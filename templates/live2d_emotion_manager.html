@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live2D 情感映射管理器 - Project N.E.K.O.</title>
+    <title data-i18n="emotionManager.title">Live2D 情感映射管理器 - Project N.E.K.O.</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         :root {
             /* 品牌核心色 */
@@ -477,40 +479,40 @@
     <div class="container">
         <div class="header">
             <div class="header-content">
-                <h1 data-text="Live2D 情感映射管理器">Live2D 情感映射管理器</h1>
-                <p>配置不同情绪下的动作和表情</p>
+                <h1 data-text="Live2D 情感映射管理器" data-i18n="emotionManager.pageTitle">Live2D 情感映射管理器</h1>
+                <p data-i18n="emotionManager.subtitle">配置不同情绪下的动作和表情</p>
             </div>
-            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭">
-                <img src="/static/icons/close_button.png" alt="关闭">
+            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="common.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
             </button>
         </div>
 
         <div class="container-content">
             <div class="field-row">
-                <label for="model-select">选择 Live2D 模型</label>
+                <label for="model-select" data-i18n="emotionManager.selectModel">选择 Live2D 模型</label>
                 <select id="model-select">
-                    <option value="">加载中...</option>
+                    <option value="" data-i18n="common.loading">加载中...</option>
                 </select>
             </div>
 
             <div id="emotion-config" style="display: none;">
             <!-- Happy -->
             <div class="emotion-section">
-                <div class="emotion-header">开心 (Happy)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.happy">开心 (Happy)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="happy">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="happy">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -519,21 +521,21 @@
 
             <!-- Sad -->
             <div class="emotion-section">
-                <div class="emotion-header">悲伤 (Sad)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.sad">悲伤 (Sad)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="sad">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="sad">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -542,21 +544,21 @@
 
             <!-- Angry -->
             <div class="emotion-section">
-                <div class="emotion-header">生气 (Angry)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.angry">生气 (Angry)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="angry">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="angry">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -565,21 +567,21 @@
 
             <!-- Neutral -->
             <div class="emotion-section">
-                <div class="emotion-header">平静 (Neutral)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.neutral">平静 (Neutral)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="neutral">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="neutral">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -588,21 +590,21 @@
 
             <!-- Surprised -->
             <div class="emotion-section">
-                <div class="emotion-header">惊讶 (Surprised)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.surprised">惊讶 (Surprised)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="surprised">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="surprised">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -611,21 +613,21 @@
 
             <!-- Idle -->
             <div class="emotion-section">
-                <div class="emotion-header">待机 (Idle)</div>
+                <div class="emotion-header" data-i18n="emotionManager.emotions.idle">待机 (Idle)</div>
                 <div class="select-group">
-                    <label>动作</label>
+                    <label data-i18n="emotionManager.motion">动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="Idle">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择动作</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectMotion">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
                 </div>
                 <div class="select-group">
-                    <label>表情</label>
+                    <label data-i18n="emotionManager.expression">表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="Idle">
                         <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="selected-text">选择表情</span>
+                            <span class="selected-text" data-i18n="emotionManager.selectExpression">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
                     </div>
@@ -633,8 +635,8 @@
             </div>
 
             <div class="button-group">
-                <button id="save-btn" class="btn btn-primary">保存配置</button>
-                <button id="reset-btn" class="btn btn-secondary">重置</button>
+                <button id="save-btn" class="btn btn-primary" data-i18n="emotionManager.saveConfig">保存配置</button>
+                <button id="reset-btn" class="btn btn-secondary" data-i18n="common.reset">重置</button>
             </div>
 
             <div id="status-message" class="status-message"></div>
@@ -653,6 +655,64 @@
         let currentModelInfo = null;
         let availableMotions = [];
         let availableExpressions = [];
+
+        // i18n 辅助函数
+        function t(key, paramsOrFallback) {
+            if (typeof window.t === 'function') {
+                return window.t(key, paramsOrFallback);
+            }
+            if (typeof i18next !== 'undefined' && i18next.isInitialized) {
+                return i18next.t(key, paramsOrFallback);
+            }
+            if (typeof paramsOrFallback === 'string') {
+                return paramsOrFallback;
+            }
+            return key;
+        }
+
+        function isI18nReady() {
+            const i18nInstance = window.i18n || (typeof i18next !== 'undefined' ? i18next : null);
+            return typeof window.t === 'function' && !!(i18nInstance && i18nInstance.isInitialized);
+        }
+
+        function waitForI18nReady(timeoutMs = 5000) {
+            return new Promise(resolve => {
+                if (isI18nReady()) {
+                    resolve();
+                    return;
+                }
+
+                let pollTimer = null;
+                let timeoutTimer = null;
+
+                const cleanup = () => {
+                    if (pollTimer) {
+                        clearInterval(pollTimer);
+                        pollTimer = null;
+                    }
+                    if (timeoutTimer) {
+                        clearTimeout(timeoutTimer);
+                        timeoutTimer = null;
+                    }
+                    window.removeEventListener('localechange', onLocaleReady);
+                };
+
+                const onLocaleReady = () => {
+                    if (!isI18nReady()) {
+                        return;
+                    }
+                    cleanup();
+                    resolve();
+                };
+
+                window.addEventListener('localechange', onLocaleReady);
+                pollTimer = setInterval(onLocaleReady, 100);
+                timeoutTimer = setTimeout(() => {
+                    cleanup();
+                    resolve();
+                }, timeoutMs);
+            });
+        }
 
         // 显示状态消息
         function showStatus(message, type = 'info') {
@@ -675,7 +735,7 @@
                 const models = await response.json();
 
                 if (Array.isArray(models) && models.length > 0) {
-                    modelSelect.innerHTML = '<option value="">请选择模型</option>';
+                    modelSelect.innerHTML = `<option value="">${t('emotionManager.pleaseSelectModel')}</option>`;
 
                     models.forEach(model => {
                         const option = document.createElement('option');
@@ -685,11 +745,11 @@
                         modelSelect.appendChild(option);
                     });
                 } else {
-                    showStatus('没有找到可用的模型', 'error');
+                    showStatus(t('emotionManager.noModelsFound'), 'error');
                 }
             } catch (error) {
                 console.error('加载模型列表失败:', error);
-                showStatus('加载模型列表失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.loadModelListFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -717,11 +777,11 @@
                     populateSelects();
                     emotionConfig.style.display = 'block';
                 } else {
-                    showStatus('加载模型文件失败: ' + (data.error || '未知错误'), 'error');
+                    showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                 }
             } catch (error) {
                 console.error('加载模型文件失败:', error);
-                showStatus('加载模型文件失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -764,7 +824,7 @@
             headerContainer.innerHTML = '';
 
             if (checkboxes.length === 0) {
-                headerContainer.textContent = isMotion ? '选择动作' : '选择表情';
+                headerContainer.textContent = isMotion ? t('emotionManager.selectMotion') : t('emotionManager.selectExpression');
             } else {
                 checkboxes.forEach(cb => {
                     const label = cb.closest('.multiselect-item').querySelector('span').textContent;
@@ -943,7 +1003,7 @@
                         }
                     });
 
-                    showStatus('配置加载成功', 'success');
+                    showStatus(t('emotionManager.configLoadSuccess'), 'success');
                 }
             } catch (error) {
                 console.error('加载情感映射配置失败:', error);
@@ -953,7 +1013,7 @@
         // 保存情感映射配置
         async function saveEmotionMapping() {
             if (!currentModelInfo) {
-                showStatus('请先选择模型', 'error');
+                showStatus(t('emotionManager.pleaseSelectModelFirst'), 'error');
                 return;
             }
 
@@ -989,13 +1049,13 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    showStatus('配置保存成功！ 每个情绪的动作/表情将平分触发概率。', 'success');
+                    showStatus(t('emotionManager.configSaveSuccess'), 'success');
                 } else {
-                    showStatus('保存失败: ' + (data.error || '未知错误'), 'error');
+                    showStatus(t('emotionManager.saveFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                 }
             } catch (error) {
                 console.error('保存情感映射配置失败:', error);
-                showStatus('保存失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.saveFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -1006,7 +1066,7 @@
                 updateMultiselectHeader(ms);
             });
 
-            showStatus('已重置配置', 'info');
+            showStatus(t('emotionManager.configReset'), 'info');
         }
 
         // 事件监听
@@ -1026,7 +1086,10 @@
         resetBtn.addEventListener('click', resetConfig);
 
         // 初始化
-        loadModelList();
+        (async () => {
+            await waitForI18nReady();
+            await loadModelList();
+        })();
     </script>
 
     <!-- Driver.js 新手引导库 -->

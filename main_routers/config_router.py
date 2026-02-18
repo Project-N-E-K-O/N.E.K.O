@@ -134,6 +134,8 @@ async def save_preferences(request: Request):
         rotation = data.get('rotation')
         # 获取视口信息（可选，用于跨分辨率位置和缩放归一化）
         viewport = data.get('viewport')
+        # 获取相机位置信息（可选，用于恢复VRM滚轮缩放状态）
+        camera_position = data.get('camera_position')
 
         # 验证和清理 viewport 数据
         if viewport is not None:
@@ -148,7 +150,7 @@ async def save_preferences(request: Request):
                     viewport = None
 
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -352,6 +354,10 @@ async def get_core_config_api():
             "visionModelUrl": core_cfg.get('visionModelUrl', ''),
             "visionModelId": core_cfg.get('visionModelId', ''),
             "visionModelApiKey": core_cfg.get('visionModelApiKey', ''),
+            "agentModelProvider": core_cfg.get('agentModelProvider', ''),
+            "agentModelUrl": core_cfg.get('agentModelUrl', ''),
+            "agentModelId": core_cfg.get('agentModelId', ''),
+            "agentModelApiKey": core_cfg.get('agentModelApiKey', ''),
             "omniModelProvider": core_cfg.get('omniModelProvider', ''),
             "omniModelUrl": core_cfg.get('omniModelUrl', ''),
             "omniModelId": core_cfg.get('omniModelId', ''),
@@ -480,6 +486,14 @@ async def update_core_config(request: Request):
             core_cfg['visionModelId'] = data['visionModelId']
         if 'visionModelApiKey' in data:
             core_cfg['visionModelApiKey'] = data['visionModelApiKey']
+        if 'agentModelProvider' in data:
+            core_cfg['agentModelProvider'] = data['agentModelProvider']
+        if 'agentModelUrl' in data:
+            core_cfg['agentModelUrl'] = data['agentModelUrl']
+        if 'agentModelId' in data:
+            core_cfg['agentModelId'] = data['agentModelId']
+        if 'agentModelApiKey' in data:
+            core_cfg['agentModelApiKey'] = data['agentModelApiKey']
         if 'omniModelProvider' in data:
             core_cfg['omniModelProvider'] = data['omniModelProvider']
         if 'omniModelUrl' in data:
@@ -620,6 +634,3 @@ async def list_gptsovits_voices(request: Request):
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
         return {"success": False, "error": str(e)}
-
-
-

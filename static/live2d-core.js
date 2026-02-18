@@ -354,8 +354,8 @@ class Live2DManager {
             // 复位后自动保存位置
             if (this._lastLoadedModelPath) {
                 const viewport = {
-                    width: this.pixi_app.renderer.width,
-                    height: this.pixi_app.renderer.height
+                    width: window.screen.width,
+                    height: window.screen.height
                 };
                 const saveSuccess = await this.saveUserPreferences(
                     this._lastLoadedModelPath,

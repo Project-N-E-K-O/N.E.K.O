@@ -14,6 +14,26 @@ class VRMManager {
         this._animationFrameId = null;
         this._uiUpdateLoopId = null;
         this.enablePhysics = true;
+        this._lookAtTarget = null;
+        this._mouseMoveHandler = null;
+        this._mouseRaycaster = null;
+        this._mouseNDC = null;
+        this._lookAtHeadWorldPos = null;
+        this._lookAtRayClosestPoint = null;
+        this._lookAtDirection = null;
+        this._lookAtBaseForward = null;
+        this._lookAtBaseRight = null;
+        this._lookAtBaseUp = null;
+        this._lookAtWorldUp = null;
+        this._lookAtDesiredPoint = null;
+        // 跟随时间常数（秒）：值越大，跟随越慢、越平滑
+        this._lookAtSmoothTime = 0.5;
+        // 头部到视线目标的固定距离（球面半径，单位：米）
+        this._lookAtDistance = 2.4;
+        // 视线角度限制（度）：避免眼睛/头部打到极限位
+        this._lookAtMaxYawDeg = 60;
+        this._lookAtMaxPitchUpDeg = 35;
+        this._lookAtMaxPitchDownDeg = 28;
 
         // 阴影资源引用（用于清理）
         this._shadowTexture = null;
@@ -26,6 +46,9 @@ class VRMManager {
         this._uiWindowHandlers = [];
         this._initWindowHandlers = [];
 
+        // CursorFollow 控制器（眼睛注视 + 头/脖子跟随）
+        this._cursorFollow = null;
+
         // 向后兼容：保留 _windowEventHandlers 作为 core 的别名（避免破坏现有代码）；建议新代码使用 _coreWindowHandlers
         Object.defineProperty(this, '_windowEventHandlers', {
             get: () => this._coreWindowHandlers,
@@ -35,6 +58,152 @@ class VRMManager {
         });
 
         this._initModules();
+    }
+
+    _ensureMouseLookAtResources() {
+        if (!window.THREE) return false;
+        if (!this._mouseRaycaster) this._mouseRaycaster = new window.THREE.Raycaster();
+        if (!this._mouseNDC) this._mouseNDC = new window.THREE.Vector2();
+        if (!this._lookAtHeadWorldPos) this._lookAtHeadWorldPos = new window.THREE.Vector3();
+        if (!this._lookAtRayClosestPoint) this._lookAtRayClosestPoint = new window.THREE.Vector3();
+        if (!this._lookAtDirection) this._lookAtDirection = new window.THREE.Vector3();
+        if (!this._lookAtBaseForward) this._lookAtBaseForward = new window.THREE.Vector3();
+        if (!this._lookAtBaseRight) this._lookAtBaseRight = new window.THREE.Vector3();
+        if (!this._lookAtBaseUp) this._lookAtBaseUp = new window.THREE.Vector3();
+        if (!this._lookAtWorldUp) this._lookAtWorldUp = new window.THREE.Vector3(0, 1, 0);
+        if (!this._lookAtDesiredPoint) this._lookAtDesiredPoint = new window.THREE.Vector3();
+        return true;
+    }
+
+    _getLookAtHeadWorldPosition() {
+        const headBone = this.currentModel?.vrm?.humanoid?.getNormalizedBoneNode('head');
+        if (headBone) {
+            headBone.updateMatrixWorld(true);
+            headBone.getWorldPosition(this._lookAtHeadWorldPos);
+            return this._lookAtHeadWorldPos;
+        }
+        if (this.currentModel?.vrm?.scene) {
+            this.currentModel.vrm.scene.updateMatrixWorld(true);
+            this.currentModel.vrm.scene.getWorldPosition(this._lookAtHeadWorldPos);
+            this._lookAtHeadWorldPos.y += 1.4;
+            return this._lookAtHeadWorldPos;
+        }
+        this._lookAtHeadWorldPos.set(0, 1.4, 0);
+        return this._lookAtHeadWorldPos;
+    }
+
+    _clampLookAtDirectionByAngle(direction, headWorldPos) {
+        if (!this.camera || !window.THREE) return;
+
+        this._lookAtBaseForward.subVectors(this.camera.position, headWorldPos);
+        if (this._lookAtBaseForward.lengthSq() < 1e-8) {
+            this._lookAtBaseForward.set(0, 0, 1);
+        } else {
+            this._lookAtBaseForward.normalize();
+        }
+
+        this._lookAtBaseRight.crossVectors(this._lookAtWorldUp, this._lookAtBaseForward);
+        if (this._lookAtBaseRight.lengthSq() < 1e-8) {
+            this._lookAtBaseRight.set(1, 0, 0);
+        } else {
+            this._lookAtBaseRight.normalize();
+        }
+        this._lookAtBaseUp.crossVectors(this._lookAtBaseForward, this._lookAtBaseRight).normalize();
+
+        const x = direction.dot(this._lookAtBaseRight);
+        const y = direction.dot(this._lookAtBaseUp);
+        const z = direction.dot(this._lookAtBaseForward);
+
+        const yaw = Math.atan2(x, z);
+        const horizontalLen = Math.sqrt(x * x + z * z);
+        const pitch = Math.atan2(y, Math.max(1e-8, horizontalLen));
+
+        const maxYaw = window.THREE.MathUtils.degToRad(this._lookAtMaxYawDeg);
+        const maxPitchUp = window.THREE.MathUtils.degToRad(this._lookAtMaxPitchUpDeg);
+        const maxPitchDown = window.THREE.MathUtils.degToRad(this._lookAtMaxPitchDownDeg);
+
+        const clampedYaw = window.THREE.MathUtils.clamp(yaw, -maxYaw, maxYaw);
+        const clampedPitch = window.THREE.MathUtils.clamp(pitch, -maxPitchDown, maxPitchUp);
+        const cosPitch = Math.cos(clampedPitch);
+
+        direction.copy(this._lookAtBaseRight).multiplyScalar(Math.sin(clampedYaw) * cosPitch)
+            .addScaledVector(this._lookAtBaseUp, Math.sin(clampedPitch))
+            .addScaledVector(this._lookAtBaseForward, Math.cos(clampedYaw) * cosPitch)
+            .normalize();
+    }
+
+    _setLookAtTargetByMouse(clientX, clientY) {
+        if (!this.camera || !this.renderer || !this._lookAtTarget) return;
+        if (!this._ensureMouseLookAtResources()) return;
+
+        const canvas = this.renderer.domElement;
+        if (!canvas) return;
+
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+
+        this._mouseNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        this._mouseNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+        this._mouseRaycaster.setFromCamera(this._mouseNDC, this.camera);
+        const headWorldPos = this._getLookAtHeadWorldPosition();
+        this._mouseRaycaster.ray.closestPointToPoint(headWorldPos, this._lookAtRayClosestPoint);
+        this._lookAtDirection.subVectors(this._lookAtRayClosestPoint, headWorldPos);
+
+        // 当鼠标刚好在头部投影附近时，回退到头部朝向相机方向，避免方向向量为零
+        if (this._lookAtDirection.lengthSq() < 1e-8) {
+            this._lookAtDirection.subVectors(this.camera.position, headWorldPos);
+        }
+        if (this._lookAtDirection.lengthSq() < 1e-8) return;
+
+        this._lookAtDirection.normalize();
+        this._clampLookAtDirectionByAngle(this._lookAtDirection, headWorldPos);
+        this._lookAtDesiredPoint.copy(headWorldPos).addScaledVector(this._lookAtDirection, this._lookAtDistance);
+    }
+
+    _initMouseLookAtTracking() {
+        if (!this.scene || !this.camera || !window.THREE) return;
+
+        // ── 初始化 CursorFollowController（替代旧的 mousemove 跟踪） ──
+        if (typeof window.CursorFollowController !== 'undefined') {
+            if (!this._cursorFollow) {
+                this._cursorFollow = new window.CursorFollowController();
+            }
+            if (!this._cursorFollow._initialized) {
+                this._cursorFollow.init(this);
+            }
+            // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
+            return;
+        }
+
+        // ── 回退：旧的 lookAt 跟踪（CursorFollowController 未加载时） ──
+        if (!this._ensureMouseLookAtResources()) return;
+
+        if (!this._lookAtTarget) {
+            this._lookAtTarget = new window.THREE.Object3D();
+            this._lookAtTarget.name = 'VRMLookAtMouseTarget';
+        }
+        if (this._lookAtTarget.parent !== this.scene) {
+            this.scene.add(this._lookAtTarget);
+        }
+
+        // 初始位置放在“头部->相机”方向的固定距离上，保持球面轨迹起点稳定
+        const headWorldPos = this._getLookAtHeadWorldPosition();
+        const initialDir = new window.THREE.Vector3().subVectors(this.camera.position, headWorldPos);
+        if (initialDir.lengthSq() < 1e-8) {
+            initialDir.set(0, 0, 1);
+        } else {
+            initialDir.normalize();
+        }
+        this._lookAtTarget.position.copy(headWorldPos).addScaledVector(initialDir, this._lookAtDistance);
+        this._lookAtDesiredPoint.copy(this._lookAtTarget.position);
+
+        if (!this._mouseMoveHandler) {
+            this._mouseMoveHandler = (event) => {
+                this._setLookAtTargetByMouse(event.clientX, event.clientY);
+            };
+            document.addEventListener('mousemove', this._mouseMoveHandler, { passive: true });
+        }
     }
 
     _initModules() {
@@ -318,6 +487,7 @@ class VRMManager {
     async initThreeJS(canvasId, containerId, lightingConfig = null) {
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
+            this._initMouseLookAtTracking();
             this._isInitialized = true;
             return true;
         }
@@ -329,6 +499,7 @@ class VRMManager {
         }
         await this.core.init(canvasId, containerId, lightingConfig);
         if (this.interaction) this.interaction.initDragAndZoom();
+        this._initMouseLookAtTracking();
         this.startAnimateLoop();
         // 设置初始化标志
         this._isInitialized = true;
@@ -371,7 +542,7 @@ class VRMManager {
                     );
                     lightOffset.applyQuaternion(this.camera.quaternion);
                     this.mainLight.position.copy(this.camera.position).add(lightOffset);
-                    
+
                     // 让主光始终指向模型中心（如果有目标）
                     if (this.currentModel.vrm.scene) {
                         this.mainLight.target = this.currentModel.vrm.scene;
@@ -383,12 +554,33 @@ class VRMManager {
                     this.expression.update(delta);
                 }
 
-                // 2. 视线更新
-                if (this.currentModel.vrm.lookAt) {
-                    this.currentModel.vrm.lookAt.target = this.camera;
+                // 2. CursorFollow：更新眼睛目标位置（平滑/死区/滤波）
+                if (this._cursorFollow) {
+                    this._cursorFollow.updateTarget(delta);
                 }
 
-                // 3. 物理更新
+                // 3. 设置 lookAt 目标
+                if (this.currentModel.vrm.lookAt) {
+                    if (this._cursorFollow && this._cursorFollow.eyesTarget) {
+                        // 新系统：使用 CursorFollow 的眼睛目标
+                        this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
+                    } else {
+                        // 回退：旧的 lookAt 跟踪
+                        if (this._lookAtTarget && this._lookAtDesiredPoint) {
+                            const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
+                            const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));
+                            this._lookAtTarget.position.lerp(this._lookAtDesiredPoint, alpha);
+                        }
+                        this.currentModel.vrm.lookAt.target = this._lookAtTarget || this.camera;
+                    }
+                }
+
+                // 4. 动画更新（mixer.update → VRMA 动作）
+                if (this.animation) {
+                    this.animation.update(delta);
+                }
+
+                // 5. VRM 核心更新（LookAt / SpringBone 物理）
                 if (this.enablePhysics) {
                     this.currentModel.vrm.update(delta);
                 } else {
@@ -396,24 +588,24 @@ class VRMManager {
                     if (this.currentModel.vrm.lookAt) this.currentModel.vrm.lookAt.update(delta);
                     if (this.currentModel.vrm.expressionManager) this.currentModel.vrm.expressionManager.update(delta);
                 }
+
+                // 6. CursorFollow：头/颈加成旋转（在 vrm.update 之后，确保不被覆盖）
+                if (this._cursorFollow) {
+                    this._cursorFollow.applyHead(delta);
+                }
             }
 
-            // 4. 动画更新
-            if (this.animation) {
-                this.animation.update(delta);
-            }
-
-            // 5. 交互系统更新（浮动按钮跟随等）
+            // 7. 交互系统更新（浮动按钮跟随等）
             if (this.interaction) {
                 this.interaction.update(delta);
             }
 
-            // 6. 更新控制器
+            // 8. 更新控制器
             if (this.controls) {
                 this.controls.update();
             }
 
-            // 7. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
+            // 9. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }
@@ -481,6 +673,11 @@ class VRMManager {
 
         // 加载模型
         const result = await this.core.loadModel(modelUrl, options);
+
+        // 模型切换后重置头部跟踪状态（滤波器/权重/累计角度）
+        if (this._cursorFollow) {
+            this._cursorFollow.reset();
+        }
 
         // 动态计算阴影位置和大小
         if (options.addShadow !== false && result && result.vrm && result.vrm.scene) {
@@ -594,7 +791,8 @@ class VRMManager {
                     try {
                         await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                             loop: true,
-                            immediate: true
+                            immediate: true,
+                            isIdle: true
                         });
                         showAndFadeIn();
                     } catch (err) {
@@ -767,7 +965,32 @@ class VRMManager {
             }
         }
 
+        // 7.5 清理 CursorFollow 控制器
+        if (this._cursorFollow) {
+            this._cursorFollow.destroy();
+            this._cursorFollow = null;
+        }
+
         // 8. 清理场景中的所有对象（包括灯光）
+        if (this._mouseMoveHandler) {
+            document.removeEventListener('mousemove', this._mouseMoveHandler);
+            this._mouseMoveHandler = null;
+        }
+        if (this._lookAtTarget && this._lookAtTarget.parent) {
+            this._lookAtTarget.parent.remove(this._lookAtTarget);
+        }
+        this._lookAtTarget = null;
+        this._mouseRaycaster = null;
+        this._mouseNDC = null;
+        this._lookAtHeadWorldPos = null;
+        this._lookAtRayClosestPoint = null;
+        this._lookAtDirection = null;
+        this._lookAtBaseForward = null;
+        this._lookAtBaseRight = null;
+        this._lookAtBaseUp = null;
+        this._lookAtWorldUp = null;
+        this._lookAtDesiredPoint = null;
+
         if (this.scene) {
             // 遍历并清理所有子对象
             while (this.scene.children.length > 0) {

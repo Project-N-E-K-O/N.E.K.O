@@ -33,6 +33,7 @@ class UniversalTutorialManager {
         this._lastAppliedStateKey = null;
         this.cachedValidSteps = null;
         this._refreshTimers = [];
+        this._pendingI18nStart = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -57,6 +58,69 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    /**
+     * 检查 i18n 是否已准备好（window.t 可用且 i18next 已初始化）
+     */
+    isI18nReady() {
+        const i18nInstance = window.i18n || (typeof i18next !== 'undefined' ? i18next : null);
+        return typeof window.t === 'function' && !!(i18nInstance && i18nInstance.isInitialized);
+    }
+
+    /**
+     * 等待 i18n 就绪后再启动引导，避免回退到硬编码文案
+     */
+    startTutorialWhenI18nReady(delayMs = 0) {
+        if (this._pendingI18nStart) {
+            return;
+        }
+
+        const launchTutorial = () => {
+            setTimeout(() => {
+                this._pendingI18nStart = false;
+                this.startTutorial();
+            }, delayMs);
+        };
+
+        if (this.isI18nReady()) {
+            launchTutorial();
+            return;
+        }
+
+        this._pendingI18nStart = true;
+
+        let pollTimer = null;
+        let timeoutTimer = null;
+
+        const cleanup = () => {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            if (timeoutTimer) {
+                clearTimeout(timeoutTimer);
+                timeoutTimer = null;
+            }
+            window.removeEventListener('localechange', onLocaleReady);
+        };
+
+        const onLocaleReady = () => {
+            if (!this.isI18nReady()) {
+                return;
+            }
+            cleanup();
+            launchTutorial();
+        };
+
+        window.addEventListener('localechange', onLocaleReady);
+        pollTimer = setInterval(onLocaleReady, 100);
+
+        // 容错：如果语言系统异常，超时后仍允许教程启动
+        timeoutTimer = setTimeout(() => {
+            cleanup();
+            launchTutorial();
+        }, 5000);
     }
 
     /**
@@ -260,6 +324,9 @@ class UniversalTutorialManager {
 
                         // 启用 popover 拖动功能
                         this.enablePopoverDragging();
+
+                        // 确保 popover 完全在视口内（防止用户无法点击按钮）
+                        this.clampPopoverToViewport();
                     })().catch(err => {
                         console.error('[Tutorial] onHighlighted 回调执行失败:', err);
                     });
@@ -353,26 +420,20 @@ class UniversalTutorialManager {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
                 this.waitForFloatingButtons().then(() => {
-                    // 延迟启动，确保 DOM 完全加载
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 1500);
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(1500);
                 });
             } else if (this.currentPage === 'chara_manager') {
                 // 对于角色管理页面，需要等待猫娘卡片加载
                 this.waitForCatgirlCards().then(async () => {
                     // 先展开猫娘卡片和进阶设定，并为元素添加唯一 ID
                     await this.prepareCharaManagerForTutorial();
-                    // 延迟启动，确保 DOM 完全加载
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 500);
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(500);
                 });
             } else {
-                // 其他页面直接延迟启动
-                setTimeout(() => {
-                    this.startTutorial();
-                }, 1500);
+                // 其他页面延迟启动，并等待 i18n 准备完成
+                this.startTutorialWhenI18nReady(1500);
             }
         }
 
@@ -412,9 +473,7 @@ class UniversalTutorialManager {
 
                 // 如果没看过，自动启动引导
                 if (!hasSeenNew) {
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 1000);
+                    this.startTutorialWhenI18nReady(1000);
                 }
             }, 500);
         });
@@ -981,6 +1040,15 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 情感配置页面是否已有可选模型项（非占位空值）
+     */
+    hasEmotionManagerSelectableModels() {
+        const select = document.querySelector('#model-select');
+        if (!select) return false;
+        return Array.from(select.options || []).some(option => option && option.value);
+    }
+
+    /**
      * 设置“下一步”按钮状态
      */
     setNextButtonState(enabled, disabledTitle = '') {
@@ -1070,6 +1138,8 @@ class UniversalTutorialManager {
             '#live2d-lock-icon',
             '#toggle-chat-btn',
             '.live2d-floating-btn',
+            '.live2d-trigger-btn',
+            '.vrm-trigger-btn',
             // 宽泛匹配：所有以 live2d- 开头 ID 的元素都将被教程系统自动识别并控制交互状态
             '[id^="live2d-"]'
         ];
@@ -2043,126 +2113,66 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 启用 popover 拖动功能
+     * 将 popover 钳位到视口内，确保用户始终能看到并操作它
      */
-    enablePopoverDragging() {
+    clampPopoverToViewport() {
         const popover = document.querySelector('.driver-popover');
-        if (!popover) {
-            console.log('[Tutorial] 未找到 popover 元素');
+        if (!popover) return;
+
+        const rect = popover.getBoundingClientRect();
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+
+        // 如果已经完全在视口内，不做任何操作
+        if (rect.left >= 0 && rect.top >= 0 && rect.right <= vw && rect.bottom <= vh) {
             return;
         }
 
-        // 始终先清理旧的监听器（从 manager 对象获取引用）
-        if (this._popoverDragListeners) {
-            console.log('[Tutorial] 清理旧的 popover 拖动监听器');
-            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = this._popoverDragListeners;
-            if (dragElement) {
-                dragElement.removeEventListener('mousedown', onMouseDown);
-            }
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-            this._popoverDragListeners = undefined;
+        console.log('[Tutorial] Popover 超出视口，钳位到可见区域', {
+            rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+            viewport: { vw, vh }
+        });
+
+        // 切换到 fixed 定位以便精确控制位置
+        popover.style.position = 'fixed';
+        popover.style.margin = '0';
+        popover.style.transform = 'none';
+
+        let newLeft = rect.left;
+        let newTop = rect.top;
+
+        // 水平钳位
+        if (rect.right > vw) newLeft = vw - rect.width - 8;
+        if (newLeft < 8) newLeft = 8;
+        // 如果 popover 比视口还宽，至少让左边对齐
+        if (rect.width > vw - 16) newLeft = 8;
+
+        // 垂直钳位
+        if (rect.bottom > vh) newTop = vh - rect.height - 8;
+        if (newTop < 8) newTop = 8;
+        // 如果 popover 比视口还高，至少让顶部对齐，用户可以通过拖拽来看底部
+        if (rect.height > vh - 16) newTop = 8;
+
+        popover.style.left = newLeft + 'px';
+        popover.style.top = newTop + 'px';
+        popover.style.zIndex = '10000';
+    }
+
+    /**
+     * 设置 popover 拖动视觉提示
+     * 注意：实际拖动事件由 driver.min.js 的 bindDragEvents() 处理，
+     * 此方法仅添加视觉提示（cursor、title），避免重复绑定导致冲突。
+     */
+    enablePopoverDragging() {
+        const popover = document.querySelector('.driver-popover');
+        if (!popover) return;
+
+        const popoverTitle = popover.querySelector('.driver-popover-title');
+        if (popoverTitle) {
+            popoverTitle.style.cursor = 'move';
+            popoverTitle.style.userSelect = 'none';
+            popoverTitle.title = this.t('tutorial.drag_hint', '按住拖动以移动提示框');
         }
-        // 清除任何 popover 上的旧标记
-        if (popover.dataset.draggableEnabled) {
-            delete popover.dataset.draggableEnabled;
-        }
-
-        // 尝试多个可能的标题选择器
-        const possibleTitleSelectors = [
-            '.driver-popover-title',
-            '.driver-popover-header',
-            'header',
-            '.popover-title'
-        ];
-
-        let popoverTitle = null;
-        for (const selector of possibleTitleSelectors) {
-            popoverTitle = popover.querySelector(selector);
-            if (popoverTitle) {
-                console.log(`[Tutorial] 找到 popover 标题元素: ${selector}`);
-                break;
-            }
-        }
-
-        // 如果找不到标题，使用整个 popover 作为拖动区域
-        if (!popoverTitle) {
-            console.log('[Tutorial] 未找到 popover 标题元素，使用整个 popover 作为拖动区域');
-            popoverTitle = popover;
-        }
-
-        // 标记为可拖动
-        popover.dataset.draggableEnabled = 'true';
-        popoverTitle.style.cursor = 'move';
-        popoverTitle.style.userSelect = 'none';
-        popoverTitle.title = '按住拖动以移动提示框';
-
-        let isDragging = false;
-        let startX = 0;
-        let startY = 0;
-        let initialX = 0;
-        let initialY = 0;
-
-        const onMouseDown = (e) => {
-            // 只在点击标题区域时启动拖动（避免影响按钮点击）
-            if (e.target.closest('button')) {
-                return;
-            }
-
-            isDragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-
-            // 获取当前 popover 的位置
-            const rect = popover.getBoundingClientRect();
-            initialX = rect.left;
-            initialY = rect.top;
-
-            // 移除 driver.js 的定位样式，切换到固定定位
-            popover.style.position = 'fixed';
-            popover.style.left = initialX + 'px';
-            popover.style.top = initialY + 'px';
-            popover.style.margin = '0';
-            popover.style.transform = 'none';
-            popover.style.zIndex = '10000';
-
-            e.preventDefault();
-            e.stopPropagation();
-        };
-
-        const onMouseMove = (e) => {
-            if (!isDragging) return;
-
-            const deltaX = e.clientX - startX;
-            const deltaY = e.clientY - startY;
-
-            const newX = initialX + deltaX;
-            const newY = initialY + deltaY;
-
-            popover.style.left = newX + 'px';
-            popover.style.top = newY + 'px';
-        };
-
-        const onMouseUp = () => {
-            if (isDragging) {
-                isDragging = false;
-            }
-        };
-
-        // 添加事件监听器
-        popoverTitle.addEventListener('mousedown', onMouseDown, { passive: false });
-        document.addEventListener('mousemove', onMouseMove, { passive: true });
-        document.addEventListener('mouseup', onMouseUp, { passive: true });
-
-        // 保存监听器引用到 manager 对象，以便清理
-        this._popoverDragListeners = {
-            onMouseDown,
-            onMouseMove,
-            onMouseUp,
-            dragElement: popoverTitle
-        };
-
-        console.log('[Tutorial] Popover 拖动功能已启用');
     }
 
     /**
@@ -2238,8 +2248,13 @@ class UniversalTutorialManager {
                     currentStepConfig.element === '#model-select') {
                     const updateNextState = () => {
                         const hasModel = this.hasEmotionManagerModelSelected();
-                        this.setNextButtonState(hasModel, '请先选择模型');
-                        if (hasModel && this.nextButtonGuardTimer) {
+                        const hasSelectableModels = this.hasEmotionManagerSelectableModels();
+                        const canProceed = !hasSelectableModels || hasModel;
+                        this.setNextButtonState(
+                            canProceed,
+                            this.t('emotionManager.pleaseSelectModelFirst', '请先选择模型')
+                        );
+                        if (canProceed && this.nextButtonGuardTimer) {
                             clearInterval(this.nextButtonGuardTimer);
                             this.nextButtonGuardTimer = null;
                         }

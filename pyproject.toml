@@ -43,6 +43,7 @@ dependencies = [
   "tomli-w>=1.2.0",
   "loguru>=0.7.0",
   "pyzmq>=27.1.0",
+  "browser-use>=0.11.0",
 ]
 
 
@@ -84,5 +85,10 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]
 

@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 import logging
+import os
 from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
@@ -12,13 +13,31 @@ logger = logging.getLogger(__name__)
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
 
+# Runtime port override support:
+# - preferred key: NEKO_<PORT_NAME>
+# - compatibility key: <PORT_NAME>
+def _read_port_env(port_name: str, default: int) -> int:
+    for key in (f"NEKO_{port_name}", port_name):
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+            if 1 <= value <= 65535:
+                return value
+        except Exception:
+            continue
+    return default
+
 # 服务器端口配置
-MAIN_SERVER_PORT = 48911
-MEMORY_SERVER_PORT = 48912
-MONITOR_SERVER_PORT = 48913
-COMMENTER_SERVER_PORT = 48914
-TOOL_SERVER_PORT = 48915
-USER_PLUGIN_SERVER_PORT = 48916
+MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
+MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
+MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
+COMMENTER_SERVER_PORT = _read_port_env("COMMENTER_SERVER_PORT", 48914)
+TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
+USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
+AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
+MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 
 # MCP Router配置
 MCP_ROUTER_URL = 'http://localhost:3282'
@@ -41,6 +60,8 @@ DEFAULT_OPENROUTER_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 屏幕分享模式的原生图片输入限流配置（秒）
 NATIVE_IMAGE_MIN_INTERVAL = 1.5
+# 无语音活动时图片发送间隔倍数（实际间隔 = NATIVE_IMAGE_MIN_INTERVAL × 此值）
+IMAGE_IDLE_RATE_MULTIPLIER = 5
 
 # 用户自定义模型配置的默认 Provider/URL/API_KEY（空字符串表示使用全局配置）
 DEFAULT_SUMMARY_MODEL_PROVIDER = ""
@@ -61,12 +82,9 @@ DEFAULT_REALTIME_MODEL_API_KEY = "" # 仅用于本地实时模型(语音+文字+
 DEFAULT_TTS_MODEL_PROVIDER = "" # 与Realtime对应的TTS模型(Native TTS)
 DEFAULT_TTS_MODEL_URL = "" # 与Realtime对应的TTS模型(Native TTS)
 DEFAULT_TTS_MODEL_API_KEY = "" # 与Realtime对应的TTS模型(Native TTS)
-DEFAULT_COMPUTER_USE_MODEL = ""  # 空字符串表示使用 assistApi 对应的视觉模型
-DEFAULT_COMPUTER_USE_MODEL_URL = ""  # 空字符串表示使用 assistApi 对应的 URL
-DEFAULT_COMPUTER_USE_MODEL_API_KEY = ""  # 空字符串表示使用 assistApi 对应的 API Key
-DEFAULT_COMPUTER_USE_GROUND_MODEL = ""  # 空字符串表示使用 assistApi 对应的视觉模型
-DEFAULT_COMPUTER_USE_GROUND_URL = ""  # 空字符串表示使用 assistApi 对应的 URL
-DEFAULT_COMPUTER_USE_GROUND_API_KEY = ""  # 空字符串表示使用 assistApi 对应的 API Key
+DEFAULT_AGENT_MODEL_PROVIDER = ""
+DEFAULT_AGENT_MODEL_URL = ""
+DEFAULT_AGENT_MODEL_API_KEY = ""
 
 # 模型配置常量（默认值）
 # 注：以下5个直接被导入使用的变量保留原名以保持向后兼容性
@@ -81,6 +99,7 @@ DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
 DEFAULT_EMOTION_MODEL = 'qwen-flash'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
+DEFAULT_AGENT_MODEL = DEFAULT_VISION_MODEL
 
 # 用户自定义模型配置（可选，暂未使用）
 DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
@@ -254,6 +273,10 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
     "mcpToken": "",
+    "agentModelProvider": "",
+    "agentModelUrl": "",
+    "agentModelId": "",
+    "agentModelApiKey": "",
 }
 
 DEFAULT_USER_PREFERENCES = []
@@ -300,11 +323,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
-        # Computer Use 不支持 free 版本
-        'COMPUTER_USE_MODEL': "",
-        'COMPUTER_USE_MODEL_URL': "",
-        'COMPUTER_USE_GROUND_MODEL': "",
-        'COMPUTER_USE_GROUND_URL': "",
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -312,11 +330,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
         'EMOTION_MODEL': "qwen-flash-2025-07-28",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
-        # Qwen VL 模型支持 Computer Use
-        'COMPUTER_USE_MODEL': "qwen3-vl-plus",
-        'COMPUTER_USE_MODEL_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'COMPUTER_USE_GROUND_MODEL': "qwen3-vl-flash",
-        'COMPUTER_USE_GROUND_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
@@ -324,11 +337,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "gpt-5-chat-latest",
         'EMOTION_MODEL': "gpt-4.1-nano",
         'VISION_MODEL': "gpt-5-chat-latest",
-        # OpenAI 使用 GPT-4o 进行 Computer Use
-        'COMPUTER_USE_MODEL': "gpt-5-chat-latest",
-        'COMPUTER_USE_MODEL_URL': "https://api.openai.com/v1",
-        'COMPUTER_USE_GROUND_MODEL': "gpt-5-chat-latest",
-        'COMPUTER_USE_GROUND_URL': "https://api.openai.com/v1",
     },
     'glm': {
         'OPENROUTER_URL': "https://open.bigmodel.cn/api/paas/v4",
@@ -336,11 +344,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "glm-4.5-air",
         'EMOTION_MODEL': "glm-4.5-flash",
         'VISION_MODEL': "glm-4.6v-flash",
-        # 智谱 GLM-4.5V 支持 Grounding
-        'COMPUTER_USE_MODEL': "glm-4.6v",
-        'COMPUTER_USE_MODEL_URL': "https://open.bigmodel.cn/api/paas/v4",
-        'COMPUTER_USE_GROUND_MODEL': "glm-4.6v-flash",
-        'COMPUTER_USE_GROUND_URL': "https://open.bigmodel.cn/api/paas/v4",
     },
     'step': {
         'OPENROUTER_URL': "https://api.stepfun.com/v1",
@@ -348,11 +351,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "step-2-mini",
         'EMOTION_MODEL': "step-2-mini",
         'VISION_MODEL': "step-1o-turbo-vision",
-        # 阶跃星辰视觉模型
-        'COMPUTER_USE_MODEL': "step-1o-turbo-vision",
-        'COMPUTER_USE_MODEL_URL': "https://api.stepfun.com/v1",
-        'COMPUTER_USE_GROUND_MODEL': "step-1o-turbo-vision",
-        'COMPUTER_USE_GROUND_URL': "https://api.stepfun.com/v1",
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
@@ -360,11 +358,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2",
         'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
         'VISION_MODEL': "zai-org/GLM-4.6V",
-        # 硅基流动使用 Qwen VL 模型
-        'COMPUTER_USE_MODEL': "zai-org/GLM-4.6V",
-        'COMPUTER_USE_MODEL_URL': "https://api.siliconflow.cn/v1",
-        'COMPUTER_USE_GROUND_MODEL': "zai-org/GLM-4.6V",
-        'COMPUTER_USE_GROUND_URL': "https://api.siliconflow.cn/v1",
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -372,11 +365,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "gemini-3-flash-preview",
         'EMOTION_MODEL': "gemini-2.5-flash",
         'VISION_MODEL': "gemini-3-flash-preview",
-        # Gemini VL 模型支持 Computer Use
-        'COMPUTER_USE_MODEL': "gemini-3-flash-preview",
-        'COMPUTER_USE_MODEL_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
-        'COMPUTER_USE_GROUND_MODEL': "gemini-3-flash-preview",
-        'COMPUTER_USE_GROUND_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
     },
 }
 
@@ -477,10 +465,13 @@ __all__ = [
     'COMMENTER_SERVER_PORT',
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
+    'AGENT_MQ_PORT',
+    'MAIN_AGENT_EVENT_PORT',
     'MCP_ROUTER_URL',
     'TFLINK_UPLOAD_URL',
     'TFLINK_ALLOWED_HOSTS',
     'NATIVE_IMAGE_MIN_INTERVAL',
+    'IMAGE_IDLE_RATE_MULTIPLIER',
     # API 和模型配置的默认值
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',
@@ -505,6 +496,7 @@ __all__ = [
     'DEFAULT_CORRECTION_MODEL',
     'DEFAULT_EMOTION_MODEL',
     'DEFAULT_VISION_MODEL',
+    'DEFAULT_AGENT_MODEL',
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
     # 用户自定义模型配置的 Provider/URL/API_KEY
@@ -526,11 +518,8 @@ __all__ = [
     'DEFAULT_TTS_MODEL_PROVIDER',
     'DEFAULT_TTS_MODEL_URL',
     'DEFAULT_TTS_MODEL_API_KEY',
-    'DEFAULT_COMPUTER_USE_MODEL',
-    'DEFAULT_COMPUTER_USE_MODEL_URL',
-    'DEFAULT_COMPUTER_USE_MODEL_API_KEY',
-    'DEFAULT_COMPUTER_USE_GROUND_MODEL',
-    'DEFAULT_COMPUTER_USE_GROUND_URL',
-    'DEFAULT_COMPUTER_USE_GROUND_API_KEY',
+    'DEFAULT_AGENT_MODEL_PROVIDER',
+    'DEFAULT_AGENT_MODEL_URL',
+    'DEFAULT_AGENT_MODEL_API_KEY',
 ]
 

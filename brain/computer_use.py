@@ -112,8 +112,9 @@ class ComputerUseAdapter:
         self.scale_x, self.scale_y = 1.0, 1.0
         # 获取配置
         self._config_manager = get_config_manager()
+        self._agent_model_cfg = self._config_manager.get_model_api_config('agent')
         try:
-            from brain.s2_5.agents.grounding import OSWorldACI
+            from brain.cua.agents.grounding import OSWorldACI
             # Monkey patch: adjust Windows docstring without modifying site-packages
             OSWorldACI.open.__doc__ = (
                 "Open any application or file with name app_or_filename. "
@@ -121,7 +122,7 @@ class ComputerUseAdapter:
             )
             # Monkey patch: click center of bbox if grounding model outputs a box
             try:
-                from brain.s2_5.utils.common_utils import call_llm_safe
+                from brain.cua.utils.common_utils import call_llm_safe
 
                 def _patched_generate_coords(self, ref_expr: str, obs: Dict) -> list[int]:
                     self.grounding_model.reset()
@@ -185,7 +186,7 @@ class ComputerUseAdapter:
                 pass
             # Monkey patch: make assign_coordinates tolerant to non-coordinate actions
             try:
-                from brain.s2_5.utils.common_utils import parse_single_code_from_string
+                from brain.cua.utils.common_utils import parse_single_code_from_string
 
                 def _patched_assign_coordinates(self, plan: str, obs: Dict):
                     # Reset previous coords
@@ -251,7 +252,7 @@ class ComputerUseAdapter:
             except Exception:
                 # If monkey patching fails, continue with the original behavior
                 pass
-            from brain.s2_5.agents.agent_s import AgentS2_5
+            from brain.cua.agents.agent_s import AgentS2_5
             if pyautogui is None:
                 # 无显示器环境（如 Docker），GUI agent 无法工作
                 self.last_error = "pyautogui not available (no display). GUI agent cannot run in headless environment."
@@ -282,11 +283,12 @@ class ComputerUseAdapter:
             )
             # Connectivity check for grounding model via ChatOpenAI
             try:
-                api_key = self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] if self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] else None
-                ground_model = self._config_manager.get_core_config()['COMPUTER_USE_GROUND_MODEL']
+                self._agent_model_cfg = self._config_manager.get_model_api_config('agent')
+                api_key = self._agent_model_cfg.get('api_key') or None
+                ground_model = self._agent_model_cfg.get('model', '')
                 test_llm = ChatOpenAI(
                     model=ground_model,
-                    base_url=self._config_manager.get_core_config()['COMPUTER_USE_GROUND_URL'],
+                    base_url=self._agent_model_cfg.get('base_url', ''),
                     api_key=api_key,
                     temperature=0,
                     extra_body=get_extra_body(ground_model) or None
@@ -309,7 +311,8 @@ class ComputerUseAdapter:
     def is_available(self) -> Dict[str, Any]:
         ok = True
         reasons = []
-        if not self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_URL') or not self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_MODEL'):
+        model_cfg = self._config_manager.get_model_api_config('agent')
+        if not model_cfg.get('base_url') or not model_cfg.get('model'):
             ok = False
             reasons.append("Grounding endpoint not configured")
         if pyautogui is None:
@@ -326,26 +329,26 @@ class ComputerUseAdapter:
             "ready": ok,
             "reasons": reasons,
             "provider": "openai",
-            "model": self._config_manager.get_core_config().get('COMPUTER_USE_MODEL', ''),
+            "model": model_cfg.get('model', ''),
             "ground_provider": "openai",
-            "ground_model": self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_MODEL', ''),
+            "ground_model": model_cfg.get('model', ''),
         }
 
     def _build_params(self) -> Dict[str, Any]:
-        core_config = self._config_manager.get_core_config()
+        model_cfg = self._config_manager.get_model_api_config('agent')
         engine_params = {
             "engine_type": "openai",
-            "model": core_config.get('COMPUTER_USE_MODEL', ''),
-            "base_url": core_config.get('COMPUTER_USE_MODEL_URL', '') or "",
-            "api_key": core_config.get('COMPUTER_USE_MODEL_API_KEY', '') or "",
+            "model": model_cfg.get('model', ''),
+            "base_url": model_cfg.get('base_url', '') or "",
+            "api_key": model_cfg.get('api_key', '') or "",
             "thinking": False,
             "extra_body": {"thinking": { "type": "disabled"}}
         }
         engine_params_for_grounding = {
             "engine_type": "openai",
-            "model": core_config.get('COMPUTER_USE_GROUND_MODEL', ''),
-            "base_url": core_config.get('COMPUTER_USE_GROUND_URL', ''),
-            "api_key": core_config.get('COMPUTER_USE_GROUND_API_KEY', '') or "",
+            "model": model_cfg.get('model', ''),
+            "base_url": model_cfg.get('base_url', ''),
+            "api_key": model_cfg.get('api_key', '') or "",
             "grounding_width": self.scaled_width,
             "grounding_height": self.scaled_height,
             "thinking": False,
@@ -361,9 +364,23 @@ class ComputerUseAdapter:
         shot.save(buf, format="PNG")
         return buf.getvalue()
 
-    def run_instruction(self, instruction: str):
+    def run_instruction(self, instruction: str, session_id: Optional[str] = None):
+        """Execute a natural-language instruction via GUI automation.
+
+        Args:
+            instruction: What to do (e.g. "打开系统计算器").
+            session_id: If provided and matches the current session, agent
+                state is preserved for multi-turn execution.  Otherwise the
+                agent is reset to avoid cross-task state pollution.
+        """
         if not self.agent:
             return {"success": False, "error": "computer-use agent not initialized"}
+
+        # Reset agent state for a fresh task unless continuing a session
+        if session_id is None or session_id != getattr(self, "_current_session_id", None):
+            self.agent.reset()
+            self._current_session_id = session_id
+
         try:
             obs = {}
             traj = "Task:\n" + instruction

@@ -58,7 +58,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         print(f"保存用户偏好失败: {e}")
         return False
 
-def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None) -> bool:
+def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
     """
     更新指定模型的偏好设置
 
@@ -107,6 +107,10 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         # 如果有视口信息，添加到偏好中（用于跨分辨率位置和缩放归一化）
         if viewport is not None:
             new_model_pref['viewport'] = viewport
+
+        # 如果有相机位置信息，添加到偏好中（用于恢复VRM滚轮缩放状态）
+        if camera_position is not None:
+            new_model_pref['camera_position'] = camera_position
         
         if model_index >= 0:
             # 更新现有模型的偏好，保留已有的参数（如果新参数为None则不更新参数）
@@ -134,6 +138,12 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
             elif 'viewport' in existing_pref:
                 # 保留已有视口信息
                 new_model_pref['viewport'] = existing_pref['viewport']
+            # 处理相机位置信息
+            if camera_position is not None:
+                pass  # 已在上面添加到 new_model_pref
+            elif 'camera_position' in existing_pref:
+                # 保留已有相机位置信息
+                new_model_pref['camera_position'] = existing_pref['camera_position']
             current_preferences[model_index] = new_model_pref
         else:
             # 添加新模型的偏好到列表开头（作为首选）

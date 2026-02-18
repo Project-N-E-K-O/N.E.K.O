@@ -8,7 +8,7 @@ import json
 import re
 import asyncio
 import logging
-from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
+from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
@@ -16,6 +16,7 @@ from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
+from .browser_use_adapter import BrowserUseAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,15 @@ class ComputerUseDecision:
     task_description: str = ""
     reason: str = ""
 
+
+@dataclass
+class BrowserUseDecision:
+    """BrowserUse 可行性评估结果"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    reason: str = ""
+
 @dataclass
 class UserPluginDecision:
     """UserPlugin 可行性评估结果"""
@@ -74,10 +84,11 @@ class DirectTaskExecutor:
     3. 执行选中的方法
     """
     
-    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None):
+    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
         self.router = McpRouterClient()
         self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
+        self.browser_use = browser_use or BrowserUseAdapter()
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -107,7 +118,7 @@ class DirectTaskExecutor:
         # fallback to built-in HTTP fetcher
         if (self.plugin_list == []) or force_refresh:
             try:
-                url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins"
+                url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
                 # increase timeout and avoid awaiting a non-awaitable .json()
                 timeout = httpx.Timeout(5.0, connect=2.0)
                 async with httpx.AsyncClient(timeout=timeout) as _client:
@@ -142,7 +153,16 @@ class DirectTaskExecutor:
     
     def _format_messages(self, messages: List[Dict[str, str]]) -> str:
         """格式化对话消息"""
+        latest_user_text = ""
+        for m in reversed(messages[-10:]):
+            if m.get('role') == 'user':
+                latest_user_text = (m.get('text') or '').strip()
+                if latest_user_text:
+                    break
         lines = []
+        if latest_user_text:
+            # Explicitly surface latest user intent to avoid being shadowed by assistant claims.
+            lines.append(f"LATEST_USER_REQUEST: {latest_user_text}")
         for m in messages[-10:]:  # 最多取最近10条
             role = m.get('role', 'user')
             text = m.get('text', '')
@@ -196,6 +216,7 @@ INSTRUCTIONS:
 2. If yes, determine if ANY of the available MCP tools can handle it
 3. If a tool can handle it, provide the exact tool name and arguments
 4. Be precise with the tool arguments - they must match the tool's schema
+5. If `LATEST_USER_REQUEST` exists, prioritize it over assistant claims like "already done".
 
 OUTPUT FORMAT (strict JSON):
 {{
@@ -293,6 +314,7 @@ INSTRUCTIONS:
 2. Determine if the task REQUIRES GUI interaction (e.g., opening apps, clicking buttons, web browsing)
 3. Tasks like "open Chrome", "click on X", "type something" require GUI
 4. Tasks that can be done via API/tools (file operations, data queries) do NOT need GUI
+5. If `LATEST_USER_REQUEST` exists, prioritize it over assistant claims like "already done".
 
 OUTPUT FORMAT (strict JSON):
 {
@@ -356,6 +378,51 @@ OUTPUT FORMAT (strict JSON):
             except Exception as e:
                 logger.error(f"[ComputerUse Assessment] Failed: {e}")
                 return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
+
+    async def _assess_browser_use(self, conversation: str, browser_available: bool) -> BrowserUseDecision:
+        if not browser_available:
+            return BrowserUseDecision(has_task=False, can_execute=False, reason="BrowserUse not available")
+        system_prompt = """You assess if the task should be handled by browser automation.
+Return strict JSON:
+{
+  "has_task": boolean,
+  "can_execute": boolean,
+  "task_description": "brief description",
+  "reason": "why"
+}
+Rules:
+- ONLY choose browser automation for tasks that require interacting with websites, web pages, web forms, web search engines, or downloading from the internet.
+- REJECT (has_task=false or can_execute=false) tasks that are purely local OS operations such as: opening local applications (calculator, file explorer, notepad, settings), managing files/folders, controlling system settings, or any task that does not need a web browser.
+- If unsure whether a task needs a browser, default to REJECT."""
+        user_prompt = f"Conversation:\n{conversation}"
+        try:
+            client = self._get_client()
+            model = self._get_model()
+            req = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 300,
+            }
+            extra_body = get_extra_body(model)
+            if extra_body:
+                req["extra_body"] = extra_body
+            response = await client.chat.completions.create(**req)
+            text = response.choices[0].message.content.strip()
+            if text.startswith("```"):
+                text = text.replace("```json", "").replace("```", "").strip()
+            decision = json.loads(text)
+            return BrowserUseDecision(
+                has_task=decision.get("has_task", False),
+                can_execute=decision.get("can_execute", False),
+                task_description=decision.get("task_description", ""),
+                reason=decision.get("reason", ""),
+            )
+        except Exception as e:
+            return BrowserUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
     
     async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
         """
@@ -582,10 +649,11 @@ Return only the JSON object, nothing else.
         # conversation_id 通过显式传参传递，避免并发时共享状态串用
         
         if agent_flags is None:
-            agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
+            agent_flags = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}
         
         mcp_enabled = agent_flags.get("mcp_enabled", False)
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
+        browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
         
         # testUserPlugin: log entry with flags and short message summary for debugging
@@ -626,10 +694,18 @@ Return only the JSON object, nothing else.
                 logger.info(f"[TaskExecutor] ComputerUse available: {cu_available}")
             except Exception as e:
                 logger.warning(f"[TaskExecutor] Failed to check ComputerUse: {e}")
+        browser_available = False
+        if browser_use_enabled:
+            try:
+                browser_available = self.browser_use.is_available().get("ready", False)
+                logger.info(f"[TaskExecutor] BrowserUse available: {browser_available}")
+            except Exception as e:
+                logger.warning(f"[TaskExecutor] Failed to check BrowserUse: {e}")
         
         # 并行执行评估（包含 user_plugin 分支）
         mcp_decision = None
         cu_decision = None
+        bu_decision = None
         up_decision = None
         
         if mcp_enabled and capabilities:
@@ -641,6 +717,8 @@ Return only the JSON object, nothing else.
         
         if user_plugin_enabled and plugins:
             assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
+        if browser_use_enabled and browser_available:
+            assessment_tasks.append(('bu', self._assess_browser_use(conversation, browser_available)))
         
         if computer_use_enabled and cu_available:
             assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
@@ -669,6 +747,9 @@ Return only the JSON object, nothing else.
             elif task_type == 'cu':
                 cu_decision = result
                 logger.info(f"[ComputerUse] has_task={getattr(cu_decision,'has_task',None)}, can_execute={getattr(cu_decision,'can_execute',None)}, reason={getattr(cu_decision,'reason',None)}")
+            elif task_type == 'bu':
+                bu_decision = result
+                logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
         
         # 决策逻辑：MCP 优先
         # 1. 如果 MCP 可以执行，使用 MCP
@@ -696,6 +777,18 @@ Return only the JSON object, nothing else.
             return result_obj
 
         # 2. 如果 MCP 不行，但 ComputerUse 可以，返回 ComputerUse 任务
+        if bu_decision and bu_decision.has_task and bu_decision.can_execute:
+            logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=bu_decision.task_description,
+                execution_method='browser_use',
+                success=False,
+                reason=bu_decision.reason
+            )
+
+        # 3. 如果 MCP/BrowserUse 不行，但 ComputerUse 可以，返回 ComputerUse 任务
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
             return TaskResult(
@@ -707,7 +800,7 @@ Return only the JSON object, nothing else.
                 reason=cu_decision.reason
             )
         
-        # 3. 如果 MCP 不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
+        # 4. 如果前面都不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
@@ -730,12 +823,15 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"MCP: {mcp_decision.reason}")
         if cu_decision:
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
+        if bu_decision:
+            reason_parts.append(f"BrowserUse: {bu_decision.reason}")
         if up_decision:
             reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
         
         # 检查是否有任务但无法执行（包含 UserPlugin）
         has_any_task = (
             (mcp_decision and mcp_decision.has_task)
+            or (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
             or (up_decision and getattr(up_decision, "has_task", False))
         )
@@ -744,6 +840,8 @@ Return only the JSON object, nothing else.
                 task_desc = mcp_decision.task_description
             elif cu_decision and cu_decision.has_task:
                 task_desc = cu_decision.task_description
+            elif bu_decision and bu_decision.has_task:
+                task_desc = bu_decision.task_description
             elif up_decision and getattr(up_decision, "has_task", False):
                 task_desc = getattr(up_decision, "task_description", "")
             else:
