@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Union
 
-from .errors import ErrorCode
+from .errors import ErrorCode, get_error_name
 from plugin.utils.time_utils import now_iso
 
 
 def ok(
     data: Any = None,
     *,
+    code: ErrorCode = ErrorCode.SUCCESS,
     message: str = "",
     trace_id: Optional[str] = None,
     time: Optional[str] = None,
@@ -20,6 +21,7 @@ def ok(
     
     Args:
         data: 返回的数据,可以是任何可序列化的类型
+        code: 错误码,默认 SUCCESS (0)
         message: 可选的消息说明
         trace_id: 可选的追踪ID,用于日志关联
         time: 可选的时间戳,默认使用当前UTC时间
@@ -29,6 +31,7 @@ def ok(
         标准响应字典,格式为:
         {
             "success": True,
+            "code": 0,
             "data": <data>,
             "message": <message>,
             "error": None,
@@ -39,13 +42,14 @@ def ok(
     
     Example:
         >>> ok(data={"result": 42})
-        {'success': True, 'data': {'result': 42}, ...}
+        {'success': True, 'code': 0, 'data': {'result': 42}, ...}
         
         >>> ok(data=[1, 2, 3], message="处理完成", custom_field="value")
-        {'success': True, 'data': [1, 2, 3], 'message': '处理完成', 'meta': {'custom_field': 'value'}, ...}
+        {'success': True, 'code': 0, 'data': [1, 2, 3], 'message': '处理完成', 'meta': {'custom_field': 'value'}, ...}
     """
     payload: Dict[str, Any] = {
         "success": True,
+        "code": int(code),
         "data": data,
         "message": message,
         "error": None,
@@ -58,7 +62,7 @@ def ok(
 
 
 def fail(
-    code: Union[ErrorCode, str],
+    code: Union[ErrorCode, str, int],
     message: str,
     *,
     details: Any = None,
@@ -72,7 +76,7 @@ def fail(
     用于插件entry返回错误结果。返回统一的错误响应格式,包含错误码、错误信息和详情。
     
     Args:
-        code: 错误码,可以使用ErrorCode枚举或自定义字符串
+        code: 错误码,可以使用ErrorCode枚举、整数或自定义字符串
         message: 错误描述信息
         details: 可选的错误详情,可以是任何可序列化的类型
         retriable: 是否可重试,True表示客户端可以重试此操作
@@ -84,10 +88,11 @@ def fail(
         标准错误响应字典,格式为:
         {
             "success": False,
+            "code": <int>,
             "data": None,
             "message": "",
             "error": {
-                "code": <code>,
+                "code": <code_name>,
                 "message": <message>,
                 "details": <details>,
                 "retriable": <retriable>
@@ -100,17 +105,32 @@ def fail(
     Example:
         >>> from plugin.sdk import ErrorCode, fail
         >>> fail(ErrorCode.VALIDATION_ERROR, "参数无效")
-        {'success': False, 'error': {'code': 'VALIDATION_ERROR', 'message': '参数无效', ...}, ...}
+        {'success': False, 'code': 400, 'error': {'code': 'VALIDATION_ERROR', 'message': '参数无效', ...}, ...}
         
         >>> fail("CUSTOM_ERROR", "自定义错误", details={"field": "email"}, retriable=True)
-        {'success': False, 'error': {'code': 'CUSTOM_ERROR', 'retriable': True, ...}, ...}
+        {'success': False, 'code': 500, 'error': {'code': 'CUSTOM_ERROR', 'retriable': True, ...}, ...}
     """
+    # 解析错误码
+    if isinstance(code, ErrorCode):
+        code_int = int(code)
+        code_name = get_error_name(code)
+    elif isinstance(code, int):
+        code_int = code
+        try:
+            code_name = get_error_name(ErrorCode(code))
+        except ValueError:
+            code_name = str(code)
+    else:
+        code_int = ErrorCode.INTERNAL.value  # 自定义字符串默认使用 500
+        code_name = str(code)
+    
     payload: Dict[str, Any] = {
         "success": False,
+        "code": code_int,
         "data": None,
         "message": "",
         "error": {
-            "code": str(code),
+            "code": code_name,
             "message": message,
             "details": details,
             "retriable": retriable,

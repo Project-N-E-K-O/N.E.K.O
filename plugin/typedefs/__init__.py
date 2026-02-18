@@ -14,11 +14,19 @@ Usage:
     )
 """
 
+# 统一错误码（从 errors.py 导出）
+from .errors import (
+    ErrorCode,
+    ERROR_NAMES,
+    get_error_name,
+    get_http_status,
+)
+
+# Result 类型
 from .result import (
     Ok,
     Err,
     Result,
-    ErrorCode,
     ResultError,
     safe,
     async_safe,
@@ -49,11 +57,15 @@ from plugin.api.exceptions import (
 from plugin.sdk.types import PluginContextProtocol
 
 __all__ = [
+    # 错误码
+    "ErrorCode",
+    "ERROR_NAMES",
+    "get_error_name",
+    "get_http_status",
     # Result 类型
     "Ok",
     "Err",
     "Result",
-    "ErrorCode",
     "ResultError",
     "safe",
     "async_safe",

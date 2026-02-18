@@ -26,53 +26,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, NoReturn, Optional, TypeVar, Union
 from functools import wraps
-from enum import IntEnum
+
+from .errors import ErrorCode
 
 T = TypeVar('T')
 U = TypeVar('U')
 E = TypeVar('E', bound=Exception)
-
-
-class ErrorCode(IntEnum):
-    """错误码枚举
-    
-    定义了插件系统中常用的错误码，与 HTTP 状态码对齐。
-    
-    Attributes:
-        SUCCESS: 成功
-        INVALID_PARAMS: 参数验证失败 (400)
-        UNAUTHORIZED: 未授权 (401)
-        FORBIDDEN: 禁止访问 (403)
-        NOT_FOUND: 资源不存在 (404)
-        CONFLICT: 资源冲突 (409)
-        EXECUTION_ERROR: 执行错误 (500)
-        NOT_IMPLEMENTED: 未实现 (501)
-        COMMUNICATION_ERROR: 通信错误 (502)
-        SERVICE_UNAVAILABLE: 服务不可用 (503)
-        TIMEOUT: 超时 (504)
-        PLUGIN_NOT_RUNNING: 插件未运行 (1001)
-        PLUGIN_CRASHED: 插件崩溃 (1002)
-        CIRCULAR_CALL: 循环调用 (1003)
-        RATE_LIMITED: 频率限制 (1004)
-    """
-    SUCCESS = 0
-    # 客户端错误 (4xx)
-    INVALID_PARAMS = 400
-    UNAUTHORIZED = 401
-    FORBIDDEN = 403
-    NOT_FOUND = 404
-    CONFLICT = 409
-    # 服务端错误 (5xx)
-    EXECUTION_ERROR = 500
-    NOT_IMPLEMENTED = 501
-    COMMUNICATION_ERROR = 502
-    SERVICE_UNAVAILABLE = 503
-    TIMEOUT = 504
-    # 插件特定错误 (1xxx)
-    PLUGIN_NOT_RUNNING = 1001
-    PLUGIN_CRASHED = 1002
-    CIRCULAR_CALL = 1003
-    RATE_LIMITED = 1004
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +118,7 @@ class Err(Generic[E]):
         'default'
     """
     error: E
-    code: ErrorCode = ErrorCode.EXECUTION_ERROR
+    code: ErrorCode = ErrorCode.INTERNAL
     message: Optional[str] = None
     
     def __bool__(self) -> bool:
