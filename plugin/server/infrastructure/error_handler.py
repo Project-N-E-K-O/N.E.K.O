@@ -7,12 +7,12 @@
 3. 错误被正确记录和传播
 """
 import asyncio
-import logging
 import os
 from typing import Any, Callable, TypeVar, Optional
 from functools import wraps
 
 from fastapi import HTTPException
+from loguru import logger
 from plugin.api.exceptions import (
     PluginError,
     PluginNotFoundError,
@@ -21,8 +21,6 @@ from plugin.api.exceptions import (
     PluginExecutionError,
     PluginCommunicationError,
 )
-
-logger = logging.getLogger("user_plugin_server")
 
 # 是否在开发模式（开发模式下可以返回更详细的错误信息）
 DEBUG_MODE = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")

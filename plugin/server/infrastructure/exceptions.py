@@ -1,9 +1,9 @@
 """
 异常处理中间件
 """
-import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from loguru import logger
 
 from plugin.api.exceptions import (
     PluginError,
@@ -11,8 +11,6 @@ from plugin.api.exceptions import (
     PluginNotRunningError,
     PluginTimeoutError,
 )
-
-logger = logging.getLogger("user_plugin_server")
 
 
 def register_exception_handlers(app):

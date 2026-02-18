@@ -4,7 +4,6 @@
 提供插件日志和服务器日志的读取和查询功能。
 支持 WebSocket 实时推送日志更新。
 """
-import logging
 import re
 import asyncio
 import threading
@@ -13,10 +12,9 @@ from typing import List, Dict, Any, Optional, Set
 from collections import deque
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from loguru import logger
 
 from plugin.settings import PLUGIN_CONFIG_ROOT
-
-logger = logging.getLogger("user_plugin_server")
 
 # 服务器日志的特殊 ID
 SERVER_LOG_ID = "_server"

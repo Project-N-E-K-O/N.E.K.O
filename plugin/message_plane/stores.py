@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import logging
 import time
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Deque, Dict, Optional
+
+from loguru import logger
 
 
 @dataclass
@@ -184,9 +185,7 @@ class TopicStore:
                         if int(ev.get("seq", 0)) > after:
                             out.append(ev)
                     except Exception:
-                        logging.getLogger("user_plugin_server").debug(
-                            "[message_plane] skip event due to invalid seq: %r", ev, exc_info=True
-                        )
+                        logger.debug("skip event due to invalid seq: {}", ev)
                         continue
 
         out.sort(key=lambda e: int(e.get("seq") or 0))
