@@ -6,7 +6,7 @@
 const VRM_POPUP_ANIMATION_DURATION_MS = 200;
 
 // 注入 CSS 样式（如果尚未注入）
-(function() {
+(function () {
     if (document.getElementById('vrm-popup-styles')) return;
     const style = document.createElement('style');
     style.id = 'vrm-popup-styles';
@@ -140,7 +140,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
     popup.className = 'vrm-popup';
 
     const stopEventPropagation = (e) => { e.stopPropagation(); };
-    ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt => {
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         popup.addEventListener(evt, stopEventPropagation, true);
     });
 
@@ -154,7 +154,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
-    } else     if (buttonId === 'settings') {
+    } else if (buttonId === 'settings') {
         // 避免小屏溢出：限制高度并允许滚动
         popup.classList.add('vrm-popup-settings');
         this._createSettingsPopupContent(popup);
@@ -381,6 +381,8 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
 
     // 存储展开/收缩方法供外部调用
     container._expand = () => {
+        // 已展开或正在展开中（opacity !== '0'），直接跳过避免高度闪烁
+        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
         container.style.display = 'flex';
         container.style.flexWrap = 'wrap';
         // 先设置固定高度以触发动画
@@ -507,7 +509,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     updateStyle();
 
     toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
-    
+
     const handleToggle = (e) => {
         if (checkbox.disabled) return;
         if (checkbox._processing) {
@@ -613,7 +615,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
+    toggleItem.addEventListener('mouseenter', () => { if (checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
     toggleItem.addEventListener('mouseleave', updateStyle);
 
     const handleToggleChange = (isChecked) => {
@@ -658,7 +660,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     checkbox.addEventListener('change', (e) => { e.stopPropagation(); handleToggleChange(checkbox.checked); });
     [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
-        if(e.target !== checkbox) { e.preventDefault(); e.stopPropagation(); checkbox.checked = !checkbox.checked; handleToggleChange(checkbox.checked); }
+        if (e.target !== checkbox) { e.preventDefault(); e.stopPropagation(); checkbox.checked = !checkbox.checked; handleToggleChange(checkbox.checked); }
     }));
 
     return toggleItem;
@@ -667,12 +669,12 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 // 创建设置菜单项 (保持与Live2D一致)
 VRMManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
-        { 
-            id: 'character', 
-            label: window.t ? window.t('settings.menu.characterManage') : '角色管理', 
-            labelKey: 'settings.menu.characterManage', 
-            icon: '/static/icons/character_icon.png', 
-            action: 'navigate', 
+        {
+            id: 'character',
+            label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
+            labelKey: 'settings.menu.characterManage',
+            icon: '/static/icons/character_icon.png',
+            action: 'navigate',
             url: '/chara_manager',
             // 子菜单：通用设置、模型管理、声音克隆
             submenu: [
@@ -896,7 +898,7 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
             clearTimeout(this._windowCheckTimers[url]);
             delete this._windowCheckTimers[url];
         }
-        try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) {}
+        try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) { }
         delete this._openSettingsWindows[url];
     });
 };
@@ -934,12 +936,12 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
             focusCheckbox.checked = !window.focusModeEnabled; updateCheckboxStyle(focusCheckbox);
         }
-        
+
         const proactiveChatCheckbox = popup.querySelector('#vrm-proactive-chat');
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
             proactiveChatCheckbox.checked = window.proactiveChatEnabled; updateCheckboxStyle(proactiveChatCheckbox);
         }
-        
+
         const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
             proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
@@ -966,16 +968,16 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
     if (isVisible) {
         popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
-        
+
         // 更新按钮状态为关闭
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, false);
         }
-        
+
         // 存储 timeout ID，以便在快速重新打开时能够清除
-        const hideTimeoutId = setTimeout(() => { 
-            popup.style.display = 'none'; 
-            popup.style.left = '100%'; 
+        const hideTimeoutId = setTimeout(() => {
+            popup.style.display = 'none';
+            popup.style.left = '100%';
             popup.style.top = '0';
             // 清除 timeout ID 引用
             popup._hideTimeoutId = null;
@@ -987,15 +989,15 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
             clearTimeout(popup._hideTimeoutId);
             popup._hideTimeoutId = null;
         }
-        
+
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
-        
+
         // 更新按钮状态为打开
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, true);
         }
-        
+
         // 预加载图片
         const images = popup.querySelectorAll('img');
         Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
@@ -1038,7 +1040,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
         if (audioInputs.length === 0) {
             const noDev = document.createElement('div');
             noDev.textContent = window.t ? window.t('microphone.noDevices') : '未检测到麦克风';
-            Object.assign(noDev.style, { padding:'8px', fontSize:'13px', color:'#666' });
+            Object.assign(noDev.style, { padding: '8px', fontSize: '13px', color: '#666' });
             popup.appendChild(noDev);
             return;
         }
@@ -1053,11 +1055,11 @@ VRMManager.prototype.renderMicList = async function (popup) {
                 borderRadius: '6px', transition: 'background 0.2s',
                 color: '#333'
             });
-            
+
             // 选中高亮逻辑（简单模拟）
             btn.addEventListener('mouseenter', () => btn.style.background = 'rgba(68, 183, 254, 0.1)');
             btn.addEventListener('mouseleave', () => btn.style.background = 'transparent');
-            
+
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 if (deviceId) {
@@ -1067,7 +1069,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ microphone_id: deviceId })
                         });
-                        
+
                         if (!response.ok) {
                             // 解析错误信息
                             let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
@@ -1078,7 +1080,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                                 try {
                                     const errorText = await response.text();
                                     if (errorText) errorMessage = errorText;
-                                } catch {}
+                                } catch { }
                             }
                             if (window.showStatusToast) {
                                 const message = window.t ? window.t('microphone.switchFailed', { error: errorMessage }) : `切换麦克风失败: ${errorMessage}`;
@@ -1092,7 +1094,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
                             window.showStatusToast(message, 2000);
                         }
-                    } catch(e) {
+                    } catch (e) {
                         console.error('[VRM UI] 切换麦克风时发生网络错误:', e);
                         if (window.showStatusToast) {
                             const message = window.t ? window.t('microphone.networkError') : '切换麦克风失败：网络错误';
@@ -1250,7 +1252,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
     if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
         const notAvailableItem = document.createElement('div');
         notAvailableItem.textContent = t('app.screenSource.notAvailable') || '仅在桌面版可用';
-        Object.assign(notAvailableItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        Object.assign(notAvailableItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
         popup.appendChild(notAvailableItem);
         return;
     }
@@ -1259,7 +1261,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         // 显示加载中
         const loadingItem = document.createElement('div');
         loadingItem.textContent = t('app.screenSource.loading') || '加载中...';
-        Object.assign(loadingItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        Object.assign(loadingItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
         popup.appendChild(loadingItem);
 
         // 获取屏幕源
@@ -1273,7 +1275,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         if (!sources || sources.length === 0) {
             const noSourcesItem = document.createElement('div');
             noSourcesItem.textContent = t('app.screenSource.noSources') || '没有可用的屏幕源';
-            Object.assign(noSourcesItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+            Object.assign(noSourcesItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
             popup.appendChild(noSourcesItem);
             return;
         }
@@ -1330,7 +1332,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         popup.innerHTML = '';
         const errDiv = document.createElement('div');
         errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
-        Object.assign(errDiv.style, { padding:'12px', fontSize:'13px', color:'#dc3545', textAlign:'center' });
+        Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#dc3545', textAlign: 'center' });
         popup.appendChild(errDiv);
     }
 };
