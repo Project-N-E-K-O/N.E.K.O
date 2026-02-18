@@ -15,12 +15,12 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         top: '0',
         marginLeft: '8px',
         zIndex: '100000',  // 确保弹出菜单置顶，不被任何元素遮挡
-        background: 'var(--neko-popup-bg)',  // Fluent Acrylic（支持暗色模式）
+        background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',  // Fluent Acrylic（支持暗色模式）
         backdropFilter: 'saturate(180%) blur(20px)',  // Fluent 标准模糊
-        border: 'var(--neko-popup-border)',  // 微妙高光边框（支持暗色模式）
+        border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',  // 微妙高光边框（支持暗色模式）
         borderRadius: '8px',  // Fluent 标准圆角
         padding: '8px',
-        boxShadow: 'var(--neko-popup-shadow)',  // Fluent 多层阴影（支持暗色模式）
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',  // Fluent 多层阴影（支持暗色模式）
         display: 'none',
         flexDirection: 'column',
         gap: '6px',

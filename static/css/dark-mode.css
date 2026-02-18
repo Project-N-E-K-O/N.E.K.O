@@ -278,7 +278,7 @@ html #chat-container {
   background: rgba(42, 123, 196, 0.2);
 }
 
-@keyframes breathingGlowDark {
+@keyframes breathing-glow-dark {
   0%, 100% {
     box-shadow: 0 0 8px rgba(42, 123, 196, 0.7);
   }
@@ -288,7 +288,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] #chat-container.minimized {
-  animation: breathingGlowDark 2s ease-in-out infinite;
+  animation: breathing-glow-dark 2s ease-in-out infinite;
 }
 
 /* ===== 暗色模式：通用按钮 ===== */
@@ -529,11 +529,6 @@ html #chat-container {
 
 /* ===== 暗色模式：选中文本 ===== */
 [data-theme="dark"] ::selection {
-  background: rgba(74, 163, 223, 0.4);
-  color: #fff;
-}
-
-[data-theme="dark"] ::-moz-selection {
   background: rgba(74, 163, 223, 0.4);
   color: #fff;
 }
@@ -946,6 +941,51 @@ html #chat-container {
   background: #383838;
 }
 
+/* Steam Workshop：ID 针对性暗色覆盖（内联样式需 !important） */
+[data-theme="dark"] #card-info-preview,
+[data-theme="dark"] #live2d-preview-container {
+  background-color: #2d2d2d !important;
+  border-color: #444 !important;
+}
+
+[data-theme="dark"] #live2d-preview-controls {
+  background-color: #333 !important;
+  border-top-color: #444 !important;
+}
+
+[data-theme="dark"] #copyright-warning {
+  background-color: rgba(220, 53, 69, 0.15) !important;
+  border-color: rgba(220, 53, 69, 0.3) !important;
+  color: #f5a0a8 !important;
+}
+
+[data-theme="dark"] #workshop-status-area {
+  background-color: rgba(0, 100, 200, 0.15) !important;
+  border-color: rgba(0, 100, 200, 0.3) !important;
+  color: #b0d4f1 !important;
+}
+
+[data-theme="dark"] #character-card-tags-wrapper {
+  background-color: #2d2d2d !important;
+  border-color: #444 !important;
+}
+
+[data-theme="dark"] #no-uploadable-models-warning,
+[data-theme="dark"] #snapshot-diff-area {
+  background-color: rgba(255, 193, 7, 0.15) !important;
+  border-color: rgba(255, 193, 7, 0.3) !important;
+  color: #f0d060 !important;
+}
+
+[data-theme="dark"] #item-title,
+[data-theme="dark"] #item-description,
+[data-theme="dark"] #snapshot-description,
+[data-theme="dark"] #snapshot-tags-container,
+[data-theme="dark"] #snapshot-model {
+  background-color: #2d2d2d !important;
+  color: #e0e0e0;
+}
+
 /* ===== 子页面：Voice Clone ===== */
 [data-theme="dark"] .voice-card,
 [data-theme="dark"] .voice-item {
@@ -958,10 +998,10 @@ html #chat-container {
   background: #383838;
 }
 
-/* voice-list-container：覆盖内联 style */
-[data-theme="dark"] #voice-list-container {
-  background: #1e1e1e !important;
-  border-color: #444 !important;
+/* voice-list-container：通过 class 覆盖 */
+[data-theme="dark"] .voice-list-bg {
+  background: #1e1e1e;
+  border-color: #444;
 }
 
 [data-theme="dark"] .voice-list-item {
