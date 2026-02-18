@@ -76,7 +76,7 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin.sdk.events import EventHandler, EVENT_META_ATTR
+from plugin.sdk.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin.sdk.version import SDK_VERSION
 from plugin.core.state import state
 from plugin.api.models import PluginMeta, PluginAuthor, PluginDependency
@@ -97,17 +97,7 @@ except ImportError:  # pragma: no cover
     InvalidSpecifier = Exception  # type: ignore
 
 
-@dataclass
-class SimpleEntryMeta:
-    event_type: str = "plugin_entry"
-    id: str = ""
-    name: str = ""
-    description: str = ""
-    input_schema: dict | None = None
-
-    def __post_init__(self):
-        if self.input_schema is None:
-            self.input_schema = {}
+# SimpleEntryMeta 已删除，统一使用 sdk/events.py 中的 EventMeta
 
 
 @dataclass
@@ -989,13 +979,14 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                     cls.__name__,
                 )
                 continue
-            entry_meta = SimpleEntryMeta(
+            entry_meta = EventMeta(
+                event_type="plugin_entry",
                 id=eid,
                 name=ent.get("name", "") if isinstance(ent, dict) else "",
                 description=ent.get("description", "") if isinstance(ent, dict) else "",
                 input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
             )
-            eh = EventHandler(meta=cast(Any, entry_meta), handler=handler_fn)
+            eh = EventHandler(meta=entry_meta, handler=handler_fn)
             with state.acquire_event_handlers_write_lock():
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
