@@ -4,7 +4,7 @@
 提供所有公共类型、异常、Result 类型的统一导出。
 
 Usage:
-    from plugin.types import (
+    from plugin.typedefs import (
         # Result 类型
         Ok, Err, Result, ErrorCode, safe, async_safe,
         # 异常
