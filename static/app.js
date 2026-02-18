@@ -7988,9 +7988,7 @@ function init_app() {
         try {
             syncProactiveFlags();
 
-            const isWindows = isWindowsOS();
-
-            // 收集可用的搭话方式
+            // 收集所有启用的搭话方式
             let availableModes = [];
 
             // 视觉搭话：需要同时开启主动搭话和自主视觉
@@ -8014,51 +8012,15 @@ function init_app() {
                 return;
             }
 
-            // 随机选择一种搭话方式
-            const selectedMode = availableModes[Math.floor(Math.random() * availableModes.length)];
-            console.log(`主动搭话模式：选择了 ${selectedMode} 搭话方式，可用方式: [${availableModes.join(', ')}]`);
-
-            let useScreenshot = false;
-            let useWindowTitle = false;
-            let useNewsOnly = false;
-            let useVideoOnly = false;
-
-            switch (selectedMode) {
-                case 'vision':
-                    useScreenshot = true;
-                    console.log('使用截图搭话');
-                    break;
-                case 'news':
-                    useNewsOnly = true;
-                    console.log('使用新闻搭话（微博热议）');
-                    break;
-                case 'video':
-                    useVideoOnly = true;
-                    console.log('使用视频搭话（B站首页）');
-                    break;
-                case 'window':
-                    useWindowTitle = true;
-                    console.log('使用窗口标题搭话');
-                    break;
-                case 'content':
-                default:
-                    console.log('使用热门内容搭话');
-                    break;
-            }
+            console.log(`主动搭话：启用模式 [${availableModes.join(', ')}]，将并行获取所有信息源`);
 
             let requestBody = {
-                lanlan_name: lanlan_config.lanlan_name
+                lanlan_name: lanlan_config.lanlan_name,
+                enabled_modes: availableModes
             };
 
-            // 新闻搭话和视频搭话需要指定内容类型
-            if (useNewsOnly) {
-                requestBody.content_type = 'news';
-            } else if (useVideoOnly) {
-                requestBody.content_type = 'video';
-            }
-
-            if (useScreenshot) {
-                // 同步获取截图和窗口标题（并行请求，确保时机同步）
+            // 如果包含 vision 模式，需要在前端获取截图和窗口标题
+            if (availableModes.includes('vision')) {
                 const [screenshotDataUrl, windowTitleResult] = await Promise.all([
                     captureProactiveChatScreenshot(),
                     fetch('/api/get_window_title')
@@ -8066,81 +8028,24 @@ function init_app() {
                         .catch(() => ({ success: false }))
                 ]);
 
-                if (!screenshotDataUrl) {
-                    console.log('主动搭话截图失败，退回使用其他方式');
-                    // 截图失败时的回退策略：优先使用已启用的其他搭话方式
-                    if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
-                        // 只有视觉搭话模式：截图失败直接跳过
-                        console.log('视觉搭话模式截图失败，跳过本次搭话');
-                        return;
-                    }
+                // await 期间检查状态
+                if (!canTriggerProactively()) {
+                    console.log('功能已关闭或前置条件不满足，取消本次搭话');
+                    return;
+                }
 
-                    // 优先回退到已启用的新闻或视频搭话
-                    if (proactiveNewsChatEnabled) {
-                        useScreenshot = false;
-                        useNewsOnly = true;
-                        requestBody.content_type = 'news';
-                        console.log('已切换到新闻搭话模式');
-                    } else if (proactiveVideoChatEnabled) {
-                        useScreenshot = false;
-                        useVideoOnly = true;
-                        requestBody.content_type = 'video';
-                        console.log('已切换到视频搭话模式');
-                    } else if (isWindows && proactiveChatEnabled) {
-                        // Windows下回退到窗口标题
-                        useScreenshot = false;
-                        useWindowTitle = true;
-                        console.log('已切换到窗口标题搭话模式');
-                    } else if (proactiveChatEnabled) {
-                        // 非Windows或不支持窗口标题时回退到热门内容
-                        useScreenshot = false;
-                        console.log('已切换到热门内容搭话模式');
-                    } else {
-                        console.log('截图失败且无其他可用方式，跳过本次搭话');
-                        return;
-                    }
-                } else {
+                if (screenshotDataUrl) {
                     requestBody.screenshot_data = screenshotDataUrl;
-                    // 窗口标题仅在获取成功时加入请求体
                     if (windowTitleResult.success && windowTitleResult.window_title) {
                         requestBody.window_title = windowTitleResult.window_title;
                         console.log('视觉搭话附加窗口标题:', windowTitleResult.window_title);
                     }
-                }
-            }
-
-            if (useWindowTitle && !useScreenshot) {
-                // 使用窗口标题搭话（Windows only）
-                try {
-                    const titleResponse = await fetch('/api/get_window_title');
-                    const titleResult = await titleResponse.json();
-
-                    // await 期间用户可能关闭了功能，避免继续执行
-                    if (!canTriggerProactively()) {
-                        console.log('功能已关闭或前置条件不满足，取消本次搭话');
-                        return;
-                    }
-
-                    if (titleResult.success && titleResult.window_title) {
-                        requestBody.window_title = titleResult.window_title;
-                        console.log('成功获取窗口标题:', titleResult.window_title);
-                    } else {
-                        console.log('获取窗口标题失败，退回使用热门内容');
-                        if (proactiveChatEnabled) {
-                            useWindowTitle = false;
-                            console.log('已切换到热门内容搭话模式');
-                        } else {
-                            console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
-                            return;
-                        }
-                    }
-                } catch (error) {
-                    console.error('获取窗口标题时出错:', error);
-                    if (proactiveChatEnabled) {
-                        useWindowTitle = false;
-                        console.log('已切换到热门内容搭话模式');
-                    } else {
-                        console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
+                } else {
+                    // 截图失败，从 enabled_modes 中移除 vision
+                    console.log('截图失败，移除 vision 模式');
+                    requestBody.enabled_modes = availableModes.filter(m => m !== 'vision');
+                    if (requestBody.enabled_modes.length === 0) {
+                        console.log('移除 vision 后无其他可用模式，跳过本次搭话');
                         return;
                     }
                 }
@@ -8171,7 +8076,14 @@ function init_app() {
                         return;
                     }
 
-                    console.log('主动搭话已发送:', result.message);
+                    console.log('主动搭话已发送:', result.message, result.source_mode ? `(来源: ${result.source_mode})` : '');
+
+                    // 如果有 source_links，延迟后在聊天中显示可点击链接（旁路，不进入 AI 记忆）
+                    if (result.source_links && result.source_links.length > 0) {
+                        setTimeout(() => {
+                            _showProactiveChatSourceLinks(result.source_links);
+                        }, 3000); // 等 AI 消息显示完再追加
+                    }
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
                     console.log('AI选择不搭话');
@@ -8181,6 +8093,65 @@ function init_app() {
             }
         } catch (error) {
             console.error('主动搭话触发失败:', error);
+        }
+    }
+
+    /**
+     * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
+     */
+    function _showProactiveChatSourceLinks(links) {
+        try {
+            const chatContent = document.getElementById('chatContent');
+            if (!chatContent) return;
+
+            const linkCard = document.createElement('div');
+            linkCard.className = 'proactive-source-link-card';
+            linkCard.style.cssText = `
+                margin: 6px 12px;
+                padding: 8px 14px;
+                background: var(--bg-secondary, rgba(255,255,255,0.08));
+                border-left: 3px solid var(--accent-color, #6c8cff);
+                border-radius: 8px;
+                font-size: 12px;
+                opacity: 0;
+                transition: opacity 0.4s ease;
+                max-width: 320px;
+            `;
+
+            for (const link of links) {
+                const a = document.createElement('a');
+                a.href = link.url;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
+                a.style.cssText = `
+                    display: block;
+                    color: var(--accent-color, #6c8cff);
+                    text-decoration: none;
+                    padding: 3px 0;
+                    word-break: break-all;
+                    font-size: 12px;
+                `;
+                a.addEventListener('mouseenter', () => { a.style.textDecoration = 'underline'; });
+                a.addEventListener('mouseleave', () => { a.style.textDecoration = 'none'; });
+                linkCard.appendChild(a);
+            }
+
+            chatContent.appendChild(linkCard);
+            chatContent.scrollTop = chatContent.scrollHeight;
+
+            // 淡入
+            requestAnimationFrame(() => { linkCard.style.opacity = '1'; });
+
+            // 5 分钟后自动移除
+            setTimeout(() => {
+                linkCard.style.opacity = '0';
+                setTimeout(() => { linkCard.remove(); }, 500);
+            }, 5 * 60 * 1000);
+
+            console.log('已显示主动搭话来源链接:', links.length, '条');
+        } catch (e) {
+            console.warn('显示来源链接失败:', e);
         }
     }
 

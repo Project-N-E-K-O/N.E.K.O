@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import deque
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -35,6 +36,126 @@ from utils.frontend_utils import count_words_and_chars
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
+
+# --- 主动搭话近期记录暂存区 ---
+# {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
+_proactive_chat_history: dict[str, deque] = {}
+
+_RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
+
+
+def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
+    """从原始 web 数据中提取链接信息列表"""
+    links = []
+    try:
+        if mode == 'news':
+            # 微博 / Twitter
+            news = raw_data.get('news', {})
+            items = news.get('trending', [])
+            for item in items[:5]:
+                title = item.get('word', '') or item.get('name', '')
+                url = item.get('url', '')
+                if title and url:
+                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region') == 'china' else 'Twitter'})
+        
+        elif mode == 'video':
+            # B站 / Reddit
+            video = raw_data.get('video', {})
+            items = video.get('videos', []) or video.get('posts', [])
+            for item in items[:5]:
+                title = item.get('title', '')
+                url = item.get('url', '')
+                if title and url:
+                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region') == 'china' else 'Reddit'})
+        
+        elif mode == 'home':
+            # 合并首页：bilibili + weibo 或 reddit + twitter
+            bilibili = raw_data.get('bilibili', {})
+            for v in (bilibili.get('videos', []) or [])[:3]:
+                if v.get('title') and v.get('url'):
+                    links.append({'title': v['title'], 'url': v['url'], 'source': 'B站'})
+            
+            weibo = raw_data.get('weibo', {})
+            for w in (weibo.get('trending', []) or [])[:3]:
+                if w.get('word') and w.get('url'):
+                    links.append({'title': w['word'], 'url': w['url'], 'source': '微博'})
+            
+            reddit = raw_data.get('reddit', {})
+            for r in (reddit.get('posts', []) or [])[:3]:
+                if r.get('title') and r.get('url'):
+                    links.append({'title': r['title'], 'url': r['url'], 'source': 'Reddit'})
+            
+            twitter = raw_data.get('twitter', {})
+            for t in (twitter.get('trending', []) or [])[:3]:
+                title = t.get('name', '') or t.get('word', '')
+                if title and t.get('url'):
+                    links.append({'title': title, 'url': t['url'], 'source': 'Twitter'})
+    except Exception as e:
+        logger.warning(f"提取链接失败 [{mode}]: {e}")
+    return links
+
+
+def _parse_web_screening_result(text: str) -> dict | None:
+    """
+    解析 Phase 1 Web 筛选 LLM 的结构化结果，提取链接信息。
+    期望格式：
+      话题：xxx / Topic: xxx
+      来源：xxx / Source: xxx
+      链接：xxx / Link: xxx
+      简述：xxx / Summary: xxx
+    """
+    import re
+    result = {}
+    # 多语言 key 匹配
+    patterns = {
+        'title': r'(?:话题|Topic|話題|주제)\s*[：:]\s*(.+)',
+        'source': r'(?:来源|Source|出典|출처)\s*[：:]\s*(.+)',
+        'url': r'(?:链接|Link|リンク|링크)\s*[：:]\s*(https?://\S+)',
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            result[key] = match.group(1).strip()
+    
+    if result.get('url'):
+        return result
+    return None
+
+
+def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
+    """将近期搭话记录格式化为可注入prompt的文本段"""
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history:
+        return ""
+    now = time.time()
+    recent = [(ts, msg) for ts, msg in history if now - ts < _RECENT_CHAT_MAX_AGE_SECONDS]
+    if not recent:
+        return ""
+    
+    headers = {
+        'zh': '======以下是你近期的主动搭话记录（不要重复这些内容）======',
+        'en': '======Your recent proactive chats (do NOT repeat these)======',
+        'ja': '======あなたの最近の自発的発言記録（繰り返さないでください）======',
+        'ko': '======최근 주도적 대화 기록 (이 내용을 반복하지 마세요)======',
+    }
+    footers = {
+        'zh': '======以上为近期搭话记录======',
+        'en': '======End recent proactive chats======',
+        'ja': '======以上、最近の発言記録======',
+        'ko': '======이상 최근 대화 기록======',
+    }
+    
+    header = headers.get(lang, headers['zh'])
+    footer = footers.get(lang, footers['zh'])
+    lines = [f"- {msg}" for _, msg in recent]
+    return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
+
+
+def _record_proactive_chat(lanlan_name: str, message: str):
+    """记录一次成功的主动搭话"""
+    if lanlan_name not in _proactive_chat_history:
+        _proactive_chat_history[lanlan_name] = deque(maxlen=10)
+    _proactive_chat_history[lanlan_name].append((time.time(), message))
 
 
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
@@ -806,7 +927,7 @@ async def get_window_title_api():
 
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
-    """主动搭话：根据模式选择使用图片、首页推荐或窗口搜索，让AI决定是否主动发起对话"""
+    """主动搭话：两阶段架构 — Phase 1 筛选话题（max 2 并发 LLM），Phase 2 结合人设生成搭话"""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -816,9 +937,10 @@ async def proactive_chat(request: Request):
             fetch_video_content, format_video_content,
             fetch_news_content, format_news_content
         )
+        from config.prompts_sys import get_proactive_screen_prompt, get_proactive_generate_prompt, get_proactive_chat_rewrite_prompt
         
-        # 获取当前角色数据
-        master_name_current, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
+        # 获取当前角色数据（包括完整人设）
+        master_name_current, her_name_current, _, catgirl_data, _, lanlan_prompt_map, _, _, _, _ = _config_manager.get_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -836,143 +958,107 @@ async def proactive_chat(request: Request):
                 "message": "请等待当前响应完成"
             }, status_code=409)
         
-        logger.info(f"[{lanlan_name}] 开始主动搭话流程...")
+        logger.info(f"[{lanlan_name}] 开始主动搭话流程（两阶段架构）...")
         
-        # 获取内容类型参数
-        content_type = data.get('content_type', None)  # 'news', 'video', 或 None（全部）
+        # ========== 解析 enabled_modes ==========
+        enabled_modes = data.get('enabled_modes', [])
+        # 兼容旧版前端
+        if not enabled_modes:
+            content_type = data.get('content_type', None)
+            screenshot_data = data.get('screenshot_data')
+            if screenshot_data and isinstance(screenshot_data, str):
+                enabled_modes = ['vision']
+            elif data.get('use_window_search', False):
+                enabled_modes = ['window']
+            elif content_type == 'news':
+                enabled_modes = ['news']
+            elif content_type == 'video':
+                enabled_modes = ['video']
+            else:
+                enabled_modes = ['home']
         
-        # 1. 检查前端是否发送了截图数据
+        logger.info(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
+        
+        # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
         screenshot_data = data.get('screenshot_data')
-        # 防御性检查：确保screenshot_data是字符串类型
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
         
-        # 检查是否使用窗口搜索模式
-        use_window_search = data.get('use_window_search', False)
-        
-        # 前端已经根据三种模式决定是否使用截图
-        use_screenshot = has_screenshot and not use_window_search
-        
-        if use_window_search:
-            logger.info(f"[{lanlan_name}] 前端选择使用窗口搜索进行主动搭话")
-        elif use_screenshot:
-            
-            # 处理前端发送的截图数据
-            try:
-                # 将DataURL转换为base64数据并分析
+        async def _fetch_source(mode: str) -> tuple:
+            """获取单个信息源，返回 (mode, content_dict) 或抛出异常"""
+            if mode == 'vision':
+                if not has_screenshot:
+                    raise ValueError("无截图数据")
                 screenshot_content = await analyze_screenshot_from_data_url(screenshot_data)
                 if not screenshot_content:
-                    logger.warning(f"[{lanlan_name}] 截图分析失败，跳过本次搭话")
-                    return JSONResponse({
-                        "success": False,
-                        "error": "截图分析失败，请检查截图格式是否正确",
-                        "action": "pass"
-                    }, status_code=500)
-                else:
-                    logger.info(f"[{lanlan_name}] 成功分析截图内容")
-            except (ValueError, TypeError) as e:
-                logger.exception(f"[{lanlan_name}] 处理截图数据失败")
-                return JSONResponse({
-                    "success": False,
-                    "error": f"截图处理失败: {str(e)}",
-                    "action": "pass"
-                }, status_code=500)
-        else:
-            if content_type == 'news':
-                logger.info(f"[{lanlan_name}] 前端选择使用新闻/热议话题进行主动搭话")
-            elif content_type == 'video':
-                logger.info(f"[{lanlan_name}] 前端选择使用视频内容进行主动搭话")
-            else:
-                logger.info(f"[{lanlan_name}] 前端选择使用首页推荐进行主动搭话")
-        
-        # 根据不同模式获取内容
-        window_context_content = None
-        formatted_content = None
-        
-        if use_window_search:
-            # 窗口搜索主动对话
-            try:
-                window_context_content = await fetch_window_context_content(limit=5)
-                
-                if not window_context_content['success']:
-                    logger.warning(f"[{lanlan_name}] 获取窗口上下文失败: {window_context_content.get('error')}")
-                    # 窗口搜索失败时回退到首页推荐
-                    logger.info(f"[{lanlan_name}] 回退到首页推荐模式")
-                    use_window_search = False
-                else:
-                    formatted_window_content = format_window_context_content(window_context_content)
-                    # 截断窗口标题以避免记录敏感信息
-                    raw_title = window_context_content.get('window_title', '')
-                    sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
-                    
-                    # 显示具体获取的搜索结果标题，使用更清晰的分隔
-                    search_results = window_context_content.get('search_results', [])
-                    if search_results:
-                        result_titles = [result.get('title', '') for result in search_results]  # 显示全部搜索结果
-                        if result_titles:
-                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
-                            logger.info(f"搜索结果 (共{len(result_titles)}条):")
-                            for title in result_titles:
-                                logger.info(f"  - {title}")
-                        else:
-                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
-                    else:
-                        logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
-                
-            except Exception:
-                logger.exception(f"[{lanlan_name}] 获取窗口上下文失败")
-                # 回退到首页推荐
-                use_window_search = False
-        
-        if not use_screenshot and not use_window_search:
-            # 根据内容类型获取不同的内容
-            formatted_content = None
+                    raise ValueError("截图分析失败")
+                logger.info(f"[{lanlan_name}] 成功分析截图内容")
+                window_title = data.get('window_title', '')
+                return (mode, {'screenshot_content': screenshot_content, 'window_title': window_title})
             
-            try:
-                if content_type == 'news':
-                    # 只获取新闻/热议话题
-                    news_content = await fetch_news_content(limit=10)
-                    
-                    if news_content['success']:
-                        formatted_content = format_news_content(news_content)
-                        _log_news_content(lanlan_name, news_content)
-                    else:
-                        logger.warning(f"[{lanlan_name}] 获取热议话题失败，回退到全部内容")
-                        content_type = None
-                    
-                elif content_type == 'video':
-                    # 只获取视频内容
-                    video_content = await fetch_video_content(limit=10)
-                    
-                    if video_content['success']:
-                        formatted_content = format_video_content(video_content)
-                        _log_video_content(lanlan_name, video_content)
-                    else:
-                        logger.warning(f"[{lanlan_name}] 获取视频内容失败，回退到全部内容")
-                        content_type = None
-                
-                if formatted_content is None:
-                    # 获取全部内容（首页推荐）或回退
-                    trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
-                    
-                    if not trending_content['success']:
-                        return JSONResponse({
-                            "success": False,
-                            "error": "无法获取内容",
-                            "detail": trending_content.get('error', '未知错误')
-                        }, status_code=500)
-                    
-                    formatted_content = format_trending_content(trending_content)
-                    _log_trending_content(lanlan_name, trending_content)
-                
-            except Exception:
-                logger.exception(f"[{lanlan_name}] 获取内容失败")
-                return JSONResponse({
-                    "success": False,
-                    "error": "爬取内容时出错",
-                    "detail": "请检查网络连接或服务状态"
-                }, status_code=500)
+            elif mode == 'news':
+                news_content = await fetch_news_content(limit=10)
+                if not news_content['success']:
+                    raise ValueError(f"获取新闻失败: {news_content.get('error')}")
+                formatted = format_news_content(news_content)
+                _log_news_content(lanlan_name, news_content)
+                # 提取链接信息
+                links = _extract_links_from_raw(mode, news_content)
+                return (mode, {'formatted_content': formatted, 'raw_data': news_content, 'links': links})
+            
+            elif mode == 'video':
+                video_content = await fetch_video_content(limit=10)
+                if not video_content['success']:
+                    raise ValueError(f"获取视频失败: {video_content.get('error')}")
+                formatted = format_video_content(video_content)
+                _log_video_content(lanlan_name, video_content)
+                links = _extract_links_from_raw(mode, video_content)
+                return (mode, {'formatted_content': formatted, 'raw_data': video_content, 'links': links})
+            
+            elif mode == 'window':
+                window_context_content = await fetch_window_context_content(limit=5)
+                if not window_context_content['success']:
+                    raise ValueError(f"获取窗口上下文失败: {window_context_content.get('error')}")
+                formatted = format_window_context_content(window_context_content)
+                raw_title = window_context_content.get('window_title', '')
+                sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
+                logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
+                return (mode, {'formatted_content': formatted, 'raw_data': window_context_content, 'links': []})
+            
+            elif mode == 'home':
+                trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
+                if not trending_content['success']:
+                    raise ValueError(f"获取首页推荐失败: {trending_content.get('error')}")
+                formatted = format_trending_content(trending_content)
+                _log_trending_content(lanlan_name, trending_content)
+                links = _extract_links_from_raw(mode, trending_content)
+                return (mode, {'formatted_content': formatted, 'raw_data': trending_content, 'links': links})
+            
+            else:
+                raise ValueError(f"未知模式: {mode}")
         
-        # 2. 获取new_dialogue prompt
+        # 并行获取所有信息源
+        fetch_tasks = [_fetch_source(m) for m in enabled_modes]
+        fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        
+        # 收集成功的信息源
+        sources: dict[str, dict] = {}
+        for result in fetch_results:
+            if isinstance(result, Exception):
+                logger.warning(f"[{lanlan_name}] 信息源获取失败: {result}")
+                continue
+            mode, content = result
+            sources[mode] = content
+        
+        if not sources:
+            return JSONResponse({
+                "success": False,
+                "error": "所有信息源获取失败",
+                "action": "pass"
+            }, status_code=500)
+        
+        logger.info(f"[{lanlan_name}] 成功获取 {len(sources)} 个信息源: {list(sources.keys())}")
+        
+        # ========== 1. 获取记忆上下文 ==========
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
@@ -981,7 +1067,7 @@ async def proactive_chat(request: Request):
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
             memory_context = ""
         
-        # 3. 选择语言（用于主动搭话提示词 i18n）
+        # ========== 2. 选择语言 ==========
         try:
             request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
             if request_lang:
@@ -990,81 +1076,18 @@ async def proactive_chat(request: Request):
                 proactive_lang = get_global_language()
         except Exception:
             proactive_lang = 'zh'
-
-        # 4. 构造提示词（根据选择使用不同的模板）
-        if use_screenshot:
-            # 构建窗口标题辅助信息（仅在前端成功获取时附加）
-            window_title = data.get('window_title', '')
-            window_title_section = ''
-            if window_title:
-                lang_key = normalize_language_code(proactive_lang, format='short') if proactive_lang else 'zh'
-                if lang_key == 'en':
-                    window_title_section = f"\n======Current Window Title======\n{window_title}\n======End Window Title======"
-                elif lang_key == 'ja':
-                    window_title_section = f"\n======現在のウィンドウタイトル======\n{window_title}\n======ウィンドウタイトルここまで======"
-                elif lang_key == 'ko':
-                    window_title_section = f"\n======현재 창 제목======\n{window_title}\n======이상 창 제목======"
-                else:
-                    window_title_section = f"\n======当前窗口标题======\n{window_title}\n======以上为窗口标题======"
-                logger.info(f"[{lanlan_name}] 附加窗口标题辅助信息: {window_title}")
-
-            # 截图模板：基于屏幕内容让AI决定是否主动发起对话
-            system_prompt = get_proactive_chat_prompt('screenshot', proactive_lang).format(
-                lanlan_name=lanlan_name,
-                master_name=master_name_current,
-                screenshot_content=screenshot_content,
-                memory_context=memory_context,
-                window_title_section=window_title_section
-            )
-            logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
-        elif use_window_search:
-            # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
-            system_prompt = get_proactive_chat_prompt('window', proactive_lang).format(
-                lanlan_name=lanlan_name,
-                master_name=master_name_current,
-                window_context=formatted_window_content,
-                memory_context=memory_context
-            )
-            logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
-        elif content_type == 'news':
-            # 新闻模板：基于热议话题让AI决定是否主动发起对话
-            system_prompt = get_proactive_chat_prompt('news', proactive_lang).format(
-                lanlan_name=lanlan_name,
-                master_name=master_name_current,
-                trending_content=formatted_content,
-                memory_context=memory_context
-            )
-            logger.info(f"[{lanlan_name}] 使用热议话题进行主动对话")
-        elif content_type == 'video':
-            # 视频模板：基于视频推荐让AI决定是否主动发起对话
-            system_prompt = get_proactive_chat_prompt('video', proactive_lang).format(
-                lanlan_name=lanlan_name,
-                master_name=master_name_current,
-                trending_content=formatted_content,
-                memory_context=memory_context
-            )
-            logger.info(f"[{lanlan_name}] 使用视频推荐进行主动对话")
-        else:
-            # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
-            system_prompt = get_proactive_chat_prompt('home', proactive_lang).format(
-                lanlan_name=lanlan_name,
-                master_name=master_name_current,
-                trending_content=formatted_content,
-                memory_context=memory_context
-            )
-            logger.info(f"[{lanlan_name}] 使用首页推荐进行主动对话")
-
-        # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
+        
+        # ========== 3. 注入近期搭话记录 ==========
+        recent_chats_section = _format_recent_proactive_chats(lanlan_name, proactive_lang)
+        memory_context_with_recent = memory_context + recent_chats_section
+        
+        # ========== 4. 获取 LLM 配置 ==========
         try:
-            # 使用 get_model_api_config 获取 API 配置
             correction_config = _config_manager.get_model_api_config('correction')
-            
-            # 安全获取配置项，使用 .get() 避免 KeyError
             correction_model = correction_config.get('model')
             correction_base_url = correction_config.get('base_url')
             correction_api_key = correction_config.get('api_key')
             
-            # 验证必需的配置项
             if not correction_model or not correction_api_key:
                 logger.error("纠错模型配置缺失: model或api_key未设置")
                 return JSONResponse({
@@ -1072,263 +1095,318 @@ async def proactive_chat(request: Request):
                     "error": "纠错模型配置缺失",
                     "detail": "请在设置中配置纠错模型的model和api_key"
                 }, status_code=500)
-            
-            llm = ChatOpenAI(
+        except Exception as e:
+            logger.error(f"获取模型配置失败: {e}")
+            return JSONResponse({
+                "success": False,
+                "error": "模型配置异常",
+                "detail": str(e)
+            }, status_code=500)
+        
+        def _make_llm(temperature: float = 1.0, max_tokens: int = 500):
+            return ChatOpenAI(
                 model=correction_model,
                 base_url=correction_base_url,
                 api_key=correction_api_key,
-                temperature=1.,
-                max_completion_tokens=500,
-                streaming=False,  # 不需要流式，直接获取完整响应
+                temperature=temperature,
+                max_completion_tokens=max_tokens,
+                streaming=False,
                 extra_body=get_extra_body(correction_model)
             )
-            
-            # 发送请求获取AI决策 - Retry策略：重试2次，间隔1秒、2秒
-            # 如需调试，可在此处使用 logger.debug 并适当截断 system_prompt
-            # logger.debug(f"[{lanlan_name}] proactive system_prompt: {system_prompt[:200]}...")
+        
+        async def _llm_call_with_retry(system_prompt: str, label: str, temperature: float = 1.0, max_tokens: int = 500, timeout: float = 10.0) -> str:
+            """带重试的 LLM 调用，返回 response_text"""
+            llm = _make_llm(temperature=temperature, max_tokens=max_tokens)
             max_retries = 3
             retry_delays = [1, 2]
-            response_text = ""
-            
             for attempt in range(max_retries):
                 try:
                     response = await asyncio.wait_for(
                         llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content="========请开始========")]),
-                        timeout=10.0
+                        timeout=timeout
                     )
-                    response_text = response.content.strip()
-                    break  # 成功则退出重试循环
+                    return response.content.strip()
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                    logger.info(f"[INFO] 捕获到 {type(e).__name__} 错误")
                     if attempt < max_retries - 1:
-                        wait_time = retry_delays[attempt]
-                        logger.warning(f"[{lanlan_name}] 主动搭话LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        # 向前端发送状态提示
-                        if mgr.websocket:
-                            try:
-                                await mgr.send_status(f"正在重试中...（第{attempt + 1}次）")
-                            except: # noqa
-                                pass
-                        await asyncio.sleep(wait_time)
+                        logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                        await asyncio.sleep(retry_delays[attempt])
                     else:
-                        logger.error(f"[{lanlan_name}] 主动搭话LLM调用失败，已达到最大重试次数: {e}")
-                        return JSONResponse({
-                            "success": False,
-                            "error": f"AI调用失败，已重试{max_retries}次",
-                            "detail": str(e)
-                        }, status_code=503)
-            
-            logger.info(f"[{lanlan_name}] AI决策结果: {response_text[:100]}...")
-
-            # --- 新增机制：用正则表达式寻找最后一个"主动搭话"后接换行的地方 ---
-            match = re.search(r'主动搭话\s*\n', response_text)
-            if match:
-                # 从最后一个"主动搭话\n"之后截取内容
-                # 使用 finditer 来找到所有匹配，取最后一个
-                matches = list(re.finditer(r'主动搭话\s*\n', response_text))
-                if matches:
-                    last_match = matches[-1]
-                    response_text = response_text[last_match.end():].strip()
-                    logger.info(f"[{lanlan_name}] 截取'主动搭话'后的内容: {response_text[:50]}...")
-
-            # 5. 判断AI是否选择搭话
-            if "[PASS]" in response_text:
-                return JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "message": "AI选择暂时不搭话"
-                })
-
-            # --- 新增验证：在继续输出前严格执行响应内容规则 ---
-            # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
-            text_length = 200
+                        logger.error(f"[{lanlan_name}] LLM [{label}] 调用失败，已达最大重试: {e}")
+                        raise
+            raise RuntimeError("Unexpected")
+        
+        # ================================================================
+        # Phase 1: 筛选话题
+        # - 视觉通道: 不调用 LLM，直接使用截图描述作为 topic
+        # - Web 通道: 合并所有文本源（含 URL）→ 1 次 LLM 筛选
+        # 总计最多 1 次 LLM 调用
+        # ================================================================
+        
+        vision_content = sources.get('vision')  # 可能为 None
+        web_modes = [m for m in sources if m != 'vision']
+        
+        # 构建带有 URL 的合并 Web 内容
+        merged_web_content = ""
+        all_web_links: list[dict] = []  # 收集所有 web 源的链接
+        if web_modes:
+            parts = []
+            for m in web_modes:
+                src = sources[m]
+                label_map = {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文'}
+                label = label_map.get(m, m)
+                content_text = src.get('formatted_content', '')
+                if content_text:
+                    # 在格式化文本后附加链接信息
+                    links = src.get('links', [])
+                    all_web_links.extend(links)
+                    link_appendix = ""
+                    if links:
+                        link_lines = [f"  链接{i+1}: {lk.get('title','')} → {lk.get('url','')}" for i, lk in enumerate(links[:5])]
+                        link_appendix = "\n" + "\n".join(link_lines)
+                    parts.append(f"--- {label} ---\n{content_text}{link_appendix}")
+            merged_web_content = "\n\n".join(parts)
+        
+        # Phase 1 结果收集
+        phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
+        source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
+        
+        # --- 视觉通道: 直接使用截图描述 (无 LLM) ---
+        if vision_content:
+            screenshot_desc = vision_content['screenshot_content']
+            window_title = vision_content.get('window_title', '')
+            if window_title:
+                topic = f"[窗口: {window_title}]\n{screenshot_desc}"
+            else:
+                topic = screenshot_desc
+            phase1_topics.append(('vision', topic))
+            logger.info(f"[{lanlan_name}] Phase 1 视觉通道: 直接使用截图描述 ({len(screenshot_desc)} 字)")
+        
+        # --- Web 通道: 1 次 LLM 筛选 ---
+        if merged_web_content:
             try:
-                text_length = count_words_and_chars(response_text)
-            except Exception:
-                logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
+                prompt = get_proactive_screen_prompt('web', proactive_lang).format(
+                    memory_context=memory_context_with_recent,
+                    merged_content=merged_web_content
+                )
+                web_result_text = await _llm_call_with_retry(prompt, "screen_web")
+                logger.info(f"[{lanlan_name}] Phase 1 Web 筛选结果: {web_result_text[:120]}")
+                
+                if "[PASS]" not in web_result_text:
+                    # 解析结构化结果提取链接
+                    parsed_link = _parse_web_screening_result(web_result_text)
+                    if parsed_link:
+                        source_links.append(parsed_link)
+                    phase1_topics.append(('web', web_result_text.strip()))
+                else:
+                    logger.info(f"[{lanlan_name}] Phase 1 Web 通道返回 PASS")
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] Phase 1 Web 筛选异常: {e}")
+        
+        if not phase1_topics:
+            logger.info(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "所有信息源筛选后均不值得搭话"
+            })
+        
+        # 选择最佳话题（vision 优先）
+        best_channel, best_topic = phase1_topics[0]
+        for channel, topic in phase1_topics:
+            if channel == 'vision':
+                best_channel, best_topic = channel, topic
+                break
+        
+        logger.info(f"[{lanlan_name}] Phase 1 最终选择 [{best_channel}] 话题: {best_topic[:80]}")
+        
+        # ================================================================
+        # Phase 2: 结合人设生成搭话 — 1 次 LLM 调用
+        # ================================================================
+        
+        # 获取角色完整人设
+        character_prompt = lanlan_prompt_map.get(lanlan_name, '')
+        if not character_prompt:
+            logger.warning(f"[{lanlan_name}] 未找到角色人设，使用空字符串")
+        
+        generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
+            character_prompt=character_prompt,
+            memory_context=memory_context_with_recent,
+            recent_chats_section=recent_chats_section,
+            topic_summary=best_topic,
+            master_name=master_name_current
+        )
+        
+        response_text = await _llm_call_with_retry(generate_prompt, "generate", temperature=1.0, max_tokens=500)
+        logger.info(f"[{lanlan_name}] Phase 2 生成结果: {response_text[:100]}...")
+        
+        # 清理 "主动搭话" 标记
+        matches = list(re.finditer(r'主动搭话\s*\n', response_text))
+        if matches:
+            response_text = response_text[matches[-1].end():].strip()
+        
+        # 检查 PASS
+        if "[PASS]" in response_text:
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "Phase 2 AI选择不搭话"
+            })
+        
+        # ========== 后处理（改写检查） ==========
+        text_length = 200
+        try:
+            text_length = count_words_and_chars(response_text)
+        except Exception:
+            logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            if text_length > 100 or response_text.find("|") != -1 or response_text.find("｜") != -1:
-                            # --- 使用改写模型清洁输出 ---
-                try:
-                    # 使用相同的correction模型进行改写
-                    rewrite_llm = ChatOpenAI(
-                        model=correction_model,
-                        base_url=correction_base_url,
-                        api_key=correction_api_key,
-                        temperature=0.3,  # 降低温度以获得更稳定的改写结果
-                        max_completion_tokens=500,
-                        streaming=False,
-                        extra_body=get_extra_body(correction_model)
-                    )
-                    
-                    # 构造改写提示
-                    rewrite_prompt = get_proactive_chat_rewrite_prompt(proactive_lang).format(raw_output=response_text)
-                    
-                    # 调用改写模型
-                    rewrite_response = await asyncio.wait_for(
-                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt), HumanMessage(content="========请开始========")]),
-                        timeout=6.0
-                    )
-                    response_text = rewrite_response.content.strip()
-                    logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
+        if text_length > 100 or response_text.find("|") != -1 or response_text.find("｜") != -1:
+            try:
+                rewrite_prompt = get_proactive_chat_rewrite_prompt(proactive_lang).format(raw_output=response_text)
+                response_text = await _llm_call_with_retry(rewrite_prompt, "rewrite", temperature=0.3, max_tokens=500, timeout=6.0)
+                logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
 
-                    if "主动搭话" in response_text or '|' in response_text or "｜" in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
-                        logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
-                        return JSONResponse({
-                            "success": True,
-                            "action": "pass",
-                            "message": "AI回复改写失败，已放弃输出"
-                        })
-
-                except Exception as e:
-                    logger.warning(f"[{lanlan_name}] 改写模型调用失败，错误提示: {e}")
+                if "主动搭话" in response_text or '|' in response_text or "｜" in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
+                    logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
                     return JSONResponse({
                         "success": True,
                         "action": "pass",
                         "message": "AI回复改写失败，已放弃输出"
                     })
-            
-            # 6. AI选择搭话，需要通过session manager处理
-            # 首先检查是否有真实的websocket连接
-            if not mgr.websocket:
+
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 改写模型调用失败，错误提示: {e}")
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "AI回复改写失败，已放弃输出"
+                })
+        
+        # ========== 输出（与旧逻辑一致） ==========
+        if not mgr.websocket:
+            return JSONResponse({
+                "success": False,
+                "error": "没有活跃的WebSocket连接，无法主动搭话。请先打开前端页面。"
+            }, status_code=400)
+        
+        try:
+            from starlette.websockets import WebSocketState
+            if hasattr(mgr.websocket, 'client_state'):
+                if mgr.websocket.client_state != WebSocketState.CONNECTED:
+                    return JSONResponse({
+                        "success": False,
+                        "error": "WebSocket未连接，无法主动搭话"
+                    }, status_code=400)
+        except Exception as e:
+            logger.warning(f"检查WebSocket状态失败: {e}")
+        
+        session_created = False
+        if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
+            logger.info(f"[{lanlan_name}] 没有活跃session，创建文本session用于主动搭话")
+            try:
+                await mgr.start_session(mgr.websocket, new=True, input_mode='text')
+            except Exception as e:
+                logger.error(f"[{lanlan_name}] 创建文本session失败: {e}")
                 return JSONResponse({
                     "success": False,
-                    "error": "没有活跃的WebSocket连接，无法主动搭话。请先打开前端页面。"
-                }, status_code=400)
+                    "error": f"创建文本session失败: {str(e)}"
+                }, status_code=500)
             
-            # 检查websocket是否连接
-            try:
-                from starlette.websockets import WebSocketState
-                if hasattr(mgr.websocket, 'client_state'):
-                    if mgr.websocket.client_state != WebSocketState.CONNECTED:
-                        return JSONResponse({
-                            "success": False,
-                            "error": "WebSocket未连接，无法主动搭话"
-                        }, status_code=400)
-            except Exception as e:
-                logger.warning(f"检查WebSocket状态失败: {e}")
-            
-            # 检查是否有现有的session，如果没有则创建一个文本session
-            session_created = False
             if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
-                logger.info(f"[{lanlan_name}] 没有活跃session，创建文本session用于主动搭话")
-                # 使用现有的真实websocket启动session
-                try:
-                    await mgr.start_session(mgr.websocket, new=True, input_mode='text')
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] 创建文本session失败: {e}")
-                    return JSONResponse({
-                        "success": False,
-                        "error": f"创建文本session失败: {str(e)}"
-                    }, status_code=500)
-                
-                # 验证session是否正确创建
-                if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
-                    logger.error(f"[{lanlan_name}] 文本session创建后验证失败")
-                    return JSONResponse({
-                        "success": False,
-                        "error": "文本session创建失败，无法进行主动搭话"
-                    }, status_code=500)
-                
-                session_created = True
-                logger.info(f"[{lanlan_name}] 文本session已创建")
+                logger.error(f"[{lanlan_name}] 文本session创建后验证失败")
+                return JSONResponse({
+                    "success": False,
+                    "error": "文本session创建失败，无法进行主动搭话"
+                }, status_code=500)
             
-            # 如果是新创建的session，等待TTS准备好
-            if session_created and mgr.use_tts:
-                logger.info(f"[{lanlan_name}] 等待TTS准备...")
-                max_wait = 5  # 最多等待5秒
-                wait_step = 0.1
-                waited = 0
-                while waited < max_wait:
-                    async with mgr.tts_cache_lock:
-                        if mgr.tts_ready:
-                            logger.info(f"[{lanlan_name}] TTS已准备好")
-                            break
-                    await asyncio.sleep(wait_step)
-                    waited += wait_step
-                
-                if waited >= max_wait:
-                    logger.warning(f"[{lanlan_name}] TTS准备超时，继续发送（可能没有语音）")
-            
-            # 现在可以将AI的话添加到对话历史中
-            from langchain_core.messages import AIMessage
-            mgr.session._conversation_history.append(AIMessage(content=response_text))
-            logger.info(f"[{lanlan_name}] 已将主动搭话添加到对话历史")
-            
-            # 生成新的speech_id（用于TTS）
-            from uuid import uuid4
-            async with mgr.lock:
-                mgr.current_speech_id = str(uuid4())
-            
-            # 检查最近30秒内是否有用户活动（语音输入或文本输入）
-            # 如果有，则放弃本次主动搭话
-            if mgr.last_user_activity_time is not None:
-                time_since_last_activity = time.time() - mgr.last_user_activity_time
-                if time_since_last_activity < 30:
-                    logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
-                    return JSONResponse({
-                        "success": True,
-                        "action": "pass",
-                        "message": f"最近{time_since_last_activity:.1f}秒内有用户活动，放弃主动搭话"
-                    })
-            
-            # 记录开始输出的时间戳，用于检测输出过程中是否有新的用户输入
-            output_start_time = time.time()
-            
-            # 通过handle_text_data处理这段话（触发TTS和前端显示）
-            # 分chunk发送以模拟流式效果
-            chunks = [response_text[i:i+10] for i in range(0, len(response_text), 10)]
-            for i, chunk in enumerate(chunks):
-                # 检查输出过程中是否有新的用户输入
-                if mgr.last_user_activity_time is not None and mgr.last_user_activity_time > output_start_time:
-                    logger.info(f"[{lanlan_name}] 输出过程中检测到用户活动，停止主动搭话输出 (已输出 {i}/{len(chunks)} chunks)")
-                    # 调用新消息处理来清空TTS队列
-                    await mgr.handle_new_message() # 这里的处理并不严谨，默认了用户输入时不会立即触发其他TTS，没有进行状态锁
-                    return JSONResponse({
-                        "success": True,
-                        "action": "interrupted",
-                        "message": "输出过程中检测到用户活动，已停止"
-                    })
-                
-                await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
-                await asyncio.sleep(0.15)  # 小延迟模拟流式
-            
-            # 发送TTS结束信号，触发TTS的commit（对于Qwen TTS的server_commit模式尤为重要）
-            if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
-                try:
-                    mgr.tts_request_queue.put((None, None))
-                except Exception as e:
-                    logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
-            
-            # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
-            mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-            try:
-                if mgr.websocket and hasattr(mgr.websocket, 'client_state') and mgr.websocket.client_state == mgr.websocket.client_state.CONNECTED:
-                    await mgr.websocket.send_json({'type': 'system', 'data': 'turn end'})
-            except Exception as e:
-                logger.warning(f"[{lanlan_name}] 发送turn end失败: {e}")
-            
-            return JSONResponse({
-                "success": True,
-                "action": "chat",
-                "message": "主动搭话已发送",
-                "lanlan_name": lanlan_name
-            })
-            
-        except asyncio.TimeoutError:
-            logger.error(f"[{lanlan_name}] AI回复超时")
-            return JSONResponse({
-                "success": False,
-                "error": "AI处理超时"
-            }, status_code=504)
-        except Exception as e:
-            logger.error(f"[{lanlan_name}] AI处理失败: {e}")
-            return JSONResponse({
-                "success": False,
-                "error": "AI处理失败",
-                "detail": str(e)
-            }, status_code=500)
+            session_created = True
+            logger.info(f"[{lanlan_name}] 文本session已创建")
         
+        if session_created and mgr.use_tts:
+            logger.info(f"[{lanlan_name}] 等待TTS准备...")
+            max_wait = 5
+            wait_step = 0.1
+            waited = 0
+            while waited < max_wait:
+                async with mgr.tts_cache_lock:
+                    if mgr.tts_ready:
+                        logger.info(f"[{lanlan_name}] TTS已准备好")
+                        break
+                await asyncio.sleep(wait_step)
+                waited += wait_step
+            
+            if waited >= max_wait:
+                logger.warning(f"[{lanlan_name}] TTS准备超时，继续发送（可能没有语音）")
+        
+        # 将搭话添加到对话历史
+        from langchain_core.messages import AIMessage
+        mgr.session._conversation_history.append(AIMessage(content=response_text))
+        logger.info(f"[{lanlan_name}] 已将主动搭话添加到对话历史")
+        
+        # 记录到近期搭话缓冲区
+        _record_proactive_chat(lanlan_name, response_text)
+        
+        # 生成新的speech_id
+        from uuid import uuid4
+        async with mgr.lock:
+            mgr.current_speech_id = str(uuid4())
+        
+        # 检查最近30秒内是否有用户活动
+        if mgr.last_user_activity_time is not None:
+            time_since_last_activity = time.time() - mgr.last_user_activity_time
+            if time_since_last_activity < 30:
+                logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": f"最近{time_since_last_activity:.1f}秒内有用户活动，放弃主动搭话"
+                })
+        
+        # 分chunk发送
+        output_start_time = time.time()
+        chunks = [response_text[i:i+10] for i in range(0, len(response_text), 10)]
+        for i, chunk in enumerate(chunks):
+            if mgr.last_user_activity_time is not None and mgr.last_user_activity_time > output_start_time:
+                logger.info(f"[{lanlan_name}] 输出过程中检测到用户活动，停止主动搭话输出 (已输出 {i}/{len(chunks)} chunks)")
+                await mgr.handle_new_message()
+                return JSONResponse({
+                    "success": True,
+                    "action": "interrupted",
+                    "message": "输出过程中检测到用户活动，已停止"
+                })
+            
+            await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
+            await asyncio.sleep(0.15)
+        
+        # 发送TTS结束信号
+        if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
+            try:
+                mgr.tts_request_queue.put((None, None))
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
+        
+        # 发送turn end信号
+        mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        try:
+            if mgr.websocket and hasattr(mgr.websocket, 'client_state') and mgr.websocket.client_state == mgr.websocket.client_state.CONNECTED:
+                await mgr.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception as e:
+            logger.warning(f"[{lanlan_name}] 发送turn end失败: {e}")
+        
+        return JSONResponse({
+            "success": True,
+            "action": "chat",
+            "message": "主动搭话已发送",
+            "lanlan_name": lanlan_name,
+            "source_mode": best_channel,
+            "source_links": source_links
+        })
+        
+    except asyncio.TimeoutError:
+        logger.error(f"主动搭话超时")
+        return JSONResponse({
+            "success": False,
+            "error": "AI处理超时"
+        }, status_code=504)
     except Exception as e:
         logger.error(f"主动搭话接口异常: {e}")
         return JSONResponse({
@@ -1336,6 +1414,9 @@ async def proactive_chat(request: Request):
             "error": "服务器内部错误",
             "detail": str(e)
         }, status_code=500)
+
+
+
 
 
 @router.post('/translate')
