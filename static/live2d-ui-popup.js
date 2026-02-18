@@ -251,6 +251,57 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     return container;
 };
 
+// 创建圆形指示器和对勾的辅助方法（供 _createToggleItem 和 _createSettingsToggleItem 共用）
+Live2DManager.prototype._createCheckIndicator = function () {
+    const indicator = document.createElement('div');
+    Object.assign(indicator.style, {
+        width: '20px',
+        height: '20px',
+        borderRadius: '50%',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
+        backgroundColor: 'transparent',
+        cursor: 'pointer',
+        flexShrink: '0',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const checkmark = document.createElement('div');
+    checkmark.innerHTML = '✓';
+    Object.assign(checkmark.style, {
+        color: '#fff',
+        fontSize: '13px',
+        fontWeight: 'bold',
+        lineHeight: '1',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        pointerEvents: 'none',
+        userSelect: 'none'
+    });
+    indicator.appendChild(checkmark);
+
+    /**
+     * 根据选中状态更新指示器样式
+     * @param {boolean} checked - 是否选中
+     */
+    const updateStyle = (checked) => {
+        if (checked) {
+            indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)';
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
+        }
+    };
+
+    return { indicator, checkmark, updateStyle };
+};
+
 // 创建Agent开关项
 Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
@@ -282,37 +333,8 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
         toggleItem.style.cursor = 'default';  // 禁用时显示默认光标
     }
 
-    // 创建自定义圆形指示器
-    const indicator = document.createElement('div');
-    Object.assign(indicator.style, {
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
-        backgroundColor: 'transparent',
-        cursor: 'pointer',
-        flexShrink: '0',
-        transition: 'all 0.2s ease',
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-    });
-
-    // 创建对勾图标（初始隐藏）
-    const checkmark = document.createElement('div');
-    checkmark.innerHTML = '✓';
-    Object.assign(checkmark.style, {
-        color: '#fff',
-        fontSize: '13px',
-        fontWeight: 'bold',
-        lineHeight: '1',
-        opacity: '0',
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'none',
-        userSelect: 'none'
-    });
-    indicator.appendChild(checkmark);
+    // 使用辅助方法创建圆形指示器和对勾
+    const { indicator, checkmark, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
@@ -339,19 +361,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     };
 
     // 根据 checkbox 状态更新指示器颜色和对勾显示
-    const updateStyle = () => {
-        if (checkbox.checked) {
-            // 选中状态：蓝色填充，显示对勾
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)';
-            checkmark.style.opacity = '1';
-        } else {
-            // 未选中状态：灰色边框，透明填充，隐藏对勾
-            indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
-            checkmark.style.opacity = '0';
-        }
-    };
+    const updateStyle = () => updateIndicatorStyle(checkbox.checked);
 
     // 更新禁用状态的视觉反馈
     const updateDisabledStyle = () => {
@@ -503,37 +513,8 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         checkbox.checked = window.proactiveVisionEnabled;
     }
 
-    // 创建自定义圆形指示器
-    const indicator = document.createElement('div');
-    Object.assign(indicator.style, {
-        width: '20px',  // 稍微增大，与下方图标更协调
-        height: '20px',
-        borderRadius: '50%',
-        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
-        backgroundColor: 'transparent',
-        cursor: 'pointer',
-        flexShrink: '0',
-        transition: 'all 0.2s ease',
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-    });
-
-    // 创建对勾图标（初始隐藏）
-    const checkmark = document.createElement('div');
-    checkmark.innerHTML = '✓';
-    Object.assign(checkmark.style, {
-        color: '#fff',
-        fontSize: '13px',  // 稍微增大，与指示器大小更协调
-        fontWeight: 'bold',
-        lineHeight: '1',
-        opacity: '0',
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'none',
-        userSelect: 'none'
-    });
-    indicator.appendChild(checkmark);
+    // 使用辅助方法创建圆形指示器和对勾
+    const { indicator, checkmark, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
@@ -553,19 +534,10 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     // 根据 checkbox 状态更新指示器颜色
     const updateStyle = () => {
-        if (checkbox.checked) {
-            // 选中状态：蓝色填充，显示对勾，背景颜色突出
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)';
-            checkmark.style.opacity = '1';
-            toggleItem.style.background = 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))';
-        } else {
-            // 未选中状态：灰色边框，透明填充，隐藏对勾，无背景
-            indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
-            checkmark.style.opacity = '0';
-            toggleItem.style.background = 'transparent';
-        }
+        updateIndicatorStyle(checkbox.checked);
+        toggleItem.style.background = checkbox.checked
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : 'transparent';
     };
 
     // 初始化样式（根据当前状态）
@@ -830,6 +802,8 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
             if (item.id === 'live2d-manage' && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                // 设置防抖标志，防止导航完成前的重复点击
+                isOpening = true;
                 window.location.href = finalUrl;
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
