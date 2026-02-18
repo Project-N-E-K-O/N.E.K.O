@@ -238,9 +238,10 @@ async def startup() -> None:
     # 注意：插件子进程会在各自进程内单独配置 loguru，本处只影响主进程。
     try:
         import sys
+        from plugin.logging_config import FORMAT_CONSOLE_SIMPLE
 
         logger.remove()
-        logger.add(sys.stdout, level=NEKO_LOGURU_LEVEL)
+        logger.add(sys.stdout, format=FORMAT_CONSOLE_SIMPLE, level=NEKO_LOGURU_LEVEL)
     except Exception:
         pass
 

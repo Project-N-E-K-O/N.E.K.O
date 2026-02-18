@@ -80,17 +80,46 @@ LOG_MAX_SIZE = os.getenv("NEKO_LOG_MAX_SIZE", "10 MB")
 LOG_RETENTION = os.getenv("NEKO_LOG_RETENTION", "7 days")
 LOG_COMPRESSION = os.getenv("NEKO_LOG_COMPRESSION", "gz")
 
-# 日志格式
+# 日志格式（统一格式，所有组件使用）
+# 控制台格式（带颜色，使用 extra[component]）
 FORMAT_CONSOLE = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
     "<level>{level: <8}</level> | "
     "<cyan>{extra[component]: <20}</cyan> | "
     "<level>{message}</level>"
 )
+# 文件格式（无颜色，使用 extra[component]）
 FORMAT_FILE = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
     "{extra[component]: <20} | {message}"
 )
+
+# 简化格式（用于不需要 component 的场景）
+FORMAT_CONSOLE_SIMPLE = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+    "<level>{level: <8}</level> | "
+    "<level>{message}</level>"
+)
+FORMAT_FILE_SIMPLE = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}"
+)
+
+# 插件进程格式（带进程标识）
+def get_plugin_format_console(plugin_id: str) -> str:
+    """获取插件进程的控制台日志格式"""
+    return (
+        f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | "
+        f"<level>{{level: <8}}</level> | "
+        f"<cyan>[{plugin_id}]</cyan> | "
+        f"<level>{{message}}</level>"
+    )
+
+def get_plugin_format_file(plugin_id: str) -> str:
+    """获取插件进程的文件日志格式"""
+    return (
+        f"{{time:YYYY-MM-DD HH:mm:ss.SSS}} | {{level: <8}} | "
+        f"[{plugin_id}] | {{message}}"
+    )
 
 # 敏感信息过滤模式
 REDACT_PATTERNS = [
@@ -303,4 +332,11 @@ __all__ = [
     "setup_logging",
     "intercept_standard_logging",
     "format_log_text",
+    # 日志格式常量
+    "FORMAT_CONSOLE",
+    "FORMAT_FILE",
+    "FORMAT_CONSOLE_SIMPLE",
+    "FORMAT_FILE_SIMPLE",
+    "get_plugin_format_console",
+    "get_plugin_format_file",
 ]

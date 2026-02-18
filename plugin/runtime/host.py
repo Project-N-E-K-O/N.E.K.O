@@ -227,28 +227,29 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     """
     from loguru import logger
     import logging
+    from plugin.logging_config import get_plugin_format_console, get_plugin_format_file
     
     # 移除默认 handler，绑定插件 ID
     logger.remove()
     logger = logger.bind(plugin_id=plugin_id)
     
-    # 添加控制台输出
+    # 添加控制台输出（使用统一格式）
     safe_pid = _sanitize_plugin_id(plugin_id)
     logger.add(
         sys.stdout,
-        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{safe_pid}] <level>{{message}}</level>",
+        format=get_plugin_format_console(safe_pid),
         level="INFO",
         colorize=True,
         enqueue=False,
     )
     
-    # 添加文件输出
+    # 添加文件输出（使用统一格式）
     log_dir = project_root / "log" / "plugins" / safe_pid
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
     logger.add(
         str(log_file),
-        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{safe_pid}] {{message}}",
+        format=get_plugin_format_file(safe_pid),
         level="INFO",
         rotation="10 MB",
         retention=10,

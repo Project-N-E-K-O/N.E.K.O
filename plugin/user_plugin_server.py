@@ -14,11 +14,12 @@ import sys
 from pathlib import Path
 
 from loguru import logger as logger
+from plugin.logging_config import FORMAT_CONSOLE_SIMPLE, FORMAT_FILE_SIMPLE
 
 logger.remove()
 logger.add(
     sys.stdout,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+    format=FORMAT_CONSOLE_SIMPLE,
     level="INFO",
     colorize=True,
 )
