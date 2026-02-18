@@ -37,6 +37,20 @@ from plugin.api.exceptions import (
 )
 from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
 from plugin.utils import parse_bool_config
+
+# 从 dependency.py 导入依赖相关函数
+from plugin.runtime.dependency import (
+    _parse_specifier,
+    _version_matches,
+    _find_plugins_by_entry,
+    _find_plugins_by_custom_event,
+    _check_plugin_dependency,
+    _check_single_plugin_version,
+    _parse_plugin_dependencies,
+    _get_dependency_plugin_ids,
+    _topological_sort_plugins,
+)
+
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
@@ -71,24 +85,7 @@ class PluginContext:
 plugin_entry_method_map: Dict[tuple, str] = {}
 
 
-def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
-    logger = _wrap_logger(logger)
-    if not spec or SpecifierSet is None:
-        return None
-    try:
-        return SpecifierSet(spec)
-    except InvalidSpecifier as e:
-        logger.error("Invalid sdk specifier '{}': {}", spec, e)
-        return None
-
-
-def _version_matches(spec: Optional[Any], version: Any) -> bool:
-    if spec is None:
-        return False
-    try:
-        return version in spec
-    except Exception:
-        return False
+# _parse_specifier, _version_matches 已移动到 dependency.py
 
 
 def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
