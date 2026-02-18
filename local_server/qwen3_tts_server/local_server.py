@@ -59,12 +59,12 @@ class QwenLocalServer:
         buffer_fallback_chars=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt")
+        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt") # 注意 这里的nyaning_voice 是测试用音声的音色
         self.model = None
         self.cached_prompt = None
         self.pad_token_id = None
-        self.ref_text = ref_text or "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。"
-        self.ref_wav = ref_wav or os.path.join(PROJECT_ROOT, "uttid_f1.wav")
+        self.ref_text = ref_text or "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。" # 后面的是自己的sample样本 需要更改
+        self.ref_wav = ref_wav or os.path.join(PROJECT_ROOT, "uttid_f1.wav") # 测试用sample 样本
         self.language = language or "Chinese"
         self.chunk_size = int(chunk_size) if chunk_size else 4096
         self.buffer_fallback_chars = int(buffer_fallback_chars) if buffer_fallback_chars else 30
