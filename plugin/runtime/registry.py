@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import hashlib
 import importlib
 import inspect
-import logging
 import os
 import sys
 from pathlib import Path
@@ -16,60 +15,11 @@ from loguru import logger as loguru_logger
 _pending_async_shutdown_tasks: set = set()
 
 
-class _LoggerAdapter:
-    def __init__(self, logger: Any):
-        self._logger = logger
-
-    def _is_stdlib(self) -> bool:
-        return isinstance(self._logger, logging.Logger)
-
-    def _fmt(self, msg: str, args: tuple[Any, ...]) -> str:
-        if not args:
-            return str(msg)
-        try:
-            return str(msg).format(*args)
-        except Exception:
-            return f"{msg} {args!r}"
-
-    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        if self._is_stdlib():
-            self._logger.debug(self._fmt(msg, args), **kwargs)
-        else:
-            self._logger.debug(msg, *args, **kwargs)
-
-    def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        if self._is_stdlib():
-            self._logger.info(self._fmt(msg, args), **kwargs)
-        else:
-            self._logger.info(msg, *args, **kwargs)
-
-    def warning(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        if self._is_stdlib():
-            self._logger.warning(self._fmt(msg, args), **kwargs)
-        else:
-            self._logger.warning(msg, *args, **kwargs)
-
-    def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        if self._is_stdlib():
-            self._logger.error(self._fmt(msg, args), **kwargs)
-        else:
-            self._logger.error(msg, *args, **kwargs)
-
-    def exception(self, msg: str, *args: Any, **kwargs: Any) -> None:
-        if self._is_stdlib():
-            self._logger.exception(self._fmt(msg, args), **kwargs)
-        else:
-            # loguru supports logger.exception(msg, *args)
-            self._logger.exception(msg, *args, **kwargs)
-
-
+# _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
+# 为保持向后兼容，_wrap_logger 现在直接返回 loguru_logger
 def _wrap_logger(logger: Any) -> Any:
-    # Avoid double-wrapping.
-    if isinstance(logger, _LoggerAdapter):
-        return logger
-    if isinstance(logger, logging.Logger):
-        return _LoggerAdapter(logger)
-    return logger
+    """向后兼容函数，现在统一返回 loguru logger"""
+    return loguru_logger
 
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -497,7 +447,7 @@ def _check_single_plugin_version(
 
 def _parse_plugin_dependencies(
     conf: Dict[str, Any],
-    logger: logging.Logger,
+    logger: Any,
     plugin_id: str
 ) -> List[PluginDependency]:
     """
