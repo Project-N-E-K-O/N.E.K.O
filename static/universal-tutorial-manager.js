@@ -1138,6 +1138,8 @@ class UniversalTutorialManager {
             '#live2d-lock-icon',
             '#toggle-chat-btn',
             '.live2d-floating-btn',
+            '.live2d-trigger-btn',
+            '.vrm-trigger-btn',
             // 宽泛匹配：所有以 live2d- 开头 ID 的元素都将被教程系统自动识别并控制交互状态
             '[id^="live2d-"]'
         ];

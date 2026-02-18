@@ -239,6 +239,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             const popup = this.createPopup(config.id);
             const triggerBtn = document.createElement('button');
             triggerBtn.type = 'button';
+            triggerBtn.className = 'vrm-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
             // 使用图片图标替代文字符号
             const triggerImg = document.createElement('img');

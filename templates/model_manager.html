@@ -47,7 +47,7 @@
             <div id="model-type-select-wrapper" style="position: relative;">
                 <button id="model-type-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.modelType">
                     <img src="/static/icons/model_type_icon.png?v=1" data-i18n-alt="live2d.modelType" class="model-type-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                    <span class="round-stroke-text" id="model-type-text" data-i18n="live2d.modelType" data-text="Model Type:">模型类型</span>
+                    <span class="round-stroke-text" id="model-type-text" data-text="Live2D">Live2D</span>
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
@@ -204,7 +204,14 @@
             </button>
         </div>
 
-        <!-- VRM 设置面板（包含动作配置与打光设置） -->
+        <!-- VRM 情感配置按钮 -->
+        <div class="control-group" id="vrm-emotion-config-group" style="display:none;">
+            <button id="vrm-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="vrm.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="vrm.emotionConfig" data-text="Emotion Config">情感配置</span>
+            </button>
+        </div>
+
+        <!-- VRM 打光设置 (已简化为二次元风格) -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
         <div id="vrm-lighting-wrapper" class="vrm-lighting-wrapper">
             <div class="vrm-lighting-header">

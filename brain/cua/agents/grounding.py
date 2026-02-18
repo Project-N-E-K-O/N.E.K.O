@@ -427,11 +427,24 @@ class OSWorldACI(ACI):
         """
 
         select_mod = "command" if self.platform == "darwin" else "ctrl"
+        paste_mod = "command" if self.platform == "darwin" else "ctrl"
+
+        # Clipboard paste: only when clicking into a known input element (coords1 set).
+        # Handles CJK/special chars correctly and is much faster than key-by-key.
+        # Falls back to pyautogui.write() if clipboard paste fails.
+        clipboard_type_snippet = (
+            f"try:\n"
+            f"    import pyperclip; pyperclip.copy({repr(text)}); "
+            f"pyautogui.hotkey({repr(paste_mod)}, 'v'); "
+            f"import time; time.sleep(0.05)\n"
+            f"except Exception:\n"
+            f"    pyautogui.write({repr(text)}, interval=0.02)\n"
+        )
+        # Plain keyboard input: used when no target element is identified,
+        # since clipboard paste may not work outside of text fields.
+        plain_type_snippet = f"pyautogui.write({repr(text)}, interval=0.02); "
 
         if self.coords1 is not None:
-            # If a node is found, retrieve its coordinates and size
-            # Start typing at the center of the element
-
             x, y = self.resize_coordinates(self.coords1)
 
             command = "import pyautogui; "
@@ -443,12 +456,11 @@ class OSWorldACI(ACI):
                     "pyautogui.press('backspace'); "
                 )
 
-            command += f"pyautogui.write({repr(text)}); "
+            command += clipboard_type_snippet
 
             if enter:
                 command += "pyautogui.press('enter'); "
         else:
-            # If no element is found, start typing at the current cursor location
             command = "import pyautogui; "
 
             if overwrite:
@@ -457,7 +469,7 @@ class OSWorldACI(ACI):
                     "pyautogui.press('backspace'); "
                 )
 
-            command += f"pyautogui.write({repr(text)}); "
+            command += plain_type_snippet
 
             if enter:
                 command += "pyautogui.press('enter'); "
