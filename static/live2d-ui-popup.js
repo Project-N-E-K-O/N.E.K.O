@@ -299,7 +299,7 @@ Live2DManager.prototype._createCheckIndicator = function () {
         }
     };
 
-    return { indicator, checkmark, updateStyle };
+    return { indicator, updateStyle };
 };
 
 // 创建Agent开关项
@@ -334,7 +334,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     }
 
     // 使用辅助方法创建圆形指示器和对勾
-    const { indicator, checkmark, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
+    const { indicator, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
@@ -514,7 +514,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     }
 
     // 使用辅助方法创建圆形指示器和对勾
-    const { indicator, checkmark, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
+    const { indicator, updateStyle: updateIndicatorStyle } = this._createCheckIndicator();
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
@@ -805,6 +805,8 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
                 // 设置防抖标志，防止导航完成前的重复点击
                 isOpening = true;
                 window.location.href = finalUrl;
+                // 500ms后重置标志，允许再次点击（防止Electron等环境下导航被阻止后永久锁死）
+                setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 const lanlanNameForKey = lanlanName || 'default';
