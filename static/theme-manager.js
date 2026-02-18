@@ -9,6 +9,21 @@
 
   const STORAGE_KEY = 'neko-dark-mode';
 
+  // 在最早的时机尝试恢复主题（避免白屏闪烁）
+  // 这会在任何函数定义或 DOMContentLoaded 之前执行
+  const savedTheme = localStorage.getItem(STORAGE_KEY);
+  if (savedTheme === 'true') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+
+  /**
+   * 读取系统暗色模式偏好
+   * @returns {boolean}
+   */
+  function getSystemPrefersDark() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
   /**
    * 应用主题到 DOM
    * @param {boolean} isDark - 是否为暗色模式
@@ -20,7 +35,7 @@
       document.documentElement.removeAttribute('data-theme');
     }
     localStorage.setItem(STORAGE_KEY, isDark ? 'true' : 'false');
-    console.log('[ThemeManager] 主题已应用:', isDark ? 'dark' : 'light');
+    console.debug('[ThemeManager] 主题已应用:', isDark ? 'dark' : 'light');
   }
 
   /**
@@ -59,15 +74,17 @@
     if (window.nekoDarkMode && typeof window.nekoDarkMode.get === 'function') {
       try {
         isDark = await window.nekoDarkMode.get();
-        console.log('[ThemeManager] 从 Electron IPC 获取主题设置:', isDark);
+        console.debug('[ThemeManager] 从 Electron IPC 获取主题设置:', isDark);
       } catch (err) {
         console.warn('[ThemeManager] 从 Electron IPC 获取失败，降级到 localStorage');
-        isDark = localStorage.getItem(STORAGE_KEY) === 'true';
+        const stored = localStorage.getItem(STORAGE_KEY);
+        isDark = stored !== null ? stored === 'true' : getSystemPrefersDark();
       }
     } else {
-      // 2. 非 Electron 环境，从 localStorage 读取
-      isDark = localStorage.getItem(STORAGE_KEY) === 'true';
-      console.log('[ThemeManager] 从 localStorage 获取主题设置:', isDark);
+      // 2. 非 Electron 环境，从 localStorage 读取，无存储值时回退到系统偏好
+      const stored = localStorage.getItem(STORAGE_KEY);
+      isDark = stored !== null ? stored === 'true' : getSystemPrefersDark();
+      console.debug('[ThemeManager] 从 localStorage/系统偏好 获取主题设置:', isDark);
     }
 
     applyTheme(isDark);
@@ -84,30 +101,27 @@
     });
   }
 
+  /**
+   * 完整初始化：应用主题 + 注册事件监听
+   */
+  function fullInit() {
+    initTheme();
+    listenForThemeChanges();
+  }
+
   // 暴露全局 API
   window.nekoTheme = {
     apply: applyTheme,
     isDark: isDarkMode,
     toggle: toggleTheme,
-    init: initTheme
+    init: fullInit
   };
 
   // DOM 准备好后初始化
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      initTheme();
-      listenForThemeChanges();
-    });
+    document.addEventListener('DOMContentLoaded', fullInit);
   } else {
     // DOM 已就绪
-    initTheme();
-    listenForThemeChanges();
-  }
-
-  // 在最早的时机尝试恢复主题（避免闪烁）
-  // 这会在 DOMContentLoaded 之前执行
-  const savedTheme = localStorage.getItem(STORAGE_KEY);
-  if (savedTheme === 'true') {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    fullInit();
   }
 })();

@@ -5,16 +5,27 @@
    所有颜色遵循 WCAG 2.1 AA 标准（4.5:1 对比度）
    ============================================= */
 
-/* ===== 全局过渡动画 ===== */
-html,
-html *,
-html *::before,
-html *::after {
-  transition: background-color 250ms ease,
-              color 250ms ease,
-              border-color 250ms ease,
-              box-shadow 250ms ease,
-              background 250ms ease;
+/* ===== 全局过渡动画（尊重用户动效偏好） ===== */
+@media (prefers-reduced-motion: no-preference) {
+  html,
+  html *,
+  html *::before,
+  html *::after {
+    transition: background-color 250ms ease,
+                color 250ms ease,
+                border-color 250ms ease,
+                box-shadow 250ms ease,
+                background 250ms ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html,
+  html *,
+  html *::before,
+  html *::after {
+    transition: none;
+  }
 }
 
 /* 排除已有 transition 的元素，避免冲突 */

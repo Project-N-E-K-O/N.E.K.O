@@ -270,7 +270,7 @@ Live2DManager.prototype._createCheckIndicator = function () {
     });
 
     const checkmark = document.createElement('div');
-    checkmark.innerHTML = '✓';
+    checkmark.textContent = '✓';
     Object.assign(checkmark.style, {
         color: '#fff',
         fontSize: '13px',
