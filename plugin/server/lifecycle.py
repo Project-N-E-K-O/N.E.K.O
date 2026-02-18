@@ -234,16 +234,8 @@ async def startup() -> None:
     2. 启动插件的通信资源
     3. 启动状态消费任务
     """
-    # 统一主进程 loguru 日志等级：默认只输出 INFO 及以上，避免 debug 诊断日志刷屏。
-    # 注意：插件子进程会在各自进程内单独配置 loguru，本处只影响主进程。
-    try:
-        import sys
-        from plugin.logging_config import FORMAT_CONSOLE_SIMPLE
-
-        logger.remove()
-        logger.add(sys.stdout, format=FORMAT_CONSOLE_SIMPLE, level=NEKO_LOGURU_LEVEL)
-    except Exception:
-        pass
+    # 注意：日志格式已在 user_plugin_server.py 中通过 configure_default_logger() 统一配置
+    # 插件子进程会在各自进程内单独配置 loguru
 
     try:
         class InterceptHandler(logging.Handler):

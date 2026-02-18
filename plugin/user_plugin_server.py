@@ -14,15 +14,10 @@ import sys
 from pathlib import Path
 
 from loguru import logger as logger
-from plugin.logging_config import FORMAT_CONSOLE_SIMPLE, FORMAT_FILE_SIMPLE
+from plugin.logging_config import configure_default_logger
 
-logger.remove()
-logger.add(
-    sys.stdout,
-    format=FORMAT_CONSOLE_SIMPLE,
-    level="INFO",
-    colorize=True,
-)
+# 配置默认 logger 格式（统一所有模块的日志格式）
+configure_default_logger()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:

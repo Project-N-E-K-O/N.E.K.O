@@ -128,6 +128,36 @@ REDACT_PATTERNS = [
     re.compile(r'(authorization|auth)["\']?\s*[:=]\s*["\']?[^"\'\s]+', re.I),
 ]
 
+# 是否已配置默认 logger
+_default_configured = False
+
+
+def configure_default_logger(level: str = "INFO") -> None:
+    """配置默认的 loguru logger 格式
+    
+    在主进程启动时调用一次，统一所有使用 `from loguru import logger` 的模块的日志格式。
+    
+    Args:
+        level: 日志级别，默认 INFO
+    
+    Usage:
+        # 在 user_plugin_server.py 启动时调用
+        from plugin.logging_config import configure_default_logger
+        configure_default_logger()
+    """
+    global _default_configured
+    if _default_configured:
+        return
+    
+    _loguru_logger.remove()
+    _loguru_logger.add(
+        sys.stdout,
+        format=FORMAT_CONSOLE_SIMPLE,
+        level=level,
+        colorize=True,
+    )
+    _default_configured = True
+
 # 已配置的组件集合
 _configured_components: set[str] = set()
 _setup_lock = None
@@ -330,6 +360,7 @@ __all__ = [
     "LOG_DIR",
     "get_logger",
     "setup_logging",
+    "configure_default_logger",
     "intercept_standard_logging",
     "format_log_text",
     # 日志格式常量
