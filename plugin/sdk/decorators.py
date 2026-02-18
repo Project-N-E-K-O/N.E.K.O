@@ -52,7 +52,8 @@ def on_event(
     auto_start: bool = False,
     persist: bool | None = None,
     checkpoint: bool | None = None,  # 向后兼容别名
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     通用事件装饰器。
@@ -60,9 +61,13 @@ def on_event(
     - id: 在"本插件内部"的事件 id（不带插件 id）
     - persist: 执行后是否保存状态（None=遵循 __persist_mode__）
     - checkpoint: persist 的向后兼容别名
+    - metadata: 额外的元数据字典
+    - extra: metadata 的向后兼容别名（已弃用）
     """
     # 向后兼容：checkpoint 参数映射到 persist
     effective_persist = persist if persist is not None else checkpoint
+    # 向后兼容：extra 参数映射到 metadata
+    effective_metadata = metadata if metadata is not None else extra
     
     def decorator(fn: Callable):
         meta = EventMeta(
@@ -73,7 +78,7 @@ def on_event(
             input_schema=input_schema or {},
             kind=kind,                    # 对 plugin_entry: "service" / "action"
             auto_start=auto_start,
-            extra=extra or {},
+            metadata=effective_metadata or {},
         )
         setattr(fn, EVENT_META_ATTR, meta)
         # 设置 persist 配置（None 表示遵循类级别 __persist_mode__）
@@ -138,7 +143,8 @@ def plugin_entry(
     persist: bool | None = None,
     checkpoint: bool | None = None,  # 向后兼容别名
     timeout: float | None = None,  # 自定义超时时间（秒），None 表示使用默认值
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     语法糖：专门用来声明"对外可调用入口"的装饰器。
@@ -154,11 +160,13 @@ def plugin_entry(
             - None: 使用默认超时（PLUGIN_TRIGGER_TIMEOUT，默认 10 秒）
             - 0 或负数: 禁用超时检测（无限等待）
             - 正数: 使用指定的超时时间
+        metadata: 额外的元数据字典
+        extra: metadata 的向后兼容别名（已弃用）
     """
-    # 将 timeout 存储到 extra 中
-    effective_extra = dict(extra) if extra else {}
+    # 向后兼容：extra 参数映射到 metadata
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if timeout is not None:
-        effective_extra["timeout"] = timeout
+        effective_metadata["timeout"] = timeout
     
     return on_event(
         event_type="plugin_entry",
@@ -170,7 +178,7 @@ def plugin_entry(
         auto_start=auto_start,
         persist=persist,
         checkpoint=checkpoint,
-        extra=effective_extra if effective_extra else None,
+        metadata=effective_metadata if effective_metadata else None,
     )
 
 
@@ -179,7 +187,8 @@ def lifecycle(
     id: Literal["startup", "shutdown", "reload", "freeze", "unfreeze", "config_change"],
     name: str | None = None,
     description: str = "",
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """生命周期事件装饰器
     
@@ -191,6 +200,7 @@ def lifecycle(
     - unfreeze: 插件从冻结状态恢复后调用（可用于重新初始化资源）
     - config_change: 配置热更新时调用（接收 old_config, new_config, mode 参数）
     """
+    effective_metadata = metadata if metadata is not None else extra
     return on_event(
         event_type="lifecycle",
         id=id,
@@ -199,7 +209,7 @@ def lifecycle(
         input_schema={},   # 一般不需要参数
         kind="lifecycle",
         auto_start=False,
-        extra=extra or {},
+        metadata=effective_metadata or {},
     )
 
 
@@ -210,14 +220,15 @@ def message(
     description: str = "",
     input_schema: dict | None = None,
     source: str | None = None,
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     消息事件：比如处理聊天消息、总线事件等。
     """
-    ex = dict(extra) if extra else {}
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if source:
-        ex.setdefault("source", source)
+        effective_metadata.setdefault("source", source)
 
     return on_event(
         event_type="message",
@@ -234,7 +245,7 @@ def message(
         },
         kind="consumer",
         auto_start=True,   # runtime 可以根据这个自动订阅
-        extra=ex,
+        metadata=effective_metadata,
     )
 
 
@@ -245,14 +256,17 @@ def timer_interval(
     name: str | None = None,
     description: str = "",
     auto_start: bool = True,
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     固定间隔定时任务：每 N 秒执行一次。
     """
-    ex = {"mode": "interval", "seconds": seconds}
-    if extra:
-        ex.update(extra)
+    effective_metadata = {"mode": "interval", "seconds": seconds}
+    if metadata:
+        effective_metadata.update(metadata)
+    elif extra:
+        effective_metadata.update(extra)
 
     return on_event(
         event_type="timer",
@@ -262,7 +276,7 @@ def timer_interval(
         input_schema={},
         kind="timer",
         auto_start=auto_start,
-        extra=ex,
+        metadata=effective_metadata,
     )
 
 
@@ -276,7 +290,8 @@ def custom_event(
     kind: EntryKind = "custom",
     auto_start: bool = False,
     trigger_method: str = "message",  # "message" | "command" | "auto"
-    extra: dict | None = None,
+    metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     自定义事件装饰器：允许插件定义全新的事件类型。
@@ -293,7 +308,8 @@ def custom_event(
             - "message": 通过消息队列触发（推荐，异步）
             - "command": 通过命令队列触发（同步，类似 plugin_entry）
             - "auto": 自动启动（类似 timer auto_start）
-        extra: 额外配置信息
+        metadata: 额外配置信息
+        extra: metadata 的向后兼容别名（已弃用）
     
     Returns:
         装饰器函数
@@ -317,8 +333,8 @@ def custom_event(
             f"Use the corresponding decorator (@plugin_entry, @lifecycle, etc.) instead."
         )
     
-    ex = dict(extra) if extra else {}
-    ex["trigger_method"] = trigger_method
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
+    effective_metadata["trigger_method"] = trigger_method
     
     return on_event(
         event_type=event_type,
@@ -328,7 +344,7 @@ def custom_event(
         input_schema=input_schema or {},
         kind=kind,
         auto_start=auto_start,
-        extra=ex,
+        metadata=effective_metadata,
     )
 
 

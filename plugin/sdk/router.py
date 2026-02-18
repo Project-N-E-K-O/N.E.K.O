@@ -491,10 +491,10 @@ class PluginRouter(HookExecutorMixin):
                     )
             
             # 创建带前缀的新 meta（如果有前缀）
-            base_extra: Dict[str, Any] = dict(meta.extra) if meta.extra else {}
-            base_extra["_router"] = self.__class__.__name__
+            base_metadata: Dict[str, Any] = dict(meta.metadata) if meta.metadata else {}
+            base_metadata["_router"] = self.__class__.__name__
             if self._prefix:
-                base_extra["_original_id"] = meta.id
+                base_metadata["_original_id"] = meta.id
             
             prefixed_meta = EventMeta(
                 event_type=meta.event_type,
@@ -504,7 +504,7 @@ class PluginRouter(HookExecutorMixin):
                 input_schema=meta.input_schema,
                 kind=meta.kind,
                 auto_start=meta.auto_start,
-                extra=base_extra,
+                metadata=base_metadata,
             )
             
             entries[entry_id] = EventHandler(meta=prefixed_meta, handler=value)
@@ -560,7 +560,7 @@ class PluginRouter(HookExecutorMixin):
             auto_start=auto_start,
             enabled=True,
             dynamic=True,
-            extra={
+            metadata={
                 "_dynamic": True,
                 "_router": self.__class__.__name__,
                 "_original_id": entry_id,

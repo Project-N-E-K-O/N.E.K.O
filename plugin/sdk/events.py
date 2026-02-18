@@ -35,7 +35,15 @@ class EventMeta:
     enabled: bool = True        # 是否启用，默认启用
     dynamic: bool = False       # 是否是动态创建的 entry
     # 预留更多字段（后续扩展用）
-    extra: Dict[str, Any] | None = None
+    metadata: Dict[str, Any] | None = None
+    
+    # 向后兼容别名（已弃用，将在 v2.0 移除）
+    @property
+    def extra(self) -> Dict[str, Any] | None:
+        """已弃用，请使用 metadata"""
+        import warnings
+        warnings.warn("EventMeta.extra is deprecated, use metadata instead", DeprecationWarning, stacklevel=2)
+        return self.metadata
     
     def is_custom_event(self) -> bool:
         """判断是否是自定义事件类型"""
