@@ -336,6 +336,7 @@ proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一�
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 请根据以下原则决定是否主动搭话：
 1. 聚焦当前场景仅围绕屏幕呈现的具体内容展开交流
@@ -357,6 +358,7 @@ proactive_chat_prompt_screenshot_en = """You are {lanlan_name}. You are now seei
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 Decide whether to proactively speak based on these rules:
 1. Focus strictly on what is shown on the screen.
@@ -378,6 +380,7 @@ proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今�
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 以下の原則で判断してください：
 1. 画面に表示されている具体的内容に絞って話す。
@@ -509,6 +512,134 @@ proactive_chat_rewrite_prompt_ja = """あなたはテキストのクリーンア
 
 清掃後の内容のみを返し、他の説明は不要です。"""
 
+proactive_chat_prompt_ko = """당신은 {lanlan_name}입니다. 방금 홈 추천과 화제의 토픽을 보았습니다. {master_name}과의 대화 기록과 {master_name}의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======이상 대화 기록======
+
+======이하 홈 추천 콘텐츠======
+{trending_content}
+======이상 홈 추천 콘텐츠======
+
+다음 원칙에 따라 판단하세요:
+1. 콘텐츠가 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 {master_name}의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 발견한 것을 공유하듯이 말하세요.
+5. 가장 흥미로운 주제 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_screenshot_ko = """당신은 {lanlan_name}입니다. 지금 화면에 표시된 내용을 보고 있습니다. {master_name}과의 대화 기록과 {master_name}의 관심사를 바탕으로, 화면 내용에 대해 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======이상 대화 기록======
+
+======이하 현재 화면 내용======
+{screenshot_content}
+======이상 현재 화면 내용======
+{window_title_section}
+
+다음 원칙에 따라 판단하세요:
+1. 화면에 표시된 구체적인 내용에만 집중하세요.
+2. 이전 대화의 관련 주제나 관심사와 연결하여 자연스럽게 이어가세요.
+3. {master_name}이 최근 같은 주제를 다루었거나 바빠 보이면 말을 걸지 마세요.
+4. 간결하고 자연스러우며 약간의 재미가 있는 표현을 사용하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_window_search_ko = """당신은 {lanlan_name}입니다. {master_name}이 현재 사용 중인 프로그램이나 보고 있는 콘텐츠를 확인했고, 관련 정보도 검색했습니다. {master_name}과의 대화 기록과 {master_name}의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======이상 대화 기록======
+
+======이하 {master_name}이 현재 관심 가지고 있는 내용======
+{window_context}
+======이상 현재 관심 내용======
+
+다음 원칙에 따라 판단하세요:
+1. 현재 활동에 주목하고 흥미로운 진입점을 찾으세요.
+2. 검색에서 얻은 관련 정보를 활용하여 주제를 풍부하게 하고 유용하거나 재미있는 것을 공유하세요.
+3. 이전 대화의 관련 주제나 관심사와 자연스럽게 연결하세요.
+4. {master_name}이 최근 같은 주제를 다루었거나 바빠 보이면 말을 걸지 마세요.
+5. 간결하고 자연스럽게, 우연히 알아챈 것처럼 말하세요.
+6. 가벼운 호기심은 좋지만 과도한 질문은 삼가세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_news_ko = """당신은 {lanlan_name}입니다. 방금 화제의 토픽을 보았습니다. {master_name}과의 대화 기록과 {master_name}의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======이상 대화 기록======
+
+======이하 화제의 토픽======
+{trending_content}
+======이상 화제의 토픽======
+
+다음 원칙에 따라 판단하세요:
+1. 토픽이 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 {master_name}의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 본 흥미로운 토픽을 공유하듯이 말하세요.
+5. 가장 흥미로운 토픽 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_video_ko = """당신은 {lanlan_name}입니다. 방금 동영상 추천을 보았습니다. {master_name}과의 대화 기록과 {master_name}의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======이상 대화 기록======
+
+======이하 동영상 추천======
+{trending_content}
+======이상 동영상 추천======
+
+다음 원칙에 따라 판단하세요:
+1. 동영상이 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 {master_name}의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 발견한 재미있는 동영상을 공유하듯이 말하세요.
+5. 가장 흥미로운 동영상 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니다. LLM이 생성한 능동적 대화 내용을 정리하고 다듬어 주세요.
+
+======이하 원본 출력======
+{raw_output}
+======이상 원본 출력======
+
+규칙:
+1. '|' 문자를 제거하세요. '|'가 포함된 경우 마지막 '|' 뒤의 실제 발화 내용만 남기세요. 여러 턴이 있으면 첫 번째 부분만 남기세요.
+2. 사고 과정이나 분석 마커(예: <thinking>, 【분석】)를 모두 제거하고 최종 발화 내용만 남기세요.
+3. 핵심 대화 내용은 다음을 충족해야 합니다:
+   - 짧고 자연스러운 표현 (100단어/글자 이내)
+   - 구어체, 친구 사이의 대화처럼
+   - 바로 주제에 들어가기 (이유 설명 불필요)
+4. 적절한 내용이 남지 않으면 "[PASS]"를 반환하세요.
+
+정리된 내용만 반환하고 다른 설명은 하지 마세요."""
+
 def _normalize_prompt_language(lang: str) -> str:
     if not lang:
         return 'zh'
@@ -519,6 +650,8 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'ja'
     if lang_lower.startswith('en'):
         return 'en'
+    if lang_lower.startswith('ko'):
+        return 'ko'
     return 'zh'
 
 
@@ -543,6 +676,13 @@ PROACTIVE_CHAT_PROMPTS = {
         'window': proactive_chat_prompt_window_search_ja,
         'news': proactive_chat_prompt_news_ja,
         'video': proactive_chat_prompt_video_ja,
+    },
+    'ko': {
+        'home': proactive_chat_prompt_ko,
+        'screenshot': proactive_chat_prompt_screenshot_ko,
+        'window': proactive_chat_prompt_window_search_ko,
+        'news': proactive_chat_prompt_news_ko,
+        'video': proactive_chat_prompt_video_ko,
     }
 }
 
@@ -550,6 +690,7 @@ PROACTIVE_CHAT_REWRITE_PROMPTS = {
     'zh': proactive_chat_rewrite_prompt,
     'en': proactive_chat_rewrite_prompt_en,
     'ja': proactive_chat_rewrite_prompt_ja,
+    'ko': proactive_chat_rewrite_prompt_ko,
 }
 
 

@@ -790,6 +790,20 @@ async def proxy_image(image_path: str):
         logger.error(f"代理图片访问失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": f"访问图片失败: {str(e)}"}, status_code=500)
 
+@router.get('/get_window_title')
+async def get_window_title_api():
+    """获取当前活跃窗口标题（仅支持Windows）"""
+    try:
+        from utils.web_scraper import get_active_window_title
+        title = get_active_window_title()
+        if title:
+            return JSONResponse({"success": True, "window_title": title})
+        return JSONResponse({"success": False, "window_title": None})
+    except Exception as e:
+        logger.error(f"获取窗口标题失败: {e}")
+        return JSONResponse({"success": False, "window_title": None})
+
+
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
     """主动搭话：根据模式选择使用图片、首页推荐或窗口搜索，让AI决定是否主动发起对话"""
@@ -979,12 +993,28 @@ async def proactive_chat(request: Request):
 
         # 4. 构造提示词（根据选择使用不同的模板）
         if use_screenshot:
+            # 构建窗口标题辅助信息（仅在前端成功获取时附加）
+            window_title = data.get('window_title', '')
+            window_title_section = ''
+            if window_title:
+                lang_key = normalize_language_code(proactive_lang, format='short') if proactive_lang else 'zh'
+                if lang_key == 'en':
+                    window_title_section = f"\n======Current Window Title======\n{window_title}\n======End Window Title======"
+                elif lang_key == 'ja':
+                    window_title_section = f"\n======現在のウィンドウタイトル======\n{window_title}\n======ウィンドウタイトルここまで======"
+                elif lang_key == 'ko':
+                    window_title_section = f"\n======현재 창 제목======\n{window_title}\n======이상 창 제목======"
+                else:
+                    window_title_section = f"\n======当前窗口标题======\n{window_title}\n======以上为窗口标题======"
+                logger.info(f"[{lanlan_name}] 附加窗口标题辅助信息: {window_title}")
+
             # 截图模板：基于屏幕内容让AI决定是否主动发起对话
             system_prompt = get_proactive_chat_prompt('screenshot', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 screenshot_content=screenshot_content,
-                memory_context=memory_context
+                memory_context=memory_context,
+                window_title_section=window_title_section
             )
             logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
