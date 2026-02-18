@@ -253,6 +253,47 @@ def intercept_standard_logging() -> None:
         logging.getLogger(name).handlers = [InterceptHandler()]
 
 
+def format_log_text(value: Any, max_len: Optional[int] = None, wrap: Optional[int] = None) -> str:
+    """格式化日志文本，支持截断和换行
+    
+    Args:
+        value: 要格式化的值
+        max_len: 最大长度，默认从环境变量 NEKO_PLUGIN_LOG_CONTENT_MAX 读取
+        wrap: 换行宽度，默认从环境变量 NEKO_PLUGIN_LOG_WRAP 读取
+    
+    Returns:
+        格式化后的字符串
+    """
+    s = "" if value is None else str(value)
+    
+    if max_len is None:
+        try:
+            max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
+        except (ValueError, TypeError):
+            max_len = 200
+    if max_len <= 0:
+        max_len = 200
+    
+    truncated = False
+    if len(s) > max_len:
+        s = s[:max_len]
+        truncated = True
+    
+    if wrap is None:
+        try:
+            wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
+        except (ValueError, TypeError):
+            wrap = 0
+    
+    if wrap and wrap > 0:
+        s = "\n".join(s[i:i + wrap] for i in range(0, len(s), wrap))
+    
+    if truncated:
+        s = s + "...(truncated)"
+    
+    return s
+
+
 # 导出
 __all__ = [
     "LogLevel",
@@ -261,4 +302,5 @@ __all__ = [
     "get_logger",
     "setup_logging",
     "intercept_standard_logging",
+    "format_log_text",
 ]
