@@ -204,26 +204,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
-            try:
-                while True:
-                    try:
-                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                    except Exception:
-                        break
-            except Exception:
-                logger.error(f"local_qwen3_tts async_worker error：{e}")
-            finally:
-                if receive_task and not receive_task.done():
-                    receive_task.cancel()
-                    try:
-                        await receive_task
-                    except asyncio.CancelledError:
-                        pass
-                if ws:
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
+
                 if sid is None:
                     # 提交缓冲区完成当前合成
                     if ws and session_id and current_speech_id is not None:
@@ -239,7 +220,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
+                                logger.warning("等待响应完成超时（30秒），强制关闭连接")
 
                             # 主动关闭连接，避免连接一直保持到超时
                             if ws:
@@ -342,7 +323,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                                 # 转换为 numpy 数组
                                                 audio_array = np.frombuffer(pcm_data, dtype=np.int16)
                                                 # 使用流式重采样器 24000Hz -> 48000Hz
-                                                response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                                                response_queue.put(
+                                                    _resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["tts.response.done", "tts.response.audio.done"]:
