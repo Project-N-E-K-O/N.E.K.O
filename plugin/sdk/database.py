@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Any, Union, Coroutine, overload
 from contextlib import contextmanager, asynccontextmanager
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -419,3 +419,225 @@ class PluginDatabase:
     def db_exists(self) -> bool:
         """检查数据库文件是否存在"""
         return self._db_path.exists()
+    
+    # ========== KV 存储接口 ==========
+    
+    @property
+    def kv(self) -> "PluginKVStore":
+        """获取 KV 存储接口
+        
+        提供类似 localStorage 的简单 KV 存储，基于同一个 SQLite 数据库。
+        
+        Usage:
+            # 基本操作
+            self.db.kv.set("key", {"data": 123})
+            value = self.db.kv.get("key")
+            self.db.kv.delete("key")
+            
+            # 便捷语法
+            self.db.kv["key"] = {"data": 123}
+            value = self.db.kv["key"]
+            del self.db.kv["key"]
+        
+        Returns:
+            PluginKVStore: KV 存储接口
+        """
+        if not hasattr(self, "_kv_store") or self._kv_store is None:
+            self._kv_store = PluginKVStore(self)
+        return self._kv_store
+
+
+class PluginKVStore:
+    """
+    基于 PluginDatabase 的 KV 存储接口
+    
+    提供类似 localStorage 的简单 API，数据存储在同一个 SQLite 数据库中。
+    线程安全，支持并发访问。
+    
+    Note:
+        此类是 PluginDatabase 的一部分，通过 db.kv 访问。
+        如需独立的 KV 存储，请使用 PluginStore。
+    """
+    
+    # KV 表名
+    _TABLE_NAME = "_plugin_kv_store"
+    
+    def __init__(self, db: PluginDatabase):
+        self._db = db
+        self._table_created = False
+    
+    def _ensure_table(self) -> None:
+        """确保 KV 表已创建"""
+        if self._table_created:
+            return
+        if not self._db.enabled:
+            return
+        
+        with self._db.session() as session:
+            session.execute(text(f"""
+                CREATE TABLE IF NOT EXISTS {self._TABLE_NAME} (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """))
+            session.commit()
+        self._table_created = True
+    
+    def _serialize(self, value: Any) -> bytes:
+        """序列化值"""
+        try:
+            import ormsgpack as msgpack
+            return msgpack.packb(value)
+        except ImportError:
+            import msgpack
+            return msgpack.packb(value, use_bin_type=True)
+    
+    def _deserialize(self, data: bytes) -> Any:
+        """反序列化值"""
+        try:
+            import ormsgpack as msgpack
+            return msgpack.unpackb(data)
+        except ImportError:
+            import msgpack
+            return msgpack.unpackb(data, raw=False)
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """获取值"""
+        if not self._db.enabled:
+            return default
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            result = session.execute(
+                text(f"SELECT value FROM {self._TABLE_NAME} WHERE key = :key"),
+                {"key": key}
+            ).fetchone()
+            if result is None:
+                return default
+            try:
+                return self._deserialize(result[0])
+            except Exception:
+                return default
+    
+    def set(self, key: str, value: Any) -> None:
+        """设置值"""
+        if not self._db.enabled:
+            return
+        self._ensure_table()
+        
+        import time
+        now = time.time()
+        data = self._serialize(value)
+        
+        with self._db.session() as session:
+            session.execute(
+                text(f"""
+                    INSERT INTO {self._TABLE_NAME} (key, value, created_at, updated_at)
+                    VALUES (:key, :value, :now, :now)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                """),
+                {"key": key, "value": data, "now": now}
+            )
+            session.commit()
+    
+    def delete(self, key: str) -> bool:
+        """删除键"""
+        if not self._db.enabled:
+            return False
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            # 先检查是否存在
+            exists = session.execute(
+                text(f"SELECT 1 FROM {self._TABLE_NAME} WHERE key = :key"),
+                {"key": key}
+            ).fetchone() is not None
+            if exists:
+                session.execute(
+                    text(f"DELETE FROM {self._TABLE_NAME} WHERE key = :key"),
+                    {"key": key}
+                )
+                session.commit()
+            return exists
+    
+    def exists(self, key: str) -> bool:
+        """检查键是否存在"""
+        if not self._db.enabled:
+            return False
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            result = session.execute(
+                text(f"SELECT 1 FROM {self._TABLE_NAME} WHERE key = :key"),
+                {"key": key}
+            ).fetchone()
+            return result is not None
+    
+    def keys(self, prefix: str = "") -> list:
+        """获取所有键"""
+        if not self._db.enabled:
+            return []
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            if prefix:
+                result = session.execute(
+                    text(f"SELECT key FROM {self._TABLE_NAME} WHERE key LIKE :prefix"),
+                    {"prefix": prefix + "%"}
+                ).fetchall()
+            else:
+                result = session.execute(
+                    text(f"SELECT key FROM {self._TABLE_NAME}")
+                ).fetchall()
+            return [row[0] for row in result]
+    
+    def clear(self) -> int:
+        """清空所有数据"""
+        if not self._db.enabled:
+            return 0
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            # 先获取数量
+            count = session.execute(
+                text(f"SELECT COUNT(*) FROM {self._TABLE_NAME}")
+            ).scalar() or 0
+            session.execute(text(f"DELETE FROM {self._TABLE_NAME}"))
+            session.commit()
+            return count
+    
+    def count(self) -> int:
+        """获取记录数"""
+        if not self._db.enabled:
+            return 0
+        self._ensure_table()
+        
+        with self._db.session() as session:
+            result = session.execute(
+                text(f"SELECT COUNT(*) FROM {self._TABLE_NAME}")
+            ).fetchone()
+            return result[0] if result else 0
+    
+    # 便捷语法
+    def __getitem__(self, key: str) -> Any:
+        value = self.get(key)
+        if value is None and not self.exists(key):
+            raise KeyError(key)
+        return value
+    
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.set(key, value)
+    
+    def __delitem__(self, key: str) -> None:
+        if not self.delete(key):
+            raise KeyError(key)
+    
+    def __contains__(self, key: str) -> bool:
+        return self.exists(key)
+    
+    def __len__(self) -> int:
+        return self.count()

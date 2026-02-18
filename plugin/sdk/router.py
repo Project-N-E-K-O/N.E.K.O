@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, ClassVar, Dict, List, Optional
 
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
+from .hook_executor import HookExecutorMixin
 
 if TYPE_CHECKING:
     from .base import NekoPluginBase
@@ -89,7 +90,7 @@ class PluginRouterError(RuntimeError):
         )
 
 
-class PluginRouter:
+class PluginRouter(HookExecutorMixin):
     """插件路由器基类
     
     允许将插件入口点组织到独立的模块中，类似 FastAPI 的 APIRouter。
@@ -145,7 +146,8 @@ class PluginRouter:
         self._plugin: Optional["NekoPluginBase"] = None
         self._bound: bool = False
         self._entry_ids: List[str] = []  # 记录注册的入口点 ID，用于卸载
-        self._hooks: Dict[str, List[HookHandler]] = {}  # target -> hooks
+        # 初始化 Hook 执行器（来自 HookExecutorMixin）
+        self.__init_hook_executor__()
     
     @property
     def prefix(self) -> str:
@@ -440,199 +442,15 @@ class PluginRouter:
         if hasattr(plugin, "report_status"):
             plugin.report_status(status)
     
-    # ========== Hook 收集与执行 ==========
+    # ========== HookExecutorMixin 抽象方法实现 ==========
     
-    def collect_hooks(self) -> Dict[str, List[HookHandler]]:
-        """收集本 Router 中所有 @hook 装饰的方法
-        
-        Returns:
-            Hook 字典，key 为目标 entry ID，value 为 HookHandler 列表
-        """
-        hooks: Dict[str, List[HookHandler]] = {}
-        
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            
-            try:
-                value = getattr(self, attr_name)
-            except Exception:
-                continue
-            
-            if not callable(value):
-                continue
-            
-            # 检查是否有 Hook 元数据
-            meta: Optional[HookMeta] = getattr(value, HOOK_META_ATTR, None)
-            if meta is None:
-                continue
-            
-            handler = HookHandler(
-                meta=meta,
-                handler=value,
-                router_name=self.__class__.__name__,
-            )
-            
-            target = meta.target_entry
-            if target not in hooks:
-                hooks[target] = []
-            hooks[target].append(handler)
-        
-        # 按优先级排序（越大越先执行）
-        for target in hooks:
-            hooks[target].sort(key=lambda h: h.meta.priority, reverse=True)
-        
-        self._hooks = hooks
-        return hooks
+    def _get_hook_logger(self) -> Any:
+        """获取日志记录器（HookExecutorMixin 抽象方法实现）"""
+        return self.logger
     
-    def get_hooks_for_entry(self, entry_id: str) -> List[HookHandler]:
-        """获取指定 entry 的所有 Hook
-        
-        Args:
-            entry_id: 入口点 ID
-        
-        Returns:
-            HookHandler 列表（已按优先级排序）
-        """
-        result: List[HookHandler] = []
-        
-        # 获取精确匹配的 Hook
-        if entry_id in self._hooks:
-            result.extend(self._hooks[entry_id])
-        
-        # 获取通配符 Hook (*)
-        if "*" in self._hooks:
-            result.extend(self._hooks["*"])
-        
-        # 重新按优先级排序
-        result.sort(key=lambda h: h.meta.priority, reverse=True)
-        return result
-    
-    async def execute_before_hooks(
-        self,
-        entry_id: str,
-        params: Dict[str, Any],
-    ) -> tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
-        """执行 before 类型的 Hook
-        
-        Args:
-            entry_id: 入口点 ID
-            params: 原始参数
-        
-        Returns:
-            (should_continue, early_result, modified_params)
-            - should_continue: 是否继续执行原始 entry
-            - early_result: 如果不继续，返回的结果
-            - modified_params: 修改后的参数
-        """
-        import inspect
-        
-        hooks = self.get_hooks_for_entry(entry_id)
-        current_params = dict(params)
-        
-        for hook_handler in hooks:
-            if hook_handler.meta.timing != "before":
-                continue
-            
-            # 检查条件
-            if hook_handler.meta.condition:
-                condition_method = getattr(self, hook_handler.meta.condition, None)
-                if condition_method and callable(condition_method):
-                    if not condition_method(entry_id, current_params):
-                        continue
-            
-            try:
-                result = hook_handler.handler(
-                    entry_id=entry_id,
-                    params=current_params,
-                )
-                if inspect.iscoroutine(result):
-                    result = await result
-                
-                if result is None:
-                    # 继续执行
-                    continue
-                elif isinstance(result, dict):
-                    # 检查是否是阻止执行的结果（包含 code/message 等）
-                    if "code" in result or "message" in result or "data" in result:
-                        # 这是一个响应结果，阻止执行
-                        return False, result, current_params
-                    else:
-                        # 这是修改后的参数
-                        current_params = result
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(
-                        f"Hook {hook_handler.router_name}.{hook_handler.handler.__name__} "
-                        f"failed for entry {entry_id}: {e}"
-                    )
-        
-        return True, None, current_params
-    
-    async def execute_after_hooks(
-        self,
-        entry_id: str,
-        params: Dict[str, Any],
-        result: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """执行 after 类型的 Hook
-        
-        Args:
-            entry_id: 入口点 ID
-            params: 原始参数
-            result: entry 执行结果
-        
-        Returns:
-            修改后的结果
-        """
-        import inspect
-        
-        hooks = self.get_hooks_for_entry(entry_id)
-        current_result = dict(result)
-        
-        for hook_handler in hooks:
-            if hook_handler.meta.timing != "after":
-                continue
-            
-            # 检查条件
-            if hook_handler.meta.condition:
-                condition_method = getattr(self, hook_handler.meta.condition, None)
-                if condition_method and callable(condition_method):
-                    if not condition_method(entry_id, params):
-                        continue
-            
-            try:
-                hook_result = hook_handler.handler(
-                    entry_id=entry_id,
-                    params=params,
-                    result=current_result,
-                )
-                if inspect.iscoroutine(hook_result):
-                    hook_result = await hook_result
-                
-                if hook_result is not None and isinstance(hook_result, dict):
-                    current_result = hook_result
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(
-                        f"Hook {hook_handler.router_name}.{hook_handler.handler.__name__} "
-                        f"failed for entry {entry_id}: {e}"
-                    )
-        
-        return current_result
-    
-    def get_around_hooks(self, entry_id: str) -> List[HookHandler]:
-        """获取 around 类型的 Hook"""
-        hooks = self.get_hooks_for_entry(entry_id)
-        return [h for h in hooks if h.meta.timing == "around"]
-    
-    def get_replace_hook(self, entry_id: str) -> Optional[HookHandler]:
-        """获取 replace 类型的 Hook（只返回优先级最高的一个）"""
-        hooks = self.get_hooks_for_entry(entry_id)
-        for h in hooks:
-            if h.meta.timing == "replace":
-                return h
-        return None
+    def _get_hook_owner_name(self) -> str:
+        """获取所属对象名称（HookExecutorMixin 抽象方法实现）"""
+        return self.__class__.__name__
     
     # ========== 入口点收集 ==========
     

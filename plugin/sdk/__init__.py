@@ -56,6 +56,16 @@ from .decorators import (
     EntryKind,
 )
 from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
+from .hook_executor import HookExecutorMixin
+from .call_chain import (
+    CallChain,
+    AsyncCallChain,
+    CircularCallError,
+    CallChainTooDeepError,
+    get_call_chain,
+    get_call_depth,
+    is_in_call_chain,
+)
 from .base import NekoPluginBase, PluginMeta
 from .router import PluginRouter, PluginRouterError
 from .config import PluginConfig
@@ -64,7 +74,9 @@ from .events import EventMeta, EventHandler, EVENT_META_ATTR
 from .system_info import SystemInfo
 from .memory import MemoryClient
 from .types import PluginContextProtocol
-from .state import StatePersistence, EXTENDED_TYPES
+from .store import PluginStore
+from .database import PluginDatabase, PluginKVStore
+from .state import PluginStatePersistence, StatePersistence, EXTENDED_TYPES
 
 # Adapter 模块（可选导入，避免循环依赖）
 try:
@@ -113,7 +125,17 @@ __all__ = [
     "HookMeta",         # Hook 元数据
     "HookHandler",      # Hook 处理器
     "HookTiming",       # Hook 时机类型
+    "HookExecutorMixin", # Hook 执行器 Mixin（供自定义类使用）
     "HOOK_META_ATTR",   # Hook 元数据属性名
+    
+    # 调用链追踪（防止循环调用和死锁）
+    "CallChain",        # 同步调用链追踪器
+    "AsyncCallChain",   # 异步调用链追踪器
+    "CircularCallError", # 循环调用错误
+    "CallChainTooDeepError", # 调用链过深错误
+    "get_call_chain",   # 获取当前调用链
+    "get_call_depth",   # 获取当前调用深度
+    "is_in_call_chain", # 检查是否在调用链中
     
     # 基类和元数据
     "NekoPluginBase",   # 插件基类
@@ -128,7 +150,8 @@ __all__ = [
     "MemoryClient",     # 记忆客户端
     
     # 状态持久化
-    "StatePersistence", # 状态持久化管理器
+    "PluginStatePersistence", # 状态持久化管理器（推荐）
+    "StatePersistence", # 向后兼容别名
     "EXTENDED_TYPES",   # 支持的扩展类型 (datetime, Enum, set, Path 等)
     
     # 类型定义和常量

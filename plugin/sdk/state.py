@@ -122,7 +122,7 @@ def _deserialize_extended_type(data: Dict[str, Any]) -> Any:
 EXTENDED_TYPES = (datetime, date, timedelta, Enum, set, frozenset, Path)
 
 
-class StatePersistence:
+class PluginStatePersistence:
     """管理 __freezable__ 属性的状态持久化
     
     统一处理插件状态的保存和恢复，替代原来分离的 checkpoint 和 freeze 机制。
@@ -134,6 +134,10 @@ class StatePersistence:
     
     插件可以通过实现 __freeze_serialize__ 和 __freeze_deserialize__ 方法
     来支持自定义类型的序列化。
+    
+    Note:
+        此类用于自动管理运行时状态（freeze/unfreeze），适合保存计数器、缓存等。
+        如需手动管理持久化数据，请使用 PluginDatabase.kv 或 PluginStore。
     """
     
     # 支持序列化的基本类型
@@ -493,4 +497,5 @@ class StatePersistence:
 
 
 # 向后兼容别名
-FreezableCheckpoint = StatePersistence
+StatePersistence = PluginStatePersistence
+FreezableCheckpoint = PluginStatePersistence

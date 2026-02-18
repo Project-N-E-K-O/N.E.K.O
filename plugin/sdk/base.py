@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional, Dict, Any, List, Union, Callable
 from functools import wraps
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
+from .hook_executor import HookExecutorMixin
 from .config import PluginConfig
 from .plugins import Plugins
 from .version import SDK_VERSION
@@ -45,7 +46,7 @@ class PluginMeta:
     description: str = ""
 
 
-class NekoPluginBase:
+class NekoPluginBase(HookExecutorMixin):
     """插件都继承这个基类.
     
     Attributes:
@@ -74,8 +75,8 @@ class NekoPluginBase:
         self._routers: List["PluginRouter"] = []
         # 动态入口点缓存：存储所有 Router 的入口点
         self._router_entries: Dict[str, EventHandler] = {}
-        # 插件级别的 Hook：target -> hooks
-        self._hooks: Dict[str, List[HookHandler]] = {}
+        # 初始化 Hook 执行器（来自 HookExecutorMixin）
+        self.__init_hook_executor__()
         # 静态 UI 配置（实例属性，避免类属性共享问题）
         self._static_ui_config: Optional[Dict[str, Any]] = None
         
@@ -692,439 +693,22 @@ class NekoPluginBase:
             if logger:
                 logger.warning(f"Failed to notify entry update: {e}")
     
-    # ========== Hook 支持 ==========
+    # ========== HookExecutorMixin 抽象方法实现 ==========
     
-    def collect_hooks(self) -> Dict[str, List[HookHandler]]:
-        """收集插件自身的所有 @hook 装饰的方法
-        
-        Returns:
-            Hook 字典，key 为目标 entry ID，value 为 HookHandler 列表
-        """
-        hooks: Dict[str, List[HookHandler]] = {}
-        
-        for attr_name in dir(self):
-            if attr_name.startswith("_"):
-                continue
-            
-            try:
-                value = getattr(self, attr_name)
-            except Exception:
-                continue
-            
-            if not callable(value):
-                continue
-            
-            # 检查是否有 Hook 元数据
-            meta: Optional[HookMeta] = getattr(value, HOOK_META_ATTR, None)
-            if meta is None:
-                continue
-            
-            handler = HookHandler(
-                meta=meta,
-                handler=value,
-                router_name=self.__class__.__name__,
-            )
-            
-            target = meta.target_entry
-            if target not in hooks:
-                hooks[target] = []
-            hooks[target].append(handler)
-        
-        # 按优先级排序（越大越先执行）
-        for target in hooks:
-            hooks[target].sort(key=lambda h: h.meta.priority, reverse=True)
-        
-        self._hooks = hooks
-        return hooks
+    def _get_hook_logger(self) -> Any:
+        """获取日志记录器（HookExecutorMixin 抽象方法实现）"""
+        return getattr(self.ctx, "logger", None)
     
-    def get_hooks_for_entry(self, entry_id: str) -> List[HookHandler]:
-        """获取指定 entry 的所有 Hook（包括插件自身和所有 Router 的 Hook）
-        
-        Args:
-            entry_id: 入口点 ID
-        
-        Returns:
-            HookHandler 列表（已按优先级排序）
-        """
-        result: List[HookHandler] = []
-        
-        # 1. 收集插件自身的 Hook
-        if entry_id in self._hooks:
-            result.extend(self._hooks[entry_id])
-        if "*" in self._hooks:
-            result.extend(self._hooks["*"])
-        
-        # 2. 收集所有 Router 的 Hook
-        for router in self._routers:
-            result.extend(router.get_hooks_for_entry(entry_id))
-        
-        # 重新按优先级排序
-        result.sort(key=lambda h: h.meta.priority, reverse=True)
-        return result
+    def _get_hook_owner_name(self) -> str:
+        """获取所属对象名称（HookExecutorMixin 抽象方法实现）"""
+        return self.__class__.__name__
     
-    async def execute_before_hooks(
-        self,
-        entry_id: str,
-        params: Dict[str, Any],
-    ) -> tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
-        """执行 before 类型的 Hook
+    def _get_child_hook_sources(self) -> List["PluginRouter"]:
+        """获取子级 Hook 来源列表（HookExecutorMixin 抽象方法实现）
         
-        Args:
-            entry_id: 入口点 ID
-            params: 原始参数
-        
-        Returns:
-            (should_continue, early_result, modified_params)
+        返回所有注册的 Router，它们的 Hook 会被合并到插件的 Hook 执行链中。
         """
-        hooks = self.get_hooks_for_entry(entry_id)
-        current_params = dict(params)
-        logger = getattr(self.ctx, "logger", None)
-        
-        for hook_handler in hooks:
-            if hook_handler.meta.timing != "before":
-                continue
-            
-            # 检查条件
-            if hook_handler.meta.condition:
-                # 从 handler 所属的对象获取条件方法
-                owner = getattr(hook_handler.handler, "__self__", None) or self
-                condition_method = getattr(owner, hook_handler.meta.condition, None)
-                if condition_method and callable(condition_method):
-                    if not condition_method(entry_id, current_params):
-                        continue
-            
-            try:
-                result = hook_handler.handler(
-                    entry_id=entry_id,
-                    params=current_params,
-                )
-                if inspect.iscoroutine(result):
-                    result = await result
-                
-                if result is None:
-                    continue
-                elif isinstance(result, dict):
-                    if "code" in result or "message" in result or "data" in result:
-                        return False, result, current_params
-                    else:
-                        current_params = result
-            except Exception as e:
-                if logger:
-                    logger.warning(
-                        f"Hook {hook_handler.router_name}.{hook_handler.handler.__name__} "
-                        f"failed for entry {entry_id}: {e}"
-                    )
-        
-        return True, None, current_params
-    
-    async def execute_after_hooks(
-        self,
-        entry_id: str,
-        params: Dict[str, Any],
-        result: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """执行 after 类型的 Hook
-        
-        Args:
-            entry_id: 入口点 ID
-            params: 原始参数
-            result: entry 执行结果
-        
-        Returns:
-            修改后的结果
-        """
-        hooks = self.get_hooks_for_entry(entry_id)
-        current_result = dict(result)
-        logger = getattr(self.ctx, "logger", None)
-        
-        for hook_handler in hooks:
-            if hook_handler.meta.timing != "after":
-                continue
-            
-            if hook_handler.meta.condition:
-                owner = getattr(hook_handler.handler, "__self__", None) or self
-                condition_method = getattr(owner, hook_handler.meta.condition, None)
-                if condition_method and callable(condition_method):
-                    if not condition_method(entry_id, params):
-                        continue
-            
-            try:
-                hook_result = hook_handler.handler(
-                    entry_id=entry_id,
-                    params=params,
-                    result=current_result,
-                )
-                if inspect.iscoroutine(hook_result):
-                    hook_result = await hook_result
-                
-                if hook_result is not None and isinstance(hook_result, dict):
-                    current_result = hook_result
-            except Exception as e:
-                if logger:
-                    logger.warning(
-                        f"Hook {hook_handler.router_name}.{hook_handler.handler.__name__} "
-                        f"failed for entry {entry_id}: {e}"
-                    )
-        
-        return current_result
-    
-    def _check_hook_condition(self, hook_handler: HookHandler, entry_id: str, params: Dict[str, Any]) -> bool:
-        """检查 Hook 的 condition 是否满足
-        
-        Args:
-            hook_handler: Hook 处理器
-            entry_id: 入口点 ID
-            params: 参数字典
-        
-        Returns:
-            True 如果 condition 满足或没有 condition，False 否则
-        """
-        if not hook_handler.meta.condition:
-            return True
-        
-        # 从 handler 所属的对象获取条件方法
-        owner = getattr(hook_handler.handler, "__self__", None) or self
-        condition_method = getattr(owner, hook_handler.meta.condition, None)
-        if condition_method and callable(condition_method):
-            try:
-                return bool(condition_method(entry_id, params))
-            except Exception:
-                return False
-        return True
-    
-    def get_replace_hook(self, entry_id: str, params: Optional[Dict[str, Any]] = None) -> Optional[HookHandler]:
-        """获取 replace 类型的 Hook（只返回优先级最高且满足 condition 的一个）
-        
-        Args:
-            entry_id: 入口点 ID
-            params: 参数字典（用于检查 condition）
-        """
-        hooks = self.get_hooks_for_entry(entry_id)
-        params = params or {}
-        for h in hooks:
-            if h.meta.timing == "replace":
-                if self._check_hook_condition(h, entry_id, params):
-                    return h
-        return None
-    
-    def get_around_hooks(self, entry_id: str, params: Optional[Dict[str, Any]] = None) -> List[HookHandler]:
-        """获取 around 类型的 Hook（按优先级排序，只返回满足 condition 的）
-        
-        Args:
-            entry_id: 入口点 ID
-            params: 参数字典（用于检查 condition）
-        """
-        hooks = self.get_hooks_for_entry(entry_id)
-        params = params or {}
-        return [h for h in hooks if h.meta.timing == "around" and self._check_hook_condition(h, entry_id, params)]
-    
-    def _wrap_handler_with_hooks(self, entry_id: str, original_handler: Callable) -> Callable:
-        """包装 handler，在执行前后执行 Hook
-        
-        Args:
-            entry_id: 入口点 ID
-            original_handler: 原始 handler
-        
-        Returns:
-            包装后的 handler（保持原始 handler 的同步/异步特性）
-        """
-        plugin_ref = self
-        is_async = asyncio.iscoroutinefunction(original_handler)
-        
-        @wraps(original_handler)
-        async def async_wrapped(**kwargs):
-            # 1. 执行 before hooks
-            should_continue, early_result, modified_params = await plugin_ref.execute_before_hooks(
-                entry_id, kwargs
-            )
-            if not should_continue:
-                return early_result
-            
-            logger = getattr(plugin_ref.ctx, "logger", None)
-            
-            # 2. 检查是否有 replace hook（传入 params 用于 condition 检查）
-            replace_hook = plugin_ref.get_replace_hook(entry_id, modified_params)
-            if replace_hook:
-                # 使用 replace hook 替代原始 handler
-                try:
-                    if logger:
-                        logger.debug(
-                            f"[Hook] replace: {replace_hook.router_name}.{replace_hook.handler.__name__} "
-                            f"for entry {entry_id}"
-                        )
-                    result = replace_hook.handler(
-                        entry_id=entry_id,
-                        params=modified_params,
-                        original_handler=original_handler,
-                    )
-                    if inspect.iscoroutine(result):
-                        result = await result
-                except Exception as e:
-                    if logger:
-                        logger.warning(
-                            f"[Hook] replace hook {replace_hook.router_name}.{replace_hook.handler.__name__} "
-                            f"failed for entry {entry_id}: {e}, falling back to original handler"
-                        )
-                    # replace hook 失败时回退到原始 handler
-                    result = original_handler(**modified_params)
-                    if inspect.iscoroutine(result):
-                        result = await result
-            else:
-                # 3. 构建 around hook 链（传入 params 用于 condition 检查）
-                around_hooks = plugin_ref.get_around_hooks(entry_id, modified_params)
-                
-                if around_hooks:
-                    # 构建调用链：around_hook_1 -> around_hook_2 -> ... -> original_handler
-                    async def build_chain(hooks_remaining, params):
-                        if not hooks_remaining:
-                            # 链的末端：执行原始 handler
-                            r = original_handler(**params)
-                            if inspect.iscoroutine(r):
-                                r = await r
-                            return r
-                        
-                        # 取出当前 hook
-                        current_hook = hooks_remaining[0]
-                        rest_hooks = hooks_remaining[1:]
-                        
-                        # 创建 next_handler 供 around hook 调用
-                        async def next_handler(p=None):
-                            return await build_chain(rest_hooks, p if p is not None else params)
-                        
-                        # 执行当前 around hook（带错误处理）
-                        try:
-                            if logger:
-                                logger.debug(
-                                    f"[Hook] around: {current_hook.router_name}.{current_hook.handler.__name__} "
-                                    f"for entry {entry_id}"
-                                )
-                            hook_result = current_hook.handler(
-                                entry_id=entry_id,
-                                params=params,
-                                next_handler=next_handler,
-                            )
-                            if inspect.iscoroutine(hook_result):
-                                hook_result = await hook_result
-                            return hook_result
-                        except Exception as e:
-                            if logger:
-                                logger.warning(
-                                    f"[Hook] around hook {current_hook.router_name}.{current_hook.handler.__name__} "
-                                    f"failed for entry {entry_id}: {e}, skipping to next"
-                                )
-                            # 跳过当前 hook，继续执行链的其余部分
-                            return await build_chain(rest_hooks, params)
-                    
-                    result = await build_chain(around_hooks, modified_params)
-                else:
-                    # 无 around hook，直接执行原始 handler
-                    result = original_handler(**modified_params)
-                    if inspect.iscoroutine(result):
-                        result = await result
-            
-            # 4. 执行 after hooks
-            final_result = await plugin_ref.execute_after_hooks(
-                entry_id, modified_params, result if isinstance(result, dict) else {"data": result}
-            )
-            return final_result
-        
-        @wraps(original_handler)
-        def sync_wrapped(**kwargs):
-            """同步包装器：在独立事件循环中执行 Hook，但在当前线程中执行原始同步 handler"""
-            # 1. 执行 before hooks（在新事件循环中）
-            should_continue, early_result, modified_params = asyncio.run(
-                plugin_ref.execute_before_hooks(entry_id, kwargs)
-            )
-            if not should_continue:
-                return early_result
-            
-            logger = getattr(plugin_ref.ctx, "logger", None)
-            
-            # 2. 检查是否有 replace hook（传入 params 用于 condition 检查）
-            replace_hook = plugin_ref.get_replace_hook(entry_id, modified_params)
-            if replace_hook:
-                # 使用 replace hook 替代原始 handler
-                try:
-                    if logger:
-                        logger.debug(
-                            f"[Hook] replace: {replace_hook.router_name}.{replace_hook.handler.__name__} "
-                            f"for entry {entry_id}"
-                        )
-                    result = replace_hook.handler(
-                        entry_id=entry_id,
-                        params=modified_params,
-                        original_handler=original_handler,
-                    )
-                    if inspect.iscoroutine(result):
-                        result = asyncio.run(result)
-                except Exception as e:
-                    if logger:
-                        logger.warning(
-                            f"[Hook] replace hook {replace_hook.router_name}.{replace_hook.handler.__name__} "
-                            f"failed for entry {entry_id}: {e}, falling back to original handler"
-                        )
-                    # replace hook 失败时回退到原始 handler
-                    result = original_handler(**modified_params)
-            else:
-                # 3. 构建 around hook 链（传入 params 用于 condition 检查）
-                around_hooks = plugin_ref.get_around_hooks(entry_id, modified_params)
-                
-                if around_hooks:
-                    # 对于同步 handler，around hook 链需要在事件循环中执行
-                    async def build_chain_async(hooks_remaining, params):
-                        if not hooks_remaining:
-                            # 链的末端：执行原始同步 handler
-                            return original_handler(**params)
-                        
-                        current_hook = hooks_remaining[0]
-                        rest_hooks = hooks_remaining[1:]
-                        
-                        async def next_handler(p=None):
-                            return await build_chain_async(rest_hooks, p if p is not None else params)
-                        
-                        # 执行当前 around hook（带错误处理）
-                        try:
-                            if logger:
-                                logger.debug(
-                                    f"[Hook] around: {current_hook.router_name}.{current_hook.handler.__name__} "
-                                    f"for entry {entry_id}"
-                                )
-                            hook_result = current_hook.handler(
-                                entry_id=entry_id,
-                                params=params,
-                                next_handler=next_handler,
-                            )
-                            if inspect.iscoroutine(hook_result):
-                                hook_result = await hook_result
-                            return hook_result
-                        except Exception as e:
-                            if logger:
-                                logger.warning(
-                                    f"[Hook] around hook {current_hook.router_name}.{current_hook.handler.__name__} "
-                                    f"failed for entry {entry_id}: {e}, skipping to next"
-                                )
-                            # 跳过当前 hook，继续执行链的其余部分
-                            return await build_chain_async(rest_hooks, params)
-                    
-                    result = asyncio.run(build_chain_async(around_hooks, modified_params))
-                else:
-                    # 无 around hook，直接执行原始同步 handler
-                    result = original_handler(**modified_params)
-            
-            # 4. 执行 after hooks（在新事件循环中）
-            final_result = asyncio.run(
-                plugin_ref.execute_after_hooks(
-                    entry_id, modified_params, result if isinstance(result, dict) else {"data": result}
-                )
-            )
-            return final_result
-        
-        # 根据原始 handler 的类型返回对应的包装器
-        # 这样可以保持原始 handler 的同步/异步特性
-        if is_async:
-            return async_wrapped
-        else:
-            return sync_wrapped
+        return self._routers
     
     def collect_entries(self, wrap_with_hooks: bool = True) -> Dict[str, EventHandler]:
         """

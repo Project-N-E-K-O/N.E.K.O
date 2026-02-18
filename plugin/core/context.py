@@ -803,31 +803,49 @@ class PluginContext:
                                         self._push_lock = new_lock
                                     lock = new_lock
 
+                        # 双重检查锁定模式：先检查是否需要创建 batcher
+                        batcher = getattr(self, "_message_plane_push_batcher", None)
+                        need_create_batcher = batcher is None
+                        
+                        if need_create_batcher:
+                            # 在锁外创建 batcher（避免在锁内做 I/O）
+                            from plugin.zeromq_ipc import MessagePlaneIngestBatcher
+                            from plugin.settings import (
+                                MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS,
+                                MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
+                                MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO,
+                            )
+                            
+                            new_batcher = MessagePlaneIngestBatcher(
+                                from_plugin=self.plugin_id,
+                                endpoint=endpoint,
+                                batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
+                                flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
+                                max_queue=int(MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE),
+                                reject_ratio=float(MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO),
+                                enqueue_timeout_s=float(MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS),
+                            )
+                            # 在锁外启动（可能涉及 ZMQ 连接）
+                            new_batcher.start()
+                            
+                            # 获取锁后再次检查并设置
+                            with lock:
+                                batcher = getattr(self, "_message_plane_push_batcher", None)
+                                if batcher is None:
+                                    batcher = new_batcher
+                                    try:
+                                        object.__setattr__(self, "_message_plane_push_batcher", batcher)
+                                    except Exception:
+                                        self._message_plane_push_batcher = batcher
+                                else:
+                                    # 另一个线程已经创建了，关闭我们创建的
+                                    try:
+                                        new_batcher.stop(timeout=0.1)
+                                    except Exception:
+                                        pass
+                        
+                        # 在锁内只做快速的内存操作
                         with lock:
-                            batcher = getattr(self, "_message_plane_push_batcher", None)
-                            if batcher is None:
-                                from plugin.zeromq_ipc import MessagePlaneIngestBatcher
-                                from plugin.settings import (
-                                    MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS,
-                                    MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
-                                    MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO,
-                                )
-
-                                batcher = MessagePlaneIngestBatcher(
-                                    from_plugin=self.plugin_id,
-                                    endpoint=endpoint,
-                                    batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
-                                    flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
-                                    max_queue=int(MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE),
-                                    reject_ratio=float(MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO),
-                                    enqueue_timeout_s=float(MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS),
-                                )
-                                batcher.start()
-                                try:
-                                    object.__setattr__(self, "_message_plane_push_batcher", batcher)
-                                except Exception:
-                                    self._message_plane_push_batcher = batcher
-
                             # Fast path: use counter instead of UUID, use float timestamp instead of ISO
                             msg_counter = getattr(self, "_msg_counter", None)
                             if msg_counter is None:
