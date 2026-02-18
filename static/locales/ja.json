@@ -2021,5 +2021,12 @@
       "angry": "怒り (Angry)",
       "surprised": "驚き (Surprised)"
     }
+  },
+  "theme": {
+    "darkMode": "ダークモード",
+    "lightMode": "ライトモード",
+    "switchToDark": "ダークモードに切り替え",
+    "switchToLight": "ライトモードに切り替え",
+    "themeChanged": "テーマが変更されました"
   }
 }

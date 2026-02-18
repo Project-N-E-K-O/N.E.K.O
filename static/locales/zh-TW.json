@@ -2041,5 +2041,12 @@
       "angry": "生氣 (Angry)",
       "surprised": "驚訝 (Surprised)"
     }
+  },
+  "theme": {
+    "darkMode": "暗色模式",
+    "lightMode": "亮色模式",
+    "switchToDark": "切換到暗色模式",
+    "switchToLight": "切換到亮色模式",
+    "themeChanged": "主題已切換"
   }
 }

@@ -15,12 +15,12 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         top: '0',
         marginLeft: '8px',
         zIndex: '100000',  // 确保弹出菜单置顶，不被任何元素遮挡
-        background: 'rgba(255, 255, 255, 0.65)',  // Fluent Acrylic
+        background: 'var(--neko-popup-bg)',  // Fluent Acrylic（支持暗色模式）
         backdropFilter: 'saturate(180%) blur(20px)',  // Fluent 标准模糊
-        border: '1px solid rgba(255, 255, 255, 0.18)',  // 微妙高光边框
+        border: 'var(--neko-popup-border)',  // 微妙高光边框（支持暗色模式）
         borderRadius: '8px',  // Fluent 标准圆角
         padding: '8px',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',  // Fluent 多层阴影
+        boxShadow: 'var(--neko-popup-shadow)',  // Fluent 多层阴影（支持暗色模式）
         display: 'none',
         flexDirection: 'column',
         gap: '6px',
@@ -121,7 +121,7 @@ Live2DManager.prototype._createSettingsPopupContent = function (popup) {
         const separator = document.createElement('div');
         Object.assign(separator.style, {
             height: '1px',
-            background: 'rgba(0,0,0,0.1)',
+            background: 'var(--neko-popup-separator)',
             margin: '4px 0'
         });
         popup.appendChild(separator);
@@ -141,7 +141,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
         gap: '2px',
         padding: '0 12px 0 44px',
         fontSize: '12px',
-        color: '#666',
+        color: 'var(--neko-popup-text-sub)',
         height: '0',
         overflow: 'hidden',
         opacity: '0',
@@ -187,7 +187,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
         width: '55px',
         height: '4px',
         cursor: 'pointer',
-        accentColor: '#44b7fe'
+        accentColor: 'var(--neko-popup-accent)'
     });
 
     // 数值显示
@@ -288,7 +288,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
         width: '20px',
         height: '20px',
         borderRadius: '50%',
-        border: '2px solid #ccc',
+        border: '2px solid var(--neko-popup-indicator-border)',
         backgroundColor: 'transparent',
         cursor: 'pointer',
         flexShrink: '0',
@@ -323,7 +323,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     label.style.cursor = 'pointer';
     label.style.userSelect = 'none';
     label.style.fontSize = '13px';
-    label.style.color = '#333';  // 文本始终为深灰色，不随选中状态改变
+    label.style.color = 'var(--neko-popup-text)';  // 文本颜色跟随主题变化
 
     // 更新标签文本的函数
     const updateLabelText = () => {
@@ -342,13 +342,13 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     const updateStyle = () => {
         if (checkbox.checked) {
             // 选中状态：蓝色填充，显示对勾
-            indicator.style.backgroundColor = '#44b7fe';
-            indicator.style.borderColor = '#44b7fe';
+            indicator.style.backgroundColor = 'var(--neko-popup-active)';
+            indicator.style.borderColor = 'var(--neko-popup-active)';
             checkmark.style.opacity = '1';
         } else {
             // 未选中状态：灰色边框，透明填充，隐藏对勾
             indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = '#ccc';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border)';
             checkmark.style.opacity = '0';
         }
     };
@@ -392,7 +392,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
             const statusEl = document.getElementById('live2d-agent-status');
             if (statusEl) statusEl.textContent = checkbox.title;
         } else if (!checkbox.disabled) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
+            toggleItem.style.background = 'var(--neko-popup-hover)';
         }
     });
     toggleItem.addEventListener('mouseleave', () => {
@@ -509,7 +509,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         width: '20px',  // 稍微增大，与下方图标更协调
         height: '20px',
         borderRadius: '50%',
-        border: '2px solid #ccc',
+        border: '2px solid var(--neko-popup-indicator-border)',
         backgroundColor: 'transparent',
         cursor: 'pointer',
         flexShrink: '0',
@@ -545,7 +545,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     label.style.cursor = 'pointer';
     label.style.userSelect = 'none';
     label.style.fontSize = '13px';
-    label.style.color = '#333';  // 文本始终为深灰色，不随选中状态改变
+    label.style.color = 'var(--neko-popup-text)';  // 文本颜色跟随主题变化
     label.style.display = 'flex';
     label.style.alignItems = 'center';
     label.style.lineHeight = '1';
@@ -555,14 +555,14 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const updateStyle = () => {
         if (checkbox.checked) {
             // 选中状态：蓝色填充，显示对勾，背景颜色突出
-            indicator.style.backgroundColor = '#44b7fe';
-            indicator.style.borderColor = '#44b7fe';
+            indicator.style.backgroundColor = 'var(--neko-popup-active)';
+            indicator.style.borderColor = 'var(--neko-popup-active)';
             checkmark.style.opacity = '1';
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';  // 浅蓝色背景
+            toggleItem.style.background = 'var(--neko-popup-selected-bg)';
         } else {
             // 未选中状态：灰色边框，透明填充，隐藏对勾，无背景
             indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = '#ccc';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border)';
             checkmark.style.opacity = '0';
             toggleItem.style.background = 'transparent';
         }
@@ -578,9 +578,9 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     toggleItem.addEventListener('mouseenter', () => {
         // 悬停效果
         if (checkbox.checked) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.15)';
+            toggleItem.style.background = 'var(--neko-popup-selected-hover)';
         } else {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.08)';
+            toggleItem.style.background = 'var(--neko-popup-hover-subtle)';
         }
     });
     toggleItem.addEventListener('mouseleave', () => {
@@ -761,7 +761,7 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
         transition: 'background 0.2s ease',
         fontSize: isSubmenuItem ? '12px' : '13px',
         whiteSpace: 'nowrap',
-        color: '#333'
+        color: 'var(--neko-popup-text)'
     });
 
     // 添加图标
@@ -805,7 +805,7 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
     }
 
     menuItem.addEventListener('mouseenter', () => {
-        menuItem.style.background = 'rgba(68, 183, 254, 0.1)';
+        menuItem.style.background = 'var(--neko-popup-hover)';
     });
     menuItem.addEventListener('mouseleave', () => {
         menuItem.style.background = 'transparent';

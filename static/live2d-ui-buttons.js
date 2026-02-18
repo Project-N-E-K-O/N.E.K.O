@@ -383,16 +383,16 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             width: '48px',
             height: '48px',
             borderRadius: '50%',
-            background: 'rgba(255, 255, 255, 0.65)',  // Fluent Design Acrylic
+            background: 'var(--neko-btn-bg)',  // Fluent Design Acrylic
             backdropFilter: 'saturate(180%) blur(20px)',  // Fluent 标准模糊
-            border: '1px solid rgba(255, 255, 255, 0.18)',  // 微妙高光边框
+            border: 'var(--neko-btn-border)',  // 微妙高光边框
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
             cursor: 'pointer',
             userSelect: 'none',
-            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',  // Fluent 多层阴影
+            boxShadow: 'var(--neko-btn-shadow)',  // Fluent 多层阴影
             transition: 'all 0.1s ease',  // Fluent 快速响应
             pointerEvents: 'auto'
         });
@@ -415,8 +415,8 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         // 鼠标悬停效果 - Fluent Design
         btn.addEventListener('mouseenter', () => {
             btn.style.transform = 'scale(1.05)';  // 更微妙的缩放
-            btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
-            btn.style.background = 'rgba(255, 255, 255, 0.8)';  // 悬停时更亮
+            btn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
+            btn.style.background = 'var(--neko-btn-bg-hover)';  // 悬停时更亮
             
             // 检查是否有单独的弹窗触发器且弹窗已打开（此时不应该切换图标）
             if (config.separatePopupTrigger) {
@@ -436,7 +436,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         });
         btn.addEventListener('mouseleave', () => {
             btn.style.transform = 'scale(1)';
-            btn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
+            btn.style.boxShadow = 'var(--neko-btn-shadow)';
             // 恢复原始背景色（根据按钮状态）
             const isActive = btn.dataset.active === 'true';
             const popup = document.getElementById(`live2d-popup-${config.id}`);
@@ -450,9 +450,9 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
             if (shouldShowOnIcon) {
                 // 激活状态：稍亮的背景
-                btn.style.background = 'rgba(255, 255, 255, 0.75)';
+                btn.style.background = 'var(--neko-btn-bg-active)';
             } else {
-                btn.style.background = 'rgba(255, 255, 255, 0.65)';  // Fluent Acrylic
+                btn.style.background = 'var(--neko-btn-bg)';  // Fluent Acrylic
             }
 
             // 根据按钮激活状态决定显示哪个图标
@@ -616,15 +616,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     width: '24px',
                     height: '24px',
                     borderRadius: '50%',
-                    background: 'rgba(255, 255, 255, 0.65)',  // Fluent Acrylic
+                    background: 'var(--neko-btn-bg)',  // Fluent Acrylic
                     backdropFilter: 'saturate(180%) blur(20px)',
-                    border: '1px solid rgba(255, 255, 255, 0.18)',
+                    border: 'var(--neko-btn-border)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
                     userSelect: 'none',
-                    boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
+                    boxShadow: 'var(--neko-btn-shadow)',
                     transition: 'all 0.1s ease',
                     pointerEvents: 'auto',
                     marginLeft: '-10px'
@@ -646,13 +646,13 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 triggerBtn.addEventListener('mouseenter', () => {
                     triggerBtn.style.transform = 'scale(1.05)';
-                    triggerBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
-                    triggerBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
+                    triggerBtn.style.background = 'var(--neko-btn-bg-hover)';
                 });
                 triggerBtn.addEventListener('mouseleave', () => {
                     triggerBtn.style.transform = 'scale(1)';
-                    triggerBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
-                    triggerBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow)';
+                    triggerBtn.style.background = 'var(--neko-btn-bg)';
                 });
 
                 triggerBtn.addEventListener('click', async (e) => {
@@ -771,15 +771,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         width: '64px',
         height: '64px',
         borderRadius: '50%',
-        background: 'rgba(255, 255, 255, 0.65)',  // Fluent Acrylic
+        background: 'var(--neko-btn-bg)',  // Fluent Acrylic
         backdropFilter: 'saturate(180%) blur(20px)',
-        border: '1px solid rgba(255, 255, 255, 0.18)',
+        border: 'var(--neko-btn-border)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         cursor: 'pointer',
         userSelect: 'none',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',
+        boxShadow: 'var(--neko-popup-shadow)',
         transition: 'all 0.1s ease',
         pointerEvents: 'auto',
         position: 'relative'
@@ -788,16 +788,16 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     // 悬停效果 - Fluent Design
     returnBtn.addEventListener('mouseenter', () => {
         returnBtn.style.transform = 'scale(1.05)';
-        returnBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.08)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+        returnBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
+        returnBtn.style.background = 'var(--neko-btn-bg-hover)';
         imgOff.style.opacity = '0';
         imgOn.style.opacity = '1';
     });
 
     returnBtn.addEventListener('mouseleave', () => {
         returnBtn.style.transform = 'scale(1)';
-        returnBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        returnBtn.style.boxShadow = 'var(--neko-popup-shadow)';
+        returnBtn.style.background = 'var(--neko-btn-bg)';
         imgOff.style.opacity = '1';
         imgOn.style.opacity = '0';
     });

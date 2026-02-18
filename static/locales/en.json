@@ -2019,5 +2019,12 @@
       "angry": "Angry",
       "surprised": "Surprised"
     }
+  },
+  "theme": {
+    "darkMode": "Dark Mode",
+    "lightMode": "Light Mode",
+    "switchToDark": "Switch to Dark Mode",
+    "switchToLight": "Switch to Light Mode",
+    "themeChanged": "Theme changed"
   }
 }

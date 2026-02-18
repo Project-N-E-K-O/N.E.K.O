@@ -2019,5 +2019,12 @@
       "angry": "화남 (Angry)",
       "surprised": "놀람 (Surprised)"
     }
+  },
+  "theme": {
+    "darkMode": "다크 모드",
+    "lightMode": "라이트 모드",
+    "switchToDark": "다크 모드로 전환",
+    "switchToLight": "라이트 모드로 전환",
+    "themeChanged": "테마가 변경되었습니다"
   }
 }

@@ -2019,5 +2019,12 @@
       "angry": "生气 (Angry)",
       "surprised": "惊讶 (Surprised)"
     }
+  },
+  "theme": {
+    "darkMode": "暗色模式",
+    "lightMode": "亮色模式",
+    "switchToDark": "切换到暗色模式",
+    "switchToLight": "切换到亮色模式",
+    "themeChanged": "主题已切换"
   }
 }
