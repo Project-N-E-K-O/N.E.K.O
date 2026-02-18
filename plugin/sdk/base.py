@@ -113,7 +113,7 @@ class NekoPluginBase(HookExecutorMixin):
             logger=getattr(ctx, "logger", None),
             backend=state_backend,
         )
-        # 向后兼容别名
+        # 向后兼容别名（已弃用，将在 v2.0 移除，请使用 _state_persistence）
         self._freeze_checkpoint = self._state_persistence
         
         # 读取 store 配置（默认禁用，需要在 plugin.toml 中显式启用）
@@ -448,7 +448,7 @@ class NekoPluginBase(HookExecutorMixin):
             auto_start=auto_start,
             enabled=True,
             dynamic=True,
-            extra={"_dynamic": True, "_registered_at": __import__("time").time()},
+            metadata={"_dynamic": True, "_registered_at": __import__("time").time()},
         )
         
         # 给 handler 添加元数据属性

@@ -22,8 +22,20 @@ class WorkerConfig:
 
 # 状态持久化配置的属性名
 PERSIST_ATTR = "_neko_persist"
-# 向后兼容别名
-CHECKPOINT_ATTR = PERSIST_ATTR
+
+# 向后兼容别名（已弃用，将在 v2.0 移除）
+def _get_checkpoint_attr():
+    import warnings
+    warnings.warn(
+        "CHECKPOINT_ATTR is deprecated, use PERSIST_ATTR instead. "
+        "Will be removed in v2.0.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    return PERSIST_ATTR
+
+# 保持向后兼容，但访问时会触发警告
+CHECKPOINT_ATTR = PERSIST_ATTR  # 直接赋值，避免每次访问都警告
 
 
 def neko_plugin(cls):
