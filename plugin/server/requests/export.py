@@ -6,7 +6,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from plugin.server.requests.typing import SendResponse
-from plugin.server.runs.manager import ExportItem, append_export_item
+from plugin.server.runs.manager import ExportItem, append_export_item, get_run
 from plugin.settings import EXPORT_INLINE_BINARY_MAX_BYTES
 
 
@@ -30,44 +30,85 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     mime = request.get("mime", None)
     metadata = request.get("metadata", None)
 
+    def _error_payload(*, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "code": str(code),
+            "message": str(message),
+        }
+        if isinstance(details, dict) and details:
+            payload["details"] = details
+        return payload
+
+    def _send_error(*, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+        send_response(
+            from_plugin,
+            request_id,
+            None,
+            _error_payload(code=code, message=message, details=details),
+            timeout=float(timeout),
+        )
+
     if not isinstance(run_id, str) or not run_id.strip():
-        send_response(from_plugin, request_id, None, "run_id is required", timeout=float(timeout))
+        _send_error(code="INVALID_ARGUMENT", message="run_id is required")
         return
+    rid = str(run_id).strip()
+
+    rec = get_run(rid)
+    if rec is None:
+        _send_error(code="RUN_NOT_FOUND", message="run not found", details={"run_id": rid})
+        return
+
+    if rec.plugin_id != from_plugin:
+        _send_error(
+            code="FORBIDDEN",
+            message="forbidden",
+            details={"run_id": rid, "owner_plugin_id": rec.plugin_id},
+        )
+        return
+
     if not isinstance(export_type, str) or not export_type.strip():
-        send_response(from_plugin, request_id, None, "export_type is required", timeout=float(timeout))
+        _send_error(code="INVALID_ARGUMENT", message="export_type is required")
         return
-    
+
     et = export_type.strip()
     if et not in ("text", "url", "binary", "binary_url"):
-        send_response(from_plugin, request_id, None, "unsupported export_type", timeout=float(timeout))
+        _send_error(
+            code="INVALID_ARGUMENT",
+            message="unsupported export_type",
+            details={"export_type": et, "allowed": ["text", "url", "binary", "binary_url"]},
+        )
         return
 
     decoded_bytes: Optional[bytes] = None
     if et == "text":
         if not isinstance(text, str):
-            send_response(from_plugin, request_id, None, "text is required", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="text is required")
             return
     elif et == "url":
         if not isinstance(url, str) or not url.strip():
-            send_response(from_plugin, request_id, None, "url is required", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="url is required")
             return
     elif et == "binary_url":
         if not isinstance(binary_url, str) or not binary_url.strip():
-            send_response(from_plugin, request_id, None, "binary_url is required", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="binary_url is required")
             return
     elif et == "binary":
         if not isinstance(binary_base64, str) or not binary_base64:
-            send_response(from_plugin, request_id, None, "binary_base64 is required", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="binary_base64 is required")
             return
         try:
             decoded_bytes = base64.b64decode(binary_base64, validate=True)
         except Exception:
-            send_response(from_plugin, request_id, None, "invalid binary_base64", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="invalid binary_base64")
             return
         try:
             if EXPORT_INLINE_BINARY_MAX_BYTES is not None and int(EXPORT_INLINE_BINARY_MAX_BYTES) > 0:
                 if len(decoded_bytes) > int(EXPORT_INLINE_BINARY_MAX_BYTES):
-                    send_response(from_plugin, request_id, None, "binary too large", timeout=float(timeout))
+                    _send_error(
+                        code="PAYLOAD_TOO_LARGE",
+                        message="binary too large",
+                        details={"max_bytes": int(EXPORT_INLINE_BINARY_MAX_BYTES)},
+                    )
                     return
         except Exception:
             pass
@@ -86,7 +127,7 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
 
     item_kwargs: Dict[str, Any] = {
         "export_item_id": export_item_id,
-        "run_id": str(run_id).strip(),
+        "run_id": rid,
         "type": et,
         "created_at": created_at,
         "description": str(description) if isinstance(description, str) else None,
@@ -108,4 +149,4 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
         append_export_item(item)
         send_response(from_plugin, request_id, {"export_item_id": export_item_id}, None, timeout=float(timeout))
     except Exception as e:
-        send_response(from_plugin, request_id, None, str(e), timeout=float(timeout))
+        _send_error(code="INTERNAL_ERROR", message=str(e))

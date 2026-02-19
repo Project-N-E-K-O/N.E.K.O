@@ -1112,6 +1112,25 @@ class PluginContext:
         orphan_warning_template: Optional[str] = None,
     ) -> Any:
         _ = method_name
+
+        def _error_to_message(error: Any) -> str:
+            if isinstance(error, str):
+                return error
+            if isinstance(error, dict):
+                code = error.get("code")
+                message = error.get("message")
+                details = error.get("details")
+                parts = []
+                if isinstance(code, str) and code:
+                    parts.append(f"[{code}]")
+                if isinstance(message, str) and message:
+                    parts.append(message)
+                if details is not None:
+                    parts.append(f"details={details}")
+                if parts:
+                    return " ".join(parts)
+            return str(error)
+
         plugin_comm_queue = self._plugin_comm_queue
         if plugin_comm_queue is None:
             raise RuntimeError(
@@ -1169,7 +1188,7 @@ class PluginContext:
         if isinstance(pending, dict) and request_id in pending:
             response = pending.pop(request_id)
             if isinstance(response, dict) and response.get("error"):
-                raise RuntimeError(str(response.get("error")))
+                raise RuntimeError(_error_to_message(response.get("error")))
             result = response.get("result") if isinstance(response, dict) else None
             if wrap_result:
                 return result if isinstance(result, dict) else {"result": result}
@@ -1195,7 +1214,7 @@ class PluginContext:
                 rid = msg.get("request_id")
                 if rid == request_id:
                     if msg.get("error"):
-                        raise RuntimeError(str(msg.get("error")))
+                        raise RuntimeError(_error_to_message(msg.get("error")))
                     result = msg.get("result")
                     if wrap_result:
                         return result if isinstance(result, dict) else {"result": result}
@@ -1218,7 +1237,7 @@ class PluginContext:
                 continue
 
             if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
+                raise RuntimeError(_error_to_message(response.get("error")))
 
             result = response.get("result")
             if wrap_result:

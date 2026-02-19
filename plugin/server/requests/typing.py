@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, Union
+
+
+ErrorPayload = Union[str, Dict[str, Any]]
 
 
 class SendResponse(Protocol):
@@ -9,7 +12,7 @@ class SendResponse(Protocol):
         to_plugin: str,
         request_id: str,
         result: Any,
-        error: Optional[str],
+        error: Optional[ErrorPayload],
         timeout: float = 10.0,
     ) -> None: ...
 

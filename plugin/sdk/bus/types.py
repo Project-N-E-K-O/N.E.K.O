@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from collections import deque
-import inspect
 import re
 import time
+import typing
 from typing import (
     Any,
     Callable,
@@ -13,7 +13,6 @@ from typing import (
     Generic,
     Final,
     Literal,
-    Iterable,
     Iterator,
     List,
     Optional,
@@ -27,7 +26,23 @@ from typing import (
     cast,
 )
 
-import uuid
+from plugin.sdk.bus.bus_list import (
+    BusListCore,
+    _freeze_plan_value,
+    _message_plane_replay_rpc,
+    _merge_unique_items,
+    _rebuild_records_from_plane_items,
+    _apply_reload_inplace_basic,
+    _intersection_unique_items,
+    _difference_unique_items,
+    _filter_items_by_compare,
+    _filter_items_by_contains,
+    _filter_items_by_regex,
+    _replay_cache_key_binary,
+    _replay_cache_key_get,
+    _replay_cache_key_unary,
+    _seed_key_from_params,
+)
 
 if TYPE_CHECKING:
     from plugin.sdk.bus.events import EventList
@@ -36,227 +51,14 @@ if TYPE_CHECKING:
     from plugin.sdk.bus.messages import MessageList
     from plugin.sdk.bus.conversations import ConversationList
 
-_WATCHER_REGISTRY: Dict[str, "BusListWatcher[Any]"] = {}
-_WATCHER_REGISTRY_LOCK = None
-try:
-    import threading
-
-    _WATCHER_REGISTRY_LOCK = threading.Lock()
-except Exception:
-    _WATCHER_REGISTRY_LOCK = None
-
-_BUS_LATEST_REV: Dict[str, int] = {
-    "messages": 0,
-    "events": 0,
-    "lifecycle": 0,
-    "conversations": 0,
-}
-_BUS_LATEST_REV_LOCK = _WATCHER_REGISTRY_LOCK
-
-_BUS_RECENT_DELTAS: Dict[str, "deque[tuple[int, str, Dict[str, Any]]]" ] = {}
-
-_BUS_CHANGE_LISTENERS: Dict[str, "list[Callable[[str, str, Dict[str, Any]], None]]"] = {
-    "messages": [],
-    "events": [],
-    "lifecycle": [],
-    "conversations": [],
-}
-
-
-# ========== 全局状态辅助函数（消除重复的 if lock: with lock: else: 模式） ==========
-
-def _locked(fn: Callable[..., Any]) -> Any:
-    """在持锁状态下执行 fn()，锁不可用时直接执行"""
-    if _BUS_LATEST_REV_LOCK is not None:
-        with _BUS_LATEST_REV_LOCK:
-            return fn()
-    return fn()
-
-
-def _get_bus_rev(bus: str) -> int:
-    return _locked(lambda: int(_BUS_LATEST_REV.get(bus, 0)))
-
-
-def _update_bus_rev(bus: str, rev: int) -> None:
-    def _do() -> None:
-        prev = int(_BUS_LATEST_REV.get(bus, 0))
-        if rev > prev:
-            _BUS_LATEST_REV[bus] = rev
-    _locked(_do)
-
-
-def _get_bus_listeners(bus: str) -> "list[Callable[[str, str, Dict[str, Any]], None]]":
-    return _locked(lambda: list(_BUS_CHANGE_LISTENERS.get(bus, [])))
-
-
-def _get_recent_deltas(bus: str) -> "list[tuple[int, str, Dict[str, Any]]]":
-    return _locked(lambda: list(_BUS_RECENT_DELTAS.get(bus, [])))
-
-
-def _append_recent_delta(bus: str, rev: int, op: str, delta: Dict[str, Any]) -> None:
-    def _do() -> None:
-        from collections import deque
-        q = _BUS_RECENT_DELTAS.get(bus)
-        if q is None:
-            q = deque(maxlen=512)
-            _BUS_RECENT_DELTAS[bus] = q
-        q.append((rev, str(op), dict(delta)))
-    _locked(_do)
-
-
-def _watcher_get(sub_id: str) -> "Optional[BusListWatcher[Any]]":
-    return _locked(lambda: _WATCHER_REGISTRY.get(sub_id))
-
-
-def _watcher_set(sub_id: str, watcher: "BusListWatcher[Any]") -> None:
-    _locked(lambda: _WATCHER_REGISTRY.__setitem__(sub_id, watcher))
-
-
-def _watcher_pop(sub_id: str) -> None:
-    _locked(lambda: _WATCHER_REGISTRY.pop(sub_id, None))
-
-
-def register_bus_change_listener(bus: str, fn: "Callable[[str, str, Dict[str, Any]], None]") -> Callable[[], None]:
-    b = str(bus).strip()
-    if b not in _BUS_CHANGE_LISTENERS:
-        raise ValueError(f"invalid bus: {bus!r}")
-    if not callable(fn):
-        raise ValueError("listener must be callable")
-    _locked(lambda: _BUS_CHANGE_LISTENERS[b].append(fn))
-
-    def _unsub() -> None:
-        try:
-            def _do() -> None:
-                lst = _BUS_CHANGE_LISTENERS.get(b)
-                if lst is not None:
-                    try:
-                        lst.remove(fn)
-                    except ValueError:
-                        pass
-            _locked(_do)
-        except Exception:
-            return
-
-    return _unsub
-
-_BUS_REV_SUB_ID: Dict[str, str] = {}
-
-
-class _BusRevSink:
-    def _on_remote_change(self, *, bus: str, op: str, delta: Dict[str, Any]) -> None:
-        _ = (bus, op, delta)
-        return
-
-
-def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
-    """确保总线订阅(内部函数,ctx可以是PluginContext或PluginContextProtocol)"""
-    b = str(bus).strip()
-    if b not in ("messages", "events", "lifecycle"):
-        return
-    if getattr(ctx, "_plugin_comm_queue", None) is None or not hasattr(ctx, "_send_request_and_wait"):
-        return
-
-    try:
-        sid0 = _locked(lambda: _BUS_REV_SUB_ID.get(b))
-        if isinstance(sid0, str) and sid0:
-            return
-    except Exception:
-        pass
-
-    try:
-        res = ctx._send_request_and_wait(
-            method_name="bus_subscribe",
-            request_type="BUS_SUBSCRIBE",
-            request_data={
-                "bus": b,
-                "rules": ["add", "del", "change"],
-                "deliver": "delta",
-                "plan": None,
-            },
-            timeout=5.0,
-            wrap_result=True,
-        )
-    except Exception:
-        return
-
-    sub_id = None
-    cur_rev = None
-    try:
-        if isinstance(res, dict):
-            sub_id = res.get("sub_id")
-            cur_rev = res.get("rev")
-    except Exception:
-        sub_id = None
-
-    if not isinstance(sub_id, str) or not sub_id:
-        return
-
-    sink = _BusRevSink()
-    def _register() -> None:
-        _WATCHER_REGISTRY[sub_id] = sink  # type: ignore[assignment]
-        _BUS_REV_SUB_ID[b] = sub_id
-    _locked(_register)
-
-    if cur_rev is not None:
-        try:
-            r = int(cur_rev)
-        except Exception:
-            r = None
-        if r is not None:
-            _update_bus_rev(b, r)
-
-
-def _notify_bus_listeners(bus: str, op: str, delta: Dict[str, Any]) -> None:
-    """通知所有 bus change listeners（提取的公共逻辑）"""
-    b = str(bus).strip()
-    if b not in _BUS_CHANGE_LISTENERS:
-        return
-    listeners = _get_bus_listeners(b)
-    d = dict(delta or {})
-    for fn in listeners:
-        try:
-            fn(b, str(op), d)
-        except Exception:
-            continue
-
-
-def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[str, Any]] = None) -> None:
-    sid = str(sub_id).strip()
-    if not sid:
-        return
-    try:
-        b = str(bus).strip()
-        d = dict(delta or {})
-        rev = d.get("rev")
-        if b in _BUS_LATEST_REV and rev is not None:
-            try:
-                r = int(rev)
-            except Exception:
-                r = None
-            if r is not None:
-                try:
-                    _append_recent_delta(b, r, op, d)
-                except Exception:
-                    pass
-                _update_bus_rev(b, r)
-    except Exception:
-        pass
-    w = _watcher_get(sid)
-    if w is None:
-        try:
-            _notify_bus_listeners(bus, op, dict(delta or {}))
-        except Exception:
-            pass
-        return
-    try:
-        w._on_remote_change(bus=str(bus), op=str(op), delta=dict(delta or {}))
-    except Exception:
-        return
-
-    try:
-        _notify_bus_listeners(bus, op, dict(delta or {}))
-    except Exception:
-        return
+from plugin.sdk.bus.rev import (
+    _BUS_LATEST_REV,
+    _ensure_bus_rev_subscription,
+    _get_bus_rev,
+    _get_recent_deltas,
+    dispatch_bus_change,
+    register_bus_change_listener,
+)
 
 
 TRecord = TypeVar("TRecord", bound="BusRecord")
@@ -546,7 +348,7 @@ def _serialize_plan_fast(node: "TraceNode") -> Optional[Dict[str, Any]]:
     return None
 
 
-class BusList(Generic[TRecord]):
+class BusList(BusListCore, Generic[TRecord]):
     def __init__(
         self,
         items: Sequence[TRecord],
@@ -589,10 +391,8 @@ class BusList(Generic[TRecord]):
         refreshed = self._replay_plan(ctx, plan)
         self._items = list(refreshed.dump_records())
         if hasattr(self, "plugin_id") and hasattr(refreshed, "plugin_id"):
-            try:
+            with suppress(Exception):
                 setattr(self, "plugin_id", getattr(refreshed, "plugin_id"))
-            except Exception:
-                pass
         self._cache_valid = True
 
     def __iter__(self) -> Iterator[TRecord]:
@@ -730,125 +530,22 @@ class BusList(Generic[TRecord]):
         }
         if hasattr(self, "plugin_id"):
             kwargs["plugin_id"] = getattr(self, "plugin_id")
+        ctor = cast(Callable[..., "BusList[TRecord]"], self.__class__)
         try:
-            out = self.__class__(items, **kwargs)  # type: ignore[call-arg]
+            out = ctor(items, **kwargs)
         except TypeError:
             kwargs.pop("plugin_id", None)
-            out = self.__class__(items, **kwargs)  # type: ignore[call-arg]
-        try:
+            out = ctor(items, **kwargs)
+        with suppress(Exception):
             if getattr(self, "_ctx", None) is not None and plan is not None and not getattr(self, "_fast_mode", False):
-                out._cache_valid = False  # type: ignore[attr-defined]
-        except Exception:
-            pass
+                out._cache_valid = False
         return out
-
-    def _dedupe_key(self, item: TRecord) -> Tuple[str, Any]:
-        for attr in ("message_id", "event_id", "lifecycle_id", "trace_id"):
-            try:
-                v = getattr(item, attr, None)
-            except Exception:
-                v = None
-            if isinstance(v, str) and v:
-                return (attr, v)
-
-        raw = None
-        try:
-            raw = getattr(item, "raw", None)
-        except Exception:
-            raw = None
-        if isinstance(raw, dict):
-            for k in ("message_id", "event_id", "lifecycle_id", "trace_id"):
-                v = raw.get(k)
-                if isinstance(v, str) and v:
-                    return (k, v)
-
-        try:
-            dumped = item.dump()
-            fp = tuple(sorted((str(k), repr(v)) for k, v in dumped.items()))
-            return ("dump", fp)
-        except Exception:
-            return ("object", id(item))
-
-    def _sort_value(self, v: Any) -> Tuple[int, Any]:
-        if v is None:
-            return (2, "")
-        if isinstance(v, (int, float)):
-            return (0, v)
-        return (1, str(v))
-
-    def _get_sort_field(self, item: TRecord, field: str) -> Any:
-        try:
-            return getattr(item, field)
-        except Exception:
-            pass
-
-        raw = None
-        try:
-            raw = getattr(item, "raw", None)
-        except Exception:
-            raw = None
-        if isinstance(raw, dict) and field in raw:
-            return raw.get(field)
-
-        try:
-            dumped = item.dump()
-            return dumped.get(field)
-        except Exception:
-            return None
-
-    def _get_field(self, item: Any, field: str) -> Any:
-        try:
-            return getattr(item, field)
-        except Exception:
-            pass
-        raw = None
-        try:
-            raw = getattr(item, "raw", None)
-        except Exception:
-            raw = None
-        if isinstance(raw, dict):
-            return raw.get(field)
-        try:
-            dumped = item.dump()
-            if isinstance(dumped, dict):
-                return dumped.get(field)
-        except Exception:
-            pass
-        return None
-
-    def _cast_value(self, v: Any, cast: Optional[str]) -> Any:
-        if cast is None:
-            return v
-        c = str(cast).strip().lower()
-        if c in ("int", "i"):
-            try:
-                return int(str(v).strip())
-            except Exception:
-                return 0
-        if c in ("float", "f"):
-            try:
-                return float(str(v).strip())
-            except Exception:
-                return 0.0
-        if c in ("str", "s"):
-            try:
-                return "" if v is None else str(v)
-            except Exception:
-                return ""
-        return v
 
     def merge(self, other: "BusList[TRecord]") -> "BusList[TRecord]":
         if type(self) is not type(other):
             raise TypeError(f"Cannot merge different bus list types: {type(self).__name__} + {type(other).__name__}")
 
-        merged: List[TRecord] = []
-        seen: set[Tuple[str, Any]] = set()
-        for item in list(self._items) + list(other._items):
-            key = self._dedupe_key(item)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
+        merged = cast(List[TRecord], _merge_unique_items(self._items, other._items, self._dedupe_key))
 
         if self._is_lazy_mode() or other._is_lazy_mode():
             left_len = len(self._items)
@@ -965,17 +662,7 @@ class BusList(Generic[TRecord]):
                 f"Cannot intersect different bus list types: {type(self).__name__} & {type(other).__name__}"
             )
 
-        other_keys = {other._dedupe_key(x) for x in other._items}
-        kept: List[TRecord] = []
-        seen: set[Tuple[str, Any]] = set()
-        for item in self._items:
-            key = self._dedupe_key(item)
-            if key not in other_keys:
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            kept.append(item)
+        kept = cast(List[TRecord], _intersection_unique_items(self._items, other._items, self._dedupe_key))
 
         if self._is_lazy_mode() or other._is_lazy_mode():
             left_len = len(self._items)
@@ -1001,17 +688,7 @@ class BusList(Generic[TRecord]):
                 f"Cannot diff different bus list types: {type(self).__name__} - {type(other).__name__}"
             )
 
-        other_keys = {other._dedupe_key(x) for x in other._items}
-        kept: List[TRecord] = []
-        seen: set[Tuple[str, Any]] = set()
-        for item in self._items:
-            key = self._dedupe_key(item)
-            if key in other_keys:
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            kept.append(item)
+        kept = cast(List[TRecord], _difference_unique_items(self._items, other._items, self._dedupe_key))
 
         if self._is_lazy_mode() or other._is_lazy_mode():
             left_len = len(self._items)
@@ -1209,16 +886,15 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._get_field(item, field)
-                if v is None:
-                    continue
-                try:
-                    if needle in str(v):
-                        items.append(item)
-                except Exception:
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_contains(
+                    items=self._items,
+                    field=field,
+                    needle=needle,
+                    get_field=self._get_field,
+                ),
+            )
         trace = self._add_trace("where_contains", {"field": field, "value": needle})
         plan = self._add_plan_unary("where_contains", {"field": field, "value": needle})
         out = self._construct(items, trace, plan)
@@ -1237,19 +913,17 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._get_field(item, field)
-                if v is None:
-                    continue
-                s = str(v)
-                try:
-                    if compiled is not None and compiled.search(s) is not None:
-                        items.append(item)
-                except Exception as e:
-                    if strict:
-                        raise BusFilterError(f"Regex match failed for where_regex({field})") from e
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_regex(
+                    items=self._items,
+                    field=field,
+                    compiled=compiled,
+                    get_field=self._get_field,
+                    strict=bool(strict),
+                    error_factory=lambda exc: BusFilterError(f"Regex match failed for where_regex({field})"),
+                ),
+            )
 
         trace = self._add_trace("where_regex", {"field": field, "pattern": pat, "strict": strict})
         plan = self._add_plan_unary("where_regex", {"field": field, "pattern": pat, "strict": strict})
@@ -1262,14 +936,17 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._cast_value(self._get_field(item, field), cast)
-                try:
-                    if v > target:
-                        items.append(item)
-                except Exception:
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_compare(
+                    items=self._items,
+                    field=field,
+                    target=target,
+                    cast_value=lambda v: self._cast_value(v, cast),
+                    get_field=self._get_field,
+                    mode="gt",
+                ),
+            )
         trace = self._add_trace("where_gt", {"field": field, "value": value, "cast": cast})
         plan = self._add_plan_unary("where_gt", {"field": field, "value": value, "cast": cast})
         out = self._construct(items, trace, plan)
@@ -1281,14 +958,17 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._cast_value(self._get_field(item, field), cast)
-                try:
-                    if v >= target:
-                        items.append(item)
-                except Exception:
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_compare(
+                    items=self._items,
+                    field=field,
+                    target=target,
+                    cast_value=lambda v: self._cast_value(v, cast),
+                    get_field=self._get_field,
+                    mode="ge",
+                ),
+            )
         trace = self._add_trace("where_ge", {"field": field, "value": value, "cast": cast})
         plan = self._add_plan_unary("where_ge", {"field": field, "value": value, "cast": cast})
         out = self._construct(items, trace, plan)
@@ -1300,14 +980,17 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._cast_value(self._get_field(item, field), cast)
-                try:
-                    if v < target:
-                        items.append(item)
-                except Exception:
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_compare(
+                    items=self._items,
+                    field=field,
+                    target=target,
+                    cast_value=lambda v: self._cast_value(v, cast),
+                    get_field=self._get_field,
+                    mode="lt",
+                ),
+            )
         trace = self._add_trace("where_lt", {"field": field, "value": value, "cast": cast})
         plan = self._add_plan_unary("where_lt", {"field": field, "value": value, "cast": cast})
         out = self._construct(items, trace, plan)
@@ -1319,14 +1002,17 @@ class BusList(Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
-            items = []
-            for item in self._items:
-                v = self._cast_value(self._get_field(item, field), cast)
-                try:
-                    if v <= target:
-                        items.append(item)
-                except Exception:
-                    continue
+            items = typing.cast(
+                List[TRecord],
+                _filter_items_by_compare(
+                    items=self._items,
+                    field=field,
+                    target=target,
+                    cast_value=lambda v: self._cast_value(v, cast),
+                    get_field=self._get_field,
+                    mode="le",
+                ),
+            )
         trace = self._add_trace("where_le", {"field": field, "value": value, "cast": cast})
         plan = self._add_plan_unary("where_le", {"field": field, "value": value, "cast": cast})
         out = self._construct(items, trace, plan)
@@ -1392,40 +1078,26 @@ class BusList(Generic[TRecord]):
         cache: Dict[Any, Any] = {}
 
         def _as_eager(lst: Any) -> Any:
-            try:
-                lst._ctx = None  # type: ignore[assignment]
-                lst._cache_valid = True  # type: ignore[assignment]
-            except Exception:
-                pass
+            with suppress(Exception):
+                lst._ctx = None
+                lst._cache_valid = True
             return lst
 
         def _freeze(x: Any) -> Any:
-            try:
-                if isinstance(x, dict):
-                    return tuple(sorted((str(k), _freeze(v)) for k, v in x.items()))
-                if isinstance(x, (list, tuple)):
-                    return tuple(_freeze(v) for v in x)
-                if isinstance(x, set):
-                    return tuple(sorted(_freeze(v) for v in x))
-                if isinstance(x, (str, int, float, bool, type(None))):
-                    return x
-                return repr(x)
-            except Exception:
-                return repr(x)
+            return _freeze_plan_value(x)
 
         def _cache_key(node: TraceNode) -> Any:
             try:
                 if isinstance(node, GetNode):
                     bus = str(node.params.get("bus") or "")
                     params = dict(node.params.get("params") or {})
-                    return ("get", bus, _freeze(params))
+                    return _replay_cache_key_get(bus, params)
                 if isinstance(node, UnaryNode):
-                    return ("unary", str(node.op), _freeze(dict(node.params or {})), _cache_key(node.child))
+                    return _replay_cache_key_unary(str(node.op), dict(node.params or {}), _cache_key(node.child))
                 if isinstance(node, BinaryNode):
-                    return (
-                        "binary",
+                    return _replay_cache_key_binary(
                         str(node.op),
-                        _freeze(dict(node.params or {})),
+                        dict(node.params or {}),
                         _cache_key(node.left),
                         _cache_key(node.right),
                     )
@@ -1607,7 +1279,7 @@ class BusList(Generic[TRecord]):
             ctx = getattr(self, "_ctx", None)
         if ctx is None:
             raise TypeError("reload() missing required argument: 'ctx' (BusList is not bound to a context)")
-        return self.reload_with(ctx, incremental=bool(incremental))
+        return cast("BusList[TRecord]", super().reload(ctx, incremental=bool(incremental)))
 
     @overload
     def reload_with(
@@ -1660,140 +1332,13 @@ class BusList(Generic[TRecord]):
 
 
         def _message_plane_replay(*, bus: str, plan: TraceNode, timeout: float = 1.0) -> Optional[List[Dict[str, Any]]]:
-            try:
-                import time as _time
-                import json as _json
-                import os as _os
-                import ormsgpack as _ormsgpack
-                try:
-                    import zmq as _zmq
-                except Exception:
-                    _zmq = None
-                if _zmq is None:
-                    return None
-                from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
-
-                plan_dict = _serialize_plan_fast(plan)
-                if plan_dict is None:
-                    return None
-                endpoint = str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)
-                if not endpoint:
-                    return None
-
-                # Use thread-local socket to avoid multi-threading issues
-                sock = None
-                try:
-                    import threading
-                    tls = getattr(ctx, "_mp_replay_tls", None)
-                    if tls is None:
-                        tls = threading.local()
-                        setattr(ctx, "_mp_replay_tls", tls)
-                    sock = getattr(tls, "sock", None)
-                except Exception:
-                    # No threading support, fall back to ctx-level socket
-                    try:
-                        sock = getattr(ctx, "_mp_replay_sock", None)
-                    except Exception:
-                        sock = None
-                
-                if sock is None:
-                    zctx = _zmq.Context.instance()
-                    sock = zctx.socket(_zmq.DEALER)
-                    try:
-                        ident = f"mp-replay:{getattr(ctx, 'plugin_id', '')}:{int(_time.time() * 1000)}".encode("utf-8")
-                        sock.setsockopt(_zmq.IDENTITY, ident)
-                    except Exception:
-                        pass
-                    try:
-                        sock.setsockopt(_zmq.LINGER, 0)
-                    except Exception:
-                        pass
-                    sock.connect(endpoint)
-                    
-                    # Store in thread-local storage if available
-                    try:
-                        import threading
-                        tls = getattr(ctx, "_mp_replay_tls", None)
-                        if tls is not None:
-                            tls.sock = sock
-                        else:
-                            setattr(ctx, "_mp_replay_sock", sock)
-                    except Exception:
-                        try:
-                            setattr(ctx, "_mp_replay_sock", sock)
-                        except Exception:
-                            pass
-
-                req_id = f"replay:{getattr(ctx, 'plugin_id', '')}:{uuid.uuid4()}"
-                # Performance knob: allow full reload to request light records from message_plane
-                # (omit payload) to reduce IPC and JSON processing cost.
-                # Env: NEKO_BUSLIST_RELOAD_FULL_LIGHT=1
-                try:
-                    light_mode = str(_os.getenv("NEKO_BUSLIST_RELOAD_FULL_LIGHT", "0")).strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    )
-                except Exception:
-                    light_mode = False
-                req = {
-                    "v": 1,
-                    "op": "bus.replay",
-                    "req_id": req_id,
-                    "from_plugin": getattr(ctx, "plugin_id", ""),
-                    "args": {"store": str(bus), "plan": plan_dict, "light": bool(light_mode)},
-                }
-                try:
-                    raw = _ormsgpack.packb(req)
-                except Exception:
-                    raw = _json.dumps(req, ensure_ascii=False).encode("utf-8")
-                try:
-                    sock.send(raw, flags=0)
-                except Exception:
-                    return None
-
-                deadline = _time.time() + max(0.0, float(timeout))
-                while True:
-                    remaining = deadline - _time.time()
-                    if remaining <= 0:
-                        return None
-                    try:
-                        if sock.poll(timeout=int(remaining * 1000), flags=_zmq.POLLIN) == 0:
-                            continue
-                    except Exception:
-                        return None
-                    try:
-                        resp_raw = sock.recv(flags=0)
-                    except Exception:
-                        return None
-                    resp = None
-                    try:
-                        resp = _ormsgpack.unpackb(resp_raw)
-                    except Exception:
-                        try:
-                            resp = _json.loads(resp_raw.decode("utf-8"))
-                        except Exception:
-                            resp = None
-                    if not isinstance(resp, dict):
-                        continue
-                    if resp.get("req_id") != req_id:
-                        continue
-                    if not resp.get("ok"):
-                        return None
-                    result = resp.get("result")
-                    if not isinstance(result, dict):
-                        return None
-                    items = result.get("items")
-                    if not isinstance(items, list):
-                        return None
-                    out: List[Dict[str, Any]] = []
-                    for ev in items:
-                        if isinstance(ev, dict):
-                            out.append(ev)
-                    return out
-            except Exception:
-                return None
+            return _message_plane_replay_rpc(
+                ctx=ctx,
+                bus=bus,
+                plan=plan,
+                timeout=timeout,
+                serialize_plan=_serialize_plan_fast,
+            )
 
         # Full reload: prefer server-side replay in message_plane to avoid expensive Python-side list ops.
         if not incremental:
@@ -1820,50 +1365,20 @@ class BusList(Generic[TRecord]):
 
                         items = _message_plane_replay(bus=seed_bus, plan=self._plan, timeout=timeout_s)
                         if items is not None:
-                            try:
-                                if seed_bus == "messages":
-                                    from plugin.sdk.bus.messages import MessageRecord
-
-                                    recs = []
-                                    for ev in items:
-                                        idx = ev.get("index")
-                                        payload = ev.get("payload")
-                                        if isinstance(idx, dict):
-                                            recs.append(MessageRecord.from_index(idx, payload if isinstance(payload, dict) else None))
-                                        elif isinstance(payload, dict):
-                                            recs.append(MessageRecord.from_raw(payload))
-                                elif seed_bus == "events":
-                                    from plugin.sdk.bus.events import EventRecord
-
-                                    recs = []
-                                    for ev in items:
-                                        idx = ev.get("index")
-                                        payload = ev.get("payload")
-                                        if isinstance(idx, dict):
-                                            recs.append(EventRecord.from_index(idx, payload if isinstance(payload, dict) else None))
-                                        elif isinstance(payload, dict):
-                                            recs.append(EventRecord.from_raw(payload))
-                                else:
-                                    from plugin.sdk.bus.lifecycle import LifecycleRecord
-
-                                    recs = []
-                                    for ev in items:
-                                        idx = ev.get("index")
-                                        payload = ev.get("payload")
-                                        if isinstance(idx, dict):
-                                            recs.append(LifecycleRecord.from_index(idx, payload if isinstance(payload, dict) else None))
-                                        elif isinstance(payload, dict):
-                                            recs.append(LifecycleRecord.from_raw(payload))
-                            except Exception:
-                                recs = []  # type: ignore[assignment]
+                            recs = _rebuild_records_from_plane_items(seed_bus, cast(List[Dict[str, Any]], items))
 
                             if inplace:
-                                self._items = list(recs)  # type: ignore[list-item]
-                                self._ctx = ctx
-                                self._cache_valid = True
+                                refreshed_tmp = self.__class__(
+                                    list(recs),
+                                    ctx=ctx,
+                                    trace=self._trace,
+                                    plan=self._plan,
+                                    fast_mode=self._fast_mode,
+                                )
+                                _apply_reload_inplace_basic(self, refreshed_tmp, ctx)
                                 return self
                             out = self.__class__(
-                                list(recs),  # type: ignore[arg-type]
+                                list(recs),
                                 ctx=ctx,
                                 trace=self._trace,
                                 plan=self._plan,
@@ -1879,10 +1394,7 @@ class BusList(Generic[TRecord]):
         # - Replay the full plan locally against the updated base snapshot.
         if incremental:
             def _seed_key(bus: str, params: Dict[str, Any]) -> Dict[str, Any]:
-                # since_ts is runtime cursor and should not be part of identity.
-                p = dict(params)
-                p.pop("since_ts", None)
-                return {"bus": bus, "params": p}
+                return _seed_key_from_params(bus, params)
 
             get_nodes = _collect_get_nodes_fast(self._plan)
             if not get_nodes:
@@ -1905,10 +1417,8 @@ class BusList(Generic[TRecord]):
                     # Fallback: full replay (may hit bus multiple times)
                     refreshed = self._replay_plan(ctx, self._plan)
                 else:
-                    try:
+                    with suppress(Exception):
                         _ensure_bus_rev_subscription(ctx, seed_bus)
-                    except Exception:
-                        pass
                     latest_rev: Optional[int] = None
                     try:
                         latest_rev = _get_bus_rev(seed_bus)
@@ -1982,24 +1492,25 @@ class BusList(Generic[TRecord]):
                             except Exception:
                                 self._incremental_fast_hits = 1
                             if inplace:
-                                self._items = list(cached)  # type: ignore[list-item]
+                                self._items = typing.cast(List[TRecord], list(cached))
                                 self._ctx = ctx
                                 self._cache_valid = True
                                 return self
-                            out = self.__class__(
-                                list(cached),  # type: ignore[arg-type]
+                            ctor_cached = cast(Callable[..., "BusList[TRecord]"], self.__class__)
+                            out = ctor_cached(
+                                typing.cast(List[TRecord], list(cached)),
                                 ctx=ctx,
                                 trace=self._trace,
                                 plan=self._plan,
                                 fast_mode=self._fast_mode,
                             )
                             try:
-                                out._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
-                                out._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
-                                out._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
-                                out._last_seen_bus_rev = self._last_seen_bus_rev  # type: ignore[attr-defined]
-                                out._incremental_cached_items = list(cached)  # type: ignore[attr-defined]
-                                out._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
+                                out._reload_cursor_ts = self._reload_cursor_ts
+                                out._incremental_seed = self._incremental_seed
+                                out._incremental_base_items = self._incremental_base_items
+                                out._last_seen_bus_rev = self._last_seen_bus_rev
+                                out._incremental_cached_items = list(cached)
+                                out._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))
                             except Exception:
                                 pass
                             return out
@@ -2029,24 +1540,24 @@ class BusList(Generic[TRecord]):
                                 self._incremental_fast_hits = 1
                             cached2 = list(self._incremental_cached_items)
                             if inplace:
-                                self._items = list(cached2)  # type: ignore[list-item]
+                                self._items = list(cached2)  
                                 self._ctx = ctx
                                 self._cache_valid = True
                                 return self
                             out2 = self.__class__(
-                                cached2,  # type: ignore[arg-type]
+                                cached2,  
                                 ctx=ctx,
                                 trace=self._trace,
                                 plan=self._plan,
                                 fast_mode=self._fast_mode,
                             )
                             try:
-                                out2._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
-                                out2._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
-                                out2._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
-                                out2._last_seen_bus_rev = self._last_seen_bus_rev  # type: ignore[attr-defined]
-                                out2._incremental_cached_items = list(cached2)  # type: ignore[attr-defined]
-                                out2._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
+                                out2._reload_cursor_ts = self._reload_cursor_ts
+                                out2._incremental_seed = self._incremental_seed
+                                out2._incremental_base_items = self._incremental_base_items
+                                out2._last_seen_bus_rev = self._last_seen_bus_rev
+                                out2._incremental_cached_items = cached2
+                                out2._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))
                             except Exception:
                                 pass
                             return out2
@@ -2155,7 +1666,7 @@ class BusList(Generic[TRecord]):
 
                     def _make_seed_buslist() -> Any:
                         # Construct a generic BusList with the base snapshot as eager items.
-                        return BusList(items_any, ctx=None, trace=None, plan=None, fast_mode=True)  # type: ignore[name-defined]
+                        return BusList(items_any, ctx=None, trace=None, plan=None, fast_mode=True)
 
                     def _replay_local(node: TraceNode) -> Any:
                         if isinstance(node, GetNode):
@@ -2219,39 +1730,39 @@ class BusList(Generic[TRecord]):
                     refreshed = _replay_local(self._plan)
                     # Materialize result records
                     out_items = list(refreshed.dump_records()) if hasattr(refreshed, "dump_records") else list(refreshed)
-                    refreshed = self.__class__(
-                        out_items,  # type: ignore[arg-type]
+                    ctor_refreshed = cast(Callable[..., "BusList[TRecord]"], self.__class__)
+                    refreshed = ctor_refreshed(
+                        typing.cast(List[TRecord], out_items),
                         ctx=ctx,
                         trace=self._trace,
                         plan=self._plan,
                         fast_mode=self._fast_mode,
                     )
-                    try:
-                        refreshed._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
-                        refreshed._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
-                        refreshed._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
+                    with suppress(Exception):
+                        refreshed._reload_cursor_ts = self._reload_cursor_ts
+                        refreshed._incremental_seed = self._incremental_seed
+                        refreshed._incremental_base_items = self._incremental_base_items
                         if latest_rev is not None:
-                            refreshed._last_seen_bus_rev = int(latest_rev)  # type: ignore[attr-defined]
+                            refreshed._last_seen_bus_rev = int(latest_rev)
                             self._last_seen_bus_rev = int(latest_rev)
-                        refreshed._incremental_cached_items = list(out_items)  # type: ignore[attr-defined]
+                        refreshed._incremental_cached_items = list(out_items)
                         self._incremental_cached_items = list(out_items)
-                        refreshed._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                        refreshed._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))
 
             if refreshed is not None and inplace:
-                self._items = list(refreshed.dump_records())
-                self._ctx = ctx
-                self._cache_valid = True
-                try:
+                _apply_reload_inplace_basic(self, refreshed, ctx)
+                with suppress(Exception):
                     self._reload_cursor_ts = getattr(refreshed, "_reload_cursor_ts", None)
+                with suppress(Exception):
                     self._incremental_seed = getattr(refreshed, "_incremental_seed", None)
+                with suppress(Exception):
                     self._incremental_base_items = getattr(refreshed, "_incremental_base_items", None)
+                with suppress(Exception):
                     self._last_seen_bus_rev = getattr(refreshed, "_last_seen_bus_rev", None)
+                with suppress(Exception):
                     self._incremental_cached_items = getattr(refreshed, "_incremental_cached_items", None)
+                with suppress(Exception):
                     self._incremental_fast_hits = int(getattr(refreshed, "_incremental_fast_hits", getattr(self, "_incremental_fast_hits", 0)))
-                except Exception:
-                    pass
                 return self
 
             if refreshed is not None:
@@ -2259,29 +1770,18 @@ class BusList(Generic[TRecord]):
 
         refreshed = self._replay_plan(ctx, self._plan)
         if not inplace:
-            try:
-                refreshed._ctx = ctx  # type: ignore[assignment]
-                refreshed._cache_valid = True  # type: ignore[assignment]
-            except Exception:
-                pass
+            with suppress(Exception):
+                refreshed._ctx = ctx
+                refreshed._cache_valid = True
             return refreshed
 
         # In-place refresh: mutate current instance to hold latest items, keep same plan.
-        self._items = list(refreshed.dump_records())
-        self._ctx = ctx
-        self._cache_valid = True
-        if hasattr(self, "plugin_id") and hasattr(refreshed, "plugin_id"):
-            try:
-                setattr(self, "plugin_id", getattr(refreshed, "plugin_id"))
-            except Exception:
-                pass
+        _apply_reload_inplace_basic(self, refreshed, ctx)
 
         # Append a trace marker for observability (plan stays the same query expression).
         if not self._fast_mode:
-            try:
+            with suppress(Exception):
                 self._trace = self._trace + (BusOp(name="reload", params={}, at=time.time()),)
-            except Exception:
-                pass
 
         return self
 
@@ -2304,12 +1804,13 @@ class BusList(Generic[TRecord]):
         Returns:
             刷新后的 BusList
         """
-        import asyncio
-        return await asyncio.to_thread(
-            self.reload_with,
-            ctx,
-            inplace=inplace,
-            incremental=incremental,
+        return cast(
+            "BusList[TRecord]",
+            await super().reload_with_async(
+                ctx,
+                inplace=inplace,
+                incremental=incremental,
+            ),
         )
 
     @overload
@@ -2360,482 +1861,28 @@ class BusList(Generic[TRecord]):
             ctx = getattr(self, "_ctx", None)
         if ctx is None:
             raise TypeError("watch() missing required argument: 'ctx' (BusList is not bound to a context)")
+        from plugin.sdk.bus.watchers import BusListWatcher
+
         return BusListWatcher(self, ctx, bus=bus, debounce_ms=debounce_ms)
 
 
-@dataclass(frozen=True)
-class BusListDelta(Generic[TRecord]):
-    kind: BusChangeOp
-    added: Tuple[TRecord, ...]
-    removed: Tuple[DedupeKey, ...]
-    current: BusList[TRecord]
+from plugin.sdk.bus.watchers import BusListDelta, BusListWatcher, list_Subscription, list_subscription
 
-
-class BusListWatcher(Generic[TRecord]):
-    def __init__(
-        self,
-        lst: BusList[TRecord],
-        ctx: BusReplayContext,
-        *,
-        bus: Optional[str] = None,
-        debounce_ms: float = 0.0,
-    ):
-        self._list = lst
-        self._ctx = ctx
-        self._debounce_ms = float(debounce_ms or 0.0)
-
-        if self._list._plan is None:
-            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/where_*/sort(by=...)")
-
-        inferred = self._infer_bus(self._list._plan)
-        self._bus = str(bus).strip() if isinstance(bus, str) and bus.strip() else inferred
-        if self._bus not in ("messages", "events", "lifecycle"):
-            raise NonReplayableTraceError(f"watcher cannot infer bus type from plan: {self._bus!r}")
-
-        self._lock = None
-        try:
-            import threading
-
-            self._lock = threading.Lock()
-        except Exception:
-            self._lock = None
-
-        self._callbacks: List[Tuple[Callable[[BusListDelta[TRecord]], None], Tuple[BusChangeOp, ...]]] = []
-        self._unsub: Optional[Callable[[], None]] = None
-        self._sub_id: Optional[str] = None
-        self._last_keys: set[DedupeKey] = {self._list._dedupe_key(x) for x in self._list.dump_records()}
-
-        self._debounce_timer: Any = None
-        self._pending_op: Optional[str] = None
-        self._pending_payload: Optional[Dict[str, Any]] = None
-
-    def _schedule_tick(self, op: str, payload: Optional[Dict[str, Any]] = None) -> None:
-        if self._debounce_ms <= 0:
-            self._tick(op, payload)
-            return
-
-        try:
-            import threading
-
-            delay = max(0.0, self._debounce_ms / 1000.0)
-            if self._lock is not None:
-                with self._lock:
-                    self._pending_op = str(op)
-                    self._pending_payload = dict(payload or {}) if isinstance(payload, dict) else None
-                    t = self._debounce_timer
-                    self._debounce_timer = None
-            else:
-                self._pending_op = str(op)
-                self._pending_payload = dict(payload or {}) if isinstance(payload, dict) else None
-                t = self._debounce_timer
-                self._debounce_timer = None
-
-            try:
-                if t is not None:
-                    t.cancel()
-            except Exception:
-                pass
-
-            def _fire() -> None:
-                if self._lock is not None:
-                    with self._lock:
-                        pending = self._pending_op
-                        pending_payload = self._pending_payload
-                        self._pending_op = None
-                        self._pending_payload = None
-                        self._debounce_timer = None
-                else:
-                    pending = self._pending_op
-                    pending_payload = self._pending_payload
-                    self._pending_op = None
-                    self._pending_payload = None
-                    self._debounce_timer = None
-
-                try:
-                    self._tick(str(pending or "change"), pending_payload)
-                except Exception:
-                    return
-
-            timer = threading.Timer(delay, _fire)
-            timer.daemon = True
-            if self._lock is not None:
-                with self._lock:
-                    self._debounce_timer = timer
-            else:
-                self._debounce_timer = timer
-            timer.start()
-        except Exception:
-            self._tick(op)
-
-    def _make_injected_callback(self, fn: Callable[..., None]) -> Callable[[BusListDelta[TRecord]], None]:
-        try:
-            sig = inspect.signature(fn)
-        except Exception:
-            return fn  # type: ignore[return-value]
-
-        params = list(sig.parameters.values())
-        if len(params) == 1 and params[0].kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            return fn  # type: ignore[return-value]
-
-        def _dump_record(rec: Any) -> Any:
-            if hasattr(rec, "dump") and callable(getattr(rec, "dump")):
-                try:
-                    return rec.dump()
-                except Exception:
-                    return rec
-            return rec
-
-        def _wrapped(delta: BusListDelta[TRecord]) -> None:
-            try:
-                added = delta.added
-                removed = delta.removed
-                current = delta.current
-                mapping: Dict[str, Any] = {
-                    "delta": delta,
-                    "d": delta,
-                    "list": current,
-                    "current": current,
-                    "buslist": current,
-                    "added": added,
-                    "removed": removed,
-                    "length": len(added),
-                    "len": len(added),
-                    "count": len(added),
-                    "kind": delta.kind,
-                    "op": delta.kind,
-                    "quickdump": tuple(_dump_record(x) for x in added),
-                }
-
-                kwargs: Dict[str, Any] = {}
-                for p in params:
-                    if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-                        continue
-                    if p.name in mapping:
-                        kwargs[p.name] = mapping[p.name]
-                    elif p.default is inspect._empty:
-                        # Unknown required parameter name: fallback to delta-only call.
-                        fn(delta)
-                        return
-
-                if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
-                    fn(**kwargs)
-                else:
-                    fn(**kwargs)
-            except Exception:
-                fn(delta)
-
-        return _wrapped
-
-    def subscribe(
-        self,
-        *,
-        on: Union[BusChangeOp, Sequence[BusChangeOp]] = ("add",),
-    ) -> Callable[[Callable[..., None]], Callable[..., None]]:
-        if isinstance(on, str):
-            rules: Tuple[BusChangeOp, ...] = (on,)
-        else:
-            rules = tuple(on)
-
-        def _decorator(fn: Callable[..., None]) -> Callable[..., None]:
-            wrapped = self._make_injected_callback(fn)
-            if self._lock is not None:
-                with self._lock:
-                    self._callbacks.append((wrapped, rules))
-            else:
-                self._callbacks.append((wrapped, rules))
-            return fn
-
-        return _decorator
-
-    def start(self) -> "BusListWatcher[TRecord]":
-        if self._unsub is not None or self._sub_id is not None:
-            return self
-
-        # Plugin process: register with server via IPC and wait for BUS change push.
-        if getattr(self._ctx, "_plugin_comm_queue", None) is not None and hasattr(self._ctx, "_send_request_and_wait"):
-            res = self._ctx._send_request_and_wait(
-                method_name="bus_subscribe",
-                request_type="BUS_SUBSCRIBE",
-                request_data={
-                    "bus": self._bus,
-                    "rules": ["add", "del", "change"],
-                    "deliver": "delta",
-                    "plan": self._list.trace_tree_dump(),
-                },
-                timeout=5.0,
-                wrap_result=True,
-            )
-            sub_id = None
-            if isinstance(res, dict):
-                sub_id = res.get("sub_id")
-            if not isinstance(sub_id, str) or not sub_id:
-                raise RuntimeError("BUS_SUBSCRIBE failed: missing sub_id")
-            self._sub_id = sub_id
-            _watcher_set(sub_id, self)  # type: ignore[arg-type]
-            return self
-
-        # In-process fallback: subscribe to core state hub.
-        from plugin.core.state import state
-
-        def _on_event(_op: str, _payload: Dict[str, Any]) -> None:
-            try:
-                self._schedule_tick(_op, _payload)
-            except Exception:
-                return
-
-        self._unsub = state.bus_change_hub.subscribe(self._bus, _on_event)
-        return self
-
-    def stop(self) -> None:
-        if self._sub_id is not None:
-            sid = self._sub_id
-            self._sub_id = None
-            _watcher_pop(sid)
-
-            try:
-                if getattr(self._ctx, "_plugin_comm_queue", None) is not None and hasattr(self._ctx, "_send_request_and_wait"):
-                    self._ctx._send_request_and_wait(
-                        method_name="bus_unsubscribe",
-                        request_type="BUS_UNSUBSCRIBE",
-                        request_data={"bus": self._bus, "sub_id": sid},
-                        timeout=3.0,
-                        wrap_result=True,
-                    )
-            except Exception:
-                pass
-            return
-
-        if self._unsub is None:
-            return
-        try:
-            self._unsub()
-        finally:
-            self._unsub = None
-
-    def _on_remote_change(self, *, bus: str, op: str, delta: Dict[str, Any]) -> None:
-        # Server push arrived in plugin process; use reload+diff as source of truth.
-        _ = (bus,)
-        try:
-            self._schedule_tick(op, delta)
-        except Exception:
-            return
-
-    def _extract_plan_ops(self) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
-        plan = getattr(self._list, "_plan", None)
-        if plan is None:
-            return None
-        if isinstance(plan, BinaryNode):
-            return None
-
-        ops: List[Tuple[str, Dict[str, Any]]] = []
-        node: TraceNode = plan
-        while isinstance(node, UnaryNode):
-            ops.append((str(node.op), dict(node.params) if isinstance(node.params, dict) else {}))
-            node = node.child
-        if not isinstance(node, GetNode):
-            return None
-        ops.reverse()
-        return ops
-
-    def _infer_bus(self, plan: TraceNode) -> str:
-        if isinstance(plan, GetNode):
-            return str(plan.params.get("bus") or "").strip()
-        if isinstance(plan, UnaryNode):
-            return self._infer_bus(plan.child)
-        if isinstance(plan, BinaryNode):
-            left = self._infer_bus(plan.left)
-            right = self._infer_bus(plan.right)
-            if left and right and left != right:
-                raise NonReplayableTraceError(f"watcher requires same bus on both sides: {left!r} vs {right!r}")
-            return left or right
-        return ""
-
-    def _apply_ops_local(self, base_items: List[TRecord], ops: List[Tuple[str, Dict[str, Any]]]) -> Optional[BusList[TRecord]]:
-        try:
-            base = self._list._construct(base_items, self._list._trace, self._list._plan)
-        except Exception:
-            base = BusList(base_items)
-
-        lst: BusList[TRecord] = base
-        for op, params in ops:
-            if op == "filter":
-                p = dict(params)
-                strict = bool(p.pop("strict", True))
-                lst = lst.filter(strict=strict, **p)
-                continue
-            if op == "limit":
-                lst = lst.limit(int(params.get("n", 0)))
-                continue
-            if op == "sort":
-                if params.get("key") is not None:
-                    return None
-                lst = lst.sort(
-                    by=params.get("by"),
-                    cast=params.get("cast"),
-                    reverse=bool(params.get("reverse", False)),
-                )
-                continue
-            if op == "where_in":
-                lst = lst.where_in(str(params.get("field")), list(params.get("values") or []))
-                continue
-            if op == "where_eq":
-                lst = lst.where_eq(str(params.get("field")), params.get("value"))
-                continue
-            if op == "where_contains":
-                lst = lst.where_contains(str(params.get("field")), str(params.get("value") or ""))
-                continue
-            if op == "where_regex":
-                lst = lst.where_regex(
-                    str(params.get("field")),
-                    str(params.get("pattern") or ""),
-                    strict=bool(params.get("strict", True)),
-                )
-                continue
-            if op == "where_gt":
-                lst = lst.where_gt(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-                continue
-            if op == "where_ge":
-                lst = lst.where_ge(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-                continue
-            if op == "where_lt":
-                lst = lst.where_lt(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-                continue
-            if op == "where_le":
-                lst = lst.where_le(str(params.get("field")), params.get("value"), cast=params.get("cast"))
-                continue
-            if op == "where":
-                return None
-        return lst
-
-    def _record_from_raw(self, raw: Dict[str, Any]) -> Optional[TRecord]:
-        try:
-            if self._bus == "messages":
-                from plugin.sdk.bus.messages import MessageRecord
-
-                return MessageRecord.from_raw(raw)  # type: ignore[return-value]
-            if self._bus == "events":
-                from plugin.sdk.bus.events import EventRecord
-
-                return EventRecord.from_raw(raw)  # type: ignore[return-value]
-            if self._bus == "lifecycle":
-                from plugin.sdk.bus.lifecycle import LifecycleRecord
-
-                return LifecycleRecord.from_raw(raw)  # type: ignore[return-value]
-        except Exception:
-            return None
-        return None
-
-    def _try_incremental(self, op: str, payload: Optional[Dict[str, Any]]) -> Optional[BusList[TRecord]]:
-        if not isinstance(payload, dict) or not payload:
-            return None
-
-        ops = self._extract_plan_ops()
-        if ops is None:
-            return None
-
-        current_items = self._list.dump_records()
-        base_items: List[TRecord] = list(current_items)
-
-        if str(op) == "add":
-            # Fast path only works when full record payload is included.
-            # With lightweight deltas (no record), fall back to reload+diff.
-            rec_raw = payload.get("record")
-            if not isinstance(rec_raw, dict):
-                return None
-            rec = self._record_from_raw(rec_raw)
-            if rec is None:
-                return None
-            base_items.append(rec)
-            return self._apply_ops_local(base_items, ops)
-
-        if str(op) == "del":
-            rid: Optional[str] = None
-            attr: Optional[str] = None
-            if self._bus == "messages":
-                rid = payload.get("message_id") if isinstance(payload.get("message_id"), str) else None
-                attr = "message_id"
-            elif self._bus == "events":
-                rid = payload.get("event_id") if isinstance(payload.get("event_id"), str) else None
-                attr = "event_id"
-            elif self._bus == "lifecycle":
-                rid = payload.get("lifecycle_id") if isinstance(payload.get("lifecycle_id"), str) else None
-                attr = "lifecycle_id"
-
-            if not rid or not attr:
-                return None
-
-            # If query has limit, deletion may require pulling another record to fill; fall back.
-            if any(op_name == "limit" for op_name, _ in ops):
-                return None
-
-            kept: List[TRecord] = []
-            for x in base_items:
-                k = self._list._dedupe_key(x)
-                if k == (attr, rid):
-                    continue
-                kept.append(x)
-            return self._apply_ops_local(kept, ops)
-
-        return None
-
-    def _tick(self, op: str, payload: Optional[Dict[str, Any]] = None) -> None:
-        refreshed = None
-        try:
-            refreshed = self._try_incremental(op, payload)
-        except Exception:
-            refreshed = None
-        if refreshed is None:
-            refreshed = self._list.reload(self._ctx)
-        new_items = refreshed.dump_records()
-        new_keys: set[DedupeKey] = {self._list._dedupe_key(x) for x in new_items}
-
-        added_items: List[TRecord] = []
-        for x in new_items:
-            k = self._list._dedupe_key(x)
-            if k not in self._last_keys:
-                added_items.append(x)
-
-        removed_keys: Tuple[DedupeKey, ...] = tuple(k for k in self._last_keys if k not in new_keys)
-
-        fired: List[BusChangeOp] = []
-        if added_items:
-            fired.append("add")
-        if removed_keys:
-            fired.append("del")
-        if added_items or removed_keys:
-            fired.append("change")
-
-        if not fired:
-            self._last_keys = new_keys
-            self._list = refreshed
-            return
-
-        kind: BusChangeOp = op if op in ("add", "del", "change") else "change"
-        delta = BusListDelta(kind=kind, added=tuple(added_items), removed=removed_keys, current=refreshed)
-
-        if self._lock is not None:
-            with self._lock:
-                callbacks = list(self._callbacks)
-        else:
-            callbacks = list(self._callbacks)
-
-        for fn, rules in callbacks:
-            if any(r in fired for r in rules):
-                try:
-                    fn(delta)
-                except Exception:
-                    continue
-
-        self._last_keys = new_keys
-        self._list = refreshed
-
-
-def list_Subscription(
-    watcher: BusListWatcher[TRecord],
-    *,
-    on: Union[BusChangeOp, Sequence[BusChangeOp]] = ("add",),
-) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
-    return watcher.subscribe(on=on)
+__all__ = [
+    "BusChange",
+    "BusChangeOp",
+    "BusFilter",
+    "BusFilterError",
+    "BusFilterResult",
+    "BusList",
+    "BusListDelta",
+    "BusListWatcher",
+    "BusOp",
+    "BusRecord",
+    "BusReplayContext",
+    "NonReplayableTraceError",
+    "dispatch_bus_change",
+    "register_bus_change_listener",
+    "list_subscription",
+    "list_Subscription",
+]
