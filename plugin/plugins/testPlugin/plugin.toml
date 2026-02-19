@@ -1,16 +1,70 @@
 [plugin]
-id = "testPlugin"
 name = "Test Plugin"
 description = "Minimal plugin used for local testing, no required input"
 version = "0.1.0"
+id = "testPlugin"
 entry = "plugins.testPlugin:HelloPlugin"
 
+[plugin.author]
+name = "Test Author"
+email = "test.author@example.com"
+url = "https://example.com"
+
 [plugin.sdk]
-# 推荐使用的 SDK 版本范围
 recommended = ">=0.1.0,<0.2.0"
-# 完全支持的 SDK 版本范围（必须满足或落在 untested）
 supported = ">=0.1.0,<0.3.0"
-# 未经过完整测试但允许加载的范围
 untested = ">=0.3.0,<0.4.0"
-# 明确冲突的版本范围，命中即拒绝加载
-conflicts = ["<0.1.0", ">=0.4.0"]
+conflicts = [
+    "<0.1.0",
+    ">=0.4.0",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+# PluginStore 配置（默认禁用，不会创建 store.db 文件）
+# 如需启用持久化 KV 存储，设置 enabled = true
+[plugin.store]
+enabled = false
+
+[debug.timer]
+enable = false
+interval_seconds = 3
+burst_size = 2
+max_count = 5
+
+[debug.config]
+enable = false
+include_values = false
+
+[debug.memory]
+enable = false
+lanlan_name = "test"
+query = "hello"
+timeout = 5.0
+
+[debug.messages]
+enable = false
+delay_seconds = 2.0
+plugin_id = "*"
+max_count = 50
+priority_min = 0
+source = ""
+timeout = 5.0
+
+[debug.events]
+enable = false
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+type = ""
+timeout = 5.0
+
+[debug.lifecycle]
+enable = false
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+type = ""
+timeout = 5.0

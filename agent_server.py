@@ -6,7 +6,6 @@ mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import uuid
 import logging
-import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 import time
@@ -33,7 +32,7 @@ app = FastAPI(title="N.E.K.O Tool Server")
 
 # Configure logging
 from utils.logger_config import setup_logging, ThrottledLogger
-logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
+logger, log_config = setup_logging(service_name="Agent", log_level="INFO")
 
 
 class Modules:
@@ -484,13 +483,18 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """
     [简化版] 使用 DirectTaskExecutor 一步完成：分析对话 + 判断执行方式 + 执行任务
     
     简化链条:
     - 旧: Analyzer(LLM#1) → Planner(LLM#2) → 子进程Processor(LLM#3) → MCP调用
     - 新: DirectTaskExecutor(LLM#1) → MCP调用
+
+    Args:
+        messages: 对话消息列表
+        lanlan_name: 角色名
+        conversation_id: 对话ID，用于关联触发事件和对话上下文
 
     Uses analyze_lock to serialize concurrent calls.  Without this, two
     near-simultaneous analyze_request events can both pass the dedup
@@ -524,7 +528,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         result = await Modules.task_executor.analyze_and_execute(
             messages=messages,
             lanlan_name=lanlan_name,
-            agent_flags=Modules.agent_flags
+            agent_flags=Modules.agent_flags,
+            conversation_id=conversation_id
         )
 
         # testUserPlugin: log after analysis decision if user_plugin_enabled is true
@@ -619,7 +624,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning(f"[ComputerUse] Task requires ComputerUse but it's disabled")
+                logger.warning(f"[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
+
+        elif result.execution_method == 'user_plugin':
+            # user_plugin is executed/accepted inside DirectTaskExecutor. Keep agent_server non-blocking.
+            if result.success:
+                logger.info(f"[TaskExecutor] ✅ UserPlugin accepted: {result.tool_name} ({getattr(result, 'result', None)})")
+            else:
+                logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {result.error}")
+
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 # Session management for multi-turn browser tasks
@@ -764,6 +777,48 @@ async def startup():
     await _emit_agent_status_update()
     
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """服务器关闭时清理所有 AsyncClient 实例"""
+    logger.info("[Agent] 正在清理 AsyncClient 资源...")
+    
+    async def _close_router(name: str, module, attr: str):
+        """辅助函数：清理单个 router（带超时保护）"""
+        if module and hasattr(module, attr):
+            try:
+                router = getattr(module, attr)
+                # 添加超时保护，防止清理过程挂起
+                await asyncio.wait_for(router.aclose(), timeout=3.0)
+                logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
+            except asyncio.TimeoutError:
+                logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
+            except asyncio.CancelledError:
+                # 正常关闭流程中的取消
+                logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
+            except RuntimeError as e:
+                # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+                logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+            except Exception as e:
+                logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
+    
+    # 并行清理所有 router，提高关闭速度
+    try:
+        # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
+        await asyncio.wait_for(
+            asyncio.gather(
+                _close_router("Processor", Modules.processor, "router"),
+                _close_router("TaskPlanner", Modules.planner, "router"),
+                _close_router("DirectTaskExecutor", Modules.task_executor, "router"),
+                return_exceptions=True  # 即使某个清理失败，也继续其他清理
+            ),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
+    
+    logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 
 
 @app.get("/health")
@@ -1045,6 +1100,35 @@ async def set_agent_flags(payload: Dict[str, Any]):
     return {"success": True, "agent_flags": Modules.agent_flags}
 
 
+# 3) 分析器模块：接收 cross-server 的对话片段，识别潜在任务，转发到规划器
+@app.post("/analyze_and_plan")
+async def analyze_and_plan(payload: Dict[str, Any]):
+    # 检查 analyzer 是否已启用（由 agent 总开关控制）
+    if not Modules.analyzer_enabled:
+        return {"success": False, "status": "analyzer_disabled", "message": "Analyzer is disabled"}
+    if not Modules.analyzer or not Modules.planner:
+        raise HTTPException(503, "Analyzer/Planner not ready")
+    messages = (payload or {}).get("messages", [])
+    if not isinstance(messages, list):
+        raise HTTPException(400, "messages must be a list of {role, text}")
+    # Previously forwarded messages to a user plugin endpoint (/plugin/testPlugin).
+    # This forwarding has been removed to avoid relying on that endpoint.
+    # If in future a safe user-plugin integration is needed, implement a provider
+    # that enumerates plugins and forwards to configured endpoints with retry/backoff.
+    # Preserve check and a light log when user_plugin_enabled is true for traceability.
+    try:
+        if Modules.agent_flags.get("user_plugin_enabled", False):
+            logger.info("user_plugin_enabled is true but /plugin/testPlugin forwarding is disabled.")
+    except Exception:
+        pass  # Defensive: catch edge cases in flag access
+
+    # Fire-and-forget background processing and scheduling
+    lanlan_name = (payload or {}).get("lanlan_name")
+    conversation_id = (payload or {}).get("conversation_id")
+    asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id))
+    return {"success": True, "status": "processed", "accepted_at": _now_iso()}
+
+
 @app.post("/agent/command")
 async def agent_command(payload: Dict[str, Any]):
     t0 = time.perf_counter()
@@ -1324,11 +1408,12 @@ async def admin_control(payload: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
+    import logging  # 仍需要用于uvicorn的过滤器
     
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_agent_server_filter
     
-    # Add filter to uvicorn access logger
+    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
     uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)

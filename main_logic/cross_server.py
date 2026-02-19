@@ -292,6 +292,26 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
                                 
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                if config.get('message_plane', True):
+                                    try:
+                                        # 构造最近的消息摘要
+                                        recent_renew = []
+                                        for item in chat_history[-6:]:
+                                            if item.get('role') in ['user', 'assistant']:
+                                                try:
+                                                    txt = item['content'][0]['text'] if item.get('content') else ''
+                                                except Exception:
+                                                    txt = ''
+                                                if txt:
+                                                    recent_renew.append({'role': item.get('role'), 'text': txt})
+                                        if recent_renew:
+                                            from main_logic.conversation_bridge import generate_conversation_id, publish_conversation
+                                            renew_conversation_id = generate_conversation_id()
+                                            publish_conversation(recent_renew, lanlan_name, "renew_session", renew_conversation_id)
+                                    except Exception:
+                                        pass  # 静默失败
+                                
                                 # 再次检查关闭状态
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
@@ -330,6 +350,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 text_output_cache = ''
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
+                                
+                                # 生成 conversation_id，用于关联触发事件和对话上下文
+                                # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
+                                from main_logic.conversation_bridge import generate_conversation_id
+                                conversation_id = generate_conversation_id()
+                                
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
                                 # 检查是否正在关闭
                                 if not shutdown_event.is_set():
@@ -364,6 +390,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                # conversation_id 用于关联触发事件和对话上下文
+                                if config.get('message_plane', True) and recent:
+                                    try:
+                                        from main_logic.conversation_bridge import publish_conversation
+                                        publish_conversation(recent, lanlan_name, "turn_end", conversation_id)
+                                    except Exception:
+                                        pass  # 静默失败
                                 
                                 # Turn end 时同步新增消息到 Memory Server，使 memory_browser 及时更新（T1/T2 记忆验收）
                                 if not shutdown_event.is_set() and last_synced_index < len(chat_history):
@@ -403,6 +438,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
                                 
+                                # 生成 conversation_id，用于关联触发事件和对话上下文
+                                # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
+                                from main_logic.conversation_bridge import generate_conversation_id
+                                session_end_conversation_id = generate_conversation_id()
+                                
                                 # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
                                 # 再次检查关闭状态
                                 if not shutdown_event.is_set():
@@ -437,6 +477,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
                                     except Exception as e:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                # conversation_id 用于关联触发事件和对话上下文
+                                if config.get('message_plane', True) and recent:
+                                    try:
+                                        from main_logic.conversation_bridge import publish_conversation
+                                        publish_conversation(recent, lanlan_name, "session_end", session_end_conversation_id)
+                                    except Exception:
+                                        pass  # 静默失败
                                 
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
@@ -585,6 +634,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                     rdr.cancel()
                 except Exception:
                     pass
+        
+        # 停止 conversation_bridge
+        try:
+            from main_logic.conversation_bridge import stop_conversation_bridge
+            stop_conversation_bridge()
+        except Exception:
+            pass
 
     try:
         loop.run_until_complete(maintain_connection(chat_history, lanlan_name))
