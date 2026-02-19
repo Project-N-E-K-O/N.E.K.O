@@ -25,11 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
-try:
-    from loguru import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 @dataclass

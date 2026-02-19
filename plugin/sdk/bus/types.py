@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from collections import deque
 import inspect
@@ -402,15 +402,8 @@ class BusRecord:
     source: Optional[str] = None
     priority: int = 0
     content: Optional[str] = None
-    metadata: Dict[str, Any] = None  # type: ignore[assignment]
-    raw: Dict[str, Any] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        # Only copy if None, avoid unnecessary dict() calls
-        if self.metadata is None:
-            object.__setattr__(self, "metadata", {})
-        if self.raw is None:
-            object.__setattr__(self, "raw", {})
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    raw: Dict[str, Any] = field(default_factory=dict)
 
     def dump(self) -> Dict[str, Any]:
         return {
