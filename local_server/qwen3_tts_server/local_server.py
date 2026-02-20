@@ -62,6 +62,12 @@ class QwenLocalServer:
         self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt") # 注意 这里的nyaning_voice 是测试用音声的音色
         self.model = None
         self.cached_prompt = None
+        self.voice_lock = threading.Lock()
+        self.prompt_cache = {}
+        self.active_voice_file = str((Path(PROJECT_ROOT) / "active_voice.json").resolve())
+        self.active_voice_path = None
+        self.active_voice_mtime = None
+        self.voice_version = 0
         self.pad_token_id = None
         self.ref_text = ref_text or "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。" # 后面的是自己的sample样本 需要更改
         self.ref_wav = ref_wav or os.path.join(PROJECT_ROOT, "uttid_f1.wav") # 测试用sample 样本
@@ -76,6 +82,91 @@ class QwenLocalServer:
         self._load_engine(model_path)
         # 启动后台工人
         threading.Thread(target=self._worker_loop, daemon=True).start()
+
+    def _load_prompt_from_pt(self, pt_path: str):
+        payload = torch.load(pt_path, map_location=self.device, weights_only=False)
+
+        if isinstance(payload, dict) and "items" in payload:
+            items_raw = payload.get("items")
+            if isinstance(items_raw, list):
+                items = []
+                for it in items_raw:
+                    if isinstance(it, VoiceClonePromptItem):
+                        items.append(it)
+                        continue
+                    if not isinstance(it, dict):
+                        raise TypeError("Invalid voice prompt item")
+                    ref_code = it.get("ref_code", None)
+                    if ref_code is not None and not torch.is_tensor(ref_code):
+                        ref_code = torch.tensor(ref_code, device=self.device)
+                    ref_spk = it.get("ref_spk_embedding", None)
+                    if ref_spk is None:
+                        raise ValueError("Missing ref_spk_embedding")
+                    if not torch.is_tensor(ref_spk):
+                        ref_spk = torch.tensor(ref_spk, device=self.device)
+                    items.append(
+                        VoiceClonePromptItem(
+                            ref_code=ref_code,
+                            ref_spk_embedding=ref_spk,
+                            x_vector_only_mode=bool(it.get("x_vector_only_mode", False)),
+                            icl_mode=bool(it.get("icl_mode", not bool(it.get("x_vector_only_mode", False)))),
+                            ref_text=it.get("ref_text", None),
+                        )
+                    )
+                return items
+
+        if isinstance(payload, list):
+            return payload
+
+        return payload
+
+    def _read_active_voice_path(self):
+        try:
+            if not os.path.exists(self.active_voice_file):
+                return None, None
+            mtime = os.path.getmtime(self.active_voice_file)
+            with open(self.active_voice_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            p = None
+            if isinstance(data, dict):
+                p = data.get("voice_pt_path")
+            if not p:
+                return None, mtime
+            p = str(p)
+            return p, mtime
+        except Exception as e:
+            logger.error(f"读取 active_voice.json 失败: {e}")
+            return None, None
+
+    def _ensure_active_prompt_loaded(self):
+        with self.voice_lock:
+            desired_path, mtime = self._read_active_voice_path()
+            if not desired_path:
+                desired_path = self.pt_path
+                try:
+                    mtime = os.path.getmtime(desired_path) if os.path.exists(desired_path) else None
+                except Exception:
+                    mtime = None
+
+            if (
+                self.active_voice_path == desired_path
+                and self.active_voice_mtime == mtime
+                and self.cached_prompt is not None
+            ):
+                return self.cached_prompt, self.voice_version
+
+            if desired_path in self.prompt_cache:
+                self.cached_prompt = self.prompt_cache[desired_path]
+            else:
+                self.cached_prompt = self._load_prompt_from_pt(desired_path)
+                self.prompt_cache[desired_path] = self.cached_prompt
+
+            self.active_voice_path = desired_path
+            self.active_voice_mtime = mtime
+            self.pt_path = desired_path
+            self.voice_version += 1
+            logger.info(f"🔁 Active voice switched: {self.active_voice_path}")
+            return self.cached_prompt, self.voice_version
 
     def _load_engine(self, model_path):
         try:
@@ -130,18 +221,18 @@ class QwenLocalServer:
             task = self.task_queue.get()
             if task is None: break
 
-            full_text, job_id, loop, audio_queue, cancel_event = task
+            full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language = task
 
             if cancel_event.is_set():
                 self.task_queue.task_done()
                 continue
 
-            self._do_inference(full_text, job_id, loop, audio_queue, cancel_event)
+            self._do_inference(full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language)
             self.task_queue.task_done()
 
-    def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event):
+    def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language):
         try:
-            if not self.model or self.cached_prompt is None: return
+            if not self.model or prompt_snapshot is None: return
 
             start_time = time.time()
 
@@ -150,8 +241,8 @@ class QwenLocalServer:
                 with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
                     wavs, sr = self.model.generate_voice_clone(
                         text=full_text,
-                        voice_clone_prompt=self.cached_prompt,
-                        language=self.language,
+                        voice_clone_prompt=prompt_snapshot,
+                        language=language,
                         pad_token_id=self.pad_token_id
                     )
 
@@ -196,9 +287,10 @@ class QwenLocalServer:
         current_job_id = None
         cancel_event = threading.Event()
         audio_queue = asyncio.Queue()
+        last_voice_version = self.voice_version
 
-        async def _stop_current_job():
-            nonlocal current_job_id, cancel_event,sentence_buffer
+        async def _stop_current_job(keep_buffer: bool = False):
+            nonlocal current_job_id, cancel_event, sentence_buffer
             cancel_event.set()
             current_job_id = None
             cancel_event = threading.Event()
@@ -207,7 +299,8 @@ class QwenLocalServer:
                     audio_queue.get_nowait()
                 except:
                     break
-            sentence_buffer = ""
+            if not keep_buffer:
+                sentence_buffer = ""
 
         # 发送循环
         async def _sender_loop():
@@ -248,6 +341,13 @@ class QwenLocalServer:
                     if msg_type == "legacy.text":
                         sentence_buffer += data.get("text", "")
 
+                    _, current_version = self._ensure_active_prompt_loaded()
+                    if current_version != last_voice_version:
+                        last_voice_version = current_version
+                        # Hot voice switch: cancel current audio job but keep the buffered text.
+                        # Otherwise the first committed sentence right after switching may be dropped.
+                        await _stop_current_job(keep_buffer=True)
+
                     # 正则智能断句
                     parts = re.split(r'([。！？.!?\n]+)', sentence_buffer)
 
@@ -262,7 +362,8 @@ class QwenLocalServer:
                                 await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
 
                             logger.info(f"📥 句子: {sentence[:20]}...")
-                            self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event))
+                            prompt, _ = self._ensure_active_prompt_loaded()
+                            self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event, prompt, self.language))
 
                         sentence_buffer = parts[-1]
 
@@ -273,7 +374,8 @@ class QwenLocalServer:
                         if not current_job_id:
                             current_job_id = str(uuid.uuid4())
                             await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
-                        self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event))
+                        prompt, _ = self._ensure_active_prompt_loaded()
+                        self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event, prompt, self.language))
 
                 elif msg_type == "cancel":
                     await _stop_current_job()
