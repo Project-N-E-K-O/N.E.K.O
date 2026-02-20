@@ -230,7 +230,7 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         gap: '12px',
         pointerEvents: 'auto',
         overflowY: 'auto',
-        transition: 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.2s ease, padding 0.2s ease',
+        transition: 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease',
         cursor: 'move',
         userSelect: 'none',
         willChange: 'transform',
@@ -324,20 +324,22 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         gap: '8px',
         maxHeight: 'calc(60vh - 80px)',
         overflowY: 'auto',
-        transition: 'max-height 0.3s ease, opacity 0.3s ease'
+        transition: 'max-height 0.3s ease, opacity 0.3s ease, width 0.3s ease'
     });
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
     const hudCollapsedKey = 'agent-task-hud-collapsed-v2';
     const applyHudCollapsed = (collapsed) => {
         if (collapsed) {
-            hud.style.width = 'auto';
+            hud.style.width = '60px';
             hud.style.padding = '8px 12px';
             title.style.display = 'none';
             header.style.paddingBottom = '0';
             header.style.borderBottom = 'none';
             header.style.justifyContent = 'flex-end';
-            taskList.style.display = 'none';
+            taskList.style.maxHeight = '0';
+            taskList.style.opacity = '0';
+            taskList.style.overflow = 'hidden';
             minimizeBtn.innerHTML = '+';
         } else {
             hud.style.width = '320px';
@@ -346,9 +348,9 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
             header.style.paddingBottom = '12px';
             header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
             header.style.justifyContent = 'space-between';
-            taskList.style.display = 'flex';
             taskList.style.maxHeight = 'calc(60vh - 80px)';
-            taskList.style.overflowY = 'auto';
+            taskList.style.opacity = '1';
+            taskList.style.overflow = 'auto';
             minimizeBtn.innerHTML = '−';
         }
     };
@@ -715,7 +717,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         hud.style.cursor = 'move';
         hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.2s ease, padding 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -818,7 +820,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         // 恢复视觉状态
         hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.2s ease, padding 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {

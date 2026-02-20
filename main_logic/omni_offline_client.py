@@ -487,6 +487,7 @@ class OmniOfflineClient:
             logger.error(error_msg)
             if self.handle_connection_error:
                 await self.handle_connection_error(error_msg)
+            assistant_message = ""  # 防止残缺内容被 finally 写入历史
             return False
         finally:
             self._is_responding = False

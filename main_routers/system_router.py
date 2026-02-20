@@ -1069,6 +1069,7 @@ async def proactive_chat(request: Request):
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
+                resp.raise_for_status()  # Check for HTTP errors explicitly
                 if resp.status_code == 200:
                     raw_memory_context = resp.text
                 else:
@@ -1317,6 +1318,9 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
             })
+
+        # 记录主动搭话（成功投递后）
+        _record_proactive_chat(lanlan_name, response_text)
 
         return JSONResponse({
             "success": True,

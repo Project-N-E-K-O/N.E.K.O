@@ -8227,8 +8227,26 @@ function init_app() {
      */
     function _showProactiveChatSourceLinks(links) {
         try {
-            const chatContent = document.getElementById('chatContent');
+            const chatContent = document.getElementById('chat-content-wrapper');
             if (!chatContent) return;
+
+            const validLinks = [];
+            for (const link of links) {
+                let safeUrl = null;
+                try {
+                    const u = new URL(String(link.url || ''), window.location.origin);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        safeUrl = u.href;
+                    }
+                } catch (e) {
+                    console.warn('解析链接失败:', e);
+                }
+                if (safeUrl) {
+                    validLinks.push({ ...link, safeUrl });
+                }
+            }
+
+            if (validLinks.length === 0) return;
 
             const linkCard = document.createElement('div');
             linkCard.className = 'proactive-source-link-card';
@@ -8244,19 +8262,9 @@ function init_app() {
                 max-width: 320px;
             `;
 
-            for (const link of links) {
-                let safeUrl = null;
-                try {
-                    const u = new URL(String(link.url || ''), window.location.origin);
-                    if (u.protocol === 'http:' || u.protocol === 'https:') {
-                        safeUrl = u.href;
-                    }
-                } catch (e) {
-                    console.warn('解析链接失败:', e);
-                }
-                if (!safeUrl) continue;
+            for (const link of validLinks) {
                 const a = document.createElement('a');
-                a.href = safeUrl;
+                a.href = link.safeUrl;
                 a.target = '_blank';
                 a.rel = 'noopener noreferrer';
                 a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
@@ -8285,7 +8293,7 @@ function init_app() {
                 setTimeout(() => { linkCard.remove(); }, 500);
             }, 5 * 60 * 1000);
 
-            console.log('已显示主动搭话来源链接:', links.length, '条');
+            console.log('已显示主动搭话来源链接:', validLinks.length, '条');
         } catch (e) {
             console.warn('显示来源链接失败:', e);
         }
