@@ -1,108 +1,3 @@
-// OGG OPUS 流式解码器 (WASM)
-// 使用 @wasm-audio-decoders/ogg-opus-decoder
-// https://github.com/eshaz/wasm-audio-decoders/tree/main/src/ogg-opus-decoder
-// 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
-
-// [Performance] 全局调试开关
-window.DEBUG_AUDIO = typeof window.DEBUG_AUDIO !== 'undefined' ? window.DEBUG_AUDIO : false;
-window.DEBUG_LIPSYNC = typeof window.DEBUG_LIPSYNC !== 'undefined' ? window.DEBUG_LIPSYNC : false;
-
-let oggOpusDecoder = null;
-let oggOpusDecoderReady = null;
-
-// 安全的翻译函数，如果 window.t 不可用或翻译缺失则返回回退文本
-function safeT(key, fallback, params) {
-    if (!window.t) {
-        console.error(`[safeT] window.t is not available, using fallback for key: ${key}`);
-        return fallback;
-    }
-    try {
-        const result = params ? window.t(key, params) : window.t(key);
-        // 如果翻译结果等于 key 本身，说明翻译缺失，使用回退文本
-        if (result === key) {
-            console.error(`[safeT] Translation missing for key: ${key}, using fallback`);
-            return fallback;
-        }
-        return result;
-    } catch (e) {
-        console.error(`[safeT] Error translating key: ${key}`, e);
-        return fallback;
-    }
-}
-
-async function getOggOpusDecoder() {
-    if (oggOpusDecoder) return oggOpusDecoder;
-    if (oggOpusDecoderReady) {
-        try {
-            const result = await oggOpusDecoderReady;
-            if (result !== null) return result;
-        } catch (e) {
-            console.warn(safeT('console.oggOpusInitFailed', 'Ogg Opus decoder initialization failed'), e);
-        }
-        oggOpusDecoderReady = null;
-    }
-
-    oggOpusDecoderReady = (async () => {
-        const module = window["ogg-opus-decoder"];
-        if (!module || !module.OggOpusDecoder) {
-            console.error(safeT('console.oggOpusNotLoaded', 'Ogg Opus decoder not loaded'));
-            return null;
-        }
-
-        try {
-            const decoder = new module.OggOpusDecoder();
-            await decoder.ready;
-            console.log(safeT('console.oggOpusReady', 'Ogg Opus decoder ready'));
-            oggOpusDecoder = decoder;
-            return decoder;
-        } catch (e) {
-            console.error(safeT('console.oggOpusCreateFailed', 'Failed to create Ogg Opus decoder'), e);
-            return null;
-        }
-    })();
-
-    try {
-        const result = await oggOpusDecoderReady;
-        if (result === null) oggOpusDecoderReady = null;
-        return result;
-    } catch (e) {
-        // Promise reject 会"毒化缓存"，需要清空缓存允许重试
-        oggOpusDecoderReady = null;
-        oggOpusDecoder = null;
-        console.warn(safeT('console.oggOpusInitRejected', 'Ogg Opus decoder initialization rejected'), e);
-        return null;
-    }
-}
-
-// 重置解码器（在新的音频流开始时调用）
-// 使用 reset() 而非 free()：reset() 是为新的音频流做状态重置，实例仍可复用
-async function resetOggOpusDecoder() {
-    if (oggOpusDecoder) {
-        try {
-            // reset() 是异步的，用于重置解码器状态以处理新的音频流
-            await oggOpusDecoder.reset();
-        } catch (e) {
-            console.warn(safeT('console.oggOpusResetFailed', 'Failed to reset Ogg Opus decoder'), e);
-            oggOpusDecoder = null;
-            oggOpusDecoderReady = null;
-        }
-    }
-}
-
-async function decodeOggOpusChunk(uint8Array) {
-    const decoder = await getOggOpusDecoder();
-    if (!decoder) {
-        throw new Error('OGG OPUS 解码器不可用');
-    }
-
-    // decode() 用于流式解码
-    const { channelData, samplesDecoded, sampleRate } = await decoder.decode(uint8Array);
-    if (channelData && channelData[0] && channelData[0].length > 0) {
-        return { float32Data: channelData[0], sampleRate: sampleRate || 48000 };
-    }
-    return null; // 数据不足，等待更多
-}
-
 // 全局窗口管理函数
 // 关闭所有已打开的设置窗口（弹窗）
 window.closeAllSettingsWindows = function () {
@@ -275,6 +170,17 @@ function init_app() {
                     } catch (e) {
                         console.warn(safeT('console.screenShareAutoReleaseFailed', 'Screen share auto-release failed'), e);
                         // stopScreenSharing 失败时，手动清理残留状态防止 double-teardown
+                        if (screenCaptureStream) {
+                            try {
+                                if (typeof screenCaptureStream.getTracks === 'function') {
+                                    screenCaptureStream.getTracks().forEach(track => {
+                                        try { track.stop(); } catch (err) { }
+                                    });
+                                }
+                            } catch (err) {
+                                console.warn('Failed to stop tracks in catch block', err);
+                            }
+                        }
                         screenCaptureStream = null;
                         screenCaptureStreamLastUsed = null;
                         screenCaptureStreamIdleTimer = null;
@@ -331,11 +237,14 @@ function init_app() {
     // 语音模式下用户 transcript 合并相关变量（兜底机制，防止 Gemini 等模型返回碎片化转录造成刷屏）
     let lastVoiceUserMessage = null;       // 上一个用户消息 DOM 元素
     let lastVoiceUserMessageTime = 0;      // 上一个用户消息的时间戳
-    const VOICE_TRANSCRIPT_MERGE_WINDOW = 5000; // 合并时间窗口（毫秒），5秒内的连续转录会合并
+    const VOICE_TRANSCRIPT_MERGE_WINDOW = 3000; // 合并时间窗口（毫秒），3秒内的连续转录会合并
 
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
+    let proactiveVisionChatEnabled = false;
+    let proactiveNewsChatEnabled = false;
+    let proactiveVideoChatEnabled = false;
     let mergeMessagesEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
@@ -398,6 +307,9 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
+    window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+    window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+    window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
     window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
     window.proactiveChatInterval = proactiveChatInterval;
@@ -425,6 +337,27 @@ function init_app() {
 
         socket.onopen = () => {
             console.log(window.t('console.websocketConnected'));
+            // Warm up Agent snapshot once websocket is ready.
+            Promise.all([
+                fetch('/api/agent/health').then(r => r.ok).catch(() => false),
+                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null)
+            ]).then(([healthOk, flagsResp]) => {
+                if (flagsResp && flagsResp.success) {
+                    window._agentStatusSnapshot = {
+                        server_online: !!healthOk,
+                        analyzer_enabled: !!flagsResp.analyzer_enabled,
+                        flags: flagsResp.agent_flags || {},
+                        agent_api_gate: flagsResp.agent_api_gate || {},
+                        capabilities: (window._agentStatusSnapshot && window._agentStatusSnapshot.capabilities) || {},
+                        updated_at: new Date().toISOString()
+                    };
+                    if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
+                        const warmFlags = flagsResp.agent_flags || {};
+                        warmFlags.agent_enabled = !!flagsResp.analyzer_enabled;
+                        window.agentStateMachine.updateCache(!!healthOk, warmFlags);
+                    }
+                }
+            }).catch(() => { });
 
             // 启动心跳保活机制
             if (heartbeatInterval) {
@@ -463,23 +396,23 @@ function init_app() {
                 if (response.type === 'gemini_response') {
                     // 检查是否是新消息的开始
                     const isNewMessage = response.isNewMessage || false;
-                    
+
                     // AI 开始新回复时，重置用户转录合并追踪（避免跨轮次合并）
                     if (isNewMessage) {
                         lastVoiceUserMessage = null;
                         lastVoiceUserMessageTime = 0;
                     }
-                    
+
                     appendMessage(response.text, 'gemini', isNewMessage);
                 } else if (response.type === 'response_discarded') {
                     const attempt = response.attempt || 0;
                     const maxAttempts = response.max_attempts || 0;
                     console.log(`[Discard] AI回复被丢弃 reason=${response.reason} attempt=${attempt}/${maxAttempts} retry=${response.will_retry}`);
-                    
+
                     window._realisticGeminiQueue = [];
                     window._realisticGeminiBuffer = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
-                    
+
                     if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
                         window.currentTurnGeminiBubbles.forEach(bubble => {
                             if (bubble && bubble.parentNode) {
@@ -508,11 +441,11 @@ function init_app() {
                     }
 
                     window._geminiTurnFullText = '';
-                    
+
                     const retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                     const failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
                     showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
-                    
+
                     if (!response.will_retry && response.message) {
                         const messageDiv = document.createElement('div');
                         messageDiv.classList.add('message', 'gemini');
@@ -521,16 +454,16 @@ function init_app() {
                         window.currentGeminiMessage = messageDiv;
                         window.currentTurnGeminiBubbles = [messageDiv];
                     }
-                    
+
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 } else if (response.type === 'user_transcript') {
                     // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
                     const now = Date.now();
-                    const shouldMerge = isRecording && 
-                        lastVoiceUserMessage && 
+                    const shouldMerge = isRecording &&
+                        lastVoiceUserMessage &&
                         lastVoiceUserMessage.isConnected &&
                         (now - lastVoiceUserMessageTime) < VOICE_TRANSCRIPT_MERGE_WINDOW;
-                    
+
                     if (shouldMerge) {
                         // 合并到上一个用户消息气泡（流式追加）
                         lastVoiceUserMessage.textContent += response.text;
@@ -538,7 +471,7 @@ function init_app() {
                     } else {
                         // 创建新消息
                         appendMessage(response.text, 'user', true);
-                        
+
                         // 在语音模式下追踪这个消息，以便后续合并
                         if (isRecording) {
                             // 获取刚创建的用户消息元素（chatContainer 的最后一个 .user 消息）
@@ -553,7 +486,7 @@ function init_app() {
                     interruptedSpeechId = response.interrupted_speech_id || null;
                     pendingDecoderReset = true;  // 标记需要在新 speech_id 到来时重置
                     skipNextAudioBlob = false;   // 重置跳过标志
-                    
+
                     // 只清空播放队列，不重置解码器（避免丢失新音频的头信息）
                     clearAudioQueueWithoutDecoderReset();
                 } else if (response.type === 'audio_chunk') {
@@ -562,14 +495,14 @@ function init_app() {
                     }
                     // 精确打断控制：根据 speech_id 决定是否接收此音频
                     const speechId = response.speech_id;
-                    
+
                     // 检查是否是被打断的旧音频，如果是则丢弃
                     if (speechId && interruptedSpeechId && speechId === interruptedSpeechId) {
                         console.log(window.t('console.discardInterruptedAudio'), speechId);
                         skipNextAudioBlob = true;  // 标记跳过后续的二进制数据
                         return;
                     }
-                    
+
                     // 检查是否是新的 speech_id（新轮对话开始）
                     if (speechId && speechId !== currentPlayingSpeechId) {
                         // 新轮对话开始，在此时重置解码器（确保有新的头信息）
@@ -586,7 +519,7 @@ function init_app() {
                         currentPlayingSpeechId = speechId;
                         interruptedSpeechId = null;  // 清除旧的打断记录
                     }
-                    
+
                     skipNextAudioBlob = false;  // 允许接收后续的二进制数据
                 } else if (response.type === 'cozy_audio') {
                     // 处理音频响应
@@ -691,14 +624,14 @@ function init_app() {
                                         action: 'start_session',
                                         input_type: 'audio'
                                     }));
-                                    
+
                                     // 在发送消息后才开始超时计时（自动重启场景）
                                     autoRestartTimeoutId = setTimeout(() => {
                                         if (sessionStartedRejecter) {
                                             const rejecter = sessionStartedRejecter;
                                             sessionStartedResolver = null;
                                             sessionStartedRejecter = null; //  同时清理 rejecter
-                                            
+
                                             // 超时时向后端发送 end_session 消息
                                             if (socket.readyState === WebSocket.OPEN) {
                                                 socket.send(JSON.stringify({
@@ -706,7 +639,7 @@ function init_app() {
                                                 }));
                                                 console.log(window.t('console.autoRestartTimeoutEndSession'));
                                             }
-                                            
+
                                             rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                                         }
                                     }, 10000);
@@ -719,22 +652,22 @@ function init_app() {
                                     if (screenCaptureStream != null) {
                                         await startScreenSharing();
                                     }
-                                    
+
                                     // 同步更新Live2D浮动按钮状态
                                     if (window.live2dManager && window.live2dManager._floatingButtons) {
                                         // 更新麦克风按钮状态
                                         syncFloatingMicButtonState(true);
-                                        
+
                                         // 更新屏幕分享按钮状态（如果屏幕共享已开启）
                                         if (screenCaptureStream != null) {
                                             syncFloatingScreenButtonState(true);
                                         }
                                     }
-                                    
+
                                     showStatusToast(window.t ? window.t('app.restartComplete', { name: lanlan_config.lanlan_name }) : `重启完成，${lanlan_config.lanlan_name}回来了！`, 4000);
                                 } catch (error) {
                                     console.error(window.t('console.restartError'), error);
-                                    
+
                                     // 重启失败时向后端发送 end_session 消息
                                     if (socket.readyState === WebSocket.OPEN) {
                                         socket.send(JSON.stringify({
@@ -742,36 +675,36 @@ function init_app() {
                                         }));
                                         console.log(window.t('console.autoRestartFailedEndSession'));
                                     }
-                                    
+
                                     hideVoicePreparingToast(); // 确保重启失败时隐藏准备提示
                                     showStatusToast(window.t ? window.t('app.restartFailed', { error: error.message }) : `重启失败: ${error.message}`, 5000);
-                                    
+
                                     // 完整的状态清理逻辑：确保重启失败时正确恢复到待机状态
                                     // 1. 移除按钮状态类
                                     micButton.classList.remove('recording');
                                     micButton.classList.remove('active');
                                     screenButton.classList.remove('active');
-                                    
+
                                     // 2. 重置录音标志
                                     isRecording = false;
                                     window.isRecording = false;
-                                    
+
                                     // 3. 同步Live2D浮动按钮状态
                                     syncFloatingMicButtonState(false);
                                     syncFloatingScreenButtonState(false);
-                                    
+
                                     // 4. 重新启用基本输入按钮（切换到文本模式）
                                     micButton.disabled = false;
                                     textSendButton.disabled = false;
                                     textInputBox.disabled = false;
                                     screenshotButton.disabled = false;
                                     resetSessionButton.disabled = false;
-                                    
+
                                     // 5. 禁用语音控制按钮
                                     muteButton.disabled = true;
                                     screenButton.disabled = true;
                                     stopButton.disabled = true;
-                                    
+
                                     // 6. 显示文本输入区
                                     const textInputArea = document.getElementById('text-input-area');
                                     if (textInputArea) {
@@ -789,6 +722,79 @@ function init_app() {
                         fn();
                     } else {
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
+                    }
+                } else if (response.type === 'agent_status_update') {
+                    const snapshot = response.snapshot || {};
+                    window._agentStatusSnapshot = snapshot;
+                    const serverOnline = snapshot.server_online !== false;
+                    const flags = snapshot.flags || {};
+                    // agent_enabled lives in snapshot.analyzer_enabled, not in flags — normalize it
+                    if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
+                        flags.agent_enabled = !!snapshot.analyzer_enabled;
+                    }
+                    if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
+                        window.agentStateMachine.updateCache(serverOnline, flags);
+                    }
+                    if (typeof window.applyAgentStatusSnapshotToUI === 'function') {
+                        window.applyAgentStatusSnapshotToUI(snapshot);
+                    }
+                    // Restore task HUD on page refresh: use snapshot flags
+                    // even when popup checkboxes don't exist yet
+                    try {
+                        const masterOn = !!flags.agent_enabled;
+                        const anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+                        if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
+                            window.startAgentTaskPolling();
+                        }
+                        // Restore active tasks from snapshot (covers page refresh / reconnect)
+                        const snapshotTasks = snapshot.active_tasks;
+                        if (Array.isArray(snapshotTasks) && snapshotTasks.length > 0) {
+                            if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                            snapshotTasks.forEach(t => {
+                                if (t && t.id) window._agentTaskMap.set(t.id, t);
+                            });
+                            const tasks = Array.from(window._agentTaskMap.values());
+                            if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
+                                window.live2dManager.updateAgentTaskHUD({
+                                    success: true,
+                                    tasks,
+                                    total_count: tasks.length,
+                                    running_count: tasks.filter(t => t.status === 'running').length,
+                                    queued_count: tasks.filter(t => t.status === 'queued').length,
+                                    completed_count: tasks.filter(t => t.status === 'completed').length,
+                                    failed_count: tasks.filter(t => t.status === 'failed').length,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                        }
+                    } catch (_e) { /* ignore */ }
+                } else if (response.type === 'agent_notification') {
+                    const msg = typeof response.text === 'string' ? response.text : '';
+                    if (msg) {
+                        setFloatingAgentStatus(msg, response.status || 'completed');
+                    }
+                } else if (response.type === 'agent_task_update') {
+                    try {
+                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        const task = response.task || {};
+                        if (task.id) {
+                            window._agentTaskMap.set(task.id, task);
+                        }
+                        const tasks = Array.from(window._agentTaskMap.values());
+                        if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
+                            window.live2dManager.updateAgentTaskHUD({
+                                success: true,
+                                tasks,
+                                total_count: tasks.length,
+                                running_count: tasks.filter(t => t.status === 'running').length,
+                                queued_count: tasks.filter(t => t.status === 'queued').length,
+                                completed_count: tasks.filter(t => t.status === 'completed').length,
+                                failed_count: tasks.filter(t => t.status === 'failed').length,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
@@ -819,19 +825,19 @@ function init_app() {
                             ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '')
                             : '';
                         const fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
-                        
+
                         if (!fullText || !fullText.trim()) {
                             return;
                         }
-                        
+
                         // 情感分析（5秒超时保护）
                         setTimeout(async () => {
                             try {
                                 const emotionPromise = analyzeEmotion(fullText);
-                                const timeoutPromise = new Promise((_, reject) => 
+                                const timeoutPromise = new Promise((_, reject) =>
                                     setTimeout(() => reject(new Error('情感分析超时')), 5000)
                                 );
-                                
+
                                 const emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
                                 if (emotionResult && emotionResult.emotion) {
                                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
@@ -845,19 +851,19 @@ function init_app() {
                                 }
                             }
                         }, 100);
-                        
+
                         // 前端翻译处理
                         (async () => {
                             try {
                                 if (userLanguage === null) {
                                     await getUserLanguage();
                                 }
-                                
+
                                 // 用户要求：不要自动翻译聊天框内的文本
                                 // if (userLanguage && userLanguage !== 'zh') {
                                 //     await translateMessageBubble(fullText, window.currentGeminiMessage);
                                 // }
-                                
+
                                 // 用户要求：只在开启字幕翻译开关后才进行翻译
                                 if (subtitleEnabled) {
                                     await translateAndShowSubtitle(fullText);
@@ -877,7 +883,9 @@ function init_app() {
                     }
 
                     // AI回复完成后，重置主动搭话计时器（如果已开启且在文本模式）
-                    if ((proactiveChatEnabled || proactiveVisionEnabled) && !isRecording) {
+                    // 先调用 hasAnyChatModeEnabled() 确保同步状态
+                    const hasChatMode = hasAnyChatModeEnabled();
+                    if (proactiveChatEnabled && hasChatMode && !isRecording) {
                         resetProactiveChatBackoff();
                     }
                 } else if (response.type === 'session_preparing') {
@@ -921,6 +929,60 @@ function init_app() {
                     }
                     sessionStartedResolver = null;
                     sessionStartedRejecter = null;
+                } else if (response.type === 'session_ended_by_server') {
+                    // 后端 session 被服务器终止（如API断连），重置前端会话状态
+                    console.log('[App] Session ended by server, input_mode:', response.input_mode);
+
+                    isTextSessionActive = false;
+
+                    // 清理可能存在的 session Promise
+                    if (sessionStartedRejecter) {
+                        try {
+                            sessionStartedRejecter(new Error('Session ended by server'));
+                        } catch (e) { /* ignore */ }
+                    }
+                    sessionStartedResolver = null;
+                    sessionStartedRejecter = null;
+
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
+                    // 如果当前处于语音模式，停止录音
+                    if (isRecording) {
+                        stopRecording();
+                    }
+
+                    // 无条件清理音频队列，防止残留播放
+                    (async () => { await clearAudioQueue(); })();
+
+                    hideVoicePreparingToast();
+
+                    // 恢复 UI 到空闲状态
+                    micButton.classList.remove('active');
+                    micButton.classList.remove('recording');
+                    screenButton.classList.remove('active');
+                    micButton.disabled = false;
+                    textSendButton.disabled = false;
+                    textInputBox.disabled = false;
+                    screenshotButton.disabled = false;
+                    muteButton.disabled = true;
+                    screenButton.disabled = true;
+                    stopButton.disabled = true;
+                    resetSessionButton.disabled = true;
+                    returnSessionButton.disabled = true;
+
+                    const textInputArea = document.getElementById('text-input-area');
+                    if (textInputArea) {
+                        textInputArea.classList.remove('hidden');
+                    }
+
+                    syncFloatingMicButtonState(false);
+                    syncFloatingScreenButtonState(false);
+
+                    window.isMicStarting = false;
+                    isSwitchingMode = false;
                 } else if (response.type === 'reload_page') {
                     console.log(window.t('console.reloadPageReceived'), response.message);
                     // 显示提示信息
@@ -943,6 +1005,12 @@ function init_app() {
                         muteButton.click();
 
                         // 显示提示信息
+                        showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
+                    } else {
+                        // isRecording 为 false 时，也需要同步按钮状态
+                        micButton.classList.remove('active');
+                        micButton.classList.remove('recording');
+                        syncFloatingMicButtonState(false);
                         showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
                     }
                 } else if (response.type === 'repetition_warning') {
@@ -974,6 +1042,98 @@ function init_app() {
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
 
+            // 重置语音录制状态和资源（包括录制中或麦克风启动中的情况）
+            if (isRecording || window.isMicStarting) {
+                console.log('WebSocket断开时重置语音录制状态');
+                isRecording = false;
+                window.isRecording = false;
+                window.isMicStarting = false;
+                window.currentGeminiMessage = null;
+                lastVoiceUserMessage = null;
+                lastVoiceUserMessageTime = 0;
+
+                // 停止静音检测
+                stopSilenceDetection();
+
+                // 清理输入analyser
+                inputAnalyser = null;
+
+                // 停止所有音频轨道
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                // 关闭AudioContext
+                if (audioContext && audioContext.state !== 'closed') {
+                    audioContext.close();
+                    audioContext = null;
+                    workletNode = null;
+                }
+            }
+
+            // 重置模式切换标志
+            if (isSwitchingMode) {
+                console.log('WebSocket断开时重置模式切换标志');
+                isSwitchingMode = false;
+            }
+
+            // 清理 session Promise resolver/rejecter，防止后续操作永远等待
+            if (sessionStartedResolver || sessionStartedRejecter) {
+                console.log('WebSocket断开时清理session Promise');
+                if (sessionStartedRejecter) {
+                    try {
+                        sessionStartedRejecter(new Error('WebSocket连接断开'));
+                    } catch (e) {
+                        // 忽略已经处理的reject
+                    }
+                }
+                sessionStartedResolver = null;
+                sessionStartedRejecter = null;
+            }
+
+            // 清理session超时定时器
+            if (window.sessionTimeoutId) {
+                clearTimeout(window.sessionTimeoutId);
+                window.sessionTimeoutId = null;
+            }
+
+            // 清理音频队列
+            (async () => {
+                await clearAudioQueue();
+            })();
+
+            // 隐藏语音准备提示
+            hideVoicePreparingToast();
+
+            // 移除按钮的active/recording类
+            micButton.classList.remove('active');
+            micButton.classList.remove('recording');
+            screenButton.classList.remove('active');
+
+            // 恢复按钮状态，确保用户可以继续操作
+            micButton.disabled = false;
+            textSendButton.disabled = false;
+            textInputBox.disabled = false;
+            screenshotButton.disabled = false;
+
+            // 禁用语音控制按钮（因为没有活跃的语音会话）
+            muteButton.disabled = true;
+            screenButton.disabled = true;
+            stopButton.disabled = true;
+            resetSessionButton.disabled = true;
+            returnSessionButton.disabled = true;
+
+            // 确保文本输入区可见
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
+            // 同步浮动按钮状态
+            syncFloatingMicButtonState(false);
+            syncFloatingScreenButtonState(false);
+
             // 如果不是正在切换猫娘，才自动重连（避免与手动重连冲突）
             if (!isSwitchingCatgirl) {
                 // 保存 setTimeout ID，以便在 handleCatgirlSwitch 中取消
@@ -996,7 +1156,7 @@ function init_app() {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
             console.log('[BroadcastChannel] 主页面 BroadcastChannel 已初始化');
 
-            nekoBroadcastChannel.onmessage = async function(event) {
+            nekoBroadcastChannel.onmessage = async function (event) {
                 if (!event.data || !event.data.action) {
                     return;
                 }
@@ -1013,11 +1173,107 @@ function init_app() {
                     case 'show_main_ui':
                         handleShowMainUI();
                         break;
+                    case 'memory_edited':
+                        console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
+                        (async () => {
+                            // 记录之前是否在语音模式
+                            const wasRecording = isRecording;
+
+                            // 停止当前语音捕获
+                            if (isRecording) {
+                                stopMicCapture();
+                            }
+
+                            // 向后端发送 end_session，确保服务器丢弃旧上下文
+                            if (socket && socket.readyState === WebSocket.OPEN) {
+                                socket.send(JSON.stringify({ action: 'end_session' }));
+                                console.log('[Memory] 已向后端发送 end_session');
+                            }
+
+                            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+                            if (isTextSessionActive) {
+                                isTextSessionActive = false;
+                                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+                            }
+                            // 停止正在播放的AI语音回复（等待音频解码/重置完成，避免与后续重连流程竞争）
+                            if (typeof clearAudioQueue === 'function') {
+                                try {
+                                    await clearAudioQueue();
+                                } catch (e) {
+                                    console.error('[Memory] clearAudioQueue 失败:', e);
+                                }
+                            }
+
+                            // 如果之前是语音模式，等待 session 结束后通过完整启动流程重新连接
+                            if (wasRecording) {
+                                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                                // 等待后端 session 完全结束
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                                // 通过 micButton.click() 触发完整启动流程
+                                // （发送 start_session、等待 session_started、再初始化麦克风）
+                                try {
+                                    micButton.click();
+                                } catch (e) {
+                                    console.error('[Memory] 自动重连语音失败:', e);
+                                }
+                            } else {
+                                // 显示提示
+                                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+                            }
+                        })();
+                        break;
                 }
             };
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    function cleanupLive2DOverlayUI() {
+        const live2dManager = window.live2dManager;
+
+        if (live2dManager) {
+            if (live2dManager._lockIconTicker && live2dManager.pixi_app?.ticker) {
+                try {
+                    live2dManager.pixi_app.ticker.remove(live2dManager._lockIconTicker);
+                } catch (_) {
+                    // ignore
+                }
+                live2dManager._lockIconTicker = null;
+            }
+            if (live2dManager._floatingButtonsTicker && live2dManager.pixi_app?.ticker) {
+                try {
+                    live2dManager.pixi_app.ticker.remove(live2dManager._floatingButtonsTicker);
+                } catch (_) {
+                    // ignore
+                }
+                live2dManager._floatingButtonsTicker = null;
+            }
+            if (live2dManager._floatingButtonsResizeHandler) {
+                window.removeEventListener('resize', live2dManager._floatingButtonsResizeHandler);
+                live2dManager._floatingButtonsResizeHandler = null;
+            }
+            if (live2dManager.tutorialProtectionTimer) {
+                clearInterval(live2dManager.tutorialProtectionTimer);
+                live2dManager.tutorialProtectionTimer = null;
+            }
+            live2dManager._floatingButtonsContainer = null;
+            live2dManager._returnButtonContainer = null;
+            live2dManager._lockIconElement = null;
+            live2dManager._lockIconImages = null;
+        }
+
+        document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
+            .forEach(el => el.remove());
+    }
+
+    function cleanupVRMOverlayUI() {
+        if (window.vrmManager && typeof window.vrmManager.cleanupUI === 'function') {
+            window.vrmManager.cleanupUI();
+            return;
+        }
+        document.querySelectorAll('#vrm-floating-buttons, #vrm-lock-icon, #vrm-return-button-container')
+            .forEach(el => el.remove());
     }
 
     // 模型重载处理函数
@@ -1074,6 +1330,14 @@ function init_app() {
                     console.warn('[Model] 模型路径为空，保持当前模型不变');
                     showStatusToast(window.t ? window.t('app.modelPathEmpty') : '模型路径为空', 2000);
                     return;
+                }
+
+                if (oldModelType !== newModelType) {
+                    if (newModelType === 'vrm') {
+                        cleanupLive2DOverlayUI();
+                    } else {
+                        cleanupVRMOverlayUI();
+                    }
                 }
 
                 // 2. 更新全局配置
@@ -1327,16 +1591,58 @@ function init_app() {
         }
     }
 
-    // 监听记忆编辑通知（从 memory_browser iframe 发送）
-    window.addEventListener('message', function (event) {
+    // 监听记忆编辑通知（从 memory_browser iframe 发送 - postMessage 后备方案）
+    window.addEventListener('message', async function (event) {
+        // 安全检查：验证消息来源
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的 memory_edited 消息:', event.origin);
+            return;
+        }
+
         if (event.data && event.data.type === 'memory_edited') {
             console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
-            // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
+
+            // 记录之前是否在语音模式
+            const wasRecording = isRecording;
+
+            // 停止当前语音捕获
             if (isRecording) {
                 stopMicCapture();
             }
-            // 显示提示
-            showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            // 向后端发送 end_session，确保服务器丢弃旧上下文
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ action: 'end_session' }));
+                console.log('[Memory] 已向后端发送 end_session');
+            }
+            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+            if (isTextSessionActive) {
+                isTextSessionActive = false;
+                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+            }
+            // 停止正在播放的AI语音回复（等待完成，避免竞态条件）
+            if (typeof clearAudioQueue === 'function') {
+                try {
+                    await clearAudioQueue();
+                } catch (e) {
+                    console.error('[Memory] clearAudioQueue 失败:', e);
+                }
+            }
+
+            // 如果之前是语音模式，等待 session 结束后自动重新连接
+            if (wasRecording) {
+                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                // 等待后端 session 完全结束
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                // 通过 micButton.click() 触发完整启动流程
+                try {
+                    micButton.click();
+                } catch (e) {
+                    console.error('[Memory] 自动重连语音失败:', e);
+                }
+            } else {
+                // 显示提示
+                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            }
         }
     });
 
@@ -1375,7 +1681,7 @@ function init_app() {
         messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
         chatContainer.appendChild(messageDiv);
         window.currentGeminiMessage = messageDiv;
-        
+
         // ========== 新增：追踪本轮气泡 ==========
         window.currentTurnGeminiBubbles.push(messageDiv);
         // ========== 追踪结束 ==========
@@ -1584,7 +1890,7 @@ function init_app() {
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(text);
-                
+
                 // 注意：翻译现在在消息完成时（turn end事件）立即执行，不再使用延迟机制
 
                 // 如果是AI第一次回复，更新状态并检查成就
@@ -1783,8 +2089,8 @@ function init_app() {
                     socket.send(JSON.stringify({ action: 'pause_session' }));
                 }
 
-                // 如果主动搭话/主动视觉已启用，重置并开始定时
-                if (proactiveChatEnabled || proactiveVisionEnabled) {
+                // 如果主动搭话已启用且选择了搭话方式，重置并开始定时
+                if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                     lastUserInputTime = Date.now();
                     resetProactiveChatBackoff();
                 }
@@ -1869,7 +2175,7 @@ function init_app() {
     }
 
     // 更新麦克风增益（供外部调用，参数为分贝值）
-    window.setMicrophoneGain = function(gainDb) {
+    window.setMicrophoneGain = function (gainDb) {
         if (gainDb >= MIN_MIC_GAIN_DB && gainDb <= MAX_MIC_GAIN_DB) {
             microphoneGainDb = gainDb;
             if (micGainNode) {
@@ -1886,7 +2192,7 @@ function init_app() {
     };
 
     // 获取当前麦克风增益（返回分贝值）
-    window.getMicrophoneGain = function() {
+    window.getMicrophoneGain = function () {
         return microphoneGainDb;
     };
 
@@ -1942,7 +2248,7 @@ function init_app() {
     }
 
     // 设置扬声器音量（供外部调用，参数为 0~100）
-    window.setSpeakerVolume = function(vol) {
+    window.setSpeakerVolume = function (vol) {
         if (vol >= 0 && vol <= 100) {
             speakerVolume = vol;
             if (speakerGainNode) {
@@ -1959,7 +2265,7 @@ function init_app() {
     };
 
     // 获取当前扬声器音量
-    window.getSpeakerVolume = function() {
+    window.getSpeakerVolume = function () {
         return speakerVolume;
     };
 
@@ -2207,7 +2513,7 @@ function init_app() {
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
-            
+
             // 失败时恢复文本输入区
             const textInputArea = document.getElementById('text-input-area');
             if (textInputArea) {
@@ -2225,6 +2531,24 @@ function init_app() {
 
     async function stopMicCapture() { // 闭麦，按钮on click
         isSwitchingMode = true; // 开始模式切换（从语音切换到待机/文本模式）
+
+        // 隐藏语音准备提示（防止残留）
+        hideVoicePreparingToast();
+
+        // 清理 session Promise 相关状态（防止影响后续会话）
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        if (sessionStartedRejecter) {
+            try {
+                sessionStartedRejecter(new Error('Session aborted'));
+            } catch (e) { /* ignore already handled */ }
+            sessionStartedRejecter = null;
+        }
+        if (sessionStartedResolver) {
+            sessionStartedResolver = null;
+        }
 
         // 停止录音时移除录音状态类
         micButton.classList.remove('recording');
@@ -2252,7 +2576,7 @@ function init_app() {
         textInputArea.classList.remove('hidden');
 
         // 停止录音后，重置主动搭话退避级别并开始定时
-        if (proactiveChatEnabled || proactiveVisionEnabled) {
+        if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
             lastUserInputTime = Date.now();
             resetProactiveChatBackoff();
         }
@@ -2333,21 +2657,88 @@ function init_app() {
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
                     // 检查是否有选中的特定屏幕源（仅Electron环境）
-                    const selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
-                    
+                    let selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
+
+                    if (selectedSourceId && window.electronDesktopCapturer) {
+                        // 验证选中的源是否仍然存在（窗口可能已关闭）
+                        try {
+                            const currentSources = await window.electronDesktopCapturer.getSources({
+                                types: ['window', 'screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            const sourceStillExists = currentSources.some(s => s.id === selectedSourceId);
+
+                            if (!sourceStillExists) {
+                                console.warn('[屏幕源] 选中的源已不可用 (ID:', selectedSourceId, ')，自动回退到全屏');
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                                // 查找第一个全屏源作为回退
+                                const screenSources = currentSources.filter(s => s.id.startsWith('screen:'));
+                                if (screenSources.length > 0) {
+                                    selectedSourceId = screenSources[0].id;
+                                    selectedScreenSourceId = selectedSourceId;
+                                    try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                    updateScreenSourceListSelection();
+                                } else {
+                                    // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
+                                    selectedSourceId = null;
+                                    selectedScreenSourceId = null;
+                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                }
+                            }
+                        } catch (validateErr) {
+                            console.warn('[屏幕源] 验证源可用性失败，继续尝试使用保存的源:', validateErr);
+                        }
+                    }
+
                     if (selectedSourceId && window.electronDesktopCapturer) {
                         // 在Electron中使用选中的特定屏幕/窗口源
                         // 使用 chromeMediaSourceId 约束来指定源
-                        screenCaptureStream = await navigator.mediaDevices.getUserMedia({
-                            audio: false,
-                            video: {
-                                mandatory: {
-                                    chromeMediaSource: 'desktop',
-                                    chromeMediaSourceId: selectedSourceId,
-                                    maxFrameRate: 1
+                        try {
+                            screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                audio: false,
+                                video: {
+                                    mandatory: {
+                                        chromeMediaSource: 'desktop',
+                                        chromeMediaSourceId: selectedSourceId,
+                                        maxFrameRate: 1
+                                    }
                                 }
+                            });
+                        } catch (captureErr) {
+                            // getUserMedia 失败（竞态：验证时存在但捕获时已消失）
+                            console.warn('[屏幕源] 指定源捕获失败，回退到全屏:', captureErr);
+                            selectedScreenSourceId = null;
+                            try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+
+                            // 尝试回退到全屏源
+                            const fallbackSources = await window.electronDesktopCapturer.getSources({
+                                types: ['screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            if (fallbackSources.length > 0) {
+                                screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: fallbackSources[0].id,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                selectedScreenSourceId = fallbackSources[0].id;
+                                try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                            } else {
+                                throw captureErr; // 全屏也拿不到，重新抛出让外层 catch 处理
                             }
-                        });
+                        }
                         console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
                     } else {
                         // 使用标准的getDisplayMedia（显示系统选择器）
@@ -2390,6 +2781,23 @@ function init_app() {
                 stopScreening();
                 screenButton.classList.remove('active');
                 syncFloatingScreenButtonState(false);
+
+                // 停止所有 tracks 并清理引用
+                if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
+                    screenCaptureStream.getTracks().forEach(track => {
+                        try {
+                            track.stop();
+                        } catch (e) { }
+                    });
+                }
+                screenCaptureStream = null;
+                screenCaptureStreamLastUsed = null;
+
+                // 清除闲置定时器
+                if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
+                    clearTimeout(screenCaptureStreamIdleTimer);
+                    screenCaptureStreamIdleTimer = null;
+                }
             };
 
             // 获取麦克风流
@@ -2416,10 +2824,10 @@ function init_app() {
 
     async function stopScreenSharing() { // 停止共享，按钮on click
         stopScreening();
-        
+
         // 停止所有 tracks 并清除回调，防止隐私/资源泄漏
         try {
-            if (screenCaptureStream instanceof MediaStream) {
+            if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
                 // 清除 onended 回调，防止重复触发
                 const vt = screenCaptureStream.getVideoTracks?.()?.[0];
                 if (vt) {
@@ -2446,17 +2854,24 @@ function init_app() {
                 screenCaptureStreamIdleTimer = null;
             }
         }
-        
-        micButton.disabled = true;
-        muteButton.disabled = false;
-        screenButton.disabled = false;
-        stopButton.disabled = true;
-        resetSessionButton.disabled = false;
-        showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
 
-        // 移除active类
-        screenButton.classList.remove('active');
-        syncFloatingScreenButtonState(false);
+        // 仅在主动录像/语音连接分享时更新 UI 状态，防止闲置释放导致 UI 错误锁定
+        if (isRecording) {
+            micButton.disabled = true;
+            muteButton.disabled = false;
+            screenButton.disabled = false;
+            stopButton.disabled = true;
+            resetSessionButton.disabled = false;
+            showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+
+            // 移除active类
+            screenButton.classList.remove('active');
+            syncFloatingScreenButtonState(false);
+        } else {
+            // 即使未录音，也确保按钮重置为正常状态
+            screenButton.classList.remove('active');
+            syncFloatingScreenButtonState(false);
+        }
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
@@ -2644,15 +3059,18 @@ function init_app() {
 
     // 同步浮动麦克风按钮状态的辅助函数
     function syncFloatingMicButtonState(isActive) {
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.mic) {
-            const floatingMicBtn = window.live2dManager._floatingButtons.mic.button;
-            if (floatingMicBtn) {
-                floatingMicBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.mic.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.mic.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        // 更新所有存在的 manager 的按钮状态
+        const managers = [window.live2dManager, window.vrmManager];
+
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
                 }
             }
         }
@@ -2660,15 +3078,18 @@ function init_app() {
 
     // 同步浮动屏幕分享按钮状态的辅助函数
     function syncFloatingScreenButtonState(isActive) {
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.screen) {
-            const floatingScreenBtn = window.live2dManager._floatingButtons.screen.button;
-            if (floatingScreenBtn) {
-                floatingScreenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.screen.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.screen.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        // 更新所有存在的 manager 的按钮状态
+        const managers = [window.live2dManager, window.vrmManager];
+
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
                 }
             }
         }
@@ -2751,7 +3172,7 @@ function init_app() {
                     action: 'start_session',
                     input_type: 'audio'
                 }));
-                
+
                 // 设置超时（10秒），如果超时则拒绝
                 timeoutId = setTimeout(() => {
                     if (sessionStartedRejecter) {
@@ -2759,7 +3180,7 @@ function init_app() {
                         sessionStartedResolver = null; // 先清除，防止重复触发
                         sessionStartedRejecter = null; // 同时清理 rejecter
                         window.sessionTimeoutId = null; // 清除全局定时器ID
-                        
+
                         // 超时时向后端发送 end_session 消息
                         if (socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({
@@ -2767,7 +3188,7 @@ function init_app() {
                             }));
                             console.log(window.t('console.sessionTimeoutEndSession'));
                         }
-                        
+
                         // 更新提示信息，显示超时
                         showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '连接超时' : '连接超时，请检查网络连接');
                         rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
@@ -2805,13 +3226,13 @@ function init_app() {
                 await showCurrentModel(); // 智能显示当前模型
 
                 showStatusToast(window.t ? window.t('app.initializingMic') : '正在初始化麦克风...', 3000);
-                
+
                 // 并行等待
                 await Promise.all([
                     sessionStartPromise,
                     startMicCapture()
                 ]);
-                
+
                 // 成功时清除超时定时器
                 if (timeoutId) {
                     clearTimeout(timeoutId);
@@ -2864,7 +3285,7 @@ function init_app() {
             if (sessionStartedRejecter) {
                 sessionStartedRejecter = null; //  同时清理 rejecter
             }
-            
+
             // 确保后端清理资源，避免前后端状态不一致
             if (socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({
@@ -2965,7 +3386,7 @@ function init_app() {
             console.log(window.t('console.executingNormalEndSession'));
 
             // 结束会话后，重置主动搭话计时器（如果已开启）
-            if (proactiveChatEnabled || proactiveVisionEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
             // 显示文本输入区
@@ -3068,7 +3489,7 @@ function init_app() {
                         sessionStartedResolver = null; // 先清除，防止重复触发
                         sessionStartedRejecter = null; //  同时清理 rejecter
                         window.sessionTimeoutId = null; // 清除全局定时器ID
-                        
+
                         // 超时时向后端发送 end_session 消息
                         if (socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({
@@ -3076,7 +3497,7 @@ function init_app() {
                             }));
                             console.log(window.t('console.returnSessionTimeoutEndSession'));
                         }
-                        
+
                         rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                     }
                 }, 15000); // 15秒超时
@@ -3168,7 +3589,7 @@ function init_app() {
             returnSessionButton.disabled = true;
 
             // 重置主动搭话定时器
-            if (proactiveChatEnabled || proactiveVisionEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
 
@@ -3178,7 +3599,7 @@ function init_app() {
             console.error(window.t('console.askHerBackFailed'), error);
             hideVoicePreparingToast(); // 确保失败时隐藏准备提示
             showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : `回来失败: ${error.message}`, 5000);
-            
+
             // 清除所有超时定时器和状态
             if (window.sessionTimeoutId) {
                 clearTimeout(window.sessionTimeoutId);
@@ -3190,7 +3611,7 @@ function init_app() {
             if (sessionStartedRejecter) {
                 sessionStartedRejecter = null; // 同时清理 rejecter
             }
-            
+
             // 重新启用按钮，允许用户重试
             returnSessionButton.disabled = false;
         } finally {
@@ -3347,7 +3768,7 @@ function init_app() {
             }
 
             // 文本聊天后，重置主动搭话计时器（如果已开启）
-            if (proactiveChatEnabled || proactiveVisionEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
 
@@ -3768,10 +4189,18 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
-        
+
         // 重置语音模式用户转录合并追踪
         lastVoiceUserMessage = null;
         lastVoiceUserMessageTime = 0;
+
+        // 清理 AI 回复相关的队列和缓冲区（防止影响后续会话）
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window.currentTurnGeminiBubbles = [];
+        window._isProcessingRealisticQueue = false;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -3794,10 +4223,10 @@ function init_app() {
             workletNode = null;
         }
 
-        // 通知服务器暂停会话
+        // 通知服务器结束会话
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
-                action: 'pause_session'
+                action: 'end_session'
             }));
         }
         // statusElement.textContent = '录制已停止';
@@ -4032,7 +4461,7 @@ function init_app() {
             screenCaptureStreamLastUsed = Date.now();
             scheduleScreenCaptureIdleCheck();
         }
-        
+
         const video = document.createElement('video');
         // console.log('Ready for sharing 1')
 
@@ -4109,7 +4538,7 @@ function init_app() {
             }
             // 无论是否新建，都同步一次全局引用
             syncAudioGlobals();
-            
+
             if (window.DEBUG_AUDIO) {
                 console.debug('[Audio] globalAnalyser 状态:', !!globalAnalyser);
             }
@@ -4128,18 +4557,18 @@ function init_app() {
         if (animationFrameId) {
             cancelAnimationFrame(animationFrameId);
         }
-        
+
         // 重置平滑状态
         _lastMouthOpen = 0;
-        
+
         // 使用时域数据计算 RMS，对干声足够了
         const dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
             if (!analyser) return;
-            
+
             analyser.getByteTimeDomainData(dataArray);
-            
+
             // 计算 RMS
             let sum = 0;
             for (let i = 0; i < dataArray.length; i++) {
@@ -4147,16 +4576,16 @@ function init_app() {
                 sum += val * val;
             }
             const rms = Math.sqrt(sum / dataArray.length);
-            
+
             // 映射到 0~1
             let mouthOpen = Math.min(1, rms * 10);
-            
-            
+
+
             // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
             mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
             _lastMouthOpen = mouthOpen;
 
-            
+
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
             }
@@ -4309,7 +4738,7 @@ function init_app() {
             console.log('[showCurrentModel] 当前处于"请她离开"状态（VRM），跳过显示逻辑');
             return;
         }
-        
+
         // 在显示模型前，明确重置 goodbye 标志（防止标志持久化导致模型无法显示）
         if (window.live2dManager) {
             window.live2dManager._goodbyeClicked = false;
@@ -4607,8 +5036,8 @@ function init_app() {
         const vrmContainer = document.getElementById('vrm-container');
         const live2dContainer = document.getElementById('live2d-container');
         const isVrmActive = vrmContainer &&
-                           vrmContainer.style.display !== 'none' &&
-                           !vrmContainer.classList.contains('hidden');
+            vrmContainer.style.display !== 'none' &&
+            !vrmContainer.classList.contains('hidden');
         console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive);
 
         // 隐藏 VRM 容器和 canvas
@@ -4681,11 +5110,11 @@ function init_app() {
         // 优先显示当前激活模型的返回按钮
         const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
         const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
-        
+
         // 【关键修复】使用之前判断的 isVrmActive 来决定显示哪个返回按钮
         // 不再检查按钮可见性，因为按钮已经被隐藏了
         const useVrmReturn = isVrmActive;
-        
+
         // 显示Live2D的返回按钮（仅在非VRM模式时显示）
         if (!useVrmReturn && live2dReturnButtonContainer) {
             if (savedGoodbyeRect) {
@@ -4711,7 +5140,7 @@ function init_app() {
             // 隐藏Live2D返回按钮（如果VRM是激活的）
             live2dReturnButtonContainer.style.display = 'none';
         }
-        
+
         // 显示VRM的返回按钮（仅在VRM模式时显示）
         console.log('[App] VRM返回按钮检查 - useVrmReturn:', useVrmReturn, 'vrmReturnButtonContainer存在:', !!vrmReturnButtonContainer);
 
@@ -4785,7 +5214,7 @@ function init_app() {
             console.log('[App] 自动折叠对话区');
             chatContainerEl.classList.add(collapseClass);
             console.log('[App] 折叠后类列表:', chatContainerEl.className);
-            
+
             // 移动端还需要隐藏内容区
             if (isMobile) {
                 const chatContentWrapper = document.getElementById('chat-content-wrapper');
@@ -4793,7 +5222,7 @@ function init_app() {
                 if (chatContentWrapper) chatContentWrapper.style.display = 'none';
                 if (chatHeader) chatHeader.style.display = 'none';
             }
-            
+
             // 同步更新切换按钮的状态（图标和标题）
             const toggleChatBtn = document.getElementById('toggle-chat-btn');
             if (toggleChatBtn) {
@@ -4803,7 +5232,7 @@ function init_app() {
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
-                
+
                 // 移动端确保切换按钮可见
                 if (isMobile) {
                     toggleChatBtn.style.display = 'block';
@@ -4958,7 +5387,7 @@ function init_app() {
             });
             console.log('[App] 已恢复所有Live2D弹窗的交互能力，数量:', allLive2dPopups.length);
         }
-        
+
         // 恢复VRM的浮动按钮系统（使用 !important 强制显示，覆盖之前的隐藏样式）
         const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
         if (vrmFloatingButtons) {
@@ -4971,7 +5400,7 @@ function init_app() {
             vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
             vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
             vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
-            
+
             // 恢复所有按钮的显示状态
             if (window.vrmManager && window.vrmManager._floatingButtons) {
                 Object.keys(window.vrmManager._floatingButtons).forEach(btnId => {
@@ -5245,11 +5674,20 @@ function init_app() {
             if (flags) this._cachedFlags = flags;
         },
 
+        // Whether the master+child flags indicate agent is active
+        isAgentActive() {
+            const f = this._cachedFlags;
+            if (!f) return false;
+            const master = !!f.agent_enabled;
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled);
+            return master && child;
+        },
+
         // 根据状态更新所有按钮UI
         _updateUI() {
             const master = document.getElementById('live2d-agent-master');
             const keyboard = document.getElementById('live2d-agent-keyboard');
-            const mcp = document.getElementById('live2d-agent-mcp');
+
             const userPlugin = document.getElementById('live2d-agent-user-plugin');
             const status = document.getElementById('live2d-agent-status');
 
@@ -5262,7 +5700,7 @@ function init_app() {
                     // 空闲：所有按钮禁用
                     if (master) { master.disabled = true; master.title = ''; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; keyboard.title = ''; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; mcp.checked = false; mcp.title = ''; syncUI(mcp); }
+
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; userPlugin.title = ''; syncUI(userPlugin); }
                     break;
 
@@ -5278,11 +5716,7 @@ function init_app() {
                         keyboard.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                         syncUI(keyboard);
                     }
-                    if (mcp) {
-                        mcp.disabled = true;
-                        mcp.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
-                        syncUI(mcp);
-                    }
+
                     if (userPlugin) {
                         userPlugin.disabled = true;
                         userPlugin.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -5310,7 +5744,7 @@ function init_app() {
                         syncUI(master);
                     }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; mcp.checked = false; syncUI(mcp); }
+
                     if (status) status.textContent = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; syncUI(userPlugin); }
                     break;
@@ -5319,7 +5753,7 @@ function init_app() {
                     // 处理中：所有按钮禁用，防止重复操作
                     if (master) { master.disabled = true; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; syncUI(mcp); }
+
                     if (userPlugin) { userPlugin.disabled = true; syncUI(userPlugin); }
                     break;
             }
@@ -5328,6 +5762,7 @@ function init_app() {
 
     // 暴露状态机给外部使用
     window.agentStateMachine = agentStateMachine;
+    window._agentStatusSnapshot = window._agentStatusSnapshot || null;
 
     // Agent 定时检查器（暴露到 window 供 live2d-ui-hud.js 调用）
     let agentCheckInterval = null;
@@ -5342,7 +5777,7 @@ function init_app() {
     const checkAgentCapabilities = async () => {
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
+
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         // 【状态机控制】如果正在处理用户操作，跳过轮询
@@ -5416,7 +5851,7 @@ function init_app() {
         // 【减少能力检查频率】只在必要时检查子功能可用性
         const checks = [
             { id: 'live2d-agent-keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
-            { id: 'live2d-agent-mcp', capability: 'mcp', flagKey: 'mcp_enabled', nameKey: 'mcpTools' },
+
             { id: 'live2d-agent-user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' }
         ];
         for (const { id, capability, flagKey, nameKey } of checks) {
@@ -5497,6 +5932,7 @@ function init_app() {
                     if (data.success) {
                         const analyzerEnabled = data.analyzer_enabled || false;
                         const flags = data.agent_flags || {};
+                        flags.agent_enabled = !!analyzerEnabled;
                         // 处理后端推送的通知（如果有）
                         const notification = data.notification;
                         if (notification) {
@@ -5518,7 +5954,7 @@ function init_app() {
                             agentMasterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
-                            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -5566,27 +6002,7 @@ function init_app() {
                             }
                         }
 
-                        if (agentMcpCheckbox && !agentMcpCheckbox._processing) {
-                            const flagEnabled = flags.mcp_enabled || false;
-                            const isAvailable = capabilityCheckFailed ? agentMcpCheckbox.checked : (capabilityResults['mcp_enabled'] !== false);
-                            const shouldBeChecked = flagEnabled && isAvailable;
 
-                            if (agentMcpCheckbox.checked !== shouldBeChecked) {
-                                if (shouldBeChecked) {
-                                    agentMcpCheckbox.checked = true;
-                                    agentMcpCheckbox._autoDisabled = true;
-                                    agentMcpCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentMcpCheckbox._autoDisabled = false;
-                                    if (typeof agentMcpCheckbox._updateStyle === 'function') agentMcpCheckbox._updateStyle();
-                                } else if (!flagEnabled) {
-                                    agentMcpCheckbox.checked = false;
-                                    agentMcpCheckbox._autoDisabled = true;
-                                    agentMcpCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentMcpCheckbox._autoDisabled = false;
-                                    if (typeof agentMcpCheckbox._updateStyle === 'function') agentMcpCheckbox._updateStyle();
-                                }
-                            }
-                        }
 
                         // 用户插件 flag 同步独立处理，避免依赖 MCP 分支
                         if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing) {
@@ -5633,7 +6049,7 @@ function init_app() {
                 agentMasterCheckbox._autoDisabled = false;
                 if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
 
-                [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                     if (cb) {
                         cb.checked = false;
                         cb.disabled = true;
@@ -5655,9 +6071,10 @@ function init_app() {
 
     // 启动 Agent 可用性定时检查（由 Agent 总开关打开时调用）
     window.startAgentAvailabilityCheck = function () {
-        // 清除之前的定时器
+        // 事件驱动：不做轮询，仅做一次性检查。
         if (agentCheckInterval) {
             clearInterval(agentCheckInterval);
+            agentCheckInterval = null;
         }
 
         // 重置 flags 同步时间，确保立即同步一次
@@ -5667,9 +6084,6 @@ function init_app() {
 
         // 立即检查一次
         checkAgentCapabilities();
-
-        // 每1秒检查一次
-        agentCheckInterval = setInterval(checkAgentCapabilities, 1000);
     };
 
     // 停止 Agent 可用性定时检查（由 Agent 总开关关闭时调用）
@@ -5681,22 +6095,45 @@ function init_app() {
     };
 
     // 浮动Agent status更新函数
-    function setFloatingAgentStatus(msg) {
+    function setFloatingAgentStatus(msg, taskStatus) {
         const statusEl = document.getElementById('live2d-agent-status');
         if (statusEl) {
             statusEl.textContent = msg || '';
+            // Apply status-specific color for task result notifications
+            const colorMap = {
+                completed: '#52c41a',  // green
+                partial: '#faad14',  // amber
+                failed: '#ff4d4f',  // red
+            };
+            if (taskStatus && colorMap[taskStatus]) {
+                statusEl.style.color = colorMap[taskStatus];
+                // Auto-reset to theme blue after 6 seconds
+                clearTimeout(statusEl._statusResetTimer);
+                statusEl._statusResetTimer = setTimeout(() => {
+                    statusEl.style.color = '#44b7fe';
+                }, 6000);
+            } else {
+                clearTimeout(statusEl._statusResetTimer);
+                statusEl.style.color = '#44b7fe';
+            }
         }
     }
 
     // 检查Agent服务器健康状态
     async function checkToolServerHealth() {
-        try {
-            const resp = await fetch(`/api/agent/health`);
-            if (!resp.ok) throw new Error('not ok');
-            return true;
-        } catch (e) {
-            return false;
+        // 兼容服务启动竞态：首次失败时做短重试，避免必须手动刷新。
+        for (let i = 0; i < 3; i++) {
+            try {
+                const resp = await fetch(`/api/agent/health`);
+                if (resp.ok) return true;
+            } catch (e) {
+                // continue retry
+            }
+            if (i < 2) {
+                await new Promise(resolve => setTimeout(resolve, 350));
+            }
         }
+        return false;
     }
 
     // 检查Agent能力
@@ -5729,9 +6166,20 @@ function init_app() {
     // 连接Agent弹出框中的开关到Agent控制逻辑
     // 使用事件监听替代固定延迟，确保在浮动按钮创建完成后才绑定事件
     const setupAgentCheckboxListeners = () => {
+        // Agent UI v2: fully event-driven single-store controller.
+        // Keep legacy logic as fallback only when v2 is unavailable.
+        if (typeof window.initAgentUiV2 === 'function') {
+            try {
+                window.initAgentUiV2();
+                return;
+            } catch (e) {
+                console.warn('[App] initAgentUiV2 failed, fallback to legacy agent UI:', e);
+            }
+        }
+
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
+
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         if (!agentMasterCheckbox) {
@@ -5743,13 +6191,13 @@ function init_app() {
 
         // 【状态机】操作序列号由状态机管理，子开关保留独立序列号
         let keyboardOperationSeq = 0;
-        let mcpOperationSeq = 0;
+
         let userPluginOperationSeq = 0;
 
         // 标记这些 checkbox 有外部处理器
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
-        if (agentMcpCheckbox) agentMcpCheckbox._hasExternalHandler = true;
+
         if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
 
 
@@ -5760,14 +6208,80 @@ function init_app() {
             }
         };
 
+        const applyAgentStatusSnapshotToUI = (snapshot) => {
+            if (!snapshot || agentStateMachine.getState() === AgentPopupState.PROCESSING) return;
+            const serverOnline = snapshot.server_online !== false;
+            const flags = snapshot.flags || {};
+            if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
+                flags.agent_enabled = !!snapshot.analyzer_enabled;
+            }
+            const analyzerEnabled = !!snapshot.analyzer_enabled;
+            const caps = snapshot.capabilities || {};
+
+            agentStateMachine.updateCache(serverOnline, flags);
+
+            if (!serverOnline) {
+                agentStateMachine.transition(AgentPopupState.OFFLINE, 'snapshot offline');
+                if (agentMasterCheckbox) {
+                    agentMasterCheckbox.checked = false;
+                    agentMasterCheckbox.disabled = true;
+                    syncCheckboxUI(agentMasterCheckbox);
+                }
+                resetSubCheckboxes();
+                setFloatingAgentStatus(window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动');
+                return;
+            }
+
+            agentStateMachine.transition(AgentPopupState.ONLINE, 'snapshot online');
+            if (agentMasterCheckbox) {
+                agentMasterCheckbox.disabled = false;
+                agentMasterCheckbox.checked = analyzerEnabled;
+                agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+                syncCheckboxUI(agentMasterCheckbox);
+            }
+
+            if (!analyzerEnabled) {
+                resetSubCheckboxes();
+                setFloatingAgentStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪');
+                return;
+            }
+
+            const applySub = (cb, enabled, ready, name) => {
+                if (!cb) return;
+                const hasReady = typeof ready === 'boolean';
+                cb.disabled = hasReady ? !ready : false;
+                cb.checked = !!enabled && (hasReady ? !!ready : true);
+                cb.title = cb.disabled
+                    ? (window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}不可用`)
+                    : name;
+                syncCheckboxUI(cb);
+            };
+
+            applySub(
+                agentKeyboardCheckbox,
+                flags.computer_use_enabled,
+                caps.computer_use_ready,
+                window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制'
+            );
+
+            applySub(
+                agentUserPluginCheckbox,
+                flags.user_plugin_enabled,
+                caps.user_plugin_ready,
+                window.t ? window.t('settings.toggles.userPlugin') : '用户插件'
+            );
+            setFloatingAgentStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启');
+        };
+        window.applyAgentStatusSnapshotToUI = applyAgentStatusSnapshotToUI;
+
         // 辅助函数：重置子开关状态和 UI
         const resetSubCheckboxes = () => {
             const names = {
                 'live2d-agent-keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-                'live2d-agent-mcp': window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具',
+
                 'live2d-agent-user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '用户插件'
             };
-            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
@@ -5840,11 +6354,7 @@ function init_app() {
                         agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                         syncCheckboxUI(agentKeyboardCheckbox);
                     }
-                    if (agentMcpCheckbox) {
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
-                        syncCheckboxUI(agentMcpCheckbox);
-                    }
+
                     if (agentUserPluginCheckbox) {
                         agentUserPluginCheckbox.disabled = true;
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
@@ -5866,21 +6376,7 @@ function init_app() {
                             agentKeyboardCheckbox.title = available ? (window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.keyboardControl') }) : '键鼠控制不可用');
                             syncCheckboxUI(agentKeyboardCheckbox);
                         })(),
-                        (async () => {
-                            if (!agentMcpCheckbox) return;
-                            const available = await checkCapability('mcp', false);
-                            // 【防竞态】检查操作序列号和总开关状态
-                            if (isExpired() || !agentMasterCheckbox.checked) {
-                                agentMcpCheckbox.disabled = true;
-                                agentMcpCheckbox.checked = false;
-                                syncCheckboxUI(agentMcpCheckbox);
-                                return;
-                            }
-                            agentMcpCheckbox.disabled = !available;
-                            agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.mcpTools') }) : 'MCP工具不可用');
-                            syncCheckboxUI(agentMcpCheckbox);
 
-                        })(),
                         (async () => {
                             if (!agentUserPluginCheckbox) return;
                             const available = await checkCapability('user_plugin', false);
@@ -5905,7 +6401,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: true, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: true, computer_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
@@ -5970,7 +6466,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: false, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: false, computer_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
 
@@ -6114,15 +6610,7 @@ function init_app() {
             () => ++keyboardOperationSeq
         );
 
-        // MCP工具开关逻辑（传入序列号的getter和setter）
-        setupSubCheckbox(
-            agentMcpCheckbox,
-            'mcp',
-            'mcp_enabled',
-            'mcpTools',
-            () => mcpOperationSeq,
-            () => ++mcpOperationSeq
-        );
+
         // 用户插件开关逻辑（传入序列号的getter和setter）
         setupSubCheckbox(
             agentUserPluginCheckbox,
@@ -6132,6 +6620,21 @@ function init_app() {
             () => userPluginOperationSeq,
             () => ++userPluginOperationSeq
         );
+
+        // 刷新后若 Agent 总开关已开启，自动打开 Agent 状态弹窗（与开关状态一致）
+        function openAgentStatusPopupWhenEnabled() {
+            if (agentStateMachine._popupOpen) return;
+            const master = document.getElementById('live2d-agent-master');
+            if (!master || !master.checked) return;
+            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"]');
+            if (!popup) return;
+            const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+            if (isVisible) return;
+            const manager = popup.id === 'live2d-popup-agent' ? window.live2dManager : window.vrmManager;
+            if (!manager || typeof manager.showPopup !== 'function') return;
+            manager.showPopup('agent', popup);
+        }
+        window.openAgentStatusPopupWhenEnabled = openAgentStatusPopupWhenEnabled;
 
         // 从后端同步 flags 状态到前端开关（完整同步，处理所有情况）
         // 【重要】此函数只同步总开关状态，子开关保持禁用等待能力检查
@@ -6144,6 +6647,7 @@ function init_app() {
 
                 const flags = data.agent_flags || {};
                 const analyzerEnabled = data.analyzer_enabled || false;
+                flags.agent_enabled = !!analyzerEnabled;
 
                 console.log('[App] 从后端获取 flags 状态:', { analyzerEnabled, flags });
 
@@ -6206,21 +6710,11 @@ function init_app() {
                     }
                     syncCheckboxUI(agentUserPluginCheckbox);
                 }
-                if (agentMcpCheckbox) {
-                    if (analyzerEnabled) {
-                        // Agent 已开启，但子开关保持禁用等待能力检查
-                        agentMcpCheckbox.checked = false;
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
-                    } else {
-                        // Agent 未开启，复位子开关
-                        agentMcpCheckbox.checked = false;
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', { name: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具' }) : '请先开启Agent总开关';
-                    }
-                    syncCheckboxUI(agentMcpCheckbox);
-                }
 
+
+                if (analyzerEnabled) {
+                    setTimeout(() => openAgentStatusPopupWhenEnabled(), 0);
+                }
                 return analyzerEnabled;
             } catch (e) {
                 console.warn('[App] 同步 flags 状态失败:', e);
@@ -6236,6 +6730,17 @@ function init_app() {
             // 使用状态机管理弹窗状态
             agentStateMachine.openPopup();
             isAgentPopupOpen = true;
+
+            // 优先使用后端推送快照秒开渲染，避免每次先卡在“连接中”。
+            if (window._agentStatusSnapshot) {
+                applyAgentStatusSnapshotToUI(window._agentStatusSnapshot);
+                setTimeout(() => {
+                    if (agentStateMachine._popupOpen) {
+                        checkAgentCapabilities();
+                    }
+                }, 0);
+                return;
+            }
 
             // 【状态机控制】如果正在处理用户操作，不进行检查
             if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
@@ -6255,7 +6760,7 @@ function init_app() {
                 agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                 syncCheckboxUI(agentMasterCheckbox);
             }
-            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -6272,7 +6777,7 @@ function init_app() {
                     checkToolServerHealth(),
                     fetch('/api/agent/flags').then(r => r.ok ? r.json() : { success: false }),
                     checkCapability('computer_use', false),
-                    checkCapability('mcp', false),
+
                     checkCapability('user_plugin', false)
                 ]);
 
@@ -6291,6 +6796,7 @@ function init_app() {
                 // 3. 统一处理逻辑
                 const analyzerEnabled = flagsData.success ? (flagsData.analyzer_enabled || false) : false;
                 const flags = flagsData.success ? (flagsData.agent_flags || {}) : {};
+                flags.agent_enabled = !!analyzerEnabled;
 
                 // 更新缓存
                 agentStateMachine.updateCache(healthOk, flags);
@@ -6317,14 +6823,7 @@ function init_app() {
                             syncCheckboxUI(agentKeyboardCheckbox);
                         }
 
-                        // MCP工具
-                        if (agentMcpCheckbox) {
-                            const shouldEnable = flags.mcp_enabled && mcpAvailable;
-                            agentMcpCheckbox.checked = shouldEnable;
-                            agentMcpCheckbox.disabled = !mcpAvailable; // 仅当能力不可用时禁用
-                            agentMcpCheckbox.title = mcpAvailable ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.mcpTools') }) : 'MCP工具不可用');
-                            syncCheckboxUI(agentMcpCheckbox);
-                        }
+
 
                         // 用户插件
                         if (agentUserPluginCheckbox) {
@@ -6357,14 +6856,14 @@ function init_app() {
                         window.stopAgentTaskPolling();
 
                         // 立即通知后台关闭全部flags（如果后端状态不一致）
-                        if (flags.computer_use_enabled || flags.mcp_enabled || flags.user_plugin_enabled) {
+                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled) {
                             console.log('[App] 总开关关闭但检测到子flag开启，强制同步关闭');
                             fetch('/api/agent/flags', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     lanlan_name: lanlan_config.lanlan_name,
-                                    flags: { agent_enabled: false, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                    flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
                                 })
                             }).catch(e => console.warn('[App] 强制关闭flags失败:', e));
                         }
@@ -6425,21 +6924,17 @@ function init_app() {
 
     // 启动任务状态轮询
     window.startAgentTaskPolling = function () {
-        if (agentTaskPollingInterval) return; // 已经在运行
-
-        console.log('[App] 启动 Agent 任务状态轮询');
-
-        // 确保 HUD 已创建并显示
+        // Always attempt to show HUD (live2dManager may have loaded since last call)
         if (window.live2dManager) {
             window.live2dManager.createAgentTaskHUD();
             window.live2dManager.showAgentTaskHUD();
         }
 
-        // 立即执行一次
-        fetchAndUpdateTaskStatus();
+        if (agentTaskPollingInterval) return;
 
-        // 每 2 秒轮询一次任务状态
-        agentTaskPollingInterval = setInterval(fetchAndUpdateTaskStatus, 2000);
+        console.log('[App] 启动 Agent 任务状态轮询');
+
+        agentTaskPollingInterval = true;
 
         // 每秒更新运行时间显示
         agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
@@ -6450,7 +6945,9 @@ function init_app() {
         console.log('[App] 停止 Agent 任务状态轮询');
 
         if (agentTaskPollingInterval) {
-            clearInterval(agentTaskPollingInterval);
+            if (typeof agentTaskPollingInterval !== 'boolean') {
+                clearInterval(agentTaskPollingInterval);
+            }
             agentTaskPollingInterval = null;
         }
 
@@ -6465,23 +6962,7 @@ function init_app() {
         }
     };
 
-    // 获取并更新任务状态
-    async function fetchAndUpdateTaskStatus() {
-        try {
-            const response = await fetch('/api/agent/task_status');
-            if (!response.ok) {
-                console.warn('[App] 获取任务状态失败:', response.status);
-                return;
-            }
-
-            const data = await response.json();
-            if (data.success && window.live2dManager) {
-                window.live2dManager.updateAgentTaskHUD(data);
-            }
-        } catch (error) {
-            console.warn('[App] 任务状态轮询出错:', error);
-        }
-    }
+    // 推送架构中任务状态由 WebSocket 事件驱动
 
     // 更新运行中任务的时间显示
     function updateTaskRunningTimes() {
@@ -6506,20 +6987,26 @@ function init_app() {
         });
     }
 
-    // 检查是否需要显示任务 HUD（总开关开启 且 键鼠或MCP任一开启）
     function checkAndToggleTaskHUD() {
+        // DOM checkboxes (may not exist or may not be synced yet)
         const masterCheckbox = document.getElementById('live2d-agent-master');
         const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const mcpCheckbox = document.getElementById('live2d-agent-mcp');
+        const browserCheckbox = document.getElementById('live2d-agent-browser');
+
         const userPlugin = document.getElementById('live2d-agent-user-plugin');
 
-        const masterEnabled = masterCheckbox && masterCheckbox.checked;
-        const keyboardEnabled = keyboardCheckbox && keyboardCheckbox.checked;
-        const mcpEnabled = mcpCheckbox && mcpCheckbox.checked;
-        const userPluginEnabled = userPlugin && userPlugin.checked;
+        const domMaster = masterCheckbox && masterCheckbox.checked;
+        const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
+            || (browserCheckbox && browserCheckbox.checked)
 
-        //  只有总开关开启 且 子开关任一开启时才显示HUD
-        if (masterEnabled && (keyboardEnabled || mcpEnabled || userPluginEnabled)) {
+            || (userPlugin && userPlugin.checked);
+
+        // Cached flags from backend (always the source of truth)
+        const flags = window.agentStateMachine && window.agentStateMachine._cachedFlags;
+        const flagMaster = flags && !!flags.agent_enabled;
+        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+
+        if ((domMaster && domChild) || (flagMaster && flagChild)) {
             window.startAgentTaskPolling();
         } else {
             window.stopAgentTaskPolling();
@@ -6534,18 +7021,22 @@ function init_app() {
         // 延迟确保元素已创建
         setTimeout(() => {
             const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-            const mcpCheckbox = document.getElementById('live2d-agent-mcp');
+            const browserCheckbox = document.getElementById('live2d-agent-browser');
+
             const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
             if (keyboardCheckbox) {
                 keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            if (mcpCheckbox) {
-                mcpCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            if (browserCheckbox) {
+                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
+
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
+            // Retry HUD show: snapshot may have enabled agent before live2dManager was ready
+            checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
         }, 100);
     });
@@ -6555,6 +7046,12 @@ function init_app() {
     window.addEventListener('live2d-floating-buttons-ready', () => {
         console.log('[App] 收到浮动按钮就绪事件，开始绑定Agent开关');
         setupAgentCheckboxListeners();
+        // Agent 已开启时刷新页面后自动打开状态弹窗（等 V2/legacy 恢复开关状态后再试）
+        setTimeout(() => {
+            if (typeof window.openAgentStatusPopupWhenEnabled === 'function') {
+                window.openAgentStatusPopupWhenEnabled();
+            }
+        }, 400);
     }, { once: true });  // 只执行一次
 
     // 麦克风权限和设备列表预加载（修复 UI 2.0 中权限请求时机导致的bug）
@@ -7110,7 +7607,7 @@ function init_app() {
     // 选择屏幕源
     async function selectScreenSource(sourceId, sourceName) {
         selectedScreenSourceId = sourceId;
-        
+
         // 持久化到 localStorage
         try {
             if (sourceId) {
@@ -7415,16 +7912,63 @@ function init_app() {
     // 暴露选中的屏幕源ID给其他模块使用
     window.getSelectedScreenSourceId = () => selectedScreenSourceId;
 
+    // 同步 proactive 相关的全局变量到模块作用域
+    function syncProactiveFlags() {
+        proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
+        proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
+        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
+        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
+        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+    }
+
+    // 检查是否有任何搭话方式被选中
+    function hasAnyChatModeEnabled() {
+        syncProactiveFlags();
+        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled;
+    }
+
+    // 检查主动搭话前置条件是否满足
+    function canTriggerProactively() {
+        syncProactiveFlags();
+
+        // 必须开启主动搭话
+        if (!proactiveChatEnabled) {
+            return false;
+        }
+
+        // 必须选择至少一种搭话方式
+        if (!proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+            return false;
+        }
+
+        // 如果只选择了视觉搭话，需要同时开启自主视觉
+        if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+            return proactiveVisionEnabled;
+        }
+
+        return true;
+    }
+
     // 主动搭话定时触发功能
     function scheduleProactiveChat() {
+        syncProactiveFlags();
+
         // 清除现有定时器
         if (proactiveChatTimer) {
             clearTimeout(proactiveChatTimer);
             proactiveChatTimer = null;
         }
 
-        // 主动搭话关闭时跳过（定时主动搭话只需要proactiveChatEnabled）
-        if (!proactiveChatEnabled) {
+        // 必须开启主动搭话且选择至少一种搭话方式才启动调度
+        if (!proactiveChatEnabled || !hasAnyChatModeEnabled()) {
+            proactiveChatBackoffLevel = 0;
+            return;
+        }
+
+        // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
+        if (!canTriggerProactively()) {
+            console.log('主动搭话前置条件不满足，不启动调度器');
+            proactiveChatBackoffLevel = 0;
             return;
         }
 
@@ -7473,121 +8017,121 @@ function init_app() {
 
     async function triggerProactiveChat() {
         try {
-            // 根据模式决定使用哪种搭话方式
-            // Windows系统下支持三种模式：截图、窗口标题搜索、热门内容
-            // 非Windows系统下只支持截图和热门内容
-            let useScreenshot = false;
-            let useWindowTitle = false;
-            const isWindows = isWindowsOS();
+            syncProactiveFlags();
 
-            if (proactiveChatEnabled && proactiveVisionEnabled) {
-                // 两个都开启时：
-                // Windows: 1/3截图, 1/3窗口标题, 1/3热门内容
-                // 非Windows: 50%截图, 50%热门内容
-                if (isWindows) {
-                    const rand = Math.random();
-                    if (rand < 0.33) {
-                        useScreenshot = true;
-                        console.log('主动搭话模式：双开模式(Windows)，使用截图搭话');
-                    } else if (rand < 0.66) {
-                        useWindowTitle = true;
-                        console.log('主动搭话模式：双开模式(Windows)，使用窗口标题搭话');
-                    } else {
-                        console.log('主动搭话模式：双开模式(Windows)，使用热门内容');
-                    }
-                } else {
-                    useScreenshot = Math.random() < 0.5;
-                    console.log(`主动搭话模式：双开模式，使用${useScreenshot ? '截图搭话' : '热门内容'}`);
-                }
-            } else if (proactiveVisionEnabled) {
-                // 只开启主动视觉时：
-                // Windows和非Windows都是100%截图
-                useScreenshot = true;
-                console.log('主动搭话模式：仅视觉模式，使用截图搭话');
-            } else if (proactiveChatEnabled && isWindows) {
-                // 只开启主动搭话时(Windows)：50%窗口标题, 50%热门内容
-                if (Math.random() < 0.5) {
-                    useWindowTitle = true;
-                    console.log('主动搭话模式：仅搭话模式(Windows)，使用窗口标题搭话');
-                } else {
-                    console.log('主动搭话模式：仅搭话模式(Windows)，使用热门内容');
-                }
-            } else if (proactiveChatEnabled) {
-                // 只开启主动搭话时(非Windows)：100%热门内容
-                useScreenshot = false;
-                useWindowTitle = false;
-                console.log('主动搭话模式：仅搭话模式，使用热门内容');
-            } else {
-                // 两个都关闭，不执行搭话
-                console.log('主动搭话模式：两个功能都关闭，跳过本次搭话');
+            // 收集所有启用的搭话方式
+            let availableModes = [];
+
+            // 视觉搭话：需要同时开启主动搭话和自主视觉
+            // 同时触发 vision 和 window 模式
+            if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                availableModes.push('vision');
+                availableModes.push('window');
+            }
+
+            // 新闻搭话：使用微博热议话题
+            if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                availableModes.push('news');
+            }
+
+            // 视频搭话：使用B站首页视频
+            if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                availableModes.push('video');
+            }
+
+            // 如果没有选择任何搭话方式，跳过本次搭话
+            if (availableModes.length === 0) {
+                console.log('未选择任何搭话方式，跳过本次搭话');
                 return;
             }
 
+            console.log(`主动搭话：启用模式 [${availableModes.join(', ')}]，将并行获取所有信息源`);
+
             let requestBody = {
-                lanlan_name: lanlan_config.lanlan_name
+                lanlan_name: lanlan_config.lanlan_name,
+                enabled_modes: availableModes
             };
 
-            if (useScreenshot) {
-                // 使用截图搭话
-                const screenshotDataUrl = await captureProactiveChatScreenshot();
+            // 如果包含 vision 模式，需要在前端获取截图和窗口标题
+            if (availableModes.includes('vision') || availableModes.includes('window')) {
+                const fetchTasks = [];
+                let screenshotIndex = -1;
+                let windowTitleIndex = -1;
 
-                if (!screenshotDataUrl) {
-                    console.log('主动搭话截图失败，退回使用其他方式');
-                    // 截图失败时的回退策略
-                    if (isWindows && proactiveChatEnabled) {
-                        // Windows下回退到窗口标题
-                        useScreenshot = false;
-                        useWindowTitle = true;
-                        console.log('已切换到窗口标题搭话模式');
-                    } else if (proactiveChatEnabled) {
-                        // 非Windows或不支持窗口标题时回退到热门内容
-                        useScreenshot = false;
-                        console.log('已切换到热门内容搭话模式');
+                if (availableModes.includes('vision')) {
+                    screenshotIndex = fetchTasks.length;
+                    fetchTasks.push(captureProactiveChatScreenshot());
+                }
+
+                if (availableModes.includes('window')) {
+                    windowTitleIndex = fetchTasks.length;
+                    fetchTasks.push(fetch('/api/get_window_title')
+                        .then(r => r.json())
+                        .catch(() => ({ success: false })));
+                }
+
+                const results = await Promise.all(fetchTasks);
+
+                // await 期间检查状态
+                if (!canTriggerProactively()) {
+                    console.log('功能已关闭或前置条件不满足，取消本次搭话');
+                    return;
+                }
+
+                // await 期间用户可能切换模式，重新同步并过滤可用模式
+                syncProactiveFlags();
+                const latestModes = [];
+                if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                    latestModes.push('vision', 'window');
+                }
+                if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                    latestModes.push('news');
+                }
+                if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                    latestModes.push('video');
+                }
+                availableModes = availableModes.filter(m => latestModes.includes(m));
+                requestBody.enabled_modes = availableModes;
+                if (availableModes.length === 0) {
+                    console.log('await后无可用模式，取消本次搭话');
+                    return;
+                }
+
+                if (screenshotIndex !== -1 && availableModes.includes('vision')) {
+                    const screenshotDataUrl = results[screenshotIndex];
+                    if (screenshotDataUrl) {
+                        requestBody.screenshot_data = screenshotDataUrl;
                     } else {
-                        // 如果只开启了主动视觉，没有开启主动搭话，则跳过本次搭话
-                        console.log('主动视觉截图失败且未开启主动搭话，跳过本次搭话');
-                        return;
+                        // 截图失败，从 enabled_modes 中移除 vision
+                        console.log('截图失败，移除 vision 模式');
+                        availableModes = availableModes.filter(m => m !== 'vision');
+                        requestBody.enabled_modes = availableModes;
                     }
-                } else {
-                    requestBody.screenshot_data = screenshotDataUrl;
+                }
+
+                if (windowTitleIndex !== -1 && availableModes.includes('window')) {
+                    const windowTitleResult = results[windowTitleIndex];
+                    if (windowTitleResult && windowTitleResult.success && windowTitleResult.window_title) {
+                        requestBody.window_title = windowTitleResult.window_title;
+                        console.log('视觉搭话附加窗口标题:', windowTitleResult.window_title);
+                    } else {
+                        // 窗口标题获取失败，从 enabled_modes 中移除 window
+                        console.log('窗口标题获取失败，移除 window 模式');
+                        availableModes = availableModes.filter(m => m !== 'window');
+                        requestBody.enabled_modes = availableModes;
+                    }
+                }
+
+                if (availableModes.length === 0) {
+                    console.log('所有附加模式均失败，移除后无其他可用模式，跳过本次搭话');
+                    return;
                 }
             }
 
-            if (useWindowTitle && !useScreenshot) {
-                // 使用窗口标题搭话（Windows only）
-                try {
-                    const titleResponse = await fetch('/api/get_window_title');
-                    const titleResult = await titleResponse.json();
-
-                    // await 期间用户可能关闭了功能，避免继续执行
-                    if (!proactiveChatEnabled && !proactiveVisionEnabled) {
-                        console.log('功能已关闭，取消本次搭话');
-                        return;
-                    }
-
-                    if (titleResult.success && titleResult.window_title) {
-                        requestBody.window_title = titleResult.window_title;
-                        console.log('成功获取窗口标题:', titleResult.window_title);
-                    } else {
-                        console.log('获取窗口标题失败，退回使用热门内容');
-                        if (proactiveChatEnabled) {
-                            useWindowTitle = false;
-                            console.log('已切换到热门内容搭话模式');
-                        } else {
-                            console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
-                            return;
-                        }
-                    }
-                } catch (error) {
-                    console.error('获取窗口标题时出错:', error);
-                    if (proactiveChatEnabled) {
-                        useWindowTitle = false;
-                        console.log('已切换到热门内容搭话模式');
-                    } else {
-                        console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
-                        return;
-                    }
-                }
+            // 发送请求前最终检查：确保功能状态未在 await 期间改变
+            if (!canTriggerProactively()) {
+                console.log('发送请求前检查失败，取消本次搭话');
+                return;
             }
 
             const response = await fetch('/api/proactive_chat', {
@@ -7609,7 +8153,14 @@ function init_app() {
                         return;
                     }
 
-                    console.log('主动搭话已发送:', result.message);
+                    console.log('主动搭话已发送:', result.message, result.source_mode ? `(来源: ${result.source_mode})` : '');
+
+                    // 如果有 source_links，延迟后在聊天中显示可点击链接（旁路，不进入 AI 记忆）
+                    if (result.source_links && result.source_links.length > 0) {
+                        setTimeout(() => {
+                            _showProactiveChatSourceLinks(result.source_links);
+                        }, 3000); // 等 AI 消息显示完再追加
+                    }
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
                     console.log('AI选择不搭话');
@@ -7619,6 +8170,83 @@ function init_app() {
             }
         } catch (error) {
             console.error('主动搭话触发失败:', error);
+        }
+    }
+
+    /**
+     * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
+     */
+    function _showProactiveChatSourceLinks(links) {
+        try {
+            const chatContent = document.getElementById('chat-content-wrapper');
+            if (!chatContent) return;
+
+            const validLinks = [];
+            for (const link of links) {
+                let safeUrl = null;
+                try {
+                    const u = new URL(String(link.url || ''), window.location.origin);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        safeUrl = u.href;
+                    }
+                } catch (e) {
+                    console.warn('解析链接失败:', e);
+                }
+                if (safeUrl) {
+                    validLinks.push({ ...link, safeUrl });
+                }
+            }
+
+            if (validLinks.length === 0) return;
+
+            const linkCard = document.createElement('div');
+            linkCard.className = 'proactive-source-link-card';
+            linkCard.style.cssText = `
+                margin: 6px 12px;
+                padding: 8px 14px;
+                background: var(--bg-secondary, rgba(255,255,255,0.08));
+                border-left: 3px solid var(--accent-color, #6c8cff);
+                border-radius: 8px;
+                font-size: 12px;
+                opacity: 0;
+                transition: opacity 0.4s ease;
+                max-width: 320px;
+            `;
+
+            for (const link of validLinks) {
+                const a = document.createElement('a');
+                a.href = link.safeUrl;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
+                a.style.cssText = `
+                    display: block;
+                    color: var(--accent-color, #6c8cff);
+                    text-decoration: none;
+                    padding: 3px 0;
+                    word-break: break-all;
+                    font-size: 12px;
+                `;
+                a.addEventListener('mouseenter', () => { a.style.textDecoration = 'underline'; });
+                a.addEventListener('mouseleave', () => { a.style.textDecoration = 'none'; });
+                linkCard.appendChild(a);
+            }
+
+            chatContent.appendChild(linkCard);
+            chatContent.scrollTop = chatContent.scrollHeight;
+
+            // 淡入
+            requestAnimationFrame(() => { linkCard.style.opacity = '1'; });
+
+            // 5 分钟后自动移除
+            setTimeout(() => {
+                linkCard.style.opacity = '0';
+                setTimeout(() => { linkCard.remove(); }, 500);
+            }, 5 * 60 * 1000);
+
+            console.log('已显示主动搭话来源链接:', validLinks.length, '条');
+        } catch (e) {
+            console.warn('显示来源链接失败:', e);
         }
     }
 
@@ -7635,8 +8263,14 @@ function init_app() {
             if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
             let dataUrl = null;
+            let usedCachedStream = false;
 
             if (screenCaptureStream) {
+                // 刷新最后使用时间并确保闲置检查器在运行
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
+                usedCachedStream = true;
+
                 const video = document.createElement('video');
                 video.srcObject = screenCaptureStream;
                 video.autoplay = true;
@@ -7663,6 +8297,11 @@ function init_app() {
                     input_type: isMobile() ? 'camera' : 'screen'
                 }));
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
+
+                // 再次刷新最后使用时间，防止在发送过程中被误释放
+                if (usedCachedStream && screenCaptureStream) {
+                    screenCaptureStreamLastUsed = Date.now();
+                }
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
@@ -7808,6 +8447,15 @@ function init_app() {
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : proactiveVisionEnabled;
+        const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
+            ? window.proactiveVisionChatEnabled
+            : proactiveVisionChatEnabled;
+        const currentNewsChat = typeof window.proactiveNewsChatEnabled !== 'undefined'
+            ? window.proactiveNewsChatEnabled
+            : proactiveNewsChatEnabled;
+        const currentVideoChat = typeof window.proactiveVideoChatEnabled !== 'undefined'
+            ? window.proactiveVideoChatEnabled
+            : proactiveVideoChatEnabled;
         const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
             ? window.mergeMessagesEnabled
             : mergeMessagesEnabled;
@@ -7824,6 +8472,9 @@ function init_app() {
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
+            proactiveVisionChatEnabled: currentVisionChat,
+            proactiveNewsChatEnabled: currentNewsChat,
+            proactiveVideoChatEnabled: currentVideoChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -7834,6 +8485,9 @@ function init_app() {
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
         proactiveVisionEnabled = currentVision;
+        proactiveVisionChatEnabled = currentVisionChat;
+        proactiveNewsChatEnabled = currentNewsChat;
+        proactiveVideoChatEnabled = currentVideoChat;
         mergeMessagesEnabled = currentMerge;
         focusModeEnabled = currentFocus;
         proactiveChatInterval = currentProactiveChatInterval;
@@ -7849,12 +8503,52 @@ function init_app() {
             const saved = localStorage.getItem('project_neko_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
+
+                // 迁移逻辑：检测旧版设置并迁移到新字段
+                // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
+                let needsSave = false;
+                if (settings.proactiveChatEnabled === true) {
+                    const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
+                        settings.proactiveNewsChatEnabled !== undefined ||
+                        settings.proactiveVideoChatEnabled !== undefined;
+                    if (!hasNewFlags) {
+                        // 根据旧的视觉偏好决定迁移策略
+                        if (settings.proactiveVisionEnabled === false) {
+                            // 用户之前禁用了视觉，保留偏好并默认启用新闻搭话
+                            settings.proactiveVisionEnabled = false;
+                            settings.proactiveVisionChatEnabled = false;
+                            settings.proactiveNewsChatEnabled = true;
+                            console.log('迁移旧版设置：保留禁用的视觉偏好，已启用新闻搭话');
+                        } else {
+                            // 视觉偏好为 true 或 undefined，默认启用视觉搭话
+                            settings.proactiveVisionEnabled = true;
+                            settings.proactiveVisionChatEnabled = true;
+                            console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
+                        }
+                        needsSave = true;
+                    }
+                }
+
+                // 如果进行了迁移，持久化更新后的设置
+                if (needsSave) {
+                    localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+                }
+
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
                 proactiveChatEnabled = settings.proactiveChatEnabled ?? false;
                 window.proactiveChatEnabled = proactiveChatEnabled; // 同步到全局
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
+                // 视觉搭话：从localStorage加载设置
+                proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? false;
+                window.proactiveVisionChatEnabled = proactiveVisionChatEnabled; // 同步到全局
+                // 新闻搭话：从localStorage加载设置
+                proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
+                window.proactiveNewsChatEnabled = proactiveNewsChatEnabled; // 同步到全局
+                // 视频搭话：从localStorage加载设置
+                proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
+                window.proactiveVideoChatEnabled = proactiveVideoChatEnabled; // 同步到全局
                 // 合并消息：从localStorage加载设置
                 mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
@@ -7871,6 +8565,9 @@ function init_app() {
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
                     proactiveVisionEnabled: proactiveVisionEnabled,
+                    proactiveVisionChatEnabled: proactiveVisionChatEnabled,
+                    proactiveNewsChatEnabled: proactiveNewsChatEnabled,
+                    proactiveVideoChatEnabled: proactiveVideoChatEnabled,
                     mergeMessagesEnabled: mergeMessagesEnabled,
                     focusModeEnabled: focusModeEnabled,
                     proactiveChatInterval: proactiveChatInterval,
@@ -7881,6 +8578,10 @@ function init_app() {
                 // 如果没有保存的设置，也要确保全局变量被初始化
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
+                window.proactiveVisionEnabled = proactiveVisionEnabled;
+                window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+                window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+                window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
                 window.mergeMessagesEnabled = mergeMessagesEnabled;
                 window.focusModeEnabled = focusModeEnabled;
                 window.proactiveChatInterval = proactiveChatInterval;
@@ -7890,6 +8591,10 @@ function init_app() {
             console.error('加载设置失败:', error);
             // 出错时也要确保全局变量被初始化
             window.proactiveChatEnabled = proactiveChatEnabled;
+            window.proactiveVisionEnabled = proactiveVisionEnabled;
+            window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+            window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+            window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
             window.mergeMessagesEnabled = mergeMessagesEnabled;
             window.focusModeEnabled = focusModeEnabled;
             window.proactiveChatInterval = proactiveChatInterval;
@@ -7906,8 +8611,8 @@ function init_app() {
     // 加载扬声器音量设置
     loadSpeakerVolumeSetting();
 
-    // 如果已开启主动搭话，立即启动定时器
-    if (proactiveChatEnabled) {
+    // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
+    if (proactiveChatEnabled && (proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled)) {
         scheduleProactiveChat();
     }
 
@@ -8158,7 +8863,7 @@ function init_app() {
                 // 检查 vrm 字段是否存在且有效
                 const hasVrmField = catgirlConfig.hasOwnProperty('vrm');
                 const vrmValue = catgirlConfig.vrm;
-                
+
                 // 检查 vrmValue 是否是有效的值（排除字符串 "undefined" 和 "null"）
                 let isVrmValueInvalid = false;
                 if (hasVrmField && vrmValue !== undefined && vrmValue !== null) {
@@ -8167,8 +8872,8 @@ function init_app() {
                         const trimmed = rawValue.trim();
                         const lowerTrimmed = trimmed.toLowerCase();
                         // 检查是否是无效的字符串值（包括 "undefined", "null" 等）
-                        isVrmValueInvalid = trimmed === '' || 
-                            lowerTrimmed === 'undefined' || 
+                        isVrmValueInvalid = trimmed === '' ||
+                            lowerTrimmed === 'undefined' ||
                             lowerTrimmed === 'null' ||
                             lowerTrimmed.includes('undefined') ||
                             lowerTrimmed.includes('null');
@@ -8185,13 +8890,13 @@ function init_app() {
                         }
                     }
                 }
-                
+
                 // 如果路径无效，使用默认模型或抛出错误
                 if (!vrmModelPath) {
                     // 如果配置中明确指定了 model_type 为 'vrm'，静默使用默认模型
                     if (catgirlConfig.model_type === 'vrm') {
                         vrmModelPath = '/static/vrm/sister1.0.vrm';
-                        
+
                         // 如果 vrmValue 是字符串 "undefined" 或 "null"，视为"未配置"，不显示警告
                         // 只有在 vrm 字段存在且值不是字符串 "undefined"/"null" 时才显示警告
                         if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
@@ -8201,7 +8906,7 @@ function init_app() {
                         } else {
                             // vrmValue 是字符串 "undefined"、"null" 或未配置，视为正常情况，只显示 info
                             console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
-                            
+
                             // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
                             if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
                                 try {
@@ -8227,7 +8932,7 @@ function init_app() {
                         console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
                     } else {
                         // model_type 不是 'vrm'，抛出错误
-                        const vrmValueStr = hasVrmField && vrmValue !== undefined && vrmValue !== null 
+                        const vrmValueStr = hasVrmField && vrmValue !== undefined && vrmValue !== null
                             ? (typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue))
                             : '(未配置)';
                         throw new Error(`VRM 模型路径无效: ${vrmValueStr}`);
@@ -8317,22 +9022,22 @@ function init_app() {
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 // 再次验证 vrmModelPath 的有效性
-                if (!vrmModelPath || 
-                    vrmModelPath === 'undefined' || 
-                    vrmModelPath === 'null' || 
+                if (!vrmModelPath ||
+                    vrmModelPath === 'undefined' ||
+                    vrmModelPath === 'null' ||
                     (typeof vrmModelPath === 'string' && (vrmModelPath.trim() === '' || vrmModelPath.includes('undefined')))) {
                     console.error('[猫娘切换] vrmModelPath 在路径转换前无效，使用默认模型:', vrmModelPath);
                     vrmModelPath = '/static/vrm/sister1.0.vrm';
                 }
-                
+
                 let modelUrl = vrmModelPath;
-                
+
                 // 确保 modelUrl 是有效的字符串
                 if (typeof modelUrl !== 'string' || !modelUrl) {
                     console.error('[猫娘切换] modelUrl 不是有效字符串，使用默认模型:', modelUrl);
                     modelUrl = '/static/vrm/sister1.0.vrm';
                 }
-                
+
                 // 处理 Windows 路径：提取文件名并转换为 Web 路径
                 if (modelUrl.includes('\\') || modelUrl.includes(':')) {
                     const filename = modelUrl.split(/[\\/]/).pop();
@@ -8355,10 +9060,10 @@ function init_app() {
                     // 确保路径格式正确（统一使用正斜杠）
                     modelUrl = modelUrl.replace(/\\/g, '/');
                 }
-                
+
                 // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
-                if (typeof modelUrl !== 'string' || 
-                    modelUrl.includes('undefined') || 
+                if (typeof modelUrl !== 'string' ||
+                    modelUrl.includes('undefined') ||
                     modelUrl.includes('null') ||
                     modelUrl.trim() === '') {
                     console.error('[猫娘切换] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
@@ -8383,14 +9088,14 @@ function init_app() {
                 // 应用角色的光照配置
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
-                    
+
                     // 确保光照已初始化，如果没有则等待（添加最大重试次数和切换取消条件）
                     let applyLightingRetryCount = 0;
                     const MAX_RETRY_COUNT = 50; // 最多重试50次（5秒）
                     let applyLightingTimerId = null;
                     const currentSwitchId = Symbol(); // 用于标识当前切换，防止旧切换的定时器继续执行
                     window._currentCatgirlSwitchId = currentSwitchId;
-                    
+
                     const applyLighting = () => {
                         // 检查是否切换已被取消（新的切换已开始）
                         if (window._currentCatgirlSwitchId !== currentSwitchId) {
@@ -8400,8 +9105,8 @@ function init_app() {
                             }
                             return;
                         }
-                        
-                        if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight && 
+
+                        if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight &&
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
                             // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
                             const defaultLighting = {
@@ -8412,7 +9117,7 @@ function init_app() {
                                 top: 0.0,          // 不需要顶光
                                 bottom: 0.0        // 不需要底光
                             };
-                            
+
                             if (window.vrmManager.ambientLight) {
                                 window.vrmManager.ambientLight.intensity = lighting.ambient ?? defaultLighting.ambient;
                             }
@@ -8431,12 +9136,12 @@ function init_app() {
                             if (window.vrmManager.bottomLight) {
                                 window.vrmManager.bottomLight.intensity = lighting.bottom ?? defaultLighting.bottom;
                             }
-                            
+
                             // 强制渲染一次，确保光照立即生效
                             if (window.vrmManager.renderer && window.vrmManager.scene && window.vrmManager.camera) {
                                 window.vrmManager.renderer.render(window.vrmManager.scene, window.vrmManager.camera);
                             }
-                            
+
                             // 成功应用，清理定时器
                             if (applyLightingTimerId) {
                                 clearTimeout(applyLightingTimerId);
@@ -8456,7 +9161,7 @@ function init_app() {
                             }
                         }
                     };
-                    
+
                     applyLighting();
                 }
 
@@ -8584,11 +9289,11 @@ function init_app() {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                             window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                         }
-                        
+
                         // 确保所有 VRM 锁图标已完全移除（loadModel 内部会调用 setupHTMLLockIcon）
                         // 清理所有可能残留的 VRM 锁图标
                         document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => el.remove());
-                        
+
                         // 【关键修复】确保 PIXI ticker 在模型加载完成后立即启动
                         if (window.live2dManager?.pixi_app?.ticker) {
                             try {
@@ -8721,7 +9426,7 @@ function init_app() {
             isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;
-            
+
             // 重置 goodbyeClicked 标志，确保 showCurrentModel 可以正常运行
             if (window.live2dManager) {
                 window.live2dManager._goodbyeClicked = false;
@@ -8810,8 +9515,18 @@ window.addEventListener("load", () => {
     }, 1000);
 });
 
-// 监听voice_id更新消息
+// 监听voice_id更新消息和VRM表情预览消息
 window.addEventListener('message', function (event) {
+    // 安全检查：验证消息来源
+    if (event.origin !== window.location.origin) {
+        return;
+    }
+
+    // 防御性检查：确保 event.data 存在且有 type 属性
+    if (!event || !event.data || typeof event.data.type === 'undefined') {
+        return;
+    }
+
     if (event.data.type === 'voice_id_updated') {
         console.log('[Voice Clone] 收到voice_id更新消息:', event.data.voice_id);
         if (typeof window.showStatusToast === 'function' && typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name) {
@@ -8819,613 +9534,34 @@ window.addEventListener('message', function (event) {
         }
     }
 
+    // VRM 表情预览（从 vrm_emotion_manager 页面发送）
+    if (event.data.type === 'vrm-preview-expression') {
+        // 防御性检查：确保 expression 属性存在
+        if (typeof event.data.expression === 'undefined') {
+            return;
+        }
+        console.log('[VRM] 收到表情预览请求:', event.data.expression);
+        if (window.vrmManager && window.vrmManager.expression) {
+            window.vrmManager.expression.setBaseExpression(event.data.expression);
+        }
+    }
+
+    // VRM 实际表情列表请求（从 vrm_emotion_manager 页面发送）
+    if (event.data.type === 'vrm-get-expressions') {
+        console.log('[VRM] 收到表情列表请求');
+        let expressions = [];
+        if (window.vrmManager && window.vrmManager.expression) {
+            expressions = window.vrmManager.expression.getExpressionList();
+        }
+        // 发送回复
+        if (event.source) {
+            event.source.postMessage({
+                type: 'vrm-expressions-response',
+                expressions: expressions
+            }, window.location.origin);
+        }
+    }
+
     // 旧的模型热切换代码已移至前面的 handleModelReload 函数
     // 不再需要这里的重复监听器
-});
-
-// 字幕提示框功能
-
-// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
-// 与 detectLanguage() 返回的格式保持一致，避免误判
-function normalizeLanguageCode(lang) {
-    if (!lang) return 'zh'; // 默认中文
-    const langLower = lang.toLowerCase();
-    if (langLower.startsWith('zh')) {
-        return 'zh';
-    } else if (langLower.startsWith('ja')) {
-        return 'ja';
-    } else if (langLower.startsWith('en')) {
-        return 'en';
-    } else if (langLower.startsWith('ko')) {
-        return 'ko';
-    }
-    return 'zh'; // 默认中文
-}
-
-// 字幕开关状态
-let subtitleEnabled = localStorage.getItem('subtitleEnabled') === 'true';
-// 用户语言（延迟初始化，避免使用 localStorage 旧值）
-// 初始化为 null，确保在使用前从 API 获取最新值
-let userLanguage = null;
-// Google 翻译失败标记（会话级，页面刷新后重置）
-let googleTranslateFailed = false;
-// 用户语言初始化 Promise（用于确保只初始化一次）
-let userLanguageInitPromise = null;
-
-// 获取用户语言（支持语言代码归一化，延迟初始化）
-async function getUserLanguage() {
-    // 如果已经初始化过，直接返回
-    if (userLanguage !== null) {
-        return userLanguage;
-    }
-    
-    // 如果正在初始化，等待初始化完成
-    if (userLanguageInitPromise) {
-        return await userLanguageInitPromise;
-    }
-    
-    // 开始初始化
-    userLanguageInitPromise = (async () => {
-        try {
-            // 优先从API获取最新值
-            const response = await fetch('/api/config/user_language');
-            const data = await response.json();
-            if (data.success && data.language) {
-                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
-                // 与 detectLanguage() 返回的格式保持一致，避免误判
-                userLanguage = normalizeLanguageCode(data.language);
-                localStorage.setItem('userLanguage', userLanguage);
-                return userLanguage;
-            }
-        } catch (error) {
-            console.warn('从API获取用户语言失败，尝试使用缓存或浏览器语言:', error);
-        }
-        
-        // API失败时，尝试从localStorage获取（作为回退）
-        const cachedLang = localStorage.getItem('userLanguage');
-        if (cachedLang) {
-            userLanguage = normalizeLanguageCode(cachedLang);
-            return userLanguage;
-        }
-        
-        // 最后回退到浏览器语言
-        const browserLang = navigator.language || navigator.userLanguage;
-        userLanguage = normalizeLanguageCode(browserLang);
-        localStorage.setItem('userLanguage', userLanguage);
-        return userLanguage;
-    })();
-    
-    return await userLanguageInitPromise;
-}
-
-// 简单的语言检测函数（客户端）
-function detectLanguage(text) {
-    if (!text || !text.trim()) {
-        return 'unknown';
-    }
-    
-    // 中文检测
-    const chinesePattern = /[\u4e00-\u9fff]/g;
-    // 日文检测（平假名、片假名）
-    const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
-    // 韩文检测（谚文）
-    const koreanPattern = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g;
-    // 英文检测
-    const englishPattern = /[a-zA-Z]/g;
-    
-    const chineseCount = (text.match(chinesePattern) || []).length;
-    const japaneseCount = (text.match(japanesePattern) || []).length;
-    const koreanCount = (text.match(koreanPattern) || []).length;
-    const englishCount = (text.match(englishPattern) || []).length;
-    
-    // 如果包含日文假名，优先判断为日语
-    if (japaneseCount > 0) {
-        return 'ja';
-    }
-    
-    // 如果包含韩文，优先判断为韩语
-    if (koreanCount > 0) {
-        return 'ko';
-    }
-    
-    // 判断主要语言
-    if (chineseCount > englishCount && chineseCount > 0) {
-        return 'zh';
-    } else if (englishCount > 0) {
-        return 'en';
-    } else {
-        return 'unknown';
-    }
-}
-
-// 字幕显示相关变量
-let subtitleTimeout = null;
-let currentTranslateAbortController = null;
-let pendingTranslation = null;
-// 流式输出时字幕语言检测的防抖计时器
-let subtitleCheckDebounceTimer = null;
-
-// 翻译消息气泡（如果用户语言不是中文）
-async function translateMessageBubble(text, messageElement) {
-    if (!text || !text.trim() || !messageElement) {
-        return;
-    }
-    
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    if (!userLanguage || userLanguage === 'zh') {
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text: text,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'),
-                source_lang: 'zh',
-                skip_google: googleTranslateFailed
-            })
-        });
-        
-        if (!response.ok) {
-            console.warn('翻译消息气泡失败:', response.status);
-            return;
-        }
-        
-        const result = await response.json();
-        
-        if (result.google_failed === true) {
-            googleTranslateFailed = true;
-            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
-        }
-        
-        if (result.success && result.translated_text && result.translated_text !== text) {
-            const timestampMatch = messageElement.textContent.match(/^\[(\d{2}:\d{2}:\d{2})\] 🎀 /);
-            if (timestampMatch) {
-                messageElement.textContent = `[${timestampMatch[1]}] 🎀 ${result.translated_text}`;
-                console.log('消息气泡已翻译:', result.translated_text.substring(0, 50) + '...');
-            }
-        }
-    } catch (error) {
-        console.error('翻译消息气泡异常:', error);
-    }
-}
-
-// 检查并显示字幕提示框
-async function checkAndShowSubtitlePrompt(text) {
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    const allGeminiMessages = document.querySelectorAll('.message.gemini');
-    let hasNonUserLanguage = false;
-    let latestNonUserLanguageText = '';
-    
-    if (allGeminiMessages.length > 0) {
-        for (const msg of allGeminiMessages) {
-            const msgText = msg.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-            if (msgText && msgText.trim()) {
-                const detectedLang = detectLanguage(msgText);
-                if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                    hasNonUserLanguage = true;
-                    latestNonUserLanguageText = msgText;
-                }
-            }
-        }
-    }
-    
-    if (hasNonUserLanguage) {
-        showSubtitlePrompt();
-    } else {
-        hideSubtitlePrompt();
-        hideSubtitle();
-    }
-}
-
-// 翻译并显示字幕
-async function translateAndShowSubtitle(text) {
-    if (!text || !text.trim()) {
-        return;
-    }
-    
-    // 即使开关关闭，也需要检测语言来决定是否隐藏提示
-    if (userLanguage === null) {
-        await getUserLanguage();
-    }
-    
-    const currentTranslationText = text;
-    pendingTranslation = currentTranslationText;
-    
-    if (currentTranslateAbortController) {
-        currentTranslateAbortController.abort();
-    }
-    
-    currentTranslateAbortController = new AbortController();
-    
-    try {
-        const subtitleDisplay = document.getElementById('subtitle-display');
-        if (!subtitleDisplay) {
-            console.warn('字幕显示元素不存在');
-            return;
-        }
-        
-        // 调用翻译API
-        const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text: text,
-                target_lang: (userLanguage !== null ? userLanguage : 'zh'), // 确保已初始化
-                source_lang: null, // 自动检测
-                skip_google: googleTranslateFailed // 如果 Google 翻译失败过，跳过它
-            }),
-            signal: currentTranslateAbortController.signal
-        });
-        
-        if (!response.ok) {
-            console.warn('翻译请求失败:', response.status);
-            if (pendingTranslation === currentTranslationText) {
-                pendingTranslation = null;
-            }
-            console.error('字幕翻译API请求失败:', {
-                status: response.status,
-                statusText: response.statusText,
-                text: text.substring(0, 50) + '...',
-                userLanguage: userLanguage
-            });
-            return;
-        }
-        
-        const result = await response.json();
-        
-        if (pendingTranslation !== currentTranslationText) {
-            console.log('检测到更新的翻译请求，忽略旧的翻译结果');
-            return;
-        }
-        pendingTranslation = null;
-        
-        if (result.google_failed === true) {
-            googleTranslateFailed = true;
-            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
-        }
-        
-        const frontendDetectedLang = detectLanguage(text);
-        const isNonUserLanguage = frontendDetectedLang !== 'unknown' && frontendDetectedLang !== userLanguage;
-        
-        const subtitleDisplayAfter = document.getElementById('subtitle-display');
-        if (!subtitleDisplayAfter) {
-            console.warn('字幕显示元素在异步操作后不存在，可能已被移除');
-            return;
-        }
-        
-        if (result.success && result.translated_text && 
-            result.source_lang && result.target_lang && 
-            result.source_lang !== result.target_lang && 
-            result.source_lang !== 'unknown') {
-            showSubtitlePrompt();
-            
-            if (subtitleEnabled) {
-                subtitleDisplayAfter.textContent = result.translated_text;
-                subtitleDisplayAfter.classList.add('show');
-                subtitleDisplayAfter.classList.remove('hidden');
-                subtitleDisplayAfter.style.opacity = '1';
-                console.log('字幕已更新（已翻译）:', result.translated_text.substring(0, 50) + '...');
-                
-                if (subtitleTimeout) {
-                    clearTimeout(subtitleTimeout);
-                    subtitleTimeout = null;
-                }
-                
-                subtitleTimeout = setTimeout(() => {
-                    const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
-                    if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.classList.contains('show')) {
-                        hideSubtitle();
-                        console.log('字幕30秒后自动隐藏');
-                    }
-                }, 30000);
-            } else {
-                subtitleDisplayAfter.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('开关已关闭，不显示字幕');
-            }
-        } else {
-            if (isNonUserLanguage) {
-                showSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('前端检测到非用户语言，显示提示框');
-            } else {
-                hideSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
-                subtitleDisplayAfter.classList.remove('show');
-                subtitleDisplayAfter.classList.add('hidden');
-                subtitleDisplayAfter.style.opacity = '0';
-                console.log('对话已是用户语言，自动隐藏字幕提示');
-            }
-            if (subtitleTimeout) {
-                clearTimeout(subtitleTimeout);
-                subtitleTimeout = null;
-            }
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            if (pendingTranslation === currentTranslationText) {
-                pendingTranslation = null;
-            }
-            return;
-        }
-        
-        console.error('字幕翻译异常:', {
-            error: error.message,
-            stack: error.stack,
-            name: error.name,
-            text: text.substring(0, 50) + '...',
-            userLanguage: userLanguage
-        });
-        
-        if (pendingTranslation === currentTranslationText) {
-            pendingTranslation = null;
-        }
-        
-        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-            console.warn('提示：字幕翻译功能暂时不可用，但对话可以正常进行');
-        }
-    } finally {
-        currentTranslateAbortController = null;
-    }
-}
-
-// 隐藏字幕
-function hideSubtitle() {
-    const subtitleDisplay = document.getElementById('subtitle-display');
-    if (!subtitleDisplay) return;
-    
-    // 清除定时器
-    if (subtitleTimeout) {
-        clearTimeout(subtitleTimeout);
-        subtitleTimeout = null;
-    }
-    
-    subtitleDisplay.classList.remove('show');
-    subtitleDisplay.style.opacity = '0';
-    
-    // 延迟隐藏，让淡出动画完成
-    setTimeout(() => {
-        const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
-        if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.style.opacity === '0') {
-            subtitleDisplayForTimeout.classList.add('hidden');
-        }
-    }, 300);
-}
-
-// 显示字幕提示框（参考Xiao8项目，改为系统消息形式）
-function showSubtitlePrompt() {
-    // 检查是否已经显示过提示（避免重复显示）
-    const existingPrompt = document.getElementById('subtitle-prompt-message');
-    if (existingPrompt) {
-        return;
-    }
-    
-    const textInputArea = document.getElementById('text-input-area');
-    const chatContainer = document.getElementById('chat-container');
-    
-    // 检测是否处于语音模式（text-input-area 被隐藏）
-    const isVoiceMode = textInputArea && textInputArea.classList.contains('hidden');
-    
-    // 确定父容器：语音模式下使用 chat-container，否则使用 text-input-area
-    let parentContainer;
-    if (isVoiceMode) {
-        parentContainer = chatContainer;
-    } else {
-        parentContainer = textInputArea;
-    }
-    
-    if (!parentContainer) {
-        return;
-    }
-    
-    // 创建提示消息（放在输入框区域中）
-    const promptDiv = document.createElement('div');
-    promptDiv.id = 'subtitle-prompt-message';
-    promptDiv.classList.add('subtitle-prompt-message');
-    
-    // 如果是语音模式，添加特殊样式类
-    if (isVoiceMode) {
-        promptDiv.classList.add('voice-mode');
-    }
-    
-    // 创建提示内容
-    const promptContent = document.createElement('div');
-    promptContent.classList.add('subtitle-prompt-content');
-    
-    // 创建开关容器
-    const toggleWrapper = document.createElement('div');
-    toggleWrapper.classList.add('subtitle-toggle-wrapper');
-    
-    // 创建圆形指示器
-    const indicator = document.createElement('div');
-    indicator.classList.add('subtitle-toggle-indicator');
-    if (subtitleEnabled) {
-        indicator.classList.add('active');
-    }
-    
-    // 创建标签文本
-    const labelText = document.createElement('span');
-    labelText.classList.add('subtitle-toggle-label');
-    labelText.setAttribute('data-i18n', 'subtitle.enable');
-    // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
-    const browserLang = normalizeLanguageCode(navigator.language);
-    const fallbacks = {
-        'zh': '开启字幕翻译',
-        'en': 'Enable Subtitle Translation',
-        'ja': '字幕翻訳を有効にする',
-        'ko': '자막 번역 켜기'
-    };
-    if (window.t) {
-        const translated = window.t('subtitle.enable');
-        // 如果翻译返回的是key本身（说明翻译不存在），使用浏览器语言的fallback
-        labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : (fallbacks[browserLang] || fallbacks['en']);
-    } else {
-        // i18n未加载时，使用浏览器语言的fallback
-        labelText.textContent = fallbacks[browserLang] || fallbacks['en'];
-    }
-    
-    toggleWrapper.appendChild(indicator);
-    toggleWrapper.appendChild(labelText);
-    
-    promptContent.appendChild(toggleWrapper);
-    promptDiv.appendChild(promptContent);
-    
-    // 根据模式插入到不同位置
-    if (isVoiceMode) {
-        // 语音模式：插入到 chat-container 底部（在 text-input-area 之前）
-        if (textInputArea) {
-            chatContainer.insertBefore(promptDiv, textInputArea);
-        } else {
-            chatContainer.appendChild(promptDiv);
-        }
-    } else {
-        // 文本模式：插入到输入框区域的最后（在text-input-row之后）
-        const textInputRow = textInputArea.querySelector('#text-input-row');
-        if (textInputRow && textInputRow.nextSibling) {
-            textInputArea.insertBefore(promptDiv, textInputRow.nextSibling);
-        } else {
-            textInputArea.appendChild(promptDiv);
-        }
-    }
-
-    
-    // 如果i18next已加载，监听语言变化事件
-    if (window.i18next) {
-        window.i18next.on('languageChanged', () => {
-            if (labelText && window.t) {
-                const translated = window.t('subtitle.enable');
-                // 如果翻译返回的是key本身（说明翻译不存在），使用当前语言的fallback
-                if (translated && translated !== 'subtitle.enable') {
-                    labelText.textContent = translated;
-                } else {
-                    // 使用与初始渲染相同的fallback逻辑
-                    const currentLang = normalizeLanguageCode(window.i18next.language || navigator.language);
-                    labelText.textContent = fallbacks[currentLang] || fallbacks['en'];
-                }
-            }
-        });
-    }
-    
-    // 更新指示器状态
-    const updateIndicator = () => {
-        if (subtitleEnabled) {
-            indicator.classList.add('active');
-        } else {
-            indicator.classList.remove('active');
-        }
-    };
-    
-    // 切换开关的函数
-    const handleToggle = (e) => {
-        if (e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-        subtitleEnabled = !subtitleEnabled;
-        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
-        updateIndicator();
-        console.log('字幕开关:', subtitleEnabled ? '开启' : '关闭');
-        
-        if (!subtitleEnabled) {
-            const subtitleDisplay = document.getElementById('subtitle-display');
-            if (subtitleDisplay) {
-                subtitleDisplay.textContent = '';
-                subtitleDisplay.classList.remove('show');
-                subtitleDisplay.classList.add('hidden');
-                subtitleDisplay.style.opacity = '0';
-            }
-            if (subtitleTimeout) {
-                clearTimeout(subtitleTimeout);
-                subtitleTimeout = null;
-            }
-        } else {
-            // 如果开启，重新翻译并显示字幕
-            if (currentTranslateAbortController) {
-                currentTranslateAbortController.abort();
-                currentTranslateAbortController = null;
-            }
-            pendingTranslation = null;
-            
-            if (window.currentGeminiMessage && 
-                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                window.currentGeminiMessage.isConnected &&
-                typeof window.currentGeminiMessage.textContent === 'string') {
-                const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-                if (fullText && fullText.trim()) {
-                    const subtitleDisplay = document.getElementById('subtitle-display');
-                    if (!subtitleDisplay) {
-                        console.error('字幕显示元素不存在，无法显示字幕');
-                        return;
-                    }
-                    subtitleDisplay.classList.remove('hidden');
-                    translateAndShowSubtitle(fullText);
-                }
-            } else {
-                if (window.currentGeminiMessage) {
-                    console.warn('currentGeminiMessage存在但不是有效的DOM元素，无法翻译字幕');
-                }
-            }
-        }
-    };
-    
-    // 绑定点击事件
-    toggleWrapper.addEventListener('click', handleToggle);
-    indicator.addEventListener('click', handleToggle);
-    labelText.addEventListener('click', handleToggle);
-}
-
-// 隐藏字幕提示框
-function hideSubtitlePrompt() {
-    const existingPrompt = document.getElementById('subtitle-prompt-message');
-    if (existingPrompt) {
-        existingPrompt.remove();
-        console.log('已隐藏字幕提示消息');
-    }
-}
-
-// 初始化字幕开关（DOM加载完成后）
-document.addEventListener('DOMContentLoaded', async function() {
-    // 初始化用户语言（等待完成，确保使用最新值）
-    await getUserLanguage();
-
-    // 检查当前消息中是否有非用户语言
-    // 增强null安全检查：确保currentGeminiMessage是有效的DOM元素
-    if (window.currentGeminiMessage &&
-        window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-        window.currentGeminiMessage.isConnected &&
-        typeof window.currentGeminiMessage.textContent === 'string') {
-        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-        if (fullText && fullText.trim()) {
-            checkAndShowSubtitlePrompt(fullText);
-        }
-    }
-
-    // 初始化通用引导管理器（幂等性保护）
-    if (!window.__universalTutorialManagerInitialized && typeof initUniversalTutorialManager === 'function') {
-        try {
-            initUniversalTutorialManager();
-            window.__universalTutorialManagerInitialized = true;
-            console.log('[App] 通用引导管理器已初始化');
-        } catch (error) {
-            console.error('[App] 通用引导管理器初始化失败:', error);
-        }
-    }
 });

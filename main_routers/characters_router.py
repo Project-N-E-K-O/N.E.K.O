@@ -14,6 +14,7 @@ import os
 import logging
 import asyncio
 import copy
+import base64
 from datetime import datetime
 import pathlib
 import wave
@@ -22,7 +23,7 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 import httpx
 import dashscope
-from dashscope.audio.tts_v2 import VoiceEnrollmentService
+from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
@@ -944,7 +945,7 @@ async def add_catgirl(request: Request):
     # 通知记忆服务器重新加载配置
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get('status') == 'success':
@@ -988,7 +989,7 @@ async def update_catgirl(name: str, request: Request):
     # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
     removed_fields = []
     for k, v in characters['猫娘'][name].items():
-        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
+        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'live2d_item_id'):
             removed_fields.append(k)
     for k in removed_fields:
         characters['猫娘'][name].pop(k)
@@ -1165,7 +1166,82 @@ async def get_microphone():
 async def get_voices():
     """获取当前API key对应的所有已注册音色"""
     _config_manager = get_config_manager()
-    return {"voices": _config_manager.get_voices_for_current_api()}
+    result = {"voices": _config_manager.get_voices_for_current_api()}
+    
+    # 如果是免费版且使用 lanlan.tech，附带免费预设音色
+    core_config = _config_manager.get_core_config()
+    if core_config.get('IS_FREE_VERSION'):
+        core_url = core_config.get('CORE_URL', '')
+        openrouter_url = core_config.get('OPENROUTER_URL', '')
+        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
+            from utils.api_config_loader import get_free_voices
+            free_voices = get_free_voices()
+            if free_voices:
+                result["free_voices"] = free_voices
+    
+    return result
+
+
+@router.get('/voice_preview')
+async def get_voice_preview(voice_id: str):
+    """获取音色预览音频"""
+    try:
+        _config_manager = get_config_manager()
+        
+        # 优先尝试从 tts_custom 获取 API Key
+        try:
+            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            audio_api_key = tts_custom_config.get('api_key', '')
+        except Exception:
+            audio_api_key = ''
+            
+        # 如果没有，则回退到核心配置
+        if not audio_api_key:
+            core_config = _config_manager.get_core_config()
+            audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            return JSONResponse({'success': False, 'error': '未配置 AUDIO_API_KEY'}, status_code=400)
+
+        # 生成音频
+        dashscope.api_key = audio_api_key
+        logger.info(f"正在为音色 {voice_id} 生成预览音频...")
+        
+        text = "喵喵喵～这里是neko～很高兴见到你～"
+        # 参照 复刻.py 使用 cosyvoice-v3-plus 模型
+        try:
+            synthesizer = SpeechSynthesizer(model="cosyvoice-v3-plus", voice=voice_id)
+            # 使用 asyncio.to_thread 包装同步阻塞调用
+            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
+            
+            if not audio_data:
+                request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()
+                logger.error(f"生成音频失败: audio_data 为空. Request ID: {request_id}")
+                return JSONResponse({
+                    'success': False, 
+                    'error': f'生成音频失败 (Request ID: {request_id})。请检查 API Key 额度或音色 ID 是否有效。'
+                }, status_code=500)
+                
+            logger.info(f"音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                
+            # 将音频数据转换为 Base64 字符串
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                
+            return {
+                "success": True, 
+                "audio": audio_base64,
+                "mime_type": "audio/mpeg"
+            }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"SpeechSynthesizer 调用异常: {error_msg}")
+            return JSONResponse({
+                'success': False, 
+                'error': f'语音合成异常: {error_msg}'
+            }, status_code=500)
+    except Exception as e:
+        logger.error(f"生成音色预览失败: {e}")
+        return JSONResponse({'success': False, 'error': f'系统错误: {str(e)}'}, status_code=500)
 
 
 @router.post('/voices')
@@ -1303,7 +1379,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
             http_base = 'http://' + base_url[5:]
         
         # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
-        # 例如: ws://localhost:50000/v1/audio/speech/stream -> http://localhost:50000
+        # 例如: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000
         if '/v1/' in http_base:
             http_base = http_base.split('/v1/')[0]
         

@@ -529,7 +529,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
-            document.getElementById('live2d-canvas').style.cursor = 'grab';
+            document.getElementById('live2d-canvas').style.cursor = '';
 
             // 拖拽结束后恢复按钮的 pointer-events
             restoreButtonPointerEvents();
@@ -567,7 +567,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (event.touches && event.touches.length > 1) {
                 // 如果变成多点触摸，停止拖拽
                 isDragging = false;
-                document.getElementById('live2d-canvas').style.cursor = 'grab';
+                document.getElementById('live2d-canvas').style.cursor = '';
                 return;
             }
 
@@ -1245,14 +1245,13 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         }
     }
 
-    // 获取当前视口尺寸（用于跨分辨率位置和缩放归一化）
+    // 获取当前屏幕尺寸（用于跨分辨率位置和缩放归一化）
+    // 使用 screen.width/height 而非 renderer 尺寸，避免临时视口变化（F12、输入法等）污染保存数据
     let viewportInfo = null;
-    if (this.pixi_app && this.pixi_app.renderer) {
-        const w = this.pixi_app.renderer.width;
-        const h = this.pixi_app.renderer.height;
-        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-            viewportInfo = { width: w, height: h };
-        }
+    const screenW = window.screen.width;
+    const screenH = window.screen.height;
+    if (Number.isFinite(screenW) && Number.isFinite(screenH) && screenW > 0 && screenH > 0) {
+        viewportInfo = { width: screenW, height: screenH };
     }
 
     // 异步保存，不阻塞交互
@@ -1402,18 +1401,16 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
 };
 
 /**
- * 设置窗口大小改变时的自动位置归一化和吸附检测
- * 当窗口/屏幕大小改变时，按比例调整模型位置和缩放，然后检测是否超出边界并执行吸附
+ * 设置窗口大小改变时的自动吸附检测
+ * 当窗口/屏幕大小改变时，检测模型是否超出边界并执行吸附
+ * 注意：不在 resize 时调整模型 scale/position，避免临时视口变化
+ *（F12 DevTools、移动端输入法弹出等）导致模型不可逆地缩小
  */
 Live2DManager.prototype.setupResizeSnapDetection = function () {
     // 防止重复绑定
     if (this._resizeSnapHandler) {
         window.removeEventListener('resize', this._resizeSnapHandler);
     }
-
-    // 记录当前视口尺寸，用于检测resize变化
-    this._lastViewportWidth = this.pixi_app ? this.pixi_app.renderer.width : window.innerWidth;
-    this._lastViewportHeight = this.pixi_app ? this.pixi_app.renderer.height : window.innerHeight;
 
     // 防抖动的 resize 处理函数
     let resizeTimeout = null;
@@ -1431,47 +1428,14 @@ Live2DManager.prototype.setupResizeSnapDetection = function () {
         resizeTimeout = setTimeout(async () => {
             if (!this.currentModel || !this.pixi_app) return;
 
-            // 获取resize后的新视口尺寸（PIXI renderer已自动resize）
-            const newWidth = this.pixi_app.renderer.width;
-            const newHeight = this.pixi_app.renderer.height;
-            const oldWidth = this._lastViewportWidth || newWidth;
-            const oldHeight = this._lastViewportHeight || newHeight;
-
-            // 检查视口是否有实际变化
-            const wRatio = newWidth / oldWidth;
-            const hRatio = newHeight / oldHeight;
-            const hasChanged = Math.abs(wRatio - 1) > 0.01 || Math.abs(hRatio - 1) > 0.01;
-
-            if (hasChanged) {
-                console.log('[Live2D] 窗口大小改变，按比例调整模型位置和缩放:', { oldWidth, oldHeight, newWidth, newHeight, wRatio, hRatio });
-
-                // 按比例调整位置
-                this.currentModel.x = this.currentModel.x * wRatio;
-                this.currentModel.y = this.currentModel.y * hRatio;
-
-                // 按最小比例等比调整缩放，保持模型相对大小
-                const scaleRatio = Math.min(wRatio, hRatio);
-                this.currentModel.scale.set(
-                    this.currentModel.scale.x * scaleRatio,
-                    this.currentModel.scale.y * scaleRatio
-                );
-
-                // 更新记录的视口尺寸
-                this._lastViewportWidth = newWidth;
-                this._lastViewportHeight = newHeight;
-
-                // 保存调整后的位置
-                this._debouncedSavePosition();
-            }
-
-            // 执行吸附检测（位置调整后仍可能超出边界）
+            // 仅执行吸附检测（防止模型超出屏幕边界）
             await this._checkAndPerformSnap(this.currentModel);
         }, 300);
     };
 
     window.addEventListener('resize', this._resizeSnapHandler);
 
-    console.debug('[Live2D] 已启用窗口大小改变时的自动位置归一化和吸附检测');
+    console.debug('[Live2D] 已启用窗口大小改变时的自动吸附检测');
 };
 
 /**

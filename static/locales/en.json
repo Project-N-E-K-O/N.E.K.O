@@ -25,7 +25,9 @@
     "nextPage": "Next Page",
     "selectFile": "Select File",
     "fieldSeparator": ", ",
-    "tryAgainLater": "Please try again later"
+    "tryAgainLater": "Please try again later",
+    "user": "User",
+    "project": "Project"
   },
   "characterProfile": {
     "gender": "Gender",
@@ -404,7 +406,45 @@
     "compressionInProgress": "Compressing model files...",
     "decompressionInProgress": "Decompressing model files...",
     "compressionFailed": "Compression failed: {{error}}",
-    "decompressionFailed": "Decompression failed: {{error}}"
+    "decompressionFailed": "Decompression failed: {{error}}",
+    "uploadingPreviewImage": "Uploading preview image...",
+    "previewImageSizeExceeded": "Preview image exceeds 1MB, please select a smaller image",
+    "modelConfigNotFound": "Model configuration file not found",
+    "noExpressionFiles": "No expression files",
+    "tempFolderDeleted": "Temporary folder deleted",
+    "tempFolderRetained": "Temporary folder retained",
+    "noAvailableModelsError": "No available models",
+    "tagsPlaceholderInput": "Enter tags, press space to add",
+    "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
+    "pageDescription": "Browse, subscribe, download, and manage Live2D models and voices from Steam Workshop",
+    "previewImageMissing": "Preview image file not found, please check the path",
+    "sort": {
+      "title": "Sort:",
+      "nameAsc": "Name (Ascending)",
+      "nameDesc": "Name (Descending)",
+      "dateAsc": "Subscribe Date (Ascending)",
+      "dateDesc": "Subscribe Date (Descending)",
+      "createDateAsc": "Create Date (Ascending)",
+      "createDateDesc": "Create Date (Descending)",
+      "updateAsc": "Update Time (Ascending)",
+      "updateDesc": "Update Time (Descending)",
+      "sizeAsc": "File Size (Ascending)",
+      "sizeDesc": "File Size (Descending)"
+    },
+    "uploadReady": "Ready to upload {{itemName}}",
+    "validatingFolderPathWithName": "Validating folder: {{path}}",
+    "voiceNote": "For voice settings, please go to the Live2D settings page to register manually"
+  },
+  "error": {
+    "cameraStreamFailed": "Failed to get camera stream",
+    "characterConfigFailed": "Failed to get character configuration",
+    "emotionTimeout": "Emotion analysis timeout",
+    "noAudioTrack": "No available audio track"
+  },
+  "camera": {
+    "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
+    "notDetected": "No camera device detected",
+    "occupied": "Camera is occupied by another app? Close QR code/photo apps and try again"
   },
   "dialogs": {
     "confirmLeave": "Confirm Leave",
@@ -425,6 +465,48 @@
     "screenshotAlt": "Screenshot {{index}}",
     "screenshotTitle": "Click to view screenshot {{index}}",
     "removeScreenshot": "Remove this screenshot"
+  },
+  "emotion": {
+    "manager": "Live2D Emotion Mapping Manager",
+    "description": "Manage and configure motion and expression mappings for Live2D characters",
+    "selectModel": "Select Live2D Model:",
+    "model": "Model: {{model}}",
+    "loading": "Loading...",
+    "loaded": "Loaded, found {{motionCount}} motion files and {{expressionCount}} expression files",
+    "loadFailed": "Failed to load available model list: {{error}}",
+    "loadError": "Error loading model list: {{error}}",
+    "pleaseSelect": "Select Model",
+    "pleaseSelectModel": "Please select a model first",
+    "pleaseSelectFile": "Please select a file",
+    "modelInfo": "Model Info",
+    "motionFiles": "Motion Files ({{count}})",
+    "expressionFiles": "Expression Files ({{count}})",
+    "motionExpressionCount": "Motion Files: {{motionCount}} | Expression Files: {{expressionCount}}",
+    "selectMotionFile": "Select Motion File",
+    "selectExpressionFile": "Select Expression File",
+    "addedMotionFile": "Added motion file: {{file}}",
+    "removedMotionFile": "Removed motion file: {{file}}",
+    "addedExpressionFile": "Added expression file: {{file}}",
+    "removedExpressionFile": "Removed expression file: {{file}}",
+    "add": "Add",
+    "delete": "Delete",
+    "reset": "Reset",
+    "saveConfig": "Save Config",
+    "resetConfig": "Reset Config",
+    "savingConfig": "Saving configuration...",
+    "configSaved": "Configuration saved successfully",
+    "saveConfigFailed": "Failed to save configuration: {{error}}",
+    "saveConfigError": "Error saving configuration: {{error}}",
+    "loadingConfig": "Loading configuration and model files...",
+    "configLoaded": "Configuration loaded, but failed to get model files",
+    "loadConfigFailed": "Failed to load configuration: {{error}}",
+    "loadConfigError": "Error loading configuration: {{error}}",
+    "loadEmotionFailed": "Failed to load emotion mapping config: {{error}}",
+    "confirmReset": "Are you sure you want to reset the current configuration? This will clear all motion and expression files.",
+    "configReset": "Configuration has been reset",
+    "autoDetected": "Auto-detected {{count}} Live2D models",
+    "autoCreatedMapping": "Auto-created emotion mapping config for model {{model}}",
+    "clickToClosePreview": "Click blank area to close preview"
   },
   "voiceControl": {
     "startVoice": "Start Voice",
@@ -677,6 +759,20 @@
       "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
       "cosyVoiceOnly": "• Currently only supports Alibaba Cloud CosyVoice compatible protocol format"
     },
+    "gptsovitsConfig": "GPT-SoVITS Configuration",
+    "gptsovitsDescription": "GPT-SoVITS Note:",
+    "gptsovitsDescriptionText": "A locally deployed voice cloning model. Start the GPT-SoVITS v3 API service first. Voice configs (reference audio, model weights, etc.) are managed in v3's voices/*.toml files — just enter the voice config ID here.",
+    "gptsovitsApiUrlPlaceholder": "e.g., http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "(Optional, default http://127.0.0.1:9881)",
+    "gptsovitsVoiceId": "Voice Config",
+    "gptsovitsVoiceIdHint": "(Fetch available configs from GPT-SoVITS v3)",
+    "gptsovitsVoiceIdEmpty": "-- Fetch voice list first --",
+    "gptsovitsNoVoices": "-- No configs available --",
+    "gptsovitsRefreshVoices": "Fetch List",
+    "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
+    "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
+    "gptsovitsEnabled": "Enable GPT-SoVITS",
+    "gptsovitsEnabledHint": "(Will override TTS config above when enabled)",
     "wsWarning": {
       "title": "Protocol Error",
       "message": "URL must use WebSocket protocol (starting with ws:// or wss://)",
@@ -695,7 +791,7 @@
     "pleaseSelectExpression": "Please select an expression first",
     "selectMotion": "Animation",
     "selectExpression": "Expression",
-    "selectPersistentExpression": "Select Persistent Expression",
+    "selectPersistentExpression": "Persist. Expr.",
     "noMotionFiles": "No motion files",
     "emotionConfig": "Emotion Config",
     "saveSettings": "Save Settings",
@@ -704,11 +800,11 @@
     "add": "Add",
     "delete": "Delete",
     "savePersistent": "Save Persistent Expression",
-    "persistentHint": "Persistent expressions will always be active; only .exp3.json files can be selected here.",
+    "persistentHint": "Persistent expressions will always be active.",
     "backToMain": "Back to Main",
-    "importModel": "Import Model:",
-    "motionPreview": "Motion Preview:",
-    "expressionPreview": "Expression Preview:",
+    "importModel": "Import Model",
+    "motionPreview": "Motion Preview",
+    "expressionPreview": "Expression Preview",
     "play": "Play",
     "modelNotSet": "Character {{name}} has no model set, please select manually",
     "noPersistentExpressions": "No persistent expressions added yet",
@@ -758,9 +854,9 @@
     "reloadVRMAnimationsFailed": "File uploaded successfully, but failed to reload animation list",
     "toggleFullscreen": "Toggle Fullscreen",
     "exitFullscreen": "Exit Fullscreen",
-    "modelType": "Model Type:",
-    "selectLive2DModel": "Select Live2D Model:",
-    "selectVRMModel": "Select VRM Model:",
+    "modelType": "Model Type",
+    "selectLive2DModel": "Select Live2D Model",
+    "selectVRMModel": "Select VRM Model",
     "selectVRMFile": "Select VRM File",
     "vrmModelListLoaded": "VRM model list loaded successfully",
     "noVRMModelsFound": "No available VRM models found",
@@ -829,7 +925,7 @@
       "title": "Face Editor",
       "backToMain": "← Back to L2D Settings",
       "backToL2DManager": "Back",
-      "selectModel": "Select Model:",
+      "selectModel": "Select Model",
       "loading": "Loading...",
       "resetAll": "Reset All",
       "saveParameters": "Save",
@@ -928,6 +1024,9 @@
       "ru": "Russian"
     },
     "registeredVoices": "Registered Voices",
+    "preview": "Preview",
+    "previewFailed": "Preview failed: {{error}}",
+    "playFailed": "Play failed: {{error}}",
     "refresh": "Refresh",
     "loading": "Loading...",
     "noVoices": "No registered voices",
@@ -937,7 +1036,9 @@
     "deleting": "Deleting...",
     "deleteSuccess": "Voice \"{{name}}\" has been successfully deleted",
     "deleteFailed": "Delete failed",
-    "deleteError": "Delete failed: {{error}}"
+    "deleteError": "Delete failed: {{error}}",
+    "freePresetLabel": "Free Preset Voices",
+    "freePresetBadge": "Preset"
   },
   "memory": {
     "title": "Memory Browser",
@@ -981,7 +1082,9 @@
     "resetTutorialBtn": "Reset Tutorial",
     "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
     "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
-    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page."
+    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page.",
+    "refreshed": "Memory updated, new memory will be used in the next conversation",
+    "refreshingContext": "Refreshing context..."
   },
   "character": {
     "manager": "Character Manager",
@@ -1061,7 +1164,8 @@
     "unregisterFailed": "Failed to unregister",
     "unregisterError": "An error occurred while unregistering",
     "switchFailed": "Switch failed",
-    "switchError": "An error occurred while switching neko"
+    "switchError": "An error occurred while switching neko",
+    "freePresetVoices": "Free Preset Voices"
   },
   "app": {
     "welcomeBack": "{{name}} is back!",
@@ -1129,7 +1233,8 @@
       "loadFailed": "Failed to load screen sources",
       "screens": "Screens",
       "windows": "Windows",
-      "selected": "Selected {{source}}"
+      "selected": "Selected {{source}}",
+      "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
     }
   },
   "buttons": {
@@ -1159,7 +1264,10 @@
     "language": {
       "title": "Select Language",
       "zh-CN": "Simplified Chinese",
-      "en": "English"
+      "en": "English",
+      "ja": "日本語",
+      "zh-TW": "繁體中文",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "Base Interval",
@@ -1170,10 +1278,17 @@
       "mergeMessages": "Merge Messages",
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Proactive Vision",
+      "proactiveVisionChat": "Vision Chat",
+      "proactiveVisionChatTooltip": "Requires both Proactive Chat and Proactive Vision to be enabled",
+      "proactiveNewsChat": "News Chat",
+      "proactiveNewsChatTooltip": "Use trending topics for proactive chat",
+      "proactiveVideoChat": "Video Chat",
+      "proactiveVideoChatTooltip": "Use video content for proactive chat",
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard/Mouse Control",
       "userPlugin": "User Plugin",
       "mcpTools": "MCP Tools",
+      "browserUse": "Browser Control",
       "focusMode": "Allow Interrupt",
       "unavailable": "{{name}} Unavailable",
       "checking": "Checking...",
@@ -1251,6 +1366,12 @@
       "saveFailed": "Save failed",
       "lightingReset": "Lighting settings reset to default",
       "lightingApplied": "Preset applied: {{name}}"
+    },
+    "emotionConfig": "VRM Emotion Config",
+    "idleAnimation": {
+      "title": "Idle Animation",
+      "changed": "Idle animation changed: {{name}}",
+      "changeFailed": "Failed to change idle animation"
     }
   },
   "modelManager": {
@@ -1430,7 +1551,6 @@
         "note": "If you don't see it, expand the tray arrow to show hidden icons.",
         "alt": "System tray location example"
       },
-
       "menu": {
         "title": "📋 Tray Menu",
         "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"
@@ -1842,5 +1962,71 @@
     "translationError": "Translation error:",
     "translationException": "Translation request exception:",
     "resetButtonNotFound": "[App] resetSessionButton not found!"
+  },
+  "emotionManager": {
+    "title": "Live2D Emotion Mapping Manager - Project N.E.K.O.",
+    "pageTitle": "Live2D Emotion Mapping Manager",
+    "subtitle": "Configure motions and expressions for different emotions",
+    "selectModel": "Select Live2D Model",
+    "motion": "Motion",
+    "expression": "Expression",
+    "selectMotion": "Select Motion",
+    "selectExpression": "Select Expression",
+    "saveConfig": "Save Configuration",
+    "pleaseSelectModel": "Please select a model",
+    "noModelsFound": "No available models found",
+    "loadModelListFailed": "Failed to load model list",
+    "loadModelFilesFailed": "Failed to load model files",
+    "configLoadSuccess": "Configuration loaded successfully",
+    "pleaseSelectModelFirst": "Please select a model first",
+    "configSaveSuccess": "Configuration saved! Each emotion's motions/expressions will share equal trigger probability.",
+    "saveFailed": "Save failed",
+    "configReset": "Configuration has been reset",
+    "emotions": {
+      "happy": "Happy",
+      "sad": "Sad",
+      "angry": "Angry",
+      "neutral": "Neutral",
+      "surprised": "Surprised",
+      "idle": "Idle"
+    }
+  },
+  "vrmEmotionManager": {
+    "title": "VRM Emotion Mapping Manager - Project N.E.K.O.",
+    "pageTitle": "VRM Emotion Mapping Manager",
+    "subtitle": "Configure expression mappings for different emotions",
+    "selectModel": "Select VRM Model",
+    "expressionPreview": "Expression Preview",
+    "expressionCandidates": "Expression Candidates",
+    "selectExpression": "Select Expression",
+    "saveConfig": "Save Configuration",
+    "resetToDefault": "Reset to Default",
+    "loading": "Loading...",
+    "loadingExpressions": "Loading expression list",
+    "pleaseSelectModel": "Please select a model",
+    "noModelsFound": "No available VRM models found",
+    "noExpressionsFound": "No available expressions",
+    "loadModelListFailed": "Failed to load model list",
+    "loadExpressionsFailed": "Failed to load model expressions",
+    "expressionsLoadedFromModel": "Expression list loaded from current model",
+    "useGenericExpressions": "Using generic expression list (please load model on main page first)",
+    "useDefaultExpressions": "Using default expression list (please load model on main page first)",
+    "configLoadSuccess": "Configuration loaded successfully",
+    "configUseDefault": "Using default configuration",
+    "configSaveSuccess": "Configuration saved successfully!",
+    "saveFailed": "Save failed",
+    "configReset": "Configuration has been reset to default",
+    "pleaseSelectModelFirst": "Please select a model first",
+    "tip": "Tip: ",
+    "tipContent": "VRM model expression names may vary by version (VRM 0.x uses joy, VRM 1.0 uses happy). Please select multiple candidate expressions for each emotion, the system will automatically match the expressions supported by the model.",
+    "close": "Close",
+    "emotions": {
+      "neutral": "Neutral",
+      "happy": "Happy",
+      "relaxed": "Relaxed",
+      "sad": "Sad",
+      "angry": "Angry",
+      "surprised": "Surprised"
+    }
   }
 }

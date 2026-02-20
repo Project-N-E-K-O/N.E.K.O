@@ -134,6 +134,8 @@ async def save_preferences(request: Request):
         rotation = data.get('rotation')
         # 获取视口信息（可选，用于跨分辨率位置和缩放归一化）
         viewport = data.get('viewport')
+        # 获取相机位置信息（可选，用于恢复VRM滚轮缩放状态）
+        camera_position = data.get('camera_position')
 
         # 验证和清理 viewport 数据
         if viewport is not None:
@@ -148,7 +150,7 @@ async def save_preferences(request: Request):
                     viewport = None
 
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport, camera_position):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -356,6 +358,10 @@ async def get_core_config_api():
             "visionModelUrl": core_cfg.get('visionModelUrl', ''),
             "visionModelId": core_cfg.get('visionModelId', ''),
             "visionModelApiKey": core_cfg.get('visionModelApiKey', ''),
+            "agentModelProvider": core_cfg.get('agentModelProvider', ''),
+            "agentModelUrl": core_cfg.get('agentModelUrl', ''),
+            "agentModelId": core_cfg.get('agentModelId', ''),
+            "agentModelApiKey": core_cfg.get('agentModelApiKey', ''),
             "omniModelProvider": core_cfg.get('omniModelProvider', ''),
             "omniModelUrl": core_cfg.get('omniModelUrl', ''),
             "omniModelId": core_cfg.get('omniModelId', ''),
@@ -493,6 +499,14 @@ async def update_core_config(request: Request):
             core_cfg['visionModelId'] = data['visionModelId']
         if 'visionModelApiKey' in data:
             core_cfg['visionModelApiKey'] = data['visionModelApiKey']
+        if 'agentModelProvider' in data:
+            core_cfg['agentModelProvider'] = data['agentModelProvider']
+        if 'agentModelUrl' in data:
+            core_cfg['agentModelUrl'] = data['agentModelUrl']
+        if 'agentModelId' in data:
+            core_cfg['agentModelId'] = data['agentModelId']
+        if 'agentModelApiKey' in data:
+            core_cfg['agentModelApiKey'] = data['agentModelApiKey']
         if 'omniModelProvider' in data:
             core_cfg['omniModelProvider'] = data['omniModelProvider']
         if 'omniModelUrl' in data:
@@ -590,3 +604,46 @@ async def get_api_providers_config():
             "assist_api_providers": [],
         }
 
+
+@router.post("/gptsovits/list_voices")
+async def list_gptsovits_voices(request: Request):
+    """代理请求到 GPT-SoVITS v3 API 获取可用语音配置列表"""
+    import aiohttp
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        data = await request.json()
+        api_url = data.get("api_url", "").rstrip("/")
+
+        if not api_url:
+            return {"success": False, "error": "api_url is required"}
+
+        # SSRF 防护：限制 api_url 只能是 localhost
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "Invalid api_url"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "api_url must be localhost"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "api_url must be localhost"}
+
+        endpoint = f"{api_url}/api/v3/voices"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                try:
+                    result = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
+                if resp.status == 200:
+                    return {"success": True, "voices": result}
+                return {"success": False, "error": f"HTTP {resp.status}: {str(result)[:200]}"}
+    except aiohttp.ClientError as e:
+        logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
+        return {"success": False, "error": f"Connection error: {str(e)}"}
+    except Exception as e:
+        logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
+        return {"success": False, "error": str(e)}

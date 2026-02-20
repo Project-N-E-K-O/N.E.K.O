@@ -589,7 +589,6 @@ MAIN_SERVER_SUPPRESSED_ENDPOINTS = [
 ]
 
 MAIN_SERVER_RATE_LIMITED_ENDPOINTS = [
-    "/api/agent/task_status",
 ]
 
 # Agent Server 的端点配置

@@ -53,7 +53,7 @@ class CompressedRecentHistoryManager:
             extra_body=get_extra_body(api_config['model']) or None
         )
 
-    async def update_history(self, new_messages, lanlan_name, detailed=False):
+    async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
         # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
             _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
@@ -109,12 +109,9 @@ class CompressedRecentHistoryManager:
             with open(file_path, "w", encoding='utf-8') as f:  # Save the updated history to file before compressing
                 json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
 
-            if len(self.user_histories[lanlan_name]) > self.max_history_length:
-                # 压缩旧消息
+            if compress and len(self.user_histories[lanlan_name]) > self.max_history_length:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
                 compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
-
-                # 只保留最近的max_history_length条消息
                 self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)

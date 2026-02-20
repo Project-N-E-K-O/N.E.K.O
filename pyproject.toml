@@ -39,6 +39,8 @@ dependencies = [
   "bilibili-api-python>=17.4.0",
   "googletrans>=4.0.2",
   "translatepy",
+  "pyzmq>=26.2.0",
+  "browser-use>=0.11.0",
 ]
 
 
@@ -80,5 +82,13 @@ include = [
 ]
 exclude = [
   "plugin/plugins",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.58.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-playwright>=0.7.2",
 ]
 

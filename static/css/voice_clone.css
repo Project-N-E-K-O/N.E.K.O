@@ -647,9 +647,14 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     padding: 40px 20px;
 }
 
-.voice-delete-btn {
-    background: #ff5252;
-    color: white;
+.voice-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-left: 16px;
+}
+
+.voice-delete-btn, .voice-preview-btn {
     border: none;
     border-radius: 999px;
     padding: 6px 12px;
@@ -662,37 +667,48 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-width: 120px;
-    height: 30px;
+    min-width: 110px;
+    height: 32px;
     line-height: 1;
     flex-shrink: 0;
-    align-self: center;
-    margin: 0;
-    transform: translateY(-4px);
+}
+
+.voice-delete-btn {
+    background: #f52;
+    color: white;
+}
+
+.voice-preview-btn {
+    background: #40c5f1;
+    color: white;
 }
 
 .voice-delete-btn:hover:not(:disabled) {
-    background: #ff4444;
-    transform: translateY(-5px);
-    box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
+    background: #f44;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgb(255 82 82 / 30%);
 }
 
-.voice-delete-btn:active:not(:disabled) {
-    background: #e53935;
+.voice-preview-btn:hover:not(:disabled) {
+    background: #35b5e1;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgb(64 197 241 / 30%);
+}
+
+.voice-delete-btn:active:not(:disabled), .voice-preview-btn:active:not(:disabled) {
     transform: translateY(1px) scale(0.98);
-    box-shadow: 0 1px 3px rgba(255, 82, 82, 0.2);
     opacity: 0.95;
 }
 
-.voice-delete-btn:disabled {
+.voice-delete-btn:disabled, .voice-preview-btn:disabled {
     background: #ccc;
     cursor: not-allowed;
     opacity: 0.6;
 }
 
-.voice-delete-btn img {
-    width: 24px;
-    height: 24px;
+.voice-delete-btn img, .voice-preview-btn img {
+    width: 18px;
+    height: 18px;
     display: block;
     flex-shrink: 0;
     margin: 0;

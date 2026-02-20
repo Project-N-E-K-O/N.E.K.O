@@ -6,12 +6,15 @@ Handles VRM model-related endpoints including:
 - VRM model listing
 - VRM model upload
 - VRM animation listing
+- VRM emotion mapping configuration
 """
 
+import json
 import logging
+import re
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
@@ -398,7 +401,7 @@ def get_vrm_animations():
         )
 
 
-# 新增配置获取接口 
+# 新增配置获取接口
 @router.get('/config')
 async def get_vrm_config():
     """获取前后端统一的路径配置"""
@@ -410,3 +413,232 @@ async def get_vrm_config():
             "static_animation": VRM_STATIC_ANIMATION_PATH
         }
     })
+
+
+# ============== VRM 情感映射配置 API ==============
+
+# 默认情感映射表
+DEFAULT_MOOD_MAP = {
+    "neutral": ["neutral"],
+    "happy": ["happy", "joy", "fun", "smile", "joy_01"],
+    "relaxed": ["relaxed", "joy", "fun", "content"],
+    "sad": ["sad", "sorrow", "grief"],
+    "angry": ["angry", "anger"],
+    "surprised": ["surprised", "surprise", "shock", "e", "o"]
+}
+
+
+def _get_emotion_config_path(model_name: str) -> Path | None:
+    """获取模型情感配置文件路径"""
+    # 允许 Unicode 单词字符（包括 CJK）、下划线、连字符
+    # \w 在 Python3 中支持 Unicode，包含字母、数字、下划线（含中日韩字符）
+    safe_name = re.sub(r'[^\w-]', '', model_name, flags=re.UNICODE)
+    if not safe_name:
+        logger.warning(f"无效的模型名称: {model_name!r}")
+        return None
+
+    config_mgr = get_config_manager()
+
+    # 配置文件存储在 static/vrm/configs/ 目录下
+    config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = config_dir / f"{safe_name}_emotion.json"
+
+    # 验证解析后的路径仍在 config_dir 内
+    try:
+        config_path.resolve().relative_to(config_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None
+
+    return config_path
+
+
+def _get_model_path(model_name: str) -> tuple[Path | None, str]:
+    """获取VRM模型文件路径，返回 (path, url_prefix)"""
+    # 仅允许字母、数字、点、下划线、连字符（含 CJK 等 Unicode 单词字符）
+    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
+    if not safe_name or safe_name != model_name:
+        logger.warning(f"无效的模型名称: {model_name!r}")
+        return None, ""
+
+    config_mgr = get_config_manager()
+    project_root = config_mgr.project_root
+
+    # 1. 检查项目目录
+    static_vrm_dir = project_root / "static" / "vrm"
+    static_vrm_path = static_vrm_dir / f"{safe_name}.vrm"
+    try:
+        resolved = static_vrm_path.resolve()
+        resolved.relative_to(static_vrm_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None, ""
+    if resolved.suffix == '.vrm' and resolved.is_file():
+        return resolved, "/static/vrm"
+
+    # 2. 检查用户目录
+    config_mgr.ensure_vrm_directory()
+    user_vrm_path = config_mgr.vrm_dir / f"{safe_name}.vrm"
+    try:
+        resolved = user_vrm_path.resolve()
+        resolved.relative_to(config_mgr.vrm_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None, ""
+    if resolved.suffix == '.vrm' and resolved.is_file():
+        return resolved, VRM_USER_PATH
+
+    return None, ""
+
+
+@router.get('/emotion_mapping/{model_name}')
+async def get_emotion_mapping(model_name: str):
+    """获取VRM模型的情感映射配置"""
+    try:
+        config_path = _get_emotion_config_path(model_name)
+
+        # Check if model_name is invalid (returns None from _get_emotion_config_path)
+        if config_path is None:
+            error_msg = f"Invalid model name: {model_name!r}"
+            logger.error(f"获取VRM情感映射配置失败: {error_msg}")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": error_msg}
+            )
+
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            return {"success": True, "config": config}
+        else:
+            # 返回默认配置
+            return {"success": True, "config": DEFAULT_MOOD_MAP}
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"情感配置文件 JSON 损坏，回退到默认配置: {e}")
+        return {"success": True, "config": DEFAULT_MOOD_MAP}
+
+    except Exception as e:
+        logger.error(f"获取VRM情感映射配置失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.post('/emotion_mapping/{model_name}')
+async def update_emotion_mapping(model_name: str, request: Request):
+    """更新VRM模型的情感映射配置"""
+    try:
+        data = await request.json()
+
+        # 1. 验证顶级 payload 是 dict/object
+        if not isinstance(data, dict) or not data:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "无效的数据结构：必须是包含情感映射的非空对象"}
+            )
+
+        # 2. 规范化每个情感映射值
+        normalized_data = {}
+        for emotion_key, value in data.items():
+            # 跳过非字符串的 key
+            if not isinstance(emotion_key, str) or not emotion_key.strip():
+                continue
+
+            # 规范化 value 为非空字符串数组
+            if isinstance(value, str):
+                # 单个字符串转换为数组
+                if value.strip():
+                    normalized_data[emotion_key] = [value.strip()]
+            elif isinstance(value, list):
+                # 过滤并转换为字符串，丢弃空条目
+                str_items = []
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        str_items.append(item.strip())
+                if str_items:
+                    normalized_data[emotion_key] = str_items
+            # 其他类型跳过
+
+        # 3. 验证规范化后的数据不为空
+        if not normalized_data:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "无效的数据：规范化后无有效情感映射"}
+            )
+
+        # 验证模型是否存在
+        model_path, _ = _get_model_path(model_name)
+        if not model_path:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "模型不存在"}
+            )
+
+        # 保存配置
+        config_path = _get_emotion_config_path(model_name)
+        if not config_path:
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": "无法创建配置目录"}
+            )
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(normalized_data, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"已保存VRM模型 {model_name} 的情感映射配置")
+
+        return {"success": True, "message": "配置保存成功"}
+
+    except json.JSONDecodeError:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "无效的JSON格式"}
+        )
+    except Exception as e:
+        logger.error(f"保存VRM情感映射配置失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.get('/expressions/{model_name}')
+async def get_model_expressions(model_name: str):
+    """获取VRM模型支持的表情列表（从配置中读取，如果有的话）"""
+    # TODO: model_name parameter is intentionally unused. Model-specific expression
+    # resolution is not implemented here because VRM files must be parsed on the frontend.
+    # The frontend obtains actual expression lists after loading the model.
+    # This endpoint returns a common expression list as a reference.
+    _ = model_name  # Mark as intentionally unused
+
+    try:
+        # 由于VRM文件需要前端解析，这里返回常见表情列表
+        # 前端会在加载模型后获取实际表情列表
+
+        common_expressions = [
+            "neutral", "happy", "joy", "fun", "smile", "joy_01",
+            "relaxed", "content",
+            "sad", "sorrow", "grief",
+            "angry", "anger",
+            "surprised", "surprise", "shock",
+            "blink", "blink_l", "blink_r",
+            "aa", "ih", "ou", "ee", "oh",
+            "lookUp", "lookDown", "lookLeft", "lookRight"
+        ]
+
+        return {
+            "success": True,
+            "expressions": common_expressions,
+            "note": "这是常见表情列表，实际表情以模型为准"
+        }
+
+    except Exception as e:
+        logger.error(f"获取VRM表情列表失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )

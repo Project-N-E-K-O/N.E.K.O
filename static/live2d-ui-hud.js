@@ -102,24 +102,24 @@ Live2DManager.prototype._createAgentPopupContent = function (popup) {
     // 【状态机严格控制】所有 agent 开关默认禁用，title显示查询中
     // 只有状态机检测到可用性后才逐个恢复交互
     const agentToggles = [
-        { 
-            id: 'agent-master', 
-            label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', 
-            labelKey: 'settings.toggles.agentMaster', 
+        {
+            id: 'agent-master',
+            label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关',
+            labelKey: 'settings.toggles.agentMaster',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
-        { 
-            id: 'agent-keyboard', 
-            label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', 
-            labelKey: 'settings.toggles.keyboardControl', 
+        {
+            id: 'agent-keyboard',
+            label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
+            labelKey: 'settings.toggles.keyboardControl',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
-        { 
-            id: 'agent-mcp', 
-            label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具', 
-            labelKey: 'settings.toggles.mcpTools', 
+        {
+            id: 'agent-browser',
+            label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
+            labelKey: 'settings.toggles.browserUse',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
@@ -214,25 +214,27 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         position: 'fixed',
         width: '320px',
         maxHeight: '60vh',
-        background: 'rgba(15, 23, 42, 0.92)',
-        backdropFilter: 'blur(12px)',
-        borderRadius: '16px',
+        background: 'rgba(255, 255, 255, 0.65)',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        WebkitBackdropFilter: 'saturate(180%) blur(20px)',
+        borderRadius: '8px',
         padding: '16px',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)',
-        color: '#e2e8f0',
+        border: '1px solid rgba(255, 255, 255, 0.18)',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)',
+        color: '#333',
         fontFamily: "'Segoe UI', 'SF Pro Display', -apple-system, sans-serif",
         fontSize: '13px',
         zIndex: '9999',
-        display: 'none', // 默认隐藏
+        display: 'none',
         flexDirection: 'column',
         gap: '12px',
         pointerEvents: 'auto',
         overflowY: 'auto',
-        transition: 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease',
+        transition: 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease',
         cursor: 'move',
         userSelect: 'none',
-        willChange: 'transform', // 优化性能
-        touchAction: 'none' // 防止浏览器默认触摸行为
+        willChange: 'transform',
+        touchAction: 'none'
     });
 
     // 应用保存的位置
@@ -248,16 +250,20 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingBottom: '12px',
-        borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+        borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
+        transition: 'padding 0.3s ease, border-color 0.3s ease'
     });
 
     const title = document.createElement('div');
     title.id = 'agent-task-hud-title';
-    title.innerHTML = `<span style="color: #60a5fa; margin-right: 8px;">⚡</span>${window.t ? window.t('agent.taskHud.title') : 'Agent 任务'}`;
+    title.innerHTML = `<span style="color: #44b7fe; margin-right: 8px;">⚡</span>${window.t ? window.t('agent.taskHud.title') : 'Agent 任务'}`;
     Object.assign(title.style, {
         fontWeight: '600',
         fontSize: '15px',
-        color: '#f1f5f9'
+        color: '#333',
+        transition: 'width 0.3s ease, opacity 0.3s ease',
+        overflow: 'hidden',
+        whiteSpace: 'nowrap'
     });
 
     // 统计信息
@@ -269,12 +275,44 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         fontSize: '11px'
     });
     stats.innerHTML = `
-        <span style="color: #fbbf24;" title="${window.t ? window.t('agent.taskHud.running') : '运行中'}">● <span id="hud-running-count">0</span></span>
-        <span style="color: #60a5fa;" title="${window.t ? window.t('agent.taskHud.queued') : '队列中'}">◐ <span id="hud-queued-count">0</span></span>
+        <span style="color: #44b7fe;" title="${window.t ? window.t('agent.taskHud.running') : '运行中'}">● <span id="hud-running-count">0</span></span>
+        <span style="color: #94a3b8;" title="${window.t ? window.t('agent.taskHud.queued') : '队列中'}">◐ <span id="hud-queued-count">0</span></span>
     `;
 
+    // 右侧容器（stats + minimize）
+    const headerRight = document.createElement('div');
+    Object.assign(headerRight.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        flexShrink: '0'
+    });
+
+    // 最小化按钮
+    const minimizeBtn = document.createElement('div');
+    minimizeBtn.id = 'agent-task-hud-minimize';
+    minimizeBtn.innerHTML = '−';
+    Object.assign(minimizeBtn.style, {
+        width: '22px',
+        height: '22px',
+        borderRadius: '6px',
+        background: 'rgba(68, 183, 254, 0.12)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '14px',
+        fontWeight: 'bold',
+        color: '#44b7fe',
+        cursor: 'pointer',
+        transition: 'all 0.2s ease',
+        flexShrink: '0'
+    });
+    minimizeBtn.title = window.t ? window.t('agent.taskHud.minimize') : '折叠/展开';
+
+    headerRight.appendChild(stats);
+    headerRight.appendChild(minimizeBtn);
     header.appendChild(title);
-    header.appendChild(stats);
+    header.appendChild(headerRight);
     hud.appendChild(header);
 
     // 任务列表容器
@@ -285,7 +323,51 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         flexDirection: 'column',
         gap: '8px',
         maxHeight: 'calc(60vh - 80px)',
-        overflowY: 'auto'
+        overflowY: 'auto',
+        transition: 'max-height 0.3s ease, opacity 0.3s ease, width 0.3s ease'
+    });
+
+    // 整体折叠逻辑 (key v2: reset stale collapsed state)
+    const hudCollapsedKey = 'agent-task-hud-collapsed-v2';
+    const applyHudCollapsed = (collapsed) => {
+        if (collapsed) {
+            hud.style.width = '60px';
+            hud.style.padding = '8px 12px';
+            title.style.display = 'none';
+            stats.style.display = 'none';
+            header.style.paddingBottom = '0';
+            header.style.borderBottom = 'none';
+            header.style.justifyContent = 'flex-end';
+            taskList.style.maxHeight = '0';
+            taskList.style.opacity = '0';
+            taskList.style.overflow = 'hidden';
+            minimizeBtn.innerHTML = '+';
+        } else {
+            hud.style.width = '320px';
+            hud.style.padding = '16px';
+            title.style.display = '';
+            stats.style.display = 'flex';
+            header.style.paddingBottom = '12px';
+            header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
+            header.style.justifyContent = 'space-between';
+            taskList.style.maxHeight = 'calc(60vh - 80px)';
+            taskList.style.opacity = '1';
+            taskList.style.overflow = '';
+            taskList.style.overflowY = 'auto';
+            minimizeBtn.innerHTML = '−';
+        }
+    };
+
+    // Default: expanded
+    let hudCollapsed = false;
+    try { hudCollapsed = localStorage.getItem(hudCollapsedKey) === 'true'; } catch (_) { }
+    applyHudCollapsed(hudCollapsed);
+
+    minimizeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hudCollapsed = !hudCollapsed;
+        applyHudCollapsed(hudCollapsed);
+        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
     });
 
     // 空状态提示
@@ -307,6 +389,9 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     const collapseButton = document.createElement('div');
     collapseButton.className = 'collapse-button';
     collapseButton.innerHTML = '▼';
+    // ARIA properties for accessibility
+    collapseButton.setAttribute('role', 'button');
+    collapseButton.setAttribute('aria-expanded', 'true');
     Object.assign(collapseButton.style, {
         position: 'absolute',
         top: '8px',
@@ -314,12 +399,10 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         width: '20px',
         height: '20px',
         borderRadius: '50%',
-        background: 'rgba(100, 116, 139, 0.3)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '10px',
-        color: '#64748b',
         cursor: 'pointer',
         transition: 'all 0.2s ease',
         zIndex: '1'
@@ -346,6 +429,58 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     this._setupDragging(hud);
 
     return hud;
+};
+
+// 设置空状态折叠功能
+Live2DManager.prototype._setupCollapseFunctionality = function (emptyState, collapseButton, emptyContent) {
+    const HUD_EMPTY_COLLAPSED_KEY = 'agent-task-empty-collapsed';
+    let isCollapsed = false;
+
+    // 添加类名以匹配CSS规则
+    emptyContent.classList.add('empty-state');
+
+    try {
+        isCollapsed = localStorage.getItem(HUD_EMPTY_COLLAPSED_KEY) === 'true';
+    } catch (e) {
+        console.warn('Failed to read collapsed state', e);
+    }
+
+    const applyState = (collapsed) => {
+        if (collapsed) {
+            collapseButton.classList.add('collapsed');
+            emptyContent.classList.add('collapsed');
+
+            emptyContent.style.maxHeight = '0px';
+            emptyContent.style.opacity = '0';
+            emptyContent.style.margin = '0';
+            emptyContent.style.padding = '0';
+            collapseButton.style.transform = 'rotate(-90deg)';
+
+            collapseButton.setAttribute('aria-expanded', 'false');
+        } else {
+            collapseButton.classList.remove('collapsed');
+            emptyContent.classList.remove('collapsed');
+
+            emptyContent.style.maxHeight = '100px';
+            emptyContent.style.opacity = '1';
+            emptyContent.style.margin = '';
+            emptyContent.style.padding = '20px';
+            collapseButton.style.transform = 'rotate(0deg)';
+
+            collapseButton.setAttribute('aria-expanded', 'true');
+        }
+    };
+
+    applyState(isCollapsed);
+
+    collapseButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        isCollapsed = !isCollapsed;
+        applyState(isCollapsed);
+        try {
+            localStorage.setItem(HUD_EMPTY_COLLAPSED_KEY, String(isCollapsed));
+        } catch (e) { }
+    });
 };
 
 // 显示任务 HUD
@@ -439,16 +574,16 @@ Live2DManager.prototype._createTaskCard = function (task) {
     }
 
     const isRunning = task.status === 'running';
-    const statusColor = isRunning ? '#fbbf24' : '#60a5fa';
+    const statusColor = isRunning ? '#44b7fe' : '#94a3b8';
     const statusText = isRunning
         ? (window.t ? window.t('agent.taskHud.statusRunning') : '运行中')
         : (window.t ? window.t('agent.taskHud.statusQueued') : '队列中');
 
     Object.assign(card.style, {
-        background: 'rgba(30, 41, 59, 0.8)',
-        borderRadius: '10px',
+        background: isRunning ? 'rgba(68, 183, 254, 0.08)' : 'rgba(249, 249, 249, 0.6)',
+        borderRadius: '8px',
         padding: '12px',
-        border: `1px solid ${isRunning ? 'rgba(251, 191, 36, 0.3)' : 'rgba(96, 165, 250, 0.2)'}`,
+        border: `1px solid ${isRunning ? 'rgba(68, 183, 254, 0.25)' : 'rgba(0, 0, 0, 0.06)'}`,
         transition: 'all 0.2s ease'
     });
 
@@ -462,11 +597,11 @@ Live2DManager.prototype._createTaskCard = function (task) {
     });
 
     // 任务类型图标
-    const typeIcon = task.source === 'mcp' ? '🔌' : (task.source === 'computer_use' ? '🖱️' : '⚙️');
+    const typeIcon = task.source === 'computer_use' ? '🖱️' : '⚙️';
     const typeName = task.type || task.source || 'unknown';
 
     const typeLabel = document.createElement('span');
-    typeLabel.innerHTML = `${typeIcon} <span style="color: #94a3b8; font-size: 11px;">${typeName}</span>`;
+    typeLabel.innerHTML = `${typeIcon} <span style="color: #666; font-size: 11px;">${typeName}</span>`;
 
     const statusBadge = document.createElement('span');
     statusBadge.textContent = statusText;
@@ -475,7 +610,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '2px 8px',
-        background: isRunning ? 'rgba(251, 191, 36, 0.15)' : 'rgba(96, 165, 250, 0.15)',
+        background: isRunning ? 'rgba(68, 183, 254, 0.12)' : 'rgba(0, 0, 0, 0.05)',
         borderRadius: '10px'
     });
 
@@ -505,7 +640,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
     const descDiv = document.createElement('div');
     descDiv.textContent = description.length > 60 ? description.substring(0, 60) + '...' : description;
     Object.assign(descDiv.style, {
-        color: '#cbd5e1',
+        color: '#444',
         fontSize: '12px',
         lineHeight: '1.4',
         marginBottom: '8px',
@@ -522,9 +657,9 @@ Live2DManager.prototype._createTaskCard = function (task) {
         const seconds = elapsed % 60;
 
         timeDiv.id = `task-time-${task.id}`;
-        timeDiv.innerHTML = `<span style="color: #64748b;">⏱️</span> ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        timeDiv.innerHTML = `<span style="color: #999;">⏱️</span> ${minutes}:${seconds.toString().padStart(2, '0')}`;
         Object.assign(timeDiv.style, {
-            color: '#94a3b8',
+            color: '#888',
             fontSize: '11px',
             display: 'flex',
             alignItems: 'center',
@@ -538,7 +673,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         const progressBar = document.createElement('div');
         Object.assign(progressBar.style, {
             height: '2px',
-            background: 'rgba(251, 191, 36, 0.2)',
+            background: 'rgba(68, 183, 254, 0.15)',
             borderRadius: '1px',
             marginTop: '8px',
             overflow: 'hidden'
@@ -548,7 +683,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         Object.assign(progressFill.style, {
             height: '100%',
             width: '30%',
-            background: 'linear-gradient(90deg, #fbbf24, #f59e0b)',
+            background: 'linear-gradient(90deg, #44b7fe, #96e8ff)',
             borderRadius: '1px',
             animation: 'taskProgress 1.5s ease-in-out infinite'
         });
@@ -595,7 +730,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
     // 鼠标按下事件 - 全局可拖动
     const handleMouseDown = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -636,9 +771,9 @@ Live2DManager.prototype._setupDragging = function (hud) {
 
         // 恢复视觉状态
         hud.style.cursor = 'move';
-        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -699,7 +834,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
     // 触摸开始
     const handleTouchStart = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -739,9 +874,9 @@ Live2DManager.prototype._setupDragging = function (hud) {
         isDragging = false;  // 确保performDrag函数停止工作
 
         // 恢复视觉状态
-        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -802,7 +937,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
-            
+
             // 使用缓存的屏幕边界进行限制
             if (!cachedDisplayHUD) {
                 console.warn('cachedDisplayHUD not initialized, skipping bounds check');
@@ -893,12 +1028,12 @@ Live2DManager.prototype._setupDragging = function (hud) {
         }
         
         #agent-task-hud::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.05);
+            background: rgba(0, 0, 0, 0.03);
             border-radius: 2px;
         }
         
         #agent-task-hud::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.2);
+            background: rgba(0, 0, 0, 0.12);
             border-radius: 2px;
         }
         
@@ -911,13 +1046,22 @@ Live2DManager.prototype._setupDragging = function (hud) {
         }
         
         #agent-task-list::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.15);
+            background: rgba(0, 0, 0, 0.1);
             border-radius: 2px;
         }
         
         .task-card:hover {
-            background: rgba(51, 65, 85, 0.8) !important;
+            background: rgba(68, 183, 254, 0.12) !important;
             transform: translateX(-2px);
+        }
+        
+        #agent-task-hud-minimize:hover {
+            background: rgba(68, 183, 254, 0.25);
+            transform: scale(1.1);
+        }
+        
+        #agent-task-hud-minimize:active {
+            transform: scale(0.95);
         }
         
         /* 折叠功能样式 */
@@ -949,12 +1093,12 @@ Live2DManager.prototype._setupDragging = function (hud) {
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            background: rgba(100, 116, 139, 0.3);
+            background: rgba(68, 183, 254, 0.12);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 10px;
-            color: #64748b;
+            color: #999;
             cursor: pointer;
             transition: all 0.2s ease;
             z-index: 1;
@@ -965,7 +1109,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         }
         
         .collapse-button:hover {
-            background: rgba(100, 116, 139, 0.6);
+            background: rgba(68, 183, 254, 0.25);
             transform: scale(1.1);
         }
         
@@ -974,8 +1118,8 @@ Live2DManager.prototype._setupDragging = function (hud) {
         }
         
         .collapse-button.collapsed {
-            background: rgba(100, 116, 139, 0.5);
-            color: #94a3b8;
+            background: rgba(68, 183, 254, 0.18);
+            color: #888;
         }
         
         /* 移动设备优化 */

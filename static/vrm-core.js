@@ -84,39 +84,71 @@ class VRMCore {
 
     /**
      * 检测 VRM 模型版本
+     * @param {Object} vrm - three-vrm 解析后的 VRM 对象
+     * @param {Object} [gltf] - 原始 GLTF 加载结果，用于读取 extensionsUsed
      */
-    detectVRMVersion(vrm) {
+    detectVRMVersion(vrm, gltf) {
         try {
+            // 1️⃣ 最可靠：直接检查 GLTF JSON 中的 extensionsUsed
+            //    VRM 1.0 使用 VRMC_vrm 扩展，VRM 0.x 使用 VRM 扩展
+            if (gltf?.parser?.json?.extensionsUsed) {
+                const exts = gltf.parser.json.extensionsUsed;
+                if (exts.includes('VRMC_vrm')) {
+                    return '1.0';
+                }
+                if (exts.includes('VRM')) {
+                    return '0.0';
+                }
+            }
+
+            // 2️⃣ 回退：检查 vrm.meta 属性
             if (vrm.meta) {
+                // VRM 0.x: meta 中有 vrmVersion / metaVersion / exporterVersion
                 if (vrm.meta.vrmVersion || vrm.meta.metaVersion) {
                     const version = vrm.meta.vrmVersion || vrm.meta.metaVersion;
                     if (version && (version.startsWith('1') || version.includes('1.0'))) {
                         return '1.0';
                     }
+                    return '0.0';
                 }
-                
-                if (vrm.humanoid && vrm.humanoid.humanBones) {
-                    const boneNames = Object.keys(vrm.humanoid.humanBones);
-                    if (boneNames.length > 50) {
-                        return '1.0';
-                    }
+
+                // VRM 1.0: meta 中有 authors (数组)，VRM 0.x 是 author (字符串)
+                if (Array.isArray(vrm.meta.authors)) {
+                    return '1.0';
                 }
-                
-                if (vrm.expressionManager && vrm.expressionManager.expressions) {
-                    let exprCount;
-                    if (vrm.expressionManager.expressions instanceof Map) {
-                        exprCount = vrm.expressionManager.expressions.size;
-                    } else {
-                        exprCount = Object.keys(vrm.expressionManager.expressions).length;
-                    }
-                    if (exprCount > 10) {
-                        return '1.0';
-                    }
+                if (typeof vrm.meta.author === 'string') {
+                    return '0.0';
+                }
+
+                // VRM 0.x: meta 中有 exporterVersion
+                if (vrm.meta.exporterVersion) {
+                    return '0.0';
                 }
             }
-            
+
+            // 3️⃣ 最后回退：启发式检查
+            if (vrm.humanoid && vrm.humanoid.humanBones) {
+                const boneNames = Object.keys(vrm.humanoid.humanBones);
+                if (boneNames.length > 50) {
+                    return '1.0';
+                }
+            }
+
+            if (vrm.expressionManager && vrm.expressionManager.expressions) {
+                let exprCount;
+                if (vrm.expressionManager.expressions instanceof Map) {
+                    exprCount = vrm.expressionManager.expressions.size;
+                } else {
+                    exprCount = Object.keys(vrm.expressionManager.expressions).length;
+                }
+                if (exprCount > 10) {
+                    return '1.0';
+                }
+            }
+
             return '0.0';
         } catch (error) {
+            console.warn('[VRM] 版本检测异常，默认为 0.0:', error);
             return '0.0';
         }
     }
@@ -397,13 +429,13 @@ class VRMCore {
         // 使用 Cineon 色调映射，提亮暗部，降低整体对比度，更接近 VRoid Hub 效果
         // 建议使用 LinearToneMapping 或 NoToneMapping 以获得更纯净的二次元感
         this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
-        this.manager.renderer.toneMappingExposure = 1.0;
+        this.manager.renderer.toneMappingExposure = 0.8;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
         canvas.style.setProperty('touch-action', 'none', 'important');
         canvas.style.setProperty('user-select', 'none', 'important');
-        canvas.style.cursor = 'grab';
+        canvas.style.cursor = 'default';
         canvas.style.width = '100%';
         canvas.style.height = '100%';
         canvas.style.display = 'block';
@@ -426,8 +458,8 @@ class VRMCore {
         // 使用光照配置（如果提供），否则使用默认值
         // VRoid Hub 风格：极高环境光、主灯跟随摄像机、无阴影
         const defaultLighting = {
-            ambient: 1.0,      // VRoid Hub 风格：极高环境光，几乎消除所有暗部
-            main: 0.6,         // 主光适中，主要靠环境光提亮
+            ambient: 0.5,      // 默认环境光
+            main: 0.8,         // 默认主光源
             fill: 0.0,         // 不需要补光
             rim: 0.0,          // 不需要外部轮廓光（MToon 内建处理）
             top: 0.0,          // 不需要顶光
@@ -624,7 +656,7 @@ class VRMCore {
             }
 
             // 检测 VRM 模型版本（0.0 或 1.0）
-            this.vrmVersion = this.detectVRMVersion(vrm);
+            this.vrmVersion = this.detectVRMVersion(vrm, gltf);
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -740,14 +772,15 @@ class VRMCore {
                         scl.x > 0 && scl.y > 0 && scl.z > 0) {
                         // 检查是否需要跨分辨率缩放归一化
                         const savedViewport = preferences.viewport;
-                        const currentHeight = window.innerHeight;
-                        if (savedViewport &&
-                            Number.isFinite(savedViewport.height) && savedViewport.height > 0 &&
-                            Math.abs(currentHeight / savedViewport.height - 1) > 0.01) {
-                            // 视口高度有变化，按比例调整缩放
-                            const hRatio = currentHeight / savedViewport.height;
+                        const currentScreenH = window.screen.height;
+                        // 仅在屏幕分辨率发生"跨代"级别变化时（如 1080p→4K）才归一化缩放
+                        const hRatio = (savedViewport &&
+                            Number.isFinite(savedViewport.height) && savedViewport.height > 0)
+                            ? currentScreenH / savedViewport.height : 1;
+                        const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
+                        if (isExtremeChange) {
                             vrm.scene.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
-                            console.log('[VRM Core] 视口变化，缩放已归一化:', { savedHeight: savedViewport.height, currentHeight, hRatio });
+                            console.log('[VRM Core] 屏幕分辨率大幅变化，缩放已归一化:', { savedHeight: savedViewport?.height, currentScreenH, hRatio });
                         } else {
                             vrm.scene.scale.set(scl.x, scl.y, scl.z);
                         }
@@ -884,24 +917,63 @@ class VRMCore {
                 }
             }
 
-            // 根据模型大小和屏幕大小计算合适的相机距离
-            // 检查相机是否存在
+            // 恢复相机位置，并记录 _cameraTarget（统一的观察目标）
             if (this.manager.camera && this.manager.camera.fov) {
-                // 使用缩放后的模型高度进行一致性校验
-                const scaledModelHeight = size.y * vrm.scene.scale.y;
-                const screenHeight = window.innerHeight;
-                const screenWidth = window.innerWidth;
+                const savedCameraPos = preferences?.camera_position;
 
-                // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍（类似Live2D）
-                const targetScreenHeight = screenHeight * 0.45;
-                const fov = this.manager.camera.fov * (Math.PI / 180);
-                const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
-                
-                const isMobileDevice = screenWidth <= 768;
-                const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
-                const cameraZ = Math.abs(distance);
-                this.manager.camera.position.set(0, cameraY, cameraZ);
-                this.manager.camera.lookAt(0, center.y, 0);
+                // 验证相机位置有效性：检查坐标有限且位置非零（orbit 后 z 可能为负）
+                const camPosValid = savedCameraPos &&
+                    Number.isFinite(savedCameraPos.x) && Number.isFinite(savedCameraPos.y) && Number.isFinite(savedCameraPos.z) &&
+                    (savedCameraPos.x * savedCameraPos.x + savedCameraPos.y * savedCameraPos.y + savedCameraPos.z * savedCameraPos.z) > 0.01;
+                if (camPosValid) {
+                    // 恢复相机位置
+                    this.manager.camera.position.set(savedCameraPos.x, savedCameraPos.y, savedCameraPos.z);
+
+                    // 优先用四元数精确恢复朝向（避免 lookAt 转换误差）
+                    if (Number.isFinite(savedCameraPos.qx) && Number.isFinite(savedCameraPos.qy) &&
+                        Number.isFinite(savedCameraPos.qz) && Number.isFinite(savedCameraPos.qw)) {
+                        this.manager.camera.quaternion.set(
+                            savedCameraPos.qx, savedCameraPos.qy,
+                            savedCameraPos.qz, savedCameraPos.qw
+                        );
+                    } else if (Number.isFinite(savedCameraPos.targetX) && Number.isFinite(savedCameraPos.targetY) && Number.isFinite(savedCameraPos.targetZ)) {
+                        // 兼容旧数据：用 lookAt
+                        this.manager.camera.lookAt(savedCameraPos.targetX, savedCameraPos.targetY, savedCameraPos.targetZ);
+                    } else {
+                        this.manager.camera.lookAt(center.x, center.y, center.z);
+                    }
+
+                    // 恢复 _cameraTarget（zoom/orbit 的中心点）
+                    if (Number.isFinite(savedCameraPos.targetX) && Number.isFinite(savedCameraPos.targetY) && Number.isFinite(savedCameraPos.targetZ)) {
+                        this.manager._cameraTarget = new THREE.Vector3(savedCameraPos.targetX, savedCameraPos.targetY, savedCameraPos.targetZ);
+                    } else {
+                        // 从相机前方方向重建 _cameraTarget
+                        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.manager.camera.quaternion);
+                        const box2 = new THREE.Box3().setFromObject(vrm.scene);
+                        const mc = box2.getCenter(new THREE.Vector3());
+                        const dist = this.manager.camera.position.distanceTo(mc);
+                        this.manager._cameraTarget = this.manager.camera.position.clone().add(forward.multiplyScalar(dist));
+                    }
+                    console.log('[VRM Core] 已恢复保存的相机位置:', savedCameraPos);
+                } else {
+                    // 没有保存的相机位置时，根据模型大小和屏幕大小计算默认值
+                    const scaledModelHeight = size.y * vrm.scene.scale.y;
+                    const screenHeight = window.innerHeight;
+                    const screenWidth = window.innerWidth;
+
+                    const targetScreenHeight = screenHeight * 0.45;
+                    const fov = this.manager.camera.fov * (Math.PI / 180);
+                    const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                    const isMobileDevice = screenWidth <= 768;
+                    const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
+                    const cameraZ = Math.abs(distance);
+                    this.manager.camera.position.set(0, cameraY, cameraZ);
+
+                    // 默认观察目标：包围盒中心
+                    this.manager._cameraTarget = new THREE.Vector3(0, center.y, 0);
+                    this.manager.camera.lookAt(this.manager._cameraTarget);
+                }
             } else {
                 console.warn('[VRM Core] 相机未初始化，跳过相机位置调整');
             }
@@ -1081,7 +1153,7 @@ class VRMCore {
      * @param {object} viewport - 视口尺寸 {width, height}（可选，用于跨分辨率归一化）
      * @returns {Promise<boolean>} 是否保存成功
      */
-    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
             // 验证位置值
             if (!position || typeof position !== 'object' ||
@@ -1131,6 +1203,16 @@ class VRMCore {
                 preferences.viewport = {
                     width: viewport.width,
                     height: viewport.height
+                };
+            }
+
+            // 如果有相机位置信息，添加到偏好中（用于恢复滚轮缩放状态）
+            if (cameraPosition && typeof cameraPosition === 'object' &&
+                Number.isFinite(cameraPosition.x) && Number.isFinite(cameraPosition.y) && Number.isFinite(cameraPosition.z)) {
+                preferences.camera_position = {
+                    x: cameraPosition.x,
+                    y: cameraPosition.y,
+                    z: cameraPosition.z
                 };
             }
             

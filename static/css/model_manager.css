@@ -1,2618 +1,2783 @@
+/* 定义本地字体 */
+@font-face {
+    font-family: 'Comic Neue';
+    src: url('/static/fonts/ComicNeue-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
 
-        /* 定义本地字体 */
-        @font-face {
-            font-family: 'Comic Neue';
-            src: url('/static/fonts/ComicNeue-Regular.ttf') format('truetype');
-            font-weight: 400;
-            font-style: normal;
-            font-display: swap;
-        }
-        @font-face {
-            font-family: 'Comic Neue';
-            src: url('/static/fonts/ComicNeue-Bold.ttf') format('truetype');
-            font-weight: 700;
-            font-style: normal;
-            font-display: swap;
-        }
-        /* 按钮圆角参数 - 调整这个值来匹配背景图片的圆角弧度 */
-        :root {
-            --button-border-radius: 24px;  /* 调整这个值（单位：px）来匹配背景图片的圆角，建议范围：10px - 25px */
-            --delete-button-border-radius: 24px;  /* 删除按钮的圆角（单位：px），可单独调整，建议范围：15px - 50px（圆形按钮） */
-            --button-text-size: 20px; /* 【统一控制】所有按钮文字大小，修改这个值即可 */
-            --button-text-stroke-color: #22b3ff; /* 描边颜色 */
-            --button-text-stroke-width: 2px; /* 描边宽度（视觉上的） */
-        }
+@font-face {
+    font-family: 'Comic Neue';
+    src: url('/static/fonts/ComicNeue-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
 
-        /* 可访问性改进：保留键盘导航的焦点指示
+/* 按钮圆角参数 - 调整这个值来匹配背景图片的圆角弧度 */
+:root {
+    --button-border-radius: 24px;
+    /* 调整这个值（单位：px）来匹配背景图片的圆角，建议范围：10px - 25px */
+    --delete-button-border-radius: 24px;
+    /* 删除按钮的圆角（单位：px），可单独调整，建议范围：15px - 50px（圆形按钮） */
+    --button-text-size: 20px;
+    /* 【统一控制】所有按钮文字大小，修改这个值即可 */
+    --button-text-stroke-color: #22b3ff;
+    /* 描边颜色 */
+    --button-text-stroke-width: 2px;
+    /* 描边宽度（视觉上的） */
+}
+
+/* 可访问性改进：保留键盘导航的焦点指示
          * 移除全局 outline: none，改用 :focus-visible 仅在鼠标点击时隐藏轮廓
          * 键盘导航时会显示主题色的焦点指示
          */
-        *:focus:not(:focus-visible) {
-            outline: none !important;
-            box-shadow: none !important;
-        }
-
-        /* 键盘导航时显示主题色焦点指示 */
-        *:focus-visible {
-            outline: 2px solid #96e8ff !important;
-            outline-offset: 2px !important;
-            box-shadow: 0 0 0 2px rgba(150, 232, 255, 0.3) !important;
-        }
-
-        html,
-        body {
-            height: 100%;
-            margin: 0;
-            padding: 0;
-            background: url('/static/icons/model_manager_background.png') center center / cover no-repeat fixed;
-            background-color: #eee;
-            color: #222;
-            font-family: 'Comic Neue', 'Microsoft YaHei', '微软雅黑', 'SimHei', '黑体', sans-serif !important;
-            overflow: hidden;
-        }
-
-        #live2d-container {
-            position: fixed;
-            right: 0px;
-            bottom: 0px;
-            width: 100%;
-            height: 100%;
-            z-index: 10;
-            pointer-events: auto;
-        }
-
-        #live2d-canvas {
-            display: block;
-            width: 100%;
-            height: 100%;
-            background: transparent;
-            cursor: grab;
-            pointer-events: auto;
-        }
-
-        #live2d-canvas:active {
-            cursor: grabbing;
-        }
-
-        #vrm-container {
-            position: fixed;
-            right: 0px;
-            bottom: 0px;
-            width: 100%;
-            height: 100%;
-            z-index: 10;
-            pointer-events: auto;
-        }
-
-        #sidebar {
-            position: fixed;
-            left: 20px;
-            top: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;  /* 统一所有 control-group 之间的间距 */
-            z-index: 20;
-            width: 360px;  /* 增加宽度以容纳导入模型按钮(270px) + 删除按钮(60px) + 边距 */
-            max-width: calc(100vw - 40px);
-            max-height: calc(100vh - 40px);
-            padding: 20px;
-            background: transparent;
-            border-radius: 12px;
-            box-shadow: none;
-            overflow-y: auto;
-            overflow-x: hidden;
-            box-sizing: border-box;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(150, 232, 255, 0.6) rgba(240, 248, 255, 0.3);
-            pointer-events: auto; /* 确保侧边栏可以接收事件 */
-        }
-
-        /* 侧边栏滚动条样式 - 与Live2D模式一致 */
-        #sidebar::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        #sidebar::-webkit-scrollbar-track {
-            background: rgba(240, 248, 255, 0.3);
-            border-radius: 4px;
-        }
-
-        #sidebar::-webkit-scrollbar-thumb {
-            background: rgba(150, 232, 255, 0.6);
-            border-radius: 4px;
-        }
-
-        #sidebar::-webkit-scrollbar-thumb:hover {
-            background: rgba(150, 232, 255, 0.8);
-        }
-
-        .control-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            width: 100%;
-            min-width: 0;
-            box-sizing: border-box;
-            margin: 0 !important;  
-            padding: 0 !important; 
-            pointer-events: auto; /* 确保控件组可以接收事件 */
-        }
-
-        .control-label {
-            font-weight: bold;
-            color: #40C5F1;
-            font-size: 1.1rem;
-            margin-bottom: 4px;
-        }
-
-        .control-select {
-            padding: 10px 15px;
-            border-radius: 50px;
-            border: 2px solid #b3e5fc;
-            font-size: 14px;
-            cursor: pointer;
-            background: #fff;
-            color: #40C5F1;
-            appearance: none;
-            -webkit-appearance: none;
-            -moz-appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 12px center;
-            padding-right: 35px;
-            transition: all 0.2s ease;
-        }
-
-        .control-select:focus {
-            outline: none;
-            border-color: #40C5F1;
-            box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
-        }
-
-        .btn {
-            padding: 10px 15px;
-            border-radius: 8px;
-            border: none;
-            font-size: 14px;
-            cursor: pointer;
-            color: white;
-            transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
-            text-align: center;
-            width: 100%;
-            box-sizing: border-box;
-            max-width: 100%;
-        }
-
-        .btn:hover:not(:disabled) {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .btn:active:not(:disabled) {
-            transform: translateY(1px) scale(0.98);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-            opacity: 0.95;
-        }
-
-        .btn:disabled {
-            background: #e0e0e0;
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
-
-        .btn-primary {
-            background: #44b7fe;
-        }
-
-        .btn-primary:hover:not(:disabled) {
-            background: #2662c8;
-        }
-
-        .btn-primary:active:not(:disabled) {
-            background: #1e4fa0;
-            transform: translateY(1px) scale(0.98);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-        }
-
-        #backToMainBtn {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;  
-            height: auto;
-            min-height: 54px;  
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important; 
-            min-width: 150px; 
-            max-width: 100% !important;  
-            position: relative;
-            transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-            box-sizing: border-box;
-        }
-        
-        #backToMainBtn .back-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;  
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;  
-            flex-shrink: 0;
-            pointer-events: none;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-        
-        #backToMainBtn .paw-icon {
-            display: block !important;
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;  
-            flex-shrink: 0;
-            pointer-events: none;
-        }
-        
-        #backToMainBtn span {
-            position: relative;
-            z-index: 20;  
-            margin: 0 !important;
-            margin-right: 40px !important;
-            flex: 1;
-            font-size: var(--button-text-size);
-            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            color: transparent;
-            font-weight: bold;
-            white-space: nowrap;
-            line-height: 1.2;
-        }
-
-        #backToMainBtn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-
-        #backToMainBtn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* 导入模型按钮样式（参考返回主页按钮模式） */
-        #upload-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;  
-            height: auto;  
-            min-height: 54px;  
-            padding: 10px 25px 10px 60px !important;  
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;  
-            min-width: 150px;  
-            max-width: 100% !important;  
-            flex-shrink: 0 !important;  
-            position: relative;
-            box-sizing: border-box !important;
-            transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-        }
-        
-        #upload-btn .import-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;  
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;  
-            flex-shrink: 0;
-            pointer-events: none;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-        
-        /* 导入模型按钮样式（参考返回主页按钮模式） */
-        .button-text {
-            position: relative;
-            z-index: 20;
-            margin: 0 !important;
-            margin-right: 15px !important;
-            flex: 1;
-            font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
-            font-weight: bold;
-            font-size: var(--button-text-size) !important;
-            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            color: transparent;
-            line-height: 1.2;
-            
-            /* 多层text-shadow模拟描边效果（圆角通过轻微模糊实现） */
-            text-shadow: 
-                /* 外层描边 - 8个方向 */
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
-                /* 轻微模糊使端点更圆润 */
-                0 0 calc(var(--button-text-stroke-width) * 1.5) var(--button-text-stroke-color);
-        }
-        
-        /* 特殊按钮：无图标，文字居中 */
-        .button-text-center {
-            margin-left: 0 !important;
-            justify-content: center;
-            display: flex;
-        }
-
-        #upload-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-
-        #upload-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* 模型类型选择器按钮样式（参考导入模型按钮模式） */
-        #model-type-select-wrapper {
-            position: relative;
-        }
-
-        #model-type-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #model-type-select-btn .model-type-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #model-type-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #model-type-select-btn .dropdown-arrow {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 20;
-            font-size: 14px;
-            pointer-events: none;
-            margin-left: 0 !important;
-            flex: 0 !important;
-        }
-
-        #model-type-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #model-type-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* 下拉菜单样式 */
-        .model-type-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 100%; /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
-            min-width: 270px;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-        }
-
-        .model-type-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .model-type-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .model-type-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .model-type-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* Live2D模型选择器按钮样式（参考模型类型选择器模式） */
-        #live2d-model-select-wrapper {
-            position: relative;
-        }
-
-        #live2d-model-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #live2d-model-select-btn .live2d-model-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #live2d-model-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #live2d-model-select-btn .dropdown-arrow {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 20;
-            font-size: 14px;
-            pointer-events: none;
-            margin-left: 0 !important;
-            flex: 0 !important;
-        }
-
-        #live2d-model-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #live2d-model-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* Live2D模型下拉菜单样式 */
-        .live2d-model-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 100%;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .live2d-model-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .live2d-model-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .live2d-model-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .live2d-model-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* 动作选择器按钮样式（参考模型类型选择器模式） */
-        #motion-select-wrapper {
-            position: relative;
-        }
-
-        #motion-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            flex-shrink: 0 !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #motion-select-btn .motion-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #motion-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #motion-select-btn .dropdown-arrow {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 20;
-            font-size: 14px;
-            pointer-events: none;
-            margin-left: 0 !important;
-            flex: 0 !important;
-        }
-
-        #motion-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #motion-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        #motion-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* 动作下拉菜单样式 */
-        .motion-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: auto;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .motion-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .motion-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .motion-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .motion-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* 表情选择器按钮样式（参考动作选择器模式） */
-        #expression-select-wrapper {
-            position: relative;
-        }
-
-        #expression-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #expression-select-btn .expression-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #expression-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #expression-select-btn .dropdown-arrow {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 20;
-            font-size: 14px;
-            pointer-events: none;
-            margin-left: 0 !important;
-            flex: 0 !important;
-        }
-
-        #expression-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #expression-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        #expression-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* 表情下拉菜单样式 */
-        .expression-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: auto;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .expression-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .expression-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .expression-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .expression-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* 表情播放按钮样式 - 与动作播放按钮样式一致 */
-        #play-expression-btn {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            width: auto !important;
-            height: auto !important;
-            min-width: auto !important;
-            max-width: none !important;
-            border-radius: 0 !important;
-            overflow: visible !important;
-            display: inline-block !important;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0 !important;
-            margin-top: 0 !important;
-            cursor: pointer;
-            box-shadow: none !important;
-        }
-
-        #play-expression-btn img,
-        #play-expression-btn .expression-play-icon {
-            width: auto !important;
-            height: 40px !important;
-            object-fit: contain;
-            image-rendering: crisp-edges;
-            display: block;
-        }
-
-        #play-expression-btn:hover:not(:disabled) {
-            background: transparent !important;
-            opacity: 0.8;
-            transform: translateY(-1px);
-            box-shadow: none !important;
-        }
-
-        #play-expression-btn:active:not(:disabled) {
-            background: transparent !important;
-            transform: translateY(1px) scale(0.95) !important;
-            opacity: 0.9 !important;
-        }
-
-        #play-expression-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* 动作播放按钮样式 - 与删除模型按钮样式一致 */
-        #play-motion-btn {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            width: auto !important;
-            height: auto !important;
-            min-width: auto !important;
-            max-width: none !important;
-            border-radius: 0 !important;
-            overflow: visible !important;
-            display: inline-block !important;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0 !important;
-            margin-top: 0 !important;
-            cursor: pointer;
-            box-shadow: none !important;
-        }
-
-        #play-motion-btn img,
-        #play-motion-btn .motion-play-icon {
-            width: auto !important;
-            height: 40px !important;
-            object-fit: contain;
-            image-rendering: crisp-edges;
-            display: block;
-        }
-
-        #play-motion-btn:hover:not(:disabled) {
-            background: transparent !important;
-            opacity: 0.8;
-            transform: translateY(-1px);
-            box-shadow: none !important;
-        }
-
-        #play-motion-btn:active:not(:disabled) {
-            background: transparent !important;
-            transform: translateY(1px) scale(0.95) !important;
-            opacity: 0.9 !important;
-        }
-
-        #play-motion-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* VRM动作播放按钮样式 - 与Live2D动作播放按钮样式一致 */
-        #play-vrm-animation-btn {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            width: auto !important;
-            height: auto !important;
-            min-width: auto !important;
-            max-width: none !important;
-            border-radius: 0 !important;
-            overflow: visible !important;
-            display: inline-block !important;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0 !important;
-            margin-top: 0 !important;
-            cursor: pointer;
-            box-shadow: none !important;
-        }
-
-        #play-vrm-animation-btn img,
-        #play-vrm-animation-btn .vrm-animation-play-icon {
-            width: auto !important;
-            height: 40px !important;
-            object-fit: contain;
-            image-rendering: crisp-edges;
-            display: block;
-        }
-
-        #play-vrm-animation-btn:hover:not(:disabled) {
-            background: transparent !important;
-            opacity: 0.8;
-            transform: translateY(-1px);
-            box-shadow: none !important;
-        }
-
-        #play-vrm-animation-btn:active:not(:disabled) {
-            background: transparent !important;
-            transform: translateY(1px) scale(0.95) !important;
-            opacity: 0.9 !important;
-        }
-
-        #play-vrm-animation-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* VRM模型选择器按钮样式（参考Live2D模型选择器模式） */
-        #vrm-model-select-wrapper {
-            position: relative;
-        }
-
-        #vrm-model-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #vrm-model-select-btn .vrm-model-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #vrm-model-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #vrm-model-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #vrm-model-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        #vrm-model-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* VRM模型下拉菜单样式 */
-        .vrm-model-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: auto;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .vrm-model-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .vrm-model-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .vrm-model-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .vrm-model-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* VRM动作选择器按钮样式（参考动作选择器模式） */
-        #vrm-animation-select-wrapper {
-            position: relative;
-        }
-
-        #vrm-animation-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            flex-shrink: 0 !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #vrm-animation-select-btn .vrm-animation-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #vrm-animation-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #vrm-animation-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #vrm-animation-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        #vrm-animation-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* VRM动作下拉菜单样式 */
-        .vrm-animation-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: auto;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .vrm-animation-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .vrm-animation-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .vrm-animation-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .vrm-animation-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* VRM表情选择器按钮样式（参考表情选择器模式） */
-        #vrm-expression-select-wrapper {
-            position: relative;
-        }
-
-        #vrm-expression-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            flex-shrink: 0 !important;
-            position: relative;
-            cursor: pointer;
-            box-sizing: border-box;
-        }
-
-        #vrm-expression-select-btn .vrm-expression-select-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #vrm-expression-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        #trigger-vrm-expression-btn {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            width: auto !important;
-            height: auto !important;
-            min-width: auto !important;
-            max-width: none !important;
-            border-radius: 0 !important;
-            overflow: visible !important;
-            display: inline-block !important;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0 !important;
-            margin-top: 0 !important;
-            cursor: pointer;
-            box-shadow: none !important;
-        }
-
-        #trigger-vrm-expression-btn img,
-        #trigger-vrm-expression-btn .vrm-expression-play-icon {
-            width: auto !important;
-            height: 40px !important;
-            object-fit: contain;
-            image-rendering: crisp-edges;
-            display: block;
-        }
-
-        #trigger-vrm-expression-btn:hover:not(:disabled) {
-            background: transparent !important;
-            opacity: 0.8;
-            transform: translateY(-1px);
-            box-shadow: none !important;
-        }
-
-        #trigger-vrm-expression-btn:active:not(:disabled) {
-            background: transparent !important;
-            transform: translateY(1px) scale(0.95) !important;
-            opacity: 0.9 !important;
-        }
-
-        #trigger-vrm-expression-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        #vrm-expression-select-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
-        }
-
-        #vrm-expression-select-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        #vrm-expression-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* VRM表情下拉菜单样式 */
-        .vrm-expression-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .vrm-expression-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .vrm-expression-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .vrm-expression-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .vrm-expression-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        /* 常驻表情选择器按钮样式（参考模型类型选择器模式） */
-        #persistent-expression-select-wrapper {
-            position: relative;
-        }
-
-        #persistent-expression-select-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            cursor: pointer !important;  /* 改为可点击的鼠标样式 */
-            box-sizing: border-box;
-            /* 移除 pointer-events: none，让按钮可以点击 */
-        }
-
-        #persistent-expression-select-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed !important;
-        }
-
-        #persistent-expression-select-btn .persistent-expression-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #persistent-expression-select-btn span:not(.dropdown-arrow) {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 30px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #persistent-expression-select-btn .dropdown-arrow {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 20;
-            font-size: 14px;
-            pointer-events: none;
-            margin-left: 0 !important;
-            flex: 0 !important;
-        }
-
-        /* 移除悬停效果，因为按钮仅作展示 */
-        #persistent-expression-select-btn:hover {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            /* 不改变任何样式，保持原样 */
-        }
-
-        /* 常驻表情下拉菜单样式 */
-        .persistent-expression-dropdown {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: auto;
-            min-width: 270px;
-            max-height: 300px;
-            overflow-y: auto;
-            background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid #b3e0ff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-            z-index: 1000;
-            margin-top: 4px;
-            padding-right: 0;
-        }
-
-        .persistent-expression-dropdown .dropdown-item {
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: background-image 0.2s;
-            position: relative;
-            background-color: transparent;
-            background-image: none;
-            background-size: 100% auto;
-            background-position: center center;
-            background-repeat: no-repeat;
-            min-height: 36px;
-            display: flex;
-            align-items: center;
-        }
-
-        .persistent-expression-dropdown .dropdown-item:hover {
-            background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
-        }
-
-        .persistent-expression-dropdown .dropdown-item:first-child {
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-
-        .persistent-expression-dropdown .dropdown-item:last-child {
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-        }
-
-        .btn-secondary {
-            background: #d5f1ff;
-            color: #333;
-        }
-
-        .btn-secondary:hover:not(:disabled) {
-            background: #b8e5ff;
-            color: #333;
-        }
-
-        .btn-secondary:active:not(:disabled) {
-            background: #a0d9ff;
-            transform: translateY(1px) scale(0.98);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-        }
-
-        .btn-success {
-            background: #44b7fe;
-        }
-
-        .btn-success:hover:not(:disabled) {
-            background: #2662c8;
-        }
-
-        .btn-success:active:not(:disabled) {
-            background: #1e4fa0;
-            transform: translateY(1px) scale(0.98);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-        }
-
-
-        /* 保存设置按钮样式 */
-        #save-position-btn {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            color: white !important;
-            /* 宽度和flex由JavaScript动态控制（Live2D模式135px，VRM模式270px） */
-            /* 不在这里设置固定宽度，避免覆盖JavaScript的动态设置 */
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px !important;
-            font-weight: bold !important;
-            /* 确保按钮容器属性一致（与情感配置按钮完全一致） */
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-            width: auto !important;
-            min-width: 135px;
-            box-sizing: border-box;
-        }
-
-        #save-position-btn span {
-            font-size: var(--button-text-size) !important;
-        }
-
-        #save-position-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-
-        #save-position-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* 情感配置按钮样式 - 与保存设置按钮保持一致的圆形两边 */
-        #emotion-config-btn {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            color: white !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px !important;
-            font-weight: bold !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-            width: auto !important;
-            min-width: 135px;
-            box-sizing: border-box;
-        }
-
-        #emotion-config-btn span {
-            font-size: var(--button-text-size) !important;
-        }
-
-        #emotion-config-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-
-        #emotion-config-btn:active:not(:disabled) {
-            background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            transform: translateY(1px) scale(0.98) !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
-            opacity: 0.95 !important;
-        }
-
-        /* 参数编辑器按钮样式（参考导入模型按钮模式） */
-        #parameter-editor-btn {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent !important;
-            border: none !important;
-            border-radius: 999px !important;
-            overflow: hidden !important;
-            height: auto;
-            min-height: 54px;
-            padding: 10px 25px 10px 60px !important;
-            color: white;
-            font-weight: bold;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: flex-start;
-            text-align: left !important;
-            width: auto !important;
-            min-width: 150px;
-            max-width: 100% !important;
-            position: relative;
-            box-sizing: border-box;
-        }
-
-        #parameter-editor-btn .parameter-editor-icon {
-            display: block !important;
-            position: absolute;
-            left: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            z-index: 10;
-            flex-shrink: 0;
-            pointer-events: none;
-            height: 40px;
-            max-width: 80px;
-            filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-        }
-
-        #parameter-editor-btn span {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            margin-right: 15px;
-            flex: 1;
-            font-size: var(--button-text-size);
-        }
-
-        #parameter-editor-btn:hover:not(:disabled) {
-            background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
-            background-color: transparent;
-            opacity: 0.9;
-            transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-
-        /* 常驻表情提示文字样式 - 与页面底部状态提示样式一致 */
-        .persistent-hint-box {
-            background: none !important;
-            background-color: transparent !important;
-            border: none !important;
-            padding: 0;
-            margin: 8px 0;
-            margin-top: 10px;
-            font-size: 12px;  /* 字体小一号 */
-            color: #4f8cff;
-            font-weight: 500;
-            line-height: 1.5;
-            text-align: left;
-            box-shadow: none !important;
-            width: auto !important;
-            max-width: 280px;
-            min-width: auto !important;
-            box-sizing: border-box;
-            white-space: nowrap;  /* 不换行 */
-        }
-
-        .btn-icon {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-        }
-
-        .btn-icon img {
-            width: 16px;
-            height: 16px;
-            object-fit: contain;
-        }
-
-        .action-group {
-            display: flex;
-            gap: 0;
-            flex-wrap: nowrap;
-            align-items: center;
-        }
-
-        .action-group .control-select {
-            flex: 1 1 100px;
-            min-width: 0;
-        }
-
-        .action-group .btn {
-            flex: 0 0 auto;
-            white-space: normal;
-            min-width: 60px;
-            padding: 10px 12px;
-        }
-
-        .action-group .btn-icon {
-            flex-shrink: 0;
-            white-space: nowrap;
-        }
-
-        /* 锁定时手势 */
-        .vrm-locked {
-            cursor: default !important;
-        }
-
-        /* 默认抓取手势 */
-        #vrm-canvas {
-            cursor: grab !important;
-        }
-
-        /* 拖拽中手势 */
-        #vrm-canvas:active,
-        .vrm-dragging {
-            cursor: grabbing !important;
-        }
-
-        #persistent-list {
-            margin-top: 6px;
-            max-height: 120px;
-            overflow: auto;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 6px;
-            background: #fff;
-        }
-
-        /* 打光控制样式 */
-        .lighting-control {
-            margin-bottom: 12px;
-        }
-
-        .lighting-control label {
-            display: block;
-            font-size: 13px;
-            color: #555;
-            margin-bottom: 6px;
-        }
-
-        /* 色调映射下拉框样式 */
-        #tonemapping-select {
-            color: #4f8cff !important;
-            background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95)) !important;
-            border: 1px solid rgba(150, 232, 255, 0.5) !important;
-        }
-
-        #tonemapping-select option {
-            color: #4f8cff;
-            background-color: rgba(240, 248, 255, 0.98);
-        }
-
-        #tonemapping-select option:hover {
-            background-color: rgba(150, 232, 255, 0.3);
-        }
-
-        #tonemapping-select option:checked {
-            background-color: rgba(150, 232, 255, 0.6);
-            color: #fff;
-        }
-
-        .lighting-control input[type="range"] {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 100%;
-            height: 6px;
-            border-radius: 3px;
-            background: #ddd;
-            outline: none;
-            margin: 0;
-            padding: 0;
-            vertical-align: middle;
-        }
-
-        .lighting-control input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #44b7fe;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            margin-top: -5px;
-            box-shadow: none;
-        }
-
-        .lighting-control input[type="range"]::-webkit-slider-thumb:hover {
-            background: #3a9eff;
-            transform: scale(1.1);
-            box-shadow: 0 2px 4px rgba(68, 183, 254, 0.4);
-        }
-
-        .lighting-control input[type="range"]::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            background: #44b7fe;
-            cursor: pointer;
-            border: none;
-            transition: all 0.2s ease;
-        }
-
-        .lighting-control input[type="range"]::-moz-range-thumb:hover {
-            background: #3a9eff;
-            transform: scale(1.1);
-            box-shadow: 0 2px 4px rgba(68, 183, 254, 0.4);
-        }
-
-        .lighting-control input[type="range"]::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 6px;
-            cursor: pointer;
-            background: #ddd;
-            border-radius: 3px;
-        }
-
-        .lighting-control input[type="range"]::-moz-range-track {
-            width: 100%;
-            height: 6px;
-            cursor: pointer;
-            background: #ddd;
-            border-radius: 3px;
-        }
-
-        .lighting-control span {
-            font-size: 13px;
-            color: #666;
-            text-align: right;
-        }
-
-        #status {
-            margin-top: 10px;
-            color: #4f8cff;
-            font-size: 14px;
-            font-weight: 500;
-            max-width: 280px;
-            word-break: break-all;
-        }
-
-        .btn-danger {
-            background: #dc3545;
-            color: white;
-        }
-
-        .btn-danger:hover:not(:disabled) {
-            background: #c82333;
-        }
-
-        .btn-danger:active:not(:disabled) {
-            background: #bd2130;
-            transform: translateY(1px) scale(0.98);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-        }
-
-        /* 删除模型按钮样式 - 只显示图标，无文字 */
-        #delete-model-btn {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            width: auto !important;
-            height: auto !important;
-            min-width: auto !important;
-            max-width: none !important;
-            border-radius: 0 !important;
-            overflow: visible !important;
-            display: inline-block !important;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0 !important;
-            margin-top: 0 !important;
-            cursor: pointer;
-            box-shadow: none !important;
-        }
-
-        #delete-model-btn img {
-            width: auto !important;
-            height: 40px !important;
-            object-fit: contain;
-            image-rendering: crisp-edges;
-            display: block;
-        }
-
-        #delete-model-btn:hover:not(:disabled) {
-            background: transparent !important;
-            opacity: 0.8;
-            transform: translateY(-1px);
-            box-shadow: none !important;
-        }
-
-        #delete-model-btn:active:not(:disabled) {
-            background: transparent !important;
-            transform: translateY(1px) scale(0.95) !important;
-            opacity: 0.9 !important;
-        }
-
-        #delete-model-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-        }
-
-        #delete-model-modal.show {
-            display: flex;
-        }
-
-        .modal-content {
-            background: #fff;
-            border-radius: 12px;
-            padding: 20px;
-            max-width: 400px;
-            width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
-        }
-
-        .modal-header h3 {
-            margin: 0;
-            font-size: 18px;
-            color: #333;
-        }
-
-        .modal-close {
-            background: none;
-            border: none;
-            font-size: 24px;
-            cursor: pointer;
-            color: #999;
-            padding: 0;
-            line-height: 1;
-        }
-
-        .modal-close:hover {
-            color: #333;
-        }
-
-        .model-list-container {
-            max-height: 400px;
-            overflow-y: auto;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            padding: 10px;
-            background: #f8f9fa;
-        }
-
-        .model-item {
-            display: flex;
-            align-items: center;
-            padding: 10px;
-            background: #fff;
-            border-radius: 6px;
-            margin-bottom: 8px;
-            border: 1px solid #ddd;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-
-        .model-item:last-child {
-            margin-bottom: 0;
-        }
-
-        .model-item:hover {
-            background: #f0f7ff;
-        }
-
-        .model-item input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            margin-right: 12px;
-            cursor: pointer;
-        }
-
-        .model-item label {
-            flex: 1;
-            cursor: pointer;
-            font-size: 14px;
-            color: #333;
-        }
-
-        .model-item .model-source {
-            font-size: 11px;
-            color: #999;
-            margin-left: 8px;
-        }
-
-        .modal-footer {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #eee;
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        }
-
-        .modal-footer .btn {
-            min-width: 100px;
-        }
-
-        .empty-message {
-            text-align: center;
-            color: #999;
-            padding: 20px;
-            font-size: 14px;
-        }
-
-        .delete-warning {
-            font-size: 12px;
-            color: #dc3545;
-            margin-bottom: 10px;
-            padding: 8px;
-            background: #fff3f3;
-            border-radius: 6px;
-        }
-        /* SVG文字样式 - 用于实现圆角描边端点 */
-        /* CSS文字样式 - 使用高密度阴影矩阵实现圆润描边（参考 live2d-ui77.html） */
-        .round-stroke-text {
-            position: relative;
-            z-index: 20;
-            margin-left: 0;
-            flex: 1;
-            font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
-            font-weight: bold;
-            font-size: var(--button-text-size) !important;
-            letter-spacing: 0.5px;
-            /* 保持文字占位大小，颜色透明 */
-            color: transparent;
-            overflow: hidden;
-            max-width: 100%;
-            white-space: nowrap;  /* 防止文字换行导致伪元素错位 */
-            text-overflow: ellipsis;  /* 文字过长时显示省略号 */
-            text-align: center;  /* 文字在 span 内居中 */
-            padding: 0 6px;
-            box-sizing: border-box;
-        }
-        
-        /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
-        .round-stroke-text::before {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1; /* 放在最底层 */
-            color: var(--button-text-stroke-color); /* 描边本体颜色 */
-            overflow: hidden;
-            white-space: nowrap;  /* 与父元素保持一致，防止换行 */
-            text-align: center;  /* 与父元素保持一致 */
-            
-            /* 技巧：为了防止文字本身和阴影之间有极细微的缝隙，先加一个极细的 text-stroke */
-            -webkit-text-stroke: 1px var(--button-text-stroke-color);
-            
-            /* 【关键技术】：高密度阴影矩阵 (High-Density Shadow Matrix)
+*:focus:not(:focus-visible) {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* 键盘导航时显示主题色焦点指示 */
+*:focus-visible {
+    outline: 2px solid #96e8ff !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 2px rgba(150, 232, 255, 0.3) !important;
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: url('/static/icons/model_manager_background.png') center center / cover no-repeat fixed;
+    background-color: #eee;
+    color: #222;
+    font-family: 'Comic Neue', 'Microsoft YaHei', '微软雅黑', 'SimHei', '黑体', sans-serif !important;
+    overflow: hidden;
+}
+
+#live2d-container {
+    position: fixed;
+    right: 0px;
+    bottom: 0px;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: auto;
+}
+
+#live2d-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    cursor: grab;
+    pointer-events: auto;
+}
+
+#live2d-canvas:active {
+    cursor: grabbing;
+}
+
+#vrm-container {
+    position: fixed;
+    right: 0px;
+    bottom: 0px;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    pointer-events: auto;
+}
+
+#sidebar {
+    position: fixed;
+    left: 20px;
+    top: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    /* 统一所有 control-group 之间的间距 */
+    z-index: 20;
+    width: 376px;
+    /* 增加宽度以容纳导入模型按钮(270px) + 删除按钮(60px) + 边距 */
+    max-width: calc(100vw - 40px);
+    max-height: calc(100vh - 40px);
+    padding: 20px;
+    background: transparent;
+    border-radius: 12px;
+    box-shadow: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(150, 232, 255, 0.6) rgba(240, 248, 255, 0.3);
+    pointer-events: auto;
+    /* 确保侧边栏可以接收事件 */
+}
+
+/* 侧边栏滚动条样式 - 与Live2D模式一致 */
+#sidebar::-webkit-scrollbar {
+    width: 8px;
+}
+
+#sidebar::-webkit-scrollbar-track {
+    background: rgba(240, 248, 255, 0.3);
+    border-radius: 4px;
+}
+
+#sidebar::-webkit-scrollbar-thumb {
+    background: rgba(150, 232, 255, 0.6);
+    border-radius: 4px;
+}
+
+#sidebar::-webkit-scrollbar-thumb:hover {
+    background: rgba(150, 232, 255, 0.8);
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    margin: 0 !important;
+    padding: 0 !important;
+    pointer-events: auto;
+    /* 确保控件组可以接收事件 */
+}
+
+.control-label {
+    font-weight: bold;
+    color: #40C5F1;
+    font-size: 1.1rem;
+    margin-bottom: 4px;
+}
+
+.control-select {
+    padding: 10px 15px;
+    border-radius: 50px;
+    border: 2px solid #b3e5fc;
+    font-size: 14px;
+    cursor: pointer;
+    background: #fff;
+    color: #40C5F1;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 35px;
+    transition: all 0.2s ease;
+}
+
+.control-select:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+}
+
+.btn {
+    padding: 10px 15px;
+    border-radius: 8px;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+    color: white;
+    transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+    text-align: center;
+    width: 100%;
+    box-sizing: border-box;
+    max-width: 100%;
+}
+
+.btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.btn:active:not(:disabled) {
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    opacity: 0.95;
+}
+
+.btn:disabled {
+    background: #e0e0e0;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.btn-primary {
+    background: #44b7fe;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #2662c8;
+}
+
+.btn-primary:active:not(:disabled) {
+    background: #1e4fa0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+#backToMainBtn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    box-sizing: border-box;
+}
+
+#backToMainBtn .back-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#backToMainBtn .paw-icon {
+    display: block !important;
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+#backToMainBtn span {
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    margin-right: 40px !important;
+    flex: 1;
+    font-size: var(--button-text-size);
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+
+#backToMainBtn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#backToMainBtn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* 导入模型按钮样式（参考返回主页按钮模式） */
+#upload-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    flex-shrink: 0 !important;
+    position: relative;
+    box-sizing: border-box !important;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+}
+
+#upload-btn .import-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+/* 导入模型按钮样式（参考返回主页按钮模式） */
+.button-text {
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    margin-right: 15px !important;
+    flex: 1;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    font-weight: bold;
+    font-size: var(--button-text-size) !important;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    line-height: 1.2;
+
+    /* 多层text-shadow模拟描边效果（圆角通过轻微模糊实现） */
+    text-shadow:
+        /* 外层描边 - 8个方向 */
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        0 0 var(--button-text-stroke-width) var(--button-text-stroke-color),
+        /* 轻微模糊使端点更圆润 */
+        0 0 calc(var(--button-text-stroke-width) * 1.5) var(--button-text-stroke-color);
+}
+
+/* 特殊按钮：无图标，文字居中 */
+.button-text-center {
+    margin-left: 0 !important;
+    justify-content: center;
+    display: flex;
+}
+
+#upload-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#upload-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* 模型类型选择器按钮样式（参考导入模型按钮模式） */
+#model-type-select-wrapper {
+    position: relative;
+}
+
+#model-type-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#model-type-select-btn .model-type-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#model-type-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#model-type-select-btn .dropdown-arrow {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 20;
+    font-size: 14px;
+    pointer-events: none;
+    margin-left: 0 !important;
+    flex: 0 !important;
+}
+
+#model-type-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#model-type-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* 下拉菜单样式 */
+.model-type-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 90%;
+    /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
+    min-width: 270px;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+}
+
+.model-type-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.model-type-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.model-type-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.model-type-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* Live2D模型选择器按钮样式（参考模型类型选择器模式） */
+#live2d-model-select-wrapper {
+    position: relative;
+}
+
+#live2d-model-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#live2d-model-select-btn .live2d-model-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#live2d-model-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#live2d-model-select-btn .dropdown-arrow {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 20;
+    font-size: 14px;
+    pointer-events: none;
+    margin-left: 0 !important;
+    flex: 0 !important;
+}
+
+#live2d-model-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#live2d-model-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* Live2D模型下拉菜单样式 */
+.live2d-model-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 90%;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.live2d-model-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.live2d-model-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.live2d-model-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.live2d-model-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* 动作选择器按钮样式（参考模型类型选择器模式） */
+#motion-select-wrapper {
+    position: relative;
+}
+
+#motion-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    flex-shrink: 0 !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#motion-select-btn .motion-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#motion-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#motion-select-btn .dropdown-arrow {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 20;
+    font-size: 14px;
+    pointer-events: none;
+    margin-left: 0 !important;
+    flex: 0 !important;
+}
+
+#motion-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#motion-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#motion-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* 动作下拉菜单样式 */
+.motion-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.motion-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.motion-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.motion-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.motion-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* 表情选择器按钮样式（参考动作选择器模式） */
+#expression-select-wrapper {
+    position: relative;
+}
+
+#expression-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#expression-select-btn .expression-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#expression-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#expression-select-btn .dropdown-arrow {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 20;
+    font-size: 14px;
+    pointer-events: none;
+    margin-left: 0 !important;
+    flex: 0 !important;
+}
+
+#expression-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#expression-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#expression-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* 表情下拉菜单样式 */
+.expression-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.expression-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.expression-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.expression-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.expression-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* 表情播放按钮样式 - 与动作播放按钮样式一致 */
+#play-expression-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#play-expression-btn img,
+#play-expression-btn .expression-play-icon {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#play-expression-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#play-expression-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+#play-expression-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* 动作播放按钮样式 - 与删除模型按钮样式一致 */
+#play-motion-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#play-motion-btn img,
+#play-motion-btn .motion-play-icon {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#play-motion-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#play-motion-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+#play-motion-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* VRM动作播放按钮样式 - 与Live2D动作播放按钮样式一致 */
+#play-vrm-animation-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#play-vrm-animation-btn img,
+#play-vrm-animation-btn .vrm-animation-play-icon {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#play-vrm-animation-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#play-vrm-animation-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+#play-vrm-animation-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* VRM模型选择器按钮样式（参考Live2D模型选择器模式） */
+#vrm-model-select-wrapper {
+    position: relative;
+}
+
+#vrm-model-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#vrm-model-select-btn .vrm-model-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#vrm-model-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#vrm-model-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#vrm-model-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#vrm-model-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* VRM模型下拉菜单样式 */
+.vrm-model-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.vrm-model-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.vrm-model-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.vrm-model-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.vrm-model-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* VRM动作选择器按钮样式（参考动作选择器模式） */
+#vrm-animation-select-wrapper {
+    position: relative;
+}
+
+#vrm-animation-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    flex-shrink: 0 !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#vrm-animation-select-btn .vrm-animation-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#vrm-animation-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#vrm-animation-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#vrm-animation-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#vrm-animation-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* VRM动作下拉菜单样式 */
+.vrm-animation-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.vrm-animation-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.vrm-animation-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.vrm-animation-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.vrm-animation-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* VRM表情选择器按钮样式（参考表情选择器模式） */
+#vrm-expression-select-wrapper {
+    position: relative;
+}
+
+#vrm-expression-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    flex-shrink: 0 !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#vrm-expression-select-btn .vrm-expression-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#vrm-expression-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#trigger-vrm-expression-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#trigger-vrm-expression-btn img,
+#trigger-vrm-expression-btn .vrm-expression-play-icon {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#trigger-vrm-expression-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#trigger-vrm-expression-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+#trigger-vrm-expression-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#vrm-expression-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#vrm-expression-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#vrm-expression-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* VRM表情下拉菜单样式 */
+.vrm-expression-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.vrm-expression-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.vrm-expression-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.vrm-expression-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.vrm-expression-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* 常驻表情选择器按钮样式（参考模型类型选择器模式） */
+#persistent-expression-select-wrapper {
+    position: relative;
+}
+
+#persistent-expression-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    cursor: pointer !important;
+    /* 改为可点击的鼠标样式 */
+    box-sizing: border-box;
+    /* 移除 pointer-events: none，让按钮可以点击 */
+}
+
+#persistent-expression-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed !important;
+}
+
+#persistent-expression-select-btn .persistent-expression-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#persistent-expression-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#persistent-expression-select-btn .dropdown-arrow {
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 20;
+    font-size: 14px;
+    pointer-events: none;
+    margin-left: 0 !important;
+    flex: 0 !important;
+}
+
+/* 移除悬停效果，因为按钮仅作展示 */
+#persistent-expression-select-btn:hover {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    /* 不改变任何样式，保持原样 */
+}
+
+/* 常驻表情下拉菜单样式 */
+.persistent-expression-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.persistent-expression-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+}
+
+.persistent-expression-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.persistent-expression-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.persistent-expression-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+.btn-secondary {
+    background: #d5f1ff;
+    color: #333;
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: #b8e5ff;
+    color: #333;
+}
+
+.btn-secondary:active:not(:disabled) {
+    background: #a0d9ff;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.btn-success {
+    background: #44b7fe;
+}
+
+.btn-success:hover:not(:disabled) {
+    background: #2662c8;
+}
+
+.btn-success:active:not(:disabled) {
+    background: #1e4fa0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+
+/* 保存设置按钮样式 */
+#save-position-btn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    color: white !important;
+    /* 宽度和flex由JavaScript动态控制（Live2D模式135px，VRM模式270px） */
+    /* 不在这里设置固定宽度，避免覆盖JavaScript的动态设置 */
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px !important;
+    font-weight: bold !important;
+    /* 确保按钮容器属性一致（与情感配置按钮完全一致） */
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    width: auto !important;
+    min-width: 135px;
+    box-sizing: border-box;
+}
+
+#save-position-btn span {
+    font-size: var(--button-text-size) !important;
+}
+
+#save-position-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#save-position-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* 情感配置按钮样式 - 与保存设置按钮保持一致的圆形两边 */
+#emotion-config-btn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    color: white !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px !important;
+    font-weight: bold !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    width: auto !important;
+    min-width: 135px;
+    box-sizing: border-box;
+}
+
+#emotion-config-btn span {
+    font-size: var(--button-text-size) !important;
+}
+
+#emotion-config-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#emotion-config-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* VRM 情感配置按钮样式 - 与 Live2D 情感配置按钮保持一致 */
+#vrm-emotion-config-btn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    color: white !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px !important;
+    font-weight: bold !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    width: auto !important;
+    min-width: 135px;
+    box-sizing: border-box;
+}
+
+#vrm-emotion-config-btn span {
+    font-size: var(--button-text-size) !important;
+}
+
+#vrm-emotion-config-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#vrm-emotion-config-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+/* 参数编辑器按钮样式（参考导入模型按钮模式） */
+#parameter-editor-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    position: relative;
+    box-sizing: border-box;
+}
+
+#parameter-editor-btn .parameter-editor-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#parameter-editor-btn span {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 15px;
+    flex: 1;
+    font-size: var(--button-text-size);
+}
+
+#parameter-editor-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* 常驻表情提示文字样式 - 与页面底部状态提示样式一致 */
+.persistent-hint-box {
+    background: none !important;
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0;
+    margin: 8px 0;
+    margin-top: 10px;
+    font-size: 12px;
+    /* 字体小一号 */
+    color: #4f8cff;
+    font-weight: 500;
+    line-height: 1.5;
+    text-align: left;
+    box-shadow: none !important;
+    width: auto !important;
+    max-width: 280px;
+    min-width: auto !important;
+    box-sizing: border-box;
+    white-space: nowrap;
+    /* 不换行 */
+}
+
+.btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn-icon img {
+    width: 16px;
+    height: 16px;
+    object-fit: contain;
+}
+
+.action-group {
+    display: flex;
+    gap: 0;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+.action-group .control-select {
+    flex: 1 1 100px;
+    min-width: 0;
+}
+
+.action-group .btn {
+    flex: 0 0 auto;
+    white-space: normal;
+    min-width: 60px;
+    padding: 10px 12px;
+}
+
+.action-group .btn-icon {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+/* 锁定时手势 */
+.vrm-locked {
+    cursor: default !important;
+}
+
+/* 默认抓取手势 */
+#vrm-canvas {
+    cursor: grab !important;
+}
+
+/* 拖拽中手势 */
+#vrm-canvas:active,
+.vrm-dragging {
+    cursor: grabbing !important;
+}
+
+#persistent-list {
+    margin-top: 6px;
+    max-height: 120px;
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 6px;
+    background: #fff;
+    width: 259px;
+}
+
+/* 常驻表情列表项样式 */
+.persistent-item {
+    padding: 4px 8px;
+    margin: 2px 0;
+    background: linear-gradient(135deg, rgb(214 245 255 / 85%), rgb(196 238 255 / 75%));
+    border: 1px solid rgb(150 232 255 / 40%);
+    border-radius: 4px;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s ease;
+    cursor: default;
+}
+
+.persistent-item:hover {
+    background: linear-gradient(135deg, rgb(150 232 255 / 95%), rgb(120 220 255 / 85%));
+    border-color: rgb(150 232 255 / 70%);
+    transform: translateY(-4px) translateX(-3px);
+    box-shadow: 0 6px 12px rgb(68 183 254 / 40%), 0 2px 4px rgb(68 183 254 / 20%);
+}
+
+/* 常驻表情删除按钮样式 */
+.persistent-delete-btn {
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.persistent-delete-btn:hover {
+    background: #c82333;
+}
+
+/* 常驻表情列表滚动条样式 */
+#persistent-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+#persistent-list::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 3px;
+}
+
+#persistent-list::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 3px;
+}
+
+#persistent-list::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+/* Firefox 滚动条样式 */
+#persistent-list {
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+/* 打光控制样式 */
+.lighting-control {
+    margin-bottom: 12px;
+}
+
+.lighting-control label {
+    display: block;
+    font-size: 13px;
+    color: #555;
+    margin-bottom: 6px;
+}
+
+/* 色调映射 & 待机动作下拉框样式 */
+#tonemapping-select,
+#idle-animation-select {
+    color: #4f8cff !important;
+    background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95)) !important;
+    border: 1px solid rgba(150, 232, 255, 0.5) !important;
+}
+
+#tonemapping-select option,
+#idle-animation-select option {
+    color: #4f8cff;
+    background-color: rgba(240, 248, 255, 0.98);
+}
+
+#tonemapping-select option:hover,
+#idle-animation-select option:hover {
+    background-color: rgba(150, 232, 255, 0.3);
+}
+
+#tonemapping-select option:checked,
+#idle-animation-select option:checked {
+    background-color: rgba(150, 232, 255, 0.6);
+    color: #fff;
+}
+
+.lighting-control input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: #ddd;
+    outline: none;
+    margin: 0;
+    padding: 0;
+    vertical-align: middle;
+}
+
+.lighting-control input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #44b7fe;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-top: -5px;
+    box-shadow: none;
+}
+
+.lighting-control input[type="range"]::-webkit-slider-thumb:hover {
+    background: #3a9eff;
+    transform: scale(1.1);
+    box-shadow: 0 2px 4px rgba(68, 183, 254, 0.4);
+}
+
+.lighting-control input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #44b7fe;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+}
+
+.lighting-control input[type="range"]::-moz-range-thumb:hover {
+    background: #3a9eff;
+    transform: scale(1.1);
+    box-shadow: 0 2px 4px rgba(68, 183, 254, 0.4);
+}
+
+.lighting-control input[type="range"]::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #ddd;
+    border-radius: 3px;
+}
+
+.lighting-control input[type="range"]::-moz-range-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: #ddd;
+    border-radius: 3px;
+}
+
+.lighting-control span {
+    font-size: 13px;
+    color: #666;
+    text-align: right;
+}
+
+#status {
+    margin-top: 10px;
+    color: #4f8cff;
+    font-size: 14px;
+    font-weight: 500;
+    max-width: 280px;
+    word-break: break-all;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: #c82333;
+}
+
+.btn-danger:active:not(:disabled) {
+    background: #bd2130;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+/* 删除模型按钮样式 - 只显示图标，无文字 */
+#delete-model-btn {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: auto !important;
+    height: auto !important;
+    min-width: auto !important;
+    max-width: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: inline-block !important;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0 !important;
+    margin-top: 0 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+}
+
+#delete-model-btn img {
+    width: auto !important;
+    height: 40px !important;
+    object-fit: contain;
+    image-rendering: crisp-edges;
+    display: block;
+}
+
+#delete-model-btn:hover:not(:disabled) {
+    background: transparent !important;
+    opacity: 0.8;
+    transform: translateY(-1px);
+    box-shadow: none !important;
+}
+
+#delete-model-btn:active:not(:disabled) {
+    background: transparent !important;
+    transform: translateY(1px) scale(0.95) !important;
+    opacity: 0.9 !important;
+}
+
+#delete-model-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+}
+
+#delete-model-modal.show {
+    display: flex;
+}
+
+.modal-content {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 400px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    color: #333;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #999;
+    padding: 0;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: #333;
+}
+
+.model-list-container {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px;
+    background: #f8f9fa;
+}
+
+.model-item {
+    display: flex;
+    align-items: center;
+    padding: 10px;
+    background: #fff;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    border: 1px solid #ddd;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.model-item:last-child {
+    margin-bottom: 0;
+}
+
+.model-item:hover {
+    background: #f0f7ff;
+}
+
+.model-item input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    margin-right: 12px;
+    cursor: pointer;
+}
+
+.model-item label {
+    flex: 1;
+    cursor: pointer;
+    font-size: 14px;
+    color: #333;
+}
+
+.model-item .model-source {
+    font-size: 11px;
+    color: #999;
+    margin-left: 8px;
+}
+
+.modal-footer {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.modal-footer .btn {
+    min-width: 100px;
+}
+
+.empty-message {
+    text-align: center;
+    color: #999;
+    padding: 20px;
+    font-size: 14px;
+}
+
+.delete-warning {
+    font-size: 12px;
+    color: #dc3545;
+    margin-bottom: 10px;
+    padding: 8px;
+    background: #fff3f3;
+    border-radius: 6px;
+}
+
+/* SVG文字样式 - 用于实现圆角描边端点 */
+/* CSS文字样式 - 使用高密度阴影矩阵实现圆润描边（参考 live2d-ui77.html） */
+.round-stroke-text {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    flex: 1;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    font-weight: bold;
+    font-size: var(--button-text-size) !important;
+    letter-spacing: 0.5px;
+    /* 保持文字占位大小，颜色透明 */
+    color: transparent;
+    overflow: hidden;
+    max-width: 100%;
+    white-space: nowrap;
+    /* 防止文字换行导致伪元素错位 */
+    text-overflow: ellipsis;
+    /* 文字过长时显示省略号 */
+    text-align: center;
+    /* 文字在 span 内居中 */
+    padding: 0 6px;
+    box-sizing: border-box;
+}
+
+/* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
+.round-stroke-text::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    /* 放在最底层 */
+    color: var(--button-text-stroke-color);
+    /* 描边本体颜色 */
+    overflow: hidden;
+    white-space: nowrap;
+    /* 与父元素保持一致，防止换行 */
+    text-align: center;
+    /* 与父元素保持一致 */
+
+    /* 技巧：为了防止文字本身和阴影之间有极细微的缝隙，先加一个极细的 text-stroke */
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+
+    /* 【关键技术】：高密度阴影矩阵 (High-Density Shadow Matrix)
                模拟半径 R=2px 的圆（从3px减小到2px，使描边更薄）。计算公式：X = R * cos(θ), Y = R * sin(θ)
                这里每隔约 20度 设置一个阴影，共覆盖 360度。
             */
-            text-shadow: 
-                /* 0度, 90度, 180度, 270度 */
-                2px 0 0 var(--button-text-stroke-color), 
-                0 2px 0 var(--button-text-stroke-color), 
-                -2px 0 0 var(--button-text-stroke-color), 
-                0 -2px 0 var(--button-text-stroke-color),
-                /* 对角线 45度 (2 * 0.707 ≈ 1.4) */
-                1.4px 1.4px 0 var(--button-text-stroke-color), 
-                -1.4px 1.4px 0 var(--button-text-stroke-color), 
-                1.4px -1.4px 0 var(--button-text-stroke-color), 
-                -1.4px -1.4px 0 var(--button-text-stroke-color),
-                /* 填补空隙 22.5度 (2*0.92≈1.8, 2*0.38≈0.8) */
-                1.8px 0.8px 0 var(--button-text-stroke-color), 
-                -1.8px 0.8px 0 var(--button-text-stroke-color), 
-                1.8px -0.8px 0 var(--button-text-stroke-color), 
-                -1.8px -0.8px 0 var(--button-text-stroke-color),
-                0.8px 1.8px 0 var(--button-text-stroke-color), 
-                -0.8px 1.8px 0 var(--button-text-stroke-color), 
-                0.8px -1.8px 0 var(--button-text-stroke-color), 
-                -0.8px -1.8px 0 var(--button-text-stroke-color),
-                /* 再加一圈 1px 的内圈阴影，彻底堵死像素缝隙 */
-                1px 0 0 var(--button-text-stroke-color), 
-                -1px 0 0 var(--button-text-stroke-color), 
-                0 1px 0 var(--button-text-stroke-color), 
-                0 -1px 0 var(--button-text-stroke-color);
-        }
-        
-        /* 【上层】：负责内部渐变 */
-        .round-stroke-text::after {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 10; /* 放在最上层 */
-            
-            /* 渐变填充 */
-            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            
-            /* 确保上层没有阴影 */
-            text-shadow: none;
-            overflow: hidden;
-            white-space: nowrap;  /* 与父元素保持一致，防止换行 */
-            text-align: center;  /* 与父元素保持一致 */
-        }
-        
-        /* 特殊按钮：无图标，文字居中 */
-        .round-stroke-text-center {
-            margin-left: 0 !important;
-            justify-content: center;
-            display: flex;
-        }
-        
-        /* 下拉菜单项文字样式 - 与按钮文字样式一致 */
-        .dropdown-item-text {
-            position: relative;
-            z-index: 10;
-            font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
-            font-weight: bold;
-            font-size: 16px !important;
-            letter-spacing: 1px;
-            color: transparent;
-            flex: 1;
-        }
-        
-        .dropdown-item-text::before {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            color: var(--button-text-stroke-color);
-            -webkit-text-stroke: 1px var(--button-text-stroke-color);
-            text-shadow:
-                2px 0 0 var(--button-text-stroke-color),
-                0 2px 0 var(--button-text-stroke-color),
-                -2px 0 0 var(--button-text-stroke-color),
-                0 -2px 0 var(--button-text-stroke-color),
-                1.4px 1.4px 0 var(--button-text-stroke-color),
-                -1.4px 1.4px 0 var(--button-text-stroke-color),
-                1.4px -1.4px 0 var(--button-text-stroke-color),
-                -1.4px -1.4px 0 var(--button-text-stroke-color),
-                1.8px 0.8px 0 var(--button-text-stroke-color),
-                -1.8px 0.8px 0 var(--button-text-stroke-color),
-                1.8px -0.8px 0 var(--button-text-stroke-color),
-                -1.8px -0.8px 0 var(--button-text-stroke-color),
-                0.8px 1.8px 0 var(--button-text-stroke-color),
-                -0.8px 1.8px 0 var(--button-text-stroke-color),
-                0.8px -1.8px 0 var(--button-text-stroke-color),
-                -0.8px -1.8px 0 var(--button-text-stroke-color),
-                1px 0 0 var(--button-text-stroke-color),
-                -1px 0 0 var(--button-text-stroke-color),
-                0 1px 0 var(--button-text-stroke-color),
-                0 -1px 0 var(--button-text-stroke-color);
-        }
-        
-        .dropdown-item-text::after {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 10;
-            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            text-shadow: none;
-        }
-        
-        /* 自定义滚动条样式 - 与模型管理页面风格一致 */
-        .model-type-dropdown::-webkit-scrollbar,
-        .live2d-model-dropdown::-webkit-scrollbar,
-        .motion-dropdown::-webkit-scrollbar,
-        .expression-dropdown::-webkit-scrollbar,
-        .persistent-expression-dropdown::-webkit-scrollbar,
-        .vrm-model-dropdown::-webkit-scrollbar,
-        .vrm-animation-dropdown::-webkit-scrollbar,
-        .vrm-expression-dropdown::-webkit-scrollbar {
-            width: 8px;
-        }
-        
-        .model-type-dropdown::-webkit-scrollbar-track,
-        .live2d-model-dropdown::-webkit-scrollbar-track,
-        .motion-dropdown::-webkit-scrollbar-track,
-        .expression-dropdown::-webkit-scrollbar-track,
-        .persistent-expression-dropdown::-webkit-scrollbar-track,
-        .vrm-model-dropdown::-webkit-scrollbar-track,
-        .vrm-animation-dropdown::-webkit-scrollbar-track,
-        .vrm-expression-dropdown::-webkit-scrollbar-track {
-            background: #f0f8ff;
-            border-radius: 4px;
-        }
-        
-        .model-type-dropdown::-webkit-scrollbar-thumb,
-        .live2d-model-dropdown::-webkit-scrollbar-thumb,
-        .motion-dropdown::-webkit-scrollbar-thumb,
-        .expression-dropdown::-webkit-scrollbar-thumb,
-        .persistent-expression-dropdown::-webkit-scrollbar-thumb,
-        .vrm-model-dropdown::-webkit-scrollbar-thumb,
-        .vrm-animation-dropdown::-webkit-scrollbar-thumb,
-        .vrm-expression-dropdown::-webkit-scrollbar-thumb {
-            background: #96e8ff;
-            border-radius: 4px;
-        }
-        
-        .model-type-dropdown::-webkit-scrollbar-thumb:hover,
-        .live2d-model-dropdown::-webkit-scrollbar-thumb:hover,
-        .motion-dropdown::-webkit-scrollbar-thumb:hover,
-        .expression-dropdown::-webkit-scrollbar-thumb:hover,
-        .persistent-expression-dropdown::-webkit-scrollbar-thumb:hover,
-        .vrm-model-dropdown::-webkit-scrollbar-thumb:hover,
-        .vrm-animation-dropdown::-webkit-scrollbar-thumb:hover,
-        .vrm-expression-dropdown::-webkit-scrollbar-thumb:hover {
-            background: #7dd3ff;
-        }
-        
-        /* Firefox 滚动条样式 */
-        .model-type-dropdown,
-        .live2d-model-dropdown,
-        .motion-dropdown,
-        .expression-dropdown,
-        .persistent-expression-dropdown,
-        .vrm-model-dropdown,
-        .vrm-animation-dropdown,
-        .vrm-expression-dropdown {
-            scrollbar-width: thin;
-            scrollbar-color: #96e8ff #f0f8ff;
-        }
+    text-shadow:
+        /* 0度, 90度, 180度, 270度 */
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        /* 对角线 45度 (2 * 0.707 ≈ 1.4) */
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        /* 填补空隙 22.5度 (2*0.92≈1.8, 2*0.38≈0.8) */
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        /* 再加一圈 1px 的内圈阴影，彻底堵死像素缝隙 */
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+}
 
-        /* VRM打光设置方框样式（参考参数列表方框） */
-        .vrm-lighting-wrapper {
-            position: relative;
-            width: 270px !important;
-            min-width: 270px !important;
-            max-width: 270px !important;
-            border: none;
-            border-radius: 0;
-            background: transparent;
-            box-shadow: none;
-            overflow: visible;
-        }
+/* 【上层】：负责内部渐变 */
+.round-stroke-text::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    /* 放在最上层 */
 
-        /* 星星图案背景 - 使用加号/四角星形状 */
-        .vrm-lighting-wrapper::before {
-            content: none;
-        }
+    /* 渐变填充 */
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
 
-        /* VRM打光设置标题栏 - 胶囊形状，顶部圆角，底部直边 */
-        .vrm-lighting-header {
-            display: none;
-        }
+    /* 确保上层没有阴影 */
+    text-shadow: none;
+    overflow: hidden;
+    white-space: nowrap;
+    /* 与父元素保持一致，防止换行 */
+    text-align: center;
+    /* 与父元素保持一致 */
+}
 
-        .vrm-lighting-header-text {
-            position: relative;
-            z-index: 20;
-            font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
-            font-weight: bold;
-            font-size: 18px !important;
-            letter-spacing: 1px;
-            color: transparent;
-            transform: translateY(-2px);
-            line-height: 1.6;
-        }
+/* 特殊按钮：无图标，文字居中 */
+.round-stroke-text-center {
+    margin-left: 0 !important;
+    justify-content: center;
+    display: flex;
+}
 
-        .vrm-lighting-header-text::before {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: -2px;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            --button-text-stroke-color: #22b3ff;
-            color: var(--button-text-stroke-color);
-            -webkit-text-stroke: 1px var(--button-text-stroke-color);
-            text-shadow: 
-                2px 0 0 var(--button-text-stroke-color), 
-                0 1.5px 0 var(--button-text-stroke-color), 
-                -2px 0 0 var(--button-text-stroke-color), 
-                0 -1.5px 0 var(--button-text-stroke-color),
-                1.4px 1.4px 0 var(--button-text-stroke-color), 
-                -1.4px 1.4px 0 var(--button-text-stroke-color), 
-                1.4px -1.4px 0 var(--button-text-stroke-color), 
-                -1.4px -1.4px 0 var(--button-text-stroke-color),
-                1.8px 0.8px 0 var(--button-text-stroke-color), 
-                -1.8px 0.8px 0 var(--button-text-stroke-color), 
-                1.8px -0.8px 0 var(--button-text-stroke-color), 
-                -1.8px -0.8px 0 var(--button-text-stroke-color),
-                0.8px 1.8px 0 var(--button-text-stroke-color), 
-                -0.8px 1.8px 0 var(--button-text-stroke-color), 
-                0.8px -1.8px 0 var(--button-text-stroke-color), 
-                -0.8px -1.8px 0 var(--button-text-stroke-color),
-                1px 0 0 var(--button-text-stroke-color), 
-                -1px 0 0 var(--button-text-stroke-color), 
-                0 0.5px 0 var(--button-text-stroke-color), 
-                0 -0.5px 0 var(--button-text-stroke-color);
-        }
+/* 下拉菜单项文字样式 - 与按钮文字样式一致 */
+.dropdown-item-text {
+    position: relative;
+    z-index: 10;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    font-weight: bold;
+    font-size: 16px !important;
+    letter-spacing: 1px;
+    color: transparent;
+    flex: 1;
+}
 
-        .vrm-lighting-header-text::after {
-            content: attr(data-text);
-            position: absolute;
-            left: 0;
-            top: -2px;
-            width: 100%;
-            height: 100%;
-            z-index: 10;
-            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            text-shadow: none;
-        }
+.dropdown-item-text::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+}
 
-        .vrm-lighting-content {
-            padding: 10px 12px;
-            background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
-            border: 1px solid rgba(150, 232, 255, 0.55);
-            border-radius: 14px;
-            box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
-            position: relative;
-            z-index: 1;
-        }
+.dropdown-item-text::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+}
 
-        /* 隐藏已简化的辅助打光控件 */
-        .lighting-control[style*="display: none"],
-        .lighting-control.hidden-simplified {
-            display: none !important;
-        }
+/* 自定义滚动条样式 - 与模型管理页面风格一致 */
+.model-type-dropdown::-webkit-scrollbar,
+.live2d-model-dropdown::-webkit-scrollbar,
+.motion-dropdown::-webkit-scrollbar,
+.expression-dropdown::-webkit-scrollbar,
+.persistent-expression-dropdown::-webkit-scrollbar,
+.vrm-model-dropdown::-webkit-scrollbar,
+.vrm-animation-dropdown::-webkit-scrollbar,
+.vrm-expression-dropdown::-webkit-scrollbar {
+    width: 8px;
+}
 
-        /* VRM打光设置滚动条样式 */
-        .vrm-lighting-content::-webkit-scrollbar {
-            width: 8px;
-        }
+.model-type-dropdown::-webkit-scrollbar-track,
+.live2d-model-dropdown::-webkit-scrollbar-track,
+.motion-dropdown::-webkit-scrollbar-track,
+.expression-dropdown::-webkit-scrollbar-track,
+.persistent-expression-dropdown::-webkit-scrollbar-track,
+.vrm-model-dropdown::-webkit-scrollbar-track,
+.vrm-animation-dropdown::-webkit-scrollbar-track,
+.vrm-expression-dropdown::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
 
-        .vrm-lighting-content::-webkit-scrollbar-track {
-            background: #f0f8ff;
-            border-radius: 4px;
-        }
+.model-type-dropdown::-webkit-scrollbar-thumb,
+.live2d-model-dropdown::-webkit-scrollbar-thumb,
+.motion-dropdown::-webkit-scrollbar-thumb,
+.expression-dropdown::-webkit-scrollbar-thumb,
+.persistent-expression-dropdown::-webkit-scrollbar-thumb,
+.vrm-model-dropdown::-webkit-scrollbar-thumb,
+.vrm-animation-dropdown::-webkit-scrollbar-thumb,
+.vrm-expression-dropdown::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
 
-        .vrm-lighting-content::-webkit-scrollbar-thumb {
-            background: #96e8ff;
-            border-radius: 4px;
-        }
+.model-type-dropdown::-webkit-scrollbar-thumb:hover,
+.live2d-model-dropdown::-webkit-scrollbar-thumb:hover,
+.motion-dropdown::-webkit-scrollbar-thumb:hover,
+.expression-dropdown::-webkit-scrollbar-thumb:hover,
+.persistent-expression-dropdown::-webkit-scrollbar-thumb:hover,
+.vrm-model-dropdown::-webkit-scrollbar-thumb:hover,
+.vrm-animation-dropdown::-webkit-scrollbar-thumb:hover,
+.vrm-expression-dropdown::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
 
-        .vrm-lighting-content::-webkit-scrollbar-thumb:hover {
-            background: #7dd3ff;
-        }
+/* Firefox 滚动条样式 */
+.model-type-dropdown,
+.live2d-model-dropdown,
+.motion-dropdown,
+.expression-dropdown,
+.persistent-expression-dropdown,
+.vrm-model-dropdown,
+.vrm-animation-dropdown,
+.vrm-expression-dropdown {
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
 
-        /* Firefox 滚动条样式 */
-        .vrm-lighting-content {
-            scrollbar-width: thin;
-            scrollbar-color: #96e8ff #f0f8ff;
-        }
+/* VRM打光设置方框样式（参考参数列表方框） */
+.vrm-lighting-wrapper {
+    position: relative;
+    width: 270px !important;
+    min-width: 270px !important;
+    max-width: 270px !important;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
 
-        /* ==================== 中文模式下按钮固定宽度 ==================== */
-        /* 中文文字较短，固定宽度更整齐美观 */
-        html[lang|="zh"] #backToMainBtn,
-        html[lang|="zh"] #upload-btn,
-        html[lang|="zh"] #model-type-select-btn,
-        html[lang|="zh"] #live2d-model-select-btn,
-        html[lang|="zh"] #motion-select-btn,
-        html[lang|="zh"] #expression-select-btn,
-        html[lang|="zh"] #persistent-expression-select-btn,
-        html[lang|="zh"] #vrm-model-select-btn,
-        html[lang|="zh"] #vrm-animation-select-btn,
-        html[lang|="zh"] #vrm-expression-select-btn,
-        html[lang|="zh"] #parameter-editor-btn {
-            width: 270px !important;
-            min-width: 270px !important;
-            padding: 10px 25px !important;  /* 对称 padding，与保存设置按钮一致 */
-            justify-content: center !important;  /* 内容居中 */
-        }
-        
-        /* 中文模式下 span 的 margin 清零 */
-        html[lang|="zh"] #backToMainBtn span:not(.dropdown-arrow),
-        html[lang|="zh"] #upload-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #model-type-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #live2d-model-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #motion-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #vrm-model-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="zh"] #parameter-editor-btn span:not(.dropdown-arrow) {
-            margin-left: 0 !important;
-            margin-right: 0 !important;
-            flex: none !important;  /* 不拉伸，让 justify-content 生效 */
-        }
+/* 星星图案背景 - 使用加号/四角星形状 */
+.vrm-lighting-wrapper::before {
+    content: none;
+}
 
-        /* ==================== 英文模式下按钮固定宽度 ==================== */
-        /* 英文文字较长，使用稍大的固定宽度保持整齐 */
-        html[lang|="en"] #backToMainBtn,
-        html[lang|="en"] #upload-btn,
-        html[lang|="en"] #model-type-select-btn,
-        html[lang|="en"] #live2d-model-select-btn,
-        html[lang|="en"] #motion-select-btn,
-        html[lang|="en"] #expression-select-btn,
-        html[lang|="en"] #persistent-expression-select-btn,
-        html[lang|="en"] #vrm-model-select-btn,
-        html[lang|="en"] #vrm-animation-select-btn,
-        html[lang|="en"] #vrm-expression-select-btn,
-        html[lang|="en"] #parameter-editor-btn {
-            width: 290px !important;
-            min-width: 290px !important;
-            padding: 10px 25px !important;
-            justify-content: center !important;
-        }
-        
-        /* 英文模式下 span 的 margin 清零 */
-        html[lang|="en"] #backToMainBtn span:not(.dropdown-arrow),
-        html[lang|="en"] #upload-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #model-type-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #motion-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-        html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
-            margin-left: 0 !important;
-            margin-right: 0 !important;
-            flex: none !important;
-        }
-    
-        #sidebar .sidebar-controls {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-            width: 100%;
-            box-sizing: border-box;
-            padding: 0;
-            border-radius: 25px;
-            background: transparent;
-            position: relative;
-            z-index: 0;
-        }
+/* VRM打光设置标题栏 - 胶囊形状，顶部圆角，底部直边 */
+.vrm-lighting-header {
+    display: none;
+}
 
-        #sidebar.mode-live2d {
-            width: 360px;
-        }
+.vrm-lighting-header-text {
+    position: relative;
+    z-index: 20;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    font-weight: bold;
+    font-size: 18px !important;
+    letter-spacing: 1px;
+    color: transparent;
+    transform: translateY(-2px);
+    line-height: 1.6;
+}
 
-        #sidebar.mode-live2d .sidebar-controls,
-        #sidebar.mode-vrm .sidebar-controls {
-            padding: 18px 16px 22px;
-            background: transparent;
-            border: none;
-        }
+.vrm-lighting-header-text::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: -2px;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    --button-text-stroke-color: #22b3ff;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 1.5px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -1.5px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 0.5px 0 var(--button-text-stroke-color),
+        0 -0.5px 0 var(--button-text-stroke-color);
+}
 
-        #sidebar.mode-live2d .sidebar-controls::before,
-        #sidebar.mode-vrm .sidebar-controls::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 7px;
-            width: 285px;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.5);
-            border: 2px solid rgba(201, 241, 244, 0.88);
-            border-radius: 25px;
-            backdrop-filter: blur(2px);
-            z-index: -1;
-            pointer-events: none;
-        }
+.vrm-lighting-header-text::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: -2px;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+}
 
-        #sidebar.mode-live2d #delete-model-btn,
-        #sidebar.mode-live2d #play-motion-btn,
-        #sidebar.mode-live2d #play-expression-btn {
-            margin-left: 8px !important;
-        }
+.vrm-lighting-content {
+    padding: 10px 12px;
+    background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
+    border: 1px solid rgba(150, 232, 255, 0.55);
+    border-radius: 14px;
+    box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
+    position: relative;
+    z-index: 1;
+}
 
-        #sidebar.mode-vrm #delete-model-btn,
-        #sidebar.mode-vrm #play-vrm-animation-btn,
-        #sidebar.mode-vrm #trigger-vrm-expression-btn {
-            margin-left: 8px !important;
-        }
+/* VRM待机动作面板样式（独立于打光，复用相同视觉风格） */
+.vrm-idle-animation-wrapper {
+    position: relative;
+    width: 270px !important;
+    min-width: 270px !important;
+    max-width: 270px !important;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.vrm-idle-animation-content {
+    padding: 10px 12px;
+    background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
+    border: 1px solid rgba(150, 232, 255, 0.55);
+    border-radius: 14px;
+    box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
+    position: relative;
+    z-index: 1;
+}
+
+/* 隐藏已简化的辅助打光控件 */
+.lighting-control[style*="display: none"],
+.lighting-control.hidden-simplified {
+    display: none !important;
+}
+
+/* VRM打光设置滚动条样式 */
+.vrm-lighting-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.vrm-lighting-content::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.vrm-lighting-content::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.vrm-lighting-content::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+/* Firefox 滚动条样式 */
+.vrm-lighting-content {
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+/* ==================== 中文模式下按钮固定宽度 ==================== */
+/* 中文文字较短，固定宽度更整齐美观 */
+html[lang|="zh"] #backToMainBtn,
+html[lang|="zh"] #upload-btn,
+html[lang|="zh"] #model-type-select-btn,
+html[lang|="zh"] #live2d-model-select-btn,
+html[lang|="zh"] #motion-select-btn,
+html[lang|="zh"] #expression-select-btn,
+html[lang|="zh"] #persistent-expression-select-btn,
+html[lang|="zh"] #vrm-model-select-btn,
+html[lang|="zh"] #vrm-animation-select-btn,
+html[lang|="zh"] #vrm-expression-select-btn,
+html[lang|="zh"] #save-position-btn,
+html[lang|="zh"] #emotion-config-btn,
+html[lang|="zh"] #vrm-emotion-config-btn,
+html[lang|="zh"] #parameter-editor-btn {
+    width: 270px !important;
+    min-width: 270px !important;
+    padding: 10px 25px !important;
+    /* 对称 padding，与保存设置按钮一致 */
+    justify-content: center !important;
+    /* 内容居中 */
+}
+
+/* 中文模式下 span 的 margin 清零 */
+html[lang|="zh"] #backToMainBtn span:not(.dropdown-arrow),
+html[lang|="zh"] #upload-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #model-type-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #live2d-model-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #motion-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #expression-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #vrm-model-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #parameter-editor-btn span:not(.dropdown-arrow) {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    flex: none !important;
+    /* 不拉伸，让 justify-content 生效 */
+}
+
+/* ==================== 英文模式下按钮固定宽度 ==================== */
+/* 英文文字较长，使用稍大的固定宽度保持整齐 */
+html[lang|="en"] #backToMainBtn,
+html[lang|="en"] #upload-btn,
+html[lang|="en"] #model-type-select-btn,
+html[lang|="en"] #live2d-model-select-btn,
+html[lang|="en"] #motion-select-btn,
+html[lang|="en"] #expression-select-btn,
+html[lang|="en"] #persistent-expression-select-btn,
+html[lang|="en"] #vrm-model-select-btn,
+html[lang|="en"] #vrm-animation-select-btn,
+html[lang|="en"] #vrm-expression-select-btn,
+html[lang|="en"] #save-position-btn,
+html[lang|="en"] #emotion-config-btn,
+html[lang|="en"] #vrm-emotion-config-btn,
+html[lang|="en"] #parameter-editor-btn {
+    width: 270px !important;
+    min-width: 270px !important;
+    padding: 10px 25px !important;
+    justify-content: center !important;
+}
+
+/* 英文模式下 span 的 margin 清零 */
+html[lang|="en"] #backToMainBtn span:not(.dropdown-arrow),
+html[lang|="en"] #upload-btn span:not(.dropdown-arrow),
+html[lang|="en"] #model-type-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #motion-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #expression-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    flex: none !important;
+}
+
+#sidebar .sidebar-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0;
+    border-radius: 25px;
+    background: transparent;
+    position: relative;
+    z-index: 0;
+}
+
+#sidebar.mode-live2d {
+    width: 376px;
+}
+
+#sidebar.mode-live2d .sidebar-controls,
+#sidebar.mode-vrm .sidebar-controls {
+    padding: 18px 16px 22px;
+    background: transparent;
+    border: none;
+}
+
+#sidebar.mode-live2d .sidebar-controls::before,
+#sidebar.mode-vrm .sidebar-controls::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 7px;
+    width: 285px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.5);
+    border: 2px solid rgba(201, 241, 244, 0.88);
+    border-radius: 25px;
+    backdrop-filter: blur(2px);
+    z-index: -1;
+    pointer-events: none;
+}
+
+#sidebar.mode-live2d #delete-model-btn,
+#sidebar.mode-live2d #play-motion-btn,
+#sidebar.mode-live2d #play-expression-btn {
+    margin-left: 8px !important;
+}
+
+#sidebar.mode-vrm #delete-model-btn,
+#sidebar.mode-vrm #play-vrm-animation-btn,
+#sidebar.mode-vrm #trigger-vrm-expression-btn {
+    margin-left: 8px !important;
+}

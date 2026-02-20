@@ -47,7 +47,7 @@
             <div id="model-type-select-wrapper" style="position: relative;">
                 <button id="model-type-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.modelType">
                     <img src="/static/icons/model_type_icon.png?v=1" data-i18n-alt="live2d.modelType" class="model-type-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                    <span class="round-stroke-text" id="model-type-text" data-i18n="live2d.modelType" data-text="Model Type:">模型类型</span>
+                    <span class="round-stroke-text" id="model-type-text" data-text="Live2D">Live2D</span>
                 </button>
                 <select id="model-type-select" class="control-select" style="display: none;">
                     <option value="live2d">Live2D</option>
@@ -185,13 +185,13 @@
                 </div>
             </div>
             <p class="persistent-hint-box" data-i18n="live2d.persistentHint">
-                常驻表情会一直生效；此处仅能选择 .exp3.json。
+                常驻表情会一直生效。
             </p>
             <div id="persistent-list" style="display: none;"></div>
         </div>
 
         <div class="control-group" id="emotion-manager-group">
-            <div id="save-position-wrapper" style="display:flex; gap: 0; width: 100%; max-width: 270px;">
+            <div id="save-position-wrapper" style="display:flex; gap: 0; width: 100%;">
                 <button id="save-position-btn" class="btn btn-primary btn-icon" disabled data-i18n-title="live2d.saveSettings" style="width: 100%;">
                     <span class="round-stroke-text round-stroke-text-center" id="save-position-text" data-i18n="live2d.saveSettings" data-text="Save Settings">保存设置</span>
                 </button>
@@ -199,8 +199,15 @@
         </div>
 
         <div class="control-group" id="emotion-config-group" style="display:none;">
-            <button id="emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%; max-width: 270px;" data-i18n-title="live2d.emotionConfig">
+            <button id="emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="live2d.emotionConfig">
                 <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
+            </button>
+        </div>
+
+        <!-- VRM 情感配置按钮 -->
+        <div class="control-group" id="vrm-emotion-config-group" style="display:none;">
+            <button id="vrm-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="vrm.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="vrm.emotionConfig" data-text="Emotion Config">情感配置</span>
             </button>
         </div>
 
@@ -214,9 +221,9 @@
                 <div class="lighting-control" id="ambient-light-control">
             <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.7"
+                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.5"
                     style="flex: 1;">
-                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.70</span>
+                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.50</span>
             </div>
         </div>
 
@@ -269,9 +276,9 @@
         <div class="lighting-control" id="exposure-control">
             <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0"
+                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="0.8"
                     style="flex: 1;">
-                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
+                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.80</span>
             </div>
         </div>
 
@@ -287,7 +294,24 @@
                     </select>
                 </div>
             </div>
+
         </div>
+        </div>
+        </div>
+
+        <!-- VRM 待机动作选择（独立于打光设置） -->
+        <div class="control-group" id="vrm-idle-animation-group" style="display:none;">
+        <div class="vrm-idle-animation-wrapper">
+            <div class="vrm-idle-animation-content">
+                <div class="lighting-control" id="idle-animation-control">
+                    <label for="idle-animation-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.idleAnimation.title">待机动作</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <select id="idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
+                            <option value="" style="color: #4f8cff;" data-i18n="common.loading">加载中...</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
         </div>
         </div>
 

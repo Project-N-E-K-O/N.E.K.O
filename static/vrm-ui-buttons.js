@@ -30,7 +30,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     }
     const container = document.getElementById('vrm-container');
 
-    document.querySelectorAll('#live2d-floating-buttons').forEach(el => el.remove());
+    document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
+        .forEach(el => el.remove());
     const buttonsContainerId = 'vrm-floating-buttons';
     const old = document.getElementById(buttonsContainerId);
     if (old) old.remove();
@@ -238,6 +239,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             const popup = this.createPopup(config.id);
             const triggerBtn = document.createElement('button');
             triggerBtn.type = 'button';
+            triggerBtn.className = 'vrm-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
             // 使用图片图标替代文字符号
             const triggerImg = document.createElement('img');
@@ -600,12 +602,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
     }
 
     // 复用对象以减少 GC 压力
-    const headPos = new window.THREE.Vector3();
-    const footPos = new window.THREE.Vector3();
-    const centerPos = new window.THREE.Vector3();
-    const lockPos = new window.THREE.Vector3();
     const box = new window.THREE.Box3();
-    const size = new window.THREE.Vector3();
 
     // 计算可见按钮数量（移动端隐藏 agent 和 goodbye 按钮）
     const getVisibleButtonCount = () => {
@@ -677,107 +674,56 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
         try {
             const vrm = this.currentModel.vrm;
-            // 统一使用 canvasRect 的宽高，确保在缩放/嵌入场景下定位准确
-            // 如果未来 VRM canvas 不再全屏，使用 canvasRect 可以保证定位精度
             const canvasRect = this.renderer.domElement.getBoundingClientRect();
             const canvasWidth = canvasRect.width;
             const canvasHeight = canvasRect.height;
 
-            // 计算模型在屏幕上的高度（通过头部和脚部骨骼）
-            let modelScreenHeight = 0;
-            let headScreenY = 0;
-            let footScreenY = 0;
+            // ========== 2D 投影包围盒（代替 3D 骨骼投影） ==========
+            // 与 Live2D 的 model.getBounds() 等价：获取模型在屏幕上的 {left, right, top, bottom}
+            box.setFromObject(this.currentModel.scene);
 
-            if (vrm.humanoid) {
-                // 获取头部骨骼
-                let headNode = vrm.humanoid.getNormalizedBoneNode('head');
-                if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
-                if (!headNode) headNode = vrm.scene;
+            // 将包围盒的 8 个顶点投影到屏幕空间，求出 2D 边界
+            const corners = [
+                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+            ];
 
-                // 获取脚部骨骼（用于计算模型高度）
-                const leftFoot = vrm.humanoid.getNormalizedBoneNode('leftFoot');
-                const rightFoot = vrm.humanoid.getNormalizedBoneNode('rightFoot');
-                const leftToes = vrm.humanoid.getNormalizedBoneNode('leftToes');
-                const rightToes = vrm.humanoid.getNormalizedBoneNode('rightToes');
+            let screenLeft = Infinity, screenRight = -Infinity;
+            let screenTop = Infinity, screenBottom = -Infinity;
 
-                if (headNode) {
-                    headNode.updateWorldMatrix(true, false);
-                    headNode.getWorldPosition(headPos);
-                    headPos.project(this.camera);
-                    headScreenY = (-headPos.y * 0.5 + 0.5) * canvasHeight;
-                }
-
-                // 使用脚趾骨骼（如果存在）或脚部骨骼来计算脚底位置
-                let footNode = null;
-                if (leftToes) footNode = leftToes;
-                else if (rightToes) footNode = rightToes;
-                else if (leftFoot) footNode = leftFoot;
-                else if (rightFoot) footNode = rightFoot;
-
-                if (footNode) {
-                    footNode.updateWorldMatrix(true, false);
-                    footNode.getWorldPosition(footPos);
-                    footPos.project(this.camera);
-                    footScreenY = (-footPos.y * 0.5 + 0.5) * canvasHeight;
-                } else {
-                    // 如果没有脚部骨骼，使用场景包围盒估算
-                    box.setFromObject(vrm.scene);
-                    box.getSize(size);
-                    // 估算：假设模型高度约为包围盒高度的 80%（排除头发等）
-                    const estimatedModelHeight = size.y * 0.8;
-                    box.getCenter(centerPos);
-                    centerPos.project(this.camera);
-                    const centerScreenY = (-centerPos.y * 0.5 + 0.5) * canvasHeight;
-                    headScreenY = centerScreenY + estimatedModelHeight / 2;
-                    footScreenY = centerScreenY - estimatedModelHeight / 2;
-                }
-
-                modelScreenHeight = Math.abs(headScreenY - footScreenY);
-            } else {
-                // 如果没有 humanoid，使用场景包围盒
-                box.setFromObject(vrm.scene);
-                box.getSize(size);
-                modelScreenHeight = size.y * 0.8; // 估算
+            for (const corner of corners) {
+                corner.project(this.camera);
+                // NDC (-1~1) → 像素坐标
+                const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
+                const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
+                screenLeft = Math.min(screenLeft, sx);
+                screenRight = Math.max(screenRight, sx);
+                screenTop = Math.min(screenTop, sy);
+                screenBottom = Math.max(screenBottom, sy);
             }
 
-            // 重新计算可见按钮数量和基准工具栏高度（响应移动端/桌面端切换）
+            // 现在 screenLeft/Right/Top/Bottom 就是模型在屏幕上 的 2D 边界（与 Live2D bounds 等价）
+            const modelScreenHeight = screenBottom - screenTop;
+            const modelCenterY = (screenTop + screenBottom) / 2;
+
+            // ========== 按钮缩放（与之前相同） ==========
             const visibleCount = getVisibleButtonCount();
             const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
-
-            // 计算目标工具栏高度（模型高度的一半，与 Live2D 保持一致）
             const targetToolbarHeight = modelScreenHeight / 2;
-
-            // 计算缩放比例（限制在合理范围内，防止按钮太小或太大）
-            const minScale = 0.5;  // 最小缩放50%
-            const maxScale = 1.0;  // 最大缩放100%
+            const minScale = 0.5;
+            const maxScale = 1.0;
             const rawScale = targetToolbarHeight / baseToolbarHeight;
             const scale = Math.max(minScale, Math.min(maxScale, rawScale));
 
-            // 更新按钮位置
+            // ========== 更新按钮位置 ==========
             if (buttonsContainer) {
-                // 获取头部位置用于定位
-                let headNode = null;
-                if (vrm.humanoid) {
-                    headNode = vrm.humanoid.getNormalizedBoneNode('head');
-                    if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
-                }
-                if (!headNode) headNode = vrm.scene;
-
-                headNode.updateWorldMatrix(true, false);
-                headNode.getWorldPosition(headPos);
-                // 减小偏移量，让按钮更靠近模型
-                headPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
-                headPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
-                headPos.project(this.camera);
-                // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
-                const screenX = (headPos.x * 0.5 + 0.5) * canvasWidth;
-                const screenY = (-(headPos.y * 0.5) + 0.5) * canvasHeight;
-
-                // 检测移动端布局（与 applyResponsiveFloatingLayout 保持一致）
                 const isMobile = window.isMobileWidth();
-
-                // 应用缩放到容器
-                // 移动端使用 bottom/right 定位，transform-origin 需要相应调整
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
                 } else {
@@ -785,87 +731,64 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
 
-                // 在移动端，跳过设置 left/top，保持 applyResponsiveFloatingLayout 设置的 bottom/right
-                // 桌面端正常设置 left/top 进行动态定位
                 if (!isMobile) {
-                    // 锁图标位置计算（使用头部位置）
-                    headNode.getWorldPosition(lockPos);
-                    lockPos.x += 0.1;
-                    lockPos.y -= 0.55;
-                    lockPos.project(this.camera);
+                    const screenWidth = window.innerWidth;
+                    const screenHeight = window.innerHeight;
 
-                    // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
-                    // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
-                    const targetX = canvasRect.left + screenX;
-                    const targetY = canvasRect.top + screenY - 50;  // 从 -100 减小到 -50，更靠近模型
+                    // X轴：定位在角色右侧（与 Live2D 相同公式）
+                    const targetX = screenRight * 0.8 + screenLeft * 0.2;
 
-                    // 使用缩放后的实际工具栏高度和宽度（用于边界限制）
+                    // 使用缩放后的实际工具栏高度
                     const actualToolbarHeight = baseToolbarHeight * scale;
-                    const actualToolbarWidth = 48 * scale;  // 按钮宽度
+                    const actualToolbarWidth = 80 * scale;  // 与 Live2D 一致（含 trigger 按钮宽度）
 
-                    // 屏幕边缘限制（参考 Live2D 的实现）
-                    // 使用窗口尺寸进行边界限制（因为按钮是相对于窗口定位的）
-                    const minMargin = 10;  // 最小边距
-                    const windowWidth = window.innerWidth;
-                    const windowHeight = window.innerHeight;
+                    // Y轴：工具栏中心偏高于模型中心（VRM 全身模型的包围盒中心在腰部，
+                    // 需要上移让按钮更接近胸部位置，与 Live2D 半身模型的视觉效果一致）
+                    const offsetY = modelScreenHeight * 0.1;  // 上移 10% 模型高度
+                    const targetY = modelCenterY - actualToolbarHeight / 2 - offsetY;
 
-                    // X轴边界限制：确保按钮容器不超出屏幕右边界
-                    const maxX = windowWidth - actualToolbarWidth - minMargin;
-                    const clampedX = Math.max(minMargin, Math.min(targetX, maxX));
+                    // 边界限制：确保不超出当前屏幕（与 Live2D 保持一致，使用 20px 边距）
+                    const minY = 20;
+                    const maxY = screenHeight - actualToolbarHeight - 20;
+                    const boundedY = Math.max(minY, Math.min(targetY, maxY));
 
-                    // Y轴边界限制：确保按钮容器不超出屏幕上下边界
-                    const minY = minMargin;
-                    const maxY = windowHeight - actualToolbarHeight - minMargin;
-                    const clampedY = Math.max(minY, Math.min(targetY, maxY));
+                    const maxX = screenWidth - actualToolbarWidth;
+                    const boundedX = Math.max(0, Math.min(targetX, maxX));
 
-                    // 平滑跟随：如果当前位置和目标位置差异较小，则不更新，减少抖动
+                    // 平滑跟随（减少抖动）
                     const currentLeft = parseFloat(buttonsContainer.style.left) || 0;
                     const currentTop = parseFloat(buttonsContainer.style.top) || 0;
-                    const dist = Math.sqrt(Math.pow(clampedX - currentLeft, 2) + Math.pow(clampedY - currentTop, 2));
-
-                    // 只有当移动距离超过 0.5 像素时才更新位置，减少微小抖动
+                    const dist = Math.sqrt(Math.pow(boundedX - currentLeft, 2) + Math.pow(boundedY - currentTop, 2));
                     if (dist > 0.5) {
-                        buttonsContainer.style.left = `${clampedX}px`;
-                        buttonsContainer.style.top = `${clampedY}px`;
+                        buttonsContainer.style.left = `${boundedX}px`;
+                        buttonsContainer.style.top = `${boundedY}px`;
                     }
 
-                    // 更新锁位置（使用与按钮相同的缩放比例）
-                    // 只有在非返回状态下才更新锁图标位置和显示
+                    // ========== 锁图标位置（与 Live2D 相同公式） ==========
                     if (lockIcon && !this._isInReturnState) {
-                        // 统一使用 canvasRect 的宽高计算屏幕坐标
-                        const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
-                        const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
-                        // 加上 canvas 的偏移量，转换为窗口坐标
-                        const targetLockX = canvasRect.left + lockScreenX;
-                        const targetLockY = canvasRect.top + lockScreenY;
+                        const lockTargetX = screenRight * 0.7 + screenLeft * 0.3;
+                        const lockTargetY = screenTop * 0.3 + screenBottom * 0.7;
 
-                        // 应用缩放到锁图标（使用与按钮相同的缩放比例）
-                        const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
                         lockIcon.style.transformOrigin = 'center center';
                         lockIcon.style.transform = `scale(${scale})`;
 
-                        // 使用缩放后的实际尺寸（用于边界限制）
+                        const baseLockIconSize = 44;
                         const actualLockIconSize = baseLockIconSize * scale;
+                        const maxLockX = screenWidth - actualLockIconSize;
+                        const maxLockY = screenHeight - actualLockIconSize - 20;
+                        const boundedLockX = Math.max(0, Math.min(lockTargetX, maxLockX));
+                        const boundedLockY = Math.max(20, Math.min(lockTargetY, maxLockY));
 
-                        // 屏幕边缘限制（使用窗口尺寸）
-                        const maxLockX = windowWidth - actualLockIconSize - minMargin;
-                        const maxLockY = windowHeight - actualLockIconSize - minMargin;
-                        const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
-                        const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
-
-                        // 平滑跟随锁图标
                         const currentLockLeft = parseFloat(lockIcon.style.left) || 0;
                         const currentLockTop = parseFloat(lockIcon.style.top) || 0;
-                        const lockDist = Math.sqrt(Math.pow(clampedLockX - currentLockLeft, 2) + Math.pow(clampedLockY - currentLockTop, 2));
-
+                        const lockDist = Math.sqrt(Math.pow(boundedLockX - currentLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
                         if (lockDist > 0.5) {
-                            lockIcon.style.left = `${clampedLockX}px`;
-                            lockIcon.style.top = `${clampedLockY}px`;
+                            lockIcon.style.left = `${boundedLockX}px`;
+                            lockIcon.style.top = `${boundedLockY}px`;
                         }
                         lockIcon.style.display = 'block';
                     }
                 }
-                // 不要在这里设置 display，让鼠标检测逻辑和初始显示逻辑来控制显示/隐藏（与 Live2D 保持一致） 
             }
         } catch (error) {
             // 忽略单帧异常，继续更新循环（开发模式下记录）

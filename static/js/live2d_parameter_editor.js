@@ -303,6 +303,9 @@ const backToMainBtn = document.getElementById('backToMainBtn');
 // 状态栏定时器 ID
 let statusTimeoutId = null;
 
+// 是否已选择模型（用于区分初始状态和用户主动选择）
+let hasSelectedModel = false;
+
 // ===== 跨页面通信系统 =====
 // 使用 BroadcastChannel（如果可用）或 localStorage 作为后备
 const CHANNEL_NAME = 'neko_page_channel';
@@ -496,10 +499,22 @@ function updateModelDropdown() {
 // 更新按钮文字
 function updateModelSelectButtonText() {
     if (!modelSelectText || !modelSelect) return;
-    const selectedOption = modelSelect.options[modelSelect.selectedIndex];
-    const text = selectedOption ? selectedOption.textContent : t('live2d.parameterEditor.pleaseSelectModel', '选择模型');
-    modelSelectText.textContent = text;
-    modelSelectText.setAttribute('data-text', text);
+    
+    // 如果已选择模型
+    if (hasSelectedModel && modelSelect.value) {
+        const selectedOption = modelSelect.options[modelSelect.selectedIndex];
+        const text = selectedOption ? selectedOption.textContent : modelSelect.value;
+        modelSelectText.textContent = text;
+        modelSelectText.setAttribute('data-text', text);
+        // 移除data-i18n属性，防止翻译系统覆盖模型名称
+        modelSelectText.removeAttribute('data-i18n');
+    } else {
+        // 没有选择模型时，使用默认文本并恢复data-i18n属性
+        const text = t('live2d.parameterEditor.selectModel', '选择模型');
+        modelSelectText.textContent = text;
+        modelSelectText.setAttribute('data-text', text);
+        modelSelectText.setAttribute('data-i18n', 'live2d.parameterEditor.selectModel');
+    }
 }
 
 // 缓存模型列表，避免重复请求
@@ -537,7 +552,7 @@ async function loadModelList() {
 
 function renderModelList(models) {
     if (models.length > 0) {
-        modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.pleaseSelectModelOption', '选择模型')}</option>`;
+        modelSelect.innerHTML = '';
         models.forEach(model => {
             const option = document.createElement('option');
             option.value = model.name;
@@ -1044,6 +1059,7 @@ document.addEventListener('click', (e) => {
 // 事件监听
 if (modelSelect) {
     modelSelect.addEventListener('change', (e) => {
+        hasSelectedModel = true;
         updateModelSelectButtonText();
         loadModel(e.target.value);
     });

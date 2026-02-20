@@ -405,3 +405,7 @@ yarl==1.22.0
     # via aiohttp
 zstandard==0.25.0
     # via langsmith
+pyzmq==26.4.0
+    # via n-e-k-o (pyproject.toml)
+browser-use==0.11.10a1
+    # via n-e-k-o (pyproject.toml)

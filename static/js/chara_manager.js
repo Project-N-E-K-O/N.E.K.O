@@ -492,117 +492,71 @@ function renderMaster() {
     // 清空原有自定义项
     Array.from(form.querySelectorAll('.custom-row')).forEach(e => e.remove());
 
-    // 确保默认属性的DOM元素存在
-    const defaultFields = [
-        { name: '档案名', type: 'input', labelText: window.t ? window.t('character.profileName') : '档案名', required: true },
-        { name: '性别', type: 'textarea', labelText: window.t ? window.t('character.gender') : '性别' },
-        { name: '昵称', type: 'textarea', labelText: window.t ? window.t('character.nickname') : '昵称' }
-    ];
+    // 只有档案名是硬编码的必填字段（HTML模板中已定义）
+    let profileInput = form.querySelector('[name="档案名"]');
+    if (!profileInput) {
+        // 如果档案名元素不存在（不应该发生），动态创建
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper';
 
-    defaultFields.forEach(field => {
-        // 检查元素是否存在
-        let fieldElement = form.querySelector(`[name="${field.name}"]`);
-        let rowElement;
+        const label = document.createElement('label');
+        const labelTextSpan = document.createElement('span');
+        labelTextSpan.setAttribute('data-i18n', 'character.profileName');
+        labelTextSpan.textContent = window.t ? window.t('character.profileName') : '档案名';
+        label.appendChild(labelTextSpan);
+        const requiredStar = document.createElement('span');
+        requiredStar.style.color = 'red';
+        requiredStar.setAttribute('data-i18n', 'character.required');
+        requiredStar.textContent = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
+        label.appendChild(requiredStar);
+        wrapper.appendChild(label);
 
-        if (!fieldElement) {
-            // 如果元素不存在，创建新的行和元素
-            const wrapper = document.createElement('div');
-            wrapper.className = 'field-row-wrapper';
+        const row = document.createElement('div');
+        row.className = 'field-row';
+        profileInput = document.createElement('input');
+        profileInput.type = 'text';
+        profileInput.name = '档案名';
+        profileInput.required = true;
+        profileInput.maxLength = 20;
+        profileInput.autocomplete = 'off';
+        row.appendChild(profileInput);
+        wrapper.appendChild(row);
 
-            // 创建label元素（在wrapper中）
-            const label = document.createElement('label');
-            // 创建文本span以支持i18n
-            const labelTextSpan = document.createElement('span');
-            // 根据字段名设置对应的i18n key
-            const i18nKeyMap = {
-                '档案名': 'character.profileName',
-                '性别': 'character.gender',
-                '昵称': 'character.nickname'
-            };
-            if (i18nKeyMap[field.name]) {
-                labelTextSpan.setAttribute('data-i18n', i18nKeyMap[field.name]);
-            }
-            labelTextSpan.textContent = field.labelText;
-            label.appendChild(labelTextSpan);
-            if (field.required) {
-                const requiredStar = document.createElement('span');
-                requiredStar.style.color = 'red';
-                requiredStar.setAttribute('data-i18n', 'character.required');
-                requiredStar.textContent = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
-                label.appendChild(requiredStar);
-            }
-            wrapper.appendChild(label);
+        // 修改名称按钮
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'btn sm';
+        renameBtn.id = 'rename-master-btn';
+        const renameText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">${window.t('character.rename')}</span>` : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
+        renameBtn.innerHTML = renameText;
+        wrapper.appendChild(renameBtn);
 
-            // 创建field-row（胶囊框）
-            rowElement = document.createElement('div');
-            rowElement.className = 'field-row';
-
-            // 创建输入元素
-            if (field.type === 'input') {
-                fieldElement = document.createElement('input');
-                fieldElement.type = 'text';
-            } else {
-                fieldElement = document.createElement('textarea');
-                fieldElement.rows = 1;
-                fieldElement.placeholder = '可输入详细描述';
-            }
-            fieldElement.name = field.name;
-            rowElement.appendChild(fieldElement);
-
-            // 为textarea添加自动调整高度功能
-            if (field.type === 'textarea') {
-                attachTextareaAutoResize(fieldElement);
-            }
-
-            // 将field-row添加到wrapper
-            wrapper.appendChild(rowElement);
-
-            // 添加删除按钮（除了档案名）- 在胶囊框外面
-            if (field.name !== '档案名') {
-                const deleteBtn = document.createElement('button');
-                deleteBtn.type = 'button';
-                deleteBtn.className = 'btn sm delete';
-                // 确保使用 innerHTML 以支持图标
-                const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
-                deleteBtn.innerHTML = deleteFieldText;
-                deleteBtn.addEventListener('click', function () {
-                    deleteMasterField(this);
-                });
-                wrapper.appendChild(deleteBtn);
-            } else {
-                // 为档案名添加修改按钮 - 在胶囊框外面
-                const renameBtn = document.createElement('button');
-                renameBtn.type = 'button';
-                renameBtn.className = 'btn sm';
-                renameBtn.id = 'rename-master-btn';
-                // 确保使用 innerHTML 以支持图标
-                const renameText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">${window.t('character.rename')}</span>` : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
-                renameBtn.innerHTML = renameText;
-                wrapper.appendChild(renameBtn);
-            }
-
-            rowElement = wrapper;
-
-            // 将行插入到表单中
-            const buttonArea = form.querySelector('div[style]');
-            if (buttonArea) {
-                form.insertBefore(rowElement, buttonArea);
-            } else {
-                form.appendChild(rowElement);
-            }
+        const buttonArea = form.querySelector('div[style]');
+        if (buttonArea) {
+            form.insertBefore(wrapper, buttonArea);
+        } else {
+            form.appendChild(wrapper);
         }
+    }
 
-        // 设置元素的值
-        fieldElement.value = master[field.name] || '';
-        // 确保在设置值后重新调整textarea高度和滚动条
-        if (field.type === 'textarea') {
-            autoResizeTextarea(fieldElement);
-        }
-    });
+    // 设置档案名的值
+    profileInput.value = master['档案名'] || '';
 
-    // 渲染自定义项
+    // 确保档案名的修改按钮存在
+    const profileWrapper = profileInput.closest('.field-row-wrapper');
+    if (profileWrapper && !profileWrapper.querySelector('#rename-master-btn')) {
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'btn sm';
+        renameBtn.id = 'rename-master-btn';
+        const renameText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">${window.t('character.rename')}</span>` : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
+        renameBtn.innerHTML = renameText;
+        profileWrapper.appendChild(renameBtn);
+    }
+
+    // 所有其他字段（性别、昵称等）完全由数据驱动
     Object.keys(master).forEach(k => {
-        if (["档案名", "性别", "昵称"].includes(k)) return;
+        if (k === '档案名') return; // 档案名已在上方处理
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
@@ -620,10 +574,10 @@ function renderMaster() {
         textarea.name = k;
         textarea.value = master[k];
         textarea.rows = 1;
-        textarea.placeholder = '可输入详细描述';
+        textarea.placeholder = (window.t && typeof window.t === 'function') ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
         row.appendChild(textarea);
 
-        // 为重新创建的textarea添加自动调整高度功能
+        // 为textarea添加自动调整高度功能
         attachTextareaAutoResize(textarea);
 
         // 将field-row添加到wrapper
@@ -633,7 +587,6 @@ function renderMaster() {
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
         deleteBtn.className = 'btn sm delete';
-        // 确保使用 innerHTML 以支持图标
         const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
         deleteBtn.innerHTML = deleteFieldText;
         deleteBtn.addEventListener('click', function () {
@@ -1554,6 +1507,20 @@ function showCatgirlForm(key, container) {
                     if (voiceId === (cat['voice_id'] || '')) option.selected = true;
                     select.appendChild(option);
                 });
+                // 添加免费预设音色（不可移除，放在最后）
+                if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                    const freeGroup = document.createElement('optgroup');
+                    const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                    freeGroup.label = '── ' + freeLabel + ' ──';
+                    Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = displayName;
+                        if (voiceId === (cat['voice_id'] || '')) option.selected = true;
+                        freeGroup.appendChild(option);
+                    });
+                    select.appendChild(freeGroup);
+                }
             }
         } catch (error) {
             console.error('加载音色列表失败:', error);
@@ -2079,6 +2046,20 @@ window.addEventListener('message', function (event) {
                     select.appendChild(option);
                 });
 
+                // 添加免费预设音色
+                if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                    const freeGroup = document.createElement('optgroup');
+                    const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                    freeGroup.label = '── ' + freeLabel + ' ──';
+                    Object.entries(data.free_voices).forEach(([displayName, id]) => {
+                        const option = document.createElement('option');
+                        option.value = id;
+                        option.textContent = displayName;
+                        freeGroup.appendChild(option);
+                    });
+                    select.appendChild(freeGroup);
+                }
+
                 select.value = voiceId;
             }).catch(() => {});
         } catch (e) {}
@@ -2296,3 +2277,10 @@ function closeCharaManagerPage() {
         }
     }
 }
+
+// 初始化通用教程管理器（从 HTML 内联脚本移至此处，避免 CSP 限制）
+document.addEventListener('DOMContentLoaded', function() {
+    if (typeof initUniversalTutorialManager === 'function') {
+        initUniversalTutorialManager();
+    }
+});
