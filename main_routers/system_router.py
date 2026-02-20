@@ -847,7 +847,7 @@ async def proactive_chat(request: Request):
                 
                 weibo_dynamic = personal_content.get('weibo_dynamic', {})
                 if weibo_dynamic.get('success'):
-                    dynamics = weibo_dynamic.get('dynamics', [])
+                    dynamics = weibo_dynamic.get('statuses', [])
                     weibo_contents = [dynamic.get('content', '') for dynamic in dynamics[:10]]
                     if weibo_contents:
                         content_details.append("微博动态:")
