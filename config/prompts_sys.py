@@ -759,6 +759,10 @@ proactive_generate_zh = """以下是你的人设：
 {character_prompt}
 ======角色设定结束======
 
+======当前状态======
+{inner_thoughts}
+======状态结束======
+
 ======以下为对话历史======
 {memory_context}
 ======以上为对话历史======
@@ -778,25 +782,29 @@ proactive_generate_zh = """以下是你的人设：
 
 请直接输出你要说的话。"""
 
-proactive_generate_en = """Here is your character setting:
-======Character Setting======
+proactive_generate_en = """Here is your persona:
+======Character Persona======
 {character_prompt}
-======End Character Setting======
+======Persona End======
+
+======Current State======
+{inner_thoughts}
+======State End======
 
 ======Chat History======
 {memory_context}
-======以上为对话历史======
+======Chat History End======
 
 {recent_chats_section}
 
 You just noticed an interesting topic:
 ======Topic======
 {topic_summary}
-======End Topic======
+======Topic End======
 
 As your character, naturally bring up this topic to {master_name}. Requirements:
-1. Stay fully in character — match personality and speech patterns
-2. Keep it short and natural, like casually sharing something (2-3 sentences max)
+1. Stay perfectly in character and match your speaking style
+2. Keep it short and natural, like a casual share (max 2-3 sentences)
 3. Do not repeat anything from your recent proactive chat history
 4. Do not include any reasoning, just say what you want to say
 
@@ -806,6 +814,10 @@ proactive_generate_ja = """以下はあなたのキャラクター設定です�
 ======キャラクター設定======
 {character_prompt}
 ======キャラクター設定ここまで======
+
+======現在の状態======
+{inner_thoughts}
+======状態ここまで======
 
 ======会話履歴======
 {memory_context}
@@ -831,9 +843,13 @@ proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 {character_prompt}
 ======캐릭터 설정 끝======
 
+======현재 상태======
+{inner_thoughts}
+======상태 끝======
+
 ======대화 기록======
 {memory_context}
-======以上为对话历史======
+======대화 기록 끝======
 
 {recent_chats_section}
 

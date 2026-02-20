@@ -1075,29 +1075,22 @@ async def proactive_chat(request: Request):
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
         # 解析 new_dialog 响应
-        def _parse_new_dialog(text: str) -> str:
+        def _parse_new_dialog(text: str) -> tuple[str, str]:
             if not text:
-                return ""
+                return "", ""
             # 尝试找到分割线 "整理了近期发生的事情"
             split_keyword = "整理了近期发生的事情"
             if split_keyword in text:
                 parts = text.split(split_keyword, 1)
                 # part[0] 是内心活动+时间，part[1] 是对话历史
-                # 我们只取对话历史部分，并去除首尾空白
+                # 提取内心活动 (去除首尾空白)
+                inner_thoughts_part = parts[0].strip()
+                # 提取对话历史 (去除首尾空白)
                 history_part = parts[1].strip()
-                # 如果需要内心活动，也可以处理 parts[0]
-                # 这里暂且只返回 history 部分，符合 "parse out format you need" (即对话历史)
-                # 但考虑到 "内心活动" 包含 Settings，可能也需要保留？
-                # 用户说 "returns a very complex structured prompt, please parse out the format you need"
-                # 通常 Proactive Generative Prompt 需要 clean history。
-                # Settings 已经在 System Prompt (character_prompt) 中部分包含，但 memory server 里的 settings 是动态的。
-                # 我们可以把 Settings 提取出来放在 history 前面，但在 "对话历史" 区块内？
-                # 或者直接返回清洗后的 history。
-                # 暂时只返回 history，因为 system prompt 里的 {memory_context} 处于 ======对话历史====== 标签下。
-                return history_part
-            return text
+                return history_part, inner_thoughts_part
+            return text, ""
 
-        memory_context = _parse_new_dialog(raw_memory_context)
+        memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
         
         # ========== 2. 选择语言 ==========
         try:
@@ -1111,22 +1104,7 @@ async def proactive_chat(request: Request):
         
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
-        # 最终 memory_context = 历史记录 + 近期搭话记录 (作为 context)
-        # 注意：proactive_chat_history_prompt 是 "Recent Proactive Chats"，不是 main history
-        # 但这里为了简单，将其拼接到 history 后面? 
-        # 不，prompt 模板里有单独的 {recent_chats_section} 占位符 (Lines 814/838 in prompts_sys.py)
-        # 所以这里不需要拼接！
-        # Wait, lines 814 in prompts_sys.py: {recent_chats_section} IS the placeholder.
-        # But in current code (before edit), it did: `memory_context_with_recent = memory_context + recent_chats_section`
-        # And later (Phase 2): `... .format(..., memory_context=memory_context_with_recent, ...)`?
-        # Let's check Phase 2 formatting arguments. I suspect Phase 2 does NOT use {recent_chats_section} placeholder if I don't pass it.
-        # If I look at `system_router.py` Phase 2 call (later in file), I need to see what keys it formats.
-        
-        # Assuming we separate them now:
-        # memory_context -> Just the parsed history
-        # proactive_chat_history_prompt -> The recent proactive chats
 
-        
         # ========== 4. 获取 LLM 配置 ==========
         try:
             correction_config = _config_manager.get_model_api_config('correction')
@@ -1276,6 +1254,7 @@ async def proactive_chat(request: Request):
         
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
+            inner_thoughts=inner_thoughts,
             memory_context=memory_context,
             recent_chats_section=proactive_chat_history_prompt,
             topic_summary=best_topic,
