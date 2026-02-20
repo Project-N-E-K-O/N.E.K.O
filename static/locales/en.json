@@ -671,7 +671,7 @@
     "providerExamplePlaceholder": "e.g., openai, azure, custom",
     "baseUrlExamplePlaceholder": "e.g., https://api.openai.com/v1",
     "modelExamplePlaceholder": "e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash",
-    "conversationApiKeyPlaceholder":"Enter conversation API Key",
+    "conversationApiKeyPlaceholder": "Enter conversation API Key",
     "summaryApiKeyPlaceholder": "Enter Summary API Key",
     "correctionApiKeyPlaceholder": "Enter Correction API Key",
     "emotionApiKeyPlaceholder": "Enter Emotion API Key",
@@ -696,7 +696,7 @@
       "cancel": "Cancel",
       "continue": "Continue Saving"
     },
-    "conversationModelConfig" : "Text Dialogue Model Configuration",
+    "conversationModelConfig": "Text Dialogue Model Configuration",
     "summaryModelConfig": "Summary Model Configuration",
     "correctionModelConfig": "Correction Model Configuration",
     "emotionModelConfig": "Emotion Model Configuration",

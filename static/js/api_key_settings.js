@@ -349,41 +349,33 @@ async function loadCurrentApiKey() {
             setInputValue('assistApiKeyInputGemini', data.assistApiKeyGemini, assistApiKeyPlaceholder);
 
             // 加载用户自定义API配置
-            setInputValue('conversationModelProvider', data.conversationModelProvider);
             setInputValue('conversationModelUrl', data.conversationModelUrl);
             setInputValue('conversationModelId', data.conversationModelId);
             setInputValue('conversationModelApiKey', data.conversationModelApiKey);
 
-            setInputValue('summaryModelProvider', data.summaryModelProvider);
             setInputValue('summaryModelUrl', data.summaryModelUrl);
             setInputValue('summaryModelId', data.summaryModelId);
             setInputValue('summaryModelApiKey', data.summaryModelApiKey);
 
-            setInputValue('correctionModelProvider', data.correctionModelProvider);
             setInputValue('correctionModelUrl', data.correctionModelUrl);
             setInputValue('correctionModelId', data.correctionModelId);
             setInputValue('correctionModelApiKey', data.correctionModelApiKey);
 
-            setInputValue('emotionModelProvider', data.emotionModelProvider);
             setInputValue('emotionModelUrl', data.emotionModelUrl);
             setInputValue('emotionModelId', data.emotionModelId);
             setInputValue('emotionModelApiKey', data.emotionModelApiKey);
 
-            setInputValue('visionModelProvider', data.visionModelProvider);
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
             setInputValue('visionModelApiKey', data.visionModelApiKey);
-            setInputValue('agentModelProvider', data.agentModelProvider);
             setInputValue('agentModelUrl', data.agentModelUrl);
             setInputValue('agentModelId', data.agentModelId);
             setInputValue('agentModelApiKey', data.agentModelApiKey);
 
-            setInputValue('omniModelProvider', data.omniModelProvider);
             setInputValue('omniModelUrl', data.omniModelUrl);
             setInputValue('omniModelId', data.omniModelId);
             setInputValue('omniModelApiKey', data.omniModelApiKey);
 
-            setInputValue('ttsModelProvider', data.ttsModelProvider);
             setInputValue('ttsModelUrl', data.ttsModelUrl);
             setInputValue('ttsModelId', data.ttsModelId);
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
@@ -736,41 +728,33 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
 
     // 获取用户自定义API配置
-    const conversationModelProvider = document.getElementById('conversationModelProvider') ? document.getElementById('conversationModelProvider').value.trim() : '';
     const conversationModelUrl = document.getElementById('conversationModelUrl') ? document.getElementById('conversationModelUrl').value.trim() : '';
     const conversationModelId = document.getElementById('conversationModelId') ? document.getElementById('conversationModelId').value.trim() : '';
     const conversationModelApiKey = document.getElementById('conversationModelApiKey') ? document.getElementById('conversationModelApiKey').value.trim() : '';
 
-    const summaryModelProvider = document.getElementById('summaryModelProvider') ? document.getElementById('summaryModelProvider').value.trim() : '';
     const summaryModelUrl = document.getElementById('summaryModelUrl') ? document.getElementById('summaryModelUrl').value.trim() : '';
     const summaryModelId = document.getElementById('summaryModelId') ? document.getElementById('summaryModelId').value.trim() : '';
     const summaryModelApiKey = document.getElementById('summaryModelApiKey') ? document.getElementById('summaryModelApiKey').value.trim() : '';
 
-    const correctionModelProvider = document.getElementById('correctionModelProvider') ? document.getElementById('correctionModelProvider').value.trim() : '';
     const correctionModelUrl = document.getElementById('correctionModelUrl') ? document.getElementById('correctionModelUrl').value.trim() : '';
     const correctionModelId = document.getElementById('correctionModelId') ? document.getElementById('correctionModelId').value.trim() : '';
     const correctionModelApiKey = document.getElementById('correctionModelApiKey') ? document.getElementById('correctionModelApiKey').value.trim() : '';
 
-    const emotionModelProvider = document.getElementById('emotionModelProvider') ? document.getElementById('emotionModelProvider').value.trim() : '';
     const emotionModelUrl = document.getElementById('emotionModelUrl') ? document.getElementById('emotionModelUrl').value.trim() : '';
     const emotionModelId = document.getElementById('emotionModelId') ? document.getElementById('emotionModelId').value.trim() : '';
     const emotionModelApiKey = document.getElementById('emotionModelApiKey') ? document.getElementById('emotionModelApiKey').value.trim() : '';
 
-    const visionModelProvider = document.getElementById('visionModelProvider') ? document.getElementById('visionModelProvider').value.trim() : '';
     const visionModelUrl = document.getElementById('visionModelUrl') ? document.getElementById('visionModelUrl').value.trim() : '';
     const visionModelId = document.getElementById('visionModelId') ? document.getElementById('visionModelId').value.trim() : '';
     const visionModelApiKey = document.getElementById('visionModelApiKey') ? document.getElementById('visionModelApiKey').value.trim() : '';
-    const agentModelProvider = document.getElementById('agentModelProvider') ? document.getElementById('agentModelProvider').value.trim() : '';
     const agentModelUrl = document.getElementById('agentModelUrl') ? document.getElementById('agentModelUrl').value.trim() : '';
     const agentModelId = document.getElementById('agentModelId') ? document.getElementById('agentModelId').value.trim() : '';
     const agentModelApiKey = document.getElementById('agentModelApiKey') ? document.getElementById('agentModelApiKey').value.trim() : '';
 
-    const omniModelProvider = document.getElementById('omniModelProvider') ? document.getElementById('omniModelProvider').value.trim() : '';
     const omniModelUrl = document.getElementById('omniModelUrl') ? document.getElementById('omniModelUrl').value.trim() : '';
     const omniModelId = document.getElementById('omniModelId') ? document.getElementById('omniModelId').value.trim() : '';
     const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
 
-    const ttsModelProvider = document.getElementById('ttsModelProvider') ? document.getElementById('ttsModelProvider').value.trim() : '';
     let ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
     const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
@@ -824,14 +808,14 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         pendingApiKey = {
             apiKey: apiKeyForSave, coreApi, assistApi,
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
-            conversationModelProvider, conversationModelUrl, conversationModelId, conversationModelApiKey,
-            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
-            agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
+            conversationModelUrl, conversationModelId, conversationModelApiKey,
+            summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelUrl, agentModelId, agentModelApiKey,
+            omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
             mcpToken, enableCustomApi
         };
         showWarningModal();
@@ -840,20 +824,20 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         await saveApiKey({
             apiKey: apiKeyForSave, coreApi, assistApi,
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
-            conversationModelProvider, conversationModelUrl, conversationModelId, conversationModelApiKey,
-            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
-            agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
+            conversationModelUrl, conversationModelId, conversationModelApiKey,
+            summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelUrl, agentModelId, agentModelApiKey,
+            omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
             mcpToken, enableCustomApi
         });
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, conversationModelProvider, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -882,35 +866,27 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 assistApiKeyStep: assistApiKeyStep || undefined,
                 assistApiKeySilicon: assistApiKeySilicon || undefined,
                 assistApiKeyGemini: assistApiKeyGemini || undefined,
-                conversationModelProvider: conversationModelProvider || undefined,
                 conversationModelUrl: conversationModelUrl || undefined,
                 conversationModelId: conversationModelId || undefined,
                 conversationModelApiKey: conversationModelApiKey || undefined,
-                summaryModelProvider: summaryModelProvider || undefined,
                 summaryModelUrl: summaryModelUrl || undefined,
                 summaryModelId: summaryModelId || undefined,
                 summaryModelApiKey: summaryModelApiKey || undefined,
-                correctionModelProvider: correctionModelProvider || undefined,
                 correctionModelUrl: correctionModelUrl || undefined,
                 correctionModelId: correctionModelId || undefined,
                 correctionModelApiKey: correctionModelApiKey || undefined,
-                emotionModelProvider: emotionModelProvider || undefined,
                 emotionModelUrl: emotionModelUrl || undefined,
                 emotionModelId: emotionModelId || undefined,
                 emotionModelApiKey: emotionModelApiKey || undefined,
-                visionModelProvider: visionModelProvider || undefined,
                 visionModelUrl: visionModelUrl || undefined,
                 visionModelId: visionModelId || undefined,
                 visionModelApiKey: visionModelApiKey || undefined,
-                agentModelProvider: agentModelProvider || undefined,
                 agentModelUrl: agentModelUrl || undefined,
                 agentModelId: agentModelId || undefined,
                 agentModelApiKey: agentModelApiKey || undefined,
-                omniModelProvider: omniModelProvider || undefined,
                 omniModelUrl: omniModelUrl || undefined,
                 omniModelId: omniModelId || undefined,
                 omniModelApiKey: omniModelApiKey || undefined,
-                ttsModelProvider: ttsModelProvider || undefined,
                 ttsModelUrl: ttsModelUrl || undefined,
                 ttsModelId: ttsModelId || undefined,
                 ttsModelApiKey: ttsModelApiKey || undefined,

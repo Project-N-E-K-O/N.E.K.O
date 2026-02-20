@@ -5,7 +5,7 @@ body {
     height: 100%;
     margin: 0;
     padding: 0;
-    /*background: #fff;*/
+    /* background: #fff; */
     background: transparent;
     color: #222;
     font-family: 'Segoe UI', Arial, sans-serif;
@@ -242,8 +242,8 @@ button * {
     right: 0;
     bottom: 0;
     pointer-events: none;
-    /*width: auto;*/
-    /*height: auto;*/
+    /* width: auto; */
+    /* height: auto; */
     display: block;
     opacity: 1;
     visibility: visible;
