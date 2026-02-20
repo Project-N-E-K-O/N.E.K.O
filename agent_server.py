@@ -70,6 +70,7 @@ class Modules:
         "browser_use": {"ready": False, "reason": "not checked"},
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
+    _background_tasks = set()
 
 
 def _rewire_computer_use_dependents() -> None:
@@ -376,7 +377,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
                 logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
-            asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+            Modules._background_tasks.add(task)
+            task.add_done_callback(Modules._background_tasks.discard)
 
 
 
@@ -433,8 +436,11 @@ async def _run_computer_use_task(
     # Execute in thread pool (run_instruction is synchronous/blocking)
     success = False
     cu_detail = ""
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction)
+
     try:
-        res = await asyncio.to_thread(Modules.computer_use.run_instruction, instruction)
+        res = await future
         if res is None:
             logger.debug("[ComputerUse] run_instruction returned None, treating as success")
             res = {"success": True}
@@ -449,7 +455,6 @@ async def _run_computer_use_task(
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
-        raise
     except Exception as e:
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
@@ -459,43 +464,43 @@ async def _run_computer_use_task(
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
 
-    # Emit task_update (terminal state)
-    try:
-        await _emit_main_event(
-            "task_update", lanlan_name,
-            task={
-                "id": task_id, "status": info["status"], "type": "computer_use",
-                "start_time": info.get("start_time"), "end_time": _now_iso(),
-                "error": info.get("error"),
-            },
-        )
-    except Exception:
-        pass
+        # Emit task_update (terminal state)
+        try:
+            asyncio.create_task(_emit_main_event(
+                "task_update", lanlan_name,
+                task={
+                    "id": task_id, "status": info["status"], "type": "computer_use",
+                    "start_time": info.get("start_time"), "end_time": _now_iso(),
+                    "error": info.get("error"),
+                },
+            ))
+        except Exception:
+            pass
 
-    # Emit structured task_result
-    try:
-        _done = "已完成" if success else "已结束"
-        params = info.get("params") or {}
-        desc = params.get("query") or params.get("instruction") or ""
-        if cu_detail and desc:
-            summary = f'你的任务“{desc}”{_done}：{cu_detail}'
-        elif cu_detail:
-            summary = f'你的任务{_done}：{cu_detail}'
-        elif desc:
-            summary = f'你的任务“{desc}”{_done}'
-        else:
-            summary = "任务已完成" if success else "任务执行失败"
-        await _emit_task_result(
-            lanlan_name,
-            channel="computer_use",
-            task_id=task_id,
-            success=success,
-            summary=summary,
-            detail=cu_detail,
-            error_message=(info.get("error") or "") if not success else "",
-        )
-    except Exception:
-        pass
+        # Emit structured task_result
+        try:
+            _done = "已完成" if success else "已结束"
+            params = info.get("params") or {}
+            desc = params.get("query") or params.get("instruction") or ""
+            if cu_detail and desc:
+                summary = f'你的任务“{desc}”{_done}：{cu_detail}'
+            elif cu_detail:
+                summary = f'你的任务{_done}：{cu_detail}'
+            elif desc:
+                summary = f'你的任务“{desc}”{_done}'
+            else:
+                summary = "任务已完成" if success else "任务执行失败"
+            asyncio.create_task(_emit_task_result(
+                lanlan_name,
+                channel="computer_use",
+                task_id=task_id,
+                success=success,
+                summary=summary,
+                detail=cu_detail,
+                error_message=(info.get("error") or "") if not success else "",
+            ))
+        except Exception:
+            pass
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
@@ -698,9 +703,9 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     if isinstance(bres, dict):
                         result_detail = str(bres.get("result") or bres.get("message") or "")
                         if success:
-                            summary = f'你的任务"{result.task_description}"已完成：{result_detail}'
+                            summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
                         else:
-                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}'
+                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
                     bu_session.complete_task(result_detail or summary, success)
                     await _emit_task_result(
                         lanlan_name,

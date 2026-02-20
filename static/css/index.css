@@ -1345,3 +1345,27 @@ animation: none;
 background: transparent;
 }
 }
+
+/* Agent HUD 空状态折叠按钮样式 */
+.collapse-button {
+    background: rgba(68, 183, 254, 0.12);
+    color: #94a3b8;
+}
+
+.collapse-button.collapsed {
+    background: rgba(0, 0, 0, 0.05);
+    color: #888;
+}
+
+.empty-state {
+    transition: max-height 0.3s ease, opacity 0.3s ease, margin 0.3s ease, padding 0.3s ease;
+    overflow: hidden;
+}
+
+.empty-state.collapsed {
+    max-height: 0;
+    opacity: 0;
+    margin: 0;
+    padding: 0;
+}
+

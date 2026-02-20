@@ -742,7 +742,7 @@ function init_app() {
                     // even when popup checkboxes don't exist yet
                     try {
                         const masterOn = !!flags.agent_enabled;
-                        const anyChildOn = !!(flags.computer_use_enabled || flags.mcp_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+                        const anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
                         if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function') {
                             window.startAgentTaskPolling();
                         }
@@ -2781,6 +2781,23 @@ function init_app() {
                 stopScreening();
                 screenButton.classList.remove('active');
                 syncFloatingScreenButtonState(false);
+
+                // 停止所有 tracks 并清理引用
+                if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
+                    screenCaptureStream.getTracks().forEach(track => {
+                        try {
+                            track.stop();
+                        } catch (e) { }
+                    });
+                }
+                screenCaptureStream = null;
+                screenCaptureStreamLastUsed = null;
+
+                // 清除闲置定时器
+                if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
+                    clearTimeout(screenCaptureStreamIdleTimer);
+                    screenCaptureStreamIdleTimer = null;
+                }
             };
 
             // 获取麦克风流
@@ -5662,7 +5679,7 @@ function init_app() {
             const f = this._cachedFlags;
             if (!f) return false;
             const master = !!f.agent_enabled;
-            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.mcp_enabled || f.user_plugin_enabled);
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.user_plugin_enabled);
             return master && child;
         },
 
@@ -5670,7 +5687,7 @@ function init_app() {
         _updateUI() {
             const master = document.getElementById('live2d-agent-master');
             const keyboard = document.getElementById('live2d-agent-keyboard');
-            const mcp = document.getElementById('live2d-agent-mcp');
+
             const userPlugin = document.getElementById('live2d-agent-user-plugin');
             const status = document.getElementById('live2d-agent-status');
 
@@ -5683,7 +5700,7 @@ function init_app() {
                     // 空闲：所有按钮禁用
                     if (master) { master.disabled = true; master.title = ''; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; keyboard.title = ''; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; mcp.checked = false; mcp.title = ''; syncUI(mcp); }
+
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; userPlugin.title = ''; syncUI(userPlugin); }
                     break;
 
@@ -5699,11 +5716,7 @@ function init_app() {
                         keyboard.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                         syncUI(keyboard);
                     }
-                    if (mcp) {
-                        mcp.disabled = true;
-                        mcp.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
-                        syncUI(mcp);
-                    }
+
                     if (userPlugin) {
                         userPlugin.disabled = true;
                         userPlugin.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -5731,7 +5744,7 @@ function init_app() {
                         syncUI(master);
                     }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; mcp.checked = false; syncUI(mcp); }
+
                     if (status) status.textContent = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; syncUI(userPlugin); }
                     break;
@@ -5740,7 +5753,7 @@ function init_app() {
                     // 处理中：所有按钮禁用，防止重复操作
                     if (master) { master.disabled = true; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; syncUI(keyboard); }
-                    if (mcp) { mcp.disabled = true; syncUI(mcp); }
+
                     if (userPlugin) { userPlugin.disabled = true; syncUI(userPlugin); }
                     break;
             }
@@ -5764,7 +5777,7 @@ function init_app() {
     const checkAgentCapabilities = async () => {
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
+
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         // 【状态机控制】如果正在处理用户操作，跳过轮询
@@ -5838,7 +5851,7 @@ function init_app() {
         // 【减少能力检查频率】只在必要时检查子功能可用性
         const checks = [
             { id: 'live2d-agent-keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
-            { id: 'live2d-agent-mcp', capability: 'mcp', flagKey: 'mcp_enabled', nameKey: 'mcpTools' },
+
             { id: 'live2d-agent-user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' }
         ];
         for (const { id, capability, flagKey, nameKey } of checks) {
@@ -5941,7 +5954,7 @@ function init_app() {
                             agentMasterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
-                            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -5989,27 +6002,7 @@ function init_app() {
                             }
                         }
 
-                        if (agentMcpCheckbox && !agentMcpCheckbox._processing) {
-                            const flagEnabled = flags.mcp_enabled || false;
-                            const isAvailable = capabilityCheckFailed ? agentMcpCheckbox.checked : (capabilityResults['mcp_enabled'] !== false);
-                            const shouldBeChecked = flagEnabled && isAvailable;
 
-                            if (agentMcpCheckbox.checked !== shouldBeChecked) {
-                                if (shouldBeChecked) {
-                                    agentMcpCheckbox.checked = true;
-                                    agentMcpCheckbox._autoDisabled = true;
-                                    agentMcpCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentMcpCheckbox._autoDisabled = false;
-                                    if (typeof agentMcpCheckbox._updateStyle === 'function') agentMcpCheckbox._updateStyle();
-                                } else if (!flagEnabled) {
-                                    agentMcpCheckbox.checked = false;
-                                    agentMcpCheckbox._autoDisabled = true;
-                                    agentMcpCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                    agentMcpCheckbox._autoDisabled = false;
-                                    if (typeof agentMcpCheckbox._updateStyle === 'function') agentMcpCheckbox._updateStyle();
-                                }
-                            }
-                        }
 
                         // 用户插件 flag 同步独立处理，避免依赖 MCP 分支
                         if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing) {
@@ -6056,7 +6049,7 @@ function init_app() {
                 agentMasterCheckbox._autoDisabled = false;
                 if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
 
-                [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                     if (cb) {
                         cb.checked = false;
                         cb.disabled = true;
@@ -6186,7 +6179,7 @@ function init_app() {
 
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
+
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         if (!agentMasterCheckbox) {
@@ -6198,13 +6191,13 @@ function init_app() {
 
         // 【状态机】操作序列号由状态机管理，子开关保留独立序列号
         let keyboardOperationSeq = 0;
-        let mcpOperationSeq = 0;
+
         let userPluginOperationSeq = 0;
 
         // 标记这些 checkbox 有外部处理器
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
-        if (agentMcpCheckbox) agentMcpCheckbox._hasExternalHandler = true;
+
         if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
 
 
@@ -6270,12 +6263,7 @@ function init_app() {
                 caps.computer_use_ready,
                 window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制'
             );
-            applySub(
-                agentMcpCheckbox,
-                flags.mcp_enabled,
-                caps.mcp_ready,
-                window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具'
-            );
+
             applySub(
                 agentUserPluginCheckbox,
                 flags.user_plugin_enabled,
@@ -6290,10 +6278,10 @@ function init_app() {
         const resetSubCheckboxes = () => {
             const names = {
                 'live2d-agent-keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-                'live2d-agent-mcp': window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具',
+
                 'live2d-agent-user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '用户插件'
             };
-            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
@@ -6366,11 +6354,7 @@ function init_app() {
                         agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                         syncCheckboxUI(agentKeyboardCheckbox);
                     }
-                    if (agentMcpCheckbox) {
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
-                        syncCheckboxUI(agentMcpCheckbox);
-                    }
+
                     if (agentUserPluginCheckbox) {
                         agentUserPluginCheckbox.disabled = true;
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
@@ -6392,21 +6376,7 @@ function init_app() {
                             agentKeyboardCheckbox.title = available ? (window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.keyboardControl') }) : '键鼠控制不可用');
                             syncCheckboxUI(agentKeyboardCheckbox);
                         })(),
-                        (async () => {
-                            if (!agentMcpCheckbox) return;
-                            const available = await checkCapability('mcp', false);
-                            // 【防竞态】检查操作序列号和总开关状态
-                            if (isExpired() || !agentMasterCheckbox.checked) {
-                                agentMcpCheckbox.disabled = true;
-                                agentMcpCheckbox.checked = false;
-                                syncCheckboxUI(agentMcpCheckbox);
-                                return;
-                            }
-                            agentMcpCheckbox.disabled = !available;
-                            agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.mcpTools') }) : 'MCP工具不可用');
-                            syncCheckboxUI(agentMcpCheckbox);
 
-                        })(),
                         (async () => {
                             if (!agentUserPluginCheckbox) return;
                             const available = await checkCapability('user_plugin', false);
@@ -6431,7 +6401,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: true, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: true, computer_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
@@ -6496,7 +6466,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: false, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: false, computer_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
 
@@ -6640,15 +6610,7 @@ function init_app() {
             () => ++keyboardOperationSeq
         );
 
-        // MCP工具开关逻辑（传入序列号的getter和setter）
-        setupSubCheckbox(
-            agentMcpCheckbox,
-            'mcp',
-            'mcp_enabled',
-            'mcpTools',
-            () => mcpOperationSeq,
-            () => ++mcpOperationSeq
-        );
+
         // 用户插件开关逻辑（传入序列号的getter和setter）
         setupSubCheckbox(
             agentUserPluginCheckbox,
@@ -6748,20 +6710,7 @@ function init_app() {
                     }
                     syncCheckboxUI(agentUserPluginCheckbox);
                 }
-                if (agentMcpCheckbox) {
-                    if (analyzerEnabled) {
-                        // Agent 已开启，但子开关保持禁用等待能力检查
-                        agentMcpCheckbox.checked = false;
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
-                    } else {
-                        // Agent 未开启，复位子开关
-                        agentMcpCheckbox.checked = false;
-                        agentMcpCheckbox.disabled = true;
-                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', { name: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具' }) : '请先开启Agent总开关';
-                    }
-                    syncCheckboxUI(agentMcpCheckbox);
-                }
+
 
                 if (analyzerEnabled) {
                     setTimeout(() => openAgentStatusPopupWhenEnabled(), 0);
@@ -6811,7 +6760,7 @@ function init_app() {
                 agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                 syncCheckboxUI(agentMasterCheckbox);
             }
-            [agentKeyboardCheckbox, agentMcpCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -6828,7 +6777,7 @@ function init_app() {
                     checkToolServerHealth(),
                     fetch('/api/agent/flags').then(r => r.ok ? r.json() : { success: false }),
                     checkCapability('computer_use', false),
-                    checkCapability('mcp', false),
+
                     checkCapability('user_plugin', false)
                 ]);
 
@@ -6874,14 +6823,7 @@ function init_app() {
                             syncCheckboxUI(agentKeyboardCheckbox);
                         }
 
-                        // MCP工具
-                        if (agentMcpCheckbox) {
-                            const shouldEnable = flags.mcp_enabled && mcpAvailable;
-                            agentMcpCheckbox.checked = shouldEnable;
-                            agentMcpCheckbox.disabled = !mcpAvailable; // 仅当能力不可用时禁用
-                            agentMcpCheckbox.title = mcpAvailable ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.mcpTools') }) : 'MCP工具不可用');
-                            syncCheckboxUI(agentMcpCheckbox);
-                        }
+
 
                         // 用户插件
                         if (agentUserPluginCheckbox) {
@@ -6914,14 +6856,14 @@ function init_app() {
                         window.stopAgentTaskPolling();
 
                         // 立即通知后台关闭全部flags（如果后端状态不一致）
-                        if (flags.computer_use_enabled || flags.mcp_enabled || flags.user_plugin_enabled) {
+                        if (flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled) {
                             console.log('[App] 总开关关闭但检测到子flag开启，强制同步关闭');
                             fetch('/api/agent/flags', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     lanlan_name: lanlan_config.lanlan_name,
-                                    flags: { agent_enabled: false, computer_use_enabled: false, mcp_enabled: false, user_plugin_enabled: false }
+                                    flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
                                 })
                             }).catch(e => console.warn('[App] 强制关闭flags失败:', e));
                         }
@@ -7050,19 +6992,19 @@ function init_app() {
         const masterCheckbox = document.getElementById('live2d-agent-master');
         const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
         const browserCheckbox = document.getElementById('live2d-agent-browser');
-        const mcpCheckbox = document.getElementById('live2d-agent-mcp');
+
         const userPlugin = document.getElementById('live2d-agent-user-plugin');
 
         const domMaster = masterCheckbox && masterCheckbox.checked;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
-            || (mcpCheckbox && mcpCheckbox.checked)
+
             || (userPlugin && userPlugin.checked);
 
         // Cached flags from backend (always the source of truth)
         const flags = window.agentStateMachine && window.agentStateMachine._cachedFlags;
         const flagMaster = flags && !!flags.agent_enabled;
-        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.mcp_enabled || flags.user_plugin_enabled);
+        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
 
         if ((domMaster && domChild) || (flagMaster && flagChild)) {
             window.startAgentTaskPolling();
@@ -7080,7 +7022,7 @@ function init_app() {
         setTimeout(() => {
             const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
             const browserCheckbox = document.getElementById('live2d-agent-browser');
-            const mcpCheckbox = document.getElementById('live2d-agent-mcp');
+
             const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
             if (keyboardCheckbox) {
@@ -7089,9 +7031,7 @@ function init_app() {
             if (browserCheckbox) {
                 browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            if (mcpCheckbox) {
-                mcpCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
+
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }

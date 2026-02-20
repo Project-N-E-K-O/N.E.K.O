@@ -389,6 +389,9 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     const collapseButton = document.createElement('div');
     collapseButton.className = 'collapse-button';
     collapseButton.innerHTML = '▼';
+    // ARIA properties for accessibility
+    collapseButton.setAttribute('role', 'button');
+    collapseButton.setAttribute('aria-expanded', 'true');
     Object.assign(collapseButton.style, {
         position: 'absolute',
         top: '8px',
@@ -396,12 +399,10 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         width: '20px',
         height: '20px',
         borderRadius: '50%',
-        background: 'rgba(68, 183, 254, 0.12)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '10px',
-        color: '#94a3b8',
         cursor: 'pointer',
         transition: 'all 0.2s ease',
         zIndex: '1'
@@ -428,6 +429,58 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     this._setupDragging(hud);
 
     return hud;
+};
+
+// 设置空状态折叠功能
+Live2DManager.prototype._setupCollapseFunctionality = function (emptyState, collapseButton, emptyContent) {
+    const HUD_EMPTY_COLLAPSED_KEY = 'agent-task-empty-collapsed';
+    let isCollapsed = false;
+
+    // 添加类名以匹配CSS规则
+    emptyContent.classList.add('empty-state');
+
+    try {
+        isCollapsed = localStorage.getItem(HUD_EMPTY_COLLAPSED_KEY) === 'true';
+    } catch (e) {
+        console.warn('Failed to read collapsed state', e);
+    }
+
+    const applyState = (collapsed) => {
+        if (collapsed) {
+            collapseButton.classList.add('collapsed');
+            emptyContent.classList.add('collapsed');
+
+            emptyContent.style.maxHeight = '0px';
+            emptyContent.style.opacity = '0';
+            emptyContent.style.margin = '0';
+            emptyContent.style.padding = '0';
+            collapseButton.style.transform = 'rotate(-90deg)';
+
+            collapseButton.setAttribute('aria-expanded', 'false');
+        } else {
+            collapseButton.classList.remove('collapsed');
+            emptyContent.classList.remove('collapsed');
+
+            emptyContent.style.maxHeight = '100px';
+            emptyContent.style.opacity = '1';
+            emptyContent.style.margin = '';
+            emptyContent.style.padding = '20px';
+            collapseButton.style.transform = 'rotate(0deg)';
+
+            collapseButton.setAttribute('aria-expanded', 'true');
+        }
+    };
+
+    applyState(isCollapsed);
+
+    collapseButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        isCollapsed = !isCollapsed;
+        applyState(isCollapsed);
+        try {
+            localStorage.setItem(HUD_EMPTY_COLLAPSED_KEY, String(isCollapsed));
+        } catch (e) { }
+    });
 };
 
 // 显示任务 HUD
@@ -544,7 +597,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
     });
 
     // 任务类型图标
-    const typeIcon = task.source === 'mcp' ? '🔌' : (task.source === 'computer_use' ? '🖱️' : '⚙️');
+    const typeIcon = task.source === 'computer_use' ? '🖱️' : '⚙️';
     const typeName = task.type || task.source || 'unknown';
 
     const typeLabel = document.createElement('span');
