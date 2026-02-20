@@ -2,7 +2,6 @@
 core_config.txt
 test.py
 .venv
-*gitignore
 
 # 忽略日志文件
 *.log

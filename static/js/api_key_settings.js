@@ -1297,10 +1297,14 @@ function toggleModelConfig(modelType) {
         // 折叠
         content.classList.remove('expanded');
         icon.style.transform = 'rotate(0deg)';
+        header.setAttribute('aria-expanded', 'false');
+        content.setAttribute('aria-hidden', 'true');
     } else {
         // 展开
         content.classList.add('expanded');
         icon.style.transform = 'rotate(180deg)';
+        header.setAttribute('aria-expanded', 'true');
+        content.setAttribute('aria-hidden', 'false');
     }
 }
 
@@ -1317,6 +1321,8 @@ document.addEventListener('DOMContentLoaded', function () {
             if (content && icon) {
                 content.classList.remove('expanded');
                 icon.style.transform = 'rotate(0deg)';
+                if (header) header.setAttribute('aria-expanded', 'false');
+                content.setAttribute('aria-hidden', 'true');
             }
         }
     });
