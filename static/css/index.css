@@ -75,22 +75,7 @@ body {
     text-align: center;
 }
 
-/* 添加遮罩层以确保文字可读性（可选） */
-#status-toast::after {
-    content: '';
-    position: absolute;
-    top: -1px;
-    /* 稍微超出，确保完全覆盖 */
-    left: -1px;
-    right: -1px;
-    bottom: -1px;
-    background: rgba(0, 0, 0, 0.1);
-    /* 半透明黑色遮罩，增强文字对比度 */
-    border-radius: 12px;
-    z-index: 0;
-    /* 在背景图片之上，文字和猫爪之下 */
-    pointer-events: none;
-}
+
 
 /* 左上角的小猫爪爪 */
 #status-toast::before {
@@ -173,6 +158,7 @@ body {
         top: 6px;
         left: 10px;
         font-size: 40px;
+        transform: translateY(0);
         /* 增大移动端猫爪图标 */
     }
 
