@@ -208,10 +208,30 @@ async def _handle_agent_event(event: dict):
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
             if text:
-                mgr.pending_extra_replies.append(text)
+                # Build structured callback and enqueue for LLM injection
+                cb_status = event.get("status") or ("completed" if event.get("success", True) else "failed")
+                callback = {
+                    "event": "agent_task_callback",
+                    "task_id": event.get("task_id") or "",
+                    "channel": event.get("channel") or "unknown",
+                    "status": cb_status,
+                    "success": bool(event.get("success", True)),
+                    "summary": event.get("summary") or text,
+                    "detail": event.get("detail") or text,
+                    "error_message": event.get("error_message") or "",
+                    "timestamp": event.get("timestamp") or "",
+                }
+                mgr.enqueue_agent_callback(callback)
+                # Attempt immediate delivery; re-queued automatically if session is busy
+                asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:
-                        await mgr.websocket.send_json({"type": "agent_notification", "text": text, "source": "brain"})
+                        await mgr.websocket.send_json({
+                            "type": "agent_notification",
+                            "text": text,
+                            "source": "brain",
+                            "status": cb_status,
+                        })
                     except Exception:
                         pass
         elif event_type == "task_update":

@@ -432,8 +432,9 @@ class OSWorldACI(ACI):
         # Clipboard paste: only when clicking into a known input element (coords1 set).
         # Handles CJK/special chars correctly and is much faster than key-by-key.
         # Falls back to pyautogui.write() if clipboard paste fails.
+        # Use \n before try: so the snippet is valid when prefixed with "...; " (Python does not allow "stmt; try:" on one line).
         clipboard_type_snippet = (
-            f"try:\n"
+            f"\ntry:\n"
             f"    import pyperclip; pyperclip.copy({repr(text)}); "
             f"pyautogui.hotkey({repr(paste_mod)}, 'v'); "
             f"import time; time.sleep(0.05)\n"

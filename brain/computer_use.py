@@ -1,25 +1,29 @@
 """
-Adapter for Simular Agent-S gui_agents SDK.
-Converts natural-language instructions into Python actions that control the local computer.
+Computer-Use Agent — single-call Thought + Action + Code paradigm.
 
-This adapter exposes two key methods:
-- is_available(): checks environment and config to determine if GUI agents can run
-- run_instruction(instruction, screenshot_bytes=None): executes one-shot instruction
-
-Note: This is a minimal integration. For production, add session/state mgmt and safety prompts.
+Adapted from the Kimi agent pattern (xlang-ai/OSWorld).
+Each step: one VLM call with screenshot → structured thought/action/code → execute.
+The multimodal model handles visual grounding directly in its generated code.
+Supports thinking mode for models that provide it.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import re
 import io
-import platform, os, time
-from PIL import Image
-from langchain_openai import ChatOpenAI
+import base64
+import logging
+import platform
+import os
+import time
+import traceback
+from openai import OpenAI
 from config import get_extra_body
+from utils.config_manager import get_config_manager
 
-# Improve DPI accuracy on Windows to avoid coordinate offsets with pyautogui
+logger = logging.getLogger(__name__)
+
 try:
     if platform.system().lower() == "windows":
-        import ctypes  # type: ignore
+        import ctypes
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
@@ -31,296 +35,369 @@ except Exception:
     pass
 
 try:
-    import pyautogui  # runtime requirement of gui_agents examples
+    import pyautogui
 except Exception:
     pyautogui = None
 
-from utils.config_manager import get_config_manager
 
-def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
-    scale_factor = min(max_dim_size / width, max_dim_size / height)
-    safe_width = int(width * scale_factor)
-    safe_height = int(height * scale_factor)
-    print("safe_width, safe_height:", safe_width, safe_height)
-    return safe_width, safe_height
+# ─── Prompt Templates ───────────────────────────────────────────────────
+
+INSTRUCTION_TEMPLATE = (
+    "# Task:\n{instruction}\n\n"
+    "Generate the next action based on the screenshot, task, "
+    "and previous steps (if any).\n"
+)
+
+# The model is NOT fine-tuned for this format, so we provide full scaffolding:
+# detailed action API docs, structured output sections, rules, and tips.
+SYSTEM_PROMPT_TEMPLATE = """\
+You are an expert GUI automation agent. You control a {platform} computer by \
+observing screenshots and generating executable Python code using the pyautogui library.
+
+## Coordinate System
+
+All coordinate arguments (x, y) are integers in the range [0, 999]:
+- (0, 0) = top-left corner of the screen
+- (999, 999) = bottom-right corner of the screen
+- (500, 500) = center of the screen
+
+For example, to click the center of the screen: pyautogui.click(500, 500)
+
+## Available Actions
+
+### Mouse
+```
+pyautogui.click(x, y, clicks=1, interval=0.0, button='left')
+    Click at position (x, y). button: 'left' | 'right' | 'middle'.
+
+pyautogui.doubleClick(x, y)
+    Double-click at position (x, y).
+
+pyautogui.rightClick(x, y)
+    Right-click at position (x, y).
+
+pyautogui.moveTo(x, y, duration=0.0)
+    Move the mouse cursor to position (x, y).
+
+pyautogui.dragTo(x, y, duration=0.5, button='left')
+    Click-and-drag from current position to position (x, y).
+
+pyautogui.scroll(clicks, x=None, y=None)
+    Scroll the mouse wheel. Positive = up, negative = down.
+    If x, y given, move there first.
+```
+
+### Keyboard
+```
+pyautogui.write("text")
+    Type text. Works with any language including CJK / Unicode.
+
+pyautogui.press("key")
+    Press and release a single key.
+    Keys: enter, tab, escape, backspace, delete, space,
+    up, down, left, right, home, end, pageup, pagedown, f1-f12, etc.
+
+pyautogui.hotkey("modifier", "key")
+    Key combination. Examples:
+    hotkey("ctrl", "c"), hotkey("alt", "f4"), hotkey("win", "r"),
+    hotkey("ctrl", "shift", "esc"), hotkey("ctrl", "a").
+```
+
+### Utility
+```
+time.sleep(seconds)
+    Pause execution. Use for waiting for animations / page loads.
+```
+
+## Special Control Actions
+
+Wait for something to load:
+```code
+computer.wait(seconds=5)
+```
+
+Task completed successfully:
+```code
+computer.terminate(status="success", answer="Brief summary of accomplishment")
+```
+
+Task failed after reasonable attempts:
+```code
+computer.terminate(status="failure", answer="Why it failed")
+```
+
+## Response Format
+
+For EACH step, you MUST output ALL sections in this exact order:
+
+```
+## Verification
+(Skip on the first step.)
+Check whether your previous action succeeded based on the new screenshot.
+If it failed, explain why and adjust your approach.
+
+## Observation
+Describe the current state of the screen: open applications, visible UI
+elements, text, dialog boxes, etc.
+
+## Thought
+Analyze the situation, reason about which UI element to target, and
+plan your next action step by step.
+
+## Action
+One-sentence description of what you will do.
+
+## Code
+```python
+pyautogui.click(742, 356)
+```
+```
+
+## Rules
+1. ONE action per step — exactly one pyautogui call or one special action.
+2. All coordinates MUST be integers in [0, 999].
+3. LOOK CAREFULLY at the screenshot to locate the exact target element.
+4. Prefer keyboard shortcuts when efficient (Ctrl+C, Ctrl+V, Alt+Tab, etc.).
+5. Call computer.terminate(status="success") AS SOON AS the task is done.
+6. Call computer.terminate(status="failure") if stuck after multiple tries.
+7. Output exactly ONE code block. No more.
+8. Do NOT repeat a failing action — try a different approach.
+9. On {platform}, use platform-appropriate shortcuts and paths.
+"""
+
+STEP_TEMPLATE = "# Step {step_num}:\n"
+
+HISTORY_TEMPLATE_THINKING = "{thought}## Action:\n{action}\n"
+HISTORY_TEMPLATE_NON_THINKING = "## Thought:\n{thought}\n\n## Action:\n{action}\n"
+
+
+# ─── Response Parser ────────────────────────────────────────────────────
+
+def parse_response(
+    response_content: str, reasoning_content: Optional[str] = None
+) -> Dict[str, str]:
+    """Parse structured VLM response into thought / action / code.
+
+    In thinking mode the thought comes from *reasoning_content*; the
+    visible *response_content* starts at ``## Action``.
+    """
+    result: Dict[str, str] = {
+        "thought": "", "action": "", "code": "", "raw": response_content,
+    }
+    text = response_content.lstrip()
+
+    # Thought
+    if reasoning_content:
+        result["thought"] = reasoning_content.strip()
+        m = re.search(r"^##\s*Action\b", text, flags=re.MULTILINE)
+        if m:
+            text = text[m.start():]
+    else:
+        m = re.search(
+            r"##\s*Thought\s*:?\s*[\n\r]+(.*?)(?=##\s*Action|##\s*Code|$)",
+            text, re.DOTALL,
+        )
+        if m:
+            result["thought"] = m.group(1).strip()
+
+    # Action
+    m = re.search(
+        r"##\s*Action\s*:?\s*[\n\r]+(.*?)(?=##\s*Code|```|$)",
+        text, re.DOTALL,
+    )
+    if m:
+        result["action"] = m.group(1).strip()
+
+    # Code (last block)
+    code_blocks = re.findall(
+        r"```(?:python|code)?\s*\n?(.*?)\s*```", text, re.DOTALL
+    )
+    if code_blocks:
+        result["code"] = code_blocks[-1].strip()
+
+    return result
+
+
+# ─── Coordinate-scaling proxy ───────────────────────────────────────────
 
 class _ScaledPyAutoGUI:
+    """Projects [0, 999] model coordinates to physical screen pixels.
+
+    If both x and y are in [0, 999] they are scaled to screen dimensions.
+    Values > 999 are passed through as absolute pixel coordinates.
     """
-    Lightweight proxy to scale coordinates from a logical (scaled) space
-    back to the physical screen coordinates before delegating to pyautogui.
-    Only wraps common absolute-coordinate mouse functions used by agents.
-    """
-    def __init__(self, backend, scale_x: float, scale_y: float):
+
+    _COORD_MAX = 999
+
+    def __init__(self, backend, screen_w: int, screen_h: int):
         self._backend = backend
-        self._scale_x = scale_x
-        self._scale_y = scale_y
+        self._w = screen_w
+        self._h = screen_h
 
     def __getattr__(self, name):
-        # Fallback for all other attributes/methods
         return getattr(self._backend, name)
 
-    def _scale_xy_from_args(self, args, kwargs):
-        # Returns (new_args, new_kwargs) with x,y scaled when present
-        if len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)):
-            x = int(round(args[0] * self._scale_x))
-            y = int(round(args[1] * self._scale_y))
-            args = (x, y) + tuple(args[2:])
-        elif len(args) >= 1 and isinstance(args[0], (tuple, list)) and len(args[0]) == 2:
-            x_raw, y_raw = args[0]
-            if isinstance(x_raw, (int, float)) and isinstance(y_raw, (int, float)):
-                x = int(round(x_raw * self._scale_x))
-                y = int(round(y_raw * self._scale_y))
-                args = ((x, y),) + tuple(args[1:])
-        else:
-            # Try kwargs variant
-            if 'x' in kwargs and 'y' in kwargs and isinstance(kwargs['x'], (int, float)) and isinstance(kwargs['y'], (int, float)):
-                kwargs = dict(kwargs)
-                kwargs['x'] = int(round(kwargs['x'] * self._scale_x))
-                kwargs['y'] = int(round(kwargs['y'] * self._scale_y))
+    def _in_range(self, x, y) -> bool:
+        return (
+            isinstance(x, (int, float)) and isinstance(y, (int, float))
+            and 0 <= x <= self._COORD_MAX and 0 <= y <= self._COORD_MAX
+        )
+
+    def _project(self, args, kwargs):
+        if (
+            len(args) >= 2
+            and isinstance(args[0], (int, float))
+            and isinstance(args[1], (int, float))
+        ):
+            x, y = args[0], args[1]
+            if self._in_range(x, y):
+                x = int(round(x * self._w / self._COORD_MAX))
+                y = int(round(y * self._h / self._COORD_MAX))
+            else:
+                x, y = int(round(x)), int(round(y))
+            return (x, y) + tuple(args[2:]), kwargs
+        if "x" in kwargs and "y" in kwargs:
+            kw = dict(kwargs)
+            x, y = kw["x"], kw["y"]
+            if self._in_range(x, y):
+                kw["x"] = int(round(x * self._w / self._COORD_MAX))
+                kw["y"] = int(round(y * self._h / self._COORD_MAX))
+            else:
+                kw["x"] = int(round(x))
+                kw["y"] = int(round(y))
+            return args, kw
         return args, kwargs
 
-    # Wrapped absolute-coordinate mouse APIs
-    def moveTo(self, *args, **kwargs):
-        args, kwargs = self._scale_xy_from_args(args, kwargs)
-        return self._backend.moveTo(*args, **kwargs)
+    def click(self, *a, **kw):
+        a, kw = self._project(a, kw)
+        return self._backend.click(*a, **kw)
 
-    def click(self, *args, **kwargs):
-        args, kwargs = self._scale_xy_from_args(args, kwargs)
-        return self._backend.click(*args, **kwargs)
+    def doubleClick(self, *a, **kw):
+        a, kw = self._project(a, kw)
+        return self._backend.doubleClick(*a, **kw)
 
-    def doubleClick(self, *args, **kwargs):
-        args, kwargs = self._scale_xy_from_args(args, kwargs)
-        return self._backend.doubleClick(*args, **kwargs)
+    def rightClick(self, *a, **kw):
+        a, kw = self._project(a, kw)
+        return self._backend.rightClick(*a, **kw)
 
-    def rightClick(self, *args, **kwargs):
-        args, kwargs = self._scale_xy_from_args(args, kwargs)
-        return self._backend.rightClick(*args, **kwargs)
+    def moveTo(self, *a, **kw):
+        a, kw = self._project(a, kw)
+        return self._backend.moveTo(*a, **kw)
 
-    def dragTo(self, *args, **kwargs):
-        args, kwargs = self._scale_xy_from_args(args, kwargs)
-        return self._backend.dragTo(*args, **kwargs)
+    def dragTo(self, *a, **kw):
+        a, kw = self._project(a, kw)
+        return self._backend.dragTo(*a, **kw)
+
+    def _clipboard_type(self, text: str):
+        """Type text via clipboard paste — handles CJK / Unicode reliably."""
+        import pyperclip
+        paste_key = "command" if platform.system() == "Darwin" else "ctrl"
+        pyperclip.copy(text)
+        self._backend.hotkey(paste_key, "v")
+        time.sleep(0.05)
+
+    def write(self, text, *a, **kw):
+        try:
+            self._clipboard_type(str(text))
+        except Exception:
+            self._backend.write(text, *a, **kw)
+
+    def typewrite(self, text, *a, **kw):
+        self.write(text, *a, **kw)
+
+
+# ─── Main Adapter ───────────────────────────────────────────────────────
 
 class ComputerUseAdapter:
-    def __init__(self):
+    """GUI automation agent: single-call Thought + Action + Code paradigm.
+
+    Follows the Kimi agent architecture (predict / reset / call_llm /
+    history management) with full prompt scaffolding for untrained models.
+    """
+
+    def __init__(
+        self,
+        max_steps: int = 50,
+        max_image_history: int = 3,
+        max_tokens: int = 4096,
+        thinking: bool = True,
+    ):
         self.last_error: Optional[str] = None
-        self.agent = None
-        self.grounding_agent = None
         self.init_ok = False
-        # 初始化默认屏幕尺寸（避免在无显示器环境如 Docker 中出错）
+        self.max_steps = max_steps
+        self.max_image_history = max_image_history
+        self.max_tokens = max_tokens
+        self.thinking = thinking
+
+        # Screen dimensions
         self.screen_width, self.screen_height = 1920, 1080
-        self.scaled_width, self.scaled_height = 1920, 1080
-        self.scale_x, self.scale_y = 1.0, 1.0
-        # 获取配置
+
+        # LLM
+        self._llm_client: Optional[OpenAI] = None
         self._config_manager = get_config_manager()
-        self._agent_model_cfg = self._config_manager.get_model_api_config('agent')
+        self._agent_model_cfg = self._config_manager.get_model_api_config("agent")
+
+        self._history_template = (
+            HISTORY_TEMPLATE_THINKING if self.thinking
+            else HISTORY_TEMPLATE_NON_THINKING
+        )
+
+        # Kimi-style agent state
+        self._current_session_id: Optional[str] = None
+        self.actions: List[str] = []
+        self.observations: List[bytes] = []
+        self.cots: List[Dict[str, str]] = []
+
         try:
-            from brain.cua.agents.grounding import OSWorldACI
-            # Monkey patch: adjust Windows docstring without modifying site-packages
-            OSWorldACI.open.__doc__ = (
-                "Open any application or file with name app_or_filename. "
-                "Use this ONLY on Linux/Darwin platform. Do NOT use this on Windows."
-            )
-            # Monkey patch: click center of bbox if grounding model outputs a box
-            try:
-                from brain.cua.utils.common_utils import call_llm_safe
-
-                def _patched_generate_coords(self, ref_expr: str, obs: Dict) -> list[int]:
-                    self.grounding_model.reset()
-                    # Prefer GLM-4.5V Grounding box tokens when available
-                    prompt = (
-                        "Locate the referenced target in the screenshot: "
-                        f"{ref_expr}\n"
-                        "If possible, output a bounding box using [x1, y1, x2, y2]. "
-                        "Coordinates must be normalized in the range 0..1000 (x is horizontal, y is vertical; top-left to bottom-right).\n"
-                        "If a box is not suitable, output exactly two pixel coordinates: x,y. Do not include any explanations or extra text."
-                    )
-                    self.grounding_model.add_message(
-                        text_content=prompt, image_content=obs["screenshot"], put_text_last=True
-                    )
-                    response = call_llm_safe(self.grounding_model)
-                    print("RAW GROUNDING MODEL RESPONSE:", response)
-                    # First, try to parse GLM-4.5V grounding tokens
-                    try:
-                        box_match = re.search(r"<\|begin_of_box\|>([\s\S]*?)<\|end_of_box\|>", response)
-                        if box_match:
-                            inner = box_match.group(1)
-                            nums = re.findall(r"-?\d+\.?\d*", inner)
-                            values = [float(n) for n in nums]
-                            if len(values) >= 4:
-                                x1, y1, x2, y2 = values[:4]
-                                # clamp to [0,1000]
-                                def clamp_0_1000(v: float) -> float:
-                                    return 0.0 if v < 0 else 1000.0 if v > 1000 else v
-                                x1, y1, x2, y2 = map(clamp_0_1000, (x1, y1, x2, y2))
-                                cx = (x1 + x2) / 2.0
-                                cy = (y1 + y2) / 2.0
-                                w = getattr(self, "width", None) or 1000
-                                h = getattr(self, "height", None) or 1000
-                                x_px = int(round(cx / 1000.0 * w))
-                                y_px = int(round(cy / 1000.0 * h))
-                                return [x_px, y_px]
-                    except Exception:
-                        pass
-
-                    # Fallbacks: parse numericals directly
-                    numericals = [int(float(x)) for x in re.findall(r"-?\d+\.?\d*", response)]
-                    if len(numericals) >= 4:
-                        x1, y1, x2, y2 = numericals[:4]
-                        if max(x1, y1, x2, y2) <= 1000:
-                            w = getattr(self, "width", None) or 1000
-                            h = getattr(self, "height", None) or 1000
-                            cx = (x1 + x2) / 2.0
-                            cy = (y1 + y2) / 2.0
-                            return [int(round(cx / 1000.0 * w)), int(round(cy / 1000.0 * h))]
-                        return [(x1 + x2) // 2, (y1 + y2) // 2]
-                    assert len(numericals) >= 2
-                    x, y = numericals[0], numericals[1]
-                    if x <= 1000 and y <= 1000:
-                        w = getattr(self, "width", None) or 1000
-                        h = getattr(self, "height", None) or 1000
-                        return [int(round(x / 1000.0 * w)), int(round(y / 1000.0 * h))]
-                    return [x, y]
-
-                OSWorldACI.generate_coords = _patched_generate_coords
-            except Exception:
-                pass
-            # Monkey patch: make assign_coordinates tolerant to non-coordinate actions
-            try:
-                from brain.cua.utils.common_utils import parse_single_code_from_string
-
-                def _patched_assign_coordinates(self, plan: str, obs: Dict):
-                    # Reset previous coords
-                    self.coords1, self.coords2 = None, None
-                    try:
-                        segment = plan.split("Grounded Action")[-1]
-                        try:
-                            action = parse_single_code_from_string(segment)
-                        except Exception:
-                            action = segment
-                        match = re.search(r"(agent\.[a-zA-Z_]+)\(", action)
-                        if not match:
-                            # No recognizable agent function → nothing to ground
-                            return
-                        function_name = match.group(1)
-                        args = self.parse_function_args(action)
-                    except Exception:
-                        # If parsing fails, skip grounding instead of raising
-                        return
-
-                    try:
-                        # Heuristic: if clicking numeric key (e.g., calculator digits), try OCR-first
-                        if (
-                            function_name == "agent.click"
-                            and len(args) >= 1
-                            and args[0] is not None
-                        ):
-                            digit_match = re.search(r"(?<!\d)(\d)(?!\d)", str(args[0]))
-                            if digit_match:
-                                digit = digit_match.group(1)
-                                try:
-                                    _, ocr_elements = self.get_ocr_elements(obs["screenshot"])
-                                    digit_elems = [e for e in ocr_elements if str(e.get("text", "")).strip() == digit]
-                                    if digit_elems:
-                                        # Prefer the lowest one on screen (calculator keypad bottom rows)
-                                        best = max(digit_elems, key=lambda e: e["top"])
-                                        cx = best["left"] + (best["width"] // 2)
-                                        cy = best["top"] + (best["height"] // 2)
-                                        self.coords1 = [cx, cy]
-                                        return
-                                except Exception:
-                                    pass
-                        
-                        if (
-                            function_name in ["agent.click", "agent.type", "agent.scroll"]
-                            and len(args) >= 1
-                            and args[0] is not None
-                        ):
-                            self.coords1 = self.generate_coords(args[0], obs)
-                        elif function_name == "agent.drag_and_drop" and len(args) >= 2:
-                            self.coords1 = self.generate_coords(args[0], obs)
-                            self.coords2 = self.generate_coords(args[1], obs)
-                        elif function_name == "agent.highlight_text_span" and len(args) >= 2:
-                            self.coords1 = self.generate_text_coords(args[0], obs, alignment="start")
-                            self.coords2 = self.generate_text_coords(args[1], obs, alignment="end")
-                        # else: functions that do not require coordinates
-                    except Exception:
-                        # On any failure, avoid raising to keep executor progressing
-                        self.coords1, self.coords2 = None, None
-                        return
-
-                OSWorldACI.assign_coordinates = _patched_assign_coordinates
-            except Exception:
-                # If monkey patching fails, continue with the original behavior
-                pass
-            from brain.cua.agents.agent_s import AgentS2_5
             if pyautogui is None:
-                # 无显示器环境（如 Docker），GUI agent 无法工作
-                self.last_error = "pyautogui not available (no display). GUI agent cannot run in headless environment."
-                print("GUI agent unavailable: pyautogui requires a display")
-                return  # 直接返回，不继续初始化
-            
-            self.screen_width, self.screen_height = pyautogui.size()
-            print("screen_width, screen_height:", self.screen_width, self.screen_height)
-            self.scaled_width, self.scaled_height = self.screen_width, self.screen_height#scale_screen_dimensions(self.screen_width, self.screen_height, max_dim_size=1920)
-            # Precompute scale factors from logical (scaled) space -> physical screen
-            self.scale_x = self.screen_width / max(1, self.scaled_width)
-            self.scale_y = self.screen_height / max(1, self.scaled_height)
+                self.last_error = "pyautogui not available (no display)"
+                return
 
-            engine_params, engine_params_for_grounding = self._build_params()
-            self.grounding_agent = OSWorldACI(
-                platform=platform.system().lower(),
-                engine_params_for_generation=engine_params,
-                engine_params_for_grounding=engine_params_for_grounding,
-                width=self.scaled_width,
-                height=self.scaled_height,
+            self.screen_width, self.screen_height = pyautogui.size()
+
+            self._system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+                platform=platform.system(),
             )
-            self.agent = AgentS2_5(
-                engine_params,
-                self.grounding_agent,
-                platform=platform.system().lower(),
-                max_trajectory_length=3,
-                enable_reflection=False,
-            )
-            # Connectivity check for grounding model via ChatOpenAI
-            try:
-                self._agent_model_cfg = self._config_manager.get_model_api_config('agent')
-                api_key = self._agent_model_cfg.get('api_key') or None
-                ground_model = self._agent_model_cfg.get('model', '')
-                test_llm = ChatOpenAI(
-                    model=ground_model,
-                    base_url=self._agent_model_cfg.get('base_url', ''),
-                    api_key=api_key,
-                    temperature=0,
-                    extra_body=get_extra_body(ground_model) or None
-                ).bind(max_tokens=5)
-                _ = test_llm.invoke("ok").content
-                self.init_ok = True
-            except Exception as e:
-                self.last_error = f"GUI Grounding model initialization failed: {e}"
-                print("GUI Grounding model initialization failed:", e)
-                try:
-                    if self.grounding_agent is not None:
-                        setattr(self.grounding_agent, "grounding_model", None)
-                except Exception:
-                    pass
-                self.init_ok = False
+
+            api_key = self._agent_model_cfg.get("api_key") or "EMPTY"
+            base_url = self._agent_model_cfg.get("base_url", "")
+            model = self._agent_model_cfg.get("model", "")
+            if not base_url or not model:
+                self.last_error = "Agent model not configured"
+                return
+
+            self._llm_client = OpenAI(base_url=base_url, api_key=api_key)
+
+            # Connectivity test (via langchain for compatibility with extra_body)
+            from langchain_openai import ChatOpenAI
+            test_llm = ChatOpenAI(
+                model=model, base_url=base_url, api_key=api_key,
+                temperature=0,
+                extra_body=get_extra_body(model) or None,
+            ).bind(max_tokens=5)
+            _ = test_llm.invoke("ok").content
+            self.init_ok = True
         except Exception as e:
             self.last_error = str(e)
-            print("Failed to initialize gui_agents. ", e)
+            logger.error("ComputerUseAdapter init failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     def is_available(self) -> Dict[str, Any]:
+        model_cfg = self._config_manager.get_model_api_config("agent")
         ok = True
-        reasons = []
-        model_cfg = self._config_manager.get_model_api_config('agent')
-        if not model_cfg.get('base_url') or not model_cfg.get('model'):
+        reasons: List[str] = []
+        if not model_cfg.get("base_url") or not model_cfg.get("model"):
             ok = False
-            reasons.append("Grounding endpoint not configured")
+            reasons.append("Agent endpoint not configured")
         if pyautogui is None:
             ok = False
             reasons.append("pyautogui not installed")
-        if not getattr(self, "init_ok", False):
+        if not self.init_ok:
             ok = False
-            msg = "gui_agents not initialized"
+            msg = "Agent not initialized"
             if self.last_error:
                 msg += f": {self.last_error}"
             reasons.append(msg)
@@ -329,122 +406,253 @@ class ComputerUseAdapter:
             "ready": ok,
             "reasons": reasons,
             "provider": "openai",
-            "model": model_cfg.get('model', ''),
-            "ground_provider": "openai",
-            "ground_model": model_cfg.get('model', ''),
+            "model": model_cfg.get("model", ""),
         }
 
-    def _build_params(self) -> Dict[str, Any]:
-        model_cfg = self._config_manager.get_model_api_config('agent')
-        engine_params = {
-            "engine_type": "openai",
-            "model": model_cfg.get('model', ''),
-            "base_url": model_cfg.get('base_url', '') or "",
-            "api_key": model_cfg.get('api_key', '') or "",
-            "thinking": False,
-            "extra_body": {"thinking": { "type": "disabled"}}
-        }
-        engine_params_for_grounding = {
-            "engine_type": "openai",
-            "model": model_cfg.get('model', ''),
-            "base_url": model_cfg.get('base_url', ''),
-            "api_key": model_cfg.get('api_key', '') or "",
-            "grounding_width": self.scaled_width,
-            "grounding_height": self.scaled_height,
-            "thinking": False,
-            "extra_body": {"thinking": { "type": "disabled"}}
-        }
-        return engine_params, engine_params_for_grounding
+    def reset(self):
+        """Reset agent state for a new task."""
+        self.actions.clear()
+        self.observations.clear()
+        self.cots.clear()
 
-    def _take_screenshot(self) -> Optional[bytes]:
-        if pyautogui is None:
-            return None
-        shot = pyautogui.screenshot()
-        buf = io.BytesIO()
-        shot.save(buf, format="PNG")
-        return buf.getvalue()
+    def predict(
+        self, instruction: str, obs: Dict[str, Any]
+    ) -> Tuple[Dict[str, str], str]:
+        """Single-step prediction following the Kimi agent pattern.
 
-    def run_instruction(self, instruction: str, session_id: Optional[str] = None):
-        """Execute a natural-language instruction via GUI automation.
+        Builds the multi-turn message array (system → history → current
+        screenshot), calls the VLM once, and parses the structured response
+        into thought / action / executable code.
 
         Args:
-            instruction: What to do (e.g. "打开系统计算器").
-            session_id: If provided and matches the current session, agent
-                state is preserved for multi-turn execution.  Otherwise the
-                agent is reset to avoid cross-task state pollution.
-        """
-        if not self.agent:
-            return {"success": False, "error": "computer-use agent not initialized"}
+            instruction: Natural-language task description.
+            obs: ``{"screenshot": <PNG bytes>}``
 
-        # Reset agent state for a fresh task unless continuing a session
-        if session_id is None or session_id != getattr(self, "_current_session_id", None):
-            self.agent.reset()
+        Returns:
+            ``(info_dict, executable_code_string)``
+        """
+        step_num = len(self.actions) + 1
+        screenshot_bytes: bytes = obs["screenshot"]
+
+        # ── Build messages ───────────────────────────────────────────
+        messages: list = [{"role": "system", "content": self._system_prompt}]
+
+        instruction_prompt = INSTRUCTION_TEMPLATE.format(instruction=instruction)
+
+        n = len(self.actions)
+        text_parts: List[str] = []
+
+        for i in range(n):
+            b64 = base64.b64encode(self.observations[i]).decode("utf-8")
+            step_text = (
+                STEP_TEMPLATE.format(step_num=i + 1)
+                + self._history_template.format(
+                    thought=self.cots[i].get("thought", ""),
+                    action=self.cots[i].get("action", ""),
+                )
+            )
+            # Recent steps: keep the screenshot image
+            if i > n - self.max_image_history:
+                if text_parts:
+                    messages.append({
+                        "role": "assistant",
+                        "content": "\n".join(text_parts),
+                    })
+                    text_parts = []
+                messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{b64}",
+                        },
+                    }],
+                })
+                messages.append({"role": "assistant", "content": step_text})
+            else:
+                # Older steps: text only (images dropped to save context)
+                text_parts.append(step_text)
+                if i == n - self.max_image_history:
+                    messages.append({
+                        "role": "assistant",
+                        "content": "\n".join(text_parts),
+                    })
+                    text_parts = []
+
+        if text_parts:
+            messages.append({
+                "role": "assistant",
+                "content": "\n".join(text_parts),
+            })
+
+        # Current screenshot + task prompt
+        cur_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{cur_b64}"},
+                },
+                {"type": "text", "text": instruction_prompt},
+            ],
+        })
+
+        # ── Call LLM ─────────────────────────────────────────────────
+        parsed = self._call_llm(messages)
+        code = parsed.get("code", "")
+        thought = parsed.get("thought", "")
+        action = parsed.get("action", "")
+
+        print("[CUA] Step %d — %s", step_num, action[:120])
+
+        # ── Update agent state ───────────────────────────────────────
+        self.observations.append(screenshot_bytes)
+        self.actions.append(action)
+        self.cots.append(parsed)
+
+        # Force termination at step limit
+        if step_num >= self.max_steps and "computer.terminate" not in code.lower():
+            logger.warning(
+                "Reached max steps %d. Forcing termination.", self.max_steps
+            )
+            code = (
+                'computer.terminate(status="failure", '
+                'answer="Reached maximum step limit")'
+            )
+
+        return {"thought": thought, "action": action, "code": code}, code
+
+    def run_instruction(
+        self, instruction: str, session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Execute a natural-language instruction via GUI automation.
+
+        Main loop: screenshot → predict → execute → repeat.
+
+        Returns:
+            ``{"success": bool, "result": str, "steps": int}``
+            (plus ``"error"`` on exception).
+        """
+        if not self._llm_client:
+            return {"success": False, "error": "Agent not initialized"}
+
+        if session_id is None or session_id != self._current_session_id:
+            self.reset()
             self._current_session_id = session_id
 
+        last_action = ""
+        success = False
+        answer = ""
+
         try:
-            obs = {}
-            traj = "Task:\n" + instruction
-            for _ in range(15):
-                # Get screen shot using pyautogui
-                screenshot = pyautogui.screenshot()
-                screenshot = screenshot.resize((self.scaled_width, self.scaled_height), Image.LANCZOS)
+            for step in range(1, self.max_steps + 1):
+                # Screenshot → PNG bytes (native resolution, no resize)
+                shot = pyautogui.screenshot()
+                buf = io.BytesIO()
+                shot.save(buf, format="PNG")
 
-                # Save the screenshot to a BytesIO object
-                buffered = io.BytesIO()
-                screenshot.save(buffered, format="PNG")
+                info, code = self.predict(instruction, {"screenshot": buf.getvalue()})
 
-                # Get the byte value of the screenshot
-                screenshot_bytes = buffered.getvalue()
-                # Convert to base64 string.
-                obs["screenshot"] = screenshot_bytes
-
-                # Get next action code from the agent
-                info, code = self.agent.predict(instruction=instruction, observation=obs)
-                print("EXECUTING CODE:", code[0])
-                if code[0] == None:
+                if not code:
                     continue
 
-                if "done" in code[0].lower() or "fail" in code[0].lower():
-                    if platform.system() == "Darwin":
-                        os.system(
-                            f'osascript -e \'display dialog "Task Completed" with title "OpenACI Agent" buttons "OK" default button "OK"\''
-                        )
-                    elif platform.system() == "Linux":
-                        os.system(
-                            f'zenity --info --title="OpenACI Agent" --text="Task Completed" --width=200 --height=100'
-                        )
+                last_action = info.get("action", "")
+                code_lower = code.lower()
 
+                # ── Special actions ──────────────────────────────────
+                if "computer.terminate" in code_lower:
+                    success = "success" in code_lower
+                    m = re.search(
+                        r'answer\s*=\s*["\'](.+?)["\']', code, re.DOTALL
+                    )
+                    answer = m.group(1) if m else last_action
                     break
 
-                if "next" in code[0].lower():
+                if "computer.wait" in code_lower:
+                    m = re.search(r"seconds\s*=\s*(\d+)", code)
+                    wait_s = int(m.group(1)) if m else 5
+                    time.sleep(min(wait_s, 30))
                     continue
 
-                if "wait" in code[0].lower():
-                    time.sleep(3)
-                    continue
+                # ── Execute pyautogui code ───────────────────────────
+                try:
+                    exec_env: dict = {"__builtins__": __builtins__}
+                    exec_env["pyautogui"] = _ScaledPyAutoGUI(
+                        pyautogui, self.screen_width, self.screen_height
+                    )
+                    exec_env["time"] = time
+                    exec_env["os"] = os
+                    exec(code, exec_env)
+                    time.sleep(0.3)
+                except Exception as e:
+                    logger.warning(
+                        "[CUA] Exec error step %d: %s\nCode: %s", step, e, code
+                    )
+                    time.sleep(0.3)
+            else:
+                answer = f"Reached {self.max_steps} steps without completion"
+                success = False
 
-                else:
-                    time.sleep(0.1)
-                    # print("EXECUTING CODE:", code[0])
-
-                    # Ask for permission before executing
-                    # Inject scaled pyautogui so that logical coords map to physical screen
-                    exec_env = globals().copy()
-                    if pyautogui is not None and hasattr(self, 'scale_x') and hasattr(self, 'scale_y'):
-                        exec_env['pyautogui'] = _ScaledPyAutoGUI(pyautogui, self.scale_x, self.scale_y)
-                    exec(code[0], exec_env, exec_env)
-                    time.sleep(0.5)
-
-                    # Update task and subtask trajectories
-                    if "reflection" in info and "executor_plan" in info:
-                        traj += (
-                            "\n\nReflection:\n"
-                            + str(info["reflection"])
-                            + "\n\n----------------------\n\nPlan:\n"
-                            + info["executor_plan"]
-                        )
         except Exception as e:
-            print("ERROR:", e)
+            logger.error(
+                "[CUA] run_instruction error: %s\n%s", e, traceback.format_exc()
+            )
             return {"success": False, "error": str(e)}
 
+        return {
+            "success": success,
+            "result": answer or last_action,
+            "steps": len(self.actions),
+        }
 
+    # ------------------------------------------------------------------
+    # LLM call
+    # ------------------------------------------------------------------
+
+    def _thinking_extra_body(self) -> dict:
+        """Provider-aware extra_body to enable thinking."""
+        base_url = (self._agent_model_cfg.get("base_url") or "").lower()
+        if "anthropic" in base_url:
+            return {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+        if "googleapis" in base_url or "gemini" in base_url:
+            return {"google": {"thinking_config": {"thinking_level": "high"}}}
+        return {"enable_thinking": True}
+
+    def _call_llm(self, messages: list) -> Dict[str, str]:
+        """Call the VLM with retry, return parsed response."""
+        model = self._agent_model_cfg.get("model", "")
+        extra = (
+            self._thinking_extra_body()
+            if self.thinking
+            else (get_extra_body(model) or {})
+        )
+
+        for attempt in range(3):
+            try:
+                resp = self._llm_client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_completion_tokens=self.max_tokens,
+                    temperature=1.0,
+                    extra_body=extra or None,
+                )
+                msg = resp.choices[0].message
+                content = msg.content or ""
+                reasoning = getattr(msg, "reasoning_content", None)
+
+                parsed = parse_response(
+                    content, reasoning if self.thinking else None
+                )
+                if parsed["code"]:
+                    return parsed
+
+                logger.warning(
+                    "[CUA] No code (attempt %d): %.300s", attempt + 1, content
+                )
+            except Exception as e:
+                logger.error("[CUA] LLM error (attempt %d): %s", attempt + 1, e)
+                if attempt < 2:
+                    time.sleep(2)
+
+        return {"thought": "", "action": "", "code": "", "raw": ""}

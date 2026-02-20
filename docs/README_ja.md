@@ -184,7 +184,7 @@ networks:
 
 #### API Keyの設定
 
-追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます（コアAPIは**Realtime APIに対応している必要があります**）。本プロジェクトは現在 *StepFun* または *Alibaba Cloud* の使用を推奨しています。`http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。**2026年春により多くの国際サービスプロバイダーに対応予定です。**
+追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます（コアAPIは**Realtime APIに対応している必要があります**）。本プロジェクトは現在 *Gemini*, *OpenAI*, *StepFun* または *Alibaba Cloud* の使用を推奨しています。`http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。
 
 > *Alibaba Cloud API*の取得：Alibaba CloudのBailian Platform[公式サイト](https://bailian.console.aliyun.com/)でアカウント登録します。新規ユーザーは実名認証後に大量の無料クレジットを取得できます。登録完了後、[コンソール](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)にアクセスしてAPI Keyを取得してください。
 
@@ -243,23 +243,17 @@ N.E.K.O/
 
 本プロジェクトの環境依存は非常にシンプルです。`python3.11`環境で`pip install -r requirements.txt`または`uv sync`を実行してください。開発者はQQグループ1022939659への参加をお勧めします。猫娘の名前はプロジェクトタイトルにあります。
 
-開発者向け詳細起動手順：(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`または`uv sync`を実行して依存関係をインストール。(3)`python memory_server.py`、`python main_server.py`（オプション：`python agent_server.py`）を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。
+開発者向け詳細起動手順：(1)新しい`python3.11`環境を作成。(2)`uv sync`を実行して依存関係をインストール。(3)`uv run python memory_server.py`、`uv run python main_server.py`（オプション：`uv run python agent_server.py`）を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。
 
 
 ### TODO リスト（開発計画）
 
-- memory serverの既存の意味インデックス部分を改善；既存のsettings update機能を公開。
+v0.7: Agent関連機能の改善。完了予定：2月。
 
-- 既存の能動的対話機能を改善。
+v0.8：記憶関連機能の改善、OpenClaw類似機能の改善。完了予定：3月。
 
-- フロントエンドをReactでリファクタリングし、スマートフォン独立実行版を準備。
+v0.9：Linux、スマートフォンを含むマルチシステム対応の改善。猫娘ネットワーク公開。完了予定：4月。
 
-- VRMサポートにより3Dモデルを導入。
-
-- 猫娘ネットワーク、猫娘同士の自律的通信を許可。
-
-- QQ/Cursorなど外部ソフトウェアへの接続。
-
-- ネイティブツール呼び出しを改善。
+v1.0：一部モデルプロバイダーへの対応を廃止し、自社大規模モデルとエージェントシステムに注力。完了予定：6月。
 
 ## Star History[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)

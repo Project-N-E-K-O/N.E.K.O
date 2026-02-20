@@ -56,10 +56,10 @@
       "name": "阿里（推荐）",
       "description": "推荐选择，支持自定义语音和Agent模式，价格适中",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "summary_model": "qwen3-next-80b-a3b-instruct",
-      "correction_model": "qwen3-235b-a22b-instruct-2507",
-      "emotion_model": "qwen-flash-2025-07-28",
-      "vision_model": "qwen3-vl-plus-2025-12-19"
+      "summary_model": "qwen-plus",
+      "correction_model": "qwen3.5-plus",
+      "emotion_model": "qwen-flash",
+      "vision_model": "qwen3-vl-plus"
     },
     "openai": {
       "key": "openai",

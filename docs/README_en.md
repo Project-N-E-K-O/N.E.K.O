@@ -184,7 +184,7 @@ networks:
 
 #### Configuring API Key
 
-When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface. **We will adapt to more international service providers in 2026 Spring.**
+When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
 
 > Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
 
@@ -243,24 +243,18 @@ N.E.K.O/
 
 This project has very simple environment dependencies. Just run `pip install -r requirements.txt` or `uv sync` in a `python3.11` environment. Developers are encouraged to join QQ group 1022939659; the catgirl's name is in the project title.
 
-Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` or `uv sync` to install dependencies. (3) Run `python memory_server.py`, `python main_server.py` (optional `python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
+Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `uv sync` to install dependencies. (3) Run `uv run python memory_server.py`, `uv run python main_server.py` (optional `uv run python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
 
 
 ### TODO List (Development Plan)
 
-- Improve the semantic indexing part in memory server; open the existing settings update functionality.
+v0.7: Improve Agent-related features. Expected completion: February.
 
-- Improve the existing proactive dialogue functionality.
+v0.8: Improve memory-related features, improve OpenClaw-like functionality. Expected completion: March.
 
-- Refactor frontend with React and prepare standalone mobile version.
+v0.9: Improve multi-system support, including Linux and mobile. N.E.K.O. Network launch. Expected completion: April.
 
-- Introduce VRM support for 3D models.
-
-- N.E.K.O. Network, allowing N.E.K.O.s to communicate autonomously.
-
-- Integrate with external software like Discord/Cursor.
-
-- Improve native tool calling.
+v1.0: Drop support for some model providers, focus on in-house large models and agent systems. Expected completion: June.
 
 ## Star History
 

@@ -226,7 +226,7 @@ function init_app() {
     // 语音模式下用户 transcript 合并相关变量（兜底机制，防止 Gemini 等模型返回碎片化转录造成刷屏）
     let lastVoiceUserMessage = null;       // 上一个用户消息 DOM 元素
     let lastVoiceUserMessageTime = 0;      // 上一个用户消息的时间戳
-    const VOICE_TRANSCRIPT_MERGE_WINDOW = 5000; // 合并时间窗口（毫秒），5秒内的连续转录会合并
+    const VOICE_TRANSCRIPT_MERGE_WINDOW = 3000; // 合并时间窗口（毫秒），3秒内的连续转录会合并
 
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
@@ -335,7 +335,9 @@ function init_app() {
                         updated_at: new Date().toISOString()
                     };
                     if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
-                        window.agentStateMachine.updateCache(!!healthOk, flagsResp.agent_flags || {});
+                        const warmFlags = flagsResp.agent_flags || {};
+                        warmFlags.agent_enabled = !!flagsResp.analyzer_enabled;
+                        window.agentStateMachine.updateCache(!!healthOk, warmFlags);
                     }
                 }
             }).catch(() => {});
@@ -709,6 +711,10 @@ function init_app() {
                     window._agentStatusSnapshot = snapshot;
                     const serverOnline = snapshot.server_online !== false;
                     const flags = snapshot.flags || {};
+                    // agent_enabled lives in snapshot.analyzer_enabled, not in flags — normalize it
+                    if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
+                        flags.agent_enabled = !!snapshot.analyzer_enabled;
+                    }
                     if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
                         window.agentStateMachine.updateCache(serverOnline, flags);
                     }
@@ -748,7 +754,7 @@ function init_app() {
                 } else if (response.type === 'agent_notification') {
                     const msg = typeof response.text === 'string' ? response.text : '';
                     if (msg) {
-                        setFloatingAgentStatus(msg);
+                        setFloatingAgentStatus(msg, response.status || 'completed');
                     }
                 } else if (response.type === 'agent_task_update') {
                     try {
@@ -5625,6 +5631,15 @@ function init_app() {
             if (flags) this._cachedFlags = flags;
         },
 
+        // Whether the master+child flags indicate agent is active
+        isAgentActive() {
+            const f = this._cachedFlags;
+            if (!f) return false;
+            const master = !!f.agent_enabled;
+            const child = !!(f.computer_use_enabled || f.browser_use_enabled || f.mcp_enabled || f.user_plugin_enabled);
+            return master && child;
+        },
+
         // 根据状态更新所有按钮UI
         _updateUI() {
             const master = document.getElementById('live2d-agent-master');
@@ -5878,6 +5893,7 @@ function init_app() {
                     if (data.success) {
                         const analyzerEnabled = data.analyzer_enabled || false;
                         const flags = data.agent_flags || {};
+                        flags.agent_enabled = !!analyzerEnabled;
                         // 处理后端推送的通知（如果有）
                         const notification = data.notification;
                         if (notification) {
@@ -6060,10 +6076,24 @@ function init_app() {
     };
 
     // 浮动Agent status更新函数
-    function setFloatingAgentStatus(msg) {
+    function setFloatingAgentStatus(msg, taskStatus) {
         const statusEl = document.getElementById('live2d-agent-status');
         if (statusEl) {
             statusEl.textContent = msg || '';
+            // Apply status-specific color for task result notifications
+            const colorMap = {
+                completed: '#52c41a',  // green
+                partial:   '#faad14',  // amber
+                failed:    '#ff4d4f',  // red
+            };
+            if (taskStatus && colorMap[taskStatus]) {
+                statusEl.style.color = colorMap[taskStatus];
+                // Auto-reset to theme blue after 6 seconds
+                clearTimeout(statusEl._statusResetTimer);
+                statusEl._statusResetTimer = setTimeout(() => {
+                    statusEl.style.color = '#44b7fe';
+                }, 6000);
+            }
         }
     }
 
@@ -6160,6 +6190,9 @@ function init_app() {
             if (!snapshot || agentStateMachine.getState() === AgentPopupState.PROCESSING) return;
             const serverOnline = snapshot.server_online !== false;
             const flags = snapshot.flags || {};
+            if (!('agent_enabled' in flags) && snapshot.analyzer_enabled !== undefined) {
+                flags.agent_enabled = !!snapshot.analyzer_enabled;
+            }
             const analyzerEnabled = !!snapshot.analyzer_enabled;
             const caps = snapshot.capabilities || {};
 
@@ -6597,6 +6630,21 @@ function init_app() {
             () => ++userPluginOperationSeq
         );
 
+        // 刷新后若 Agent 总开关已开启，自动打开 Agent 状态弹窗（与开关状态一致）
+        function openAgentStatusPopupWhenEnabled() {
+            if (agentStateMachine._popupOpen) return;
+            const master = document.getElementById('live2d-agent-master');
+            if (!master || !master.checked) return;
+            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"]');
+            if (!popup) return;
+            const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+            if (isVisible) return;
+            const manager = popup.id === 'live2d-popup-agent' ? window.live2dManager : window.vrmManager;
+            if (!manager || typeof manager.showPopup !== 'function') return;
+            manager.showPopup('agent', popup);
+        }
+        window.openAgentStatusPopupWhenEnabled = openAgentStatusPopupWhenEnabled;
+
         // 从后端同步 flags 状态到前端开关（完整同步，处理所有情况）
         // 【重要】此函数只同步总开关状态，子开关保持禁用等待能力检查
         async function syncFlagsFromBackend() {
@@ -6608,6 +6656,7 @@ function init_app() {
 
                 const flags = data.agent_flags || {};
                 const analyzerEnabled = data.analyzer_enabled || false;
+                flags.agent_enabled = !!analyzerEnabled;
 
                 console.log('[App] 从后端获取 flags 状态:', { analyzerEnabled, flags });
 
@@ -6685,6 +6734,9 @@ function init_app() {
                     syncCheckboxUI(agentMcpCheckbox);
                 }
 
+                if (analyzerEnabled) {
+                    setTimeout(() => openAgentStatusPopupWhenEnabled(), 0);
+                }
                 return analyzerEnabled;
             } catch (e) {
                 console.warn('[App] 同步 flags 状态失败:', e);
@@ -6766,6 +6818,7 @@ function init_app() {
                 // 3. 统一处理逻辑
                 const analyzerEnabled = flagsData.success ? (flagsData.analyzer_enabled || false) : false;
                 const flags = flagsData.success ? (flagsData.agent_flags || {}) : {};
+                flags.agent_enabled = !!analyzerEnabled;
 
                 // 更新缓存
                 agentStateMachine.updateCache(healthOk, flags);
@@ -6900,17 +6953,16 @@ function init_app() {
 
     // 启动任务状态轮询
     window.startAgentTaskPolling = function () {
-        if (agentTaskPollingInterval) return;
-
-        console.log('[App] 启动 Agent 任务状态轮询');
-
-        // 确保 HUD 已创建并显示
+        // Always attempt to show HUD (live2dManager may have loaded since last call)
         if (window.live2dManager) {
             window.live2dManager.createAgentTaskHUD();
             window.live2dManager.showAgentTaskHUD();
         }
 
-        // 推送架构下由 WebSocket 的 agent_task_update 驱动，不再拉取 /task_status
+        if (agentTaskPollingInterval) return;
+
+        console.log('[App] 启动 Agent 任务状态轮询');
+
         agentTaskPollingInterval = true;
 
         // 每秒更新运行时间显示
@@ -6964,20 +7016,26 @@ function init_app() {
         });
     }
 
-    // 检查是否需要显示任务 HUD（总开关开启 且 键鼠或MCP任一开启）
     function checkAndToggleTaskHUD() {
+        // DOM checkboxes (may not exist or may not be synced yet)
         const masterCheckbox = document.getElementById('live2d-agent-master');
         const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
+        const browserCheckbox = document.getElementById('live2d-agent-browser');
         const mcpCheckbox = document.getElementById('live2d-agent-mcp');
         const userPlugin = document.getElementById('live2d-agent-user-plugin');
 
-        const masterEnabled = masterCheckbox && masterCheckbox.checked;
-        const keyboardEnabled = keyboardCheckbox && keyboardCheckbox.checked;
-        const mcpEnabled = mcpCheckbox && mcpCheckbox.checked;
-        const userPluginEnabled = userPlugin && userPlugin.checked;
+        const domMaster = masterCheckbox && masterCheckbox.checked;
+        const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
+            || (browserCheckbox && browserCheckbox.checked)
+            || (mcpCheckbox && mcpCheckbox.checked)
+            || (userPlugin && userPlugin.checked);
 
-        //  只有总开关开启 且 子开关任一开启时才显示HUD
-        if (masterEnabled && (keyboardEnabled || mcpEnabled || userPluginEnabled)) {
+        // Cached flags from backend (always the source of truth)
+        const flags = window.agentStateMachine && window.agentStateMachine._cachedFlags;
+        const flagMaster = flags && !!flags.agent_enabled;
+        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.mcp_enabled || flags.user_plugin_enabled);
+
+        if ((domMaster && domChild) || (flagMaster && flagChild)) {
             window.startAgentTaskPolling();
         } else {
             window.stopAgentTaskPolling();
@@ -6992,11 +7050,15 @@ function init_app() {
         // 延迟确保元素已创建
         setTimeout(() => {
             const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
+            const browserCheckbox = document.getElementById('live2d-agent-browser');
             const mcpCheckbox = document.getElementById('live2d-agent-mcp');
             const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
             if (keyboardCheckbox) {
                 keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            }
+            if (browserCheckbox) {
+                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             if (mcpCheckbox) {
                 mcpCheckbox.addEventListener('change', checkAndToggleTaskHUD);
@@ -7004,6 +7066,8 @@ function init_app() {
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
+            // Retry HUD show: snapshot may have enabled agent before live2dManager was ready
+            checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
         }, 100);
     });
@@ -7013,6 +7077,12 @@ function init_app() {
     window.addEventListener('live2d-floating-buttons-ready', () => {
         console.log('[App] 收到浮动按钮就绪事件，开始绑定Agent开关');
         setupAgentCheckboxListeners();
+        // Agent 已开启时刷新页面后自动打开状态弹窗（等 V2/legacy 恢复开关状态后再试）
+        setTimeout(() => {
+            if (typeof window.openAgentStatusPopupWhenEnabled === 'function') {
+                window.openAgentStatusPopupWhenEnabled();
+            }
+        }, 400);
     }, { once: true });  // 只执行一次
 
     // 麦克风权限和设备列表预加载（修复 UI 2.0 中权限请求时机导致的bug）

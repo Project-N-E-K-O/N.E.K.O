@@ -1044,126 +1044,17 @@ async def proactive_chat(request: Request):
                         "message": "AI回复改写失败，已放弃输出"
                     })
             
-            # 6. AI选择搭话，需要通过session manager处理
-            # 首先检查是否有真实的websocket连接
-            if not mgr.websocket:
+            # 6. 投递：通过 LLMSessionManager.deliver_text_proactively 统一处理
+            delivered = await mgr.deliver_text_proactively(response_text, min_idle_secs=30.0)
+
+            if not delivered:
+                # deliver_text_proactively 内部已 log 具体原因
                 return JSONResponse({
-                    "success": False,
-                    "error": "没有活跃的WebSocket连接，无法主动搭话。请先打开前端页面。"
-                }, status_code=400)
-            
-            # 检查websocket是否连接
-            try:
-                from starlette.websockets import WebSocketState
-                if hasattr(mgr.websocket, 'client_state'):
-                    if mgr.websocket.client_state != WebSocketState.CONNECTED:
-                        return JSONResponse({
-                            "success": False,
-                            "error": "WebSocket未连接，无法主动搭话"
-                        }, status_code=400)
-            except Exception as e:
-                logger.warning(f"检查WebSocket状态失败: {e}")
-            
-            # 检查是否有现有的session，如果没有则创建一个文本session
-            session_created = False
-            if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
-                logger.info(f"[{lanlan_name}] 没有活跃session，创建文本session用于主动搭话")
-                # 使用现有的真实websocket启动session
-                try:
-                    await mgr.start_session(mgr.websocket, new=True, input_mode='text')
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] 创建文本session失败: {e}")
-                    return JSONResponse({
-                        "success": False,
-                        "error": f"创建文本session失败: {str(e)}"
-                    }, status_code=500)
-                
-                # 验证session是否正确创建
-                if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
-                    logger.error(f"[{lanlan_name}] 文本session创建后验证失败")
-                    return JSONResponse({
-                        "success": False,
-                        "error": "文本session创建失败，无法进行主动搭话"
-                    }, status_code=500)
-                
-                session_created = True
-                logger.info(f"[{lanlan_name}] 文本session已创建")
-            
-            # 如果是新创建的session，等待TTS准备好
-            if session_created and mgr.use_tts:
-                logger.info(f"[{lanlan_name}] 等待TTS准备...")
-                max_wait = 5  # 最多等待5秒
-                wait_step = 0.1
-                waited = 0
-                while waited < max_wait:
-                    async with mgr.tts_cache_lock:
-                        if mgr.tts_ready:
-                            logger.info(f"[{lanlan_name}] TTS已准备好")
-                            break
-                    await asyncio.sleep(wait_step)
-                    waited += wait_step
-                
-                if waited >= max_wait:
-                    logger.warning(f"[{lanlan_name}] TTS准备超时，继续发送（可能没有语音）")
-            
-            # 现在可以将AI的话添加到对话历史中
-            from langchain_core.messages import AIMessage
-            mgr.session._conversation_history.append(AIMessage(content=response_text))
-            logger.info(f"[{lanlan_name}] 已将主动搭话添加到对话历史")
-            
-            # 生成新的speech_id（用于TTS）
-            from uuid import uuid4
-            async with mgr.lock:
-                mgr.current_speech_id = str(uuid4())
-            
-            # 检查最近30秒内是否有用户活动（语音输入或文本输入）
-            # 如果有，则放弃本次主动搭话
-            if mgr.last_user_activity_time is not None:
-                time_since_last_activity = time.time() - mgr.last_user_activity_time
-                if time_since_last_activity < 30:
-                    logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
-                    return JSONResponse({
-                        "success": True,
-                        "action": "pass",
-                        "message": f"最近{time_since_last_activity:.1f}秒内有用户活动，放弃主动搭话"
-                    })
-            
-            # 记录开始输出的时间戳，用于检测输出过程中是否有新的用户输入
-            output_start_time = time.time()
-            
-            # 通过handle_text_data处理这段话（触发TTS和前端显示）
-            # 分chunk发送以模拟流式效果
-            chunks = [response_text[i:i+10] for i in range(0, len(response_text), 10)]
-            for i, chunk in enumerate(chunks):
-                # 检查输出过程中是否有新的用户输入
-                if mgr.last_user_activity_time is not None and mgr.last_user_activity_time > output_start_time:
-                    logger.info(f"[{lanlan_name}] 输出过程中检测到用户活动，停止主动搭话输出 (已输出 {i}/{len(chunks)} chunks)")
-                    # 调用新消息处理来清空TTS队列
-                    await mgr.handle_new_message() # 这里的处理并不严谨，默认了用户输入时不会立即触发其他TTS，没有进行状态锁
-                    return JSONResponse({
-                        "success": True,
-                        "action": "interrupted",
-                        "message": "输出过程中检测到用户活动，已停止"
-                    })
-                
-                await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
-                await asyncio.sleep(0.15)  # 小延迟模拟流式
-            
-            # 发送TTS结束信号，触发TTS的commit（对于Qwen TTS的server_commit模式尤为重要）
-            if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
-                try:
-                    mgr.tts_request_queue.put((None, None))
-                except Exception as e:
-                    logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
-            
-            # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
-            mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-            try:
-                if mgr.websocket and hasattr(mgr.websocket, 'client_state') and mgr.websocket.client_state == mgr.websocket.client_state.CONNECTED:
-                    await mgr.websocket.send_json({'type': 'system', 'data': 'turn end'})
-            except Exception as e:
-                logger.warning(f"[{lanlan_name}] 发送turn end失败: {e}")
-            
+                    "success": True,
+                    "action": "pass",
+                    "message": "主动搭话条件未满足（用户近期活跃或语音会话正在进行）"
+                })
+
             return JSONResponse({
                 "success": True,
                 "action": "chat",
