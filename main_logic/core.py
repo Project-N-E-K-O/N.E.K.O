@@ -766,9 +766,9 @@ class LLMSessionManager:
         
         # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
         _realtime_model = realtime_config.get('model', '')
-        _correction_model = self._config_manager.get_model_api_config('correction').get('model', '')
+        _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
         _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_correction_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
@@ -947,12 +947,12 @@ class LLMSessionManager:
             # 根据input_mode创建不同的session
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
-                correction_config = self._config_manager.get_model_api_config('correction')
+                conversation_config = self._config_manager.get_model_api_config('conversation')
                 vision_config = self._config_manager.get_model_api_config('vision')
                 self.session = OmniOfflineClient(
-                    base_url=correction_config['base_url'],
-                    api_key=correction_config['api_key'],
-                    model=correction_config['model'],
+                    base_url=conversation_config['base_url'],
+                    api_key=conversation_config['api_key'],
+                    model=conversation_config['model'],
                     vision_model=vision_config['model'],
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
@@ -1259,13 +1259,13 @@ class LLMSessionManager:
             # 根据input_mode创建对应类型的pending session
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                correction_config = self._config_manager.get_model_api_config('correction')
+                conversation_config = self._config_manager.get_model_api_config('conversation')
                 vision_config = self._config_manager.get_model_api_config('vision')
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
-                    base_url=correction_config['base_url'],
-                    api_key=correction_config['api_key'],
-                    model=correction_config['model'],
+                    base_url=conversation_config['base_url'],
+                    api_key=conversation_config['api_key'],
+                    model=conversation_config['model'],
                     vision_model=vision_config['model'],
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],

@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from memory import CompressedRecentHistoryManager, SemanticMemory, ImportantSettingsManager, TimeIndexedMemory
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 import json
 import uvicorn
@@ -26,6 +26,14 @@ class HistoryRequest(BaseModel):
     input_history: str
 
 app = FastAPI()
+
+def validate_lanlan_name(name: str) -> str:
+    name = name.strip()
+    if not name or len(name) > 50:
+        raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
+    if not re.match(r"^[\w\-\s]+$", name):
+        raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
+    return name
 
 # 初始化组件
 _config_manager = get_config_manager()
@@ -125,6 +133,7 @@ async def _run_review_in_background(lanlan_name: str):
 
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
     供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
     try:
@@ -141,6 +150,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -183,6 +193,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks
     try:
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
@@ -221,6 +232,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
 @app.get("/get_recent_history/{lanlan_name}")
 def get_recent_history(lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
         character_data = _config_manager.load_characters()
@@ -247,10 +259,12 @@ def get_recent_history(lanlan_name: str):
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
 async def get_memory(query: str, lanlan_name:str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     return await semantic_manager.query(query, lanlan_name)
 
 @app.get("/get_settings/{lanlan_name}")
 def get_settings(lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     # 检查角色是否存在于配置中
     try:
         character_data = _config_manager.load_characters()
@@ -280,6 +294,7 @@ async def reload_config():
 
 @app.post("/cancel_correction/{lanlan_name}")
 async def cancel_correction(lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     """中断指定角色的记忆整理任务（用于记忆编辑后立即生效）"""
     global correction_tasks, correction_cancel_flags
     
@@ -303,6 +318,7 @@ async def cancel_correction(lanlan_name: str):
 
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str):
+    lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks, correction_cancel_flags
     
     # 检查角色是否存在于配置中

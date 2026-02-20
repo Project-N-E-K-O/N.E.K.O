@@ -223,7 +223,7 @@ async def _handle_agent_event(event: dict):
                 }
                 mgr.enqueue_agent_callback(callback)
                 # Attempt immediate delivery; re-queued automatically if session is busy
-                asyncio.create_task(mgr.trigger_agent_callbacks())
+                mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:
                         await mgr.websocket.send_json({

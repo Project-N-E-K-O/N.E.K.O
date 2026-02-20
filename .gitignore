@@ -1,6 +1,8 @@
 # 忽略敏感配置
 core_config.txt
 test.py
+tests/api_keys.json
+tests/test_inputs/*.wav
 
 # 忽略日志文件
 *.log
@@ -39,7 +41,7 @@ __pycache__/
 .idea/
 .pytest_cache/
 .DS_Store
-.venv/
+.venv
 .venv_monitor/
 .env
 .env.local
@@ -47,6 +49,7 @@ __pycache__/
 .env.test.local
 .env.production.local
 .ruff_cache
+.claude
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
@@ -97,6 +100,3 @@ start.sh
 local_server/cosyvoice_server/*wav
 
 
-.claude
-tests/api_keys.json
-tests/test_inputs/*.wav

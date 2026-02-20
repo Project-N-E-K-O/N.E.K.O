@@ -288,6 +288,16 @@ class _ScaledPyAutoGUI:
         a, kw = self._project(a, kw)
         return self._backend.dragTo(*a, **kw)
 
+    def scroll(self, clicks, x=None, y=None, *args, **kwargs):
+        if x is not None and y is not None:
+            if self._in_range(x, y):
+                scaled_x = int(round(x * self._w / self._COORD_MAX))
+                scaled_y = int(round(y * self._h / self._COORD_MAX))
+            else:
+                scaled_x, scaled_y = int(round(x)), int(round(y))
+            return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
+        return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
+
     def _clipboard_type(self, text: str):
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
         import pyperclip
@@ -372,7 +382,6 @@ class ComputerUseAdapter:
             from langchain_openai import ChatOpenAI
             test_llm = ChatOpenAI(
                 model=model, base_url=base_url, api_key=api_key,
-                temperature=0,
                 extra_body=get_extra_body(model) or None,
             ).bind(max_tokens=5)
             _ = test_llm.invoke("ok").content
@@ -452,7 +461,7 @@ class ComputerUseAdapter:
                 )
             )
             # Recent steps: keep the screenshot image
-            if i > n - self.max_image_history:
+            if i >= n - self.max_image_history:
                 if text_parts:
                     messages.append({
                         "role": "assistant",
@@ -472,7 +481,7 @@ class ComputerUseAdapter:
             else:
                 # Older steps: text only (images dropped to save context)
                 text_parts.append(step_text)
-                if i == n - self.max_image_history:
+                if i == n - self.max_image_history - 1:
                     messages.append({
                         "role": "assistant",
                         "content": "\n".join(text_parts),
@@ -504,7 +513,7 @@ class ComputerUseAdapter:
         thought = parsed.get("thought", "")
         action = parsed.get("action", "")
 
-        print("[CUA] Step %d — %s", step_num, action[:120])
+        print(f"[CUA] Step {step_num}, {action[:120]}") # 敏感日志使用print而不是logger，用于脱敏
 
         # ── Update agent state ───────────────────────────────────────
         self.observations.append(screenshot_bytes)
@@ -562,11 +571,12 @@ class ComputerUseAdapter:
 
                 # ── Special actions ──────────────────────────────────
                 if "computer.terminate" in code_lower:
-                    success = "success" in code_lower
-                    m = re.search(
+                    m_status = re.search(r'status\s*=\s*["\'](\w+)["\']', code)
+                    success = (m_status.group(1).lower() == "success") if m_status else False
+                    m_answer = re.search(
                         r'answer\s*=\s*["\'](.+?)["\']', code, re.DOTALL
                     )
-                    answer = m.group(1) if m else last_action
+                    answer = m_answer.group(1) if m_answer else last_action
                     break
 
                 if "computer.wait" in code_lower:
@@ -614,7 +624,7 @@ class ComputerUseAdapter:
         """Provider-aware extra_body to enable thinking."""
         base_url = (self._agent_model_cfg.get("base_url") or "").lower()
         if "anthropic" in base_url:
-            return {"thinking": {"type": "enabled", "budget_tokens": 4096}}
+            return {"thinking": {"type": "enabled", "budget_tokens": 2048}}
         if "googleapis" in base_url or "gemini" in base_url:
             return {"google": {"thinking_config": {"thinking_level": "high"}}}
         return {"enable_thinking": True}
@@ -634,7 +644,6 @@ class ComputerUseAdapter:
                     model=model,
                     messages=messages,
                     max_completion_tokens=self.max_tokens,
-                    temperature=1.0,
                     extra_body=extra or None,
                 )
                 msg = resp.choices[0].message

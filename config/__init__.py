@@ -64,25 +64,20 @@ NATIVE_IMAGE_MIN_INTERVAL = 1.5
 IMAGE_IDLE_RATE_MULTIPLIER = 5
 
 # 用户自定义模型配置的默认 Provider/URL/API_KEY（空字符串表示使用全局配置）
-DEFAULT_SUMMARY_MODEL_PROVIDER = ""
+DEFAULT_CONVERSATION_MODEL_URL = ""
+DEFAULT_CONVERSATION_MODEL_API_KEY = ""
 DEFAULT_SUMMARY_MODEL_URL = ""
 DEFAULT_SUMMARY_MODEL_API_KEY = ""
-DEFAULT_CORRECTION_MODEL_PROVIDER = ""
 DEFAULT_CORRECTION_MODEL_URL = ""
 DEFAULT_CORRECTION_MODEL_API_KEY = ""
-DEFAULT_EMOTION_MODEL_PROVIDER = ""
 DEFAULT_EMOTION_MODEL_URL = ""
 DEFAULT_EMOTION_MODEL_API_KEY = ""
-DEFAULT_VISION_MODEL_PROVIDER = ""
 DEFAULT_VISION_MODEL_URL = ""
 DEFAULT_VISION_MODEL_API_KEY = ""
-DEFAULT_REALTIME_MODEL_PROVIDER = "local" # 仅用于本地实时模型(语音+文字+图片)
 DEFAULT_REALTIME_MODEL_URL = "" # 仅用于本地实时模型(语音+文字+图片)
 DEFAULT_REALTIME_MODEL_API_KEY = "" # 仅用于本地实时模型(语音+文字+图片)
-DEFAULT_TTS_MODEL_PROVIDER = "" # 与Realtime对应的TTS模型(Native TTS)
 DEFAULT_TTS_MODEL_URL = "" # 与Realtime对应的TTS模型(Native TTS)
 DEFAULT_TTS_MODEL_API_KEY = "" # 与Realtime对应的TTS模型(Native TTS)
-DEFAULT_AGENT_MODEL_PROVIDER = ""
 DEFAULT_AGENT_MODEL_URL = ""
 DEFAULT_AGENT_MODEL_API_KEY = ""
 
@@ -95,6 +90,7 @@ DEFAULT_SEMANTIC_MODEL = SEMANTIC_MODEL = 'text-embedding-v4'
 DEFAULT_RERANKER_MODEL = RERANKER_MODEL = 'qwen-plus'
 
 # 其他模型配置（仅通过 config_manager 动态获取）
+DEFAULT_CONVERSATION_MODEL = 'qwen-max'
 DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
 DEFAULT_EMOTION_MODEL = 'qwen-flash'
@@ -273,7 +269,6 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeySilicon": "",
     "assistApiKeyGemini": "",
     "mcpToken": "",
-    "agentModelProvider": "",
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
@@ -316,6 +311,7 @@ DEFAULT_CORE_API_PROFILES = {
 DEFAULT_ASSIST_API_PROFILES = {
     'free': {
         'OPENROUTER_URL': "https://lanlan.tech/text/v1",
+        'CONVERSATION_MODEL' : "free-model" ,
         'SUMMARY_MODEL': "free-model",
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-model",
@@ -326,13 +322,15 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        'CONVERSATION_MODEL' : "qwen3-235b-a22b-instruct-2507",
         'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
         'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
-        'EMOTION_MODEL': "qwen-flash-2025-07-28",
+        'EMOTION_MODEL': "qwen-flash",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
+        'CONVERSATION_MODEL' : "gpt-5-chat-latest",
         'SUMMARY_MODEL': "gpt-4.1-mini",
         'CORRECTION_MODEL': "gpt-5-chat-latest",
         'EMOTION_MODEL': "gpt-4.1-nano",
@@ -340,6 +338,7 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'glm': {
         'OPENROUTER_URL': "https://open.bigmodel.cn/api/paas/v4",
+        'CONVERSATION_MODEL' : "glm-4.5-air" ,
         'SUMMARY_MODEL': "glm-4.5-flash",
         'CORRECTION_MODEL': "glm-4.5-air",
         'EMOTION_MODEL': "glm-4.5-flash",
@@ -347,6 +346,7 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'step': {
         'OPENROUTER_URL': "https://api.stepfun.com/v1",
+        'CONVERSATION_MODEL' : "step-2-mini",
         'SUMMARY_MODEL': "step-2-mini",
         'CORRECTION_MODEL': "step-2-mini",
         'EMOTION_MODEL': "step-2-mini",
@@ -354,6 +354,7 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
+        'CONVERSATION_MODEL' : "deepseek-ai/DeepSeek-V3.2" ,
         'SUMMARY_MODEL': "Qwen/Qwen3-Next-80B-A3B-Instruct",
         'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2",
         'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
@@ -361,6 +362,7 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
+        'CONVERSATION_MODEL' : "gemini-3-flash-preview",
         'SUMMARY_MODEL': "gemini-3-flash-preview",
         'CORRECTION_MODEL': "gemini-3-flash-preview",
         'EMOTION_MODEL': "gemini-2.5-flash",
@@ -398,11 +400,11 @@ EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_l
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP = {
     # Qwen 系列
-    "qwen-flash-2025-07-28": EXTRA_BODY_OPENAI,
+    "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
-    # "qwen3.5-plus": EXTRA_BODY_OPENAI,
+    "qwen3.5-plus": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     # GLM 系列
@@ -494,6 +496,7 @@ __all__ = [
     'DEFAULT_RERANKER_MODEL',
     'RERANKER_MODEL',
     # 其他模型配置（仅导出 DEFAULT_ 版本）
+    'DEFAULT_CONVERSATION_MODEL',
     'DEFAULT_SUMMARY_MODEL',
     'DEFAULT_CORRECTION_MODEL',
     'DEFAULT_EMOTION_MODEL',
@@ -501,26 +504,21 @@ __all__ = [
     'DEFAULT_AGENT_MODEL',
     'DEFAULT_REALTIME_MODEL',
     'DEFAULT_TTS_MODEL',
-    # 用户自定义模型配置的 Provider/URL/API_KEY
-    'DEFAULT_SUMMARY_MODEL_PROVIDER',
+    # 用户自定义模型配置的 URL/API_KEY
+    'DEFAULT_CONVERSATION_MODEL_URL',
+    'DEFAULT_CONVERSATION_MODEL_API_KEY',
     'DEFAULT_SUMMARY_MODEL_URL',
     'DEFAULT_SUMMARY_MODEL_API_KEY',
-    'DEFAULT_CORRECTION_MODEL_PROVIDER',
     'DEFAULT_CORRECTION_MODEL_URL',
     'DEFAULT_CORRECTION_MODEL_API_KEY',
-    'DEFAULT_EMOTION_MODEL_PROVIDER',
     'DEFAULT_EMOTION_MODEL_URL',
     'DEFAULT_EMOTION_MODEL_API_KEY',
-    'DEFAULT_VISION_MODEL_PROVIDER',
     'DEFAULT_VISION_MODEL_URL',
     'DEFAULT_VISION_MODEL_API_KEY',
-    'DEFAULT_REALTIME_MODEL_PROVIDER',
     'DEFAULT_REALTIME_MODEL_URL',
     'DEFAULT_REALTIME_MODEL_API_KEY',
-    'DEFAULT_TTS_MODEL_PROVIDER',
     'DEFAULT_TTS_MODEL_URL',
     'DEFAULT_TTS_MODEL_API_KEY',
-    'DEFAULT_AGENT_MODEL_PROVIDER',
     'DEFAULT_AGENT_MODEL_URL',
     'DEFAULT_AGENT_MODEL_API_KEY',
 ]

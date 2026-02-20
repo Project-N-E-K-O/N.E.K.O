@@ -57,7 +57,6 @@
         const caps = (snapshot && snapshot.capabilities) || {};
         const map = {
             computer_use_enabled: 'computer_use',
-            mcp_enabled: 'mcp',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
         };
@@ -69,7 +68,6 @@
         const caps = (snapshot && snapshot.capabilities) || {};
         const map = {
             computer_use_enabled: 'computer_use',
-            mcp_enabled: 'mcp',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
         };
@@ -213,7 +211,7 @@
                 await sendCommand('set_agent_enabled', { enabled });
                 if (opSeq === state.masterOpSeq) {
                     const ts = performance.now();
-                    await fetchSnapshot().catch(() => {});
+                    await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_master', ms: Number((performance.now() - ts).toFixed(2)) });
                 }
             } catch (e) {
@@ -221,7 +219,7 @@
                     state.pending.delete('agent_enabled');
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    fetchSnapshot().catch(() => {});
+                    fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(`Agent切换失败: ${e.message}`, 2500);
                     }
@@ -255,13 +253,13 @@
                 try {
                     await sendCommand('set_flag', { key, value });
                     const ts = performance.now();
-                    await fetchSnapshot().catch(() => {});
+                    await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
                 } catch (e) {
                     state.pending.delete(key);
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    fetchSnapshot().catch(() => {});
+                    fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(`${getName(key)}切换失败: ${e.message}`, 2500);
                     }
@@ -288,7 +286,7 @@
                 return;
             }
             // Open popup without waiting, then refresh in background.
-            fetchSnapshot().catch(() => {});
+            fetchSnapshot().catch(() => { });
         });
         window.addEventListener('live2d-agent-popup-closed', () => {
             state.popupOpen = false;

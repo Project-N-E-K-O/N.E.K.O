@@ -514,8 +514,21 @@ OUTPUT FORMAT (strict JSON):
 VERY IMPORTANT: If has_task and can_execute are true, entry_id is REQUIRED. If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 Return only the JSON object, nothing else.
 """
-        user_prompt = f"Conversation:\\n{conversation}\\n\\nUser intent (one-line): {conversation.splitlines()[-1] if conversation.splitlines() else ''}"
+        user_intent = ""
+        conv_lines = conversation.splitlines()
+        for line in conv_lines:
+            if line.startswith("LATEST_USER_REQUEST:"):
+                user_intent = line[len("LATEST_USER_REQUEST:"):].strip()
+                break
         
+        if not user_intent:
+            for line in reversed(conv_lines):
+                if line.startswith("user:") or line.startswith("User:"):
+                    user_intent = line[5:].strip()
+                    break
+
+        user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
+
         max_retries = 3
         retry_delays = [1, 2]
         
@@ -665,11 +678,14 @@ Return only the JSON object, nothing else.
             assessment_tasks.append(('mcp', self._assess_mcp(conversation, capabilities)))
         
         # user plugin 支路（由外部 provider 提供插件列表）
-        await self.plugin_list_provider()
-        plugins = self.plugin_list
-        
+        plugins = []
+        if user_plugin_enabled:
+            await self.plugin_list_provider()
+            plugins = self.plugin_list
+
         if user_plugin_enabled and plugins:
             assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
+        
         if browser_use_enabled and browser_available:
             assessment_tasks.append(('bu', self._assess_browser_use(conversation, browser_available)))
         
