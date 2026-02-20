@@ -70,6 +70,7 @@ class Modules:
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
     _background_tasks: ClassVar[set] = set()
+    _persistent_tasks: ClassVar[set] = set()
 
 
 def _rewire_computer_use_dependents() -> None:
@@ -446,7 +447,8 @@ async def _run_computer_use_task(
             info["error"] = cu_detail
             logger.error("[ComputerUse] Task %s aborted: %s", task_id, cu_detail)
         else:
-            future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction)
+            session_id = info.get("session_id")
+            future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction, session_id)
             res = await future
             if res is None:
                 logger.debug("[ComputerUse] run_instruction returned None, treating as success")
@@ -834,8 +836,8 @@ async def startup():
 
     # Start computer-use scheduler
     sch_task = asyncio.create_task(_computer_use_scheduler_loop())
-    Modules._background_tasks.add(sch_task)
-    sch_task.add_done_callback(Modules._background_tasks.discard)
+    Modules._persistent_tasks.add(sch_task)
+    sch_task.add_done_callback(Modules._persistent_tasks.discard)
     # Start ZeroMQ bridge for main_server events
     try:
         Modules.agent_bridge = AgentServerEventBridge(on_session_event=_on_session_event)

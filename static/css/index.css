@@ -74,7 +74,7 @@ body {
     transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
     pointer-events: none;
     /* 默认不响应事件 */
-    word-wrap: break-word;
+    overflow-wrap: break-word;
     white-space: pre-wrap;
     display: flex;
     /* 使用flex布局 */
@@ -145,10 +145,10 @@ body {
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
-    animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    animation: slide-in-toast 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
-@keyframes slideIn {
+@keyframes slide-in-toast {
     0% {
         opacity: 0;
         transform: translateY(-20px) scale(0.8);
@@ -521,7 +521,7 @@ button * {
     padding: 10px 14px;
     border-radius: 12px;
     max-width: 80%;
-    word-wrap: break-word;
+    overflow-wrap: break-word;
     line-height: 1.5;
     font-size: 0.95rem;
     animation: fadeIn 0.3s ease;
@@ -695,7 +695,7 @@ button * {
     font-weight: 500;
     line-height: 1.7;
     text-align: center;
-    word-wrap: break-word;
+    overflow-wrap: break-word;
     white-space: pre-wrap;
     opacity: 0;
     visibility: hidden;
@@ -844,10 +844,10 @@ button * {
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    animation: slideIn 0.3s ease;
+    animation: screenshot-scale-in 0.3s ease;
 }
 
-@keyframes slideIn {
+@keyframes screenshot-scale-in {
     from {
         opacity: 0;
         transform: scale(0.8);
