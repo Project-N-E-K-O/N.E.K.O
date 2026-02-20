@@ -395,6 +395,7 @@ class OmniOfflineClient:
                             await self.handle_connection_error(error_msg)
                         break
                 except Exception as e:
+                    print(f"EXCEPTION_CAUGHT: {e}")
                     error_msg = f"Error in text streaming: {str(e)}"
                     logger.error(error_msg)
                     if self.handle_connection_error:
@@ -447,6 +448,52 @@ class OmniOfflineClient:
         if instructions.strip():
             self._conversation_history.append(SystemMessage(content=instructions))
     
+    async def stream_proactive(self, instruction: str) -> bool:
+        """Generate and stream a proactive AI response driven by a system instruction.
+
+        The *instruction* is expected to be pre-formatted by the caller using the
+        ========...======== convention and is injected as a temporary HumanMessage.
+        It is **not** persisted to _conversation_history.  Only the AI's
+        natural-language response (AIMessage) is kept in history.
+
+        Calls on_response_done() when finished (same as stream_text).
+        Returns True if any text was generated, False if aborted or empty.
+        """
+        if not instruction or not instruction.strip():
+            return False
+
+        # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
+        # 不持久化到 _conversation_history，避免污染长期上下文。
+        messages_to_send = (
+            self._conversation_history
+            + [HumanMessage(content=instruction)]
+        )
+
+        assistant_message = ""
+        is_first_chunk = True
+
+        try:
+            self._is_responding = True
+            async for chunk in self.llm.astream(messages_to_send):
+                if not self._is_responding:
+                    break
+                content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if content and content.strip():
+                    assistant_message += content
+                    if self.on_text_delta:
+                        await self.on_text_delta(content, is_first_chunk)
+                    is_first_chunk = False
+        except Exception as e:
+            logger.error("OmniOfflineClient.stream_proactive error: %s", e)
+        finally:
+            self._is_responding = False
+            if assistant_message:
+                self._conversation_history.append(AIMessage(content=assistant_message))
+            if self.on_response_done:
+                await self.on_response_done()
+
+        return bool(assistant_message)
+
     async def cancel_response(self) -> None:
         """Cancel the current response if possible"""
         self._is_responding = False

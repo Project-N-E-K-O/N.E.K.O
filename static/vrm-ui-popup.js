@@ -34,6 +34,10 @@
         .vrm-popup.vrm-popup-settings {
             max-height: 70vh;
         }
+        .vrm-popup.vrm-popup-agent {
+            max-height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
         .vrm-toggle-item {
             display: flex;
             align-items: center;
@@ -150,6 +154,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.style.gap = '0';
         popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
     } else if (buttonId === 'agent') {
+        popup.classList.add('vrm-popup-agent');
         this._createAgentPopupContent(popup);
     } else     if (buttonId === 'settings') {
         // 避免小屏溢出：限制高度并允许滚动
@@ -163,7 +168,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
 // 创建Agent弹出框内容
 VRMManager.prototype._createAgentPopupContent = function (popup) {
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'vrm-agent-status';
+    statusDiv.id = 'live2d-agent-status';
     statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);
@@ -171,7 +176,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
     const agentToggles = [
         { id: 'agent-master', label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', labelKey: 'settings.toggles.agentMaster', initialDisabled: true },
         { id: 'agent-keyboard', label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', labelKey: 'settings.toggles.keyboardControl', initialDisabled: true },
-        { id: 'agent-mcp', label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具', labelKey: 'settings.toggles.mcpTools', initialDisabled: true }
+        { id: 'agent-browser', label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control', labelKey: 'settings.toggles.browserUse', initialDisabled: true }
     ];
 
     agentToggles.forEach(toggle => {
@@ -401,13 +406,10 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
     toggleItem.setAttribute('aria-checked', 'false');
     toggleItem.setAttribute('aria-disabled', toggle.initialDisabled ? 'true' : 'false');
-    if (toggle.initialDisabled) {
-        toggleItem.style.opacity = '0.5';
-    }
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.id = `vrm-${toggle.id}`;
+    checkbox.id = `live2d-${toggle.id}`;
     checkbox.style.position = 'absolute';
     checkbox.style.opacity = '0';
     checkbox.style.width = '1px';
@@ -434,7 +436,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     label.className = 'vrm-toggle-label';
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
-    label.htmlFor = `vrm-${toggle.id}`;
+    label.htmlFor = `live2d-${toggle.id}`;
     toggleItem.setAttribute('aria-label', toggle.label);
 
     // 更新标签文本的函数
@@ -454,10 +456,44 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
     };
 
+    // 同步禁用态视觉，避免出现“灰色但可交互”的状态漂移
+    const updateDisabledStyle = () => {
+        const disabled = checkbox.disabled;
+        toggleItem.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        toggleItem.setAttribute('tabIndex', disabled ? '-1' : '0');
+        // 清理初始写死透明度，确保可交互态视觉能恢复
+        toggleItem.style.opacity = disabled ? '0.5' : '1';
+        const cursor = disabled ? 'default' : 'pointer';
+        [toggleItem, label, indicator].forEach(el => {
+            el.style.cursor = cursor;
+        });
+    };
+
+    // 同步 title 到整行，保证悬浮提示一致
+    const updateTitle = () => {
+        const title = checkbox.title || '';
+        toggleItem.title = title;
+        label.title = title;
+    };
+
     checkbox.addEventListener('change', updateStyle);
     updateStyle();
+    updateDisabledStyle();
+    updateTitle();
+
+    // 监听外部（app.js 状态机）对 disabled/title 的变更并更新视觉状态
+    const disabledObserver = new MutationObserver(() => {
+        updateDisabledStyle();
+        updateTitle();
+    });
+    disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
 
     toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
+    checkbox._updateStyle = () => {
+        updateStyle();
+        updateDisabledStyle();
+        updateTitle();
+    };
     
     const handleToggle = (e) => {
         if (checkbox.disabled) return;

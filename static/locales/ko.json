@@ -1280,6 +1280,7 @@
       "keyboardControl": "키보드/마우스 제어",
       "userPlugin": "사용자 플러그인",
       "mcpTools": "MCP 도구",
+      "browserUse": "브라우저 제어",
       "focusMode": "인터럽트 허용",
       "unavailable": "{{name}} 사용할 수 없음",
       "checking": "확인 중...",

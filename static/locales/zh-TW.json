@@ -1302,6 +1302,7 @@
       "keyboardControl": "鍵鼠控製",
       "userPlugin": "用戶插件",
       "mcpTools": "MCP工具",
+      "browserUse": "瀏覽器控制",
       "focusMode": "允許打斷",
       "unavailable": "{{name}}不可用",
       "checking": "查詢中...",

@@ -1077,6 +1077,7 @@
       "keyboardControl": "キーボード/マウス操作",
       "userPlugin": "ユーザープラグイン",
       "mcpTools": "MCPツール",
+      "browserUse": "ブラウザ制御",
       "focusMode": "割り込み許可",
       "unavailable": "{{name}}は利用できません",
       "checking": "確認中...",

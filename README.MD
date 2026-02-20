@@ -242,24 +242,18 @@ N.E.K.O/
 
 本项目环境依赖非常简单，请在`python3.11`环境中执行`uv sync`或`pip install -r requirements.txt`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
 
-开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`uv sync`或`pip install -r requirements.txt`安装依赖。(3)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
+开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`uv sync`安装依赖。(3)执行`uv run python memory_server.py`, `uv run python main_server.py`(可选`uv run python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
 
 
 ### TODO List（开发计划）
 
-- 完善memory server中已有的语义索引的部分；开放已有的settings update功能。
+v0.7: 完善Agent相关功能，预计2月完成。
 
-- 完善已有的主动对话功能。
+v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计3月完成。
 
-- 用React对前端进行重构，筹备手机端独立运行版本。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计4月完成。
 
-- 引入VRM支持3D模型。
-
-- 猫娘网络，允许猫娘之间自行通信。
-
-- 接入QQ/cursor等外部软件。
-
-- 完善原生工具调用。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计6月完成。
 
 ## Star History
 
