@@ -436,6 +436,7 @@ async def _run_computer_use_task(
     try:
         res = await asyncio.to_thread(Modules.computer_use.run_instruction, instruction)
         if res is None:
+            logger.debug("[ComputerUse] run_instruction returned None, treating as success")
             res = {"success": True}
         elif isinstance(res, dict) and "success" not in res:
             res["success"] = True

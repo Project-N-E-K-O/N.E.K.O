@@ -334,6 +334,7 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
             hud.style.width = '60px';
             hud.style.padding = '8px 12px';
             title.style.display = 'none';
+            stats.style.display = 'none';
             header.style.paddingBottom = '0';
             header.style.borderBottom = 'none';
             header.style.justifyContent = 'flex-end';
@@ -345,12 +346,14 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
             hud.style.width = '320px';
             hud.style.padding = '16px';
             title.style.display = '';
+            stats.style.display = 'flex';
             header.style.paddingBottom = '12px';
             header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
             header.style.justifyContent = 'space-between';
             taskList.style.maxHeight = 'calc(60vh - 80px)';
             taskList.style.opacity = '1';
-            taskList.style.overflow = 'auto';
+            taskList.style.overflow = '';
+            taskList.style.overflowY = 'auto';
             minimizeBtn.innerHTML = '−';
         }
     };

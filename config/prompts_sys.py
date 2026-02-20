@@ -959,10 +959,12 @@ def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
 
 
 def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
-    """获取 Phase 1 筛选阶段 prompt。channel: 'vision' 或 'web'"""
+    """获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。"""
     lang_key = _normalize_prompt_language(lang)
     prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS['zh'])
-    return prompt_set.get(channel, prompt_set['web'])
+    if channel not in prompt_set:
+        raise ValueError(f"Unsupported channel '{channel}'. Vision is handled before Phase 1 and should not be passed here; only 'web' is supported.")
+    return prompt_set[channel]
 
 
 def get_proactive_generate_prompt(lang: str = 'zh') -> str:

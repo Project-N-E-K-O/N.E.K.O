@@ -170,6 +170,17 @@ function init_app() {
                     } catch (e) {
                         console.warn(safeT('console.screenShareAutoReleaseFailed', 'Screen share auto-release failed'), e);
                         // stopScreenSharing 失败时，手动清理残留状态防止 double-teardown
+                        if (screenCaptureStream) {
+                            try {
+                                if (typeof screenCaptureStream.getTracks === 'function') {
+                                    screenCaptureStream.getTracks().forEach(track => {
+                                        try { track.stop(); } catch (err) { }
+                                    });
+                                }
+                            } catch (err) {
+                                console.warn('Failed to stop tracks in catch block', err);
+                            }
+                        }
                         screenCaptureStream = null;
                         screenCaptureStreamLastUsed = null;
                         screenCaptureStreamIdleTimer = null;
@@ -2799,7 +2810,7 @@ function init_app() {
 
         // 停止所有 tracks 并清除回调，防止隐私/资源泄漏
         try {
-            if (screenCaptureStream instanceof MediaStream) {
+            if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
                 // 清除 onended 回调，防止重复触发
                 const vt = screenCaptureStream.getVideoTracks?.()?.[0];
                 if (vt) {
