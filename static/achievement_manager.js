@@ -65,7 +65,7 @@
             name: 'ACH_MEOW_100',
             description: '喵语十级',
             counter: 'meowCount',
-            threshold: 100
+            threshold: 50
         }
     };
 

@@ -399,12 +399,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
-        voice_id: 音色ID，默认使用"Cherry"
+        voice_id: 音色ID，默认使用"Momo"
     """
     import asyncio
 
     if not voice_id:
-        voice_id = "Cherry"
+        voice_id = "Momo"
     
     async def async_worker():
         """异步TTS worker主循环"""

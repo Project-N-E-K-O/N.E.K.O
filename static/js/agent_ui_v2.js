@@ -1,5 +1,5 @@
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'mcp_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
 
     const state = {
         snapshot: null,
@@ -18,7 +18,7 @@
     const el = () => ({
         master: byId('live2d-agent-master'),
         keyboard: byId('live2d-agent-keyboard'),
-        mcp: byId('live2d-agent-mcp'),
+        browser: byId('live2d-agent-browser'),
         userPlugin: byId('live2d-agent-user-plugin'),
         status: byId('live2d-agent-status'),
     });
@@ -28,8 +28,7 @@
     const getName = (key) => {
         const map = {
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-            mcp_enabled: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具',
-            browser_use_enabled: 'Browser Use',
+            browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
         };
         return map[key] || key;
@@ -114,14 +113,14 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, mcp, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master) return;
         const snap = state.snapshot;
         if (!snap) {
             master.disabled = true;
             master.checked = false;
             sync(master);
-            [keyboard, mcp, userPlugin].forEach(cb => {
+            [keyboard, browser, userPlugin].forEach(cb => {
                 if (!cb) return;
                 cb.disabled = true;
                 cb.checked = false;
@@ -145,7 +144,7 @@
             master.disabled = true;
             master.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             sync(master);
-            [keyboard, mcp, userPlugin].forEach(cb => {
+            [keyboard, browser, userPlugin].forEach(cb => {
                 if (!cb) return;
                 cb.checked = false;
                 cb.disabled = true;
@@ -164,7 +163,7 @@
         FLAG_KEYS.forEach((k) => {
             const target = k === 'computer_use_enabled'
                 ? keyboard
-                : (k === 'mcp_enabled' ? mcp : (k === 'user_plugin_enabled' ? userPlugin : null));
+                : (k === 'browser_use_enabled' ? browser : (k === 'user_plugin_enabled' ? userPlugin : null));
             if (!target) return;
             const ready = capabilityReady(snap, k);
             const reason = capabilityReason(snap, k);
@@ -190,7 +189,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, mcp, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master) return;
         const clearProcessing = (cb) => {
             if (!cb) return;
@@ -278,7 +277,7 @@
         };
 
         bindFlag(keyboard, 'computer_use_enabled');
-        bindFlag(mcp, 'mcp_enabled');
+        bindFlag(browser, 'browser_use_enabled');
         bindFlag(userPlugin, 'user_plugin_enabled');
 
         window.addEventListener('live2d-agent-popup-opening', async () => {

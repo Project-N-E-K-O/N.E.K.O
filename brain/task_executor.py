@@ -617,9 +617,8 @@ Return only the JSON object, nothing else.
         except Exception:
             logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
         
-        # 如果两个功能都没开启，直接返回
-        if not mcp_enabled and not computer_use_enabled and not user_plugin_enabled:
-            logger.debug("[TaskExecutor] Both MCP and ComputerUse disabled, skipping")
+        if not mcp_enabled and not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
+            logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
         
         # 格式化对话

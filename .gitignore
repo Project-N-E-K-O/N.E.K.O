@@ -96,4 +96,7 @@ start.sh
 # --- CosyVoice Ignore Rules ---
 local_server/cosyvoice_server/*wav
 
+
 .claude
+tests/api_keys.json
+tests/test_inputs/*.wav

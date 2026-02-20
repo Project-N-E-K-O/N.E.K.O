@@ -38,7 +38,7 @@ const PLATFORM_CONFIG = {
         instruction: `<b>获取途径：</b><br>1. 浏览器登录 weibo.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
         fields: [
             { key: 'SUB', label: 'SUB', desc: '核心登录凭证 (必填, 以_2A开头)', required: true },
-            // 【修改点】：替换为 XSRF-TOKEN，配合后端的防 500 报错机制
+            // 替换为 XSRF-TOKEN，配合后端的防 500 报错机制
             { key: 'XSRF-TOKEN', label: 'XSRF-TOKEN', desc: '防伪造令牌 (选填, 若未找到后端会自动伪造)', required: false }
         ]
     },
@@ -166,7 +166,7 @@ function showAlert(success, message) {
     alertEl.style.backgroundColor = success ? '#ecfdf5' : '#fef2f2';
     alertEl.style.color = success ? '#059669' : '#dc2626';
     alertEl.style.border = `1px solid ${success ? '#a7f3d0' : '#fecaca'}`;
-    alertEl.innerHTML = message;
+    alertEl.textContent = message;
     setTimeout(() => { alertEl.style.display = 'none'; }, 4000);
 }
 
@@ -211,6 +211,12 @@ async function deleteCookie(platformKey) {
         if (data.success) {
             refreshStatusList();
             showAlert(true, `✅ 已清空`);
+         }else{
+            showAlert(false, data.message || '删除失败');
         }
-    } catch (error) {}
+    }catch(error){
+        //加错误提示
+        showAlert(false, '删除失败，请检查服务状态');
+        console.error('删除出错', error);
+    }
 }

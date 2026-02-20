@@ -1280,6 +1280,7 @@
       "keyboardControl": "键鼠控制",
       "userPlugin": "用户插件",
       "mcpTools": "MCP工具",
+      "browserUse": "浏览器控制",
       "focusMode": "允许打断",
       "unavailable": "{{name}}不可用",
       "checking": "查询中...",

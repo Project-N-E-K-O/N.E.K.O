@@ -123,6 +123,22 @@ async def _run_review_in_background(lanlan_name: str):
         if lanlan_name in correction_cancel_flags:
             correction_cancel_flags[lanlan_name].clear()
 
+@app.post("/cache/{lanlan_name}")
+async def cache_conversation(request: HistoryRequest, lanlan_name: str):
+    """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
+    供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
+    try:
+        input_history = convert_to_messages(json.loads(request.input_history))
+        if not input_history:
+            return {"status": "cached", "count": 0}
+        logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
+        await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
+        return {"status": "cached", "count": len(input_history)}
+    except Exception as e:
+        logger.error(f"[MemoryServer] cache 失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     global correction_tasks

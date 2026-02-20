@@ -7,6 +7,7 @@ from utils.config_manager import get_config_manager
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_S = 300
+_DEFAULT_KEEP_ALIVE = True
 
 # Blue breathing glow overlay.  Blocks user mouse; CDP automation bypasses it.
 _OVERLAY_JS = r"""
@@ -84,17 +85,29 @@ class BrowserUseAdapter:
         """Lazy-create and cache a BrowserSession."""
         if self._browser_session is None:
             from browser_use.browser.session import BrowserSession
-            self._browser_session = BrowserSession(headless=self._headless)
+            # keep_alive=True keeps the browser window/session after each task,
+            # so users can inspect results and follow-up tasks can reuse context.
+            self._browser_session = BrowserSession(
+                headless=self._headless,
+                keep_alive=_DEFAULT_KEEP_ALIVE,
+            )
         return self._browser_session
 
     def _build_llm(self) -> Any:
         """Build a browser-use compatible ChatOpenAI instance."""
         from browser_use.llm import ChatOpenAI as BUChatOpenAI
         api_cfg = self._config_manager.get_model_api_config("agent")
+        base_url = api_cfg.get("base_url", "")
+        needs_text_mode = any(k in base_url for k in ("dashscope", "siliconflow", "bigmodel", "stepfun"))
         return BUChatOpenAI(
             model=api_cfg.get("model"),
             api_key=api_cfg.get("api_key"),
-            base_url=api_cfg.get("base_url"),
+            base_url=base_url,
+            temperature=0.0,
+            dont_force_structured_output=needs_text_mode,
+            add_schema_to_system_prompt=needs_text_mode,
+            remove_min_items_from_schema=needs_text_mode,
+            remove_defaults_from_schema=needs_text_mode,
         )
 
     async def _cdp_eval_on_page(self, session: Any, js: str) -> None:
