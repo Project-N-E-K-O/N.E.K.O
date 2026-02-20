@@ -805,8 +805,6 @@ async def startup():
         pass
 
     try:
-        import httpx
-
         async def _http_plugin_provider(force_refresh: bool = False):
             url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
             if force_refresh:
@@ -1092,7 +1090,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
                     if r.status_code != 200:
@@ -1374,15 +1371,16 @@ async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
         # Cancel any in-flight background analyzer tasks
+        tasks_to_await = []
         for t in list(Modules._background_tasks):
             if not t.done():
                 t.cancel()
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.warning(f"[Agent] Error awaiting cancelled background task: {e}")
+                tasks_to_await.append(t)
+        if tasks_to_await:
+            results = await asyncio.gather(*tasks_to_await, return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
+                    logger.warning(f"[Agent] Error awaiting cancelled background task: {res}")
         Modules._background_tasks.clear()
 
         # Cancel any in-flight asyncio tasks and clear registry
@@ -1396,6 +1394,7 @@ async def admin_control(payload: Dict[str, Any]):
                 logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
 
         Modules.task_registry.clear()
+        Modules.last_user_turn_fingerprint.clear()
         # Clear scheduling state
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None

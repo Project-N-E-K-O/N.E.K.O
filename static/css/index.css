@@ -15,17 +15,7 @@ body {
     /* 防止出现滚动条 */
 }
 
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
 
-    to {
-        opacity: 0.85;
-        transform: translateY(0);
-    }
-}
 
 /* Status 气泡框样式 - 更显眼的样式 */
 #status-toast {
