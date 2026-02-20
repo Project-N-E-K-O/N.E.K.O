@@ -999,7 +999,7 @@ function isFreeVersionText(value) {
 function setAssistApiInputsDisabled(disabled) {
     const assistApiKeyInputs = [
         'assistApiKeyInputQwen', 'assistApiKeyInputOpenai', 'assistApiKeyInputGlm',
-        'assistApiKeyInputStep', 'assistApiKeyInputSilicon'
+        'assistApiKeyInputStep', 'assistApiKeyInputSilicon', 'assistApiKeyInputGemini'
     ];
     assistApiKeyInputs.forEach(id => {
         const input = document.getElementById(id);
