@@ -8,7 +8,7 @@ import uuid
 import logging
 import time
 import hashlib
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, ClassVar
 from datetime import datetime
 import httpx
 
@@ -62,14 +62,14 @@ class Modules:
     # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
-    last_user_turn_fingerprint: Dict[str, str] = {}
+    last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "not checked"},
         "mcp": {"ready": False, "reason": "not checked"},
         "browser_use": {"ready": False, "reason": "not checked"},
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
-    _background_tasks = set()
+    _background_tasks: ClassVar[set] = set()
 
 
 def _rewire_computer_use_dependents() -> None:
@@ -364,7 +364,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
         if event_id:
-            asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+            ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+            Modules._background_tasks.add(ack_task)
+            ack_task.add_done_callback(Modules._background_tasks.discard)
         if isinstance(messages, list) and messages:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
@@ -471,7 +473,7 @@ async def _run_computer_use_task(
 
         # Emit task_update (terminal state)
         try:
-            asyncio.create_task(_emit_main_event(
+            task_obj = asyncio.create_task(_emit_main_event(
                 "task_update", lanlan_name,
                 task={
                     "id": task_id, "status": info["status"], "type": "computer_use",
@@ -479,6 +481,8 @@ async def _run_computer_use_task(
                     "error": info.get("error"),
                 },
             ))
+            Modules._background_tasks.add(task_obj)
+            task_obj.add_done_callback(Modules._background_tasks.discard)
         except Exception:
             pass
 
@@ -495,7 +499,7 @@ async def _run_computer_use_task(
                 summary = f'你的任务“{desc}”{_done}'
             else:
                 summary = "任务已完成" if success else "任务执行失败"
-            asyncio.create_task(_emit_task_result(
+            task_obj = asyncio.create_task(_emit_task_result(
                 lanlan_name,
                 channel="computer_use",
                 task_id=task_id,
@@ -504,6 +508,8 @@ async def _run_computer_use_task(
                 detail=cu_detail,
                 error_message=(info.get("error") or "") if not success else "",
             ))
+            Modules._background_tasks.add(task_obj)
+            task_obj.add_done_callback(Modules._background_tasks.discard)
         except Exception:
             pass
 
@@ -827,7 +833,9 @@ async def startup():
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
     # Start computer-use scheduler
-    asyncio.create_task(_computer_use_scheduler_loop())
+    sch_task = asyncio.create_task(_computer_use_scheduler_loop())
+    Modules._background_tasks.add(sch_task)
+    sch_task.add_done_callback(Modules._background_tasks.discard)
     # Start ZeroMQ bridge for main_server events
     try:
         Modules.agent_bridge = AgentServerEventBridge(on_session_event=_on_session_event)
@@ -921,8 +929,9 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["error"] = str(e)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
 
-    asyncio.create_task(_run_plugin())
-    # 如果未来需要集中管理后台插件任务，可将 Task 收集到 Modules 上的集合并在 done 后移除
+    plugin_task = asyncio.create_task(_run_plugin())
+    Modules._background_tasks.add(plugin_task)
+    plugin_task.add_done_callback(Modules._background_tasks.discard)
     return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
 
 
