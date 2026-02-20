@@ -792,6 +792,168 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
         }
 
 
+async def _fetch_content_by_region(
+    china_fetch_func,
+    non_china_fetch_func,
+    limit: int,
+    content_key: str,
+    china_log_msg: str,
+    non_china_log_msg: str
+) -> Dict[str, Any]:
+    """
+    根据用户区域获取内容的通用辅助函数
+    
+    Args:
+        china_fetch_func: 中文区域使用的异步获取函数
+        non_china_fetch_func: 非中文区域使用的异步获取函数
+        limit: 内容最大数量
+        content_key: 返回结果中的内容键名 ('video' 或 'news')
+        china_log_msg: 中文区域的日志消息
+        non_china_log_msg: 非中文区域的日志消息
+    
+    Returns:
+        包含成功状态和内容的字典
+    """
+    china_region = is_china_region()
+    region = 'china' if china_region else 'non-china'
+    
+    try:
+        if china_region:
+            logger.info(china_log_msg)
+            result = await china_fetch_func(limit)
+            response = {
+                'success': result.get('success', False),
+                'region': region,
+                content_key: result
+            }
+        else:
+            logger.info(non_china_log_msg)
+            result = await non_china_fetch_func(limit)
+            response = {
+                'success': result.get('success', False),
+                'region': region,
+                content_key: result
+            }
+        
+        if not result.get('success') and result.get('error'):
+            response['error'] = result.get('error')
+        return response
+            
+    except Exception as e:
+        logger.error(f"获取内容失败: content_key={content_key} region={region} error={e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
+    """
+    根据用户区域获取视频内容
+    
+    中文区域：获取B站首页视频
+    非中文区域：获取Reddit热门帖子
+    
+    Args:
+        limit: 内容最大数量
+    
+    Returns:
+        包含成功状态和视频内容的字典
+    """
+    return await _fetch_content_by_region(
+        china_fetch_func=fetch_bilibili_trending,
+        non_china_fetch_func=fetch_reddit_popular,
+        limit=limit,
+        content_key='video',
+        china_log_msg="检测到中文区域，获取B站视频内容",
+        non_china_log_msg="检测到非中文区域，获取Reddit热门内容"
+    )
+
+
+async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
+    """
+    根据用户区域获取新闻/热议话题内容
+    
+    中文区域：获取微博热议话题
+    非中文区域：获取Twitter热门话题
+    
+    Args:
+        limit: 内容最大数量
+    
+    Returns:
+        包含成功状态和新闻内容的字典
+    """
+    return await _fetch_content_by_region(
+        china_fetch_func=fetch_weibo_trending,
+        non_china_fetch_func=fetch_twitter_trending,
+        limit=limit,
+        content_key='news',
+        china_log_msg="检测到中文区域，获取微博热议话题",
+        non_china_log_msg="检测到非中文区域，获取Twitter热门话题"
+    )
+
+
+def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
+    """格式化B站视频列表"""
+    output_lines = ["【B站首页推荐】"]
+    for i, video in enumerate(videos[:limit], 1):
+        title = video.get('title', '')
+        author = video.get('author', '')
+        rcmd_reason = video.get('rcmd_reason', '')
+        
+        output_lines.append(f"{i}. {title}")
+        output_lines.append(f"   UP主: {author}")
+        if rcmd_reason:
+            output_lines.append(f"   推荐理由: {rcmd_reason}")
+    output_lines.append("")
+    return output_lines
+
+
+def _format_reddit_posts(posts: List[Dict], limit: int = 5) -> List[str]:
+    """格式化Reddit帖子列表"""
+    output_lines = ["【Reddit Hot Posts】"]
+    for i, post in enumerate(posts[:limit], 1):
+        title = post.get('title', '')
+        subreddit = post.get('subreddit', '')
+        score = post.get('score', '')
+        
+        output_lines.append(f"{i}. {title}")
+        if subreddit:
+            output_lines.append(f"   {subreddit} | {score} upvotes")
+    output_lines.append("")
+    return output_lines
+
+
+def _format_weibo_trending(trending_list: List[Dict], limit: int = 5) -> List[str]:
+    """格式化微博热议话题列表"""
+    output_lines = ["【微博热议话题】"]
+    for i, item in enumerate(trending_list[:limit], 1):
+        word = item.get('word', '')
+        note = item.get('note', '')
+        
+        line = f"{i}. {word}"
+        if note:
+            line += f" [{note}]"
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
+
+def _format_twitter_trending(trending_list: List[Dict], limit: int = 5) -> List[str]:
+    """格式化Twitter热门话题列表"""
+    output_lines = ["【Twitter Trending Topics】"]
+    for i, item in enumerate(trending_list[:limit], 1):
+        word = item.get('word', '')
+        tweet_count = item.get('tweet_count', '')
+        
+        line = f"{i}. {word}"
+        if tweet_count and tweet_count != 'N/A':
+            line += f" ({tweet_count} tweets)"
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
+
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
     将热门内容格式化为可读字符串
@@ -810,94 +972,95 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
     region = trending_content.get('region', 'china')
     
     if region == 'china':
-        # 格式化B站内容（中文）
         bilibili_data = trending_content.get('bilibili', {})
         if bilibili_data.get('success'):
-            output_lines.append("【B站首页推荐】")
             videos = bilibili_data.get('videos', [])
-            
-            for i, video in enumerate(videos[:5], 1):  # 只显示前5个
-                title = video.get('title', '')
-                author = video.get('author', '')
-                url = video.get('url', '')
-                rcmd_reason = video.get('rcmd_reason', '')
-                
-                output_lines.append(f"{i}. {title}")
-                output_lines.append(f"   UP主: {author}")
-                # 显示推荐理由（如果有）
-                if rcmd_reason:
-                    output_lines.append(f"   推荐理由: {rcmd_reason}")
-                if url:
-                    output_lines.append(f"   链接: {url}")
-            
-            output_lines.append("")  # 空行
+            output_lines.extend(_format_bilibili_videos(videos))
         
-        # 格式化微博内容（中文）
         weibo_data = trending_content.get('weibo', {})
         if weibo_data.get('success'):
-            output_lines.append("【微博热议话题】")
             trending_list = weibo_data.get('trending', [])
-            
-            for i, item in enumerate(trending_list[:5], 1):  # 只显示前5个
-                word = item.get('word', '')
-                note = item.get('note', '')
-                url = item.get('url', '')
-                
-                line = f"{i}. {word}"
-                if note:
-                    line += f" [{note}]"
-                output_lines.append(line)
-                if url:
-                    output_lines.append(f"   链接: {url}")
+            output_lines.extend(_format_weibo_trending(trending_list))
         
         if not output_lines:
             return "暂时无法获取推荐内容"
     else:
-        # 格式化Reddit内容（英文）
         reddit_data = trending_content.get('reddit', {})
         if reddit_data.get('success'):
-            output_lines.append("【Reddit Hot Posts】")
             posts = reddit_data.get('posts', [])
-            
-            for i, post in enumerate(posts[:5], 1):  # 只显示前5个
-                title = post.get('title', '')
-                subreddit = post.get('subreddit', '')
-                score = post.get('score', '')
-                url = post.get('url', '')
-                
-                output_lines.append(f"{i}. {title}")
-                if subreddit:
-                    output_lines.append(f"   {subreddit} | {score} upvotes")
-                if url:
-                    output_lines.append(f"   Link: {url}")
-            
-            output_lines.append("")  # 空行
+            output_lines.extend(_format_reddit_posts(posts))
         
-        # 格式化Twitter内容（英文）
         twitter_data = trending_content.get('twitter', {})
         if twitter_data.get('success'):
-            output_lines.append("【Twitter Trending Topics】")
             trending_list = twitter_data.get('trending', [])
-            
-            for i, item in enumerate(trending_list[:5], 1):  # 只显示前5个
-                word = item.get('word', '')
-                tweet_count = item.get('tweet_count', '')
-                note = item.get('note', '')
-                url = item.get('url', '')
-                
-                line = f"{i}. {word}"
-                if tweet_count and tweet_count != 'N/A':
-                    line += f" ({tweet_count} tweets)"
-                if note:
-                    line += f" - {note}"
-                output_lines.append(line)
-                if url:
-                    output_lines.append(f"   Link: {url}")
+            output_lines.extend(_format_twitter_trending(trending_list))
         
         if not output_lines:
-            return "暂时无法获取热门内容"
+            return "Unable to fetch trending content at the moment"
     
     return "\n".join(output_lines)
+
+
+def format_video_content(video_content: Dict[str, Any]) -> str:
+    """
+    将视频内容格式化为可读字符串
+    
+    根据区域自动格式化：
+    - 中文区域：B站视频内容
+    - 非中文区域：Reddit帖子内容
+    
+    Args:
+        video_content: fetch_video_content返回的结果
+    
+    Returns:
+        格式化后的字符串
+    """
+    region = video_content.get('region', 'china')
+    video_data = video_content.get('video', {})
+    
+    if region == 'china':
+        if video_data.get('success'):
+            videos = video_data.get('videos', [])
+            output_lines = _format_bilibili_videos(videos)
+            return "\n".join(output_lines)
+        return "暂时无法获取视频推荐内容"
+    else:
+        if video_data.get('success'):
+            posts = video_data.get('posts', [])
+            output_lines = _format_reddit_posts(posts)
+            return "\n".join(output_lines)
+        return "Unable to fetch trending posts at the moment"
+
+
+def format_news_content(news_content: Dict[str, Any]) -> str:
+    """
+    将新闻内容格式化为可读字符串
+    
+    根据区域自动格式化：
+    - 中文区域：微博热议话题
+    - 非中文区域：Twitter热门话题
+    
+    Args:
+        news_content: fetch_news_content返回的结果
+    
+    Returns:
+        格式化后的字符串
+    """
+    region = news_content.get('region', 'china')
+    news_data = news_content.get('news', {})
+    
+    if region == 'china':
+        if news_data.get('success'):
+            trending_list = news_data.get('trending', [])
+            output_lines = _format_weibo_trending(trending_list)
+            return "\n".join(output_lines)
+        return "暂时无法获取热议话题"
+    else:
+        if news_data.get('success'):
+            trending_list = news_data.get('trending', [])
+            output_lines = _format_twitter_trending(trending_list)
+            return "\n".join(output_lines)
+        return "Unable to fetch trending topics at the moment"
 
 
 def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Dict[str, str]]]:

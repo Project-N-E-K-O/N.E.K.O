@@ -3,6 +3,9 @@
  * 包含弹出框创建、设置菜单、开关项组件
  */
 
+// 动画时长常量（与 CSS transition duration 保持一致）
+const POPUP_ANIMATION_DURATION_MS = 200;
+
 // 创建弹出框
 Live2DManager.prototype.createPopup = function (buttonId) {
     const popup = document.createElement('div');
@@ -226,26 +229,72 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     container.appendChild(labelText);
     container.appendChild(sliderWrapper);
 
+    // 如果是主动搭话，在间隔控件内添加搭话方式选项
+    if (toggle.id === 'proactive-chat') {
+        if (typeof window.createChatModeToggles === 'function') {
+            const chatModesContainer = window.createChatModeToggles('live2d');
+            container.appendChild(chatModesContainer);
+        }
+    }
+
     // 存储展开/收缩方法供外部调用
     container._expand = () => {
         container.style.display = 'flex';
+        container.style.flexWrap = 'wrap';
+        // 先设置固定高度以触发动画
+        container.style.height = '0';
+        // 清除之前的展开超时（防止竞争条件）
+        if (container._expandTimeout) {
+            clearTimeout(container._expandTimeout);
+            container._expandTimeout = null;
+        }
+        // 清除待处理的折叠超时（防止折叠回调在展开后执行）
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
         // 使用 requestAnimationFrame 确保 display 变化后再触发动画
         requestAnimationFrame(() => {
-            container.style.height = '24px';
+            // 使用 scrollHeight 获取实际高度
+            const targetHeight = container.scrollHeight;
+            container.style.height = targetHeight + 'px';
             container.style.opacity = '1';
             container.style.padding = '4px 12px 8px 44px';
+            // 动画完成后设置为 auto 以适应内容变化
+            container._expandTimeout = setTimeout(() => {
+                if (container.style.opacity === '1') {
+                    container.style.height = 'auto';
+                }
+                container._expandTimeout = null;
+            }, POPUP_ANIMATION_DURATION_MS);
         });
     };
     container._collapse = () => {
-        container.style.height = '0';
-        container.style.opacity = '0';
-        container.style.padding = '0 12px 0 44px';
-        // 动画结束后隐藏
-        setTimeout(() => {
-            if (container.style.opacity === '0') {
-                container.style.display = 'none';
-            }
-        }, 200);
+        // 清除待处理的展开超时（防止展开回调在折叠后执行）
+        if (container._expandTimeout) {
+            clearTimeout(container._expandTimeout);
+            container._expandTimeout = null;
+        }
+        // 清除之前的折叠超时（防止竞争条件）
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
+        // 先设置为固定高度以触发动画
+        container.style.height = container.scrollHeight + 'px';
+        // 使用 requestAnimationFrame 确保高度设置后再触发动画
+        requestAnimationFrame(() => {
+            container.style.height = '0';
+            container.style.opacity = '0';
+            container.style.padding = '0 12px 0 44px';
+            // 动画结束后隐藏（在 requestAnimationFrame 内部启动计时）
+            container._collapseTimeout = setTimeout(() => {
+                if (container.style.opacity === '0') {
+                    container.style.display = 'none';
+                }
+                container._collapseTimeout = null;
+            }, POPUP_ANIMATION_DURATION_MS);
+        });
     };
 
     return container;
@@ -901,7 +950,7 @@ Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;

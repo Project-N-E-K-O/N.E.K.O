@@ -299,6 +299,207 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
     });
 };
 
+// 全局函数：更新圆形指示器样式
+window.updateChatModeStyle = function(checkbox) {
+    if (!checkbox) return;
+    const wrapper = checkbox.parentElement;
+    if (!wrapper) return;
+    const indicator = wrapper.querySelector('.chat-mode-indicator');
+    const checkmark = indicator?.querySelector('.chat-mode-checkmark');
+    if (!indicator || !checkmark) return;
+    if (checkbox.checked) {
+        indicator.style.backgroundColor = '#44b7fe';
+        indicator.style.borderColor = '#44b7fe';
+        checkmark.style.opacity = '1';
+    } else {
+        indicator.style.backgroundColor = 'transparent';
+        indicator.style.borderColor = '#ccc';
+        checkmark.style.opacity = '0';
+    }
+};
+
+// 兼容旧函数名
+window.updateVisionOnlyStyle = window.updateChatModeStyle;
+
+// 全局工厂函数：创建搭话方式选项控件
+window.createChatModeToggle = function(options) {
+    const { checkboxId, labelKey, tooltipKey, globalVarName } = options;
+    
+    const wrapper = document.createElement('div');
+    const tooltipText = window.t ? window.t(tooltipKey) : '';
+    wrapper.title = tooltipText;
+    Object.assign(wrapper.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        width: '100%',
+        paddingLeft: '0',
+        marginTop: '2px'
+    });
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = checkboxId;
+    if (typeof window[globalVarName] !== 'undefined') {
+        checkbox.checked = window[globalVarName];
+    }
+    Object.assign(checkbox.style, {
+        position: 'absolute',
+        opacity: '0',
+        width: '0',
+        height: '0'
+    });
+
+    const indicator = document.createElement('div');
+    indicator.classList.add('chat-mode-indicator');
+    Object.assign(indicator.style, {
+        width: '16px',
+        height: '16px',
+        borderRadius: '50%',
+        border: '2px solid #ccc',
+        backgroundColor: 'transparent',
+        cursor: 'pointer',
+        flexShrink: '0',
+        transition: 'all 0.2s ease',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const checkmark = document.createElement('div');
+    checkmark.classList.add('chat-mode-checkmark');
+    checkmark.innerHTML = '✓';
+    Object.assign(checkmark.style, {
+        color: '#fff',
+        fontSize: '11px',
+        fontWeight: 'bold',
+        lineHeight: '1',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        pointerEvents: 'none',
+        userSelect: 'none'
+    });
+    indicator.appendChild(checkmark);
+
+    const label = document.createElement('label');
+    label.textContent = window.t ? window.t(labelKey) : '';
+    label.setAttribute('data-i18n', labelKey);
+    label.htmlFor = checkboxId;
+    Object.assign(label.style, {
+        fontSize: '10px',
+        color: '#666',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap'
+    });
+
+    checkbox.addEventListener('change', (e) => {
+        e.stopPropagation();
+        window.updateChatModeStyle(checkbox);
+        window[globalVarName] = checkbox.checked;
+        if (typeof window.saveNEKOSettings === 'function') {
+            window.saveNEKOSettings();
+        }
+        if (checkbox.checked) {
+            // 开启时，如果主动搭话已开启，重置并启动调度
+            if (window.proactiveChatEnabled && typeof window.resetProactiveChatBackoff === 'function') {
+                window.resetProactiveChatBackoff();
+            }
+        } else {
+            // 关闭时的逻辑：区分主开关和子模式
+            const isMainSwitch = globalVarName === 'proactiveChatEnabled';
+            
+            if (isMainSwitch) {
+                // 主开关关闭：停止调度
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    window.stopProactiveChatSchedule();
+                }
+            } else {
+                // 子模式关闭：如果没有其他子模式开启，停止调度
+                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
+                if (!hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
+                    window.stopProactiveChatSchedule();
+                }
+            }
+        }
+        console.log(`${label.textContent}已${checkbox.checked ? '开启' : '关闭'}`);
+    });
+
+    checkbox.addEventListener('click', (e) => e.stopPropagation());
+    label.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        checkbox.click();
+    });
+    indicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        checkbox.click();
+    });
+
+    wrapper.appendChild(checkbox);
+    wrapper.appendChild(indicator);
+    wrapper.appendChild(label);
+
+    window.updateChatModeStyle(checkbox);
+
+    return wrapper;
+};
+
+// 聊天模式配置（单一数据源）
+window.CHAT_MODE_CONFIG = [
+    {
+        mode: 'vision',
+        labelKey: 'settings.toggles.proactiveVisionChat',
+        tooltipKey: 'settings.toggles.proactiveVisionChatTooltip',
+        globalVarName: 'proactiveVisionChatEnabled'
+    },
+    {
+        mode: 'news',
+        labelKey: 'settings.toggles.proactiveNewsChat',
+        tooltipKey: 'settings.toggles.proactiveNewsChatTooltip',
+        globalVarName: 'proactiveNewsChatEnabled'
+    },
+    {
+        mode: 'video',
+        labelKey: 'settings.toggles.proactiveVideoChat',
+        tooltipKey: 'settings.toggles.proactiveVideoChatTooltip',
+        globalVarName: 'proactiveVideoChatEnabled'
+    }
+];
+
+// 全局工厂函数：创建所有搭话方式选项
+window.createChatModeToggles = function(prefix) {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+        width: '100%'
+    });
+
+    // 使用共享配置创建搭话方式选项
+    window.CHAT_MODE_CONFIG.forEach(config => {
+        const toggle = window.createChatModeToggle({
+            checkboxId: `${prefix}-proactive-${config.mode}-chat`,
+            labelKey: config.labelKey,
+            tooltipKey: config.tooltipKey,
+            globalVarName: config.globalVarName
+        });
+        container.appendChild(toggle);
+    });
+
+    return container;
+};
+
+// 兼容旧函数名
+window.createVisionOnlyToggle = function(checkboxId) {
+    return window.createChatModeToggle({
+        checkboxId: checkboxId,
+        labelKey: 'settings.toggles.proactiveVisionChat',
+        tooltipKey: 'settings.toggles.proactiveVisionChatTooltip',
+        globalVarName: 'proactiveVisionChatEnabled'
+    });
+};
+
 // 显示弹出框（1秒后自动隐藏），支持点击切换
 Live2DManager.prototype.showPopup = function (buttonId, popup) {
     // 确保 _popupTimers 已初始化
@@ -317,6 +518,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     if (buttonId === 'settings') {
         const focusCheckbox = popup.querySelector('#live2d-focus-mode');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
+        const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
 
         // 辅助函数：更新 checkbox 的视觉样式
         const updateCheckboxStyle = (checkbox) => {
@@ -345,36 +547,52 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
             // "允许打断"按钮值与 focusModeEnabled 相反
             const newChecked = !window.focusModeEnabled;
-            // 只在状态改变时更新，避免不必要的 DOM 操作
             if (focusCheckbox.checked !== newChecked) {
                 focusCheckbox.checked = newChecked;
-                // 使用 requestAnimationFrame 确保 DOM 已更新后再更新样式
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
-            } else {
-                // 即使状态相同，也确保视觉样式正确（处理概率性问题）
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
             }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(focusCheckbox);
+            });
         }
 
         // 更新 proactive chat checkbox 状态和视觉样式
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
             const newChecked = window.proactiveChatEnabled;
-            // 只在状态改变时更新，避免不必要的 DOM 操作
             if (proactiveChatCheckbox.checked !== newChecked) {
                 proactiveChatCheckbox.checked = newChecked;
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
-            } else {
-                // 即使状态相同，也确保视觉样式正确（处理概率性问题）
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
             }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(proactiveChatCheckbox);
+            });
+        }
+
+        // 更新 proactive vision checkbox 状态和视觉样式
+        if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
+            const newChecked = window.proactiveVisionEnabled;
+            if (proactiveVisionCheckbox.checked !== newChecked) {
+                proactiveVisionCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(proactiveVisionCheckbox);
+            });
+        }
+
+        // 同步搭话方式选项状态
+        if (window.CHAT_MODE_CONFIG) {
+            window.CHAT_MODE_CONFIG.forEach(config => {
+                const checkbox = popup.querySelector(`#live2d-proactive-${config.mode}-chat`);
+                if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
+                    const newChecked = window[config.globalVarName];
+                    if (checkbox.checked !== newChecked) {
+                        checkbox.checked = newChecked;
+                    }
+                    requestAnimationFrame(() => {
+                        if (typeof window.updateChatModeStyle === 'function') {
+                            window.updateChatModeStyle(checkbox);
+                        }
+                    });
+                }
+            });
         }
     }
 
