@@ -715,7 +715,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         hud.style.cursor = 'move';
         hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.2s ease, padding 0.2s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -818,7 +818,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         // 恢复视觉状态
         hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.2s ease, padding 0.2s ease';
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {

@@ -288,6 +288,16 @@ class _ScaledPyAutoGUI:
         a, kw = self._project(a, kw)
         return self._backend.dragTo(*a, **kw)
 
+    def scroll(self, clicks, x=None, y=None, *args, **kwargs):
+        if x is not None and y is not None:
+            if self._in_range(x, y):
+                scaled_x = int(round(x * self._w / self._COORD_MAX))
+                scaled_y = int(round(y * self._h / self._COORD_MAX))
+            else:
+                scaled_x, scaled_y = int(round(x)), int(round(y))
+            return self._backend.scroll(clicks, x=scaled_x, y=scaled_y, *args, **kwargs)
+        return self._backend.scroll(clicks, x=x, y=y, *args, **kwargs)
+
     def _clipboard_type(self, text: str):
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
         import pyperclip

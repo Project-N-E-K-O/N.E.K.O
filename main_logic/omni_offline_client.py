@@ -483,7 +483,11 @@ class OmniOfflineClient:
                         await self.on_text_delta(content, is_first_chunk)
                     is_first_chunk = False
         except Exception as e:
-            logger.error("OmniOfflineClient.stream_proactive error: %s", e)
+            error_msg = f"OmniOfflineClient.stream_proactive error: {e}"
+            logger.error(error_msg)
+            if self.handle_connection_error:
+                await self.handle_connection_error(error_msg)
+            return False
         finally:
             self._is_responding = False
             if assistant_message:

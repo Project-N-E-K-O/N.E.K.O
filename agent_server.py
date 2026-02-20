@@ -324,7 +324,7 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
             continue
         # Keep text as primary signal, and attach optional metadata if present.
         if "text" in m and "content" not in m:
-            logger.warning(f"[AgentServer] Deprecation Warning: Received user message with 'text' but no 'content'. Message: {m}")
+            logger.warning(f"[AgentServer] Deprecation Warning: Received user message with 'text' but no 'content'.")
         text = str(m.get("text") or m.get("content") or "").strip()
         mid = str(
             m.get("id")

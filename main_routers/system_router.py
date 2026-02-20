@@ -939,7 +939,7 @@ async def proactive_chat(request: Request):
         from config.prompts_sys import get_proactive_screen_prompt, get_proactive_generate_prompt, get_proactive_chat_rewrite_prompt
         
         # 获取当前角色数据（包括完整人设）
-        master_name_current, her_name_current, _, catgirl_data, _, lanlan_prompt_map, _, _, _, _ = _config_manager.get_character_data()
+        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _, _ = _config_manager.get_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -1069,7 +1069,10 @@ async def proactive_chat(request: Request):
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                raw_memory_context = resp.text
+                if resp.status_code == 200:
+                    raw_memory_context = resp.text
+                else:
+                    logger.warning(f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文")
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         

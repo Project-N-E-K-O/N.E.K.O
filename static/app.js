@@ -8127,7 +8127,26 @@ function init_app() {
                     return;
                 }
 
-                if (screenshotIndex !== -1) {
+                // await 期间用户可能切换模式，重新同步并过滤可用模式
+                syncProactiveFlags();
+                const latestModes = [];
+                if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                    latestModes.push('vision', 'window');
+                }
+                if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                    latestModes.push('news');
+                }
+                if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                    latestModes.push('video');
+                }
+                availableModes = availableModes.filter(m => latestModes.includes(m));
+                requestBody.enabled_modes = availableModes;
+                if (availableModes.length === 0) {
+                    console.log('await后无可用模式，取消本次搭话');
+                    return;
+                }
+
+                if (screenshotIndex !== -1 && availableModes.includes('vision')) {
                     const screenshotDataUrl = results[screenshotIndex];
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
@@ -8139,7 +8158,7 @@ function init_app() {
                     }
                 }
 
-                if (windowTitleIndex !== -1) {
+                if (windowTitleIndex !== -1 && availableModes.includes('window')) {
                     const windowTitleResult = results[windowTitleIndex];
                     if (windowTitleResult && windowTitleResult.success && windowTitleResult.window_title) {
                         requestBody.window_title = windowTitleResult.window_title;
