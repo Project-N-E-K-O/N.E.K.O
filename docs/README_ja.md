@@ -241,9 +241,9 @@ N.E.K.O/
 
 ### 開発への参加
 
-本プロジェクトの環境依存は非常にシンプルです。`python3.11`環境で`pip install -r requirements.txt`または`uv sync`を実行してください。開発者はQQグループ1022939659への参加をお勧めします。猫娘の名前はプロジェクトタイトルにあります。
+本プロジェクトの環境依存は非常にシンプルです。`uv sync`または`python3.11`環境で`pip install -r requirements.txt`を実行してください。開発者はDiscordサーバーへの参加をお勧めします。
 
-開発者向け詳細起動手順：(1)新しい`python3.11`環境を作成。(2)`uv sync`を実行して依存関係をインストール。(3)`uv run python memory_server.py`、`uv run python main_server.py`（オプション：`uv run python agent_server.py`）を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。
+開発者向け詳細起動手順：(1)`uv`環境を作成。(2)`uv sync`を実行して依存関係をインストール。(3)`uv run python memory_server.py`、`uv run python main_server.py`（オプション：`uv run python agent_server.py`）を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。
 
 
 ### TODO リスト（開発計画）

@@ -28,7 +28,7 @@
 7. **ACH_SEND_IMAGE** - 与你分享的世界 ⏳
 
 ### 计数型成就
-8. **ACH_MEOW_100** - 喵语十级（100次）⏳
+8. **ACH_MEOW_100** - 喵语十级（50次）⏳
 
 > 详细状态请查看 `ACHIEVEMENT_STATUS.md`
 

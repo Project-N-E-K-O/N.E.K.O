@@ -399,7 +399,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
-        voice_id: 音色ID，默认使用"Momo"
+        voice_id: 音色ID, 默认使用"Momo"
     """
     import asyncio
 
@@ -408,7 +408,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     
     async def async_worker():
         """异步TTS worker主循环"""
-        tts_url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime-2025-09-18"
+        tts_url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime-2025-11-27"
         ws = None
         current_speech_id = None
         receive_task = None

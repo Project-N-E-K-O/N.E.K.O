@@ -668,7 +668,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                 if (isChecked) {
                     window.resetProactiveChatBackoff && window.resetProactiveChatBackoff();
                 } else {
-                    window.stopProactiveChatSchedule && window.stopProactiveChatSchedule();
+                    if (!window.proactiveChatEnabled && !window.proactiveVisionEnabled && window.stopProactiveChatSchedule) window.stopProactiveChatSchedule();
                 }
             } else if (toggle.id === 'proactive-vision') {
                 window.proactiveVisionEnabled = isChecked;

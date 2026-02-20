@@ -2827,16 +2827,23 @@ function init_app() {
             }
         }
 
-        micButton.disabled = true;
-        muteButton.disabled = false;
-        screenButton.disabled = false;
-        stopButton.disabled = true;
-        resetSessionButton.disabled = false;
-        showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
+        // 仅在主动录像/语音连接分享时更新 UI 状态，防止闲置释放导致 UI 错误锁定
+        if (isRecording) {
+            micButton.disabled = true;
+            muteButton.disabled = false;
+            screenButton.disabled = false;
+            stopButton.disabled = true;
+            resetSessionButton.disabled = false;
+            showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
 
-        // 移除active类
-        screenButton.classList.remove('active');
-        syncFloatingScreenButtonState(false);
+            // 移除active类
+            screenButton.classList.remove('active');
+            syncFloatingScreenButtonState(false);
+        } else {
+            // 即使未录音，也确保按钮重置为正常状态
+            screenButton.classList.remove('active');
+            syncFloatingScreenButtonState(false);
+        }
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
@@ -6091,8 +6098,8 @@ function init_app() {
             // Apply status-specific color for task result notifications
             const colorMap = {
                 completed: '#52c41a',  // green
-                partial:   '#faad14',  // amber
-                failed:    '#ff4d4f',  // red
+                partial: '#faad14',  // amber
+                failed: '#ff4d4f',  // red
             };
             if (taskStatus && colorMap[taskStatus]) {
                 statusEl.style.color = colorMap[taskStatus];
@@ -6101,6 +6108,9 @@ function init_app() {
                 statusEl._statusResetTimer = setTimeout(() => {
                     statusEl.style.color = '#44b7fe';
                 }, 6000);
+            } else {
+                clearTimeout(statusEl._statusResetTimer);
+                statusEl.style.color = '#44b7fe';
             }
         }
     }
@@ -8092,13 +8102,24 @@ function init_app() {
             };
 
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
-            if (availableModes.includes('vision')) {
-                const [screenshotDataUrl, windowTitleResult] = await Promise.all([
-                    captureProactiveChatScreenshot(),
-                    fetch('/api/get_window_title')
+            if (availableModes.includes('vision') || availableModes.includes('window')) {
+                const fetchTasks = [];
+                let screenshotIndex = -1;
+                let windowTitleIndex = -1;
+
+                if (availableModes.includes('vision')) {
+                    screenshotIndex = fetchTasks.length;
+                    fetchTasks.push(captureProactiveChatScreenshot());
+                }
+
+                if (availableModes.includes('window')) {
+                    windowTitleIndex = fetchTasks.length;
+                    fetchTasks.push(fetch('/api/get_window_title')
                         .then(r => r.json())
-                        .catch(() => ({ success: false }))
-                ]);
+                        .catch(() => ({ success: false })));
+                }
+
+                const results = await Promise.all(fetchTasks);
 
                 // await 期间检查状态
                 if (!canTriggerProactively()) {
@@ -8106,21 +8127,34 @@ function init_app() {
                     return;
                 }
 
-                if (screenshotDataUrl) {
-                    requestBody.screenshot_data = screenshotDataUrl;
-                    if (windowTitleResult.success && windowTitleResult.window_title) {
+                if (screenshotIndex !== -1) {
+                    const screenshotDataUrl = results[screenshotIndex];
+                    if (screenshotDataUrl) {
+                        requestBody.screenshot_data = screenshotDataUrl;
+                    } else {
+                        // 截图失败，从 enabled_modes 中移除 vision
+                        console.log('截图失败，移除 vision 模式');
+                        availableModes = availableModes.filter(m => m !== 'vision');
+                        requestBody.enabled_modes = availableModes;
+                    }
+                }
+
+                if (windowTitleIndex !== -1) {
+                    const windowTitleResult = results[windowTitleIndex];
+                    if (windowTitleResult && windowTitleResult.success && windowTitleResult.window_title) {
                         requestBody.window_title = windowTitleResult.window_title;
                         console.log('视觉搭话附加窗口标题:', windowTitleResult.window_title);
+                    } else {
+                        // 窗口标题获取失败，从 enabled_modes 中移除 window
+                        console.log('窗口标题获取失败，移除 window 模式');
+                        availableModes = availableModes.filter(m => m !== 'window');
+                        requestBody.enabled_modes = availableModes;
                     }
-                } else {
-                    // 截图失败，从 enabled_modes 中移除 vision（保留 window 模式）
-                    console.log('截图失败，移除 vision 模式');
-                    requestBody.enabled_modes = availableModes.filter(m => m !== 'vision');
-                    if (requestBody.enabled_modes.length === 0) {
-                        console.log('移除 vision 后无其他可用模式，跳过本次搭话');
-                        return;
-                    }
-                    console.log(`截图失败，继续使用模式: [${requestBody.enabled_modes.join(', ')}]`);
+                }
+
+                if (availableModes.length === 0) {
+                    console.log('所有附加模式均失败，移除后无其他可用模式，跳过本次搭话');
+                    return;
                 }
             }
 
@@ -8192,8 +8226,18 @@ function init_app() {
             `;
 
             for (const link of links) {
+                let safeUrl = null;
+                try {
+                    const u = new URL(String(link.url || ''), window.location.origin);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        safeUrl = u.href;
+                    }
+                } catch (e) {
+                    console.warn('解析链接失败:', e);
+                }
+                if (!safeUrl) continue;
                 const a = document.createElement('a');
-                a.href = link.url;
+                a.href = safeUrl;
                 a.target = '_blank';
                 a.rel = 'noopener noreferrer';
                 a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
@@ -8241,8 +8285,14 @@ function init_app() {
             if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
             let dataUrl = null;
+            let usedCachedStream = false;
 
             if (screenCaptureStream) {
+                // 刷新最后使用时间并确保闲置检查器在运行
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
+                usedCachedStream = true;
+
                 const video = document.createElement('video');
                 video.srcObject = screenCaptureStream;
                 video.autoplay = true;
@@ -8269,6 +8319,11 @@ function init_app() {
                     input_type: isMobile() ? 'camera' : 'screen'
                 }));
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
+
+                // 再次刷新最后使用时间，防止在发送过程中被误释放
+                if (usedCachedStream && screenCaptureStream) {
+                    screenCaptureStreamLastUsed = Date.now();
+                }
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);

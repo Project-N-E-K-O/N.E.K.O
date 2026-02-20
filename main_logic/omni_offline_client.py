@@ -395,7 +395,6 @@ class OmniOfflineClient:
                             await self.handle_connection_error(error_msg)
                         break
                 except Exception as e:
-                    print(f"EXCEPTION_CAUGHT: {e}")
                     error_msg = f"Error in text streaming: {str(e)}"
                     logger.error(error_msg)
                     if self.handle_connection_error:

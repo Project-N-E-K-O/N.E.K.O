@@ -51,6 +51,7 @@ class Modules:
     computer_use_queue: Optional[asyncio.Queue] = None
     computer_use_running: bool = False
     active_computer_use_task_id: Optional[str] = None
+    active_computer_use_async_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
     # Notification queue for frontend (one-time messages)
@@ -322,7 +323,9 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
         if m.get("role") != "user":
             continue
         # Keep text as primary signal, and attach optional metadata if present.
-        text = str(m.get("text") or "").strip()
+        if "text" in m and "content" not in m:
+            logger.warning(f"[AgentServer] Deprecation Warning: Received user message with 'text' but no 'content'. Message: {m}")
+        text = str(m.get("text") or m.get("content") or "").strip()
         mid = str(
             m.get("id")
             or m.get("message_id")
@@ -339,7 +342,7 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     if not user_parts:
         return None
     payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
-    return hashlib.sha1(payload).hexdigest()
+    return hashlib.sha256(payload).hexdigest()
 
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
@@ -442,13 +445,18 @@ async def _run_computer_use_task(
             cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
         else:
             cu_detail = str(res) if res is not None else ""
+    except asyncio.CancelledError:
+        info["error"] = "Task was cancelled"
+        logger.info("[ComputerUse] Task %s was cancelled", task_id)
+        raise
     except Exception as e:
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
     finally:
-        info["status"] = "completed" if success else "failed"
+        info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
+        Modules.active_computer_use_async_task = None
 
     # Emit task_update (terminal state)
     try:
@@ -508,7 +516,7 @@ async def _computer_use_scheduler_loop():
             if not tid or tid not in Modules.task_registry:
                 continue
             # Run task in thread pool (non-blocking for the scheduler)
-            asyncio.create_task(_run_computer_use_task(
+            Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
                 tid, next_task.get("instruction", ""),
             ))
         except Exception:
@@ -1344,10 +1352,20 @@ async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
         # Cancel any in-flight asyncio tasks and clear registry
+        if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
+            Modules.active_computer_use_async_task.cancel()
+            try:
+                await Modules.active_computer_use_async_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
+
         Modules.task_registry.clear()
         # Clear scheduling state
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
+        Modules.active_computer_use_async_task = None
         # Drain the asyncio scheduler queue
         try:
             if Modules.computer_use_queue is not None:

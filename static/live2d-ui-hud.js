@@ -102,24 +102,24 @@ Live2DManager.prototype._createAgentPopupContent = function (popup) {
     // 【状态机严格控制】所有 agent 开关默认禁用，title显示查询中
     // 只有状态机检测到可用性后才逐个恢复交互
     const agentToggles = [
-        { 
-            id: 'agent-master', 
-            label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', 
-            labelKey: 'settings.toggles.agentMaster', 
+        {
+            id: 'agent-master',
+            label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关',
+            labelKey: 'settings.toggles.agentMaster',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
-        { 
-            id: 'agent-keyboard', 
-            label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', 
-            labelKey: 'settings.toggles.keyboardControl', 
+        {
+            id: 'agent-keyboard',
+            label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
+            labelKey: 'settings.toggles.keyboardControl',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
-        { 
-            id: 'agent-browser', 
-            label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control', 
-            labelKey: 'settings.toggles.browserUse', 
+        {
+            id: 'agent-browser',
+            label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
+            labelKey: 'settings.toggles.browserUse',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
@@ -355,14 +355,14 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
 
     // Default: expanded
     let hudCollapsed = false;
-    try { hudCollapsed = localStorage.getItem(hudCollapsedKey) === 'true'; } catch (_) {}
+    try { hudCollapsed = localStorage.getItem(hudCollapsedKey) === 'true'; } catch (_) { }
     applyHudCollapsed(hudCollapsed);
 
     minimizeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         hudCollapsed = !hudCollapsed;
         applyHudCollapsed(hudCollapsed);
-        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) {}
+        try { localStorage.setItem(hudCollapsedKey, String(hudCollapsed)); } catch (_) { }
     });
 
     // 空状态提示
@@ -672,7 +672,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
     // 鼠标按下事件 - 全局可拖动
     const handleMouseDown = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -713,7 +713,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
 
         // 恢复视觉状态
         hud.style.cursor = 'move';
-        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
 
@@ -776,7 +776,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
     // 触摸开始
     const handleTouchStart = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -816,7 +816,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
         isDragging = false;  // 确保performDrag函数停止工作
 
         // 恢复视觉状态
-        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
 
@@ -879,7 +879,7 @@ Live2DManager.prototype._setupDragging = function (hud) {
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
-            
+
             // 使用缓存的屏幕边界进行限制
             if (!cachedDisplayHUD) {
                 console.warn('cachedDisplayHUD not initialized, skipping bounds check');

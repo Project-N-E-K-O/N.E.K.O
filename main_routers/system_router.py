@@ -104,7 +104,6 @@ def _parse_web_screening_result(text: str) -> dict | None:
       链接：xxx / Link: xxx
       简述：xxx / Summary: xxx
     """
-    import re
     result = {}
     # 多语言 key 匹配
     patterns = {

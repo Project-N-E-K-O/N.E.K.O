@@ -328,7 +328,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
         'SUMMARY_MODEL': "qwen3-next-80b-a3b-instruct",
         'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
-        'EMOTION_MODEL': "qwen-flash-2025-07-28",
+        'EMOTION_MODEL': "qwen-flash",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
     },
     'openai': {
@@ -398,11 +398,11 @@ EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_l
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP = {
     # Qwen 系列
-    "qwen-flash-2025-07-28": EXTRA_BODY_OPENAI,
+    "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
-    # "qwen3.5-plus": EXTRA_BODY_OPENAI,
+    "qwen3.5-plus": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     # GLM 系列

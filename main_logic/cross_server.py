@@ -316,7 +316,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     txt = ''
                                                 if txt == '':
                                                     continue
-                                                recent.append({'role': item.get('role'), 'text': txt})
+                                                recent.append({'role': item.get('role'), 'content': txt})
                                         if recent:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
@@ -389,7 +389,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     txt = ''
                                                 if txt == '':
                                                     continue
-                                                recent.append({'role': item.get('role'), 'text': txt})
+                                                recent.append({'role': item.get('role'), 'content': txt})
                                         if recent:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,

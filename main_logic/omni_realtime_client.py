@@ -850,6 +850,7 @@ class OmniRealtimeClient:
         replace this stub with the actual logic (e.g. create_response with a
         properly framed system turn).
         """
+        _ = instruction
         logger.debug("OmniRealtimeClient.stream_proactive: delegating to hot-swap mechanism")
         return False
 
