@@ -10,7 +10,6 @@ import time
 import hashlib
 from typing import Dict, Any, Optional
 from datetime import datetime
-import time
 import httpx
 
 from fastapi import FastAPI, HTTPException
@@ -437,21 +436,27 @@ async def _run_computer_use_task(
     success = False
     cu_detail = ""
     loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction)
 
     try:
-        res = await future
-        if res is None:
-            logger.debug("[ComputerUse] run_instruction returned None, treating as success")
-            res = {"success": True}
-        elif isinstance(res, dict) and "success" not in res:
-            res["success"] = True
-        success = bool(res.get("success", False))
-        info["result"] = res
-        if isinstance(res, dict):
-            cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
+        if Modules.computer_use is None or not hasattr(Modules.computer_use, "run_instruction"):
+            success = False
+            cu_detail = "ComputerUse adapter is inactive or invalid (e.g., reset)"
+            info["error"] = cu_detail
+            logger.error("[ComputerUse] Task %s aborted: %s", task_id, cu_detail)
         else:
-            cu_detail = str(res) if res is not None else ""
+            future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction)
+            res = await future
+            if res is None:
+                logger.debug("[ComputerUse] run_instruction returned None, treating as success")
+                res = {"success": True}
+            elif isinstance(res, dict) and "success" not in res:
+                res["success"] = True
+            success = bool(res.get("success", False))
+            info["result"] = res
+            if isinstance(res, dict):
+                cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
+            else:
+                cu_detail = str(res) if res is not None else ""
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
@@ -1357,6 +1362,18 @@ async def list_tasks():
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
+        # Cancel any in-flight background analyzer tasks
+        for t in list(Modules._background_tasks):
+            if not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"[Agent] Error awaiting cancelled background task: {e}")
+        Modules._background_tasks.clear()
+
         # Cancel any in-flight asyncio tasks and clear registry
         if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
             Modules.active_computer_use_async_task.cancel()
