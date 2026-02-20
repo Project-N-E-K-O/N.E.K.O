@@ -56,7 +56,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('word', '') or item.get('name', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region') == 'china' else 'Twitter'})
+                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
         
         elif mode == 'video':
             # B站 / Reddit
@@ -66,7 +66,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region') == 'china' else 'Reddit'})
+                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
         
         elif mode == 'home':
             # 合并首页：bilibili + weibo 或 reddit + twitter
@@ -1057,15 +1057,47 @@ async def proactive_chat(request: Request):
             }, status_code=500)
         
         logger.info(f"[{lanlan_name}] 成功获取 {len(sources)} 个信息源: {list(sources.keys())}")
+
+        # ========== 1. 获取记忆上下文 (New Dialog) ==========
+        # new_dialog 返回格式：
+        # ========以下是{name}的内心活动========
+        # {内心活动/Settings}...
+        # 现在时间...整理了近期发生的事情。
+        # Name | Content
+        # ...
         
-        # ========== 1. 获取记忆上下文 ==========
+        raw_memory_context = ""
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                memory_context = resp.text
+                raw_memory_context = resp.text
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
-            memory_context = ""
+        
+        # 解析 new_dialog 响应
+        def _parse_new_dialog(text: str) -> str:
+            if not text:
+                return ""
+            # 尝试找到分割线 "整理了近期发生的事情"
+            split_keyword = "整理了近期发生的事情"
+            if split_keyword in text:
+                parts = text.split(split_keyword, 1)
+                # part[0] 是内心活动+时间，part[1] 是对话历史
+                # 我们只取对话历史部分，并去除首尾空白
+                history_part = parts[1].strip()
+                # 如果需要内心活动，也可以处理 parts[0]
+                # 这里暂且只返回 history 部分，符合 "parse out format you need" (即对话历史)
+                # 但考虑到 "内心活动" 包含 Settings，可能也需要保留？
+                # 用户说 "returns a very complex structured prompt, please parse out the format you need"
+                # 通常 Proactive Generative Prompt 需要 clean history。
+                # Settings 已经在 System Prompt (character_prompt) 中部分包含，但 memory server 里的 settings 是动态的。
+                # 我们可以把 Settings 提取出来放在 history 前面，但在 "对话历史" 区块内？
+                # 或者直接返回清洗后的 history。
+                # 暂时只返回 history，因为 system prompt 里的 {memory_context} 处于 ======对话历史====== 标签下。
+                return history_part
+            return text
+
+        memory_context = _parse_new_dialog(raw_memory_context)
         
         # ========== 2. 选择语言 ==========
         try:
@@ -1078,8 +1110,22 @@ async def proactive_chat(request: Request):
             proactive_lang = 'zh'
         
         # ========== 3. 注入近期搭话记录 ==========
-        recent_chats_section = _format_recent_proactive_chats(lanlan_name, proactive_lang)
-        memory_context_with_recent = memory_context + recent_chats_section
+        proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
+        # 最终 memory_context = 历史记录 + 近期搭话记录 (作为 context)
+        # 注意：proactive_chat_history_prompt 是 "Recent Proactive Chats"，不是 main history
+        # 但这里为了简单，将其拼接到 history 后面? 
+        # 不，prompt 模板里有单独的 {recent_chats_section} 占位符 (Lines 814/838 in prompts_sys.py)
+        # 所以这里不需要拼接！
+        # Wait, lines 814 in prompts_sys.py: {recent_chats_section} IS the placeholder.
+        # But in current code (before edit), it did: `memory_context_with_recent = memory_context + recent_chats_section`
+        # And later (Phase 2): `... .format(..., memory_context=memory_context_with_recent, ...)`?
+        # Let's check Phase 2 formatting arguments. I suspect Phase 2 does NOT use {recent_chats_section} placeholder if I don't pass it.
+        # If I look at `system_router.py` Phase 2 call (later in file), I need to see what keys it formats.
+        
+        # Assuming we separate them now:
+        # memory_context -> Just the parsed history
+        # proactive_chat_history_prompt -> The recent proactive chats
+
         
         # ========== 4. 获取 LLM 配置 ==========
         try:
@@ -1185,7 +1231,7 @@ async def proactive_chat(request: Request):
         if merged_web_content:
             try:
                 prompt = get_proactive_screen_prompt('web', proactive_lang).format(
-                    memory_context=memory_context_with_recent,
+                    memory_context=memory_context + "\n" + proactive_chat_history_prompt,
                     merged_content=merged_web_content
                 )
                 web_result_text = await _llm_call_with_retry(prompt, "screen_web")
@@ -1230,8 +1276,8 @@ async def proactive_chat(request: Request):
         
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
-            memory_context=memory_context_with_recent,
-            recent_chats_section=recent_chats_section,
+            memory_context=memory_context,
+            recent_chats_section=proactive_chat_history_prompt,
             topic_summary=best_topic,
             master_name=master_name_current
         )
@@ -1301,7 +1347,7 @@ async def proactive_chat(request: Request):
         })
         
     except asyncio.TimeoutError:
-        logger.error(f"主动搭话超时")
+        logger.error("主动搭话超时")
         return JSONResponse({
             "success": False,
             "error": "AI处理超时"
