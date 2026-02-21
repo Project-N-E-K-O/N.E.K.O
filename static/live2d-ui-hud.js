@@ -90,7 +90,7 @@ Live2DManager.prototype._createAgentPopupContent = function (popup) {
         color: '#44b7fe',  // 主题浅蓝色
         padding: '6px 8px',
         borderRadius: '4px',
-        background: 'rgba(68, 183, 254, 0.05)',  // 浅蓝背景
+        background: 'var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05))',  // 浅蓝背景
         marginBottom: '8px',
         minHeight: '20px',
         textAlign: 'center'

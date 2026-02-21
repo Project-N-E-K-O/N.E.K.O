@@ -110,10 +110,10 @@ VRMManager.prototype.setupFloatingButtons = function () {
         btn.className = 'vrm-floating-btn';
 
         Object.assign(btn.style, {
-            width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
-            backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
+            width: '48px', height: '48px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+            backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
+            cursor: 'pointer', userSelect: 'none', boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
             transition: 'all 0.1s ease', pointerEvents: 'auto'
         });
 
@@ -146,8 +146,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
             // 悬停效果
             btn.addEventListener('mouseenter', () => {
                 btn.style.transform = 'scale(1.05)';
-                btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
-                btn.style.background = 'rgba(255, 255, 255, 0.8)';
+                btn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+                btn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
 
                 // 检查是否有单独的弹窗触发器且弹窗已打开
                 if (config.separatePopupTrigger) {
@@ -161,7 +161,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             btn.addEventListener('mouseleave', () => {
                 btn.style.transform = 'scale(1)';
-                btn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
+                btn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
                 const isActive = btn.dataset.active === 'true';
                 const popup = document.getElementById(`vrm-popup-${config.id}`);
                 const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
@@ -171,7 +171,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     ? isActive
                     : (isActive || isPopupVisible);
 
-                btn.style.background = shouldShowOnIcon ? 'rgba(255, 255, 255, 0.75)' : 'rgba(255, 255, 255, 0.65)';
+                btn.style.background = shouldShowOnIcon ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
                 if (imgOff && imgOn) {
                     imgOff.style.opacity = shouldShowOnIcon ? '0' : '1';
                     imgOn.style.opacity = shouldShowOnIcon ? '1' : '0';
@@ -224,7 +224,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     return;
                 }
 
-                btn.style.background = targetActive ? 'rgba(255, 255, 255, 0.75)' : 'rgba(255, 255, 255, 0.8)';
+                btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
             });
         }
 
@@ -252,11 +252,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
             });
             Object.assign(triggerBtn.style, {
                 width: '24px', height: '24px', borderRadius: '50%',
-                background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'saturate(180%) blur(20px)',
-                border: '1px solid rgba(255, 255, 255, 0.18)',
+                background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))', backdropFilter: 'saturate(180%) blur(20px)',
+                border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 cursor: 'pointer', userSelect: 'none',
-                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)', transition: 'all 0.1s ease', pointerEvents: 'auto',
+                boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))', transition: 'all 0.1s ease', pointerEvents: 'auto',
                 marginLeft: '-10px'
             });
             triggerBtn.appendChild(triggerImg);
@@ -451,22 +451,22 @@ VRMManager.prototype.setupFloatingButtons = function () {
     Object.assign(returnImgOn.style, { position: 'absolute', width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease' });
 
     Object.assign(returnBtn.style, {
-        width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
-        backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
+        width: '64px', height: '64px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
+        boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
     });
 
     returnBtn.addEventListener('mouseenter', () => {
         returnBtn.style.transform = 'scale(1.05)';
-        returnBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.08)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+        returnBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+        returnBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
         returnImgOff.style.opacity = '0'; returnImgOn.style.opacity = '1';
     });
     returnBtn.addEventListener('mouseleave', () => {
         returnBtn.style.transform = 'scale(1)';
-        returnBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        returnBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
+        returnBtn.style.background = 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
         returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {
@@ -987,8 +987,8 @@ VRMManager.prototype.setButtonActive = function (buttonId, active) {
 
     // 更新背景色
     buttonData.button.style.background = active
-        ? 'rgba(68, 183, 254, 0.3)'
-        : 'rgba(255, 255, 255, 0.65)';
+        ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))'
+        : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
 
     // 更新图标
     if (buttonData.imgOff) {

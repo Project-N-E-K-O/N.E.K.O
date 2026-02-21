@@ -17,12 +17,12 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             top: 0;
             margin-left: 8px;
             z-index: 100001;
-            background: rgba(255, 255, 255, 0.65);
+            background: var(--neko-popup-bg, rgba(255, 255, 255, 0.65));
             backdrop-filter: saturate(180%) blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.18);
+            border: var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18));
             border-radius: 8px;
             padding: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
+            box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04));
             display: none;
             flex-direction: column;
             gap: 6px;
@@ -53,7 +53,7 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             white-space: nowrap;
         }
         .vrm-toggle-item:focus-within {
-            outline: 2px solid #44b7fe;
+            outline: 2px solid var(--neko-popup-active, #44b7fe);
             outline-offset: 2px;
         }
         .vrm-toggle-item[aria-disabled="true"] {
@@ -64,7 +64,7 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            border: 2px solid #ccc;
+            border: 2px solid var(--neko-popup-indicator-border, #ccc);
             background-color: transparent;
             cursor: pointer;
             flex-shrink: 0;
@@ -75,8 +75,8 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             justify-content: center;
         }
         .vrm-toggle-indicator[aria-checked="true"] {
-            background-color: #44b7fe;
-            border-color: #44b7fe;
+            background-color: var(--neko-popup-active, #44b7fe);
+            border-color: var(--neko-popup-active, #44b7fe);
         }
         .vrm-toggle-checkmark {
             color: #fff;
@@ -95,10 +95,10 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             cursor: pointer;
             user-select: none;
             font-size: 13px;
-            color: #333;
+            color: var(--neko-popup-text, #333);
         }
         .vrm-toggle-item:hover:not([aria-disabled="true"]) {
-            background: rgba(68, 183, 254, 0.1);
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
         .vrm-settings-menu-item {
             display: flex;
@@ -110,25 +110,25 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             transition: background 0.2s ease;
             font-size: 13px;
             white-space: nowrap;
-            color: #333;
+            color: var(--neko-popup-text, #333);
             pointer-events: auto !important;
             position: relative;
             z-index: 100002;
         }
         .vrm-settings-menu-item:hover {
-            background: rgba(68, 183, 254, 0.1);
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
         .vrm-settings-separator {
             height: 1px;
-            background: rgba(0,0,0,0.1);
+            background: var(--neko-popup-separator, rgba(0, 0, 0, 0.1));
             margin: 4px 0;
         }
         .vrm-agent-status {
             font-size: 12px;
-            color: #44b7fe;
+            color: var(--neko-popup-accent, #44b7fe);
             padding: 6px 8px;
             border-radius: 4px;
-            background: rgba(68, 183, 254, 0.05);
+            background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
             margin-bottom: 8px;
             min-height: 20px;
             text-align: center;
@@ -171,7 +171,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
 // 创建Agent弹出框内容
 VRMManager.prototype._createAgentPopupContent = function (popup) {
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'live2d-agent-status';
+    statusDiv.id = 'vrm-agent-status';
     statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);
@@ -205,7 +205,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
             whiteSpace: 'nowrap',
             opacity: '0.5',
             cursor: 'not-allowed',
-            color: '#666'
+            color: 'var(--neko-popup-text-sub, #666)'
         });
 
         const indicator = document.createElement('div');
@@ -213,7 +213,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            border: '2px solid #ccc',
+            border: '2px solid var(--neko-popup-indicator-border, #ccc)',
             backgroundColor: 'transparent',
             flexShrink: '0'
         });
@@ -223,7 +223,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
         label.setAttribute('data-i18n', item.labelKey);
         label.style.userSelect = 'none';
         label.style.fontSize = '13px';
-        label.style.color = '#999';
+        label.style.color = 'var(--neko-popup-text-sub, #666)';
 
         adaptingItem.appendChild(indicator);
         adaptingItem.appendChild(label);
@@ -291,7 +291,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         gap: '2px',
         padding: '0 12px 0 44px',
         fontSize: '12px',
-        color: '#666',
+        color: 'var(--neko-popup-text-sub, #666)',
         height: '0',
         overflow: 'hidden',
         opacity: '0',
@@ -337,7 +337,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         width: '55px',
         height: '4px',
         cursor: 'pointer',
-        accentColor: '#44b7fe'
+        accentColor: 'var(--neko-popup-accent, #44b7fe)'
     });
 
     // 数值显示
@@ -582,7 +582,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
     toggleItem.style.padding = '8px 12px';
-    toggleItem.style.borderBottom = '1px solid rgba(0,0,0,0.05)';
+    toggleItem.style.borderBottom = '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
@@ -641,7 +641,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         if (isChecked) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
+            toggleItem.style.background = 'var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1))';
         } else {
             toggleItem.style.background = 'transparent';
         }
@@ -650,7 +650,13 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => { if (checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
+    toggleItem.addEventListener('mouseenter', () => {
+        if (checkbox.checked) {
+            toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68, 183, 254, 0.15))';
+        } else {
+            toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68, 183, 254, 0.08))';
+        }
+    });
     toggleItem.addEventListener('mouseleave', updateStyle);
 
     const handleToggleChange = (isChecked) => {
@@ -765,7 +771,7 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
         transition: 'background 0.2s ease',
         fontSize: isSubmenuItem ? '12px' : '13px',
         whiteSpace: 'nowrap',
-        color: '#333'
+        color: 'var(--neko-popup-text, #333)'
     });
 
     if (item.icon) {
@@ -803,7 +809,7 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
         };
     }
 
-    menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'rgba(68, 183, 254, 0.1)');
+    menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
     menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
     // 防抖标志：防止快速多次点击导致多开窗口
@@ -880,7 +886,8 @@ VRMManager.prototype._createSubmenuContainer = function (submenuItems) {
     container._expand = () => {
         container.style.display = 'flex';
         requestAnimationFrame(() => {
-            container.style.height = `${submenuItems.length * 32}px`;
+            const calculatedHeight = Math.max(submenuItems.length * 32, container.scrollHeight);
+            container.style.height = `${calculatedHeight}px`;
             container.style.opacity = '1';
         });
     };
@@ -956,9 +963,9 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                 return;
             }
             if (checkbox.checked) {
-                indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1'; toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
+                indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)'; indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)'; checkmark.style.opacity = '1'; toggleItem.style.background = 'var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1))';
             } else {
-                indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0'; toggleItem.style.background = 'transparent';
+                indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)'; checkmark.style.opacity = '0'; toggleItem.style.background = 'transparent';
             }
         };
 
@@ -1075,7 +1082,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
         if (audioInputs.length === 0) {
             const noDev = document.createElement('div');
             noDev.textContent = window.t ? window.t('microphone.noDevices') : '未检测到麦克风';
-            Object.assign(noDev.style, { padding: '8px', fontSize: '13px', color: '#666' });
+            Object.assign(noDev.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)' });
             popup.appendChild(noDev);
             return;
         }
@@ -1088,11 +1095,11 @@ VRMManager.prototype.renderMicList = async function (popup) {
             Object.assign(btn.style, {
                 padding: '8px 12px', cursor: 'pointer', fontSize: '13px',
                 borderRadius: '6px', transition: 'background 0.2s',
-                color: '#333'
+                color: 'var(--neko-popup-text, #333)'
             });
 
             // 选中高亮逻辑（简单模拟）
-            btn.addEventListener('mouseenter', () => btn.style.background = 'rgba(68, 183, 254, 0.1)');
+            btn.addEventListener('mouseenter', () => btn.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
             btn.addEventListener('mouseleave', () => btn.style.background = 'transparent');
 
             btn.addEventListener('click', async (e) => {
@@ -1215,7 +1222,7 @@ function createScreenSourceOption(source) {
             height: '56px',
             objectFit: 'cover',
             borderRadius: '4px',
-            border: '1px solid #ddd',
+            border: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
             marginBottom: '4px'
         });
         option.appendChild(thumb);
@@ -1230,7 +1237,7 @@ function createScreenSourceOption(source) {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
-            background: '#f5f5f5',
+            background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
             borderRadius: '4px',
             marginBottom: '4px'
         });
@@ -1242,7 +1249,7 @@ function createScreenSourceOption(source) {
     label.textContent = source.name;
     Object.assign(label.style, {
         fontSize: '10px',
-        color: '#333',
+        color: 'var(--neko-popup-text, #333)',
         width: '100%',
         textAlign: 'center',
         lineHeight: '1.3',
@@ -1257,7 +1264,7 @@ function createScreenSourceOption(source) {
 
     // 悬停效果
     option.addEventListener('mouseenter', () => {
-        option.style.background = 'rgba(68, 183, 254, 0.1)';
+        option.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))';
     });
     option.addEventListener('mouseleave', () => {
         option.style.background = 'transparent';
@@ -1287,7 +1294,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
     if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
         const notAvailableItem = document.createElement('div');
         notAvailableItem.textContent = t('app.screenSource.notAvailable') || '仅在桌面版可用';
-        Object.assign(notAvailableItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
+        Object.assign(notAvailableItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
         popup.appendChild(notAvailableItem);
         return;
     }
@@ -1296,7 +1303,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         // 显示加载中
         const loadingItem = document.createElement('div');
         loadingItem.textContent = t('app.screenSource.loading') || '加载中...';
-        Object.assign(loadingItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
+        Object.assign(loadingItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
         popup.appendChild(loadingItem);
 
         // 获取屏幕源
@@ -1310,7 +1317,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         if (!sources || sources.length === 0) {
             const noSourcesItem = document.createElement('div');
             noSourcesItem.textContent = t('app.screenSource.noSources') || '没有可用的屏幕源';
-            Object.assign(noSourcesItem.style, { padding: '12px', fontSize: '13px', color: '#666', textAlign: 'center' });
+            Object.assign(noSourcesItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
             popup.appendChild(noSourcesItem);
             return;
         }
@@ -1327,8 +1334,8 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 padding: '6px 8px',
                 fontSize: '11px',
                 fontWeight: '600',
-                color: '#666',
-                borderBottom: '1px solid #eee',
+                color: 'var(--neko-popup-text-sub, #666)',
+                borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
                 marginBottom: '4px'
             });
             popup.appendChild(screenTitle);
@@ -1348,8 +1355,8 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 padding: '6px 8px',
                 fontSize: '11px',
                 fontWeight: '600',
-                color: '#666',
-                borderBottom: '1px solid #eee',
+                color: 'var(--neko-popup-text-sub, #666)',
+                borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
                 marginTop: windows.length > 0 && screens.length > 0 ? '8px' : '0',
                 marginBottom: '4px'
             });
@@ -1367,7 +1374,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         popup.innerHTML = '';
         const errDiv = document.createElement('div');
         errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
-        Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: '#dc3545', textAlign: 'center' });
+        Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-error, #dc3545)', textAlign: 'center' });
         popup.appendChild(errDiv);
     }
 };

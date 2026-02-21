@@ -2364,7 +2364,7 @@ function init_app() {
                 cachedBarFill.style.backgroundColor = '#4f8cff';
                 if (cachedStatus) {
                     cachedStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
-                    cachedStatus.style.color = '#888';
+                    cachedStatus.style.color = 'var(--neko-popup-text-sub)';
                 }
                 if (cachedHint) {
                     cachedHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
@@ -2413,7 +2413,7 @@ function init_app() {
             }
             if (volumeStatus) {
                 volumeStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
-                volumeStatus.style.color = '#888';
+                volumeStatus.style.color = 'var(--neko-popup-text-sub)';
             }
             if (volumeHint) {
                 volumeHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
@@ -7095,7 +7095,7 @@ function init_app() {
                 const noMicItem = document.createElement('div');
                 noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
                 noMicItem.style.padding = '8px 12px';
-                noMicItem.style.color = '#666';
+                noMicItem.style.color = 'var(--neko-popup-text-sub)';
                 noMicItem.style.fontSize = '13px';
                 micPopup.appendChild(noMicItem);
                 return false;
@@ -7140,7 +7140,7 @@ function init_app() {
             speakerLabel.textContent = window.t ? window.t('speaker.volumeLabel') : '扬声器音量';
             speakerLabel.setAttribute('data-i18n', 'speaker.volumeLabel');
             speakerLabel.style.fontSize = '13px';
-            speakerLabel.style.color = '#333';
+            speakerLabel.style.color = 'var(--neko-popup-text)';
             speakerLabel.style.fontWeight = '500';
 
             const speakerValue = document.createElement('span');
@@ -7195,7 +7195,7 @@ function init_app() {
             speakerHint.setAttribute('data-i18n', 'speaker.volumeHint');
             Object.assign(speakerHint.style, {
                 fontSize: '11px',
-                color: '#888',
+                color: 'var(--neko-popup-text-sub)',
                 marginTop: '6px'
             });
             speakerContainer.appendChild(speakerHint);
@@ -7205,7 +7205,7 @@ function init_app() {
             // 添加分隔线
             const speakerSeparator = document.createElement('div');
             speakerSeparator.style.height = '1px';
-            speakerSeparator.style.backgroundColor = '#eee';
+            speakerSeparator.style.backgroundColor = 'var(--neko-popup-separator)';
             speakerSeparator.style.margin = '8px 0';
             leftColumn.appendChild(speakerSeparator);
 
@@ -7228,7 +7228,7 @@ function init_app() {
             const gainLabel = document.createElement('span');
             gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
             gainLabel.style.fontSize = '13px';
-            gainLabel.style.color = '#333';
+            gainLabel.style.color = 'var(--neko-popup-text)';
             gainLabel.style.fontWeight = '500';
 
             const gainValue = document.createElement('span');
@@ -7283,7 +7283,7 @@ function init_app() {
             gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
             Object.assign(gainHint.style, {
                 fontSize: '11px',
-                color: '#888',
+                color: 'var(--neko-popup-text-sub)',
                 marginTop: '6px'
             });
             gainContainer.appendChild(gainHint);
@@ -7293,7 +7293,7 @@ function init_app() {
             // 添加分隔线（音量可视化区域前）
             const volumeSeparator = document.createElement('div');
             volumeSeparator.style.height = '1px';
-            volumeSeparator.style.backgroundColor = '#eee';
+            volumeSeparator.style.backgroundColor = 'var(--neko-popup-separator)';
             volumeSeparator.style.margin = '8px 0';
             leftColumn.appendChild(volumeSeparator);
 
@@ -7316,14 +7316,14 @@ function init_app() {
             const volumeLabelText = document.createElement('span');
             volumeLabelText.textContent = window.t ? window.t('microphone.volumeLabel') : '实时麦克风音量';
             volumeLabelText.style.fontSize = '13px';
-            volumeLabelText.style.color = '#333';
+            volumeLabelText.style.color = 'var(--neko-popup-text)';
             volumeLabelText.style.fontWeight = '500';
 
             const volumeStatus = document.createElement('span');
             volumeStatus.id = 'mic-volume-status';
             volumeStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
             volumeStatus.style.fontSize = '11px';
-            volumeStatus.style.color = '#888';
+            volumeStatus.style.color = 'var(--neko-popup-text-sub)';
 
             volumeLabel.appendChild(volumeLabelText);
             volumeLabel.appendChild(volumeStatus);
@@ -7335,7 +7335,7 @@ function init_app() {
             Object.assign(volumeBarBg.style, {
                 width: '100%',
                 height: '8px',
-                backgroundColor: '#e9ecef',
+                backgroundColor: 'var(--neko-mic-volume-bg, #e9ecef)',
                 borderRadius: '4px',
                 overflow: 'hidden',
                 position: 'relative'
@@ -7361,7 +7361,7 @@ function init_app() {
             volumeHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
             Object.assign(volumeHint.style, {
                 fontSize: '11px',
-                color: '#888',
+                color: 'var(--neko-popup-text-sub)',
                 marginTop: '6px'
             });
             volumeContainer.appendChild(volumeHint);
@@ -7379,7 +7379,7 @@ function init_app() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                borderBottom: '1px solid rgba(79, 140, 255, 0.15)',
+                borderBottom: '1px solid var(--neko-popup-separator)',
                 marginBottom: '4px'
             });
             const deviceTitleIcon = document.createElement('span');
@@ -7404,18 +7404,18 @@ function init_app() {
                 padding: '8px 12px',
                 cursor: 'pointer',
                 border: 'none',
-                background: selectedMicrophoneId === null ? '#e6f0ff' : 'transparent',
+                background: selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent',
                 borderRadius: '6px',
                 transition: 'background 0.2s ease',
                 fontSize: '13px',
                 width: '100%',
                 textAlign: 'left',
-                color: selectedMicrophoneId === null ? '#4f8cff' : '#333',
+                color: selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)',
                 fontWeight: selectedMicrophoneId === null ? '500' : '400'
             });
             defaultOption.addEventListener('mouseenter', () => {
                 if (selectedMicrophoneId !== null) {
-                    defaultOption.style.background = 'rgba(79, 140, 255, 0.1)';
+                    defaultOption.style.background = 'var(--neko-popup-hover)';
                 }
             });
             defaultOption.addEventListener('mouseleave', () => {
@@ -7433,7 +7433,7 @@ function init_app() {
             // 添加分隔线
             const separator = document.createElement('div');
             separator.style.height = '1px';
-            separator.style.backgroundColor = '#eee';
+            separator.style.backgroundColor = 'var(--neko-popup-separator)';
             separator.style.margin = '5px 0';
             rightColumn.appendChild(separator);
 
@@ -7452,19 +7452,19 @@ function init_app() {
                     padding: '8px 12px',
                     cursor: 'pointer',
                     border: 'none',
-                    background: selectedMicrophoneId === device.deviceId ? '#e6f0ff' : 'transparent',
+                    background: selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent',
                     borderRadius: '6px',
                     transition: 'background 0.2s ease',
                     fontSize: '13px',
                     width: '100%',
                     textAlign: 'left',
-                    color: selectedMicrophoneId === device.deviceId ? '#4f8cff' : '#333',
+                    color: selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)',
                     fontWeight: selectedMicrophoneId === device.deviceId ? '500' : '400'
                 });
 
                 option.addEventListener('mouseenter', () => {
                     if (selectedMicrophoneId !== device.deviceId) {
-                        option.style.background = 'rgba(79, 140, 255, 0.1)';
+                        option.style.background = 'var(--neko-popup-hover)';
                     }
                 });
                 option.addEventListener('mouseleave', () => {
@@ -7489,7 +7489,7 @@ function init_app() {
             const verticalDivider = document.createElement('div');
             Object.assign(verticalDivider.style, {
                 width: '1px',
-                backgroundColor: '#eee',
+                backgroundColor: 'var(--neko-popup-separator)',
                 alignSelf: 'stretch',
                 margin: '8px 0'
             });
@@ -7527,13 +7527,13 @@ function init_app() {
 
             if (isSelected) {
                 option.classList.add('selected');
-                option.style.background = '#e6f0ff';
+                option.style.background = 'var(--neko-popup-selected-bg)';
                 option.style.color = '#4f8cff';
                 option.style.fontWeight = '500';
             } else {
                 option.classList.remove('selected');
                 option.style.background = 'transparent';
-                option.style.color = '#333';
+                option.style.color = 'var(--neko-popup-text)';
                 option.style.fontWeight = '400';
             }
         });
@@ -7622,7 +7622,7 @@ function init_app() {
 
             if (isSelected) {
                 option.classList.add('selected');
-                option.style.background = '#e6f0ff';
+                option.style.background = 'var(--neko-popup-selected-bg)';
                 option.style.borderColor = '#4f8cff';
             } else {
                 option.classList.remove('selected');
@@ -7646,7 +7646,7 @@ function init_app() {
             const notAvailableItem = document.createElement('div');
             notAvailableItem.textContent = window.t ? window.t('app.screenSource.notAvailable') : '仅在桌面版可用';
             notAvailableItem.style.padding = '12px';
-            notAvailableItem.style.color = '#666';
+            notAvailableItem.style.color = 'var(--neko-popup-text-sub)';
             notAvailableItem.style.fontSize = '13px';
             notAvailableItem.style.textAlign = 'center';
             screenPopup.appendChild(notAvailableItem);
@@ -7659,7 +7659,7 @@ function init_app() {
             const loadingItem = document.createElement('div');
             loadingItem.textContent = window.t ? window.t('app.screenSource.loading') : '加载中...';
             loadingItem.style.padding = '12px';
-            loadingItem.style.color = '#666';
+            loadingItem.style.color = 'var(--neko-popup-text-sub)';
             loadingItem.style.fontSize = '13px';
             loadingItem.style.textAlign = 'center';
             screenPopup.appendChild(loadingItem);
@@ -7676,7 +7676,7 @@ function init_app() {
                 const noSourcesItem = document.createElement('div');
                 noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
                 noSourcesItem.style.padding = '12px';
-                noSourcesItem.style.color = '#666';
+                noSourcesItem.style.color = 'var(--neko-popup-text-sub)';
                 noSourcesItem.style.fontSize = '13px';
                 noSourcesItem.style.textAlign = 'center';
                 screenPopup.appendChild(noSourcesItem);
@@ -7722,7 +7722,7 @@ function init_app() {
 
                 if (selectedScreenSourceId === source.id) {
                     option.classList.add('selected');
-                    option.style.background = '#e6f0ff';
+                    option.style.background = 'var(--neko-popup-selected-bg)';
                     option.style.borderColor = '#4f8cff';
                 }
 
@@ -7757,7 +7757,7 @@ function init_app() {
                         height: '56px',
                         objectFit: 'cover',
                         borderRadius: '4px',
-                        border: '1px solid #ddd',
+                        border: '1px solid var(--neko-popup-separator)',
                         marginBottom: '4px'
                     });
                     option.appendChild(thumb);
@@ -7773,7 +7773,7 @@ function init_app() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         fontSize: '24px',
-                        background: '#f5f5f5',
+                        background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
                         borderRadius: '4px',
                         marginBottom: '4px'
                     });
@@ -7785,7 +7785,7 @@ function init_app() {
                 label.textContent = source.name;
                 Object.assign(label.style, {
                     fontSize: '10px',
-                    color: '#333',
+                    color: 'var(--neko-popup-text)',
                     width: '100%',
                     textAlign: 'center',
                     lineHeight: '1.3',
@@ -7805,7 +7805,7 @@ function init_app() {
 
                 option.addEventListener('mouseenter', () => {
                     if (!option.classList.contains('selected')) {
-                        option.style.background = 'rgba(79, 140, 255, 0.1)';
+                        option.style.background = 'var(--neko-popup-hover)';
                     }
                 });
                 option.addEventListener('mouseleave', () => {
@@ -7824,7 +7824,7 @@ function init_app() {
                 Object.assign(screenLabel.style, {
                     padding: '4px 8px',
                     fontSize: '11px',
-                    color: '#555',
+                    color: 'var(--neko-popup-text-sub)',
                     fontWeight: '600',
                     textTransform: 'uppercase'
                 });
@@ -7844,7 +7844,7 @@ function init_app() {
                 Object.assign(windowLabel.style, {
                     padding: '4px 8px',
                     fontSize: '11px',
-                    color: '#555',
+                    color: 'var(--neko-popup-text-sub)',
                     fontWeight: '600',
                     textTransform: 'uppercase',
                     marginTop: '8px'

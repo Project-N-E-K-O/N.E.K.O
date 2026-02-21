@@ -9,6 +9,8 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/api_key_settings.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
 </head>
 
 <body>
@@ -245,30 +247,6 @@
                                 placeholder="Optional, defaults to Core API Key" value="" style="max-width: 600px;">
                         </div>
 
-                        <!-- MCP Router Token设置（仅保留输入框） -->
-                        <div class="field-row"
-                            style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #6c757d;">
-                            <label for="mcpTokenInput">
-                                <span data-i18n="api.mcpRouterToken">MCP Router Token</span>
-                                <div class="tooltip-container">
-                                    <span class="tooltip-icon">?</span>
-                                    <div class="tooltip-content">
-                                        <strong data-i18n="api.mcpRouterTokenDesc">MCP Router Token说明：</strong><br>
-                                        <span data-i18n="api.mcpRouterTokenDescText">用于访问MCP
-                                            Router服务的认证令牌，启用MCP功能时需要填写。如果您的MCP Router不需要认证，可以留空。</span>
-                                    </div>
-                                </div>
-                                <span
-                                    style="font-weight: normal; font-size: 0.9em; color: #666; display: block; margin-top: 4px;"><span
-                                        data-i18n="api.mcpRouterNoteBefore">当前版本请自行获取并配置</span> <a
-                                        href="https://mcp-router.net/" target="_blank" style="color: #4f8cff;">MCP
-                                        Router</a><span data-i18n="api.mcpRouterNoteAfter">，后续版本会优化。</span></span>
-                            </label>
-                            <input type="text" id="mcpTokenInput" data-i18n-placeholder="api.mcpRouterTokenPlaceholder"
-                                placeholder="Enter MCP Router Token (optional)" value=""
-                                style="width: 100%; max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; font-family: 'Courier New', monospace;">
-                        </div>
-
                         <!-- 用户自定义API配置（位于高级选项内部最下方） -->
                         <div id="custom-api-section">
                             <button id="custom-api-toggle-btn" onclick="toggleCustomApiSection()">
@@ -486,9 +464,9 @@
                                     <div class="model-config-container">
                                         <div class="model-header" onclick="toggleModelConfig('agent')">
                                             <span class="model-title">
-                                                <img src="/static/icons/summary_model_icon.png" alt="Agent API"
-                                                    class="model-title-icon">
-                                                <span>Agent API 配置</span>
+                                                <img src="/static/icons/correction_model_icon.png"
+                                                    data-i18n-alt="api.agentApiConfigTitle" class="model-title-icon">
+                                                <span data-i18n="api.agentApiConfigTitle">Agent API 配置</span>
                                             </span>
                                             <span class="toggle-icon">▼</span>
                                         </div>
@@ -496,19 +474,23 @@
                                             <div class="field-row">
                                                 <label for="agentModelUrl" data-i18n="api.apiUrl">API URL</label>
                                                 <input type="text" id="agentModelUrl"
-                                                    data-i18n-placeholder="api.baseUrlExamplePlaceholder"
-                                                    placeholder="留空则跟随辅助API视觉模型URL" value="" style="max-width: 600px;">
+                                                    data-i18n-placeholder="api.agentModelUrlPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API vision model URL"
+                                                    value="" style="max-width: 600px;">
                                             </div>
                                             <div class="field-row">
                                                 <label for="agentModelId" data-i18n="api.modelId">模型ID</label>
-                                                <input type="text" id="agentModelId" placeholder="留空则跟随辅助API视觉模型ID"
+                                                <input type="text" id="agentModelId"
+                                                    data-i18n-placeholder="api.agentModelIdPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API vision model ID"
                                                     value="" style="max-width: 600px;">
                                             </div>
                                             <div class="field-row">
                                                 <label for="agentModelApiKey" data-i18n="api.apiKey">API Key</label>
                                                 <input type="text" id="agentModelApiKey"
-                                                    placeholder="留空则跟随辅助API Key（free 不可用）" value=""
-                                                    style="max-width: 600px;">
+                                                    data-i18n-placeholder="api.agentModelApiKeyPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API Key (not available for 'free')"
+                                                    value="" style="max-width: 600px;">
                                             </div>
                                         </div>
                                     </div>
@@ -670,28 +652,28 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
 
-                <!-- 弹出式警告 -->
-                <div id="warning-modal" class="modal-overlay" onclick="closeWarningModal()">
-                    <div class="modal-warning" onclick="event.stopPropagation()">
-                        <h3 data-i18n="api.apiKeyChangeWarning.title">⚠️ 重要提醒</h3>
-                        <p data-i18n="api.apiKeyChangeWarning.message">检测到您正在更换 API Key，请注意以下事项：</p>
-                        <ul>
-                            <li data-i18n="api.apiKeyChangeWarning.voiceIdBinding">Voice ID 与您的 API Key 绑定，更换 API Key
-                                后所有已注册的 Voice ID 将失效</li>
-                            <li data-i18n="api.apiKeyChangeWarning.reRegisterVoice">建议在更换 API Key 后重新注册所需的音色</li>
-                        </ul>
-                        <div class="modal-buttons">
-                            <button type="button" class="btn secondary" onclick="closeWarningModal()"
-                                data-i18n="api.apiKeyChangeWarning.cancel">取消</button>
-                            <button type="button" class="btn" onclick="confirmApiKeyChange()"
-                                data-i18n="api.apiKeyChangeWarning.continue">继续保存</button>
-                        </div>
-                    </div>
+        <!-- 弹出式警告 -->
+        <div id="warning-modal" class="modal-overlay" onclick="closeWarningModal()">
+            <div class="modal-warning" onclick="event.stopPropagation()">
+                <h3 data-i18n="api.apiKeyChangeWarning.title">⚠️ 重要提醒</h3>
+                <p data-i18n="api.apiKeyChangeWarning.message">检测到您正在更换 API Key，请注意以下事项：</p>
+                <ul>
+                    <li data-i18n="api.apiKeyChangeWarning.voiceIdBinding">Voice ID 与您的 API Key 绑定，更换 API Key
+                        后所有已注册的 Voice ID 将失效</li>
+                    <li data-i18n="api.apiKeyChangeWarning.reRegisterVoice">建议在更换 API Key 后重新注册所需的音色</li>
+                </ul>
+                <div class="modal-buttons">
+                    <button type="button" class="btn secondary" onclick="closeWarningModal()"
+                        data-i18n="api.apiKeyChangeWarning.cancel">取消</button>
+                    <button type="button" class="btn" onclick="confirmApiKeyChange()"
+                        data-i18n="api.apiKeyChangeWarning.continue">继续保存</button>
                 </div>
+            </div>
+        </div>
 
-            </div> <!-- 关闭 container-content -->
-        </div> <!-- 关闭 container -->
     </div> <!-- 关闭 main-content -->
 
     <script src="/static/js/api_key_settings.js?v=5"></script>

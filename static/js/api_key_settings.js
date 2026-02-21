@@ -396,11 +396,11 @@ async function loadCurrentApiKey() {
                 }, 100);
             }
         } else {
-            showCurrentApiKey(window.t ? window.t('get_current_api_key_failed') : '获取当前API Key失败', '', false);
+            showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
         console.error('loadCurrentApiKey error:', error);
-        showCurrentApiKey(window.t ? window.t('error_getting_current_api_key') : '获取当前API Key时出错', '', false);
+        showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     }
 }
 
@@ -1190,7 +1190,7 @@ function autoFillCoreApiKey() {
             showStatus(autoFillMsg, 'info');
             setTimeout(() => {
                 const statusDiv = document.getElementById('status');
-                if (statusDiv.textContent.includes(autoFillMsg)) {
+                if (statusDiv && statusDiv.textContent.includes(autoFillMsg)) {
                     statusDiv.style.display = 'none';
                 }
             }, 2000);
@@ -1423,7 +1423,7 @@ async function initializePage() {
         const providersLoaded = await loadApiProviders();
 
         if (!providersLoaded) {
-            throw new Error('加载API服务商选项失败');
+            throw new Error(window.t ? window.t('api.loadProvidersFailed') : '加载API服务商选项失败');
         }
 
         // 第二步：加载当前API配置
