@@ -153,7 +153,7 @@
     "search": "검색:",
     "uploadSuccess": "업로드가 성공했습니다!",
     "itemIdDisplay": "항목 ID: {{itemId}}",
-    "agreementAccepted": "워크샵 계약 수락됨",
+    "agreementAccepted": "창작마당 계약 수락됨",
     "uploadError": "업로드 실패: {{error}}",
     "uploadWarning": "{{message}}",
     "uploadGeneralError": "업로드 중에 오류가 발생했습니다.",
