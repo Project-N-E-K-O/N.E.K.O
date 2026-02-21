@@ -329,11 +329,62 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     return container;
 };
 
-// 创建带缩进的导航链接项（对齐“基础间隔”列）
-Live2DManager.prototype._createSettingsLinkItem = function (item) {
-    const linkItem = document.createElement('div');
-    Object.assign(linkItem.style, {
-        display: 'none', // 初始隐藏
+// 创建圆形指示器和对勾的辅助方法（供 _createToggleItem 和 _createSettingsToggleItem 共用）
+Live2DManager.prototype._createCheckIndicator = function () {
+    const indicator = document.createElement('div');
+    Object.assign(indicator.style, {
+        width: '20px',
+        height: '20px',
+        borderRadius: '50%',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
+        backgroundColor: 'transparent',
+        cursor: 'pointer',
+        flexShrink: '0',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const checkmark = document.createElement('div');
+    checkmark.textContent = '✓';
+    Object.assign(checkmark.style, {
+        color: '#fff',
+        fontSize: '13px',
+        fontWeight: 'bold',
+        lineHeight: '1',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        pointerEvents: 'none',
+        userSelect: 'none'
+    });
+    indicator.appendChild(checkmark);
+
+    /**
+     * 根据选中状态更新指示器样式
+     * @param {boolean} checked - 是否选中
+     */
+    const updateStyle = (checked) => {
+        if (checked) {
+            indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)';
+            indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)';
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
+        }
+    };
+
+    return { indicator, updateStyle };
+};
+
+// 创建Agent开关项
+Live2DManager.prototype._createToggleItem = function (toggle, popup) {
+    const toggleItem = document.createElement('div');
+    Object.assign(toggleItem.style, {
+        display: 'flex',
         alignItems: 'center',
         gap: '8px',
         padding: '0 12px 0 44px', // 关键：44px 缩进对齐“基础间隔”文字

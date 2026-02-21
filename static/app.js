@@ -617,10 +617,14 @@ function init_app() {
                             setTimeout(async () => {
                                 try {
                                     // 创建一个 Promise 来等待 session_started 消息
-                                    let autoRestartTimeoutId = null;
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
                                         sessionStartedRejecter = reject; //  保存 reject 函数
+                                        
+                                        if (window.sessionTimeoutId) {
+                                            clearTimeout(window.sessionTimeoutId);
+                                            window.sessionTimeoutId = null;
+                                        }
                                     });
 
                                     // 发送start session事件
@@ -630,11 +634,12 @@ function init_app() {
                                     }));
 
                                     // 在发送消息后才开始超时计时（自动重启场景）
-                                    autoRestartTimeoutId = setTimeout(() => {
+                                    window.sessionTimeoutId = setTimeout(() => {
                                         if (sessionStartedRejecter) {
                                             const rejecter = sessionStartedRejecter;
                                             sessionStartedResolver = null;
                                             sessionStartedRejecter = null; //  同时清理 rejecter
+                                            window.sessionTimeoutId = null;
 
                                             // 超时时向后端发送 end_session 消息
                                             if (socket.readyState === WebSocket.OPEN) {
@@ -3129,7 +3134,6 @@ function init_app() {
 
         try {
             // 创建一个 Promise 来等待 session_started 消息
-            let timeoutId = null; // 在外部作用域定义，以便清除
             const sessionStartPromise = new Promise((resolve, reject) => {
                 sessionStartedResolver = resolve;
                 sessionStartedRejecter = reject; // 保存 reject 函数
@@ -3137,6 +3141,7 @@ function init_app() {
                 // 清除之前的超时定时器（如果存在）
                 if (window.sessionTimeoutId) {
                     clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
                 }
             });
 
@@ -3148,7 +3153,7 @@ function init_app() {
                 }));
 
                 // 设置超时（10秒），如果超时则拒绝
-                timeoutId = setTimeout(() => {
+                window.sessionTimeoutId = setTimeout(() => {
                     if (sessionStartedRejecter) {
                         const rejecter = sessionStartedRejecter;
                         sessionStartedResolver = null; // 先清除，防止重复触发
@@ -3170,14 +3175,8 @@ function init_app() {
                         window.sessionTimeoutId = null; // 即使 rejecter 不存在也清除
                     }
                 }, 10000); // 10秒超时
-
-                // 保存到全局变量，以便在 session_started 事件中清除
-                window.sessionTimeoutId = timeoutId;
             } else {
                 // WebSocket未连接，清除超时定时器和状态
-                if (timeoutId) {
-                    clearTimeout(timeoutId);
-                }
                 if (window.sessionTimeoutId) {
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
@@ -3208,15 +3207,15 @@ function init_app() {
                 ]);
 
                 // 成功时清除超时定时器
-                if (timeoutId) {
-                    clearTimeout(timeoutId);
-                    timeoutId = null;
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
                 }
             } catch (error) {
                 // 超时或错误时清除超时定时器
-                if (timeoutId) {
-                    clearTimeout(timeoutId);
-                    timeoutId = null;
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
                 }
                 throw error; // 重新抛出错误，让外层 catch 处理
             }
@@ -3446,7 +3445,6 @@ function init_app() {
             showVoicePreparingToast(window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...');
 
             // 创建一个 Promise 来等待 session_started 消息（复用已有模式）
-            let timeoutId = null;
             const sessionStartPromise = new Promise((resolve, reject) => {
                 sessionStartedResolver = resolve;
                 sessionStartedRejecter = reject; //  保存 reject 函数
@@ -3454,10 +3452,11 @@ function init_app() {
                 // 清除之前的超时定时器（如果存在）
                 if (window.sessionTimeoutId) {
                     clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
                 }
 
                 // 设置超时（15秒），如果超时则拒绝
-                timeoutId = setTimeout(() => {
+                window.sessionTimeoutId = setTimeout(() => {
                     if (sessionStartedRejecter) {
                         const rejecter = sessionStartedRejecter;
                         sessionStartedResolver = null; // 先清除，防止重复触发
@@ -3475,9 +3474,6 @@ function init_app() {
                         rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                     }
                 }, 15000); // 15秒超时
-
-                // 保存到全局变量，以便在 session_started 事件中清除
-                window.sessionTimeoutId = timeoutId;
             });
 
             // 启动文本session
@@ -3489,9 +3485,6 @@ function init_app() {
                 }));
             } else {
                 // WebSocket未连接，清除超时定时器和状态
-                if (timeoutId) {
-                    clearTimeout(timeoutId);
-                }
                 if (window.sessionTimeoutId) {
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
