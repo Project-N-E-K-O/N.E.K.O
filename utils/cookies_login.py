@@ -84,6 +84,8 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
             
         cookie_file = COOKIE_FILES[platform]
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if sys.platform != 'win32':
+           os.chmod(CONFIG_DIR, 0o700)  # 仅所有者可访问
         
         # 根据参数决定是否加密
         if encrypt:

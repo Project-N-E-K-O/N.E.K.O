@@ -94,85 +94,28 @@ def get_random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
-def _get_bilibili_credential():
-    """
-    从文件加载Bilibili认证信息，返回Credential对象
-    
-    支持从以下位置读取cookies：
-    1. ~/bilibili_cookies.json
-    2. config/bilibili_cookies.json
-    3. ./bilibili_cookies.json
-    
-    Returns:
-        Credential对象，如果加载失败则返回None
-    """
+def _get_bilibili_credential() -> Any | None:
     try:
         from bilibili_api import Credential
+        cookies = _get_platform_cookies('bilibili')
+        if not cookies:
+            return None
         
-        # 查找可能的cookie文件位置
-        possible_paths = [
-            Path(os.path.expanduser('~')) / 'bilibili_cookies.json',
-            Path('config') / 'bilibili_cookies.json',
-            Path('.') / 'bilibili_cookies.json',
-        ]
-        
-        for cookie_file in possible_paths:
-            if cookie_file.exists():
-                with open(cookie_file, 'r', encoding='utf-8') as f:
-                    cookie_data = json.load(f)
-                    
-                    # 提取必要的认证信息
-                    cookies = {}
-                    
-                    # EditThisCookie/Cookie-Editor格式 (数组)
-                    if isinstance(cookie_data, list):
-                        for cookie in cookie_data:
-                            # 安全地访问字典，防止畸形数据导致 KeyError
-                            if cookie.get('domain', '').endswith('bilibili.com'):
-                                name = cookie.get('name')
-                                value = cookie.get('value')
-                                # 只有 name 和 value 都存在时才添加
-                                if name and value:
-                                    cookies[name] = value
-                    
-                    # 简单的键值对格式
-                    elif isinstance(cookie_data, dict):
-                        cookies = cookie_data
-                    
-                    # 创建Credential对象
-                    if cookies:
-                        sessdata = cookies.get('SESSDATA', '')
-                        bili_jct = cookies.get('bili_jct', '')
-                        buvid3 = cookies.get('buvid3', '')
-                        dedeuserid = cookies.get('DedeUserID', '')
-                        
-                        if sessdata:
-                            credential = Credential(
-                                sessdata=sessdata,
-                                bili_jct=bili_jct,
-                                buvid3=buvid3,
-                                dedeuserid=dedeuserid
-                            )
-                            print(f"✅ 成功从文件加载 Bilibili 认证信息: {cookie_file}")
-                            return credential
-                        else:
-                            print(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
+        # 兼容原版逻辑，加入 buvid3 防止被 B站 API 风控拦截
+        return Credential(
+            sessdata=cookies.get('SESSDATA', ''),
+            bili_jct=cookies.get('bili_jct', ''),
+            buvid3=cookies.get('buvid3', ''),
+            dedeuserid=cookies.get('DedeUserID', '')
+        )
     except ImportError:
-        # bilibili_api 库未安装，直接返回 None
-        # 不打印任何日志，让调用方处理
         logger.debug("bilibili_api 库未安装")
         return None
     except Exception as e:
         logger.debug(f"从文件加载认证信息失败: {e}")
     
-    # 如果没有找到cookie文件，不记录到日志（避免暴露用户路径）
-    # 使用 print 保持私密性
-    logger.debug("未找到 Bilibili cookie 文件，将使用默认推荐（非个性化）")
-    print("提示：要使用个性化推荐，可导出cookies到以下位置之一：")
-    print(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
-    print(f"  - {Path('config') / 'bilibili_cookies.json'}")
-    
     return None
+
 
 # ==================================================
 # 热门内容获取函数
@@ -2060,6 +2003,7 @@ async def search_and_play_song(song_name: str) -> Dict[str, Any]:
 # =======================================================
 
 def _get_platform_cookies(platform_name: str) -> dict[str, str]:
+    
     """
     通用平台 Cookie 读取器 (接入系统底层的加密/明文统一读取逻辑)
     """

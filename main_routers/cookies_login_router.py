@@ -145,7 +145,8 @@ async def save_cookie(data: CookieSubmit):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"保存失败: {e}")
+        logger.error(f"保存失败: {type(e).__name__}")
+        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         raise HTTPException(status_code=500, detail="内部服务器错误")
 
 @router.get("/cookies/{platform}", summary="获取平台Cookie状态")
@@ -163,8 +164,7 @@ async def get_platform_cookies(platform: str):
         "data": {
             "platform": platform,
             "has_cookies": True,
-            "cookies_count": len(cookies),
-            "cookie_names": list(cookies.keys())[:5]  # 修复：真正只返回前5个
+            "cookies_count": len(cookies)
         }
     }
 
@@ -191,7 +191,8 @@ async def delete_platform_cookies(platform: str):
 
         return {"success": True, "message": f"✅ {platform.capitalize()} 凭证已物理粉碎"}
     except Exception as e:
-        logger.error(f"删除文件失败: {e}")
+        logger.error(f"删除失败: {type(e).__name__}")
+        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         raise HTTPException(status_code=500, detail="删除失败，请检查系统权限")
 
 # ============ 4. 兼容性适配 ============
@@ -202,10 +203,13 @@ async def api_save_cookie_legacy(data: CookieSubmit):
     try:  
         result = await save_cookie(data)
         logger.info(f"✅ 兼容版cookies保存成功 | 平台: {data.platform}")
+        logger.debug(f"保存结果: {result}")  # debug 级别记录详情
         return {"success": True, "msg": result["message"]}
     except HTTPException as e:
         logger.warning(f"❌ 兼容版cookies保存失败 | 平台: {data.platform} | 错误: {e.detail}")
+        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         return {"success": False, "msg": f"❌ {e.detail}"}
     except Exception as e:
         logger.error(f"❌ 兼容性cookies保存失败 | 平台: {data.platform} | 错误: {str(e)}")
+        logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         return {"success": False, "msg": f"❌ 系统异常,请稍后尝试: {str(e)}"}

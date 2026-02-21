@@ -124,7 +124,11 @@ async function submitCurrentCookie() {
 
         if (val) {
             // 简单的防注入处理：移除换行符和首尾多余的分号
-            const sanitizedVal = val.replace(/[\r\n]/g, '').replace(/^;|;$/g, '');
+            const sanitizedVal = val
+                .replace(/[\r\n\t]/g, '')       // 清理控制字符
+                .replace(/[<>'"]/g, '')          // 清理潜在 XSS 字符
+                .replace(/^;+|;+$/g, '')
+                .trim();
             if (sanitizedVal !== val) {
                 showAlert(false, `⚠️ [${f.label}] 包含无效字符: 分号 (;),已自动清除，请确认后重新提交`);
             }
@@ -203,25 +207,62 @@ async function refreshStatusList() {
             )
         );
         
-        container.innerHTML = results.map((res, idx) => {
+        container.textContent = '';
+
+        results.forEach((res, idx) => {
             const key = platforms[idx];
             const cfg = PLATFORM_CONFIG[key];
             const active = res.success && res.data?.has_cookies;
 
-            return `
-                <div class="status-card" style="border-left: 4px solid ${active ? '#10b981' : '#cbd5e1'}">
-                    <div class="status-info">
-                        <div class="status-name">${cfg.icon} ${cfg.name}</div>
-                        <div class="status-tag" style="color: ${active ? '#10b981' : '#94a3b8'}">
-                            ${active ? '● 已就绪' : '○ 未配置'}
-                        </div>
-                    </div>
-                    ${active ? `<button class="del-btn" onclick="deleteCookie('${key}')">移除</button>` : ''}
-                </div>
-            `;
-        }).join('');
+            // 1. 创建卡片外层容器
+            const statusCard = document.createElement('div');
+            statusCard.className = 'status-card';
+            // 设置左侧边框样式（安全设置内联样式，避免字符串拼接）
+            statusCard.style.borderLeft = `4px solid ${active ? '#10b981' : '#cbd5e1'}`;
+
+            // 2. 创建状态信息容器
+            const statusInfo = document.createElement('div');
+            statusInfo.className = 'status-info';
+
+            // 3. 创建状态名称元素
+            const statusName = document.createElement('div');
+            statusName.className = 'status-name';
+            // 使用textContent设置文本（核心：避免XSS，仅渲染纯文本）
+            statusName.textContent = `${cfg.icon} ${cfg.name}`;
+
+            // 4. 创建状态标签元素
+            const statusTag = document.createElement('div');
+            statusTag.className = 'status-tag';
+            statusTag.style.color = active ? '#10b981' : '#94a3b8';
+            statusTag.textContent = active ? '● 已就绪' : '○ 未配置';
+
+            // 5. 组装状态信息容器
+            statusInfo.appendChild(statusName);
+            statusInfo.appendChild(statusTag);
+
+            // 6. 创建删除按钮（仅在active为true时创建）
+            if (active) {
+                const delBtn = document.createElement('button');
+                delBtn.className = 'del-btn';
+                delBtn.textContent = '移除';
+                // 使用addEventListener绑定事件（替代onclick属性，避免XSS）
+                delBtn.addEventListener('click', () => {
+                    deleteCookie(key);
+                });
+                statusCard.appendChild(delBtn);
+            }
+
+            // 7. 组装完整卡片并添加到容器
+            statusCard.appendChild(statusInfo);
+            container.appendChild(statusCard);
+        });
     } catch (e) {
-        container.innerHTML = '<div class="error-text">状态加载失败</div>';
+        // 错误提示也使用DOM创建，避免innerHTML
+        container.textContent = ''; // 先清空
+        const errorText = document.createElement('div');
+        errorText.className = 'error-text';
+        errorText.textContent = '状态加载失败';
+        container.appendChild(errorText);
     }
 }
 
