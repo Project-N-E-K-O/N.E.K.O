@@ -784,32 +784,28 @@ class ConfigManager:
             DEFAULT_CORE_URL,
             DEFAULT_CORE_MODEL,
             DEFAULT_OPENROUTER_URL,
+            DEFAULT_CONVERSATION_MODEL,
             DEFAULT_SUMMARY_MODEL,
             DEFAULT_CORRECTION_MODEL,
             DEFAULT_EMOTION_MODEL,
             DEFAULT_VISION_MODEL,
             DEFAULT_REALTIME_MODEL,
             DEFAULT_TTS_MODEL,
-            DEFAULT_SUMMARY_MODEL_PROVIDER,
+            DEFAULT_AGENT_MODEL,
+            DEFAULT_CONVERSATION_MODEL_URL,
+            DEFAULT_CONVERSATION_MODEL_API_KEY,
             DEFAULT_SUMMARY_MODEL_URL,
             DEFAULT_SUMMARY_MODEL_API_KEY,
-            DEFAULT_CORRECTION_MODEL_PROVIDER,
             DEFAULT_CORRECTION_MODEL_URL,
             DEFAULT_CORRECTION_MODEL_API_KEY,
-            DEFAULT_EMOTION_MODEL_PROVIDER,
             DEFAULT_EMOTION_MODEL_URL,
             DEFAULT_EMOTION_MODEL_API_KEY,
-            DEFAULT_VISION_MODEL_PROVIDER,
             DEFAULT_VISION_MODEL_URL,
             DEFAULT_VISION_MODEL_API_KEY,
-            DEFAULT_AGENT_MODEL,
-            DEFAULT_AGENT_MODEL_PROVIDER,
             DEFAULT_AGENT_MODEL_URL,
             DEFAULT_AGENT_MODEL_API_KEY,
-            DEFAULT_REALTIME_MODEL_PROVIDER,
             DEFAULT_REALTIME_MODEL_URL,
             DEFAULT_REALTIME_MODEL_API_KEY,
-            DEFAULT_TTS_MODEL_PROVIDER,
             DEFAULT_TTS_MODEL_URL,
             DEFAULT_TTS_MODEL_API_KEY,
         )
@@ -823,6 +819,7 @@ class ConfigManager:
             'CORE_MODEL': DEFAULT_CORE_MODEL,
             'CORE_API_TYPE': 'qwen',
             'OPENROUTER_URL': DEFAULT_OPENROUTER_URL,
+            'CONVERSATION_MODEL': DEFAULT_CONVERSATION_MODEL,
             'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
             'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
             'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
@@ -837,25 +834,20 @@ class ConfigManager:
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
-            'SUMMARY_MODEL_PROVIDER': DEFAULT_SUMMARY_MODEL_PROVIDER,
+            'CONVERSATION_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
+            'CONVERSATION_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
             'SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
             'SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
-            'CORRECTION_MODEL_PROVIDER': DEFAULT_CORRECTION_MODEL_PROVIDER,
             'CORRECTION_MODEL_URL': DEFAULT_CORRECTION_MODEL_URL,
             'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
-            'EMOTION_MODEL_PROVIDER': DEFAULT_EMOTION_MODEL_PROVIDER,
             'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
             'EMOTION_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
-            'VISION_MODEL_PROVIDER': DEFAULT_VISION_MODEL_PROVIDER,
             'VISION_MODEL_URL': DEFAULT_VISION_MODEL_URL,
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
-            'AGENT_MODEL_PROVIDER': DEFAULT_AGENT_MODEL_PROVIDER,
             'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
             'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
-            'REALTIME_MODEL_PROVIDER': DEFAULT_REALTIME_MODEL_PROVIDER,
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
-            'TTS_MODEL_PROVIDER': DEFAULT_TTS_MODEL_PROVIDER,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
         }
@@ -939,8 +931,6 @@ class ConfigManager:
             config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
 
         # Agent API 配置处理（默认跟随 assist vision，可单独覆盖）
-        if core_cfg.get('agentModelProvider') is not None:
-            config['AGENT_MODEL_PROVIDER'] = core_cfg.get('agentModelProvider', '')
         if core_cfg.get('agentModelUrl') is not None:
             config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
         if core_cfg.get('agentModelId') is not None:
@@ -956,6 +946,14 @@ class ConfigManager:
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            # 文本对话模型 模型自定义配置映射
+            if core_cfg.get('conversationModelApiKey') is not None:
+                config['CONVERSATION_MODEL_API_KEY'] = core_cfg.get('conversationModelApiKey', '') or config.get('CONVERSATION_MODEL_API_KEY', '')
+            if core_cfg.get('conversationModelUrl') is not None:
+                config['CONVERSATION_MODEL_URL'] = core_cfg.get('conversationModelUrl', '') or config.get('CONVERSATION_MODEL_URL', '')
+            if core_cfg.get('conversationModelId') is not None:
+                config['CONVERSATION_MODEL'] = core_cfg.get('conversationModelId', '') or config.get('CONVERSATION_MODEL', '')
+            
             # Summary（摘要）模型自定义配置映射
             if core_cfg.get('summaryModelApiKey') is not None:
                 config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '') or config.get('SUMMARY_MODEL_API_KEY', '')
@@ -1041,6 +1039,13 @@ class ConfigManager:
         # 模型类型到配置字段的映射
         # fallback_type: 'assist' = 辅助API, 'core' = 核心API
         model_type_mapping = {
+            'conversation': {
+                'custom_model': 'CONVERSATION_MODEL',
+                'custom_url': 'CONVERSATION_MODEL_URL',
+                'custom_key': 'CONVERSATION_MODEL_API_KEY',
+                'default_model': 'CONVERSATION_MODEL',
+                'fallback_type': 'assist',
+            },
             'summary': {
                 'custom_model': 'SUMMARY_MODEL',
                 'custom_url': 'SUMMARY_MODEL_URL',

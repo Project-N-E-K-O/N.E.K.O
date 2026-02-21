@@ -7,11 +7,9 @@ import asyncio
 import uuid
 import logging
 import time
-from typing import Dict, Any, Optional
+import hashlib
+from typing import Dict, Any, Optional, ClassVar
 from datetime import datetime
-import time
-import multiprocessing as mp
-import queue
 import httpx
 
 from fastapi import FastAPI, HTTPException
@@ -45,8 +43,6 @@ class Modules:
     task_executor: DirectTaskExecutor | None = None  # 新增：合并的任务执行器
     # Task tracking
     task_registry: Dict[str, Dict[str, Any]] = {}
-    result_queue: Optional[mp.Queue] = None
-    poller_task: Optional[asyncio.Task] = None
     executor_reset_needed: bool = False
     analyzer_enabled: bool = False
     analyzer_profile: Dict[str, Any] = {}
@@ -54,6 +50,7 @@ class Modules:
     computer_use_queue: Optional[asyncio.Queue] = None
     computer_use_running: bool = False
     active_computer_use_task_id: Optional[str] = None
+    active_computer_use_async_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
     # Notification queue for frontend (one-time messages)
@@ -64,12 +61,16 @@ class Modules:
     state_revision: int = 0
     # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
     analyze_lock: Optional[asyncio.Lock] = None
+    # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
+    last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "not checked"},
         "mcp": {"ready": False, "reason": "not checked"},
         "browser_use": {"ready": False, "reason": "not checked"},
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
+    _background_tasks: ClassVar[set] = set()
+    _persistent_tasks: ClassVar[set] = set()
 
 
 def _rewire_computer_use_dependents() -> None:
@@ -211,25 +212,45 @@ async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> t
 #         queue.put({"task_id": task_id, "success": False, "error": str(e)})
 
 
-def _worker_computer_use(task_id: str, instruction: str, screenshot: Optional[bytes], queue: mp.Queue):
-    try:
-        from brain.computer_use import ComputerUseAdapter as _CU
-        cu = _CU()
-        # Ensure exclusive run within this process; ComputerUseAdapter.run_instruction
-        # is synchronous by design. We intentionally do not pass screenshot here
-        # to match the adapter signature.
-        res = cu.run_instruction(instruction)
-        if res is None:
-            res = {"success": True}
-        elif isinstance(res, dict) and "success" not in res:
-            res["success"] = True
-        queue.put({"task_id": task_id, "success": bool(res.get("success", False)), "result": res})
-    except Exception as e:
-        queue.put({"task_id": task_id, "success": False, "error": str(e)})
 
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+
+async def _emit_task_result(
+    lanlan_name: Optional[str],
+    *,
+    channel: str,
+    task_id: str,
+    success: bool,
+    summary: str,
+    detail: str = "",
+    error_message: str = "",
+) -> None:
+    """Emit a structured task_result event to main_server."""
+    if success:
+        status = "completed"
+    elif detail:
+        status = "partial"
+    else:
+        status = "failed"
+    _SUMMARY_LIMIT = 500
+    _DETAIL_LIMIT = 1500
+    _ERROR_LIMIT = 500
+    await _emit_main_event(
+        "task_result",
+        lanlan_name,
+        text=summary[:_SUMMARY_LIMIT],
+        task_id=task_id,
+        channel=channel,
+        status=status,
+        success=success,
+        summary=summary[:_SUMMARY_LIMIT],
+        detail=detail[:_DETAIL_LIMIT] if detail else "",
+        error_message=error_message[:_ERROR_LIMIT] if error_message else "",
+        timestamp=_now_iso(),
+    )
 
 
 def _check_agent_api_gate() -> Dict[str, Any]:
@@ -284,6 +305,47 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     }
 
 
+def _normalize_lanlan_key(lanlan_name: Optional[str]) -> str:
+    name = (lanlan_name or "").strip()
+    return name or "__default__"
+
+
+def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
+    """
+    Build a stable fingerprint from user-role messages only.
+    Used to ensure analyzer consumes each user turn once.
+    """
+    if not isinstance(messages, list):
+        return None
+    user_parts: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") != "user":
+            continue
+        # Keep text as primary signal, and attach optional metadata if present.
+        if "text" in m and "content" not in m:
+            logger.warning("[AgentServer] Deprecation Warning: Received user message with 'text' but no 'content'.")
+        text = str(m.get("text") or m.get("content") or "").strip()
+        mid = str(
+            m.get("id")
+            or m.get("message_id")
+            or m.get("msg_id")
+            or ""
+        ).strip()
+        ts = str(
+            m.get("timestamp")
+            or m.get("time")
+            or m.get("created_at")
+            or ""
+        ).strip()
+        user_parts.append(f"{text}|{mid}|{ts}")
+    if not user_parts:
+        return None
+    payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
+    return hashlib.sha256(payload).hexdigest()
+
+
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
         snapshot = _collect_agent_status_snapshot()
@@ -303,160 +365,155 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
         if event_id:
-            asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+            ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
+            Modules._background_tasks.add(ack_task)
+            ack_task.add_done_callback(Modules._background_tasks.discard)
         if isinstance(messages, list) and messages:
-            asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+            # Consume only new user turn. Assistant turn_end without new user input should be ignored.
+            lanlan_key = _normalize_lanlan_key(lanlan_name)
+            fp = _build_user_turn_fingerprint(messages)
+            if fp is None:
+                logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
+                return
+            if Modules.last_user_turn_fingerprint.get(lanlan_key) == fp:
+                logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
+                return
+            Modules.last_user_turn_fingerprint[lanlan_key] = fp
+            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+            Modules._background_tasks.add(task)
+            task.add_done_callback(Modules._background_tasks.discard)
 
 
 
 def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    生成任务（仅用于 computer_use 任务）
-    注意: MCP processor 任务现在使用协程直接执行，不再通过此函数
-    """
+    """生成 computer_use 任务条目并入队等待独占执行。"""
     task_id = str(uuid.uuid4())
     info = {
         "id": task_id,
         "type": kind,
-        "status": "running",
+        "status": "queued",
         "start_time": _now_iso(),
         "params": args,
         "result": None,
         "error": None,
     }
-    # Ensure result queue exists lazily
-    if Modules.result_queue is None:
-        Modules.result_queue = mp.Queue()
-    
     if kind == "computer_use":
-        # Queue the task for exclusive execution by the scheduler
-        info["status"] = "queued"
-        info["pid"] = None
         Modules.task_registry[task_id] = info
         if Modules.computer_use_queue is None:
             Modules.computer_use_queue = asyncio.Queue()
-        # Put a minimal payload; scheduler will spawn the process
         Modules.computer_use_queue.put_nowait({
             "task_id": task_id,
             "instruction": args.get("instruction", ""),
-            "screenshot": args.get("screenshot"),
         })
         return info
     else:
         raise ValueError(f"Unknown task kind: {kind}")
 
 
-async def _start_computer_use_process(task_info: Dict[str, Any]) -> None:
-    """Spawn the actual computer-use worker process for a queued task."""
-    task_id = task_info.get("task_id")
-    instruction = task_info.get("instruction", "")
-    screenshot = task_info.get("screenshot")
-    if Modules.result_queue is None:
-        Modules.result_queue = mp.Queue()
-    p = mp.Process(target=_worker_computer_use, args=(task_id, instruction, screenshot, Modules.result_queue))
-    p.daemon = True
-    p.start()
-    # Update registry entry
+async def _run_computer_use_task(
+    task_id: str,
+    instruction: str,
+) -> None:
+    """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
     info = Modules.task_registry.get(task_id, {})
+    lanlan_name = info.get("lanlan_name")
+
+    # Mark running
     info["status"] = "running"
     info["start_time"] = _now_iso()
-    info["pid"] = p.pid
-    info["_proc"] = p
-    Modules.task_registry[task_id] = info
     Modules.computer_use_running = True
     Modules.active_computer_use_task_id = task_id
-    # Notify frontend of queued→running transition
+
     try:
         await _emit_main_event(
-            "task_update",
-            info.get("lanlan_name"),
+            "task_update", lanlan_name,
             task={
-                "id": task_id,
-                "status": "running",
-                "type": "computer_use",
-                "start_time": info["start_time"],
-                "params": info.get("params", {}),
+                "id": task_id, "status": "running", "type": "computer_use",
+                "start_time": info["start_time"], "params": info.get("params", {}),
             },
         )
     except Exception:
         pass
 
+    # Execute in thread pool (run_instruction is synchronous/blocking)
+    success = False
+    cu_detail = ""
+    loop = asyncio.get_running_loop()
 
-async def _poll_results_loop():
-    while True:
+    try:
+        if Modules.computer_use is None or not hasattr(Modules.computer_use, "run_instruction"):
+            success = False
+            cu_detail = "ComputerUse adapter is inactive or invalid (e.g., reset)"
+            info["error"] = cu_detail
+            logger.error("[ComputerUse] Task %s aborted: %s", task_id, cu_detail)
+        else:
+            session_id = info.get("session_id")
+            future = loop.run_in_executor(None, Modules.computer_use.run_instruction, instruction, session_id)
+            res = await future
+            if res is None:
+                logger.debug("[ComputerUse] run_instruction returned None, treating as success")
+                res = {"success": True}
+            elif isinstance(res, dict) and "success" not in res:
+                res["success"] = True
+            success = bool(res.get("success", False))
+            info["result"] = res
+            if isinstance(res, dict):
+                cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
+            else:
+                cu_detail = str(res) if res is not None else ""
+    except asyncio.CancelledError:
+        info["error"] = "Task was cancelled"
+        logger.info("[ComputerUse] Task %s was cancelled", task_id)
+    except Exception as e:
+        info["error"] = str(e)
+        logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
+    finally:
+        info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
+        Modules.computer_use_running = False
+        Modules.active_computer_use_task_id = None
+        Modules.active_computer_use_async_task = None
+
+        # Emit task_update (terminal state)
         try:
-            if Modules.result_queue is None:
-                await asyncio.sleep(0.2)
-                continue
-            try:
-                msg = await asyncio.to_thread(Modules.result_queue.get, True, 0.5)
-            except queue.Empty:
-                continue
-            if not isinstance(msg, dict):
-                continue
-            tid = msg.get("task_id")
-            if not tid or tid not in Modules.task_registry:
-                continue
-            info = Modules.task_registry[tid]
-            info["status"] = "completed" if msg.get("success") else "failed"
-            if "result" in msg:
-                info["result"] = msg["result"]
-            if "error" in msg:
-                info["error"] = msg["error"]
-            # If this was the active computer-use task, allow next to run
-            if Modules.active_computer_use_task_id == tid:
-                Modules.computer_use_running = False
-                Modules.active_computer_use_task_id = None
-            # Kill subprocess if still alive (shouldn't be, but safety net)
-            proc = info.get("_proc")
-            if proc is not None and proc.is_alive():
-                logger.warning("[Agent] Subprocess for task %s still alive after result received, killing", tid)
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            try:
-                await _emit_main_event(
-                    "task_update",
-                    info.get("lanlan_name"),
-                    task={
-                        "id": tid,
-                        "status": info.get("status"),
-                        "type": info.get("type"),
-                        "start_time": info.get("start_time"),
-                        "end_time": _now_iso(),
-                        "error": info.get("error"),
-                    },
-                )
-            except Exception:
-                pass
-            # Notify main server about completion so it can insert an extra reply next turn
-            try:
-                summary = "任务已完成"
-                try:
-                    # Build a compact result summary if possible
-                    r = info.get("result")
-                    if isinstance(r, dict):
-                        detail = r.get("result") or r.get("message") or r.get("reason") or ""
-                    else:
-                        detail = str(r) if r is not None else ""
-                    # Include task description if available
-                    params = info.get("params") or {}
-                    desc = params.get("query") or params.get("instruction") or ""
-                    if detail and desc:
-                        summary = f"你的任务 “{desc}” 已完成：{detail}"[:240]
-                    elif detail:
-                        summary = f"你的任务已完成：{detail}"[:240]
-                    elif desc:
-                        summary = f"你的任务 “{desc}” 已完成"[:240]
-                except Exception:
-                    pass
-                await _emit_main_event("task_result", info.get("lanlan_name"), text=summary)
-            except Exception:
-                pass
+            task_obj = asyncio.create_task(_emit_main_event(
+                "task_update", lanlan_name,
+                task={
+                    "id": task_id, "status": info["status"], "type": "computer_use",
+                    "start_time": info.get("start_time"), "end_time": _now_iso(),
+                    "error": info.get("error"),
+                },
+            ))
+            Modules._background_tasks.add(task_obj)
+            task_obj.add_done_callback(Modules._background_tasks.discard)
         except Exception:
             pass
 
+        # Emit structured task_result
+        try:
+            _done = "已完成" if success else "已结束"
+            params = info.get("params") or {}
+            desc = params.get("query") or params.get("instruction") or ""
+            if cu_detail and desc:
+                summary = f'你的任务“{desc}”{_done}：{cu_detail}'
+            elif cu_detail:
+                summary = f'你的任务{_done}：{cu_detail}'
+            elif desc:
+                summary = f'你的任务“{desc}”{_done}'
+            else:
+                summary = "任务已完成" if success else "任务执行失败"
+            task_obj = asyncio.create_task(_emit_task_result(
+                lanlan_name,
+                channel="computer_use",
+                task_id=task_id,
+                success=success,
+                summary=summary,
+                detail=cu_detail,
+                error_message=(info.get("error") or "") if not success else "",
+            ))
+            Modules._background_tasks.add(task_obj)
+            task_obj.add_done_callback(Modules._background_tasks.discard)
+        except Exception:
+            pass
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
@@ -466,7 +523,7 @@ async def _computer_use_scheduler_loop():
     while True:
         try:
             await asyncio.sleep(0.05)
-            # If a task is running, check if it finished (poller will clear flags)
+            # If a task is running, wait until _run_computer_use_task marks it done
             if Modules.computer_use_running:
                 continue
             # No active task: try to dequeue next
@@ -477,8 +534,10 @@ async def _computer_use_scheduler_loop():
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
-            # Start the process for this queued task
-            await _start_computer_use_process(next_task)
+            # Run task in thread pool (non-blocking for the scheduler)
+            Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
+                tid, next_task.get("instruction", ""),
+            ))
         except Exception:
             # Never crash the scheduler
             await asyncio.sleep(0.1)
@@ -563,23 +622,31 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             if result.success:
                 # MCP 任务已成功执行，通知 main_server
                 summary = f'你的任务"{result.task_description}"已完成'
+                mcp_detail = ""
                 if result.result:
-                    # 尝试提取结果摘要
                     try:
                         if isinstance(result.result, dict):
                             detail = result.result.get('content', [])
                             if detail and isinstance(detail, list):
                                 text_parts = [item.get('text', '') for item in detail if isinstance(item, dict)]
-                                detail_text = ' '.join(text_parts)[:150]
-                                if detail_text:
-                                    summary = f'你的任务"{result.task_description}"已完成：{detail_text}'
+                                mcp_detail = ' '.join(text_parts)
+                                if mcp_detail:
+                                    summary = f'你的任务"{result.task_description}"已完成：{mcp_detail}'
                         elif isinstance(result.result, str):
-                            summary = f'你的任务"{result.task_description}"已完成：{result.result[:150]}'
+                            mcp_detail = result.result
+                            summary = f'你的任务"{result.task_description}"已完成：{mcp_detail}'
                     except Exception:
                         pass
                 
                 try:
-                    await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="mcp",
+                        task_id=str(getattr(result, "task_id", "") or ""),
+                        success=True,
+                        summary=summary,
+                        detail=mcp_detail,
+                    )
                     logger.info(f"[TaskExecutor] ✅ MCP task completed and notified: {result.task_description}")
                 except Exception as e:
                     logger.warning(f"[TaskExecutor] Failed to notify main_server: {e}")
@@ -644,15 +711,23 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         session_id=bu_session.session_id,
                     )
                     success = bres.get("success", False) if isinstance(bres, dict) else False
-                    result_summary = ""
-                    summary = f'你的任务"{result.task_description}"已完成'
+                    summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
+                    result_detail = ""
                     if isinstance(bres, dict):
-                        detail = bres.get("result") or bres.get("message") or ""
-                        if detail:
-                            result_summary = str(detail)[:150]
-                            summary = f'你的任务"{result.task_description}"已完成：{result_summary}'
-                    bu_session.complete_task(result_summary or summary[:120], success)
-                    await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                        result_detail = str(bres.get("result") or bres.get("message") or "")
+                        if success:
+                            summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
+                        else:
+                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
+                    bu_session.complete_task(result_detail or summary, success)
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="browser_use",
+                        task_id=bu_task_id,
+                        success=success,
+                        summary=summary,
+                        detail=result_detail,
+                    )
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
@@ -664,13 +739,24 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         pass
                 except Exception as e:
                     logger.warning(f"[BrowserUse] Failed: {e}")
-                    bu_session.complete_task(str(e)[:120], success=False)
+                    bu_session.complete_task(str(e), success=False)
+                    try:
+                        await _emit_task_result(
+                            lanlan_name,
+                            channel="browser_use",
+                            task_id=bu_task_id,
+                            success=False,
+                            summary=f'你的任务"{result.task_description}"执行异常',
+                            error_message=str(e),
+                        )
+                    except Exception:
+                        pass
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
                             task={"id": bu_task_id, "status": "failed", "type": "browser_use",
                                   "start_time": bu_start, "end_time": _now_iso(),
-                                  "error": str(e)[:200],
+                                  "error": str(e)[:500],
                                   "session_id": bu_session.session_id},
                         )
                     except Exception:
@@ -719,8 +805,6 @@ async def startup():
         pass
 
     try:
-        import httpx
-
         async def _http_plugin_provider(force_refresh: bool = False):
             url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
             if force_refresh:
@@ -748,11 +832,10 @@ async def startup():
     except Exception as e:
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
-    # Start result poller (for computer_use tasks)
-    if Modules.poller_task is None:
-        Modules.poller_task = asyncio.create_task(_poll_results_loop())
     # Start computer-use scheduler
-    asyncio.create_task(_computer_use_scheduler_loop())
+    sch_task = asyncio.create_task(_computer_use_scheduler_loop())
+    Modules._persistent_tasks.add(sch_task)
+    sch_task.add_done_callback(Modules._persistent_tasks.discard)
     # Start ZeroMQ bridge for main_server events
     try:
         Modules.agent_bridge = AgentServerEventBridge(on_session_event=_on_session_event)
@@ -831,8 +914,14 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             # Only notify main server when actually accepted
             if accepted:
                 try:
-                    summary = f'插件任务 "{plugin_id}" 已接受'
-                    await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                    plugin_summary = f'插件任务 "{plugin_id}" 已接受'
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="user_plugin",
+                        task_id=task_id,
+                        success=True,
+                        summary=plugin_summary,
+                    )
                 except Exception:
                     pass
         except Exception as e:
@@ -840,8 +929,9 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["error"] = str(e)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
 
-    asyncio.create_task(_run_plugin())
-    # 如果未来需要集中管理后台插件任务，可将 Task 收集到 Modules 上的集合并在 done 后移除
+    plugin_task = asyncio.create_task(_run_plugin())
+    Modules._background_tasks.add(plugin_task)
+    plugin_task.add_done_callback(Modules._background_tasks.discard)
     return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
 
 
@@ -1000,7 +1090,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin
             try:
-                import httpx
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
                     if r.status_code != 200:
@@ -1281,30 +1370,40 @@ async def list_tasks():
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
-        # terminate all running processes and clear registry
-        for tid, info in list(Modules.task_registry.items()):
-            p = info.get("_proc")
+        # Cancel any in-flight background analyzer tasks
+        tasks_to_await = []
+        for t in list(Modules._background_tasks):
+            if not t.done():
+                t.cancel()
+                tasks_to_await.append(t)
+        if tasks_to_await:
+            results = await asyncio.gather(*tasks_to_await, return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
+                    logger.warning(f"[Agent] Error awaiting cancelled background task: {res}")
+        Modules._background_tasks.clear()
+
+        # Cancel any in-flight asyncio tasks and clear registry
+        if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
+            Modules.active_computer_use_async_task.cancel()
             try:
-                if p is not None and p.is_alive():
-                    p.terminate()
-                    p.join(timeout=1.0)
-            except Exception:
+                await Modules.active_computer_use_async_task
+            except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
+
         Modules.task_registry.clear()
-        # Clear scheduling state and queue
+        Modules.last_user_turn_fingerprint.clear()
+        # Clear scheduling state
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
+        Modules.active_computer_use_async_task = None
+        # Drain the asyncio scheduler queue
         try:
             if Modules.computer_use_queue is not None:
                 while not Modules.computer_use_queue.empty():
                     await Modules.computer_use_queue.get()
-        except Exception:
-            pass
-        # drain queue
-        try:
-            if Modules.result_queue is not None:
-                while True:
-                    Modules.result_queue.get_nowait()
         except Exception:
             pass
         return {"success": True, "message": "all tasks terminated and cleared"}

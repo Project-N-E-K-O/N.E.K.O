@@ -1,5 +1,5 @@
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'mcp_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
 
     const state = {
         snapshot: null,
@@ -18,7 +18,7 @@
     const el = () => ({
         master: byId('live2d-agent-master'),
         keyboard: byId('live2d-agent-keyboard'),
-        mcp: byId('live2d-agent-mcp'),
+        browser: byId('live2d-agent-browser'),
         userPlugin: byId('live2d-agent-user-plugin'),
         status: byId('live2d-agent-status'),
     });
@@ -28,8 +28,7 @@
     const getName = (key) => {
         const map = {
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-            mcp_enabled: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具',
-            browser_use_enabled: 'Browser Use',
+            browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
         };
         return map[key] || key;
@@ -58,7 +57,6 @@
         const caps = (snapshot && snapshot.capabilities) || {};
         const map = {
             computer_use_enabled: 'computer_use',
-            mcp_enabled: 'mcp',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
         };
@@ -70,7 +68,6 @@
         const caps = (snapshot && snapshot.capabilities) || {};
         const map = {
             computer_use_enabled: 'computer_use',
-            mcp_enabled: 'mcp',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
         };
@@ -114,14 +111,14 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, mcp, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master) return;
         const snap = state.snapshot;
         if (!snap) {
             master.disabled = true;
             master.checked = false;
             sync(master);
-            [keyboard, mcp, userPlugin].forEach(cb => {
+            [keyboard, browser, userPlugin].forEach(cb => {
                 if (!cb) return;
                 cb.disabled = true;
                 cb.checked = false;
@@ -145,7 +142,7 @@
             master.disabled = true;
             master.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             sync(master);
-            [keyboard, mcp, userPlugin].forEach(cb => {
+            [keyboard, browser, userPlugin].forEach(cb => {
                 if (!cb) return;
                 cb.checked = false;
                 cb.disabled = true;
@@ -164,7 +161,7 @@
         FLAG_KEYS.forEach((k) => {
             const target = k === 'computer_use_enabled'
                 ? keyboard
-                : (k === 'mcp_enabled' ? mcp : (k === 'user_plugin_enabled' ? userPlugin : null));
+                : (k === 'browser_use_enabled' ? browser : (k === 'user_plugin_enabled' ? userPlugin : null));
             if (!target) return;
             const ready = capabilityReady(snap, k);
             const reason = capabilityReason(snap, k);
@@ -190,7 +187,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, mcp, userPlugin } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master) return;
         const clearProcessing = (cb) => {
             if (!cb) return;
@@ -214,7 +211,7 @@
                 await sendCommand('set_agent_enabled', { enabled });
                 if (opSeq === state.masterOpSeq) {
                     const ts = performance.now();
-                    await fetchSnapshot().catch(() => {});
+                    await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_master', ms: Number((performance.now() - ts).toFixed(2)) });
                 }
             } catch (e) {
@@ -222,7 +219,7 @@
                     state.pending.delete('agent_enabled');
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    fetchSnapshot().catch(() => {});
+                    fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(`Agent切换失败: ${e.message}`, 2500);
                     }
@@ -256,13 +253,13 @@
                 try {
                     await sendCommand('set_flag', { key, value });
                     const ts = performance.now();
-                    await fetchSnapshot().catch(() => {});
+                    await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
                 } catch (e) {
                     state.pending.delete(key);
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    fetchSnapshot().catch(() => {});
+                    fetchSnapshot().catch(() => { });
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(`${getName(key)}切换失败: ${e.message}`, 2500);
                     }
@@ -278,7 +275,7 @@
         };
 
         bindFlag(keyboard, 'computer_use_enabled');
-        bindFlag(mcp, 'mcp_enabled');
+        bindFlag(browser, 'browser_use_enabled');
         bindFlag(userPlugin, 'user_plugin_enabled');
 
         window.addEventListener('live2d-agent-popup-opening', async () => {
@@ -289,7 +286,7 @@
                 return;
             }
             // Open popup without waiting, then refresh in background.
-            fetchSnapshot().catch(() => {});
+            fetchSnapshot().catch(() => { });
         });
         window.addEventListener('live2d-agent-popup-closed', () => {
             state.popupOpen = false;
