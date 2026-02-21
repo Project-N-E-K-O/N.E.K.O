@@ -128,7 +128,7 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             color: var(--neko-popup-accent);
             padding: 6px 8px;
             border-radius: 4px;
-            background: rgba(68, 183, 254, 0.05);
+            background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
             margin-bottom: 8px;
             min-height: 20px;
             text-align: center;
@@ -1221,7 +1221,7 @@ function createScreenSourceOption(source) {
             height: '56px',
             objectFit: 'cover',
             borderRadius: '4px',
-            border: '1px solid #ddd',
+            border: 'var(--vrm-thumb-border, 1px solid #ddd)',
             marginBottom: '4px'
         });
         option.appendChild(thumb);
@@ -1236,7 +1236,7 @@ function createScreenSourceOption(source) {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
-            background: '#f5f5f5',
+            background: 'var(--vrm-placeholder-bg, #f5f5f5)',
             borderRadius: '4px',
             marginBottom: '4px'
         });

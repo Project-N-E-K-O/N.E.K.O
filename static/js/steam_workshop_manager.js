@@ -929,6 +929,11 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
     modalContainer.appendChild(modalContent);
     modalOverlay.appendChild(modalContainer);
 
+    const isDark = getIsDarkTheme();
+    if (isDark) {
+        modalContent.classList.add('dark-theme');
+    }
+
     // 添加到页面
     document.body.appendChild(modalOverlay);
 
@@ -965,13 +970,20 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
             min-width: 400px;
             max-width: 90%;
             animation: slideUp 0.3s ease;
+            color: #333;
+        }
+        
+        .confirm-modal-content.dark-theme,
+        body.dark-theme .confirm-modal-content {
+            background-color: #333;
+            color: #e0e0e0;
         }
 
         .confirm-modal-message {
             font-size: 16px;
-            color: #333;
             margin-bottom: 20px;
             line-height: 1.5;
+            color: inherit;
         }
 
         .confirm-modal-actions {
@@ -1155,7 +1167,7 @@ function LoadingManager() {
                 const loadingText = document.createElement('div');
                 loadingText.textContent = message;
                 loadingText.style.fontSize = '16px';
-                loadingText.style.color = getIsDarkTheme() ? '#e0e0e0' : '#333';
+                loadingText.style.color = _loadDark ? '#e0e0e0' : '#333';
 
                 // 添加CSS动画
                 const style = document.createElement('style');
@@ -3642,17 +3654,18 @@ function updateCardPreview() {
     const container = document.getElementById('card-info-dynamic-content');
     if (!container) return;
 
+    const isDark = getIsDarkTheme();
+
     // 从已加载的角色卡列表中获取当前角色卡数据
     if (!currentCharacterCardId || !window.characterCards) {
-        const _phDark = getIsDarkTheme();
-        container.innerHTML = `<p style="color: ${_phDark ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡') + '</p>';
         return;
     }
 
     const currentCard = window.characterCards.find(card => card.id === currentCharacterCardId);
     if (!currentCard) {
-        container.innerHTML = `<p style="color: ${getIsDarkTheme() ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.characterCardNotFound') : '找不到角色卡数据') + '</p>';
         return;
     }
@@ -3683,8 +3696,7 @@ function updateCardPreview() {
 
         // 创建属性行
         const row = document.createElement('div');
-        const _rowDark = getIsDarkTheme();
-        row.style.cssText = `color: ${_rowDark ? '#b0b0b0' : '#555'}; margin-bottom: 8px;`;
+        row.style.cssText = `color: ${isDark ? '#b0b0b0' : '#555'}; margin-bottom: 8px;`;
 
         // 格式化值
         let displayValue = '';
@@ -3709,8 +3721,7 @@ function updateCardPreview() {
 
     // 如果没有任何属性显示，显示提示
     if (container.children.length === 0) {
-        const _emptyDark = getIsDarkTheme();
-        container.innerHTML = `<p style="color: ${_emptyDark ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.noCardProperties') : '暂无属性信息') + '</p>';
     }
 }
