@@ -128,6 +128,7 @@ async function submitCurrentCookie() {
                 .replace(/[\r\n\t]/g, '')       // 清理控制字符
                 .replace(/[<>'"]/g, '')          // 清理潜在 XSS 字符
                 .replace(/^;+|;+$/g, '')
+                .replace(/;/g, '')  
                 .trim();
             if (sanitizedVal !== val) {
                 showAlert(false, `⚠️ [${f.label}] 包含无效字符: 分号 (;),已自动清除，请确认后重新提交`);
