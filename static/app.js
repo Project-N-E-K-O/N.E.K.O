@@ -5453,7 +5453,7 @@ function init_app() {
                 if (buttonData && buttonData.button) {
                     buttonData.button.dataset.active = 'false';
                     if (buttonData.imgOff) {
-                        buttonData.imgOff.style.opacity = '0.5';
+                        buttonData.imgOff.style.opacity = '1';
                     }
                     if (buttonData.imgOn) {
                         buttonData.imgOn.style.opacity = '0';

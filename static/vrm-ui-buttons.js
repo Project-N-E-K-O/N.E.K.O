@@ -126,7 +126,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             imgOff = document.createElement('img');
             imgOff.src = config.iconOff; imgOff.alt = config.emoji;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0.5', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
+            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
 
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn; imgOn.alt = config.emoji;
@@ -173,7 +173,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
                 btn.style.background = shouldShowOnIcon ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
                 if (imgOff && imgOn) {
-                    imgOff.style.opacity = shouldShowOnIcon ? '0' : '0.5';
+                    imgOff.style.opacity = shouldShowOnIcon ? '0' : '1';
                     imgOn.style.opacity = shouldShowOnIcon ? '1' : '0';
                 }
             });
@@ -304,7 +304,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     // 更新被关闭的互斥按钮的图标
                     const exclusiveData = this._floatingButtons[config.exclusive];
                     if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
-                        exclusiveData.imgOff.style.opacity = '0.5';
+                        exclusiveData.imgOff.style.opacity = '1';
                         exclusiveData.imgOn.style.opacity = '0';
                     }
                 }
@@ -320,7 +320,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                             imgOff.style.opacity = '0';
                             imgOn.style.opacity = '1';
                         } else {
-                            imgOff.style.opacity = '0.5';
+                            imgOff.style.opacity = '1';
                             imgOn.style.opacity = '0';
                         }
                     }
@@ -463,7 +463,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
     const returnImgOff = document.createElement('img');
     returnImgOff.src = '/static/icons/rest_off.png' + iconVersion; returnImgOff.alt = '💤';
-    Object.assign(returnImgOff.style, { width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '0.5', transition: 'opacity 0.3s ease' });
+    Object.assign(returnImgOff.style, { width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease' });
 
     const returnImgOn = document.createElement('img');
     returnImgOn.src = '/static/icons/rest_on.png' + iconVersion; returnImgOn.alt = '💤';
@@ -486,7 +486,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         returnBtn.style.transform = 'scale(1)';
         returnBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
         returnBtn.style.background = 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
-        returnImgOff.style.opacity = '0.5'; returnImgOn.style.opacity = '0';
+        returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {
         if (returnButtonContainer.getAttribute('data-dragging') === 'true') {
@@ -1011,7 +1011,7 @@ VRMManager.prototype.setButtonActive = function (buttonId, active) {
 
     // 更新图标
     if (buttonData.imgOff) {
-        buttonData.imgOff.style.opacity = active ? '0' : '0.5';
+        buttonData.imgOff.style.opacity = active ? '0' : '1';
     }
     if (buttonData.imgOn) {
         buttonData.imgOn.style.opacity = active ? '1' : '0';

@@ -1106,7 +1106,6 @@ button * {
 #chat-container.minimized #toggle-chat-btn img {
     width: 100% !important;
     height: 100% !important;
-    opacity: 0.8 !important;
 }
 
 /* 折叠状态下的呼吸特效动画 */

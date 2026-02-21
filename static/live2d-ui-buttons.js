@@ -341,7 +341,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 height: '48px',
                 objectFit: 'contain',
                 pointerEvents: 'none',
-                opacity: '0.5',
+                opacity: '0.75',
                 transition: 'opacity 0.3s ease'
             });
 
@@ -463,7 +463,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     imgOn.style.opacity = '1';
                 } else {
                     // 未激活状态：显示off图标
-                    imgOff.style.opacity = '0.5';
+                    imgOff.style.opacity = '0.75';
                     imgOn.style.opacity = '0';
                 }
             }
@@ -489,7 +489,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     // 更新被关闭的互斥按钮的图标
                     const exclusiveData = this._floatingButtons[config.exclusive];
                     if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
-                        exclusiveData.imgOff.style.opacity = '0.5';
+                        exclusiveData.imgOff.style.opacity = '0.75';
                         exclusiveData.imgOn.style.opacity = '0';
                     }
                 }
@@ -508,7 +508,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                             imgOn.style.opacity = '1';
                         } else {
                             // 弹出框隐藏：显示off图标
-                            imgOff.style.opacity = '0.5';
+                            imgOff.style.opacity = '0.75';
                             imgOn.style.opacity = '0';
                         }
                     }
@@ -576,7 +576,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                         imgOn.style.opacity = '1';
                     } else {
                         // 未激活：显示off图标
-                        imgOff.style.opacity = '0.5';
+                        imgOff.style.opacity = '0.75';
                         imgOn.style.opacity = '0';
                     }
                 }
@@ -756,7 +756,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         height: '64px',
         objectFit: 'contain',
         pointerEvents: 'none',
-        opacity: '0.5',
+        opacity: '0.75',
         transition: 'opacity 0.3s ease'
     });
 
@@ -804,7 +804,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         returnBtn.style.transform = 'scale(1)';
         returnBtn.style.boxShadow = 'var(--neko-popup-shadow)';
         returnBtn.style.background = 'var(--neko-btn-bg)';
-        imgOff.style.opacity = '0.5';
+        imgOff.style.opacity = '0.75';
         imgOn.style.opacity = '0';
     });
 
