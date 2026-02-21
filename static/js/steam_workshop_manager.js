@@ -510,7 +510,7 @@ function scanLocalItems() {
                     messageElement.style.transform = 'translateY(0)';
                 }, 10);
 
-                // 5秒后自动消失
+                // 3秒后自动消失
                 setTimeout(() => {
                     messageElement.style.opacity = '0';
                     messageElement.style.transform = 'translateY(-10px)';
@@ -973,8 +973,7 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
             color: #333;
         }
         
-        .confirm-modal-content.dark-theme,
-        body.dark-theme .confirm-modal-content {
+        .confirm-modal-content.dark-theme {
             background-color: #333;
             color: #e0e0e0;
         }
