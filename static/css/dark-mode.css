@@ -64,6 +64,7 @@ html #chat-container {
   --neko-popup-selected-hover: rgba(68, 183, 254, 0.15);
   --neko-popup-separator: rgba(0, 0, 0, 0.1);
   --neko-popup-accent: #44b7fe;
+  --neko-popup-accent-bg: rgba(68, 183, 254, 0.05);
   --neko-popup-error: #dc3545;
   /* 浮动按钮变量 */
   --neko-btn-bg: rgba(255, 255, 255, 0.65);
@@ -88,6 +89,7 @@ html #chat-container {
   --neko-popup-selected-hover: rgba(74, 163, 223, 0.2);
   --neko-popup-separator: rgba(255, 255, 255, 0.1);
   --neko-popup-accent: #3a9fd8;
+  --neko-popup-accent-bg: rgba(58, 159, 216, 0.1);
   --neko-popup-error: #ff6b6b;
   /* 浮动按钮变量 - 暗色 */
   --neko-btn-bg: rgba(35, 35, 35, 0.75);
