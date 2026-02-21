@@ -163,7 +163,7 @@
     "uploadErrorFormat": "{{message}}",
     "uploadErrorWithMessage": "An error occurred during upload: {{error}}",
     "checkNetworkConnection": "Please check network connection and server status",
-    "serverProblem": "Server may have encountered a problem{{message}}",
+    "serverProblem": "Server may have encountered a problem: {{message}}",
     "pagination": "Page {{currentPage}} of {{totalPages}}",
     "sort": {
       "title": "Sort:",

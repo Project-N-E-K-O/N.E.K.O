@@ -482,42 +482,7 @@ function scanLocalItems() {
                 // 直接显示扫描完成提示，使用简单清晰的消息
                 const successMessage = window.t ? window.t('steam.scanComplete', { count: localItems.length }) : `扫描完成，共找到 ${localItems.length} 个物品`;
 
-                // 使用独立的提示元素，确保与开始提示分开
-                const messageElement = document.createElement('div');
-                messageElement.innerHTML = successMessage;
-                const isDark = getIsDarkTheme();
-                messageElement.style.cssText = `
-                position: fixed;
-                top: 60px;
-                right: 20px;
-                padding: 15px 20px;
-                background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
-                color: ${isDark ? '#81c784' : '#2e7d32'};
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
-                z-index: 99999;
-                font-weight: bold;
-                opacity: 0;
-                transform: translateY(-10px);
-                transition: opacity 0.3s ease, transform 0.3s ease;
-            `;
-
-                document.body.appendChild(messageElement);
-
-                // 触发动画
-                setTimeout(() => {
-                    messageElement.style.opacity = '1';
-                    messageElement.style.transform = 'translateY(0)';
-                }, 10);
-
-                // 3秒后自动消失
-                setTimeout(() => {
-                    messageElement.style.opacity = '0';
-                    messageElement.style.transform = 'translateY(-10px)';
-                    setTimeout(() => {
-                        messageElement.remove();
-                    }, 300);
-                }, 3000);
+                showToast(successMessage);
 
             } else {
                 const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
@@ -1129,6 +1094,45 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+
+// 共享的提示框功能
+function showToast(message, duration = 3000) {
+    const messageElement = document.createElement('div');
+    // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
+    messageElement.textContent = message;
+    const isDark = typeof getIsDarkTheme === 'function' ? getIsDarkTheme() : false;
+    messageElement.style.cssText = `
+        position: fixed;
+        top: 60px;
+        right: 20px;
+        padding: 15px 20px;
+        background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
+        color: ${isDark ? '#81c784' : '#2e7d32'};
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
+        z-index: 99999;
+        font-weight: bold;
+        opacity: 0;
+        transform: translateY(-10px);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+    `;
+
+    document.body.appendChild(messageElement);
+
+    setTimeout(() => {
+        messageElement.style.opacity = '1';
+        messageElement.style.transform = 'translateY(0)';
+    }, 10);
+
+    setTimeout(() => {
+        messageElement.style.opacity = '0';
+        messageElement.style.transform = 'translateY(-10px)';
+        setTimeout(() => {
+            messageElement.remove();
+        }, 300);
+    }, duration);
+}
+
 // 加载状态管理器
 function LoadingManager() {
     const loadingCount = { value: 0 };
@@ -1182,7 +1186,7 @@ function LoadingManager() {
                             100% { transform: rotate(360deg); }
                         }
                     `;
-                    document.body.appendChild(style);
+                    document.head.appendChild(style);
                 }
 
                 loadingOverlay.appendChild(loadingSpinner);
@@ -2333,7 +2337,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
 }
 
 // 初始化页面
-window.onload = function () {
+window.addEventListener('load', function () {
     // 检查是否需要切换到特定标签页
     const lastActiveTab = localStorage.getItem('lastActiveTab');
     if (lastActiveTab) {
@@ -2368,7 +2372,7 @@ window.onload = function () {
     // 页面加载时自动扫描创意工坊角色卡并添加到系统
     autoScanAndAddWorkshopCharacterCards();
 
-};
+});
 
 // 角色卡相关函数
 
@@ -3001,7 +3005,7 @@ async function performUpload(data) {
         // 步骤1: 调用API创建临时目录并复制文件
         // 保存上传数据的名称，供错误处理使用（避免回调中的参数覆盖）
         const uploadDataName = data.name;
-        fetch('/api/steam/workshop/prepare-upload', {
+        await fetch('/api/steam/workshop/prepare-upload', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -3191,42 +3195,7 @@ async function loadVoices() {
             // 显示扫描完成提示
             const successMessage = window.t ? window.t('steam.scanComplete', { count: voiceCount }) : `扫描完成，共找到 ${voiceCount} 个音色`;
 
-            // 使用与物品扫描相同的成功提示样式
-            const messageElement = document.createElement('div');
-            messageElement.innerHTML = successMessage;
-            const isDark = getIsDarkTheme();
-            messageElement.style.cssText = `
-                position: fixed;
-                top: 60px;
-                right: 20px;
-                padding: 15px 20px;
-                background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
-                color: ${isDark ? '#81c784' : '#2e7d32'};
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
-                z-index: 99999;
-                font-weight: bold;
-                opacity: 0;
-                transform: translateY(-10px);
-                transition: opacity 0.3s ease, transform 0.3s ease;
-            `;
-
-            document.body.appendChild(messageElement);
-
-            // 触发动画
-            setTimeout(() => {
-                messageElement.style.opacity = '1';
-                messageElement.style.transform = 'translateY(0)';
-            }, 10);
-
-            // 3秒后自动消失
-            setTimeout(() => {
-                messageElement.style.opacity = '0';
-                messageElement.style.transform = 'translateY(-10px)';
-                setTimeout(() => {
-                    messageElement.remove();
-                }, 300);
-            }, 3000);
+            showToast(successMessage);
         }
     } catch (error) {
         console.error('加载音色列表失败:', error);
@@ -3736,12 +3705,6 @@ function updateCardPreview() {
     }
 }
 
-// HTML转义函数（防止XSS）
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 // 为输入字段添加事件监听器，自动更新预览
 document.addEventListener('DOMContentLoaded', function () {
