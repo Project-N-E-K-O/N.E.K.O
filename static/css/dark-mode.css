@@ -336,21 +336,23 @@ html #chat-container {
 }
 
 /* ===== 暗色模式：图标亮度调整 ===== */
-[data-theme="dark"] img {
+[data-theme="dark"] .icon,
+[data-theme="dark"] [class*="-icon"],
+[data-theme="dark"] [class*="icon-"],
+[data-theme="dark"] button img {
   filter: brightness(0.78);
 }
 
-/* 排除特定图标（保持原始亮度） */
-[data-theme="dark"] .screenshot-thumbnail img,
-[data-theme="dark"] #chat-header img {
-  filter: brightness(0.85);
-}
-
-/* 按钮内图标稍微亮一些以保持可识别 */
+/* 特定 UI 图标和按钮内图标稍微亮一些以保持可识别 */
 [data-theme="dark"] #textSendButton img,
 [data-theme="dark"] #screenshotButton img,
 [data-theme="dark"] #toggle-chat-btn img {
   filter: brightness(0.82);
+}
+
+/* 通过排除类或没有匹配的 UI 图标（如 .screenshot-thumbnail img 和 #chat-header img）将保持原图亮度 */
+[data-theme="dark"] img.no-dim {
+  filter: none !important;
 }
 
 /* ===== 暗色模式：Status Toast ===== */
@@ -1159,7 +1161,7 @@ html #chat-container {
 [data-theme="dark"] #snapshot-tags-container,
 [data-theme="dark"] #snapshot-model {
   background-color: #2d2d2d !important;
-  color: #e0e0e0;
+  color: #e0e0e0 !important;
 }
 
 /* ===== 子页面：Voice Clone ===== */
