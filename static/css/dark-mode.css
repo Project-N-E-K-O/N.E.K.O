@@ -37,10 +37,8 @@
 html #live2d-container,
 html #live2d-canvas,
 html #vrm-container,
-html #vrm-canvas,
-html #live2d-container.minimized,
-html #vrm-container.minimized {
-  transition: all 1s ease-in-out, height 0ms 1s, width 0ms 1s, visibility 0ms 1s;
+html #vrm-canvas {
+  transition: opacity 1s ease-in-out, transform 1s ease-in-out, height 0ms 1s, width 0ms 1s, visibility 0ms 1s;
 }
 
 html #chat-container {
@@ -477,10 +475,7 @@ html #chat-container {
   color: var(--neko-popup-text-sub) !important;
 }
 
-/* 滑动条 accent 颜色 */
-[data-theme="dark"] input[type="range"] {
-  accent-color: var(--neko-popup-accent) !important;
-}
+/* 滑动条 accent 颜色（移至下方统一处理，使用厂商前缀选择器以支持 WebKit 和 Gecko） */
 
 /* Agent 弹出框状态文本 */
 [data-theme="dark"] #live2d-agent-status,
@@ -871,8 +866,12 @@ html #chat-container {
   box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.15);
 }
 
+[data-theme="dark"] #advanced-options .field-row input::-webkit-input-placeholder {
+  color: #bfbfbf;
+}
+
 [data-theme="dark"] #advanced-options .field-row input::placeholder {
-  color: #666;
+  color: #bfbfbf;
 }
 
 /* 覆盖 model-content 中 input:focus 的白色背景 */
@@ -1250,7 +1249,39 @@ html #chat-container {
 }
 
 [data-theme="dark"] input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+[data-theme="dark"] input[type="range"]::-webkit-slider-runnable-track {
   background: #444;
+  height: 6px;
+  border-radius: 3px;
+}
+
+[data-theme="dark"] input[type="range"]::-moz-range-track {
+  background: #444;
+  height: 6px;
+  border-radius: 3px;
+}
+
+[data-theme="dark"] input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: var(--neko-popup-accent);
+  margin-top: -5px;
+}
+
+[data-theme="dark"] input[type="range"]::-moz-range-thumb {
+  background: var(--neko-popup-accent);
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  border: none;
 }
 
 /* ===== 链接文字随背景自适应 ===== */
