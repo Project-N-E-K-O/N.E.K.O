@@ -10,7 +10,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
+
+from plugin.sdk.adapter.gateway_contracts import LoggerLike
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -46,24 +48,34 @@ class AdapterConfig:
         priority: Adapter 启动优先级（数字越小越先启动）
     """
     mode: AdapterMode = AdapterMode.HYBRID
-    protocols: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    routes: List[Dict[str, Any]] = field(default_factory=list)
+    protocols: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    routes: List[Dict[str, object]] = field(default_factory=list)
     priority: int = 0
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AdapterConfig":
+    def from_dict(cls, data: Dict[str, object]) -> "AdapterConfig":
         """从字典创建配置"""
         mode_str = data.get("mode", "hybrid")
         try:
-            mode = AdapterMode(mode_str)
+            mode = AdapterMode(str(mode_str))
         except ValueError:
             mode = AdapterMode.HYBRID
         
+        # 类型安全的提取
+        protocols_raw = data.get("protocols", {})
+        protocols = dict(protocols_raw) if isinstance(protocols_raw, dict) else {}
+        
+        routes_raw = data.get("routes", [])
+        routes = list(routes_raw) if isinstance(routes_raw, list) else []
+        
+        priority_raw = data.get("priority", 0)
+        priority = int(priority_raw) if isinstance(priority_raw, (int, float, str)) else 0
+        
         return cls(
             mode=mode,
-            protocols=data.get("protocols", {}),
-            routes=data.get("routes", []),
-            priority=data.get("priority", 0),
+            protocols=protocols,  # type: ignore[arg-type]
+            routes=routes,  # type: ignore[arg-type]
+            priority=priority,
         )
 
 
@@ -84,12 +96,12 @@ class AdapterContext:
         self,
         adapter_id: str,
         config: AdapterConfig,
-        logger: Any,
+        logger: LoggerLike,
         plugin_ctx: Optional["PluginContext"] = None,
     ):
         self.adapter_id = adapter_id
         self.config = config
-        self.logger = logger
+        self.logger: LoggerLike = logger
         self._plugin_ctx = plugin_ctx
         self._event_handlers: Dict[str, List[Callable]] = {}
     
@@ -97,9 +109,9 @@ class AdapterContext:
         self,
         plugin_id: str,
         entry: str,
-        payload: Dict[str, Any],
+        payload: Dict[str, object],
         timeout: float = 30.0,
-    ) -> Any:
+    ) -> object:
         """
         调用指定插件的入口
         
@@ -120,15 +132,15 @@ class AdapterContext:
             target_plugin_id=plugin_id,
             event_type="adapter_call",
             event_id=entry,
-            args=payload,
+            params=payload,
             timeout=timeout,
         )
     
     async def broadcast_event(
         self,
         event_type: str,
-        payload: Dict[str, Any],
-    ) -> List[Any]:
+        payload: Dict[str, object],
+    ) -> List[object]:
         """
         广播事件到所有订阅的插件
         
@@ -268,7 +280,7 @@ class AdapterBase(ABC):
         self,
         name: str,
         handler: Callable,
-        schema: Optional[Dict[str, Any]] = None,
+        schema: Optional[Dict[str, object]] = None,
     ) -> None:
         """
         注册一个工具（Router 模式）
@@ -318,9 +330,9 @@ class AdapterBase(ABC):
         self,
         plugin_id: str,
         entry: str,
-        payload: Dict[str, Any],
+        payload: Dict[str, object],
         timeout: float = 30.0,
-    ) -> Any:
+    ) -> object:
         """
         转发请求到指定插件
         
@@ -338,8 +350,8 @@ class AdapterBase(ABC):
     async def broadcast(
         self,
         event_type: str,
-        payload: Dict[str, Any],
-    ) -> List[Any]:
+        payload: Dict[str, object],
+    ) -> List[object]:
         """
         广播事件到所有订阅的插件
         

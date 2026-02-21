@@ -610,9 +610,6 @@ def _topological_sort_plugins(
     Returns:
         排序后的插件 ID 列表
     """
-    from pathlib import Path
-    from plugin.runtime.registry import PluginContext
-    
     logger.info("Sorting {} plugins based on dependencies...", len(plugin_contexts))
     
     # 构建依赖图
@@ -637,10 +634,38 @@ def _topological_sort_plugins(
                     adj_list[dependency].append(dependent)
                     in_degree[dependent] += 1
     
+    def _queue_sort_key(pid: str) -> tuple[int, int, int, str]:
+        """
+        同层节点排序规则（不改变拓扑约束，仅影响同一入度层的加载先后）：
+        1) enabled 优先
+        2) adapter 优先于普通 plugin
+        3) adapter 按 adapter.priority 升序（数字越小越先启动）
+        4) pid 字典序兜底
+        """
+        ctx = pid_to_context.get(pid)
+        if ctx is None:
+            return (1, 1, 0, str(pid))
+
+        enabled_rank = 0 if ctx.enabled else 1
+        plugin_type = str(ctx.pdata.get("type", "plugin")) if isinstance(ctx.pdata, dict) else "plugin"
+
+        if plugin_type == "adapter":
+            adapter_rank = 0
+            adapter_conf = ctx.conf.get("adapter", {}) if isinstance(ctx.conf, dict) else {}
+            priority_raw = adapter_conf.get("priority", 0) if isinstance(adapter_conf, dict) else 0
+            try:
+                adapter_priority = int(priority_raw)
+            except (TypeError, ValueError):
+                adapter_priority = 0
+        else:
+            adapter_rank = 1
+            adapter_priority = 0
+
+        return (enabled_rank, adapter_rank, adapter_priority, str(pid))
+
     # 初始化队列（入度为 0 的节点）
     queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
-    # 优先加载 enabled 插件
-    queue.sort(key=lambda x: (0 if pid_to_context.get(x, PluginContext("", Path(), {}, {}, "", [], None, None, None, [], True, True)).enabled else 1, str(x)))
+    queue.sort(key=_queue_sort_key)
     
     final_order: List[str] = []
     while queue:
@@ -651,7 +676,7 @@ def _topological_sort_plugins(
             in_degree[v] -= 1
             if in_degree[v] == 0:
                 queue.append(v)
-        queue.sort(key=lambda x: (0 if pid_to_context.get(x, PluginContext("", Path(), {}, {}, "", [], None, None, None, [], True, True)).enabled else 1, str(x)))
+        queue.sort(key=_queue_sort_key)
     
     # 检查循环依赖
     if len(final_order) != len(plugin_contexts):

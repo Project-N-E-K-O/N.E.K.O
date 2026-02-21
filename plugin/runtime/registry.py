@@ -1071,6 +1071,7 @@ def _load_adapter_plugin(
     ctx: PluginContext,
     logger: Any,
     process_host_factory: Callable[..., Any],
+    plugin_id: Optional[str] = None,
 ) -> Optional[Any]:
     """
     加载 Adapter 类型插件。
@@ -1090,7 +1091,7 @@ def _load_adapter_plugin(
     Returns:
         创建的 host 对象，或 None 如果加载失败
     """
-    pid = ctx.pid
+    pid = plugin_id or ctx.pid
     pdata = ctx.pdata
     toml_path = ctx.toml_path
     entry = ctx.entry
@@ -1098,11 +1099,10 @@ def _load_adapter_plugin(
     # 解析 adapter 配置
     adapter_conf = ctx.conf.get("adapter", {})
     adapter_mode = adapter_conf.get("mode", "hybrid")
-    adapter_priority = adapter_conf.get("priority", 0)
     
     logger.info(
-        "Loading adapter '{}' (mode={}, priority={})",
-        pid, adapter_mode, adapter_priority,
+        "Loading adapter '{}' (mode={})",
+        pid, adapter_mode,
     )
     
     # 构建插件元数据
@@ -1114,12 +1114,6 @@ def _load_adapter_plugin(
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
     )
-    
-    # 在元数据中标记为 adapter 类型
-    plugin_meta_dict = plugin_meta.model_dump() if hasattr(plugin_meta, 'model_dump') else plugin_meta.__dict__.copy()
-    plugin_meta_dict["plugin_type"] = "adapter"
-    plugin_meta_dict["adapter_mode"] = adapter_mode
-    plugin_meta_dict["adapter_priority"] = adapter_priority
     
     # 创建进程宿主
     host = None
@@ -1166,13 +1160,16 @@ def _load_adapter_plugin(
         if isinstance(meta, dict):
             meta["runtime_enabled"] = ctx.enabled
             meta["runtime_auto_start"] = ctx.auto_start
-            meta["type"] = "adapter"  # 确保 type 字段正确设置
-            meta["plugin_type"] = "adapter"
+            # type 是唯一权威字段；plugin_type 仅做兼容镜像。
+            meta["type"] = "adapter"
+            meta["plugin_type"] = meta["type"]
             meta["adapter_mode"] = adapter_mode
-            meta["adapter_priority"] = adapter_priority
             state.plugins[resolved_id] = meta
+
+    if resolved_id != pid:
+        _migrate_plugin_id(pid, resolved_id, host, logger)
     
-    logger.info("Adapter '{}' loaded successfully", pid)
+    logger.info("Adapter '{}' loaded successfully", resolved_id)
     return host
 
 
@@ -1338,11 +1335,6 @@ def load_plugins_from_toml(
             _load_extension_plugin(ctx, logger)
             continue
         
-        # adapter 类型：作为网关/路由器运行
-        if plugin_type == "adapter":
-            _load_adapter_plugin(ctx, logger, process_host_factory)
-            continue
-
         # 依赖检查（可通过配置禁用）
         dependency_check_failed = False
         if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
@@ -1404,6 +1396,11 @@ def load_plugins_from_toml(
 
         # 检查插件是否已注册
         if _check_plugin_already_registered(pid, toml_path, logger):
+            continue
+
+        # adapter 类型：在通过统一依赖和重复检查后，再走 adapter-specific 启动逻辑
+        if plugin_type == "adapter":
+            _load_adapter_plugin(ctx, logger, process_host_factory, plugin_id=pid)
             continue
 
         module_path, class_name = entry.split(":", 1)

@@ -331,3 +331,163 @@ body {
     justify-content: flex-end;
   }
 }
+
+/* 服务器管理样式 */
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.servers-list.selectable .server-card {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.servers-list.selectable .server-card:hover {
+  background: rgba(79, 70, 229, 0.15);
+}
+
+.servers-list.selectable .server-card.selected {
+  background: rgba(79, 70, 229, 0.25);
+  border-color: #4f46e5;
+}
+
+.server-checkbox {
+  display: flex;
+  align-items: center;
+  margin-right: 12px;
+}
+
+.server-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+/* 表单面板 */
+.form-panel {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.form-panel h3 {
+  margin-bottom: 16px;
+  color: #fff;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  color: #aaa;
+  font-size: 0.9rem;
+}
+
+.form-group input[type="text"],
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.form-group input[type="text"]:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #4f46e5;
+}
+
+.form-group input[type="text"]::placeholder {
+  color: #666;
+}
+
+.form-group input[type="checkbox"] {
+  margin-right: 8px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+}
+
+/* textarea 样式 */
+.form-group textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 0.9rem;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  resize: vertical;
+  min-height: 150px;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  border-color: #4f46e5;
+}
+
+.form-group textarea::placeholder {
+  color: #666;
+}
+
+.form-hint {
+  color: #888;
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+}
+
+/* 服务器工具列表 */
+.server-tools {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tools-header {
+  font-size: 0.8rem;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.tools-list-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tool-item-inline {
+  background: rgba(79, 70, 229, 0.2);
+  border: 1px solid rgba(79, 70, 229, 0.4);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #a5b4fc;
+  cursor: default;
+}
+
+.tool-item-inline:hover {
+  background: rgba(79, 70, 229, 0.3);
+}
+
+.server-details {
+  flex: 1;
+}

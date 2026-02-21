@@ -87,7 +87,28 @@ try:
         AdapterMode,
         AdapterMessage,
         AdapterResponse,
+        AdapterGatewayCore,
+        ExternalEnvelope,
+        CallablePluginInvoker,
+        DefaultPolicyEngine,
+        DefaultRequestNormalizer,
+        DefaultResponseSerializer,
+        DefaultRouteEngine,
+        GatewayAction,
+        GatewayError,
+        GatewayErrorException,
+        GatewayRequest,
+        GatewayResponse,
+        LoggerLike,
+        PluginInvoker,
+        PolicyEngine,
         Protocol,
+        RequestNormalizer,
+        ResponseSerializer,
+        RouteDecision,
+        RouteEngine,
+        RouteMode,
+        TransportAdapter,
         on_adapter_event,
         on_adapter_startup,
         on_adapter_shutdown,
@@ -169,6 +190,27 @@ __all__ = [
     "AdapterMode",      # Adapter 工作模式
     "AdapterMessage",   # Adapter 消息
     "AdapterResponse",  # Adapter 响应
+    "AdapterGatewayCore", # Gateway Core 编排器
+    "ExternalEnvelope", # 外部协议包
+    "DefaultRequestNormalizer", # 默认请求规范化器
+    "DefaultPolicyEngine", # 默认策略引擎
+    "DefaultRouteEngine", # 默认路由引擎
+    "DefaultResponseSerializer", # 默认响应序列化器
+    "CallablePluginInvoker", # 可注入调用器
+    "GatewayAction",    # Gateway 动作类型
+    "GatewayRequest",   # Gateway 统一请求
+    "GatewayResponse",  # Gateway 统一响应
+    "GatewayError",     # Gateway 结构化错误
+    "GatewayErrorException", # Gateway 错误异常
+    "RouteDecision",    # Gateway 路由决策
+    "RouteMode",        # Gateway 路由模式
+    "LoggerLike",       # Gateway 日志接口
+    "TransportAdapter", # 传输层接口
+    "RequestNormalizer", # 规范化接口
+    "PolicyEngine",     # 策略引擎接口
+    "RouteEngine",      # 路由引擎接口
+    "PluginInvoker",    # 插件调用接口
+    "ResponseSerializer", # 响应序列化接口
     "Protocol",         # 协议类型枚举
     "on_adapter_event", # Adapter 事件装饰器
     "on_adapter_startup",   # Adapter 启动装饰器

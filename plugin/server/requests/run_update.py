@@ -17,18 +17,41 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
     if not isinstance(request_id, str) or not request_id:
         return
 
+    def _error_payload(*, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "code": str(code),
+            "message": str(message),
+        }
+        if isinstance(details, dict) and details:
+            payload["details"] = details
+        return payload
+
+    def _send_error(*, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+        send_response(
+            from_plugin,
+            request_id,
+            None,
+            _error_payload(code=code, message=message, details=details),
+            timeout=float(timeout),
+        )
+
     run_id = request.get("run_id")
     if not isinstance(run_id, str) or not run_id.strip():
-        send_response(from_plugin, request_id, None, "run_id is required", timeout=float(timeout))
+        _send_error(code="INVALID_ARGUMENT", message="run_id is required")
         return
+    rid = str(run_id).strip()
 
-    rec = get_run(run_id)
+    rec = get_run(rid)
     if rec is None:
-        send_response(from_plugin, request_id, None, "run not found", timeout=float(timeout))
+        _send_error(code="RUN_NOT_FOUND", message="run not found", details={"run_id": rid})
         return
 
     if rec.plugin_id != from_plugin:
-        send_response(from_plugin, request_id, None, "forbidden", timeout=float(timeout))
+        _send_error(
+            code="FORBIDDEN",
+            message="forbidden",
+            details={"run_id": rid, "owner_plugin_id": rec.plugin_id},
+        )
         return
 
     patch: Dict[str, Any] = {}
@@ -42,7 +65,7 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
         try:
             patch["progress"] = float(progress)
         except Exception:
-            send_response(from_plugin, request_id, None, "invalid progress", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="invalid progress")
             return
 
     step = request.get("step")
@@ -50,7 +73,7 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
         try:
             patch["step"] = int(step)
         except Exception:
-            send_response(from_plugin, request_id, None, "invalid step", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="invalid step")
             return
 
     step_total = request.get("step_total")
@@ -58,7 +81,7 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
         try:
             patch["step_total"] = int(step_total)
         except Exception:
-            send_response(from_plugin, request_id, None, "invalid step_total", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="invalid step_total")
             return
 
     stage = request.get("stage")
@@ -74,7 +97,7 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
         try:
             patch["eta_seconds"] = float(eta_seconds)
         except Exception:
-            send_response(from_plugin, request_id, None, "invalid eta_seconds", timeout=float(timeout))
+            _send_error(code="INVALID_ARGUMENT", message="invalid eta_seconds")
             return
 
     metrics = request.get("metrics")
@@ -83,9 +106,9 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
 
     now = float(time.time())
     try:
-        updated, applied = update_run_from_plugin(from_plugin=from_plugin, run_id=str(run_id).strip(), patch=patch)
+        updated, applied = update_run_from_plugin(from_plugin=from_plugin, run_id=rid, patch=patch)
         if updated is None:
-            send_response(from_plugin, request_id, None, "run not found", timeout=float(timeout))
+            _send_error(code="RUN_NOT_FOUND", message="run not found", details={"run_id": rid})
             return
         send_response(
             from_plugin,
@@ -95,4 +118,4 @@ async def handle_run_update(request: Dict[str, Any], send_response: SendResponse
             timeout=float(timeout),
         )
     except Exception as e:
-        send_response(from_plugin, request_id, None, str(e), timeout=float(timeout))
+        _send_error(code="INTERNAL_ERROR", message=str(e))

@@ -458,6 +458,10 @@ class NekoPluginBase(HookExecutorMixin):
         event_handler = EventHandler(meta=meta, handler=handler)
         self._router_entries[entry_id] = event_handler
         
+        # 更新 ctx._entry_map（如果存在）
+        if hasattr(self.ctx, "_entry_map") and self.ctx._entry_map is not None:
+            self.ctx._entry_map[entry_id] = handler
+        
         # 通知主进程
         await self._notify_entry_update("register", entry_id, meta)
         
@@ -493,6 +497,11 @@ class NekoPluginBase(HookExecutorMixin):
         
         # 从本地移除
         del self._router_entries[entry_id]
+        
+        # 从 ctx._entry_map 中移除（如果存在）
+        if hasattr(self.ctx, "_entry_map") and self.ctx._entry_map is not None:
+            if entry_id in self.ctx._entry_map:
+                del self.ctx._entry_map[entry_id]
         
         # 通知主进程
         await self._notify_entry_update("unregister", entry_id, None)

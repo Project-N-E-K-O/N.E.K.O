@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 from loguru import logger
 
 from plugin.core.state import state
+from plugin.server.requests.typing import ErrorPayload
 from plugin.server.requests.registry import build_request_handlers
 from plugin.settings import (
     PLUGIN_ZMQ_IPC_ENABLED,
@@ -132,7 +133,13 @@ class PluginRouter:
 
         out: Dict[str, Any] = {}
 
-        def _send_response(to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 10.0) -> None:
+        def _send_response(
+            to_plugin: str,
+            request_id: str,
+            result: Any,
+            error: Optional[ErrorPayload],
+            timeout: float = 10.0,
+        ) -> None:
             out.update(
                 {
                     "type": "PLUGIN_TO_PLUGIN_RESPONSE",
@@ -237,7 +244,14 @@ class PluginRouter:
 
         await handler(request, self._send_response)
     
-    def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 10.0) -> None:
+    def _send_response(
+        self,
+        to_plugin: str,
+        request_id: str,
+        result: Any,
+        error: Optional[ErrorPayload],
+        timeout: float = 10.0,
+    ) -> None:
         """
         发送响应到源插件（使用响应映射，避免共享队列的竞态条件）
         
@@ -245,7 +259,7 @@ class PluginRouter:
             to_plugin: 目标插件ID
             request_id: 请求ID
             result: 响应结果
-            error: 错误信息（如果有）
+            error: 错误信息（字符串或结构化错误对象）
             timeout: 超时时间（秒），用于计算响应过期时间
         """
         response = {

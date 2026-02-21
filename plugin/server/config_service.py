@@ -303,12 +303,39 @@ def load_plugin_config_toml(plugin_id: str) -> Dict[str, Any]:
         ) from e
 
 
+# 特殊标记：用于在 deep_merge 中删除 key
+_DELETE_MARKER = "__DELETE__"
+
+
 def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    """深度合并字典"""
+    """深度合并字典
+    
+    特殊处理：
+    - 如果 updates 中的值是空字典 {}，则直接替换而不是合并。
+    - 如果 updates 中的值是 "__DELETE__"，则从结果中删除该 key。
+    - 如果 updates 中的值是包含 "__replace__": True 的字典，则直接替换而不是合并。
+    """
     result = base.copy()
     for key, value in updates.items():
+        # 删除标记
+        if value == _DELETE_MARKER:
+            if key in result:
+                del result[key]
+            continue
+        
+        # 替换标记
+        if isinstance(value, dict) and value.get("__replace__") is True:
+            # 移除 __replace__ 标记，直接替换
+            new_value = {k: v for k, v in value.items() if k != "__replace__"}
+            result[key] = new_value
+            continue
+        
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
+            # 如果 value 是空字典，直接替换（用于清空配置部分）
+            if len(value) == 0:
+                result[key] = value
+            else:
+                result[key] = deep_merge(result[key], value)
         else:
             result[key] = value
     return result

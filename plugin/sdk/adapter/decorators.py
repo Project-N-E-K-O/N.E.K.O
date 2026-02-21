@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar, ParamSpec, Awaitable, Union
+from typing import Callable, Optional, TypeVar, ParamSpec, Awaitable, Union
 
 __all__ = [
     "ADAPTER_EVENT_META",

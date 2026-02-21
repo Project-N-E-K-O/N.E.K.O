@@ -442,7 +442,7 @@ class PluginCommunicationResourceManager:
                     auto_start=meta_dict.get("auto_start", False),
                     enabled=meta_dict.get("enabled", True),
                     dynamic=True,
-                    extra={"_dynamic": True, "_registered_via_ipc": True},
+                    metadata={"_dynamic": True, "_registered_via_ipc": True},
                 )
                 
                 # 创建代理 handler（实际调用会路由到插件进程）

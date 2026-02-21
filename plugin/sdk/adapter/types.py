@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Dict, Generic, List, Optional, TypeVar
 
 __all__ = [
     "Protocol",
@@ -65,9 +65,9 @@ class AdapterMessage(Generic[T]):
     source: str = ""
     target: str = "*"
     timestamp: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, object] = field(default_factory=dict)
     
-    def reply(self, data: Any, success: bool = True) -> "AdapterResponse":
+    def reply(self, data: object, success: bool = True) -> "AdapterResponse":
         """创建响应消息"""
         return AdapterResponse(
             request_id=self.id,
@@ -102,12 +102,12 @@ class AdapterResponse:
     """
     request_id: str
     success: bool = True
-    data: Any = None
+    data: object = None
     error: Optional[str] = None
     error_code: Optional[str] = None
     protocol: Protocol = Protocol.CUSTOM
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[str, object]:
         """转换为字典"""
         result = {
             "request_id": self.request_id,

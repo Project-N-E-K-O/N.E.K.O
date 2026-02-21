@@ -29,6 +29,34 @@ from plugin.sdk.adapter.decorators import (
     on_adapter_startup,
     on_adapter_shutdown,
 )
+from plugin.sdk.adapter.gateway_models import (
+    ExternalEnvelope,
+    GatewayAction,
+    GatewayError,
+    GatewayErrorException,
+    GatewayRequest,
+    GatewayResponse,
+    RouteDecision,
+    RouteMode,
+)
+from plugin.sdk.adapter.gateway_contracts import (
+    LoggerLike,
+    PluginInvoker,
+    PolicyEngine,
+    RequestNormalizer,
+    ResponseSerializer,
+    RouteEngine,
+    TransportAdapter,
+)
+from plugin.sdk.adapter.gateway_core import AdapterGatewayCore
+from plugin.sdk.adapter.gateway_defaults import (
+    CallablePluginInvoker,
+    DefaultPolicyEngine,
+    DefaultRequestNormalizer,
+    DefaultResponseSerializer,
+    DefaultRouteEngine,
+)
+from plugin.sdk.adapter.neko_adapter import NekoAdapterPlugin
 
 __all__ = [
     # 基类
@@ -44,4 +72,31 @@ __all__ = [
     "on_adapter_event",
     "on_adapter_startup",
     "on_adapter_shutdown",
+    # Gateway Core 模型
+    "ExternalEnvelope",
+    "GatewayAction",
+    "GatewayRequest",
+    "GatewayError",
+    "GatewayErrorException",
+    "GatewayResponse",
+    "RouteDecision",
+    "RouteMode",
+    # Gateway Core 契约
+    "LoggerLike",
+    "TransportAdapter",
+    "RequestNormalizer",
+    "PolicyEngine",
+    "RouteEngine",
+    "PluginInvoker",
+    "ResponseSerializer",
+    # Gateway Core
+    "AdapterGatewayCore",
+    # Gateway Core 默认组件
+    "DefaultRequestNormalizer",
+    "DefaultPolicyEngine",
+    "DefaultRouteEngine",
+    "DefaultResponseSerializer",
+    "CallablePluginInvoker",
+    # NEKO Adapter 基类
+    "NekoAdapterPlugin",
 ]
