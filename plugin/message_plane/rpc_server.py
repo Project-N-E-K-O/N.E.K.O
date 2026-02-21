@@ -335,7 +335,10 @@ class MessagePlaneRpcServer:
             values = params.get("values")
             if not field or not isinstance(values, list):
                 return items
-            s = set(values)
+            try:
+                s = set(values)
+            except TypeError:
+                return items
             matched_in: List[Dict[str, Any]] = []
             for ev in items:
                 idx = ev.get("index")

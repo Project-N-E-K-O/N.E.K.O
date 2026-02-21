@@ -160,6 +160,7 @@ def configure_default_logger(level: str = "INFO") -> None:
 
 # 已配置的组件集合
 _configured_components: set[str] = set()
+_configured_console_roots: set[str] = set()  # 按 root 组件去重，防止 console handler 重复
 _setup_lock = None
 try:
     import threading
@@ -221,15 +222,18 @@ def _setup_logging_impl(
     if not _configured_components:
         _loguru_logger.remove()
     
-    # 控制台输出
+    # 控制台输出（按 root 组件去重，防止重复 handler）
     if LOG_CONSOLE:
-        _loguru_logger.add(
-            sys.stdout,
-            format=FORMAT_CONSOLE,
-            level=level.value,
-            colorize=True,
-            filter=lambda record: record["extra"].get("component", "").startswith(component.split(".")[0]),
-        )
+        root = component.split(".")[0]
+        if root not in _configured_console_roots:
+            _loguru_logger.add(
+                sys.stdout,
+                format=FORMAT_CONSOLE,
+                level=level.value,
+                colorize=True,
+                filter=lambda record, r=root: record["extra"].get("component", "").startswith(r),
+            )
+            _configured_console_roots.add(root)
     
     # 文件输出
     if LOG_FILE:

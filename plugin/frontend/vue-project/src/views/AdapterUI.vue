@@ -29,13 +29,14 @@
       </div>
     </el-card>
 
-    <EmptyState v-else :description="$t('plugins.noPlugins')" />
+    <EmptyState v-else :description="$t('plugins.adapterNotFound')" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
@@ -45,6 +46,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
+const { t } = useI18n()
 
 const loading = ref(false)
 const loadError = ref<string | null>(null)
@@ -66,7 +68,7 @@ onMounted(async () => {
     try {
       await pluginStore.fetchPlugins()
     } catch (e: any) {
-      loadError.value = e?.message || 'Failed to load plugins'
+      loadError.value = e?.message || t('plugins.loadFailed')
     } finally {
       loading.value = false
     }

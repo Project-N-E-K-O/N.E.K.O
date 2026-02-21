@@ -1011,8 +1011,11 @@ Return only the JSON object, nothing else.
                     ctx_obj["conversation_id"] = conversation_id
                 if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(
+                    "[TaskExecutor] Failed to build _ctx: lanlan=%s conversation_id=%s error=%s",
+                    lanlan_name, conversation_id, e
+                )
 
             run_body: Dict[str, Any] = {
                 "task_id": task_id,

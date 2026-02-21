@@ -15,6 +15,7 @@ from loguru import logger
 
 from plugin.core.state import state
 from plugin._types.models import PluginDependency
+from plugin._types.events import STANDARD_EVENT_TYPES
 
 if TYPE_CHECKING:
     from plugin.core.registry import PluginContext
@@ -125,8 +126,8 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
             if len(parts) == 3:
                 pid, etype, eid = parts
                 if etype == event_type and eid == event_id:
-                    # 验证不是标准类型（plugin_entry, lifecycle, message, timer）
-                    if etype not in ("plugin_entry", "lifecycle", "message", "timer"):
+                    # 验证不是标准类型
+                    if etype not in STANDARD_EVENT_TYPES:
                         found_plugin_ids.add(pid)
     
     # 获取这些插件的元数据

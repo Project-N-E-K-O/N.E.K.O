@@ -24,7 +24,10 @@ from pathlib import Path
 from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
-import ormsgpack
+try:
+    import ormsgpack
+except ImportError:  # pragma: no cover
+    ormsgpack = None  # type: ignore[assignment]
 
 try:
     import zmq
@@ -979,6 +982,8 @@ class PluginContext:
                     }
 
                     # Blocking send: rely on ZMQ HWM for backpressure.
+                    if ormsgpack is None:
+                        raise RuntimeError("ormsgpack is required for message_plane push")
                     sock.send(ormsgpack.packb(msg), flags=0)
                     if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                         try:
@@ -986,9 +991,17 @@ class PluginContext:
                         except Exception:
                             pass
                     return
-            finally:
-                # Note: Never fall back to control-plane on message_plane failure: it can amplify overload.
-                pass
+            except Exception as e:
+                # Catch all ZMQ/Batcher errors to prevent plugin crash
+                try:
+                    self.logger.warning(
+                        "[PluginContext] message_plane error: plugin_id=%s error=%s",
+                        self.plugin_id, e
+                    )
+                except Exception:
+                    pass
+                # Do not fall back to control-plane: it can amplify overload
+                return
 
         # message_plane 不可用时，尝试回退到 message_queue（如果可用）
         if self.message_queue is not None:

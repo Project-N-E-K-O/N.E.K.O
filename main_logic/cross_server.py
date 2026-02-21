@@ -19,6 +19,11 @@ import json
 import re
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.conversation_bridge import (
+    generate_conversation_id,
+    publish_conversation,
+    stop_conversation_bridge,
+)
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -353,15 +358,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 
                                 # 生成 conversation_id，用于关联触发事件和对话上下文
                                 # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
-                                from main_logic.conversation_bridge import generate_conversation_id
                                 conversation_id = generate_conversation_id()
                                 
+                                # 提前初始化，避免 shutdown 时 NameError
+                                recent = []
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
                                 # 检查是否正在关闭
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要
-                                        recent = []
                                         for item in chat_history[-6:]:
                                             if item.get('role') in ['user', 'assistant']:
                                                 try:
@@ -395,7 +400,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # conversation_id 用于关联触发事件和对话上下文
                                 if config.get('message_plane', True) and recent:
                                     try:
-                                        from main_logic.conversation_bridge import publish_conversation
                                         publish_conversation(recent, lanlan_name, "turn_end", conversation_id)
                                     except Exception:
                                         pass  # 静默失败
@@ -440,15 +444,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 
                                 # 生成 conversation_id，用于关联触发事件和对话上下文
                                 # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
-                                from main_logic.conversation_bridge import generate_conversation_id
                                 session_end_conversation_id = generate_conversation_id()
                                 
+                                # 提前初始化，避免 shutdown 时 NameError
+                                recent = []
                                 # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
                                 # 再次检查关闭状态
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要
-                                        recent = []
                                         for item in chat_history[-6:]:
                                             if item.get('role') in ['user', 'assistant']:
                                                 try:
@@ -482,7 +486,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # conversation_id 用于关联触发事件和对话上下文
                                 if config.get('message_plane', True) and recent:
                                     try:
-                                        from main_logic.conversation_bridge import publish_conversation
                                         publish_conversation(recent, lanlan_name, "session_end", session_end_conversation_id)
                                     except Exception:
                                         pass  # 静默失败
@@ -637,7 +640,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         
         # 停止 conversation_bridge
         try:
-            from main_logic.conversation_bridge import stop_conversation_bridge
             stop_conversation_bridge()
         except Exception:
             pass
@@ -647,5 +649,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
     except Exception as e:
         logger.error(f"[{lanlan_name}] Sync进程错误: {e}", exc_info=True)
     finally:
+        # 确保 conversation_bridge 被清理（使用模块级导入）
+        try:
+            stop_conversation_bridge()
+        except Exception:
+            pass
         loop.close()
         logger.info(f"[{lanlan_name}] Sync进程已终止")

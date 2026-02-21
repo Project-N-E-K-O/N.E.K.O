@@ -1,6 +1,12 @@
 <template>
   <div class="plugin-detail">
-    <el-card v-if="plugin">
+    <!-- Loading 状态 -->
+    <div v-if="loading" class="loading-container">
+      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+      <span>{{ $t('common.loading') }}</span>
+    </div>
+
+    <el-card v-else-if="plugin">
       <template #header>
         <div class="card-header">
           <div class="header-left">
@@ -84,14 +90,14 @@
       </el-tabs>
     </el-card>
 
-    <EmptyState v-else :description="$t('plugins.pluginNotFound')" />
+    <EmptyState v-else-if="!loading" :description="$t('plugins.pluginNotFound')" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginActions from '@/components/plugin/PluginActions.vue'
@@ -107,6 +113,7 @@ const pluginStore = usePluginStore()
 
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
+const loading = ref(true)
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -153,15 +160,33 @@ function goToPlugin(pid: string) {
 }
 
 onMounted(async () => {
-  await pluginStore.fetchPlugins()
-  await pluginStore.fetchPluginStatus(pluginId.value)
-  pluginStore.setSelectedPlugin(pluginId.value)
+  try {
+    await pluginStore.fetchPlugins()
+    await pluginStore.fetchPluginStatus(pluginId.value)
+    pluginStore.setSelectedPlugin(pluginId.value)
+  } finally {
+    loading.value = false
+  }
 })
 </script>
 
 <style scoped>
 .plugin-detail {
   padding: 0;
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  gap: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.loading-container .el-icon {
+  color: var(--el-color-primary);
 }
 
 .card-header {

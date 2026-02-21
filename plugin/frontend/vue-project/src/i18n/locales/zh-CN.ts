@@ -110,6 +110,7 @@ export default {
     reloadAllPartial: '重载完成：{success} 个成功，{fail} 个失败',
     viewDetails: '查看详情',
     noPlugins: '暂无插件',
+    adapterNotFound: '适配器不存在',
     pluginNotFound: '插件不存在',
     pluginDetail: '插件详情',
     basicInfo: '基本信息',

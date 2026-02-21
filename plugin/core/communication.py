@@ -11,7 +11,7 @@ import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from plugin.utils.time_utils import now_iso
 from queue import Empty, Queue
 from typing import Any, Dict, Optional
 
@@ -699,7 +699,7 @@ class PluginCommunicationResourceManager:
                                 if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
                                     msg["message_id"] = str(uuid.uuid4())
                                 if not isinstance(msg.get("time"), str) or not msg.get("time"):
-                                    msg["time"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                                    msg["time"] = now_iso()
                                 msg["_bus_stored"] = True
                                 state.append_message_record(msg)
                             except Exception:

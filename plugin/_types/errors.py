@@ -69,7 +69,7 @@ class ErrorCode(IntEnum):
     DEPENDENCY_MISSING = 502
     NOT_READY = 503
     TIMEOUT = 504
-    INVALID_RESPONSE = 502
+    INVALID_RESPONSE = 422
     
     # 插件特定错误 (1xxx)
     PLUGIN_NOT_RUNNING = 1001
@@ -104,8 +104,8 @@ class ErrorCode(IntEnum):
         
         try:
             return cls[name_upper]
-        except KeyError:
-            raise ValueError(f"Unknown error code: {name}")
+        except KeyError as err:
+            raise ValueError(f"Unknown error code: {name}") from err
 
 
 # 错误码名称映射（用于序列化）

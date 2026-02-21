@@ -509,10 +509,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """Inner implementation, always called under analyze_lock."""
     try:
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
@@ -624,7 +624,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning(f"[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
+                logger.warning("[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
 
         elif result.execution_method == 'user_plugin':
             # user_plugin is executed/accepted inside DirectTaskExecutor. Keep agent_server non-blocking.

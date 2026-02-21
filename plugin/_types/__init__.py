@@ -68,6 +68,7 @@ from .exceptions import (
 # 事件
 from .events import (
     EVENT_META_ATTR,
+    STANDARD_EVENT_TYPES,
     StandardEventType,
     EventType,
     EventMeta,
@@ -129,6 +130,7 @@ __all__ = [
     "PluginQueueError",
     # 事件
     "EVENT_META_ATTR",
+    "STANDARD_EVENT_TYPES",
     "StandardEventType",
     "EventType",
     "EventMeta",

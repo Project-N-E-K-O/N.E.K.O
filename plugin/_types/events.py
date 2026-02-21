@@ -10,6 +10,9 @@ from typing import Dict, Any, Callable, Literal, Optional, Union
 # 注意：这个常量也在 settings.py 中定义，保持同步
 EVENT_META_ATTR = "__neko_event_meta__"
 
+# 标准事件类型集合（与 StandardEventType Literal 保持同步）
+STANDARD_EVENT_TYPES: tuple[str, ...] = ("plugin_entry", "lifecycle", "message", "timer")
+
 # 标准事件类型
 StandardEventType = Literal[
     "plugin_entry",  # 对外可调用入口(plugin_entry) 目前已经实现
@@ -49,8 +52,7 @@ class EventMeta:
     
     def is_custom_event(self) -> bool:
         """判断是否是自定义事件类型"""
-        standard_types = ("plugin_entry", "lifecycle", "message", "timer")
-        return self.event_type not in standard_types
+        return self.event_type not in STANDARD_EVENT_TYPES
 
 
 @dataclass

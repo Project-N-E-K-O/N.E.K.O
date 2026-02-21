@@ -45,21 +45,21 @@ export interface PluginProfileConfig {
  * 获取插件配置
  */
 export function getPluginConfig(pluginId: string): Promise<PluginConfig> {
-  return get(`/plugin/${pluginId}/config`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config`)
 }
 
 /**
  * 获取插件配置（TOML 原文）
  */
 export function getPluginConfigToml(pluginId: string): Promise<PluginConfigToml> {
-  return get(`/plugin/${pluginId}/config/toml`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/toml`)
 }
 
 /**
  * 获取插件基础配置（直接来自 plugin.toml，不包含 profile 叠加）
  */
 export function getPluginBaseConfig(pluginId: string): Promise<PluginBaseConfig> {
-  return get(`/plugin/${pluginId}/config/base`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/base`)
 }
 
 /**
@@ -75,7 +75,7 @@ export function updatePluginConfig(
   requires_reload: boolean
   message: string
 }> {
-  return put(`/plugin/${pluginId}/config`, { config })
+  return put(`/plugin/${encodeURIComponent(pluginId)}/config`, { config })
 }
 
 /**
@@ -91,7 +91,7 @@ export function updatePluginConfigToml(
   requires_reload: boolean
   message: string
 }> {
-  return put(`/plugin/${pluginId}/config/toml`, { toml })
+  return put(`/plugin/${encodeURIComponent(pluginId)}/config/toml`, { toml })
 }
 
 /**
@@ -104,7 +104,7 @@ export function parsePluginConfigToml(
   plugin_id: string
   config: Record<string, any>
 }> {
-  return post(`/plugin/${pluginId}/config/parse_toml`, { toml })
+  return post(`/plugin/${encodeURIComponent(pluginId)}/config/parse_toml`, { toml })
 }
 
 /**
@@ -117,14 +117,14 @@ export function renderPluginConfigToml(
   plugin_id: string
   toml: string
 }> {
-  return post(`/plugin/${pluginId}/config/render_toml`, { config })
+  return post(`/plugin/${encodeURIComponent(pluginId)}/config/render_toml`, { config })
 }
 
 /**
  * 获取 profile 配置总体状态
  */
 export function getPluginProfilesState(pluginId: string): Promise<PluginProfilesState> {
-  return get(`/plugin/${pluginId}/config/profiles`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/profiles`)
 }
 
 /**
@@ -134,7 +134,7 @@ export function getPluginProfileConfig(
   pluginId: string,
   profileName: string
 ): Promise<PluginProfileConfig> {
-  return get(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/config/profiles/${encodeURIComponent(profileName)}`)
 }
 
 /**
@@ -146,7 +146,7 @@ export function upsertPluginProfileConfig(
   config: Record<string, any>,
   makeActive?: boolean
 ): Promise<PluginProfileConfig> {
-  return put(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`, {
+  return put(`/plugin/${encodeURIComponent(pluginId)}/config/profiles/${encodeURIComponent(profileName)}`, {
     config,
     make_active: makeActive
   })
@@ -163,7 +163,7 @@ export function deletePluginProfileConfig(
   profile: string
   removed: boolean
 }> {
-  return del(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`)
+  return del(`/plugin/${encodeURIComponent(pluginId)}/config/profiles/${encodeURIComponent(profileName)}`)
 }
 
 /**
@@ -173,7 +173,7 @@ export function setPluginActiveProfile(
   pluginId: string,
   profileName: string
 ): Promise<PluginProfilesState> {
-  return post(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}/activate`, {})
+  return post(`/plugin/${encodeURIComponent(pluginId)}/config/profiles/${encodeURIComponent(profileName)}/activate`, {})
 }
 
 /**
@@ -205,7 +205,7 @@ export function hotUpdatePluginConfig(
   mode: 'temporary' | 'permanent' = 'temporary',
   profile?: string | null
 ): Promise<HotUpdateConfigResponse> {
-  return post(`/plugin/${pluginId}/config/hot-update`, {
+  return post(`/plugin/${encodeURIComponent(pluginId)}/config/hot-update`, {
     config,
     mode,
     profile: profile ?? null

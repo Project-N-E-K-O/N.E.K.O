@@ -110,6 +110,7 @@ export default {
     reloadAllPartial: 'Reload completed: {success} succeeded, {fail} failed',
     viewDetails: 'View Details',
     noPlugins: 'No Plugins',
+    adapterNotFound: 'Adapter not found',
     pluginNotFound: 'Plugin not found',
     pluginDetail: 'Plugin Detail',
     basicInfo: 'Basic Info',
