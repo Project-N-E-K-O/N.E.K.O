@@ -11,7 +11,7 @@ logger = logger.bind(component="router")
 
 
 async def handle_plugin_query(request: Dict[str, Any], send_response) -> None:
-    from plugin.runtime.status import status_manager
+    from plugin.core.status import status_manager
 
     from_plugin = request.get("from_plugin")
     request_id = request.get("request_id")

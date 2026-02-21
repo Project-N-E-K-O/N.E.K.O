@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Query, Body
 from fastapi.responses import FileResponse
 from loguru import logger
 
-from plugin.api.models import RunCreateRequest, RunCreateResponse
+from plugin._types.models import RunCreateRequest, RunCreateResponse
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.runs.manager import (
     RunCancelRequest,

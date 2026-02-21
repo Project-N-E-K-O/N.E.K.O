@@ -15,10 +15,10 @@ from typing import Any, Dict, List, Optional
 import threading
 
 from fastapi import HTTPException
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.core.state import state
-from plugin.api.exceptions import (
+from plugin._types.exceptions import (
     PluginError,
     PluginTimeoutError,
     PluginExecutionError,
@@ -34,7 +34,7 @@ from plugin.settings import (
 from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
-logger = loguru_logger
+# logger 已在上方导入
 
 
 def _parse_iso_ts(value: Any) -> Optional[float]:

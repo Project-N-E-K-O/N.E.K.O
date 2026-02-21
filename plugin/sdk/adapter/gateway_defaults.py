@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Callable
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
@@ -211,7 +211,7 @@ class CallablePluginInvoker:
     logger: LoggerLike | None = None
 
     async def invoke(self, request: GatewayRequest, decision: RouteDecision) -> object:
-        logger = self.logger if self.logger is not None else loguru_logger
+        logger = self.logger if self.logger is not None else logger
 
         if decision.mode == RouteMode.DROP:
             raise GatewayErrorException(

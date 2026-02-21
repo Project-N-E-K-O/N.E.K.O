@@ -1,29 +1,31 @@
 """
-插件系统统一类型定义
+插件系统统一类型定义（已弃用）
 
-提供所有公共类型、异常、Result 类型的统一导出。
+此模块已弃用，请使用 plugin.types 代替。
 
 Usage:
-    from plugin.typedefs import (
-        # Result 类型
-        Ok, Err, Result, ErrorCode, safe, async_safe,
-        # 异常
-        PluginError, PluginNotFoundError, PluginTimeoutError,
-        # Protocol
-        PluginContextProtocol,
-    )
+    # 旧方式（已弃用）
+    from plugin.typedefs import Ok, Err, Result
+    
+    # 新方式（推荐）
+    from plugin._types import Ok, Err, Result
 """
+import warnings
 
-# 统一错误码（从 errors.py 导出）
-from .errors import (
+warnings.warn(
+    "plugin.typedefs is deprecated, use plugin.types instead",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+# 从新位置重导出所有内容
+from plugin._types import (
+    # 错误码
     ErrorCode,
     ERROR_NAMES,
     get_error_name,
     get_http_status,
-)
-
-# Result 类型
-from .result import (
+    # Result 类型
     Ok,
     Err,
     Result,
@@ -34,10 +36,7 @@ from .result import (
     try_call_async,
     from_optional,
     collect_results,
-)
-
-# 从现有位置重导出异常（保持向后兼容）
-from plugin.api.exceptions import (
+    # 异常
     PluginError,
     PluginNotFoundError,
     PluginNotRunningError,
@@ -51,10 +50,9 @@ from plugin.api.exceptions import (
     PluginEntryNotFoundError,
     PluginMetadataError,
     PluginQueueError,
+    # Protocol
+    PluginContextProtocol,
 )
-
-# 从现有位置重导出 Protocol（保持向后兼容）
-from plugin.sdk.types import PluginContextProtocol
 
 __all__ = [
     # 错误码

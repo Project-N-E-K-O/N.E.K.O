@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from loguru import logger
 
-from plugin.api.exceptions import PluginError
+from plugin._types.exceptions import PluginError
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.config_service import (
     load_plugin_config,

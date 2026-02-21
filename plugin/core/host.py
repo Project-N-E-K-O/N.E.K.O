@@ -15,16 +15,16 @@ from typing import Any, Dict, Optional, Type
 from multiprocessing import Queue
 from queue import Empty
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
-from plugin.sdk.events import EVENT_META_ATTR, EventHandler
+from plugin._types.events import EVENT_META_ATTR, EventHandler
 from plugin.sdk.decorators import WORKER_MODE_ATTR, PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
-from plugin.runtime.communication import PluginCommunicationResourceManager
-from plugin.runtime.worker import WorkerExecutor
-from plugin.api.models import HealthCheckResponse
-from plugin.api.exceptions import (
+from plugin.core.communication import PluginCommunicationResourceManager
+from plugin.core.worker import WorkerExecutor
+from plugin._types.models import HealthCheckResponse
+from plugin._types.exceptions import (
     PluginLifecycleError,
     PluginTimerError,
     PluginEntryNotFoundError,
@@ -337,7 +337,7 @@ def _find_project_root(config_path: Path) -> Path:
     
     # Fallback: assume layout plugin/plugins/<id>/plugin.toml
     try:
-        loguru_logger.debug(
+        logger.debug(
             "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
             config_path,
         )
@@ -825,7 +825,7 @@ def _plugin_process_runner(
             from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
 
             if PLUGIN_ZMQ_IPC_ENABLED:
-                from plugin.zeromq_ipc import ZmqIpcClient
+                from plugin.utils.zeromq_ipc import ZmqIpcClient
 
                 ctx._zmq_ipc_client = ZmqIpcClient(plugin_id=plugin_id, endpoint=PLUGIN_ZMQ_IPC_ENDPOINT)
                 try:
@@ -1656,7 +1656,7 @@ class PluginHost:
         self.entry_point = entry_point
         self.config_path = config_path
         # 使用loguru logger，绑定插件ID
-        self.logger = loguru_logger.bind(plugin_id=plugin_id, host=True)
+        self.logger = logger.bind(plugin_id=plugin_id, host=True)
         
         # 创建队列（由通信资源管理器管理）
         cmd_queue: Queue = multiprocessing.Queue()
@@ -1682,14 +1682,14 @@ class PluginHost:
         try:
             _ = state.plugin_response_map
         except Exception as e:
-            loguru_logger.warning(
+            logger.warning(
                 "Failed to pre-initialize plugin_response_map for plugin {}: {}",
                 plugin_id, e
             )
         try:
             _ = state.plugin_response_notify_event
         except Exception as e:
-            loguru_logger.warning(
+            logger.warning(
                 "Failed to pre-initialize plugin_response_notify_event for plugin {}: {}",
                 plugin_id, e
             )

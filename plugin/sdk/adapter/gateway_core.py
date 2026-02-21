@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.sdk.adapter.gateway_contracts import (
     LoggerLike,
@@ -43,7 +43,7 @@ class AdapterGatewayCore:
         self._router = router
         self._invoker = invoker
         self._serializer = serializer
-        self._logger = logger if logger is not None else loguru_logger
+        self._logger = logger if logger is not None else globals()["logger"]
         self._running = False
 
     async def start(self) -> None:

@@ -6,23 +6,23 @@ Plugin 模块
 
 from plugin.core.state import state, PluginRuntimeState
 from plugin.core.context import PluginContext
-from plugin.runtime.status import status_manager, PluginStatusManager
-from plugin.runtime.registry import (
+from plugin.core.status import status_manager, PluginStatusManager
+from plugin.core.registry import (
     load_plugins_from_toml,
     get_plugins,
     register_plugin,
     scan_static_metadata,
 )
-from plugin.runtime.host import PluginProcessHost
-from plugin.runtime.communication import PluginCommunicationResourceManager
-from plugin.api.models import (
+from plugin.core.host import PluginProcessHost
+from plugin.core.communication import PluginCommunicationResourceManager
+from plugin._types.models import (
     PluginPushMessageRequest,
     PluginPushMessage,
     PluginPushMessageResponse,
     PluginMeta,
     HealthCheckResponse,
 )
-from plugin.api.exceptions import (
+from plugin._types.exceptions import (
     PluginError,
     PluginNotFoundError,
     PluginNotRunningError,
@@ -38,7 +38,7 @@ from plugin.api.exceptions import (
     PluginQueueError,
 )
 from plugin.sdk.base import NekoPluginBase, PluginMeta as SDKPluginMeta, NEKO_PLUGIN_TAG, NEKO_PLUGIN_META_ATTR
-from plugin.sdk.events import (
+from plugin._types.events import (
     EventMeta,
     EventHandler,
     EventType,

@@ -118,4 +118,3 @@ class PluginQueueError(PluginError):
         self.operation = operation
         self.reason = reason
         super().__init__(f"Queue operation '{operation}' failed: {reason}")
-

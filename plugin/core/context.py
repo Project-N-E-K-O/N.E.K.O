@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover
 
 from fastapi import FastAPI
 
-from plugin.api.exceptions import PluginError
+from plugin._types.exceptions import PluginError
 from plugin.core.state import state
 from plugin.settings import (
     EVENT_META_ATTR,
@@ -809,7 +809,7 @@ class PluginContext:
                         
                         if need_create_batcher:
                             # 在锁外创建 batcher（避免在锁内做 I/O）
-                            from plugin.zeromq_ipc import MessagePlaneIngestBatcher
+                            from plugin.utils.zeromq_ipc import MessagePlaneIngestBatcher
                             from plugin.settings import (
                                 MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS,
                                 MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,

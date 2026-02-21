@@ -12,11 +12,11 @@ from fastapi import HTTPException
 from loguru import logger
 
 from plugin.core.state import state
-from plugin.runtime.host import PluginProcessHost
-from plugin.runtime.registry import scan_static_metadata, register_plugin, _parse_plugin_dependencies, _check_plugin_dependency
-from plugin.runtime.status import status_manager
-from plugin.api.models import PluginMeta, PluginAuthor
-from plugin.api.exceptions import PluginNotFoundError
+from plugin.core.host import PluginProcessHost
+from plugin.core.registry import scan_static_metadata, register_plugin, _parse_plugin_dependencies, _check_plugin_dependency
+from plugin.core.status import status_manager
+from plugin._types.models import PluginMeta, PluginAuthor
+from plugin._types.exceptions import PluginNotFoundError
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
@@ -232,7 +232,7 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
         )
     
     # 检测并解决插件 ID 冲突
-    from plugin.runtime.registry import _resolve_plugin_id_conflict
+    from plugin.core.registry import _resolve_plugin_id_conflict
     from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
 
     original_plugin_id = plugin_id

@@ -60,7 +60,7 @@ class PluginRouter:
         self._router_task = asyncio.create_task(self._router_loop())
         if PLUGIN_ZMQ_IPC_ENABLED:
             try:
-                from plugin.zeromq_ipc import ZmqIpcServer
+                from plugin.utils.zeromq_ipc import ZmqIpcServer
 
                 self._zmq_server = ZmqIpcServer(
                     endpoint=PLUGIN_ZMQ_IPC_ENDPOINT,

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any, Dict, Optional
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
@@ -24,7 +24,7 @@ class PluginStatusManager:
     - 状态存储和查询
     - 状态消费后台任务管理
     """
-    logger: Any = field(default_factory=lambda: loguru_logger.bind(component="status"))
+    logger: Any = field(default_factory=lambda: logger.bind(component="status"))
     _plugin_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     

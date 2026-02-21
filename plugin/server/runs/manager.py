@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 from pydantic import BaseModel, Field
 
 from plugin.core.state import state
-from plugin.api.models import RunCreateRequest, RunCreateResponse, RunStatus
+from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.server.services import trigger_plugin
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 

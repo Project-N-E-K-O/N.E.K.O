@@ -16,9 +16,9 @@ import threading
 from loguru import logger
 
 from plugin.core.state import state
-from plugin.runtime.registry import load_plugins_from_toml
-from plugin.runtime.host import PluginProcessHost
-from plugin.runtime.status import status_manager
+from plugin.core.registry import load_plugins_from_toml
+from plugin.core.host import PluginProcessHost
+from plugin.core.status import status_manager
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.plugin_router import plugin_router
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager

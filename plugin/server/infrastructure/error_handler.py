@@ -13,7 +13,7 @@ from functools import wraps
 
 from fastapi import HTTPException
 from loguru import logger
-from plugin.api.exceptions import (
+from plugin._types.exceptions import (
     PluginError,
     PluginNotFoundError,
     PluginNotRunningError,

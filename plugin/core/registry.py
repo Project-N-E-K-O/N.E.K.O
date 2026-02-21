@@ -9,28 +9,28 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, cast
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 
 _pending_async_shutdown_tasks: set = set()
 
 
 # _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
-# 为保持向后兼容，_wrap_logger 现在直接返回 loguru_logger
+# 为保持向后兼容，_wrap_logger 现在直接返回 logger
 def _wrap_logger(logger: Any) -> Any:
     """向后兼容函数，现在统一返回 loguru logger"""
-    return loguru_logger
+    return logger
 
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin.sdk.events import EventHandler, EventMeta, EVENT_META_ATTR
-from plugin.sdk.version import SDK_VERSION
+from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
+from plugin._types.version import SDK_VERSION
 from plugin.core.state import state
-from plugin.api.models import PluginMeta, PluginAuthor, PluginDependency
-from plugin.api.exceptions import (
+from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin._types.exceptions import (
     PluginImportError,
     PluginLoadError,
     PluginMetadataError,
@@ -39,7 +39,7 @@ from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPEN
 from plugin.utils import parse_bool_config
 
 # 从 dependency.py 导入依赖相关函数
-from plugin.runtime.dependency import (
+from plugin.core.dependency import (
     _parse_specifier,
     _version_matches,
     _find_plugins_by_entry,
@@ -341,7 +341,7 @@ def register_plugin(
     Returns:
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
-    logger_ = cast(Any, _wrap_logger(logger or loguru_logger))
+    logger_ = cast(Any, _wrap_logger(logger or logger))
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -404,7 +404,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     """
     在不实例化的情况下扫描类属性，提取 @EventHandler 元数据并填充全局表。
     """
-    logger = loguru_logger
+    # 使用模块级 logger
     for name, member in inspect.getmembers(cls):
         event_meta = getattr(member, EVENT_META_ATTR, None)
         if event_meta is None and hasattr(member, "__wrapped__"):

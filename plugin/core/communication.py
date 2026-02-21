@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from queue import Empty, Queue
 from typing import Any, Dict, Optional
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.settings import (
     COMMUNICATION_THREAD_POOL_MAX_WORKERS,
@@ -27,7 +27,7 @@ from plugin.settings import (
     PLUGIN_LOG_MESSAGE_FORWARD,
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
-from plugin.api.exceptions import PluginExecutionError
+from plugin._types.exceptions import PluginExecutionError
 from plugin.utils.logging import format_log_text as _format_log_text
 
 
@@ -51,7 +51,7 @@ class PluginCommunicationResourceManager:
     res_queue: Queue
     status_queue: Queue
     message_queue: Queue
-    logger: Any = field(default_factory=lambda: loguru_logger.bind(component="communication"))
+    logger: Any = field(default_factory=lambda: logger.bind(component="communication"))
     
     # 异步相关资源
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)

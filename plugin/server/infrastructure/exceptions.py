@@ -5,7 +5,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from plugin.api.exceptions import (
+from plugin._types.exceptions import (
     PluginError,
     PluginNotFoundError,
     PluginNotRunningError,

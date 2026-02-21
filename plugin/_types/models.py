@@ -8,7 +8,8 @@ from datetime import datetime
 from typing import Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Field, field_serializer, model_validator
-from plugin.sdk.version import SDK_VERSION
+
+from .version import SDK_VERSION
 
 
 # /runs (Run Protocol)

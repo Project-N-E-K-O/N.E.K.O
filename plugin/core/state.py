@@ -14,7 +14,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
 
 from loguru import logger
 
-from plugin.sdk.events import EventHandler
+from plugin._types.events import EventHandler
 from plugin.settings import (
     BUS_SDK_POLL_INTERVAL_SECONDS,
     EVENT_QUEUE_MAX,

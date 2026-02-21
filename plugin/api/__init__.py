@@ -1,10 +1,25 @@
 """
-Plugin API 模块
+Plugin API 模块（已弃用）
 
-提供 API 数据模型和异常定义。
+此模块已弃用，请使用 plugin.types 代替。
+
+Usage:
+    # 旧方式（已弃用）
+    from plugin.api import PluginMeta
+    
+    # 新方式（推荐）
+    from plugin._types import PluginMeta
 """
+import warnings
 
-from plugin.api.models import (
+warnings.warn(
+    "plugin.api is deprecated, use plugin.types instead",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+# 从新位置重导出
+from plugin._types import (
     PluginMeta,
     PluginType,
     PluginAuthor,

@@ -5,7 +5,7 @@
 提供 IntEnum 错误码（与 HTTP 状态码对齐）和字符串别名。
 
 Usage:
-    from plugin.typedefs import ErrorCode, ERROR_NAMES
+    from plugin._types import ErrorCode, ERROR_NAMES
     
     # 使用错误码
     code = ErrorCode.VALIDATION_ERROR  # 400

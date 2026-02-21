@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Any
 from datetime import datetime
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 
 class PluginFileLogger:
@@ -151,7 +151,7 @@ class PluginFileLogger:
         should_add_console = False
         if logger is None:
             # 创建新的loguru logger（绑定插件ID）
-            self._logger = loguru_logger.bind(plugin_id=self.plugin_id)
+            self._logger = logger.bind(plugin_id=self.plugin_id)
             should_add_console = True
         else:
             self._logger = logger

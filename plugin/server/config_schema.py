@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from plugin.api.models import PluginType
+from plugin._types.models import PluginType
 
 
 class PluginAuthorSchema(BaseModel):

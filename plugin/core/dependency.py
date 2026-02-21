@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from loguru import logger as loguru_logger
+from loguru import logger
 
 from plugin.core.state import state
-from plugin.api.models import PluginDependency
+from plugin._types.models import PluginDependency
 
 if TYPE_CHECKING:
-    from plugin.runtime.registry import PluginContext
+    from plugin.core.registry import PluginContext
 
 try:
     from packaging.version import Version, InvalidVersion
@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover
 
 def _wrap_logger(logger: Any) -> Any:
     """向后兼容函数，现在统一返回 loguru logger"""
-    return loguru_logger
+    return logger
 
 
 def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:

@@ -5,7 +5,7 @@ Result 类型模块
 支持 Python 3.10+ 的 pattern matching。
 
 Usage:
-    from plugin.typedefs import Ok, Err, Result, safe, async_safe
+    from plugin._types import Ok, Err, Result, safe, async_safe
     
     @async_safe
     async def fetch_user(user_id: int) -> dict:

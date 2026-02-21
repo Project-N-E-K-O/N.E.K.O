@@ -7,8 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 
-from plugin.api.exceptions import PluginError
-from plugin.runtime.status import status_manager
+from plugin._types.exceptions import PluginError
+from plugin.core.status import status_manager
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.services import build_plugin_list
 from plugin.server.management import start_plugin, stop_plugin, reload_plugin, reload_all_plugins, disable_extension, enable_extension

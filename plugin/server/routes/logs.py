@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket
 from loguru import logger
 
-from plugin.api.exceptions import PluginError
+from plugin._types.exceptions import PluginError
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint
 from plugin.server.infrastructure.utils import now_iso
