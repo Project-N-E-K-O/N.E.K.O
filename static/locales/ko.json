@@ -162,7 +162,7 @@
     "uploadErrorFormat": "{{message}}",
     "uploadErrorWithMessage": "업로드 중 오류가 발생했습니다: {{error}}",
     "checkNetworkConnection": "네트워크 연결 및 서버 상태를 확인하세요.",
-    "serverProblem": "서버에 문제가 발생했을 수 있습니다{{message}}",
+    "serverProblem": "서버에 문제가 발생했을 수 있습니다: {{message}}",
     "pagination": "페이지 {{currentPage}}/{{totalPages}}",
     "sort": {
       "title": "정렬:",
@@ -1173,7 +1173,7 @@
     "configReset": "설정이 초기화되었습니다",
     "model": "모델: {{model}}",
     "motionExpressionCount": "모션 파일: {{motionCount}} | 표정 파일: {{expressionCount}}",
-    "clickToClosePreview": "💡 빈 영역을 클릭하여 미리보기를 닫습니다"
+    "clickToClosePreview": "빈 영역을 클릭하여 미리보기를 닫습니다"
   },
   "app": {
     "welcomeBack": "{{name}}이 돌아왔습니다!",

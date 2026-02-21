@@ -162,7 +162,7 @@
         "uploadErrorFormat": "{{message}}",
         "uploadErrorWithMessage": "上传过程中发生错误：{{error}}",
         "checkNetworkConnection": "请检查网络连接和服务器状态",
-        "serverProblem": "服务器可能遇到问题{{message}}",
+        "serverProblem": "服务器可能遇到问题: {{message}}",
         "pagination": "第 {{currentPage}} 页，共 {{totalPages}} 页",
         "sort": {
             "title": "排序：",

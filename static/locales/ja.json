@@ -134,7 +134,7 @@
     "localModPathConfig": "ローカルMODパス設定",
     "localModFolder": "ローカルMODフォルダパス",
     "defaultPathHint": "スキャンパスが指定されていない場合、このデフォルトパスが使用されます",
-    "defaultPathExample": "ヒント: デフォルトパスは通常「My Documents/N.E.K.O Mods」です",
+    "defaultPathExample": "ヒント: デフォルトパスは通常「My Documents/N.E.K.O/live2d」です",
     "loadConfig": "現在の設定を読み込む",
     "saveConfig": "設定を保存",
     "emptyStateHint": "ローカルファイルを含むフォルダを入力してスキャンしてください",
