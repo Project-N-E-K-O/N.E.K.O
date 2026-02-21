@@ -463,7 +463,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     imgOn.style.opacity = '1';
                 } else {
                     // 未激活状态：显示off图标
-                    imgOff.style.opacity = '1';
+                    imgOff.style.opacity = '0.75';
                     imgOn.style.opacity = '0';
                 }
             }
@@ -486,6 +486,12 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
+                    // 更新被关闭的互斥按钮的图标
+                    const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                        exclusiveData.imgOff.style.opacity = '0.75';
+                        exclusiveData.imgOn.style.opacity = '0';
+                    }
                 }
 
                 // 切换弹出框
@@ -502,7 +508,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                             imgOn.style.opacity = '1';
                         } else {
                             // 弹出框隐藏：显示off图标
-                            imgOff.style.opacity = '1';
+                            imgOff.style.opacity = '0.75';
                             imgOn.style.opacity = '0';
                         }
                     }
@@ -570,7 +576,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                         imgOn.style.opacity = '1';
                     } else {
                         // 未激活：显示off图标
-                        imgOff.style.opacity = '1';
+                        imgOff.style.opacity = '0.75';
                         imgOn.style.opacity = '0';
                     }
                 }
@@ -798,7 +804,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         returnBtn.style.transform = 'scale(1)';
         returnBtn.style.boxShadow = 'var(--neko-popup-shadow)';
         returnBtn.style.background = 'var(--neko-btn-bg)';
-        imgOff.style.opacity = '1';
+        imgOff.style.opacity = '0.75';
         imgOn.style.opacity = '0';
     });
 

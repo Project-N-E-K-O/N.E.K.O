@@ -301,10 +301,29 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     popup.style.opacity !== '';
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
+                    // 更新被关闭的互斥按钮的图标
+                    const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                        exclusiveData.imgOff.style.opacity = '1';
+                        exclusiveData.imgOn.style.opacity = '0';
+                    }
                 }
                 isToggling = true;
                 this.showPopup(config.id, popup);
+                // 更新图标状态
                 setTimeout(() => {
+                    const newPopupVisible = popup.style.display === 'flex' &&
+                        popup.style.opacity !== '0' &&
+                        popup.style.opacity !== '';
+                    if (imgOff && imgOn) {
+                        if (newPopupVisible) {
+                            imgOff.style.opacity = '0';
+                            imgOn.style.opacity = '1';
+                        } else {
+                            imgOff.style.opacity = '1';
+                            imgOn.style.opacity = '0';
+                        }
+                    }
                     isToggling = false;
                 }, 200);
             });
