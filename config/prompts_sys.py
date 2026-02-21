@@ -506,7 +506,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_personal_ja = """あなたは{lanlan_name}です。今、フォローしているクリエイターの最新の動向を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_personal_ja = """あなたは{lanlan_name}です。今、フォローしているクリエイターの最新の動向を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}

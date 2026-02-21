@@ -1015,6 +1015,12 @@ function init_app() {
 
                         // 显示提示信息
                         showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
+                    } else {
+                        // isRecording 为 false 时，也需要同步按钮状态
+                        micButton.classList.remove('active');
+                        micButton.classList.remove('recording');
+                        syncFloatingMicButtonState(false);
+                        showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
                     }
                 } else if (response.type === 'repetition_warning') {
                     // 处理高重复度对话警告
@@ -2535,6 +2541,24 @@ function init_app() {
     async function stopMicCapture() { // 闭麦，按钮on click
         isSwitchingMode = true; // 开始模式切换（从语音切换到待机/文本模式）
 
+        // 隐藏语音准备提示（防止残留）
+        hideVoicePreparingToast();
+
+        // 清理 session Promise 相关状态（防止影响后续会话）
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        if (sessionStartedRejecter) {
+            try {
+                sessionStartedRejecter(new Error('Session aborted'));
+            } catch (e) { /* ignore already handled */ }
+            sessionStartedRejecter = null;
+        }
+        if (sessionStartedResolver) {
+            sessionStartedResolver = null;
+        }
+
         // 停止录音时移除录音状态类
         micButton.classList.remove('recording');
 
@@ -3044,15 +3068,18 @@ function init_app() {
 
     // 同步浮动麦克风按钮状态的辅助函数
     function syncFloatingMicButtonState(isActive) {
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.mic) {
-            const floatingMicBtn = window.live2dManager._floatingButtons.mic.button;
-            if (floatingMicBtn) {
-                floatingMicBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.mic.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.mic.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        // 更新所有存在的 manager 的按钮状态
+        const managers = [window.live2dManager, window.vrmManager];
+
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
                 }
             }
         }
@@ -3060,15 +3087,18 @@ function init_app() {
 
     // 同步浮动屏幕分享按钮状态的辅助函数
     function syncFloatingScreenButtonState(isActive) {
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.screen) {
-            const floatingScreenBtn = window.live2dManager._floatingButtons.screen.button;
-            if (floatingScreenBtn) {
-                floatingScreenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.screen.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.screen.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        // 更新所有存在的 manager 的按钮状态
+        const managers = [window.live2dManager, window.vrmManager];
+
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
                 }
             }
         }
@@ -4156,10 +4186,18 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
-        
+
         // 重置语音模式用户转录合并追踪
         lastVoiceUserMessage = null;
         lastVoiceUserMessageTime = 0;
+
+        // 清理 AI 回复相关的队列和缓冲区（防止影响后续会话）
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window.currentTurnGeminiBubbles = [];
+        window._isProcessingRealisticQueue = false;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -8142,6 +8180,13 @@ function init_app() {
                 return;
             }
 
+            // 检测用户是否在20秒内有过输入，有过输入则作废本次主动搭话
+            const timeSinceLastInput = Date.now() - lastUserInputTime;
+            if (timeSinceLastInput < 20000) {
+                console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
+                return;
+            }
+
             const response = await fetch('/api/proactive_chat', {
                 method: 'POST',
                 headers: {
@@ -8150,19 +8195,10 @@ function init_app() {
                 body: JSON.stringify(requestBody)
             });
 
-        const result = await response.json();
-        
-        if (result.success) {
-            if (result.action === 'chat') {
-                console.log('主动搭话已发送：', result.message);
+            const result = await response.json();
 
-                // 检测用户是否在20秒内有过输入
-                const timeSinceLastInput = Date.now() - lastUserInputTime;
-                if (timeSinceLastInput < 20000) {
-                    console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
-                    return;
-                }
-
+            if (result.success) {
+                if (result.action === 'chat') {
                     console.log('主动搭话已发送:', result.message, result.source_mode ? `(来源: ${result.source_mode})` : '');
 
                     // 如果有 source_links，延迟后在聊天中显示可点击链接（旁路，不进入 AI 记忆）

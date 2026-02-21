@@ -123,16 +123,24 @@ async function submitCurrentCookie() {
         }
 
         if (val) {
-            // 简单的防注入处理：移除换行符和首尾多余的分号
-            const sanitizedVal = val
-                .replace(/[\r\n\t]/g, '')       // 清理控制字符
-                .replace(/[<>'"]/g, '')          // 清理潜在 XSS 字符
-                .replace(/^;+|;+$/g, '')
-                .replace(/;/g, '')  
-                .trim();
-            if (sanitizedVal !== val) {
-                showAlert(false, `⚠️ [${f.label}] 包含无效字符: 分号 (;),已自动清除，请确认后重新提交`);
+            // 简单的防注入处理：分步骤检查并清理
+            let sanitizedVal = val;
+            
+            if (/[\r\n\t<>'";]/.test(sanitizedVal)) {
+                sanitizedVal = sanitizedVal
+                    .replace(/[\r\n\t]/g, '')       // 清理控制字符
+                    .replace(/[<>'"]/g, '')         // 清理潜在 XSS 字符
+                    .replace(/;/g, '');             // 清理所有分号
+                    
+                showAlert(false, `⚠️ [${f.label}] 包含无效字符...`);
             }
+            
+            const prevVal = sanitizedVal;
+            sanitizedVal = sanitizedVal.trim();
+            if (sanitizedVal !== prevVal) {
+                showAlert(false, `⚠️ [${f.label}] 包含前/后空白，已自动修剪，请确认后重新提交`);
+            }
+            
             cookiePairs.push(`${f.key}=${sanitizedVal}`);
         }
     }
@@ -180,16 +188,6 @@ async function submitCurrentCookie() {
         if (submitBtn) submitBtn.disabled = false;
         if (submitText) submitText.textContent = originalBtnText;
     }
-}
-
-function showAlert(success, message) {
-    const alertEl = document.getElementById('main-alert');
-    alertEl.style.display = 'block';
-    alertEl.style.backgroundColor = success ? '#ecfdf5' : '#fef2f2';
-    alertEl.style.color = success ? '#059669' : '#dc2626';
-    alertEl.style.border = `1px solid ${success ? '#a7f3d0' : '#fecaca'}`;
-    alertEl.textContent = message;
-    setTimeout(() => { alertEl.style.display = 'none'; }, 4000);
 }
 
 // 状态监控
@@ -279,6 +277,8 @@ async function deleteCookie(platformKey) {
         if (data.success) {
             showAlert(true, "✅ 已成功移除凭证");
             refreshStatusList();
+        } else {
+            showAlert(false, data.message || "删除失败");
         }
     } catch (e) {
         showAlert(false, "❌ 删除失败，请检查网络");
@@ -287,7 +287,7 @@ async function deleteCookie(platformKey) {
 
 /**
  * 统一弹窗提醒
- * 修复：使用 innerHTML 以支持渲染传入的 <b> 标签，并处理计时器竞争
+ * 修复：使用 textContent 修改文本以避免XSS风险，并处理计时器竞争
  */
 function showAlert(success, message) {
     const alertEl = document.getElementById('main-alert');

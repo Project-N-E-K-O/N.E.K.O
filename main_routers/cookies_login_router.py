@@ -10,7 +10,7 @@ import logging
 import re
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Request, HTTPException, status, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
@@ -24,8 +24,27 @@ from utils.cookies_login import (
     COOKIE_FILES  # 确保此常量在 utils 中已定义
 )
 
-router = APIRouter(prefix="/api/auth", tags=["认证管理"])
 logger = logging.getLogger("Main")
+
+def verify_local_access(request: Request):
+    """🛡️ 纵深防御：拦截非本地主机的越权访问尝试"""
+    client_host = getattr(request.client, "host", None) if request.client else None
+    
+    if not client_host:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            client_host = forwarded.split(",")[0].strip()
+            
+    allowed_hosts = ["127.0.0.1", "::1", "localhost"]
+    
+    if client_host not in allowed_hosts:
+        logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，来源 IP: {client_host}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Forbidden: 出于安全考虑，凭证管理页面仅限本地主机 (Localhost) 访问。"
+        )
+
+router = APIRouter(prefix="/api/auth", tags=["认证管理"], dependencies=[Depends(verify_local_access)])
 templates = Jinja2Templates(directory="templates")
 login_manager = PlatformLoginManager()
 
@@ -78,21 +97,6 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 @router.get("/page", response_class=HTMLResponse, summary="凭证管理可视化后台入口")
 async def render_auth_page(request: Request):
     """访问凭证管理网页 (限制仅本地访问)"""
-    
-    # 🛡️ 纵深防御：获取发起请求的客户端 IP
-    client_host = request.client.host
-    
-    # 定义允许的本地 IP 列表 (IPv4 和 IPv6 的本地回环地址)
-    allowed_hosts = ["127.0.0.1", "::1", "localhost"]
-    
-    if client_host not in allowed_hosts:
-        logger.warning(f"🚨 拦截到非本地主机的越权访问尝试，访问凭证管理页面的来源 IP: {client_host}")
-        # 如果不是本地访问，直接返回 403 拒绝服务
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Forbidden: 出于安全考虑，凭证管理页面仅限本地主机 (Localhost) 访问。"
-        )
-
     return templates.TemplateResponse("cookies_login.html", {"request": request})
 
 # ============ 3. API 核心功能 ============
@@ -210,6 +214,6 @@ async def api_save_cookie_legacy(data: CookieSubmit):
         logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         return {"success": False, "msg": f"❌ {e.detail}"}
     except Exception as e:
-        logger.error(f"❌ 兼容性cookies保存失败 | 平台: {data.platform} | 错误: {str(e)}")
+        logger.error(f"❌ 兼容性cookies保存失败 | 平台: {data.platform} | 错误: {type(e).__name__}")
         logger.debug(f"详细错误: {e}")  # debug 级别记录详情
-        return {"success": False, "msg": f"❌ 系统异常,请稍后尝试: {str(e)}"}
+        return {"success": False, "msg": "❌ 系统异常,请稍后尝试"}
