@@ -124,10 +124,10 @@
     "unsubscribeFailed": "取消訂閱失敗: {{error}}",
     "unsubscribeError": "取消訂閱時發生錯誤，請稍後再試",
     "validatingFolderPath": "正在驗證文件夾: {{path}}",
-    "previewImageMissing": "預覽圖片文件不存在，請檢查路徑",
+    "previewImageMissing": "預覽圖片檔案不存在，請檢查路徑",
     "uploadReady": "準備上傳 {{itemName}}",
-    "pageDescription": "通過此頁麵，您可以瀏覽、訂閱、下載和管理Steam創意工坊中的Live2D模型和聲音",
-    "voiceNote": "如有語音音色請前往live2d設置頁麵手動注冊",
+    "pageDescription": "透過此頁面，您可以瀏覽、訂閱、下載和管理Steam創意工坊中的Live2D模型和聲音",
+    "voiceNote": "如有語音音色請前往live2d設定頁面手動註冊",
     "manageLocalItems": "管理本地物品",
     "searchLocalItems": "搜索本地物品...",
     "scanLocalItems": "掃描本地物品",
@@ -171,12 +171,12 @@
       "nameDesc": "名稱（降序）",
       "dateAsc": "訂閱日期（升序）",
       "dateDesc": "訂閱日期（降序）",
-      "sizeAsc": "文件大小（升序）",
-      "sizeDesc": "文件大小（降序）",
+      "sizeAsc": "檔案大小（升序）",
+      "sizeDesc": "檔案大小（降序）",
       "updateAsc": "更新時間（升序）",
       "updateDesc": "更新時間（降序）",
-      "createDateAsc": "創建日期（升序）",
-      "createDateDesc": "創建日期（降序）"
+      "createDateAsc": "建立日期（升序）",
+      "createDateDesc": "建立日期（降序）"
     },
     "localItemsHide": "隱藏本地物品",
     "localItemsManage": "管理本地物品",
@@ -248,6 +248,7 @@
     "scanFailed": "掃描失敗: {{error}}",
     "workshopScanError": "掃描時齣錯: {{error}}",
     "validatingFolder": "正在驗證文件夾: {{path}}",
+    "validatingFolderPathWithName": "正在驗證資料夾: {{path}}",
     "previewImageNotFound": "未找到預覽圖片",
     "previewImageNotProvided": "未提供預覽圖片，係統將嘗試自動生成",
     "itemDetailsFailed": "物品詳情加載失敗: {{error}}",
@@ -432,42 +433,24 @@
     "tempFolderRetained": "臨時目錄已保留",
     "noAvailableModelsError": "沒有可用的模型",
     "tagsPlaceholderInput": "輸入標籤，按空格添加",
-    "prepareUploadFailedMessage": "準備上傳失敗: {{error}}",
-    "pageDescription": "透過此頁面，您可以瀏覽、訂閱、下載和管理Steam創意工坊中的Live2D模型和聲音",
-    "previewImageMissing": "預覽圖片檔案不存在，請檢查路徑",
-    "sort": {
-      "title": "排序：",
-      "nameAsc": "名稱（升序）",
-      "nameDesc": "名稱（降序）",
-      "dateAsc": "訂閱日期（升序）",
-      "dateDesc": "訂閱日期（降序）",
-      "createDateAsc": "建立日期（升序）",
-      "createDateDesc": "建立日期（降序）",
-      "updateAsc": "更新時間（升序）",
-      "updateDesc": "更新時間（降序）",
-      "sizeAsc": "檔案大小（升序）",
-      "sizeDesc": "檔案大小（降序）"
-    },
-    "uploadReady": "準備上傳 {{itemName}}",
-    "validatingFolderPathWithName": "正在驗證資料夾: {{path}}",
-    "voiceNote": "如有語音音色請前往live2d設定頁面手動註冊"
-  },
-  "error": {
-    "cameraStreamFailed": "無法取得攝影機串流",
-    "characterConfigFailed": "無法取得角色設定",
-    "emotionTimeout": "情感分析逾時",
-    "noAudioTrack": "沒有可用的音軌"
-  },
-  "camera": {
-    "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",
-    "notDetected": "未偵測到攝影機裝置",
-    "occupied": "攝影機被其他應用程式佔用？關閉掃碼/拍照應用程式後重試"
+    "prepareUploadFailedMessage": "準備上傳失敗: {{error}}"
   },
   "dialogs": {
     "confirmLeave": "確認離開",
     "unsavedChanges": "您有未保存的設置，確定要離開嗎？",
     "clearScreenshots": "清空截圖",
     "clearScreenshotsConfirm": "確定要清空所有待發送的截圖嗎？"
+  },
+  "error": {
+    "emotionTimeout": "情感分析逾時",
+    "noAudioTrack": "沒有可用的音軌",
+    "cameraStreamFailed": "無法取得攝影機串流",
+    "characterConfigFailed": "無法取得角色設定"
+  },
+  "camera": {
+    "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",
+    "notDetected": "未偵測到攝影機裝置",
+    "occupied": "攝影機被其他應用程式佔用？關閉掃碼/拍照應用程式後重試"
   },
   "chat": {
     "title": "對話",
@@ -482,48 +465,6 @@
     "screenshotAlt": "截圖 {{index}}",
     "screenshotTitle": "點擊查看截圖 {{index}}",
     "removeScreenshot": "移除此截圖"
-  },
-  "emotion": {
-    "manager": "Live2D 情感映射管理器",
-    "description": "管理和設定Live2D角色的動作與表情映射",
-    "selectModel": "選擇Live2D模型：",
-    "model": "模型: {{model}}",
-    "loading": "載入中...",
-    "loaded": "已載入，發現 {{motionCount}} 個動作檔案和 {{expressionCount}} 個表情檔案",
-    "loadFailed": "載入可用模型列表失敗: {{error}}",
-    "loadError": "載入模型列表時出錯: {{error}}",
-    "pleaseSelect": "選擇模型",
-    "pleaseSelectModel": "請先選擇一個模型",
-    "pleaseSelectFile": "請選擇一個檔案",
-    "modelInfo": "模型資訊",
-    "motionFiles": "動作檔案 ({{count}})",
-    "expressionFiles": "表情檔案 ({{count}})",
-    "motionExpressionCount": "動作檔案: {{motionCount}} | 表情檔案: {{expressionCount}}",
-    "selectMotionFile": "選擇動作檔案",
-    "selectExpressionFile": "選擇表情檔案",
-    "addedMotionFile": "已新增動作檔案: {{file}}",
-    "removedMotionFile": "已刪除動作檔案: {{file}}",
-    "addedExpressionFile": "已新增表情檔案: {{file}}",
-    "removedExpressionFile": "已刪除表情檔案: {{file}}",
-    "add": "新增",
-    "delete": "刪除",
-    "reset": "重設",
-    "saveConfig": "儲存設定",
-    "resetConfig": "重設設定",
-    "savingConfig": "正在儲存設定...",
-    "configSaved": "設定儲存成功",
-    "saveConfigFailed": "設定儲存失敗: {{error}}",
-    "saveConfigError": "儲存設定時出錯: {{error}}",
-    "loadingConfig": "正在載入設定和模型檔案...",
-    "configLoaded": "設定已載入，但無法取得模型檔案",
-    "loadConfigFailed": "載入設定失敗: {{error}}",
-    "loadConfigError": "載入設定時出錯: {{error}}",
-    "loadEmotionFailed": "載入情感映射設定失敗: {{error}}",
-    "confirmReset": "確定要重設當前設定嗎？這將清空所有動作和表情檔案。",
-    "configReset": "設定已重設",
-    "autoDetected": "自動識別到 {{count}} 個Live2D模型",
-    "autoCreatedMapping": "已為模型 {{model}} 自動建立情緒映射設定",
-    "clickToClosePreview": "點擊空白處關閉預覽"
   },
   "voiceControl": {
     "startVoice": "開始語音",
@@ -561,13 +502,13 @@
     "volumeHintOk": "麥剋風工作正常"
   },
   "speaker": {
+    "volumeLabel": "揚聲器音量",
+    "volumeHint": "調節AI語音的播放音量",
     "title": "選擇揚聲器",
     "defaultDevice": "系統默認揚聲器",
     "deviceLabel": "揚聲器 {{index}}",
     "loadFailed": "獲取揚聲器列表失敗",
-    "noDevices": "沒有檢測到揚聲器設備",
-    "volumeLabel": "揚聲器音量",
-    "volumeHint": "調節AI語音的播放音量"
+    "noDevices": "沒有檢測到揚聲器設備"
   },
   "status": {
     "initializing": "正在初始化...",
@@ -717,7 +658,7 @@
       "cancel": "取消",
       "continue": "繼續保存"
     },
-    "conversationModelConfig":"文本對話模型配置",
+    "conversationModelConfig": "文本對話模型配置",
     "summaryModelConfig": "摘要模型配置",
     "correctionModelConfig": "糾錯模型配置",
     "emotionModelConfig": "情感模型配置",
@@ -727,9 +668,11 @@
     "apiUrl": "API URL",
     "apiKey": "API Key",
     "modelId": "模型ID",
+    "agentApiConfigTitle": "Agent API 配置",
     "providerPlaceholder": "如：openai、azure、local",
     "apiUrlPlaceholder": "如：https://api.openai.com/v1",
     "modelIdPlaceholder": "如：gpt-5.1-chat-latest、qwen-flash",
+    "apiKeyPlaceholder": "留空則跟隨輔助 API Key（free 不可用）",
     "summaryModelApiKeyPlaceholder": "請輸入摘要模型的API Key",
     "correctionModelApiKeyPlaceholder": "請輸入糾錯模型的API Key",
     "emotionModelApiKeyPlaceholder": "請輸入情感模型的API Key",
@@ -739,6 +682,9 @@
     "ttsVoiceId": "Voice ID",
     "ttsVoiceIdHint": "（可選，角色未設置時的迴退音色）",
     "ttsVoiceIdPlaceholder": "如：中文女、alloy",
+    "agentModelUrlPlaceholder": "留空則跟隨輔助 API 視覺模型 URL",
+    "agentModelIdPlaceholder": "留空則跟隨輔助 API 視覺模型 ID",
+    "agentModelApiKeyPlaceholder": "留空則跟隨輔助 API Key（free 不可用）",
     "omniApiUrlNote": "（必須是WebSocket地址，以ws://或wss://開頭）",
     "omniApiUrlPlaceholder": "如：wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
     "pleaseEnterApiKeyError": "請輸入API Key",
@@ -800,7 +746,11 @@
       "correctExamples": "正確示例：",
       "wrongExamples": "錯誤示例：",
       "confirm": "我知道瞭"
-    }
+    },
+    "loadConfigFailed": "載入配置失敗，請重新整理頁面重試",
+    "errorGettingCurrentApiKey": "獲取目前 API Key 時出錯",
+    "getCurrentApiKeyFailed": "獲取目前 API Key 失敗",
+    "autoFillCoreApiKeyMsg": "已自動填充核心 API Key"
   },
   "live2d": {
     "manager": "Live2D 模型管理",
@@ -1187,6 +1137,48 @@
     "switchError": "切換貓娘時發生錯誤",
     "freePresetVoices": "── 免費預設音色 ──"
   },
+  "emotion": {
+    "manager": "Live2D 情感映射管理器",
+    "description": "管理和設定Live2D角色的動作與表情映射",
+    "selectModel": "選擇Live2D模型：",
+    "pleaseSelect": "選擇模型",
+    "saveConfig": "儲存設定",
+    "reset": "重設",
+    "modelInfo": "模型資訊",
+    "loading": "載入中...",
+    "loadingConfig": "正在載入設定和模型檔案...",
+    "loaded": "已載入，發現 {{motionCount}} 個動作檔案和 {{expressionCount}} 個表情檔案",
+    "configLoaded": "設定已載入，但無法取得模型檔案",
+    "pleaseSelectModel": "請先選擇一個模型",
+    "autoDetected": "自動識別到 {{count}} 個Live2D模型",
+    "loadFailed": "載入可用模型列表失敗: {{error}}",
+    "loadError": "載入模型列表時出錯: {{error}}",
+    "loadEmotionFailed": "載入情感映射設定失敗: {{error}}",
+    "loadConfigFailed": "載入設定失敗: {{error}}",
+    "loadConfigError": "載入設定時出錯: {{error}}",
+    "autoCreatedMapping": "已為模型 {{model}} 自動建立情緒映射設定",
+    "motionFiles": "動作檔案 ({{count}})",
+    "selectMotionFile": "選擇動作檔案",
+    "add": "新增",
+    "expressionFiles": "表情檔案 ({{count}})",
+    "selectExpressionFile": "選擇表情檔案",
+    "delete": "刪除",
+    "pleaseSelectFile": "請選擇一個檔案",
+    "addedMotionFile": "已新增動作檔案: {{file}}",
+    "addedExpressionFile": "已新增表情檔案: {{file}}",
+    "removedMotionFile": "已刪除動作檔案: {{file}}",
+    "removedExpressionFile": "已刪除表情檔案: {{file}}",
+    "savingConfig": "正在儲存設定...",
+    "configSaved": "設定儲存成功",
+    "saveConfigFailed": "設定儲存失敗: {{error}}",
+    "saveConfigError": "儲存設定時出錯: {{error}}",
+    "confirmReset": "確定要重設當前設定嗎？這將清空所有動作和表情檔案。",
+    "resetConfig": "重設設定",
+    "configReset": "設定已重設",
+    "model": "模型: {{model}}",
+    "motionExpressionCount": "動作檔案: {{motionCount}} | 表情檔案: {{expressionCount}}",
+    "clickToClosePreview": "點擊空白處關閉預覽"
+  },
   "app": {
     "welcomeBack": "{{name}}迴來瞭！",
     "title": "Project N.E.K.O.",
@@ -1266,10 +1258,6 @@
     "return": "請她迴來"
   },
   "settings": {
-    "interval": {
-      "chatIntervalBase": "聊天間隔基準",
-      "visionInterval": "視覺間隔"
-    },
     "menu": {
       "live2dSettings": "Live2D設置",
       "modelSettings": "角色外形",
@@ -1289,9 +1277,13 @@
       "title": "選擇語言",
       "zh-CN": "簡體中文",
       "en": "English",
-      "zh-TW": "繁體中文",
       "ja": "日本語",
+      "zh-TW": "繁體中文",
       "ko": "한국어"
+    },
+    "interval": {
+      "chatIntervalBase": "聊天間隔基準",
+      "visionInterval": "視覺間隔"
     },
     "toggles": {
       "allowInterrupt": "允許打斷",

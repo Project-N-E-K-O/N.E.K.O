@@ -1221,7 +1221,7 @@ function createScreenSourceOption(source) {
             height: '56px',
             objectFit: 'cover',
             borderRadius: '4px',
-            border: 'var(--vrm-thumb-border, 1px solid #ddd)',
+            border: '1px solid var(--neko-popup-separator)',
             marginBottom: '4px'
         });
         option.appendChild(thumb);
@@ -1236,7 +1236,7 @@ function createScreenSourceOption(source) {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
-            background: 'var(--vrm-placeholder-bg, #f5f5f5)',
+            background: 'var(--neko-screen-placeholder-bg)',
             borderRadius: '4px',
             marginBottom: '4px'
         });

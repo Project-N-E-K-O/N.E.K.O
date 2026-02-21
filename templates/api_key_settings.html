@@ -464,8 +464,8 @@
                                     <div class="model-config-container">
                                         <div class="model-header" onclick="toggleModelConfig('agent')">
                                             <span class="model-title">
-                                                <img src="/static/icons/summary_model_icon.png" alt="Agent API"
-                                                    class="model-title-icon">
+                                                <img src="/static/icons/summary_model_icon.png"
+                                                    data-i18n-alt="api.agentApiConfigTitle" class="model-title-icon">
                                                 <span data-i18n="api.agentApiConfigTitle">Agent API 配置</span>
                                             </span>
                                             <span class="toggle-icon">▼</span>
@@ -474,21 +474,23 @@
                                             <div class="field-row">
                                                 <label for="agentModelUrl" data-i18n="api.apiUrl">API URL</label>
                                                 <input type="text" id="agentModelUrl"
-                                                    data-i18n-placeholder="api.baseUrlExamplePlaceholder"
-                                                    placeholder="留空则跟随辅助API视觉模型URL" value="" style="max-width: 600px;">
+                                                    data-i18n-placeholder="api.agentModelUrlPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API vision model URL"
+                                                    value="" style="max-width: 600px;">
                                             </div>
                                             <div class="field-row">
                                                 <label for="agentModelId" data-i18n="api.modelId">模型ID</label>
                                                 <input type="text" id="agentModelId"
-                                                    data-i18n-placeholder="api.modelIdPlaceholder"
-                                                    placeholder="留空则跟随辅助API视觉模型ID" value="" style="max-width: 600px;">
+                                                    data-i18n-placeholder="api.agentModelIdPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API vision model ID"
+                                                    value="" style="max-width: 600px;">
                                             </div>
                                             <div class="field-row">
                                                 <label for="agentModelApiKey" data-i18n="api.apiKey">API Key</label>
                                                 <input type="text" id="agentModelApiKey"
-                                                    data-i18n-placeholder="api.apiKeyPlaceholder"
-                                                    placeholder="留空则跟随辅助API Key（free 不可用）" value=""
-                                                    style="max-width: 600px;">
+                                                    data-i18n-placeholder="api.agentModelApiKeyPlaceholder"
+                                                    placeholder="Leave blank to follow Assist API Key (not available for 'free')"
+                                                    value="" style="max-width: 600px;">
                                             </div>
                                         </div>
                                     </div>

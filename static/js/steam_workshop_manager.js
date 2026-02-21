@@ -485,16 +485,16 @@ function scanLocalItems() {
                 // 使用独立的提示元素，确保与开始提示分开
                 const messageElement = document.createElement('div');
                 messageElement.innerHTML = successMessage;
-                const _isDark = getIsDarkTheme();
+                const isDark = getIsDarkTheme();
                 messageElement.style.cssText = `
                 position: fixed;
                 top: 60px;
                 right: 20px;
                 padding: 15px 20px;
-                background: ${_isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
-                color: ${_isDark ? '#81c784' : '#2e7d32'};
+                background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
+                color: ${isDark ? '#81c784' : '#2e7d32'};
                 border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,${_isDark ? '0.3' : '0.15'});
+                box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
                 z-index: 99999;
                 font-weight: bold;
                 opacity: 0;
@@ -938,70 +938,73 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
     document.body.appendChild(modalOverlay);
 
     // 添加CSS样式
-    const style = document.createElement('style');
-    style.textContent = `
-        .confirm-modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 9999;
-            animation: fadeIn 0.3s ease;
-        }
+    if (!document.getElementById('confirm-modal-styles')) {
+        const style = document.createElement('style');
+        style.id = 'confirm-modal-styles';
+        style.textContent = `
+            .confirm-modal-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: rgba(0, 0, 0, 0.5);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 9999;
+                animation: fadeIn 0.3s ease;
+            }
 
-        .confirm-modal-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 100%;
-            height: 100%;
-        }
+            .confirm-modal-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                width: 100%;
+                height: 100%;
+            }
 
-        .confirm-modal-content {
-            background-color: white;
-            border-radius: 8px;
-            padding: 24px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-            min-width: 400px;
-            max-width: 90%;
-            animation: slideUp 0.3s ease;
-            color: #333;
-        }
-        
-        .confirm-modal-content.dark-theme {
-            background-color: #333;
-            color: #e0e0e0;
-        }
+            .confirm-modal-content {
+                background-color: white;
+                border-radius: 8px;
+                padding: 24px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                min-width: 400px;
+                max-width: 90%;
+                animation: slideUp 0.3s ease;
+                color: #333;
+            }
+            
+            .confirm-modal-content.dark-theme {
+                background-color: #333;
+                color: #e0e0e0;
+            }
 
-        .confirm-modal-message {
-            font-size: 16px;
-            margin-bottom: 20px;
-            line-height: 1.5;
-            color: inherit;
-        }
+            .confirm-modal-message {
+                font-size: 16px;
+                margin-bottom: 20px;
+                line-height: 1.5;
+                color: inherit;
+            }
 
-        .confirm-modal-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        }
+            .confirm-modal-actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: 10px;
+            }
 
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
 
-        @keyframes slideUp {
-            from { transform: translateY(20px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-    `;
-    document.head.appendChild(style);
+            @keyframes slideUp {
+                from { transform: translateY(20px); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
@@ -1136,14 +1139,14 @@ function LoadingManager() {
             if (loadingCount.value === 1) {
                 const loadingOverlay = document.createElement('div');
                 loadingOverlay.id = 'loading-overlay';
-                const _loadDark = getIsDarkTheme();
+                const isDark = getIsDarkTheme();
                 loadingOverlay.style.cssText = `
                     position: fixed;
                     top: 0;
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    background: ${_loadDark ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.8)'};
+                    background: ${isDark ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.8)'};
                     display: flex;
                     flex-direction: column;
                     align-items: center;
@@ -1154,8 +1157,8 @@ function LoadingManager() {
 
                 const loadingSpinner = document.createElement('div');
                 loadingSpinner.style.cssText = `
-                    border: 4px solid ${_loadDark ? '#444' : '#f3f3f3'};
-                    border-top: 4px solid ${_loadDark ? '#3a9fd8' : '#3498db'};
+                    border: 4px solid ${isDark ? '#444' : '#f3f3f3'};
+                    border-top: 4px solid ${isDark ? '#3a9fd8' : '#3498db'};
                     border-radius: 50%;
                     width: 40px;
                     height: 40px;
@@ -1166,21 +1169,25 @@ function LoadingManager() {
                 const loadingText = document.createElement('div');
                 loadingText.textContent = message;
                 loadingText.style.fontSize = '16px';
-                loadingText.style.color = _loadDark ? '#e0e0e0' : '#333';
+                loadingText.style.color = isDark ? '#e0e0e0' : '#333';
 
                 // 添加CSS动画
-                const style = document.createElement('style');
-                style.textContent = `
-                    @keyframes spin {
-                        0% { transform: rotate(0deg); }
-                        100% { transform: rotate(360deg); }
-                    }
-                `;
+                let style = document.getElementById('loading-overlay-style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'loading-overlay-style';
+                    style.textContent = `
+                        @keyframes spin {
+                            0% { transform: rotate(0deg); }
+                            100% { transform: rotate(360deg); }
+                        }
+                    `;
+                    document.body.appendChild(style);
+                }
 
                 loadingOverlay.appendChild(loadingSpinner);
                 loadingOverlay.appendChild(loadingText);
                 document.body.appendChild(loadingOverlay);
-                document.body.appendChild(style);
             }
         },
 
@@ -1191,6 +1198,10 @@ function LoadingManager() {
                 const overlay = document.getElementById('loading-overlay');
                 if (overlay) {
                     overlay.remove();
+                }
+                const style = document.getElementById('loading-overlay-style');
+                if (style) {
+                    style.remove();
                 }
             }
         }
@@ -2722,11 +2733,11 @@ function showWorkshopSnapshot() {
     const tagsContainer = document.getElementById('snapshot-tags-container');
     tagsContainer.innerHTML = '';
     if (snapshot.tags && snapshot.tags.length > 0) {
+        const isDark = getIsDarkTheme();
         snapshot.tags.forEach(tag => {
             const tagEl = document.createElement('span');
             tagEl.className = 'tag';
-            const _tagDark = getIsDarkTheme();
-            tagEl.style.cssText = `background-color: ${_tagDark ? '#3a3a3a' : '#e0e0e0'}; color: ${_tagDark ? '#e0e0e0' : 'inherit'}; padding: 4px 8px; border-radius: 4px; font-size: 12px;`;
+            tagEl.style.cssText = `background-color: ${isDark ? '#3a3a3a' : '#e0e0e0'}; color: ${isDark ? '#e0e0e0' : 'inherit'}; padding: 4px 8px; border-radius: 4px; font-size: 12px;`;
             tagEl.textContent = tag;
             tagsContainer.appendChild(tagEl);
         });
@@ -3183,16 +3194,16 @@ async function loadVoices() {
             // 使用与物品扫描相同的成功提示样式
             const messageElement = document.createElement('div');
             messageElement.innerHTML = successMessage;
-            const _isDark2 = getIsDarkTheme();
+            const isDark = getIsDarkTheme();
             messageElement.style.cssText = `
                 position: fixed;
                 top: 60px;
                 right: 20px;
                 padding: 15px 20px;
-                background: ${_isDark2 ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
-                color: ${_isDark2 ? '#81c784' : '#2e7d32'};
+                background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
+                color: ${isDark ? '#81c784' : '#2e7d32'};
                 border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,${_isDark2 ? '0.3' : '0.15'});
+                box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
                 z-index: 99999;
                 font-weight: bold;
                 opacity: 0;
