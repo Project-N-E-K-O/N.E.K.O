@@ -88,11 +88,11 @@ function switchTab(platformKey, btnElement) {
         fieldsContainer.innerHTML = config.fields.map(f => `
             <div class="field-group">
                 <label for="input-${f.mapKey || f.key}">
-                    <span>${f.label} ${f.required ? '<span class="req-star">*</span>' : ''}</span>
-                    <span class="desc">${f.desc}</span>
+                    <span>${DOMPurify.sanitize(f.label)} ${f.required ? '<span class="req-star">*</span>' : ''}</span>
+                    <span class="desc">${DOMPurify.sanitize(f.desc)}</span>
                 </label>
                 <input type="text" id="input-${f.mapKey || f.key}" 
-                       placeholder="在此粘贴 ${f.key}..." 
+                         placeholder="在此粘贴 ${DOMPurify.sanitize(f.key)}..." 
                        autocomplete="off" 
                        class="credential-input">
             </div>
