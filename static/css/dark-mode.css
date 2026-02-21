@@ -11,18 +11,20 @@
 
 /* ===== 主题过渡动画（仅在切换时由 JS 添加 .theme-transitioning 类触发） ===== */
 @media (prefers-reduced-motion: no-preference) {
+
   html.theme-transitioning,
   html.theme-transitioning *,
   html.theme-transitioning *::before,
   html.theme-transitioning *::after {
     transition: background-color 250ms ease,
-                color 250ms ease,
-                border-color 250ms ease,
-                box-shadow 250ms ease;
+      color 250ms ease,
+      border-color 250ms ease,
+      box-shadow 250ms ease;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   html.theme-transitioning,
   html.theme-transitioning *,
   html.theme-transitioning *::before,
@@ -43,15 +45,15 @@ html #vrm-container.minimized {
 
 html #chat-container {
   transition: width 0.3s ease, height 0.3s ease, max-height 0.3s ease,
-              padding 0.3s ease, box-shadow 0.2s ease,
-              background-color 250ms ease, border-color 250ms ease;
+    padding 0.3s ease, box-shadow 0.2s ease,
+    background-color 250ms ease, border-color 250ms ease;
 }
 
 /* ===== 弹出框 & 按钮主题变量（供 JS 内联样式引用） ===== */
 :root {
   --neko-popup-bg: rgba(255, 255, 255, 0.65);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.18);
-  --neko-popup-shadow: 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04);
+  --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
   --neko-popup-text: #333;
   --neko-popup-text-sub: #666;
   --neko-popup-indicator-border: #ccc;
@@ -68,14 +70,14 @@ html #chat-container {
   --neko-btn-bg-hover: rgba(255, 255, 255, 0.8);
   --neko-btn-bg-active: rgba(255, 255, 255, 0.75);
   --neko-btn-border: 1px solid rgba(255, 255, 255, 0.18);
-  --neko-btn-shadow: 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08);
-  --neko-btn-shadow-hover: 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08);
+  --neko-btn-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08);
+  --neko-btn-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08);
 }
 
 [data-theme="dark"] {
   --neko-popup-bg: rgba(30, 30, 30, 0.82);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.1);
-  --neko-popup-shadow: 0 2px 4px rgba(0,0,0,0.15), 0 8px 16px rgba(0,0,0,0.25), 0 16px 32px rgba(0,0,0,0.15);
+  --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.15), 0 8px 16px rgba(0, 0, 0, 0.25), 0 16px 32px rgba(0, 0, 0, 0.15);
   --neko-popup-text: #f0f0f0;
   --neko-popup-text-sub: #b0b0b0;
   --neko-popup-indicator-border: #777;
@@ -92,8 +94,8 @@ html #chat-container {
   --neko-btn-bg-hover: rgba(50, 50, 50, 0.85);
   --neko-btn-bg-active: rgba(45, 45, 45, 0.8);
   --neko-btn-border: 1px solid rgba(255, 255, 255, 0.1);
-  --neko-btn-shadow: 0 2px 4px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.16);
-  --neko-btn-shadow-hover: 0 4px 8px rgba(0,0,0,0.16), 0 8px 16px rgba(0,0,0,0.2);
+  --neko-btn-shadow: 0 2px 4px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.16);
+  --neko-btn-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.16), 0 8px 16px rgba(0, 0, 0, 0.2);
   /* 其他暗色主题变量 */
   --neko-mic-volume-bg: #3a3a3a;
   --neko-screen-placeholder-bg: #2d2d2d;
@@ -286,7 +288,7 @@ html #chat-container {
   background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
   border-color: rgba(255, 255, 255, 0.25);
   box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
-              0 0 0 1px rgba(255, 255, 255, 0.2) inset;
+    0 0 0 1px rgba(255, 255, 255, 0.2) inset;
 }
 
 /* ===== 暗色模式：最小化状态 ===== */
@@ -295,9 +297,12 @@ html #chat-container {
 }
 
 @keyframes breathing-glow-dark {
-  0%, 100% {
+
+  0%,
+  100% {
     box-shadow: 0 0 8px rgba(42, 123, 196, 0.7);
   }
+
   50% {
     box-shadow: 0 0 16px rgba(42, 123, 196, 1);
   }
@@ -453,20 +458,20 @@ html #chat-container {
 /* JS 已使用 CSS 变量, 以下为额外安全兜底 */
 
 /* VRM 间隔控件（使用 class selector 的 inline style 兜底） */
-[data-theme="dark"] [class^="vrm-interval-control"] {
+[data-theme="dark"] [class*="vrm-interval-control"] {
   color: var(--neko-popup-text-sub) !important;
 }
 
-[data-theme="dark"] [class^="vrm-interval-control"] span {
+[data-theme="dark"] [class*="vrm-interval-control"] span {
   color: var(--neko-popup-text-sub) !important;
 }
 
 /* Live2D 间隔控件 */
-[data-theme="dark"] [class^="live2d-interval-control"] {
+[data-theme="dark"] [class*="live2d-interval-control"] {
   color: var(--neko-popup-text-sub) !important;
 }
 
-[data-theme="dark"] [class^="live2d-interval-control"] span {
+[data-theme="dark"] [class*="live2d-interval-control"] span {
   color: var(--neko-popup-text-sub) !important;
 }
 
@@ -580,11 +585,12 @@ html #chat-container {
 
 /* ===== 移动端暗色模式适配 ===== */
 @media only screen and (max-width: 768px) {
+
   html[data-theme="dark"],
   html[data-theme="dark"] body {
     background: #000 !important;
   }
-  
+
   [data-theme="dark"] #chat-content-wrapper {
     background: rgba(25, 25, 25, 0.6);
   }
@@ -885,11 +891,6 @@ html #chat-container {
   color: #4aa3df !important;
 }
 
-/* MCP Token 输入框覆盖内联 border */
-[data-theme="dark"] #mcpTokenInput {
-  border-color: #3a5a6e !important;
-}
-
 /* 配置建议框（高级选项顶部蓝色提示） */
 [data-theme="dark"] .api-config-suggestion {
   background: #1a2e3d !important;
@@ -930,23 +931,13 @@ html #chat-container {
   border-color: #555 !important;
 }
 
-/* MCP Router 说明文字 */
-[data-theme="dark"] label[for="mcpTokenInput"] > span[style] {
-  color: #999 !important;
-}
-
-/* MCP Router 链接 */
-[data-theme="dark"] label[for="mcpTokenInput"] a {
-  color: #5cb8f0 !important;
-}
-
 /* 自定义API配置区域分隔线 */
 [data-theme="dark"] #custom-api-options {
   border-top-color: #444 !important;
 }
 
 /* MCP 区域分隔线 */
-[data-theme="dark"] #advanced-options > .field-row[style*="border-top"] {
+[data-theme="dark"] #advanced-options>.field-row[style*="border-top"] {
   border-top-color: #555 !important;
 }
 
@@ -955,7 +946,7 @@ html #chat-container {
   background-color: #555;
 }
 
-[data-theme="dark"] input:checked + .slider {
+[data-theme="dark"] input:checked+.slider {
   background-color: #2a7bc4;
 }
 
@@ -1220,11 +1211,11 @@ html #chat-container {
 }
 
 /* voice-list-container 内加载/分隔线等 JS 内联样式覆盖 */
-[data-theme="dark"] #voice-list-container > div[id="voice-list-loading"] {
+[data-theme="dark"] #voice-list-container>div[id="voice-list-loading"] {
   color: #999 !important;
 }
 
-[data-theme="dark"] #voice-list-container > div[style*="border-top"] {
+[data-theme="dark"] #voice-list-container>div[style*="border-top"] {
   border-top-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(255, 255, 255, 0.45) !important;
 }

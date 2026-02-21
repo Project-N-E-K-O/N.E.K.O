@@ -128,7 +128,6 @@
     "uploadReady": "{{itemName}}のアップロード準備完了",
     "pageDescription": "SteamワークショップからLive2Dモデルとボイスを閲覧、購読、ダウンロード、管理できます",
     "voiceNote": "ボイス設定については、Live2D設定ページで手動登録してください",
-    "manageLocalItems": "ローカルアイテム管理",
     "searchLocalItems": "ローカルアイテムを検索...",
     "scanLocalItems": "ローカルアイテムをスキャン",
     "configurePath": "パス設定",
@@ -159,7 +158,7 @@
     "uploadWarning": "{{message}}",
     "uploadGeneralError": "アップロード中にエラーが発生しました",
     "uploadNetworkError": "アップロード中にエラーが発生しました。ネットワーク接続またはサーバーの状態を確認してください",
-    "uploadHttpError": "アップロードエラー: {{error}}",
+    "uploadHttpError": "アップロードHTTPエラー: {{error}}",
     "uploadErrorFormat": "{{message}}",
     "uploadErrorWithMessage": "アップロードエラー: {{error}}",
     "checkNetworkConnection": "ネットワーク接続とサーバーの状態を確認してください",
@@ -247,8 +246,6 @@
     "scanningWorkshop": "ワークショップアイテムをスキャン中...",
     "scanFailed": "スキャンに失敗しました: {{error}}",
     "workshopScanError": "スキャン中にエラーが発生しました: {{error}}",
-    "validatingFolder": "フォルダを検証中: {{path}}",
-    "validatingFolderPathWithName": "フォルダを検証中: {{path}}",
     "previewImageNotFound": "プレビュー画像が見つかりません",
     "previewImageNotProvided": "プレビュー画像が指定されていません。システムは自動生成を試みます",
     "itemDetailsFailed": "アイテム詳細の読み込みに失敗しました: {{error}}",
@@ -503,7 +500,12 @@
   },
   "speaker": {
     "volumeLabel": "スピーカー音量",
-    "volumeHint": "AI音声の再生音量を調整"
+    "volumeHint": "AI音声の再生音量を調整",
+    "title": "スピーカーを選択",
+    "defaultDevice": "システムのデフォルトスピーカー",
+    "deviceLabel": "スピーカー {{index}}",
+    "loadFailed": "スピーカーリストの取得に失敗しました",
+    "noDevices": "スピーカーデバイスが検出されませんでした"
   },
   "status": {
     "initializing": "初期化中...",
@@ -744,8 +746,7 @@
     },
     "loadConfigFailed": "設定の読み込みに失敗しました。ページを更新して再試行してください",
     "errorGettingCurrentApiKey": "現在のAPIキーの取得中にエラーが発生しました",
-    "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました",
-    "autoFillCoreApiKeyMsg": "コアAPIキーが自動入力されました"
+    "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました"
   },
   "live2d": {
     "manager": "Live2Dモデル管理",

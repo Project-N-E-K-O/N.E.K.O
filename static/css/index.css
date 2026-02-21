@@ -726,7 +726,7 @@ button * {
     flex-direction: column;
     gap: 6px;
     padding: 8px;
-    background: rgba(68, 183, 254, 0.05);
+    background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
     border-radius: 8px;
     border: 1px solid rgba(68, 183, 254, 0.2);
     animation: slideDown 0.3s ease;

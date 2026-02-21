@@ -1097,27 +1097,42 @@ function escapeHtml(text) {
 
 // 共享的提示框功能
 function showToast(message, duration = 3000) {
+    let container = document.getElementById('message-area');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'message-area';
+        container.className = 'message-area';
+        document.body.appendChild(container);
+
+        container.style.position = 'fixed';
+        container.style.top = '20px';
+        container.style.right = '20px';
+        container.style.maxWidth = '400px';
+        container.style.zIndex = '99999';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.alignItems = 'flex-end';
+        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    }
+
     const messageElement = document.createElement('div');
     // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
     messageElement.textContent = message;
-    const isDark = typeof getIsDarkTheme === 'function' ? getIsDarkTheme() : false;
+    const isDark = getIsDarkTheme();
     messageElement.style.cssText = `
-        position: fixed;
-        top: 60px;
-        right: 20px;
         padding: 15px 20px;
+        margin-bottom: 10px;
         background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
         color: ${isDark ? '#81c784' : '#2e7d32'};
         border-radius: 6px;
         box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
-        z-index: 99999;
         font-weight: bold;
         opacity: 0;
         transform: translateY(-10px);
         transition: opacity 0.3s ease, transform 0.3s ease;
     `;
 
-    document.body.appendChild(messageElement);
+    container.appendChild(messageElement);
 
     setTimeout(() => {
         messageElement.style.opacity = '1';
@@ -1202,10 +1217,6 @@ function LoadingManager() {
                 const overlay = document.getElementById('loading-overlay');
                 if (overlay) {
                     overlay.remove();
-                }
-                const style = document.getElementById('loading-overlay-style');
-                if (style) {
-                    style.remove();
                 }
             }
         }

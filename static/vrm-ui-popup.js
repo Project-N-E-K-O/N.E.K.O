@@ -171,7 +171,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
 // 创建Agent弹出框内容
 VRMManager.prototype._createAgentPopupContent = function (popup) {
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'live2d-agent-status';
+    statusDiv.id = 'vrm-agent-status';
     statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);

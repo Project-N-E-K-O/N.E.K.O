@@ -128,7 +128,6 @@
     "uploadReady": "{{itemName}} 업로드 준비 중",
     "pageDescription": "이 페이지를 통해 Steam 워크숍에서 Live2D 모델과 사운드를 검색, 구독, 다운로드 및 관리할 수 있습니다",
     "voiceNote": "음성 샘플이 있으면 Live2D 설정 페이지로 이동하여 수동으로 등록하세요",
-    "manageLocalItems": "로컬 항목 관리",
     "searchLocalItems": "지역 항목 검색...",
     "scanLocalItems": "로컬 항목 스캔",
     "configurePath": "경로 구성",
@@ -247,8 +246,6 @@
     "scanningWorkshop": "창작마당 아이템 스캔 중...",
     "scanFailed": "스캔 실패: {{error}}",
     "workshopScanError": "스캔 중 오류: {{error}}",
-    "validatingFolder": "폴더 확인 중: {{path}}",
-    "validatingFolderPathWithName": "폴더 확인 중: {{path}}",
     "previewImageNotFound": "미리보기 이미지를 찾을 수 없습니다.",
     "previewImageNotProvided": "미리보기 이미지가 제공되지 않습니다. 시스템이 자동으로 생성을 시도합니다.",
     "itemDetailsFailed": "항목 세부정보를 로드하지 못했습니다: {{error}}",
@@ -503,7 +500,12 @@
   },
   "speaker": {
     "volumeLabel": "스피커 볼륨",
-    "volumeHint": "AI 음성 재생 볼륨 조절"
+    "volumeHint": "AI 음성 재생 볼륨 조절",
+    "title": "스피커 선택",
+    "defaultDevice": "시스템 기본 스피커",
+    "deviceLabel": "스피커 {{index}}",
+    "loadFailed": "스피커 목록을 가져오지 못했습니다",
+    "noDevices": "스피커 장치가 감지되지 않았습니다"
   },
   "status": {
     "initializing": "초기화 중...",
@@ -744,8 +746,7 @@
     },
     "loadConfigFailed": "설정을 불러오는 데 실패했습니다. 페이지를 새로고침하여 다시 시도하십시오",
     "errorGettingCurrentApiKey": "현재 API 키를 가져오는 중 오류가 발생했습니다",
-    "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다",
-    "autoFillCoreApiKeyMsg": "코어 API 키가 자동으로 채워졌습니다"
+    "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다"
   },
   "live2d": {
     "manager": "Live2D 모델 관리자",
