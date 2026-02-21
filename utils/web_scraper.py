@@ -94,86 +94,32 @@ def get_random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
-def _get_bilibili_credential():
-    """
-    从文件加载Bilibili认证信息，返回Credential对象
-    
-    支持从以下位置读取cookies：
-    1. ~/bilibili_cookies.json
-    2. config/bilibili_cookies.json
-    3. ./bilibili_cookies.json
-    
-    Returns:
-        Credential对象，如果加载失败则返回None
-    """
+def _get_bilibili_credential() -> Any | None:
     try:
         from bilibili_api import Credential
+        cookies = _get_platform_cookies('bilibili')
+        if not cookies:
+            return None
         
-        # 查找可能的cookie文件位置
-        possible_paths = [
-            Path(os.path.expanduser('~')) / 'bilibili_cookies.json',
-            Path('config') / 'bilibili_cookies.json',
-            Path('.') / 'bilibili_cookies.json',
-        ]
-        
-        for cookie_file in possible_paths:
-            if cookie_file.exists():
-                with open(cookie_file, 'r', encoding='utf-8') as f:
-                    cookie_data = json.load(f)
-                    
-                    # 提取必要的认证信息
-                    cookies = {}
-                    
-                    # EditThisCookie/Cookie-Editor格式 (数组)
-                    if isinstance(cookie_data, list):
-                        for cookie in cookie_data:
-                            # 安全地访问字典，防止畸形数据导致 KeyError
-                            if cookie.get('domain', '').endswith('bilibili.com'):
-                                name = cookie.get('name')
-                                value = cookie.get('value')
-                                # 只有 name 和 value 都存在时才添加
-                                if name and value:
-                                    cookies[name] = value
-                    
-                    # 简单的键值对格式
-                    elif isinstance(cookie_data, dict):
-                        cookies = cookie_data
-                    
-                    # 创建Credential对象
-                    if cookies:
-                        sessdata = cookies.get('SESSDATA', '')
-                        bili_jct = cookies.get('bili_jct', '')
-                        buvid3 = cookies.get('buvid3', '')
-                        dedeuserid = cookies.get('DedeUserID', '')
-                        
-                        if sessdata:
-                            credential = Credential(
-                                sessdata=sessdata,
-                                bili_jct=bili_jct,
-                                buvid3=buvid3,
-                                dedeuserid=dedeuserid
-                            )
-                            print(f"✅ 成功从文件加载 Bilibili 认证信息: {cookie_file}")
-                            return credential
-                        else:
-                            print(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
+        # 兼容原版逻辑，加入 buvid3 防止被 B站 API 风控拦截
+        return Credential(
+            sessdata=cookies.get('SESSDATA', ''),
+            bili_jct=cookies.get('bili_jct', ''),
+            buvid3=cookies.get('buvid3', ''),
+            dedeuserid=cookies.get('DedeUserID', '')
+        )
     except ImportError:
-        # bilibili_api 库未安装，直接返回 None
-        # 不打印任何日志，让调用方处理
         logger.debug("bilibili_api 库未安装")
         return None
     except Exception as e:
         logger.debug(f"从文件加载认证信息失败: {e}")
     
-    # 如果没有找到cookie文件，不记录到日志（避免暴露用户路径）
-    # 使用 print 保持私密性
-    logger.debug("未找到 Bilibili cookie 文件，将使用默认推荐（非个性化）")
-    print("提示：要使用个性化推荐，可导出cookies到以下位置之一：")
-    print(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
-    print(f"  - {Path('config') / 'bilibili_cookies.json'}")
-    
     return None
 
+
+# ==================================================
+# 热门内容获取函数
+# ==================================================
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
@@ -1062,7 +1008,9 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
             return "\n".join(output_lines)
         return "Unable to fetch trending topics at the moment"
 
-
+# =======================================================
+# 活跃窗口标题获取函数
+# =======================================================
 def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Dict[str, str]]]:
     """
     获取当前活跃窗口的标题（仅支持Windows）
@@ -1272,6 +1220,9 @@ def clean_window_title(title: str) -> str:
     
     return cleaned[:100]  # 限制长度
 
+# =======================================================
+# 搜索函数
+# =======================================================
 
 async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
     """
@@ -1880,8 +1831,751 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
     
     return "\n".join(output_lines)
 
+# =======================================================
+# 自动搜索歌曲，弹出嵌入式浏览器播放
+# =======================================================
+async def search_and_play_song(song_name: str) -> Dict[str, Any]:
+    """
+    搜索歌曲并在嵌入式浏览器中播放
+    
+    根据区域自动选择平台：
+    - 中文区域：优先使用B站搜索并播放
+    - 非中文区域：优先使用YouTube搜索并播放
+    
+    Args:
+        song_name: 歌曲名称
+    
+    Returns:
+        包含播放结果的字典，结构：
+        {
+            'success': bool,
+            'error': str (可选),
+            'url': str (嵌入式播放URL),
+            'platform': str ('bilibili'/'youtube'),
+            'region': str ('china'/'non-china')
+        }
+    """
+    if not song_name or not song_name.strip():
+        logger.error("歌曲名称不能为空")
+        return {
+            'success': False,
+            'error': '歌曲名称不能为空',
+            'platform': '',
+            'region': ''
+        }
+    
+    # 检测用户区域
+    china_region = is_china_region()
+    region = 'china' if china_region else 'non-china'
+    platform = 'bilibili' if china_region else 'youtube'
+    
+    # 编码歌曲名称用于URL
+    encoded_song_name = quote(song_name.strip())
+    
+    headers = {
+        'User-Agent': get_random_user_agent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' if china_region else 'en-US,en;q=0.9',
+    }
+    
+    try:
+        # 添加随机延迟，避免请求过快被限制
+        await asyncio.sleep(random.uniform(0.2, 0.8))
+        
+        if china_region:
+            # 中文区域：B站搜索歌曲
+            search_url = f"https://search.bilibili.com/all?keyword={encoded_song_name}&order=click&duration=0&tids_1=0"
+            logger.info(f"B站搜索歌曲: {song_name}, URL: {search_url}")
+            
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(search_url, headers=headers)
+                response.raise_for_status()
+                
+                # 解析搜索结果，提取第一个视频的播放URL
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # 查找第一个视频链接（B站搜索结果的视频项）
+                video_item = soup.find('a', class_='video-item__title') or soup.find('a', attrs={'href': re.compile(r'/video/')})
+                
+                if not video_item:
+                    logger.warning(f"B站未找到歌曲相关视频: {song_name}")
+                    return {
+                        'success': False,
+                        'error': f'B站未找到"{song_name}"相关视频',
+                        'platform': platform,
+                        'region': region
+                    }
+                
+                # 提取视频链接并构造嵌入式播放URL
+                video_href = video_item.get('href', '')
+                if not video_href.startswith('http'):
+                    video_href = f"https:{video_href}" if video_href.startswith('//') else f"https://www.bilibili.com{video_href}"
+                
+                # B站嵌入式播放URL（支持iframe嵌入）
+                # 提取BV号用于构造embed URL
+                bv_match = re.search(r'(BV\w+)', video_href)
+                if bv_match:
+                    embed_url = f"https://player.bilibili.com/player.html?bvid={bv_match.group(1)}&page=1"
+                else:
+                    embed_url = video_href
+                
+                logger.info(f"成功找到B站歌曲播放链接: {embed_url}")
+                return {
+                    'success': True,
+                    'url': embed_url,
+                    'platform': platform,
+                    'region': region
+                }
+        
+        else:
+            # 非中文区域：YouTube搜索歌曲
+            search_url = f"https://www.youtube.com/results?search_query={encoded_song_name}"
+            logger.info(f"YouTube搜索歌曲: {song_name}, URL: {search_url}")
+            
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(search_url, headers=headers)
+                response.raise_for_status()
+                
+                # 解析YouTube搜索结果，提取第一个视频的ID
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # YouTube搜索结果的视频项匹配（适配不同页面结构）
+                video_script = soup.find('script', string=re.compile(r'"videoId":"[\w-]+"'))
+                video_id = None
+                
+                if video_script:
+                    # 从JSON数据中提取第一个视频ID
+                    vid_match = re.search(r'"videoId":"([\w-]+)"', video_script.string)
+                    if vid_match:
+                        video_id = vid_match.group(1)
+                else:
+                    # 备用解析方式：查找视频链接的a标签
+                    video_link = soup.find('a', attrs={'href': re.compile(r'/watch\?v=')})
+                    if video_link:
+                        vid_match = re.search(r'v=([\w-]+)', video_link.get('href', ''))
+                        if vid_match:
+                            video_id = vid_match.group(1)
+                
+                if not video_id:
+                    logger.warning(f"YouTube未找到歌曲相关视频: {song_name}")
+                    return {
+                        'success': False,
+                        'error': f'YouTube未找到"{song_name}"相关视频',
+                        'platform': platform,
+                        'region': region
+                    }
+                
+                # YouTube嵌入式播放URL
+                embed_url = f"https://www.youtube.com/embed/{video_id}"
+                logger.info(f"成功找到YouTube歌曲播放链接: {embed_url}")
+                return {
+                    'success': True,
+                    'url': embed_url,
+                    'platform': platform,
+                    'region': region
+                }
+    
+    except httpx.TimeoutException:
+        logger.error(f"{platform}搜索歌曲超时: {song_name}")
+        return {
+            'success': False,
+            'error': f'{platform}请求超时，请稍后重试',
+            'platform': platform,
+            'region': region
+        }
+    except httpx.HTTPStatusError as e:
+        logger.error(f"{platform}搜索歌曲HTTP错误: {song_name}, 状态码: {e.response.status_code}")
+        return {
+            'success': False,
+            'error': f'{platform}请求失败（状态码：{e.response.status_code}）',
+            'platform': platform,
+            'region': region
+        }
+    except Exception as e:
+        logger.error(f"搜索并播放歌曲失败: {song_name}, 错误: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': f'播放失败：{str(e)}',
+            'platform': platform,
+            'region': region
+        }
 
+# =======================================================
+# 个人动态（基于用户兴趣和区域）
+# =======================================================
+
+def _get_platform_cookies(platform_name: str) -> dict[str, str]:
+    
+    """
+    通用平台 Cookie 读取器 (接入系统底层的加密/明文统一读取逻辑)
+    """
+    try:
+        # 优先调用系统底层的解密读取逻辑
+        from utils.cookies_login import load_cookies_from_file
+        cookies = load_cookies_from_file(platform_name)
+        if cookies:
+            logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")
+            return cookies
+    except Exception as e:
+        logger.debug(f"底层接口加载 {platform_name} 凭证失败: {e}，尝试使用明文回退...")
+
+    # 下面是作为回退的明文读取逻辑（兜底处理旧文件）
+    possible_paths = [
+        Path(os.path.expanduser('~')) / f'{platform_name}_cookies.json',
+        Path('config') / f'{platform_name}_cookies.json',
+        Path('.') / f'{platform_name}_cookies.json',
+    ]
+    
+    for cookie_file in possible_paths:
+        if not cookie_file.exists():
+            continue
+            
+        try:
+            with open(cookie_file, 'r', encoding='utf-8') as f:
+                cookie_data = json.load(f)
+
+            cookies = {}
+            if isinstance(cookie_data, list):
+                for cookie in cookie_data:
+                    name, value = cookie.get('name'), cookie.get('value')
+                    if name and value: 
+                        cookies[name] = value
+            elif isinstance(cookie_data, dict):
+                cookies = cookie_data
+            
+            if cookies:
+                return cookies
+        except Exception:
+            continue
+
+    return {}
+
+# 获取个人关注动态内容
+
+async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """
+    获取B站推送的动态消息
+    设计原则：
+    - 仅需核心登录凭证 SESSDATA，其他 Cookie 全部失效
+    - 目标变更为：移动端首页关注流的固定 Container ID
+    - 必须伪装成手机浏览器的 User-Agent
+    """
+    import re
+
+    try:
+        credential = _get_bilibili_credential()
+        if not credential: 
+            return {'success': False, 'error': '未提供Bilibili认证信息'}
+
+        url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all"
+        headers = {"User-Agent": get_random_user_agent(), "Referer": "https://t.bilibili.com/"}
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
+
+        if not isinstance(data, dict) or data.get("code") != 0:
+            logger.error(f"获取B站动态失败，API返回: {data}")
+            return {'success': False, 'error': "API请求失败"}
+
+        def safe_dict(d: Any, key: str) -> dict:
+            if not isinstance(d, dict):
+                return {}
+            v = d.get(key)
+            return v if isinstance(v, dict) else {}
+
+        dynamic_list = []
+        items = data.get("data")
+        items = items.get("items", []) if isinstance(items, dict) else []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+                
+            try:
+                dynamic_id = str(item.get("id_str", ""))
+                dynamic_type = str(item.get("type", ""))
+                if dynamic_type in {"DYNAMIC_TYPE_AD", "DYNAMIC_TYPE_APPLET", "DYNAMIC_TYPE_NONE"}: 
+                    continue
+                
+                modules = safe_dict(item, "modules")
+                module_author = safe_dict(modules, "module_author")
+                
+                # 获取到了作者名
+                author = module_author.get("name") or "未知UP主"
+                pub_time = module_author.get("pub_time") or "刚刚"
+                
+                module_dynamic = safe_dict(modules, "module_dynamic")
+                major = safe_dict(module_dynamic, "major")
+                desc = safe_dict(module_dynamic, "desc")
+                
+                major_type = major.get("type")
+                raw_text = desc.get("text") or ""
+                
+                content = ""
+                specific_url = f"https://t.bilibili.com/{dynamic_id}"  # 默认动态页面URL
+                
+                match major_type:
+                    case "MAJOR_TYPE_ARCHIVE": 
+                        # 视频动态：添加视频链接
+                        archive = safe_dict(major, "archive")
+                        bvid = archive.get("bvid", "")
+                        if bvid:
+                            specific_url = f"https://www.bilibili.com/video/{bvid}"
+                        content = f"[发布了新视频] {archive.get('title', '')}"
+                        
+                    case "MAJOR_TYPE_DRAW": 
+                        # 图文动态：保持动态页面链接
+                        content = f"[图文动态] {raw_text}" if raw_text else "[分享了图片]"
+                        
+                    case "MAJOR_TYPE_ARTICLE":
+                        # 专栏文章：添加文章链接
+                        article = safe_dict(major, "article")
+                        article_id = article.get("id", "")
+                        if article_id:
+                            specific_url = f"https://www.bilibili.com/read/cv{article_id}"
+                        content = f"[发布了专栏文章] {article.get('title', '')}"
+                        
+                    case "MAJOR_TYPE_LIVE_RCMD":
+                        # 直播动态：添加直播间链接
+                        live_title = raw_text
+                        try:
+                            live_rcmd = major.get("live_rcmd") or major.get("live")
+                            if isinstance(live_rcmd, dict):
+                                content_str = live_rcmd.get("content")
+                                if isinstance(content_str, str) and content_str.startswith("{"):
+                                    play_info = json.loads(content_str).get("live_play_info")
+                                    if isinstance(play_info, dict):
+                                        live_title = play_info.get("title", live_title)
+                                        room_id = play_info.get("room_id")
+                                        if room_id:
+                                            specific_url = f"https://live.bilibili.com/{room_id}"
+                                elif isinstance(live_rcmd.get("live_play_info"), dict):
+                                    live_title = live_rcmd["live_play_info"].get("title", live_title)
+                                    room_id = live_rcmd["live_play_info"].get("room_id")
+                                    if room_id:
+                                        specific_url = f"https://live.bilibili.com/{room_id}"
+                        except Exception:
+                            pass
+                        content = f"[正在直播] {live_title or '快来我的直播间看看吧！'}"
+                        
+                    case _:
+                        if dynamic_type == "DYNAMIC_TYPE_LIVE_RCMD":
+                            # 直播开播推送：添加直播间链接
+                            content = f"[正在直播] {raw_text or '快来我的直播间看看吧！'}"
+                            # 尝试从描述中提取直播间ID
+                            import re
+                            room_match = re.search(r'直播间：(\d+)', raw_text)
+                            if room_match:
+                                specific_url = f"https://live.bilibili.com/{room_match.group(1)}"
+                                
+                        elif dynamic_type == "DYNAMIC_TYPE_FORWARD":
+                            content = f"[转发动态] {raw_text}" if raw_text else "[转发了动态]"
+                        else:
+                            content = raw_text or "发布了新动态"
+
+                content = re.sub(r'\s+', ' ', content).strip()
+                if not content:
+                    content = "分享了新动态"
+
+                final_content = f"UP主【{author}】: {content}"
+
+                dynamic_list.append({
+                    'dynamic_id': dynamic_id, 'type': dynamic_type, 'timestamp': pub_time,
+                    'author': author, 'content': final_content,  # 存入拼接好的完整字符串
+                    'url': specific_url,  # 使用具体类型的URL
+                    'base_url': f"https://t.bilibili.com/{dynamic_id}"  # 保留原始动态页面链接
+                })
+                if len(dynamic_list) >= limit:
+                    break
+            except Exception as item_e:
+                logger.warning(f"解析单条动态失败，跳过: {item_e}, 动态ID: {item.get('id_str', '未知')}")
+
+        if dynamic_list:
+            logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条你关注的UP主动态消息")
+        return {'success': True, 'dynamics': dynamic_list}
+
+    except Exception as e:
+        logger.error(f"获取B站动态消息失败: {e}")
+        return {'success': False, 'error': str(e)}
+        
+async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    pass
+
+async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)"""
+    pass
+
+async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """
+    获取微博动态
+    设计原则：
+    - 切换至 Mobile 移动版 API，彻底绕过 PC 端所有风控
+    - 仅需核心登录凭证 SUB，其他 Cookie 全部失效
+    - 目标变更为：移动端首页关注流的固定 Container ID
+    - 必须伪装成手机浏览器的 User-Agent
+    """
+    import re
+    import random
+    import asyncio
+    import httpx
+    
+    try:
+        weibo_cookies = _get_platform_cookies('weibo')
+        if not weibo_cookies:
+            return {'success': False, 'error': '未找到 config/weibo_cookies.json'}
+        
+        # 1. 只需要最核心的 SUB，其他全都不需要！
+        sub = weibo_cookies.get('SUB') or weibo_cookies.get('sub')
+        if not sub:
+            logger.error("❌ 缺少核心登录凭证 SUB。")
+            return {'success': False, 'error': '缺少核心登录凭证 SUB'}
+
+        # 2. 目标变更为：移动端首页关注流的固定 Container ID
+        url = "https://m.weibo.cn/api/container/getIndex?containerid=102803"
+        
+        # 3. 必须伪装成手机浏览器的 User-Agent
+        mobile_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+        
+        headers = {
+            'User-Agent': mobile_ua,
+            'Referer': 'https://m.weibo.cn/',
+            'Accept': 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest',
+            'MWeibo-Pwa': '1'
+        }
+        
+        # 仅携带最纯净的 SUB 即可
+        req_cookies = {'SUB': sub}
+        
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        # 4. 移动端 API 非常宽容，直接用普通的 httpx 即可稳定发包
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=req_cookies)
+            
+            if response.status_code != 200:
+                logger.error(f"❌ 移动端微博接口异常，状态码: {response.status_code}")
+                return {'success': False, 'error': f"API请求失败，状态码: {response.status_code}"}
+                
+            data = response.json()
+            
+            # 移动端如果未登录，通常会返回 ok: 0 或者重定向
+            if data.get('ok') != 1:
+                logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
+                return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+            
+            cards = data.get('data', {}).get('cards', [])
+            weibo_list = []
+            
+            for card in cards:
+                # card_type == 9 代表这是一条正常的微博博文卡片
+                if card.get('card_type') != 9:
+                    continue
+                    
+                mblog = card.get('mblog')
+                if not mblog:
+                    continue
+                    
+                user = mblog.get('user', {})
+                author = user.get('screen_name') or '未知博主'
+                
+                # 提取正文并清理 HTML 标签
+                text = str(mblog.get('text') or '')
+                clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
+                
+                # 兼容并缝合转发内容
+                if mblog.get('retweeted_status'):
+                    retweet = mblog['retweeted_status']
+                    rt_author = retweet.get('user', {}).get('screen_name') or '原博主'
+                    rt_text = str(retweet.get('text') or '')
+                    rt_clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', rt_text)).strip()
+                    clean_text = f"{clean_text} // [转发动态] @{rt_author}: {rt_clean_text}"
+                
+                display_text = clean_text if clean_text else "[分享了图片/动态]"
+                final_content = f"博主【{author}】: {display_text}"
+                mid = mblog.get('mid') or mblog.get('id', '')
+                
+                weibo_list.append({
+                    'author': author,
+                    'content': final_content,
+                    'timestamp': mblog.get('created_at') or '',
+                    'url': f"https://m.weibo.cn/detail/{mid}" # 使用移动端 URL
+                })
+                
+                if len(weibo_list) >= limit:
+                    break
+
+            if weibo_list: 
+                logger.info(f"✅ 成功通过移动端接口获取到 {len(weibo_list)} 条微博个人动态")
+                logger.info("微博动态:")  # 统一对齐 B站 的提示词
+                for i, weibo in enumerate(weibo_list, 1):
+                    content = weibo.get('content', '')
+                    # 稍微放宽一点截断长度，保证显示效果更好
+                    if len(content) > 50:
+                        content = content[:50] + "..."
+                    # 去掉冗余的时间和作者，直接干干净净地打印 content
+                    logger.info(f"  - {content}")
+                
+                return {'success': True, 'statuses': weibo_list}
+            else:
+                return {'success': False, 'error': '未解析到微博内容'}
+                
+    except Exception as e: 
+        logger.error(f"微博动态解析发生错误: {e}")
+        return {'success': False, 'error': str(e)}
+
+async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """
+    获取Reddit推送的动态帖子
+    设计原则：
+    - 仅需核心登录凭证 reddit_session，其他 Cookie 全部失效
+    - 目标变更为：移动端首页关注流的固定 Container ID
+    - 必须伪装成手机浏览器的 User-Agent
+    """
+    try:
+        reddit_cookies = _get_platform_cookies('reddit')
+        if not reddit_cookies: 
+            return {'success': False, 'error': '未配置 config/reddit_cookies.json'}
+        url = f"https://www.reddit.com/hot.json?limit={limit}"
+        headers = {'User-Agent': get_random_user_agent(), 'Accept': 'application/json'}
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=reddit_cookies)
+            data = response.json()
+            posts = [
+                {
+                    'title': pd.get('title', ''), 'subreddit': f"r/{pd.get('subreddit', '')}",
+                    'score': _format_score(pd.get('score', 0)), 
+                    'url': f"https://www.reddit.com{pd.get('permalink', '')}"
+                }
+                for item in data.get('data', {}).get('children', [])[:limit]
+                if not (pd := item.get('data', {})).get('over_18')
+            ]
+            if posts:
+                logger.info(f"✅ 成功获取到 {len(posts)} 条Reddit订阅帖子")
+            return {'success': True, 'posts': posts}
+    except Exception as e: 
+        return {'success': False, 'error': str(e)}
+
+
+async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """
+    Twitter 网页抓取 fallback
+    设计原则：
+    - 仅需核心登录凭证 twitter_session，其他 Cookie 全部失效
+    - 目标变更为：移动端首页关注流的固定 Container ID
+    - 必须伪装成手机浏览器的 User-Agent
+    """
+    try:
+        url = "https://twitter.com/home"
+        headers = {'User-Agent': get_random_user_agent()}
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            res = await client.get(url, headers=headers, cookies=cookies)
+            
+            # 如果被重定向到了登录页，说明 Cookie 彻底失效了
+            if "login" in str(res.url) or "logout" in str(res.url):
+                return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
+                
+            tweets = []
+            tweet_texts = re.findall(r'"tweet":\{[^}]*"full_text":"([^"]+)"', res.text)
+            screen_names = re.findall(r'"screen_name":"([^"]+)"', res.text)
+            
+            for i, text in enumerate(tweet_texts[:limit]):
+                clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+                tweets.append({
+                    'author': f"@{screen_names[i] if i<len(screen_names) else 'Unknown'}", 
+                    'content': clean_text,
+                    'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
+                })
+                
+            return {'success': True, 'tweets': tweets} if tweets else {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
+    except Exception as e: 
+        logger.error(f"Twitter 网页抓取 fallback 失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """
+    获取 Twitter 个人时间线
+    设计原则：
+    - 仅需核心登录凭证 twitter_session，其他 Cookie 全部失效
+    - 目标变更为：移动端首页关注流的固定 Container ID
+    - 必须伪装成手机浏览器的 User-Agent
+    """
+    
+    try:
+        twitter_cookies = _get_platform_cookies('twitter')
+        if not twitter_cookies:
+             return {'success': False, 'error': '未配置 config/twitter_cookies.json'}
+             
+        # 提取防伪 CSRF Token。Twitter 必须，否则哪怕有合法 Cookie 也会立刻 401/403
+        ct0 = twitter_cookies.get('ct0') or twitter_cookies.get('CT0', '')
+        if not ct0:
+            logger.warning("Twitter Cookie 中缺少核心字段 ct0，极大可能触发风控拦截")
+        
+        # 官方 Web 客户端通用固化的 Bearer Token
+        bearer_token = os.environ.get("TWITTER_BEARER_TOKEN", "")
+        if not bearer_token:
+            logger.warning("Falling back to hardcoded Web client Bearer Token, consider configuring TWITTER_BEARER_TOKEN")
+            bearer_token = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIyU2%2FGoa3FmBNYDPz%2FzGz%2F2Rnc%2F2bGBDH%2Fc'
+        
+        # 切换到更稳定、包含完整推文文本的 v1.1 接口
+        url = f"https://api.twitter.com/1.1/statuses/home_timeline.json?tweet_mode=extended&count={limit}"
+        
+        # 补全极其严格的 Twitter 风控协议头
+        headers = {
+            'User-Agent': get_random_user_agent(), 
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {bearer_token}',
+            'x-twitter-auth-type': 'OAuth2Session' if 'auth_token' in twitter_cookies else '',
+            'x-csrf-token': ct0,  # <-- 防火墙放行的关键钥匙
+            'x-twitter-active-user': 'yes',
+            'x-twitter-client-language': 'zh-cn'
+        }
+        
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers, cookies=twitter_cookies)
+            
+            # 状态码非 200 时，平滑降级到备用网页刮削方案
+            if response.status_code != 200: 
+                logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
+                return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
+                
+            # 真正去解析返回的推文数据，替换掉之前的占位符
+            data = response.json()
+            if not isinstance(data, list):
+                return {'success': False, 'error': 'API 返回数据格式异常'}
+                
+            tweets = []
+            for tweet in data[:limit]:
+                user = tweet.get('user', {})
+                author = user.get('screen_name') or 'Unknown'
+                # tweet_mode=extended 时，正文在 full_text 里
+                text = str(tweet.get('full_text') or tweet.get('text') or '')
+                
+                # 清理推文末尾自带的分享短链接 (https://t.co/xxx)
+                clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+                
+                # 处理转推 (Retweet) 的前缀拼接
+                if 'retweeted_status' in tweet:
+                    rt_user = tweet['retweeted_status'].get('user', {}).get('screen_name', 'Unknown')
+                    rt_text = str(tweet['retweeted_status'].get('full_text') or '')
+                    rt_clean_text = re.sub(r'https://t\.co/\w+', '', rt_text).strip()
+                    clean_text = f"RT @{rt_user}: {rt_clean_text}"
+                
+                tweets.append({
+                    'author': f"@{author}", 
+                    'content': clean_text,
+                    'timestamp': tweet.get('created_at', '')
+                })
+                
+            if tweets:
+                logger.info(f"✅ 成功获取到 {len(tweets)} 条 Twitter 个人时间线动态")
+                return {'success': True, 'tweets': tweets}
+            else:
+                return {'success': False, 'error': '未解析到推文内容'}
+                
+    except Exception as e: 
+        logger.error(f"Twitter API 获取失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
+    """
+    独立获取全平台个人登录态下的订阅/关注动态
+    """
+    try:
+        china_region = is_china_region()
+        if china_region:
+            logger.info("检测到中文区域，获取B站和微博个人动态")
+            b_dyn, w_dyn = await asyncio.gather(
+                fetch_bilibili_personal_dynamic(limit),
+                fetch_weibo_personal_dynamic(limit),
+                return_exceptions=True
+            )
+            # 异常隔离与安全降级
+            b_dyn = {'success': False, 'error': str(b_dyn)} if isinstance(b_dyn, Exception) else b_dyn
+            w_dyn = {'success': False, 'error': str(w_dyn)} if isinstance(w_dyn, Exception) else w_dyn
+
+            top_success = b_dyn.get('success', False) or w_dyn.get('success', False)
+            return {'success': top_success, 'region': 'china', 
+                    'bilibili_dynamic': b_dyn, 'weibo_dynamic': w_dyn}
+        else:
+            logger.info("检测到非中文区域，获取Reddit和Twitter个人动态")
+            r_dyn, t_dyn = await asyncio.gather(
+                fetch_reddit_personal_dynamic(limit),
+                fetch_twitter_personal_dynamic(limit),
+                return_exceptions=True
+            )
+            r_dyn = {'success': False, 'error': str(r_dyn)} if isinstance(r_dyn, Exception) else r_dyn
+            t_dyn = {'success': False, 'error': str(t_dyn)} if isinstance(t_dyn, Exception) else t_dyn
+            
+            top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
+            return {'success': top_success, 'region': 'non-china', 'reddit_dynamic': r_dyn, 'twitter_dynamic': t_dyn}
+    except Exception as e:
+        logger.error(f"获取个人动态内容失败: {e}")
+        return {'success': False, 'error': str(e)}
+
+def format_personal_dynamics(data: Dict[str, Any]) -> str:
+    """格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)"""
+    output_lines = []
+    region = data.get('region', 'china')
+    
+    if region == 'china':
+        # 配置表：(数据字典键名, 展示标题, 列表的键名)
+        platforms = [
+            ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
+            ('weibo_dynamic', '微博个人关注动态', 'statuses')
+        ]
+        
+        for key, title, list_key in platforms:
+            dyn_data = data.get(key, {})
+            # 海象运算符 := 提取列表，如果为空则直接跳过该平台
+            if dyn_data.get('success') and (items := dyn_data.get(list_key, [])):
+                output_lines.append(f"【{title}】")
+                
+                for i, item in enumerate(items[:5], 1):
+                    # 统一了排版结构，保证所有平台的缩进严格对齐 (3个空格)
+                    author = item.get('author', '未知')
+                    timestamp = item.get('timestamp', '')
+                    content = item.get('content', '')
+                    
+                    output_lines.append(f"{i}. {author} ({timestamp})")
+                    output_lines.append(f"   内容: {content}")
+                    
+                output_lines.append("") 
+                
+        return "\n".join(output_lines).strip() or "暂时无法获取关注动态"
+        
+    else:
+        # 海外平台配置表
+        platforms = [
+            ('reddit_dynamic', 'Reddit Subscribed Posts', 'posts'),
+            ('twitter_dynamic', 'Twitter Timeline', 'tweets')
+        ]
+        
+        for key, title, list_key in platforms:
+            dyn_data = data.get(key, {})
+            if dyn_data.get('success') and (items := dyn_data.get(list_key, [])):
+                output_lines.append(f"【{title}】")
+                
+                for i, item in enumerate(items[:5], 1):
+                    if key == 'reddit_dynamic':
+                        output_lines.append(f"{i}. {item.get('title')}")
+                        output_lines.append(f"   Subreddit: {item.get('subreddit')} | Score: {item.get('score')} upvotes")
+                    else:
+                        output_lines.append(f"{i}. {item.get('author')}: {item.get('content')}")
+                        
+                output_lines.append("")
+                
+        return "\n".join(output_lines).strip() or "No personal timeline available"
+
+# =======================================================
 # 测试用的主函数
+# =======================================================
+
 async def main():
     """
     Web爬虫的测试函数

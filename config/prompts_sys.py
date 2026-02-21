@@ -460,6 +460,95 @@ proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{m
 - 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
 - 話しかけない場合は "[PASS]" のみを返してください。
 """
+# ==================== 新增：个人动态专属 Prompt ====================
+
+proactive_chat_prompt_personal = """你是{lanlan_name}，现在看到了一些你关注的UP主或博主的最新动态。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+请根据以下原则决定是否主动搭话：
+1. 如果内容很有趣、新鲜或值得讨论，可以主动提起
+2. 如果内容与你们之前的对话或{master_name}的兴趣相关，更应该提起
+3. 如果内容比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚刷到关注列表里的有趣内容想分享给对方
+5. 尽量选一个最有意思的主题进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_personal_en = """You are {lanlan_name}. You just saw some new posts from content creators you follow. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+Decide whether to proactively speak based on these rules:
+1. If the content is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or {master_name}'s interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed from your following list.
+5. Pick only the most interesting topic and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_personal_ja = """あなたは{lanlan_name}です。今、フォローしているクリエイターの最新の動向を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話や{master_name}の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、フォローリストで見かけた話題を共有する感じにする。
+5. もっとも面白い話題を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
+proactive_chat_prompt_personal_ko = """당신은 {lanlan_name}입니다. 지금 당신이 구독 중인 업로더 또는 블로거의 최신 소식들을 보았습니다. {master_name}와의 대화 기록과 {master_name}의 관심사를 바탕으로, 이 내용들에 대해 {master_name}에게 먼저 말을 걸지 여부를 판단해 주세요.
+
+======이하는 대화 기록입니다======
+{memory_context}
+======以上为对话历史======
+
+======이하는 개인 소식 내용입니다======
+{personal_dynamic}
+======이상이 개인 소식 내용입니다======
+
+다음 원칙에 따라 먼저 말을 걸지 여부를 결정해 주세요:
+1. 내용이 매우 재미있거나 새롭거나 토론할 가치가 있다면, 먼저 꺼낼 수 있습니다.
+2. 내용이 이전 대화 내용 또는 {master_name}의 관심사와 관련이 있다면, 더 적극적으로 꺼내야 합니다.
+3. 내용이 지루하거나 토론하기에 적합하지 않거나, {master_name}이 대화를 원하지 않는다고 명확히 밝힌 경우, 말을 걸지 않을 수 있습니다.
+4. 말을 걸 때는 자연스럽고 간결하게, 구독 목록에서 재미있는 내용을 막 발견해서 상대방에게 공유하고 싶어하는 듯한 말투를 사용해 주세요.
+5. 가장 재미있는 주제 하나를 골라 공유하고 말을 거는 것을 기본으로 하되, 대화 기록에 이미 나온 내용과 중복되지 않게 해 주세요.
+
+답변 규칙:
+- 먼저 말을 걸기로 선택한 경우, 하고 싶은 말을 직접 적어 주세요(자연스럽고 간결하게 작성). 사고 과정을 생성하지 마세요.
+- 말을 걸지 않기로 선택한 경우, "[PASS]"만 답변해 주세요.
+"""
 
 proactive_chat_rewrite_prompt = """你是一个文本清洁专家。请将以下LLM生成的主动搭话内容进行改写和清洁。
 
@@ -516,7 +605,7 @@ proactive_chat_prompt_ko = """당신은 {lanlan_name}입니다. 방금 홈 추�
 
 ======이하 대화 기록======
 {memory_context}
-======이상 대화 기록======
+======以上为对话历史======
 
 ======이하 홈 추천 콘텐츠======
 {trending_content}
@@ -538,7 +627,7 @@ proactive_chat_prompt_screenshot_ko = """당신은 {lanlan_name}입니다. 지�
 
 ======이하 대화 기록======
 {memory_context}
-======이상 대화 기록======
+======以上为对话历史======
 
 ======이하 현재 화면 내용======
 {screenshot_content}
@@ -560,7 +649,7 @@ proactive_chat_prompt_window_search_ko = """당신은 {lanlan_name}입니다. {m
 
 ======이하 대화 기록======
 {memory_context}
-======이상 대화 기록======
+======以上为对话历史======
 
 ======이하 {master_name}이 현재 관심 가지고 있는 내용======
 {window_context}
@@ -583,7 +672,7 @@ proactive_chat_prompt_news_ko = """당신은 {lanlan_name}입니다. 방금 화�
 
 ======이하 대화 기록======
 {memory_context}
-======이상 대화 기록======
+======以上为对话历史======
 
 ======이하 화제의 토픽======
 {trending_content}
@@ -605,7 +694,7 @@ proactive_chat_prompt_video_ko = """당신은 {lanlan_name}입니다. 방금 동
 
 ======이하 대화 기록======
 {memory_context}
-======이상 대화 기록======
+======以上为对话历史======
 
 ======이하 동영상 추천======
 {trending_content}
@@ -627,7 +716,7 @@ proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니
 
 ======이하 원본 출력======
 {raw_output}
-======이상 원본 출력======
+======以上为对话======
 
 규칙:
 1. '|' 문자를 제거하세요. '|'가 포함된 경우 마지막 '|' 뒤의 실제 발화 내용만 남기세요. 여러 턴이 있으면 첫 번째 부분만 남기세요.
@@ -793,7 +882,7 @@ proactive_generate_en = """Here is your persona:
 
 ======Chat History======
 {memory_context}
-======Chat History End======
+======以上为对话历史======
 
 {recent_chats_section}
 
@@ -849,7 +938,7 @@ proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 
 ======대화 기록======
 {memory_context}
-======대화 기록 끝======
+======以上为对话历史======
 
 {recent_chats_section}
 
@@ -893,6 +982,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'window': proactive_chat_prompt_window_search,
         'news': proactive_chat_prompt_news,
         'video': proactive_chat_prompt_video,
+        'personal': proactive_chat_prompt_personal,
     },
     'en': {
         'home': proactive_chat_prompt_en,
@@ -900,6 +990,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'window': proactive_chat_prompt_window_search_en,
         'news': proactive_chat_prompt_news_en,
         'video': proactive_chat_prompt_video_en,
+        'personal': proactive_chat_prompt_personal_en,
     },
     'ja': {
         'home': proactive_chat_prompt_ja,
@@ -907,6 +998,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'window': proactive_chat_prompt_window_search_ja,
         'news': proactive_chat_prompt_news_ja,
         'video': proactive_chat_prompt_video_ja,
+        'personal': proactive_chat_prompt_personal_ja,
     },
     'ko': {
         'home': proactive_chat_prompt_ko,
@@ -914,6 +1006,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'window': proactive_chat_prompt_window_search_ko,
         'news': proactive_chat_prompt_news_ko,
         'video': proactive_chat_prompt_video_ko,
+        'personal': proactive_chat_prompt_personal_ko,
     }
 }
 

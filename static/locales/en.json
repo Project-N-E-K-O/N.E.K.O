@@ -1225,7 +1225,8 @@
             "live2dManage": "Live2D Management",
             "apiSettings": "API Settings",
             "language": "Language",
-            "general": "General"
+            "general": "General",
+            "mediaCredentials": "Media Credentials"
         },
         "language": {
             "title": "Select Language",

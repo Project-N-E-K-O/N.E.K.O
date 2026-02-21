@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>N.E.K.O 凭证控制中心</title>
+    <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <style>
+        :root { --primary: #4f46e5; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        .dashboard { background: var(--card-bg); width: 100%; max-width: 600px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); overflow: hidden; animation: slideDown 0.4s ease-out; }
+        .header { background: var(--primary); color: white; padding: 25px 30px; text-align: center; }
+        .header h1 { margin: 0 0 10px 0; font-size: 24px; }
+        .header p { margin: 0; font-size: 14px; opacity: 0.9; }
+        
+        .tabs { display: flex; background: #eef0f4; border-bottom: 1px solid #ddd; }
+        .tab-btn { flex: 1; padding: 15px 0; border: none; background: none; font-size: 15px; font-weight: bold; color: #666; cursor: pointer; transition: all 0.3s; }
+        .tab-btn:hover { background: #e2e5eb; }
+        .tab-btn.active { background: var(--card-bg); color: var(--primary); box-shadow: inset 0 3px 0 var(--primary); }
+        
+        .tab-content { padding: 30px; }
+        
+        /* 填空题样式 */
+        .field-group { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px;}
+        .field-group label { font-weight: bold; font-size: 14px; color: #334155; display: flex; justify-content: space-between; align-items: center;}
+        .field-group .req-star { color: #ef4444; margin-left: 4px; }
+        .field-group .desc { font-size: 12px; color: #94a3b8; font-weight: normal; }
+        .field-group input { width: 100%; padding: 12px 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 14px; transition: all 0.2s; box-sizing: border-box; }
+        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); }
+        
+        .submit-btn { width: 100%; padding: 14px; margin-top: 10px; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; background: var(--primary); color: white; cursor: pointer; transition: 0.2s; display: flex; justify-content: center; align-items: center; gap: 8px; }
+        .submit-btn:hover { background: #4338ca; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(67, 56, 202, 0.2); }
+        .submit-btn:disabled { background: #9ca3af; cursor: not-allowed; transform: none; box-shadow: none; }
+        .alert { display: none; padding: 12px; margin-top: 15px; border-radius: 8px; font-size: 14px; font-weight: 500; text-align: center;}
+        
+        .status-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 15px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h1 style="margin-bottom: 8px;">🔐 凭证获取中心</h1>
+            <p>填空引导，精准提取各平台校验字段</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('bilibili', this)">📺 B站</button>
+            <button class="tab-btn" onclick="switchTab('douyin', this)">🎵 抖音</button>
+            <button class="tab-btn" onclick="switchTab('kuaishou', this)">🧡 快手</button>
+            <button class="tab-btn" onclick="switchTab('weibo', this)">🌏 微博</button>
+            <button class="tab-btn" onclick="switchTab('twitter', this)">🐦 Twitter/X</button>
+            <button class="tab-btn" onclick="switchTab('reddit', this)">👽 Reddit</button>
+        </div>
+
+        <div class="tab-content" id="main-panel">
+            <div id="panel-desc" style="background: #f8fafc; padding: 12px 16px; border-radius: 8px; border-left: 4px solid var(--primary); line-height: 1.6; color: #334155; margin-bottom: 20px; font-size: 14px;">
+                </div>
+            
+            <div id="dynamic-fields"></div>
+            
+            <div style="margin: 20px 0 15px 0; display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="encrypt-toggle" checked style="width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer;">
+                <label for="encrypt-toggle" style="font-weight: 500; font-size: 14px; color: #475569; cursor: pointer;">安全加密存储至本地文件</label>
+            </div>
+            
+            <button class="submit-btn" id="submit-btn" onclick="submitCurrentCookie()">
+                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
+                <span id="submit-text">保存配置</span>
+            </button>
+            <div id="main-alert" class="alert"></div>
+        </div>
+
+        <div id="status-area" style="padding: 0 30px 30px 30px;">
+            <h3 style="font-size: 15px; color: #334155; margin-bottom: 12px; border-top: 1px dashed #cbd5e1; padding-top: 20px;">本地状态监控</h3>
+            <div id="platform-list-content"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/cookies_login.js"></script>
+</body>
+</html>

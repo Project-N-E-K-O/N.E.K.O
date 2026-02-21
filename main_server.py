@@ -488,6 +488,7 @@ from main_routers import ( # noqa
     agent_router,
     system_router,
 )
+from main_routers.cookies_login_router import router as cookies_login_router
 from main_routers.shared_state import init_shared_state # noqa
 
 # Initialize shared state for routers to access
@@ -534,6 +535,7 @@ app.include_router(memory_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
+app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(pages_router)  # Mount last for catch-all routes
 
 # 后台预加载任务
