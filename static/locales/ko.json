@@ -126,7 +126,7 @@
     "validatingFolderPath": "폴더 확인 중: {{path}}",
     "previewImageMissing": "미리보기 이미지 파일이 없습니다. 경로를 확인하세요",
     "uploadReady": "{{itemName}} 업로드 준비 중",
-    "pageDescription": "이 페이지를 통해 Steam 워크숍에서 Live2D 모델과 사운드를 검색, 구독, 다운로드 및 관리할 수 있습니다",
+    "pageDescription": "이 페이지를 통해 Steam 창작마당에서 Live2D 모델과 사운드를 검색, 구독, 다운로드 및 관리할 수 있습니다",
     "voiceNote": "음성 샘플이 있으면 Live2D 설정 페이지로 이동하여 수동으로 등록하세요",
     "searchLocalItems": "로컬 항목 검색...",
     "scanLocalItems": "로컬 항목 스캔",
