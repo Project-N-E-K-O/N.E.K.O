@@ -866,10 +866,6 @@ html #chat-container {
   box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.15);
 }
 
-[data-theme="dark"] #advanced-options .field-row input::-webkit-input-placeholder {
-  color: #bfbfbf;
-}
-
 [data-theme="dark"] #advanced-options .field-row input::placeholder {
   color: #bfbfbf;
 }
