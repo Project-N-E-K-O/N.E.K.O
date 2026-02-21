@@ -473,7 +473,7 @@ class PluginCommunicationResourceManager:
                 with state.acquire_event_handlers_write_lock():
                     handler = state.event_handlers.get(f"{plugin_id}.{entry_id}")
                     if handler and hasattr(handler.meta, "enabled"):
-                        object.__setattr__(handler.meta, "enabled", True)
+                        handler.meta.enabled = True
                 
                 self.logger.info(f"Entry '{entry_id}' enabled for plugin {plugin_id}")
                 
@@ -482,7 +482,7 @@ class PluginCommunicationResourceManager:
                 with state.acquire_event_handlers_write_lock():
                     handler = state.event_handlers.get(f"{plugin_id}.{entry_id}")
                     if handler and hasattr(handler.meta, "enabled"):
-                        object.__setattr__(handler.meta, "enabled", False)
+                        handler.meta.enabled = False
                 
                 self.logger.info(f"Entry '{entry_id}' disabled for plugin {plugin_id}")
                 

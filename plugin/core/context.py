@@ -36,10 +36,8 @@ except ImportError:  # pragma: no cover
 
 from fastapi import FastAPI
 
-from plugin._types.exceptions import PluginError
 from plugin.core.state import state
 from plugin.settings import (
-    EVENT_META_ATTR,
     EXPORT_INLINE_BINARY_MAX_BYTES,
     PLUGIN_LOG_CTX_MESSAGE_PUSH,
     PLUGIN_LOG_CTX_STATUS_UPDATE,

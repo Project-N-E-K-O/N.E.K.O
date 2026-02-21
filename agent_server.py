@@ -630,6 +630,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             # user_plugin is executed/accepted inside DirectTaskExecutor. Keep agent_server non-blocking.
             if result.success:
                 logger.info(f"[TaskExecutor] ✅ UserPlugin accepted: {result.tool_name} ({getattr(result, 'result', None)})")
+                try:
+                    summary = f'插件任务 "{result.tool_name}" 已接受'
+                    await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                except Exception:
+                    pass
             else:
                 logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {result.error}")
 

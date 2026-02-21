@@ -135,7 +135,7 @@ class Err(Generic[E]):
     
     def unwrap(self) -> NoReturn:
         """获取值，Err 总是抛出异常"""
-        raise self.error
+        raise ResultError(self.code, self.message or str(self.error), self.error) from self.error
     
     def unwrap_or(self, default: T) -> T:
         """获取值，Err 返回默认值"""

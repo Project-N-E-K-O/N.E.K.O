@@ -946,11 +946,17 @@ def _migrate_plugin_id(
     # 更新 plugin_hosts
     with state.acquire_plugin_hosts_write_lock():
         if old_pid in state.plugin_hosts:
-            host = state.plugin_hosts.pop(old_pid)
+            existing_host = state.plugin_hosts.pop(old_pid)
+            state.plugin_hosts[new_pid] = existing_host
+            if hasattr(existing_host, 'plugin_id'):
+                existing_host.plugin_id = new_pid
+            logger.info("Plugin host moved from '{}' to '{}' in plugin_hosts", old_pid, new_pid)
+        else:
+            # old_pid not in plugin_hosts; register the passed-in host under new_pid
             state.plugin_hosts[new_pid] = host
             if hasattr(host, 'plugin_id'):
                 host.plugin_id = new_pid
-            logger.info("Plugin host moved from '{}' to '{}' in plugin_hosts", old_pid, new_pid)
+            logger.warning("Plugin host for '{}' not found during migration; registered passed-in host under '{}'", old_pid, new_pid)
     
     # 迁移 response queue
     with state._plugin_response_queues_lock:
