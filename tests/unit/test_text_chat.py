@@ -67,8 +67,13 @@ def offline_client():
 @pytest.mark.unit
 async def test_simple_text_chat(offline_client, llm_judger):
     """Test sending a simple text message and checking the response quality."""
+
+    print("\n==================================================\n")
+    print("text_chat_simple_joke\n")
+    print("==================================================\n\n")
+
     prompt = "Tell me a very short joke with less than 20 words."
-    
+    print("\tUser:  Tell me a very short joke with less than 20 words.\n")
     # OmniOfflineClient uses callbacks. We need to capture the output from on_text_delta.
     response_accumulator = []
     
@@ -85,6 +90,7 @@ async def test_simple_text_chat(offline_client, llm_judger):
         
         full_response = "".join(response_accumulator)
         logger.info(f"Received response: {full_response}")
+        print(f"\tAI:   {full_response[:150]}{'...' if len(full_response) > 150 else ''}")
         
         assert len(full_response) > 0, "Response should not be empty"
         
@@ -98,7 +104,10 @@ async def test_simple_text_chat(offline_client, llm_judger):
         assert passed, f"LLM Judger rejected the response: {full_response}"
         
     except Exception as e:
+        print("failed to get response from AI")
         pytest.fail(f"Text chat failed: {e}")
+    
+    print("\n\n")
 
 
 @pytest.mark.unit
@@ -124,7 +133,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
     offline_client.on_response_done = on_response_done
     
     # Initialize client with a system prompt
-    await offline_client.connect(instructions="你是一个友善、活泼的AI助手。请用中文自然地和用户聊天。")
+    await offline_client.connect(instructions="你是一个友善、活泼、可爱的AI猫娘助手。请用中文自然地和用户聊天。")
     
     # Full conversation log for holistic evaluation
     conversation_log = []
@@ -223,7 +232,11 @@ async def test_vision_chat(offline_client, llm_judger):
 
     prompt = "What is in this image? Describe it briefly."
     keywords = ["steam", "n.e.k.o.", "girl", "character", "猫娘"]
-    
+
+    print(f"\n{'='*50}")
+    print("Vision Chat Test")
+    print(f"{'='*50}")
+    print(f"\tUser: What is in this image? Describe it briefly. [image load from path: {image_path}]\n")
     response_accumulator = []
     async def on_text_delta(text, is_first):
         response_accumulator.append(text)
@@ -245,10 +258,12 @@ async def test_vision_chat(offline_client, llm_judger):
         # Validation 1: fast keyword check
         request_verification = any(k.lower() in full_response.lower() for k in keywords)
         
+        print(f"\tAI:   {full_response[:300]}{'...' if len(full_response) > 300 else ''}")
+
         if request_verification:
-             logger.info("✅ Keyword validation passed locally.")
+            logger.info("✅ Keyword validation passed locally.")
         else:
-             logger.warning(f"⚠️ Keywords {keywords} not found in response. Fallback to LLM identification.")
+            logger.warning(f"⚠️ Keywords {keywords} not found in response. Fallback to LLM identification.")
 
         # Validation 2: LLM Judger for semantic correctness
         criteria = (
