@@ -46,6 +46,9 @@
     console.debug('[ThemeManager] 主题已应用:', isDark ? 'dark' : 'light');
   }
 
+  let themeTransitionTimeout = null;
+  const TRANSITION_MS = 300;
+
   /**
    * 带动画过渡地应用主题（用于主题切换，非初始加载）
    * @param {boolean} isDark
@@ -53,9 +56,15 @@
   function applyThemeAnimated(isDark) {
     document.documentElement.classList.add('theme-transitioning');
     applyTheme(isDark);
-    setTimeout(() => {
+
+    if (themeTransitionTimeout !== null) {
+      clearTimeout(themeTransitionTimeout);
+    }
+
+    themeTransitionTimeout = setTimeout(() => {
       document.documentElement.classList.remove('theme-transitioning');
-    }, 300);
+      themeTransitionTimeout = null;
+    }, TRANSITION_MS);
   }
 
   /**
