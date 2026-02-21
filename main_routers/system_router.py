@@ -1254,7 +1254,7 @@ async def translate_text_api(request: Request):
             "target_lang": "zh"
         }
         
-`@router.post`('/personal_dynamics')
+@router.post('/personal_dynamics')
 async def get_personal_dynamics(request: Request):
     """获取个性化内容数据"""
     try:
@@ -1281,7 +1281,7 @@ async def get_personal_dynamics(request: Request):
             "data": {
                 "raw": personal_content,
                 "formatted": formatted_content,
-                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error')]
+                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
             }
         })
         

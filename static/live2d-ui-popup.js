@@ -99,9 +99,13 @@ Live2DManager.prototype._createSettingsPopupContent = function (popup) {
             let authPageLink = null;
 
             if (toggle.id === 'proactive-chat') {
+                const AUTH_I18N_KEY = 'mediaCredentials';
+                const AUTH_FALLBACK_LABEL = '配置媒体凭证';
+
                 authPageLink = this._createSettingsLinkItem({
                     id: 'auth-page',
-                    label: '配置媒体凭证',
+                    label: window.t ? window.t(AUTH_I18N_KEY) : AUTH_FALLBACK_LABEL,
+                    labelKey: AUTH_I18N_KEY,
                     icon: '/static/icons/cookies_icon.png', // 确保该图标文件存在
                     action: 'navigate',
                     url: '/api/auth/page'

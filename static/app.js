@@ -7988,6 +7988,11 @@ function init_app() {
 
     async function triggerProactiveChat() {
         try {
+            const timeSinceLastInput = Date.now() - lastUserInputTime;
+            if (timeSinceLastInput < 20000) {
+                console.log(`主动搭话作废：用户在 ${Math.round(timeSinceLastInput / 1000)} 秒前有输入`);
+                return;
+            }
             let useScreenshot = false;
             let useWindowTitle = false;
             let usePersonalDynamic = false;
@@ -8129,6 +8134,8 @@ function init_app() {
         
         if (result.success) {
             if (result.action === 'chat') {
+                console.log('主动搭话已发送：', result.message);
+
                 // 检测用户是否在20秒内有过输入
                 const timeSinceLastInput = Date.now() - lastUserInputTime;
                 if (timeSinceLastInput < 20000) {

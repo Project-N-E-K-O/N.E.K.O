@@ -198,7 +198,7 @@ def parse_cookie_string(cookie_string: str) -> Dict[str, str]:
     for item in cookie_string.split(';'):
         if '=' in item:
             key, value = item.strip().split('=', 1)
-            cookies[key] = value
+            cookies[key.strip()] = value.strip()
     return cookies
 
  

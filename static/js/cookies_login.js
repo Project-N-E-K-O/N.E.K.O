@@ -1,162 +1,179 @@
 /**
- * N.E.K.O 填空题版凭证录入脚本
+ * N.E.K.O 凭证录入脚本 - 企业级加固版
+ * 修复：DOM 节点依赖、HTML 标签转义、ID 规范化、异步竞争过滤
  */
 
 const PLATFORM_CONFIG = {
     'bilibili': {
         name: 'Bilibili', icon: '📺', theme: '#4f46e5',
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 bilibili.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 在左侧展开 <b>Cookies</b> 并点击 b站 网址。<br>4. 在右侧列表中找到以下对应名称的值，双击复制填入。`,
+        instruction: `<b>获取途径：</b><br>1. 浏览器登录 <b>bilibili.com</b><br>2. 按 <b>F12</b> 选 <b>Application (应用)</b> -> <b>Cookies</b>。<br>3. 复制下方字段对应的值。`,
         fields: [
             { key: 'SESSDATA', label: 'SESSDATA', desc: '核心身份凭证 (必填)', required: true },
             { key: 'bili_jct', label: 'bili_jct', desc: 'CSRF Token (必填)', required: true },
-            { key: 'DedeUserID', label: 'DedeUserID', desc: '你的账号UID (必填)', required: true },
-            { key: 'buvid3', label: 'buvid3', desc: '设备指纹 (选填，建议填入防风控)', required: false }
+            { key: 'DedeUserID', label: 'DedeUserID', desc: '账号 UID (必填)', required: true },
+            { key: 'buvid3', label: 'buvid3', desc: '设备指纹 (选填)', required: false }
         ]
     },
-   'douyin': {
-        name: '抖音', icon: '🎵', theme: '#000000', // 换了个更有音符感的图标
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 douyin.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
+    'douyin': {
+        name: '抖音', icon: '🎵', theme: '#000000',
+        instruction: `<b>获取途径：</b>在 <b>douyin.com</b> 的 Cookies 中查找。`,
         fields: [
-            { key: 'sessionid', label: 'sessionid', desc: '核心会话凭证 (必填，登录状态关键)', required: true },
-            { key: 'ttwid', label: 'ttwid', desc: '设备风控码 (必填，防止被当成爬虫)', required: true },
-            { key: 'passport_csrf_token', label: 'passport_csrf_token', desc: '安全验证令牌 (选填，建议提供)', required: false },
-            { key: 'odin_tt', label: 'odin_tt', desc: '设备追踪特征 (选填)', required: false }
+            { key: 'sessionid', label: 'sessionid', desc: '核心会话凭证 (必填)', required: true },
+            { key: 'ttwid', label: 'ttwid', desc: '设备风控码 (必填)', required: true },
+            { key: 'passport_csrf_token', label: 'csrf_token', desc: '安全验证令牌', required: false },
+            { key: 'odin_tt', label: 'odin_tt', desc: '设备特征', required: false }
         ]
     },
     'kuaishou': {
         name: '快手', icon: '🧡', theme: '#ff5000',
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 kuaishou.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
+        instruction: `<b>获取途径：</b>在 <b>kuaishou.com</b> 的 Cookies 中查找。`,
         fields: [
-            { key: 'kuaishou.server.web_st', label: 'web_st', desc: '核心登录票据 (必填)', required: true },
-            { key: 'kuaishou.server.web_ph', label: 'web_ph', desc: '辅助登录票据 (必填)', required: true },
-            { key: 'userId', label: 'userId', desc: '你的用户ID (必填)', required: true },
-            { key: 'did', label: 'did', desc: '设备ID (必填，防风控)', required: true }
+            // 修复点：后端 key 包含点号，通过 mapKey 处理 DOM ID
+            { key: 'kuaishou.server.web_st', mapKey: 'ks_web_st', label: 'web_st', desc: '核心票据 (必填)', required: true },
+            { key: 'kuaishou.server.web_ph', mapKey: 'ks_web_ph', label: 'web_ph', desc: '辅助票据 (必填)', required: true },
+            { key: 'userId', label: 'userId', desc: '用户ID', required: true },
+            { key: 'did', label: 'did', desc: '设备ID', required: true }
         ]
     },
     'weibo': {
         name: '微博', icon: '🌏', theme: '#f59e0b',
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 weibo.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
+        instruction: `<b>获取途径：</b>在 <b>weibo.com</b> 的 Cookies 中查找。`,
         fields: [
-            { key: 'SUB', label: 'SUB', desc: '核心登录凭证 (必填, 以_2A开头)', required: true },
-            // 替换为 XSRF-TOKEN，配合后端的防 500 报错机制
-            { key: 'XSRF-TOKEN', label: 'XSRF-TOKEN', desc: '防伪造令牌 (选填, 若未找到后端会自动伪造)', required: false }
+            { key: 'SUB', label: 'SUB', desc: '核心凭证 (以 _2A 开头)', required: true },
+            { key: 'XSRF-TOKEN', label: 'XSRF-TOKEN', desc: '防伪造令牌', required: false }
         ]
     },
     'twitter': {
         name: 'Twitter/X', icon: '🐦', theme: '#0ea5e9',
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 x.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
+        instruction: `<b>获取途径：</b>在 <b>x.com</b> 的 Cookies 中查找。`,
         fields: [
-            { key: 'auth_token', label: 'auth_token', desc: '核心身份 Token (必填)', required: true },
-            { key: 'ct0', label: 'ct0', desc: '防跨站攻击校验码 (必填)', required: true }
-        ]
-    },
-    'reddit': {
-        name: 'Reddit', icon: '👽', theme: '#ff4500',
-        instruction: `<b>获取途径：</b><br>1. 浏览器登录 reddit.com<br>2. 按 <b>F12</b> 打开开发者工具，点击顶部 <b>Application (应用)</b>。<br>3. 左侧展开 <b>Cookies</b> 列表，找到并复制以下字段。`,
-        fields: [
-            { key: 'reddit_session', label: 'reddit_session', desc: '会话凭证 (必填)', required: true }
+            { key: 'auth_token', label: 'auth_token', desc: '核心身份 Token', required: true },
+            { key: 'ct0', label: 'ct0', desc: 'CSRF 校验码', required: true }
         ]
     }
 };
 
 let currentPlatform = 'bilibili';
+let alertTimeout = null;
 
+// 初始化
 document.addEventListener('DOMContentLoaded', () => {
-    switchTab('bilibili', document.querySelector('.tab-btn'));
+    const firstTab = document.querySelector('.tab-btn');
+    if (firstTab) switchTab('bilibili', firstTab);
     refreshStatusList();
 });
 
-// 动态渲染填空题
+/**
+ * 切换平台标签
+ */
 function switchTab(platformKey, btnElement) {
+    if (!PLATFORM_CONFIG[platformKey]) return;
     currentPlatform = platformKey;
     const config = PLATFORM_CONFIG[platformKey];
 
+    // UI 状态切换
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    btnElement.classList.add('active');
+    btnElement?.classList.add('active');
 
     // 渲染说明
     const descBox = document.getElementById('panel-desc');
-    descBox.style.borderColor = config.theme;
-    descBox.innerHTML = config.instruction;
+    if (descBox) {
+        descBox.style.borderColor = config.theme;
+        descBox.innerHTML = config.instruction;
+    }
 
-    // 渲染填空题表单
+    // 渲染动态字段
     const fieldsContainer = document.getElementById('dynamic-fields');
-    fieldsContainer.innerHTML = ''; // 清空旧表单
-    
-    config.fields.forEach(f => {
-        const fieldHtml = `
+    if (fieldsContainer) {
+        fieldsContainer.innerHTML = config.fields.map(f => `
             <div class="field-group">
-                <label for="input-${f.key}">
+                <label for="input-${f.mapKey || f.key}">
                     <span>${f.label} ${f.required ? '<span class="req-star">*</span>' : ''}</span>
                     <span class="desc">${f.desc}</span>
                 </label>
-                <input type="text" id="input-${f.key}" placeholder="在此粘贴 ${f.key} 的值..." autocomplete="off">
+                <input type="text" id="input-${f.mapKey || f.key}" 
+                       placeholder="在此粘贴 ${f.key}..." 
+                       autocomplete="off" 
+                       class="credential-input">
             </div>
-        `;
-        fieldsContainer.insertAdjacentHTML('beforeend', fieldHtml);
-    });
+        `).join('');
+    }
 
-    document.getElementById('submit-text').textContent = `保存 ${config.name} 配置`;
-    document.getElementById('main-alert').style.display = 'none';
+    const submitText = document.getElementById('submit-text');
+    if (submitText) submitText.textContent = `保存 ${config.name} 配置`;
 }
 
-// 收集填空题并提交
+/**
+ * 提交当前表单
+ */
 async function submitCurrentCookie() {
     const config = PLATFORM_CONFIG[currentPlatform];
-    let cookiePairs = [];
+    const cookiePairs = [];
     
-    // 遍历抓取用户填写的值
-    for (let f of config.fields) {
-        const inputVal = document.getElementById(`input-${f.key}`).value.trim();
-        
-        // 必填项校验
-        if (f.required && !inputVal) {
-            showAlert(false, `⚠️ 请完整填写必填字段：<b>${f.label}</b>`);
-            document.getElementById(`input-${f.key}`).focus();
+    // 1. 数据收集与校验
+    for (const f of config.fields) {
+        const fieldId = `input-${f.mapKey || f.key}`;
+        const inputEl = document.getElementById(fieldId);
+        const val = inputEl ? inputEl.value.trim() : '';
+
+        if (f.required && !val) {
+            showAlert(false, `⚠️ 请填写必填项: [${f.label}]`);
+            inputEl?.focus();
             return;
         }
-        
-        // 只要填了，就拼装成 key=value
-        if (inputVal) {
-            cookiePairs.push(`${f.key}=${inputVal}`);
+
+        if (val) {
+            // 简单的防注入处理：移除换行符和首尾多余的分号
+            const sanitizedVal = val.replace(/[\r\n]/g, '').replace(/^;|;$/g, '');
+            if (sanitizedVal !== val) {
+                showAlert(false, `⚠️ [${f.label}] 包含无效字符: 分号 (;),已自动清除，请确认后重新提交`);
+            }
+            cookiePairs.push(`${f.key}=${sanitizedVal}`);
         }
     }
 
-    // 将数组用分号拼装成后端熟悉的原始 Cookie 字符串
-    const finalCookieString = cookiePairs.join('; ');
-    const isEncrypt = document.getElementById('encrypt-toggle').checked;
+    // 2. 状态更新
     const submitBtn = document.getElementById('submit-btn');
-    const originalText = document.getElementById('submit-text').textContent;
+    const submitText = document.getElementById('submit-text');
+    const encryptToggle = document.getElementById('encrypt-toggle');
+    const originalBtnText = submitText?.textContent;
 
-    submitBtn.disabled = true;
-    document.getElementById('submit-text').textContent = '安全保存中...';
+    if (submitBtn) submitBtn.disabled = true;
+    if (submitText) submitText.textContent = '安全加密传输中...';
 
     try {
         const response = await fetch('/api/auth/cookies/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                platform: currentPlatform, 
-                cookie_string: finalCookieString, 
-                encrypt: isEncrypt 
+            body: JSON.stringify({
+                platform: currentPlatform,
+                cookie_string: cookiePairs.join('; '),
+                encrypt: encryptToggle ? encryptToggle.checked : false
             })
         });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            showAlert(true, `✅ ${config.name} 凭证已安全保存！`);
-            // 清空所有填空框
-            config.fields.forEach(f => document.getElementById(`input-${f.key}`).value = '');
+
+        const result = await response.json();
+
+        if (result.success) {
+            showAlert(true, `✅ ${config.name} 凭证保存成功！`);
+            // 重置当前输入框
+            document.querySelectorAll('.credential-input').forEach(i => i.value = '');
             refreshStatusList();
         } else {
-            showAlert(false, data.message || data.detail || "❌ 保存失败，请检查格式");
+            let errMsg = result.message;
+            if(!errMsg && result.detail) {
+                errMsg = Array.isArray(result.detail)
+                    ? result.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+                    : String(result.detail);
+            }
+            showAlert(false, errMsg || "保存失败，请检查格式是否正确");
         }
-    } catch (error) {
-        showAlert(false, "❌ 网络异常，请检查后端服务器");
+    } catch (err) {
+        showAlert(false, "❌ 网络异常: 无法连接至后端服务");
+        console.error("Submit error:", err);
     } finally {
-        submitBtn.disabled = false;
-        document.getElementById('submit-text').textContent = originalText;
+        if (submitBtn) submitBtn.disabled = false;
+        if (submitText) submitText.textContent = originalBtnText;
     }
 }
 
@@ -173,50 +190,76 @@ function showAlert(success, message) {
 // 状态监控
 async function refreshStatusList() {
     const container = document.getElementById('platform-list-content');
+    if (!container) return;
+
     const platforms = Object.keys(PLATFORM_CONFIG);
     
     try {
-        const promises = platforms.map(p => fetch(`/api/auth/cookies/${p}`).then(res => res.json()).catch(() => ({ success: false })));
-        const results = await Promise.all(promises);
+        const results = await Promise.all(
+            platforms.map(p => 
+                fetch(`/api/auth/cookies/${p}`)
+                    .then(r => r.json())
+                    .catch(() => ({ success: false }))
+            )
+        );
         
-        let html = '';
-        results.forEach((data, index) => {
-            const platformKey = platforms[index];
-            const config = PLATFORM_CONFIG[platformKey];
-            const hasCookies = data.success && data.data && data.data.has_cookies;
+        container.innerHTML = results.map((res, idx) => {
+            const key = platforms[idx];
+            const cfg = PLATFORM_CONFIG[key];
+            const active = res.success && res.data?.has_cookies;
 
-            html += `
-                <div class="status-card" style="border-left: 4px solid ${hasCookies ? '#10b981' : '#cbd5e1'}">
-                    <div>
-                        <div style="font-weight: 600; color: #1e293b; margin-bottom: 2px;">${config.icon} ${config.name}</div>
-                        <div style="font-size: 13px; color: ${hasCookies ? '#10b981' : '#94a3b8'};">
-                            ${hasCookies ? '🟢 凭证已就绪' : '⚪ 未检测到凭证'}
+            return `
+                <div class="status-card" style="border-left: 4px solid ${active ? '#10b981' : '#cbd5e1'}">
+                    <div class="status-info">
+                        <div class="status-name">${cfg.icon} ${cfg.name}</div>
+                        <div class="status-tag" style="color: ${active ? '#10b981' : '#94a3b8'}">
+                            ${active ? '● 已就绪' : '○ 未配置'}
                         </div>
                     </div>
-                    ${hasCookies ? `<button onclick="deleteCookie('${platformKey}')" style="background: #fee2e2; color: #ef4444; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer;">清空</button>` : ''}
+                    ${active ? `<button class="del-btn" onclick="deleteCookie('${key}')">移除</button>` : ''}
                 </div>
             `;
-        });
-        container.innerHTML = html;
-    } catch (error) {
-        container.innerHTML = '<div style="color:#ef4444; text-align:center;">状态加载失败</div>';
+        }).join('');
+    } catch (e) {
+        container.innerHTML = '<div class="error-text">状态加载失败</div>';
     }
 }
 
+/**
+ * 删除凭证
+ */
 async function deleteCookie(platformKey) {
-    if (!confirm(`⚠️ 确定要清空 ${PLATFORM_CONFIG[platformKey].name} 的本地凭证吗？`)) return;
+    if (!confirm(`确定要清空 ${PLATFORM_CONFIG[platformKey]?.name || '该平台'} 的登录凭证吗？`)) return;
+
     try {
-        const response = await fetch(`/api/auth/cookies/${platformKey}`, { method: 'DELETE' });
-        const data = await response.json();
+        const res = await fetch(`/api/auth/cookies/${platformKey}`, { method: 'DELETE' });
+        const data = await res.json();
         if (data.success) {
+            showAlert(true, "✅ 已成功移除凭证");
             refreshStatusList();
-            showAlert(true, `✅ 已清空`);
-         }else{
-            showAlert(false, data.message || '删除失败');
         }
-    }catch(error){
-        //加错误提示
-        showAlert(false, '删除失败，请检查服务状态');
-        console.error('删除出错', error);
+    } catch (e) {
+        showAlert(false, "❌ 删除失败，请检查网络");
     }
+}
+
+/**
+ * 统一弹窗提醒
+ * 修复：使用 innerHTML 以支持渲染传入的 <b> 标签，并处理计时器竞争
+ */
+function showAlert(success, message) {
+    const alertEl = document.getElementById('main-alert');
+    if (!alertEl) return;
+
+    clearTimeout(alertTimeout);
+    
+    alertEl.style.display = 'block';
+    alertEl.style.backgroundColor = success ? '#ecfdf5' : '#fef2f2';
+    alertEl.style.color = success ? '#059669' : '#dc2626';
+    alertEl.style.borderColor = success ? '#a7f3d0' : '#fecaca';
+    alertEl.innerHTML = message; 
+
+    alertTimeout = setTimeout(() => {
+        alertEl.style.display = 'none';
+    }, 4000);
 }
