@@ -678,7 +678,7 @@
     "ttsModelApiKeyPlaceholder": "TTS 모델 API 키를 입력하세요.",
     "ttsVoiceId": "음성 ID",
     "ttsVoiceIdHint": "(선택 사항, 캐릭터가 없을 때 대체 음성)",
-    "ttsVoiceIdPlaceholder": "예: 중국어 여성, alloy",
+    "ttsVoiceIdPlaceholder": "예: 중국 여성, 합금",
     "agentModelUrlPlaceholder": "비워 두면 보조 API 비전 모델 URL을 따릅니다",
     "agentModelIdPlaceholder": "비워 두면 보조 API 비전 모델 ID를 따릅니다",
     "agentModelApiKeyPlaceholder": "비워 두면 보조 API 키를 따릅니다 ('free'에서는 사용할 수 없음)",
