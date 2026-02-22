@@ -38,14 +38,29 @@ import ctypes
 import atexit
 import signal
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from utils.port_utils import (
+    probe_neko_health,
+    acquire_startup_lock,
+    release_startup_lock,
+    get_hyperv_excluded_ranges,
+    is_port_in_excluded_range,
+)
+
+# 本次 launcher 启动的唯一标识
+LAUNCH_ID = uuid.uuid4().hex
+INSTANCE_ID = uuid.uuid4().hex
+# 注入 INSTANCE_ID，确保所有子进程共享同一实例标识
+os.environ["NEKO_INSTANCE_ID"] = INSTANCE_ID
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
 _cleanup_done = False
+_existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
 DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
     "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
@@ -55,8 +70,7 @@ INTERNAL_DEFAULT_PORTS = {
     "AGENT_MQ_PORT": 48917,
     "MAIN_AGENT_EVENT_PORT": 48918,
 }
-# Keep this range reserved for known N.E.K.O defaults so fallback
-# does not collide with other companion services.
+# 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
 AVOID_FALLBACK_PORTS = set(range(48911, 48919))
 
 
@@ -71,11 +85,15 @@ def _show_error_dialog(message: str):
 
 
 def emit_frontend_event(event_type: str, payload: dict | None = None):
-    """Emit machine-readable event line for Electron stdout parser."""
+    """向 Electron stdout 发送机器可读事件。
+
+    每个事件都带有 *launch_id*，前端可据此忽略历史（僵尸）进程事件。
+    """
     envelope = {
         "source": "neko_launcher",
         "event": event_type,
         "ts": datetime.now(timezone.utc).isoformat(),
+        "launch_id": LAUNCH_ID,
         "payload": payload or {},
     }
     print(f"NEKO_EVENT {json.dumps(envelope, ensure_ascii=True, separators=(',', ':'))}", flush=True)
@@ -460,14 +478,51 @@ def _pick_fallback_port(preferred_port: int, reserved: set[int]) -> int | None:
     return None
 
 
-def apply_port_strategy() -> bool:
-    """Keep default ports when possible; auto-avoid conflicts when needed."""
+def _classify_port_conflict(port: int, excluded_ranges: list[tuple[int, int]] | None = None) -> str:
+    """对端口不可用原因进行分类。
+
+    - ``"neko"``            已有 N.E.K.O 服务占用
+    - ``"hyperv_excluded"`` 位于 Hyper-V / WSL 保留端口范围
+    - ``"other_process"``   被非 N.E.K.O 进程监听
+    - ``"unknown"``         无法绑定但原因不明确
+    """
+    health = probe_neko_health(port)
+    if health is not None:
+        return "neko"
+    if excluded_ranges is not None and is_port_in_excluded_range(port, excluded_ranges):
+        return "hyperv_excluded"
+    owners = get_port_owners(port)
+    if owners:
+        return "other_process"
+    # 端口无法绑定且无监听者，通常是 Hyper-V 预留
+    if is_port_in_excluded_range(port):
+        return "hyperv_excluded"
+    return "unknown"
+
+
+def apply_port_strategy() -> bool | str:
+        """优先使用默认端口，必要时自动规避冲突。
+
+        返回值：
+            ``True``      端口规划完成，可继续启动服务。
+            ``False``     发生致命错误，需中止启动。
+            ``"attach"`` 默认端口已由现有 N.E.K.O 后端完整占用。
+
+        策略：
+        1. 默认端口若已是 N.E.K.O 服务，则视为可复用。
+        2. 若被 Hyper-V/WSL 保留或其他进程占用，则选择 fallback 端口。
+        """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
     chosen: dict[str, int] = {}
     chosen_internal: dict[str, int] = {}
     fallback_details: list[dict] = []
     internal_fallback_details: list[dict] = []
     reserved: set[int] = set()
+
+    # 预先查询 Hyper-V 保留端口范围，避免重复子进程调用
+    excluded_ranges = get_hyperv_excluded_ranges()
+    if excluded_ranges:
+        print(f"[Launcher] Detected {len(excluded_ranges)} Hyper-V/WSL excluded port range(s)", flush=True)
 
     for key in ("MEMORY_SERVER_PORT", "TOOL_SERVER_PORT", "MAIN_SERVER_PORT"):
         preferred = int(DEFAULT_PORTS[key])
@@ -476,11 +531,32 @@ def apply_port_strategy() -> bool:
             reserved.add(preferred)
             continue
 
+        # 端口不可绑定，先识别具体原因
+        reason = _classify_port_conflict(preferred, excluded_ranges)
+
+        if reason == "neko":
+            # 已有 N.E.K.O 实例占用该端口。
+            # 仍记录为 chosen，并打标记供前端决定“附加复用”而非“重复拉起”。
+            chosen[key] = preferred
+            reserved.add(preferred)
+            fallback_details.append(
+                {
+                    "port_key": key,
+                    "preferred": preferred,
+                    "selected": preferred,
+                    "reason": "existing_neko",
+                    "owners": get_port_owners(preferred),
+                }
+            )
+            continue
+
+        # 需要选择回退端口
         owners = get_port_owners(preferred)
         fallback = _pick_fallback_port(preferred, reserved)
         if fallback is None:
             report_startup_failure(
-                f"Startup failed: no fallback port available for {key} (preferred={preferred}, owners={owners})"
+                f"Startup failed: no fallback port available for {key} "
+                f"(preferred={preferred}, reason={reason}, owners={owners})"
             )
             return False
 
@@ -491,6 +567,7 @@ def apply_port_strategy() -> bool:
                 "port_key": key,
                 "preferred": preferred,
                 "selected": fallback,
+                "reason": reason,
                 "owners": owners,
             }
         )
@@ -540,6 +617,8 @@ def apply_port_strategy() -> bool:
     emit_frontend_event(
         "port_plan",
         {
+            "launch_id": LAUNCH_ID,
+            "instance_id": INSTANCE_ID,
             "defaults": DEFAULT_PORTS,
             "selected": chosen,
             "internal_defaults": INTERNAL_DEFAULT_PORTS,
@@ -549,6 +628,32 @@ def apply_port_strategy() -> bool:
             "fallback_applied": bool(fallback_details or internal_fallback_details),
         },
     )
+
+    # 检查默认端口是否全部由既有 N.E.K.O 占用（existing_neko）。
+    # 若是，则 launcher 不应继续拉起新服务。
+    existing_neko_keys = {
+        d["port_key"]
+        for d in fallback_details
+        if d.get("reason") == "existing_neko"
+    }
+
+    # 记录已存在实例的服务端口键，供 start_server() 跳过重复启动。
+    global _existing_neko_services
+    _existing_neko_services = existing_neko_keys
+
+    if existing_neko_keys == set(DEFAULT_PORTS.keys()):
+        # 默认端口上的完整 N.E.K.O 后端已在运行。
+        emit_frontend_event(
+            "attach_existing",
+            {
+                "launch_id": LAUNCH_ID,
+                "selected": chosen,
+                "message": "All default ports occupied by an existing N.E.K.O backend",
+            },
+        )
+        print("[Launcher] Existing N.E.K.O backend detected on all default ports; attaching.", flush=True)
+        return "attach"
+
     if fallback_details or internal_fallback_details:
         print(
             f"[Launcher] Port fallback applied: public={fallback_details}, internal={internal_fallback_details}",
@@ -573,6 +678,23 @@ def start_server(server: Dict) -> bool:
     """启动单个服务器"""
     try:
         port = server.get('port')
+
+        # Map module name to port key for _existing_neko_services lookup
+        _MODULE_TO_PORT_KEY = {
+            "memory_server": "MEMORY_SERVER_PORT",
+            "agent_server": "TOOL_SERVER_PORT",
+            "main_server": "MAIN_SERVER_PORT",
+        }
+        port_key = _MODULE_TO_PORT_KEY.get(server['module'])
+
+        # If this service's port already has a running N.E.K.O instance,
+        # skip launching (the existing process will serve requests).
+        if port_key and port_key in _existing_neko_services:
+            print(f"✓ {server['name']} already running on port {port} (existing N.E.K.O instance)", flush=True)
+            server['ready_event'] = Event()
+            server['ready_event'].set()  # Mark as ready immediately
+            return True
+
         if isinstance(port, int) and check_port(port):
             owner_pids = get_port_owners(port)
             owner_suffix = f", owner_pids={owner_pids}" if owner_pids else ""
@@ -737,8 +859,29 @@ def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
-    if not apply_port_strategy():
+
+    # ── 发送 startup_begin，便于前端绑定本次启动会话 ──
+    emit_frontend_event("startup_begin", {"launch_id": LAUNCH_ID, "instance_id": INSTANCE_ID})
+
+    # ── 单实例启动锁 ──────────────────────────────────
+    if not acquire_startup_lock():
+        msg = "Another N.E.K.O launcher is already starting up"
+        print(f"[Launcher] {msg}", flush=True)
+        emit_frontend_event("startup_in_progress", {
+            "launch_id": LAUNCH_ID,
+            "message": msg,
+        })
+        return 0  # 非错误场景：前端应附加到已有进程
+
+    port_result = apply_port_strategy()
+    if port_result == "attach":
+        # 已有 N.E.K.O 后端在运行，无需再次拉起。
+        release_startup_lock()
+        return 0
+    if not port_result:
+        release_startup_lock()
         return 1
+
     register_shutdown_hooks()
     
     # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
@@ -770,7 +913,17 @@ def main():
             cleanup_servers()
             return 1
         
-        # 3. 服务器已启动，等待用户操作
+        # 3. 服务器已启动，通知前端
+        emit_frontend_event("startup_ready", {
+            "launch_id": LAUNCH_ID,
+            "instance_id": INSTANCE_ID,
+            "selected": {
+                "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+                "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+                "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+            },
+        })
+
         print("", flush=True)
         print("=" * 60, flush=True)
         print("  🎉 所有服务器已启动完成！", flush=True)
@@ -781,6 +934,9 @@ def main():
         print("=" * 60, flush=True)
         print("", flush=True)
         
+        # 服务已就绪，释放启动锁。
+        release_startup_lock()
+
         # 持续运行，监控服务器状态
         while True:
             time.sleep(1)
@@ -800,6 +956,7 @@ def main():
         report_startup_failure(f"Launcher unhandled exception: {e}")
     finally:
         cleanup_servers()
+        release_startup_lock()
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
     

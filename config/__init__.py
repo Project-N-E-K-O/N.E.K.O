@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Configuration constants exposed by the config package."""
+"""config 包对外暴露的配置常量。"""
 
 from copy import deepcopy
 import logging
 import os
+import uuid
 from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
@@ -13,9 +14,9 @@ logger = logging.getLogger(__name__)
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
 
-# Runtime port override support:
-# - preferred key: NEKO_<PORT_NAME>
-# - compatibility key: <PORT_NAME>
+# 运行时端口覆盖支持：
+# - 首选键：NEKO_<PORT_NAME>
+# - 兼容键：<PORT_NAME>
 def _read_port_env(port_name: str, default: int) -> int:
     for key in (f"NEKO_{port_name}", port_name):
         raw = os.getenv(key)
@@ -38,6 +39,12 @@ TOOL_SERVER_PORT = _read_port_env("TOOL_SERVER_PORT", 48915)
 USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
+
+# 实例 ID：同一次启动的所有服务共享。
+# launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
+# 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
+# 始终返回有效 id。
+INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 
 # MCP Router配置
 MCP_ROUTER_URL = 'http://localhost:3282'
@@ -303,7 +310,7 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_MODEL': "step-audio-2",
     },
     'gemini': {
-        # Gemini uses google-genai SDK, not raw WebSocket
+        # Gemini 使用 google-genai SDK，而非原生 WebSocket
         'CORE_MODEL': "gemini-2.5-flash-native-audio-preview-12-2025",
     },
 }

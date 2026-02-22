@@ -26,7 +26,7 @@ def _get_app_root():
     else:
         return os.getcwd()
 
-# Only adjust DLL search path on Windows
+# 仅在 Windows 上调整 DLL 搜索路径
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     os.add_dll_directory(_get_app_root())
     
@@ -121,7 +121,7 @@ def get_default_steam_info():
 # 这样可以避免在模块导入时就执行 DLL 加载等操作
 steamworks = None
 
-# Configure logging (子进程静默初始化，避免重复打印初始化消息)
+# 配置日志（子进程静默初始化，避免重复打印初始化消息）
 from utils.logger_config import setup_logging # noqa: E402
 
 logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
@@ -148,7 +148,7 @@ session_id = {}
 sync_process = {}
 # 每个角色的websocket操作锁，用于防止preserve/restore与cleanup()之间的竞争
 websocket_locks = {}
-# Global variables for character data (will be updated on reload)
+# 角色数据全局变量（会在重载时更新）
 master_name = None
 her_name = None
 master_basic_config = None
@@ -164,7 +164,7 @@ agent_event_bridge: MainServerAgentBridge | None = None
 
 
 async def _handle_agent_event(event: dict):
-    """Receive events from agent_server via ZeroMQ and fan out to core/websocket."""
+    """通过 ZeroMQ 接收 agent_server 事件，并分发到 core/websocket。"""
     try:
         event_type = event.get("event_type")
         lanlan = event.get("lanlan_name")
@@ -474,8 +474,8 @@ if _IS_MAIN_PROCESS:
         app.mount("/user_mods", CustomStaticFiles(directory=user_mod_path), name="user_mods")
         logger.info(f"已挂载用户mod路径: {user_mod_path}")
 
-# --- Initialize Shared State and Mount Routers ---
-# Import and mount routers from main_routers package
+# --- 初始化共享状态并挂载路由 ---
+# 从 main_routers 包导入并挂载路由
 from main_routers import ( # noqa
     config_router,
     characters_router,
@@ -491,7 +491,7 @@ from main_routers import ( # noqa
 from main_routers.cookies_login_router import router as cookies_login_router
 from main_routers.shared_state import init_shared_state # noqa
 
-# Initialize shared state for routers to access
+# 初始化共享状态，供各路由访问
 # 注意：steamworks 会在 startup 事件中初始化后更新
 if _IS_MAIN_PROCESS:
     init_shared_state(
@@ -508,35 +508,46 @@ if _IS_MAIN_PROCESS:
         initialize_character_data=initialize_character_data,
     )
 
+
+# ── 健康检查 / 指纹端点 ──────────────────────────────────────────
+@app.get("/health")
+async def health():
+    """返回带 N.E.K.O 签名的健康响应，供 launcher/前端识别，
+    以区分当前服务与随机占用该端口的其他进程。"""
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response("main", instance_id=INSTANCE_ID)
+
+
 @app.post('/api/beacon/shutdown')
 async def beacon_shutdown():
-    """Beacon API for graceful server shutdown"""
+    """Beacon 接口：用于优雅关闭服务器"""
     try:
         # 从 app.state 获取配置
         current_config = get_start_config()
-        # Only respond to beacon if server was started with --open-browser
+        # 仅当服务由 --open-browser 模式启动时才响应 beacon
         if current_config['browser_mode_enabled']:
             logger.info("收到beacon信号，准备关闭服务器...")
-            # Schedule server shutdown
+            # 调度服务器关闭任务
             asyncio.create_task(shutdown_server_async())
             return {"success": True, "message": "服务器关闭信号已接收"}
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
 
-# Mount all routers
+# 挂载全部路由
 app.include_router(config_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
-# Note: pages_router should be mounted last due to catch-all route /{lanlan_name}
+# 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
-app.include_router(pages_router)  # Mount last for catch-all routes
+app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
 _preload_task: asyncio.Task = None
@@ -693,7 +704,7 @@ async def on_startup():
         # 在后台异步预加载音频模块（不阻塞服务器启动）
         # 注意：不需要等待机制，Python import lock 会自动处理并发
         _preload_task = asyncio.create_task(_background_preload())
-        # Start ZeroMQ event bridge for agent_server <-> main_server
+        # 启动 agent_server <-> main_server 的 ZeroMQ 事件桥接
         try:
             agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
             await agent_event_bridge.start()
@@ -773,7 +784,7 @@ async def _init_and_mount_workshop():
 async def shutdown_server_async():
     """异步关闭服务器"""
     try:
-        # Give a small delay to allow the beacon response to be sent
+        # 短暂延时，确保 beacon 响应有机会先发送
         await asyncio.sleep(0.5)
         logger.info("正在关闭服务器...")
         
@@ -790,7 +801,7 @@ async def shutdown_server_async():
         except Exception as e:
             logger.warning(f"向memory_server发送关闭信号时出错: {e}")
         
-        # Signal the server to stop
+        # 通知服务器退出
         current_config = get_start_config()
         if current_config['server'] is not None:
             current_config['server'].should_exit = True
@@ -913,7 +924,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logger.info("--- Starting FastAPI Server ---")
-    # Use os.path.abspath to show full path clearly
+    # 使用 os.path.abspath 输出更清晰的完整路径
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
     logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
@@ -922,10 +933,10 @@ if __name__ == "__main__":
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_main_server_filter, create_httpx_filter
     
-    # Add filter to uvicorn access logger
+    # 为 uvicorn access 日志添加过滤器
     logging.getLogger("uvicorn.access").addFilter(create_main_server_filter())
     
-    # Add filter to httpx logger for availability check requests
+    # 为 httpx 日志添加可用性检查过滤器
     logging.getLogger("httpx").addFilter(create_httpx_filter())
 
     # 启动前预检端口，避免 uvicorn 启动后立刻退出且日志不明显

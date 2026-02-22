@@ -851,7 +851,13 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "agent_flags": Modules.agent_flags}
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response(
+        "agent",
+        instance_id=INSTANCE_ID,
+        extra={"agent_flags": Modules.agent_flags},
+    )
 
 
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
