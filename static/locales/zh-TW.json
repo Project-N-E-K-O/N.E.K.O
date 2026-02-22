@@ -1225,7 +1225,8 @@
             "live2dManage": "Live2D管理",
             "apiSettings": "API設置",
             "language": "語言",
-            "general": "通用設置"
+            "general": "通用設置",
+            "mediaCredentials": "媒體資格信息"
         },
         "language": {
             "title": "選擇語言",
