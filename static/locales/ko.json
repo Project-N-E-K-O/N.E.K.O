@@ -1268,7 +1268,17 @@
       "disabled": "{{name}} 비활성화됨",
       "enableFailed": "{{name}} 활성화 실패",
       "userPluginAdapting": "사용자 플러그인(개발 중)",
-      "moltbotAdapting": "moltbot (개발 중)"
+      "moltbotAdapting": "moltbot (개발 중)",
+      "chatSettings": "채팅 설정",
+      "animationSettings": "애니메이션 설정",
+      "renderQuality": "화질",
+      "renderQualityLow": "낮음",
+      "renderQualityMedium": "중간",
+      "renderQualityHigh": "높음",
+      "frameRate": "프레임 레이트",
+      "frameRateLow": "30fps",
+      "frameRateMedium": "45fps",
+      "frameRateHigh": "60fps"
     }
   },
   "subtitle": {

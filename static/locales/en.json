@@ -1268,7 +1268,17 @@
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
             "userPluginAdapting": "User Plugin (Developing)",
-            "moltbotAdapting": "moltbot (Developing)"
+            "moltbotAdapting": "moltbot (Developing)",
+            "chatSettings": "Chat Settings",
+            "animationSettings": "Animation Settings",
+            "renderQuality": "Quality",
+            "renderQualityLow": "Low",
+            "renderQualityMedium": "Medium",
+            "renderQualityHigh": "High",
+            "frameRate": "Frame Rate",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps"
         }
     },
     "subtitle": {

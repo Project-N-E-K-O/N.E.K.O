@@ -508,11 +508,11 @@ class VRMManager {
 
     startAnimateLoop() {
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
+        this._lastRenderTime = 0;
 
         const animateLoop = () => {
             // 检查渲染器、场景和相机是否都存在，如果任何一个被 dispose 了则取消动画循环
             if (!this.renderer || !this.scene || !this.camera) {
-                // 如果资源已被清理，取消动画帧并返回
                 if (this._animationFrameId) {
                     cancelAnimationFrame(this._animationFrameId);
                     this._animationFrameId = null;
@@ -522,28 +522,26 @@ class VRMManager {
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
 
+            // 帧率限制：根据 targetFrameRate 跳帧
+            const now = performance.now();
+            const targetFps = window.targetFrameRate || 60;
+            const frameInterval = 1000 / targetFps;
+            if (now - this._lastRenderTime < frameInterval * 0.9) return;
+            this._lastRenderTime = now;
+
             // 获取时间增量并限制最大值，防止切屏或卡顿导致物理"爆炸"
             let delta = this.clock ? this.clock.getDelta() : 0.016;
-            // 限制最大时间步长为 0.05 秒（20fps），防止物理飞逸
             delta = Math.min(delta, 0.05);
 
             if (!this.animation && typeof window.VRMAnimation !== 'undefined') this._initModules();
 
             if (this.currentModel && this.currentModel.vrm) {
-                // 0. 主灯跟随相机（VRoid Hub 风格：面部始终清晰受光）
-                // 核心理念：主光始终从相机方向照向模型，确保正面永远明亮
+                // 0. 主灯跟随相机
                 if (this.mainLight && this.camera) {
-                    // VRoid Hub 风格：主光几乎正对相机方向，只有轻微偏移
-                    // 这确保无论从什么角度看，模型正面都是均匀明亮的
-                    const lightOffset = new window.THREE.Vector3(
-                        0.2,   // X: 轻微右偏，产生自然的微弱侧影
-                        0.5,   // Y: 略微偏上，模拟柔和的顶光
-                        1.5    // Z: 在相机前方，确保光线方向正确
-                    );
+                    const lightOffset = new window.THREE.Vector3(0.2, 0.5, 1.5);
                     lightOffset.applyQuaternion(this.camera.quaternion);
                     this.mainLight.position.copy(this.camera.position).add(lightOffset);
 
-                    // 让主光始终指向模型中心（如果有目标）
                     if (this.currentModel.vrm.scene) {
                         this.mainLight.target = this.currentModel.vrm.scene;
                     }
@@ -554,7 +552,7 @@ class VRMManager {
                     this.expression.update(delta);
                 }
 
-                // 2. CursorFollow：更新眼睛目标位置（平滑/死区/滤波）
+                // 2. CursorFollow：更新眼睛目标位置
                 if (this._cursorFollow) {
                     this._cursorFollow.updateTarget(delta);
                 }
@@ -562,10 +560,8 @@ class VRMManager {
                 // 3. 设置 lookAt 目标
                 if (this.currentModel.vrm.lookAt) {
                     if (this._cursorFollow && this._cursorFollow.eyesTarget) {
-                        // 新系统：使用 CursorFollow 的眼睛目标
                         this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
                     } else {
-                        // 回退：旧的 lookAt 跟踪
                         if (this._lookAtTarget && this._lookAtDesiredPoint) {
                             const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
                             const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));
@@ -580,11 +576,12 @@ class VRMManager {
                     this.animation.update(delta);
                 }
 
-                // 5. VRM 核心更新（LookAt / SpringBone 物理）
-                if (this.enablePhysics) {
+                // 5. VRM 核心更新（LookAt / SpringBone 物理）— 受画质设置影响
+                // low: 仅 lookAt + expressions；medium/high: 完整物理（spring bone）
+                const quality = window.renderQuality || 'high';
+                if (this.enablePhysics && quality !== 'low') {
                     this.currentModel.vrm.update(delta);
                 } else {
-                    // 物理完全禁用时（用户手动禁用），只更新视线和表情
                     if (this.currentModel.vrm.lookAt) this.currentModel.vrm.lookAt.update(delta);
                     if (this.currentModel.vrm.expressionManager) this.currentModel.vrm.expressionManager.update(delta);
                 }
@@ -605,7 +602,7 @@ class VRMManager {
                 this.controls.update();
             }
 
-            // 9. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
+            // 9. 渲染场景
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }

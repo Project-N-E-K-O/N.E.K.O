@@ -988,6 +988,8 @@ class VRMCore {
 
             // 优化材质设置（根据性能模式）
             this.optimizeMaterials();
+            // 根据当前画质设置应用阴影/描边/像素比
+            this.applyQualitySettings(window.renderQuality || 'high');
 
             if (this.manager.controls) {
                 this.manager.controls.target.set(0, center.y, 0);
@@ -1271,8 +1273,87 @@ class VRMCore {
             return false;
         }
     }
+
+    /**
+     * 根据画质设置应用渲染优化
+     * Low:    无物理（render loop 控制）、无阴影、降像素比、禁描边
+     * Medium: 有物理、无阴影、正常像素比和描边
+     * High:   有物理、有阴影、正常像素比和描边
+     */
+    applyQualitySettings(quality) {
+        if (!this.manager.renderer) return;
+
+        // 像素比：低画质降到 1.0
+        if (quality === 'low') {
+            this.manager.renderer.setPixelRatio(1.0);
+        } else {
+            this.applyPerformanceSettings();
+        }
+
+        // 阴影：仅高画质启用，使用专用阴影灯光（从上方斜打，阴影投射到模型身上）
+        const enableShadows = (quality === 'high');
+        if (enableShadows && !this.manager._shadowLight) {
+            const sl = new THREE.DirectionalLight(0xffffff, 0.3);
+            sl.position.set(1.5, 3.0, 1.0);
+            sl.castShadow = true;
+            const shadow = sl.shadow;
+            shadow.mapSize.width = 2048;
+            shadow.mapSize.height = 2048;
+            shadow.camera.near = 0.1;
+            shadow.camera.far = 10;
+            shadow.camera.left = -1.5;
+            shadow.camera.right = 1.5;
+            shadow.camera.top = 2.5;
+            shadow.camera.bottom = -1;
+            shadow.bias = -0.001;
+            shadow.normalBias = 0.03;
+            this.manager.scene.add(sl);
+            this.manager._shadowLight = sl;
+        }
+        if (this.manager._shadowLight) {
+            this.manager._shadowLight.visible = enableShadows;
+        }
+
+        if (!this.manager.currentModel?.vrm?.scene) return;
+        this.manager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+
+            // 阴影投射/接收
+            object.castShadow = enableShadows;
+            object.receiveShadow = enableShadows;
+
+            // 描边：低画质禁用以节省 draw call
+            const mat = object.material;
+            if (!mat) return;
+            if (quality === 'low') {
+                if (mat.outlineWidthFactor !== undefined) {
+                    if (mat._savedOutlineWidthFactor === undefined) {
+                        mat._savedOutlineWidthFactor = mat.outlineWidthFactor;
+                    }
+                    mat.outlineWidthFactor = 0;
+                }
+            } else {
+                if (mat._savedOutlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._savedOutlineWidthFactor;
+                    delete mat._savedOutlineWidthFactor;
+                }
+            }
+
+            if (object.receiveShadow) {
+                object.material.needsUpdate = true;
+            }
+        });
+    }
 }
 
 // 导出到全局
 window.VRMCore = VRMCore;
+
+// 监听画质变更事件，实时应用
+window.addEventListener('neko-render-quality-changed', (e) => {
+    const quality = e.detail?.quality;
+    if (quality && window.vrmManager?.core) {
+        window.vrmManager.core.applyQualitySettings(quality);
+    }
+});
 

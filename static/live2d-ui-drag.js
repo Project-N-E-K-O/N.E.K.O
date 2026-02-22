@@ -516,7 +516,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
 
     // 如果是设置弹出框，每次显示时更新开关状态（确保与 app.js 同步）
     if (buttonId === 'settings') {
-        const focusCheckbox = popup.querySelector('#live2d-focus-mode');
+        const mergeCheckbox = document.querySelector('#live2d-merge-messages');
+        const focusCheckbox = document.querySelector('#live2d-focus-mode');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
         const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
 
@@ -543,9 +544,19 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             }
         };
 
+        // 更新 merge messages checkbox 状态和视觉样式
+        if (mergeCheckbox && typeof window.mergeMessagesEnabled !== 'undefined') {
+            const newChecked = window.mergeMessagesEnabled;
+            if (mergeCheckbox.checked !== newChecked) {
+                mergeCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(mergeCheckbox);
+            });
+        }
+
         // 更新 focus mode checkbox 状态和视觉样式
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
-            // "允许打断"按钮值与 focusModeEnabled 相反
             const newChecked = !window.focusModeEnabled;
             if (focusCheckbox.checked !== newChecked) {
                 focusCheckbox.checked = newChecked;
@@ -580,7 +591,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         // 同步搭话方式选项状态
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
-                const checkbox = popup.querySelector(`#live2d-proactive-${config.mode}-chat`);
+                const checkbox = document.querySelector(`#live2d-proactive-${config.mode}-chat`);
                 if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
                     const newChecked = window[config.globalVarName];
                     if (checkbox.checked !== newChecked) {

@@ -1268,7 +1268,17 @@
       "disabled": "{{name}}を無効にしました",
       "enableFailed": "{{name}}の有効化に失敗しました",
       "userPluginAdapting": "ユーザープラグイン（開発中）",
-      "moltbotAdapting": "moltbot（開発中）"
+      "moltbotAdapting": "moltbot（開発中）",
+      "chatSettings": "チャット設定",
+      "animationSettings": "アニメーション設定",
+      "renderQuality": "画質",
+      "renderQualityLow": "低",
+      "renderQualityMedium": "中",
+      "renderQualityHigh": "高",
+      "frameRate": "フレームレート",
+      "frameRateLow": "30fps",
+      "frameRateMedium": "45fps",
+      "frameRateHigh": "60fps"
     }
   },
   "subtitle": {

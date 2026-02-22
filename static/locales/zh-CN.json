@@ -1268,7 +1268,17 @@
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
             "userPluginAdapting": "用户插件（开发中）",
-            "moltbotAdapting": "moltbot（开发中）"
+            "moltbotAdapting": "moltbot（开发中）",
+            "chatSettings": "对话设置",
+            "animationSettings": "动画设置",
+            "renderQuality": "画质",
+            "renderQualityLow": "低",
+            "renderQualityMedium": "中",
+            "renderQualityHigh": "高",
+            "frameRate": "帧率",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps"
         }
     },
     "subtitle": {

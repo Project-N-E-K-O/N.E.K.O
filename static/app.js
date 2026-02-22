@@ -307,6 +307,10 @@ function init_app() {
     // Focus模式为true时，AI播放语音时会自动静音麦克风（不允许打断）
     let focusModeEnabled = false;
 
+    // 动画设置：画质和帧率
+    let renderQuality = 'high';   // 'low' | 'medium' | 'high'
+    let targetFrameRate = 60;     // 30 | 60
+
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
@@ -318,6 +322,8 @@ function init_app() {
     window.focusModeEnabled = focusModeEnabled;
     window.proactiveChatInterval = proactiveChatInterval;
     window.proactiveVisionInterval = proactiveVisionInterval;
+    window.renderQuality = renderQuality;
+    window.targetFrameRate = targetFrameRate;
 
     // WebSocket心跳保活
     let heartbeatInterval = null;
@@ -8517,6 +8523,12 @@ function init_app() {
         const currentPersonalChat = typeof window.proactivePersonalChatEnabled !== 'undefined'
             ? window.proactivePersonalChatEnabled
             : proactivePersonalChatEnabled;
+        const currentRenderQuality = typeof window.renderQuality !== 'undefined'
+            ? window.renderQuality
+            : renderQuality;
+        const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
+            ? window.targetFrameRate
+            : targetFrameRate;
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -8528,7 +8540,9 @@ function init_app() {
             focusModeEnabled: currentFocus,
             proactiveChatInterval: currentProactiveChatInterval,
             proactiveVisionInterval: currentProactiveVisionInterval,
-            proactivePersonalChatEnabled: currentPersonalChat
+            proactivePersonalChatEnabled: currentPersonalChat,
+            renderQuality: currentRenderQuality,
+            targetFrameRate: currentTargetFrameRate
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
 
@@ -8543,6 +8557,8 @@ function init_app() {
         proactiveChatInterval = currentProactiveChatInterval;
         proactiveVisionInterval = currentProactiveVisionInterval;
         proactivePersonalChatEnabled = currentPersonalChat;
+        renderQuality = currentRenderQuality;
+        targetFrameRate = currentTargetFrameRate;
     }
 
     // 暴露到全局作用域，供 live2d.js 等其他模块调用
@@ -8618,6 +8634,12 @@ function init_app() {
                 // 主动视觉时间间隔：从localStorage加载设置
                 proactiveVisionInterval = settings.proactiveVisionInterval ?? DEFAULT_PROACTIVE_VISION_INTERVAL;
                 window.proactiveVisionInterval = proactiveVisionInterval; // 同步到全局
+                // 画质设置
+                renderQuality = settings.renderQuality ?? 'high';
+                window.renderQuality = renderQuality;
+                // 帧率设置
+                targetFrameRate = settings.targetFrameRate ?? 60;
+                window.targetFrameRate = targetFrameRate;
 
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
@@ -8645,6 +8667,8 @@ function init_app() {
                 window.focusModeEnabled = focusModeEnabled;
                 window.proactiveChatInterval = proactiveChatInterval;
                 window.proactiveVisionInterval = proactiveVisionInterval;
+                window.renderQuality = renderQuality;
+                window.targetFrameRate = targetFrameRate;
             }
         } catch (error) {
             console.error('加载设置失败:', error);
@@ -8659,6 +8683,8 @@ function init_app() {
             window.focusModeEnabled = focusModeEnabled;
             window.proactiveChatInterval = proactiveChatInterval;
             window.proactiveVisionInterval = proactiveVisionInterval;
+            window.renderQuality = renderQuality;
+            window.targetFrameRate = targetFrameRate;
         }
     }
 
