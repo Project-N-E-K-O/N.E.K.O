@@ -404,7 +404,7 @@ export default defineConfig({
   ],
 
   // Deploy to GitHub Pages at https://project-n-e-k-o.github.io/N.E.K.O/
-  base: '/N.E.K.O/',
+  base: '/',
 
   lastUpdated: true,
   cleanUrls: true,
@@ -485,7 +485,7 @@ export default defineConfig({
     logo: '/logo.jpg',
     siteTitle: 'N.E.K.O. Docs',
 
-    nav: buildNav('en'),
+    nav: buildNav('en'), 
     sidebar: buildSidebar('en'),
 
     socialLinks: [
