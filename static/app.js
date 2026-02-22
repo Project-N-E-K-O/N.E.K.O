@@ -769,8 +769,8 @@ function init_app() {
                                 if (t && t.id) window._agentTaskMap.set(t.id, t);
                             });
                             const tasks = Array.from(window._agentTaskMap.values());
-                            if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
-                                window.live2dManager.updateAgentTaskHUD({
+                            if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                window.AgentHUD.updateAgentTaskHUD({
                                     success: true,
                                     tasks,
                                     total_count: tasks.length,
@@ -796,8 +796,8 @@ function init_app() {
                             window._agentTaskMap.set(task.id, task);
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
-                        if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
-                            window.live2dManager.updateAgentTaskHUD({
+                        if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                            window.AgentHUD.updateAgentTaskHUD({
                                 success: true,
                                 tasks,
                                 total_count: tasks.length,
@@ -4814,20 +4814,19 @@ function init_app() {
                     console.log('[showCurrentModel] 创建后VRM浮动按钮存在:', !!vrmFloatingButtons);
                 }
 
-                // 显示VRM浮动按钮（与 showLive2d 保持一致的处理方式）
+                // VRM 浮动按钮交给 vrm-ui-buttons 内部显隐逻辑管理（避免强制常显）
                 if (vrmFloatingButtons) {
-                    vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
-                    vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
-                    vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
+                    vrmFloatingButtons.style.removeProperty('display');
+                    vrmFloatingButtons.style.removeProperty('visibility');
+                    vrmFloatingButtons.style.removeProperty('opacity');
                 }
 
-                //  显示VRM锁图标（与 showLive2d 保持一致的处理方式）
+                // VRM 锁图标同样交给 vrm-ui-buttons 自主判定显示
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
                     vrmLockIcon.style.removeProperty('display');
                     vrmLockIcon.style.removeProperty('visibility');
                     vrmLockIcon.style.removeProperty('opacity');
-                    vrmLockIcon.style.display = 'block';
                 }
 
                 // 设置VRM解锁状态（统一使用 core.setLocked API）
@@ -5341,7 +5340,7 @@ function init_app() {
         // 恢复VRM的锁图标
         const vrmLockIcon = document.getElementById('vrm-lock-icon');
         if (vrmLockIcon) {
-            vrmLockIcon.style.display = 'block';
+            vrmLockIcon.style.removeProperty('display');
             vrmLockIcon.style.removeProperty('visibility');
             vrmLockIcon.style.removeProperty('opacity');
         }
@@ -5391,18 +5390,13 @@ function init_app() {
             console.log('[App] 已恢复所有Live2D弹窗的交互能力，数量:', allLive2dPopups.length);
         }
 
-        // 恢复VRM的浮动按钮系统（使用 !important 强制显示，覆盖之前的隐藏样式）
+        // 恢复VRM浮动按钮系统：仅清理强制隐藏样式，不强制设为常显
         const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
         if (vrmFloatingButtons) {
             // 先清除所有可能的隐藏样式
             vrmFloatingButtons.style.removeProperty('display');
             vrmFloatingButtons.style.removeProperty('visibility');
             vrmFloatingButtons.style.removeProperty('opacity');
-
-            // 使用 !important 强制显示，确保覆盖之前的隐藏样式（与Live2D保持一致）
-            vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
-            vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
-            vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
 
             // 恢复所有按钮的显示状态
             if (window.vrmManager && window.vrmManager._floatingButtons) {
@@ -6929,10 +6923,11 @@ function init_app() {
 
     // 启动任务状态轮询
     window.startAgentTaskPolling = function () {
-        // Always attempt to show HUD (live2dManager may have loaded since last call)
-        if (window.live2dManager) {
-            window.live2dManager.createAgentTaskHUD();
-            window.live2dManager.showAgentTaskHUD();
+        console.trace('[App] startAgentTaskPolling');
+        // Always attempt to show HUD
+        if (window.AgentHUD && window.AgentHUD.createAgentTaskHUD) {
+            window.AgentHUD.createAgentTaskHUD();
+            window.AgentHUD.showAgentTaskHUD();
         }
 
         if (agentTaskPollingInterval) return;
@@ -6948,6 +6943,7 @@ function init_app() {
     // 停止任务状态轮询
     window.stopAgentTaskPolling = function () {
         console.log('[App] 停止 Agent 任务状态轮询');
+        console.trace('[App] stopAgentTaskPolling caller trace');
 
         if (agentTaskPollingInterval) {
             if (typeof agentTaskPollingInterval !== 'boolean') {
@@ -6962,8 +6958,8 @@ function init_app() {
         }
 
         // 隐藏 HUD
-        if (window.live2dManager) {
-            window.live2dManager.hideAgentTaskHUD();
+        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+            window.AgentHUD.hideAgentTaskHUD();
         }
     };
 
@@ -6993,57 +6989,106 @@ function init_app() {
     }
 
     function checkAndToggleTaskHUD() {
-        // DOM checkboxes (may not exist or may not be synced yet)
-        const masterCheckbox = document.getElementById('live2d-agent-master');
-        const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const browserCheckbox = document.getElementById('live2d-agent-browser');
+        const getEl = (ids) => {
+            for (let id of ids) {
+                const el = document.getElementById(id);
+                if (el) return el;
+            }
+            return null;
+        };
 
-        const userPlugin = document.getElementById('live2d-agent-user-plugin');
+        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master']);
+        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-        const domMaster = masterCheckbox && masterCheckbox.checked;
+        // Extract DOM states
+        const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
-
             || (userPlugin && userPlugin.checked);
 
-        // Cached flags from backend (always the source of truth)
-        const flags = window.agentStateMachine && window.agentStateMachine._cachedFlags;
-        const flagMaster = flags && !!flags.agent_enabled;
-        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+        // Extract backend/cached state
+        const snap = window._agentStatusSnapshot; 
+        const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
+        
+        // We prefer snapshot flags if they exist and are populated, else fallback to machine cached flags
+        const flags = (snap && snap.flags && Object.keys(snap.flags).length > 0) ? snap.flags : machineFlags;
 
-        if ((domMaster && domChild) || (flagMaster && flagChild)) {
+        // Extract optimistic state from agent_ui_v2 if available
+        let optMaster = undefined;
+        let optChild = undefined;
+        if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
+             const opt = window.agent_ui_v2_state.optimistic;
+             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
+             if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
+                 optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
+             }
+        }
+
+        let isMasterOn = false;
+        let isChildOn = false;
+
+        // Is the UI fully interactive? If masterCheckbox is missing or disabled, it usually means we are loading/syncing
+        const isUiInteractive = masterCheckbox && !masterCheckbox.disabled;
+
+        if (!isUiInteractive) {
+            // UI is loading, trust optimistic state first, then backend flags
+            isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled));
+        } else {
+            // UI is interactive. We strictly trust the explicit DOM state, plus any optimistic overrides.
+            isMasterOn = optMaster !== undefined ? optMaster : domMaster;
+            isChildOn = optChild !== undefined ? optChild : domChild;
+        }
+
+        if (isMasterOn && isChildOn) {
+            console.log('[DEBUG HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.startAgentTaskPolling();
         } else {
+            console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.stopAgentTaskPolling();
         }
     }
+
 
     // 暴露给其他模块使用
     window.checkAndToggleTaskHUD = checkAndToggleTaskHUD;
 
     // 监听 Agent 子开关变化来控制 HUD 显示
     window.addEventListener('live2d-floating-buttons-ready', () => {
-        // 延迟确保元素已创建
-        setTimeout(() => {
-            const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-            const browserCheckbox = document.getElementById('live2d-agent-browser');
+        // 等待 agent_ui_v2 初始化或者直接靠 DOM
+        const bindHUD = () => {
+            const getEl = (ids) => {
+                for (let id of ids) {
+                    const el = document.getElementById(id);
+                    if (el) return el;
+                }
+                return null;
+            };
 
-            const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
+            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-            if (keyboardCheckbox) {
-                keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            if (!keyboardCheckbox || !browserCheckbox) {
+                // 如果还不存在，稍后再试（应对动态创建的情况，比如 VRM 模式下的懒加载 popup）
+                setTimeout(bindHUD, 500);
+                return;
             }
-            if (browserCheckbox) {
-                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
 
+            keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            // Retry HUD show: snapshot may have enabled agent before live2dManager was ready
+            
             checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
-        }, 100);
+        };
+        
+        // 由于不同模型(Live2D/VRM)构建 popup DOM 的时机不同，这里采用递归轮询直到元素出现为止
+        setTimeout(bindHUD, 100);
     });
     // Agent 任务 HUD 轮询逻辑结束
 
@@ -9310,9 +9355,9 @@ function init_app() {
                     const vrmButtons = document.getElementById('vrm-floating-buttons');
                     console.log('[猫娘切换] VRM按钮检查 - 存在:', !!vrmButtons);
                     if (vrmButtons) {
-                        vrmButtons.style.setProperty('display', 'flex', 'important');
-                        vrmButtons.style.visibility = 'visible';
-                        vrmButtons.style.opacity = '1';
+                        vrmButtons.style.removeProperty('display');
+                        vrmButtons.style.removeProperty('visibility');
+                        vrmButtons.style.removeProperty('opacity');
                         console.log('[猫娘切换] VRM按钮已设置为可见');
                     } else {
                         console.warn('[猫娘切换] ⚠️ VRM浮动按钮不存在，尝试重新创建');

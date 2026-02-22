@@ -175,6 +175,13 @@ class VRMCore {
             this.manager.interaction.setLocked(locked);
         }
 
+        if (!locked) {
+            const vrmContainer = document.getElementById('vrm-container');
+            if (vrmContainer) {
+                vrmContainer.style.opacity = '1';
+            }
+        }
+
         if (this.manager.controls) {
             this.manager.controls.enablePan = !locked;
         }
@@ -1276,15 +1283,15 @@ class VRMCore {
 
     /**
      * 根据画质设置应用渲染优化（纯性能分级，不改变视觉风格）
-     * Low:    pixelRatio 0.75、无物理（render loop 控制）、禁描边
-     * Medium: pixelRatio 1.0、有物理、禁描边
+     * Low:    pixelRatio 0.8、无物理（render loop 控制）、禁描边
+     * Medium: pixelRatio 1.0、有物理（跳帧）、禁描边
      * High:   pixelRatio = devicePixelRatio、有物理、有描边
      */
     applyQualitySettings(quality) {
         if (!this.manager.renderer) return;
 
         if (quality === 'low') {
-            this.manager.renderer.setPixelRatio(0.75);
+            this.manager.renderer.setPixelRatio(0.8);
         } else if (quality === 'medium') {
             this.manager.renderer.setPixelRatio(1.0);
         } else {
