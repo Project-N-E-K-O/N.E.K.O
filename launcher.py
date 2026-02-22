@@ -485,26 +485,30 @@ def _pick_fallback_port(preferred_port: int, reserved: set[int]) -> int | None:
     return None
 
 
-def _classify_port_conflict(port: int, excluded_ranges: list[tuple[int, int]] | None = None) -> str:
+def _classify_port_conflict(
+    port: int,
+    excluded_ranges: list[tuple[int, int]] | None = None,
+) -> tuple[str, list]:
     """对端口不可用原因进行分类。
 
+    返回 ``(reason, owners)``，其中 reason 为以下之一：
     - ``"neko"``            已有 N.E.K.O 服务占用
     - ``"hyperv_excluded"`` 位于 Hyper-V / WSL 保留端口范围
     - ``"other_process"``   被非 N.E.K.O 进程监听
     - ``"unknown"``         无法绑定但原因不明确
+    owners 为监听该端口的进程 ID 列表。
     """
     health = probe_neko_health(port)
     if health is not None:
-        return "neko"
-    if excluded_ranges is not None and is_port_in_excluded_range(port, excluded_ranges):
-        return "hyperv_excluded"
+        return "neko", get_port_owners(port)
+    # 将 excluded_ranges 解析一次，避免重复 netsh 子进程调用
+    ranges = excluded_ranges if excluded_ranges is not None else get_hyperv_excluded_ranges()
+    if is_port_in_excluded_range(port, ranges):
+        return "hyperv_excluded", []
     owners = get_port_owners(port)
     if owners:
-        return "other_process"
-    # 端口无法绑定且无监听者，通常是 Hyper-V 预留
-    if is_port_in_excluded_range(port, excluded_ranges):
-        return "hyperv_excluded"
-    return "unknown"
+        return "other_process", owners
+    return "unknown", []
 
 
 def apply_port_strategy() -> bool | str:
@@ -538,9 +542,8 @@ def apply_port_strategy() -> bool | str:
             reserved.add(preferred)
             continue
 
-        # 端口不可绑定，先识别具体原因
-        reason = _classify_port_conflict(preferred, excluded_ranges)
-        owners = get_port_owners(preferred)
+        # 端口不可绑定，识别具体原因（同时获取 owners 避免重复查询）
+        reason, owners = _classify_port_conflict(preferred, excluded_ranges)
 
         if reason == "neko":
             # 已有 N.E.K.O 实例占用该端口。
@@ -624,7 +627,6 @@ def apply_port_strategy() -> bool | str:
     emit_frontend_event(
         "port_plan",
         {
-            "launch_id": LAUNCH_ID,
             "instance_id": INSTANCE_ID,
             "defaults": DEFAULT_PORTS,
             "selected": chosen,

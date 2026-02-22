@@ -136,10 +136,17 @@ def get_hyperv_excluded_ranges() -> list[tuple[int, int]]:
     if sys.platform != "win32":
         return []
     try:
+        import shutil
         import subprocess
 
+        # 优先通过 PATH 查找 netsh，找不到则回退到 System32 绝对路径
+        resolved_netsh = shutil.which("netsh")
+        if resolved_netsh is None:
+            system_root = os.environ.get("SystemRoot", r"C:\Windows")
+            resolved_netsh = os.path.join(system_root, "System32", "netsh.exe")
+
         result = subprocess.run(
-            ["netsh", "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
+            [resolved_netsh, "interface", "ipv4", "show", "excludedportrange", "protocol=tcp"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -207,13 +214,19 @@ def _acquire_win32_mutex() -> bool:
         handle = kernel32.CreateMutexW(None, True, _LOCK_NAME)
         last_err = kernel32.GetLastError()
 
-        if handle and last_err != ERROR_ALREADY_EXISTS:
-            _lock_handle = handle
-            return True
-        # 说明已有其他实例持有互斥体
-        if handle:
+        if handle != 0:
+            if last_err != ERROR_ALREADY_EXISTS:
+                # 成功创建新互斥体，本实例持有锁
+                _lock_handle = handle
+                return True
+            # 互斥体已存在，另一实例正在运行
             kernel32.CloseHandle(handle)
-        return False
+            return False
+        # handle == 0：创建失败
+        if last_err == ERROR_ALREADY_EXISTS:
+            return False  # 确认已有另一实例
+        # 权限或其他错误，允许启动以免误阻
+        return True
     except Exception:
         # 无法判定时，默认允许继续（避免误阻断）
         return True
