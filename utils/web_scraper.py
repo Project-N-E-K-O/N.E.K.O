@@ -116,7 +116,6 @@ def _get_bilibili_credential() -> Any | None:
     
     return None
 
-
 # ==================================================
 # 热门内容获取函数
 # ==================================================
@@ -2004,7 +2003,6 @@ async def search_and_play_song(song_name: str) -> Dict[str, Any]:
 # =======================================================
 
 def _get_platform_cookies(platform_name: str) -> dict[str, str]:
-    
     """
     通用平台 Cookie 读取器 (接入系统底层的加密/明文统一读取逻辑)
     """
@@ -2054,10 +2052,6 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
 async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     获取B站推送的动态消息
-    设计原则：
-    - 仅需核心登录凭证 SESSDATA，其他 Cookie 全部失效
-    - 目标变更为：移动端首页关注流的固定 Container ID
-    - 必须伪装成手机浏览器的 User-Agent
     """
     import re
 
@@ -2190,7 +2184,7 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 if len(dynamic_list) >= limit:
                     break
             except Exception as item_e:
-                logger.warning(f"解析单条动态失败，跳过: {item_e}, 动态ID: {item.get('id_str', '未知')}")
+                logger.warning(f"解析单条动态失败, 跳过, 动态ID: {item.get('id_str', '未知')}, 错误类型: {type(item_e).__name__}")
 
         if dynamic_list:
             logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条你关注的UP主动态消息")
@@ -2329,10 +2323,6 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     获取Reddit推送的动态帖子
-    设计原则：
-    - 仅需核心登录凭证 reddit_session，其他 Cookie 全部失效
-    - 目标变更为：移动端首页关注流的固定 Container ID
-    - 必须伪装成手机浏览器的 User-Agent
     """
     try:
         reddit_cookies = _get_platform_cookies('reddit')
@@ -2364,10 +2354,6 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
     Twitter 网页抓取 fallback
-    设计原则：
-    - 仅需核心登录凭证 twitter_session，其他 Cookie 全部失效
-    - 目标变更为：移动端首页关注流的固定 Container ID
-    - 必须伪装成手机浏览器的 User-Agent
     """
     try:
         url = "https://twitter.com/home"
@@ -2399,10 +2385,6 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
 async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     获取 Twitter 个人时间线
-    设计原则：
-    - 仅需核心登录凭证 twitter_session，其他 Cookie 全部失效
-    - 目标变更为：移动端首页关注流的固定 Container ID
-    - 必须伪装成手机浏览器的 User-Agent
     """
     
     try:
