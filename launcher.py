@@ -53,9 +53,9 @@ from utils.port_utils import (
 
 # 本次 launcher 启动的唯一标识
 LAUNCH_ID = uuid.uuid4().hex
-INSTANCE_ID = uuid.uuid4().hex
-# 注入 INSTANCE_ID，确保所有子进程共享同一实例标识
-os.environ["NEKO_INSTANCE_ID"] = INSTANCE_ID
+# 实例 ID：若父进程已设置则复用，否则生成新值，确保所有子进程共享同一实例标识
+INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
+os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
@@ -655,7 +655,6 @@ def apply_port_strategy() -> bool | str:
         emit_frontend_event(
             "attach_existing",
             {
-                "launch_id": LAUNCH_ID,
                 "selected": chosen,
                 "message": "All default ports occupied by an existing N.E.K.O backend",
             },
@@ -864,14 +863,13 @@ def main():
     freeze_support()
 
     # ── 发送 startup_begin，便于前端绑定本次启动会话 ──
-    emit_frontend_event("startup_begin", {"launch_id": LAUNCH_ID, "instance_id": INSTANCE_ID})
+    emit_frontend_event("startup_begin", {"instance_id": INSTANCE_ID})
 
     # ── 单实例启动锁 ──────────────────────────────────
     if not acquire_startup_lock():
         msg = "Another N.E.K.O launcher is already starting up"
         print(f"[Launcher] {msg}", flush=True)
         emit_frontend_event("startup_in_progress", {
-            "launch_id": LAUNCH_ID,
             "message": msg,
         })
         return 0  # 非错误场景：前端应附加到已有进程
@@ -918,7 +916,6 @@ def main():
         
         # 3. 服务器已启动，通知前端
         emit_frontend_event("startup_ready", {
-            "launch_id": LAUNCH_ID,
             "instance_id": INSTANCE_ID,
             "selected": {
                 "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
