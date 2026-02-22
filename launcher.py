@@ -662,9 +662,16 @@ def apply_port_strategy() -> bool | str:
         print("[Launcher] Existing N.E.K.O backend detected on all default ports; attaching.", flush=True)
         return "attach"
 
-    if fallback_details or internal_fallback_details:
+    # 区分“复用已有实例”与“真正端口回退”的日志
+    real_fallbacks = [d for d in fallback_details if d.get("reason") != "existing_neko"]
+    if real_fallbacks or internal_fallback_details:
         print(
-            f"[Launcher] Port fallback applied: public={fallback_details}, internal={internal_fallback_details}",
+            f"[Launcher] Port fallback applied: public={real_fallbacks}, internal={internal_fallback_details}",
+            flush=True,
+        )
+    elif existing_neko_keys:
+        print(
+            f"[Launcher] Ports reused from existing N.E.K.O instance: {sorted(existing_neko_keys)}",
             flush=True,
         )
     else:
@@ -874,25 +881,23 @@ def main():
         })
         return 0  # 非错误场景：前端应附加到已有进程
 
-    port_result = apply_port_strategy()
-    if port_result == "attach":
-        # 已有 N.E.K.O 后端在运行，无需再次拉起。
-        release_startup_lock()
-        return 0
-    if not port_result:
-        release_startup_lock()
-        return 1
-
-    register_shutdown_hooks()
-    
-    # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
-    setup_job_object()
-    
-    print("=" * 60, flush=True)
-    print("N.E.K.O. 服务器启动器", flush=True)
-    print("=" * 60, flush=True)
-    
     try:
+        port_result = apply_port_strategy()
+        if port_result == "attach":
+            # 已有 N.E.K.O 后端在运行，无需再次拉起。
+            return 0
+        if not port_result:
+            return 1
+
+        register_shutdown_hooks()
+
+        # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
+        setup_job_object()
+
+        print("=" * 60, flush=True)
+        print("N.E.K.O. 服务器启动器", flush=True)
+        print("=" * 60, flush=True)
+
         # 1. 启动所有服务器
         print("\n正在启动服务器...\n", flush=True)
         all_started = True
@@ -900,20 +905,20 @@ def main():
             if not start_server(server):
                 all_started = False
                 break
-        
+
         if not all_started:
             print("\n启动失败，正在清理...", flush=True)
             report_startup_failure("Startup aborted: at least one service failed to start", show_dialog=False)
             cleanup_servers()
             return 1
-        
+
         # 2. 等待服务器准备就绪
         if not wait_for_servers():
             print("\n启动失败，正在清理...", flush=True)
             report_startup_failure("Startup aborted: services did not become ready before timeout", show_dialog=False)
             cleanup_servers()
             return 1
-        
+
         # 3. 服务器已启动，通知前端
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
@@ -933,19 +938,25 @@ def main():
         print("\n  按 Ctrl+C 关闭所有服务器", flush=True)
         print("=" * 60, flush=True)
         print("", flush=True)
-        
-        # 服务已就绪，释放启动锁。
-        release_startup_lock()
 
         # 持续运行，监控服务器状态
         while True:
-            time.sleep(1)
-            # 仅检查已实际启动的进程，跳过复用已有实例而未创建进程的服务
+            time.sleep(5)
+            # 检查已实际启动的进程
             started = [s for s in SERVERS if s.get('process') is not None]
             if started and not all(s['process'].is_alive() for s in started):
                 print("\n检测到服务器异常退出！", flush=True)
                 break
-        
+            # 对复用已有实例的服务进行健康探测
+            reused = [s for s in SERVERS if s.get('process') is None and s.get('port')]
+            for s in reused:
+                if probe_neko_health(s['port']) is None:
+                    print(f"\n复用的 {s['name']}(port {s['port']}) 已不可达！", flush=True)
+                    break
+            else:
+                continue
+            break  # 内层 for 触发 break 时跳出外层 while
+
     except KeyboardInterrupt:
         print("\n\n收到中断信号，正在关闭...", flush=True)
     except Exception as e:
@@ -956,7 +967,7 @@ def main():
         release_startup_lock()
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
-    
+
     return 0
 
 if __name__ == "__main__":
