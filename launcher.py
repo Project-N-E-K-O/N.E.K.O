@@ -502,7 +502,7 @@ def _classify_port_conflict(port: int, excluded_ranges: list[tuple[int, int]] | 
     if owners:
         return "other_process"
     # 端口无法绑定且无监听者，通常是 Hyper-V 预留
-    if is_port_in_excluded_range(port):
+    if is_port_in_excluded_range(port, excluded_ranges):
         return "hyperv_excluded"
     return "unknown"
 
@@ -540,6 +540,7 @@ def apply_port_strategy() -> bool | str:
 
         # 端口不可绑定，先识别具体原因
         reason = _classify_port_conflict(preferred, excluded_ranges)
+        owners = get_port_owners(preferred)
 
         if reason == "neko":
             # 已有 N.E.K.O 实例占用该端口。
@@ -552,13 +553,12 @@ def apply_port_strategy() -> bool | str:
                     "preferred": preferred,
                     "selected": preferred,
                     "reason": "existing_neko",
-                    "owners": get_port_owners(preferred),
+                    "owners": owners,
                 }
             )
             continue
 
         # 需要选择回退端口
-        owners = get_port_owners(preferred)
         fallback = _pick_fallback_port(preferred, reserved)
         if fallback is None:
             report_startup_failure(

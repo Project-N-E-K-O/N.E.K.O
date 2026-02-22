@@ -99,10 +99,16 @@ def probe_neko_health(
 
         # 处理 chunked 传输编码（常见单块场景）
         body = body.strip()
-        if body and body[0].isdigit() and "\r\n" in body:
-            # 可能是分块格式："<十六进制长度>\r\n<数据>\r\n0\r\n"
+        if body and "\r\n" in body:
             _size_line, rest = body.split("\r\n", 1)
-            body = rest.rsplit("\r\n0", 1)[0] if "\r\n0" in rest else rest
+            # chunk-size 可能带扩展（分号后），取纯十六进制部分
+            _size_hex = _size_line.split(";", 1)[0].strip()
+            try:
+                int(_size_hex, 16)
+                # 确认是 chunked 分块格式，去掉末尾 "0" 结束块
+                body = rest.rsplit("\r\n0", 1)[0] if "\r\n0" in rest else rest
+            except ValueError:
+                pass  # 非 chunked，保持 body 不变
 
         payload = json.loads(body)
         if isinstance(payload, dict) and payload.get("app") == HEALTH_APP_SIGNATURE:
