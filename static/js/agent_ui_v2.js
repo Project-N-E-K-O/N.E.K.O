@@ -13,6 +13,9 @@
         optimistic: {},
         busyTimer: null,
     };
+    
+    // 暴露状态供 app.js 等外部脚本使用乐观更新检测
+    window.agent_ui_v2_state = state;
 
     const byId = (id) => document.getElementById(id);
     const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
@@ -198,6 +201,15 @@
             setStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启');
         }
         state.suppressChange = false;
+
+
+        if (typeof window.checkAndToggleTaskHUD === 'function') {
+            console.log('[AgentUIv2] Calling checkAndToggleTaskHUD from render()');
+            window.checkAndToggleTaskHUD();
+        } else {
+            console.log('[AgentUIv2] checkAndToggleTaskHUD not found during render()');
+        }
+
     }
 
     function bindEvents() {

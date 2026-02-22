@@ -164,7 +164,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add('vrm-popup-agent');
-        this._createAgentPopupContent(popup);
+        window.AgentHUD._createAgentPopupContent.call(this, popup);
     } else if (buttonId === 'settings') {
         // 避免小屏溢出：限制高度并允许滚动
         popup.classList.add('vrm-popup-settings');

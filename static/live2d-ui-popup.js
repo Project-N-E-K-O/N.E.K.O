@@ -71,7 +71,7 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         // Agent工具开关组
-        this._createAgentPopupContent(popup);
+        window.AgentHUD._createAgentPopupContent.call(this, popup);
     } else if (buttonId === 'settings') {
         // 设置菜单
         this._createSettingsPopupContent(popup);
