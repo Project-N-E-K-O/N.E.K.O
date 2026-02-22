@@ -25,9 +25,14 @@ logger = logging.getLogger(__name__)
 # ZMQ 地址：支持环境变量覆盖，便于 launcher 在默认端口落入
 # Hyper-V 保留区时进行迁移。
 def _zmq_addr(env_key: str, default_port: int) -> str:
-    port = os.getenv(env_key)
-    if port and port.isdigit():
-        return f"tcp://127.0.0.1:{port}"
+    raw = os.getenv(env_key, "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if 1 <= val <= 65535:
+                return f"tcp://127.0.0.1:{val}"
+        except (ValueError, TypeError):
+            pass
     return f"tcp://127.0.0.1:{default_port}"
 
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）

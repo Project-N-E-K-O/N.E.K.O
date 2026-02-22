@@ -73,6 +73,13 @@ INTERNAL_DEFAULT_PORTS = {
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
 AVOID_FALLBACK_PORTS = set(range(48911, 48919))
 
+# 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
+MODULE_TO_PORT_KEY: dict[str, str] = {
+    "memory_server": "MEMORY_SERVER_PORT",
+    "agent_server": "TOOL_SERVER_PORT",
+    "main_server": "MAIN_SERVER_PORT",
+}
+
 
 def _show_error_dialog(message: str):
     """在 Windows 打包场景显示错误弹窗。"""
@@ -501,17 +508,17 @@ def _classify_port_conflict(port: int, excluded_ranges: list[tuple[int, int]] | 
 
 
 def apply_port_strategy() -> bool | str:
-        """优先使用默认端口，必要时自动规避冲突。
+    """优先使用默认端口，必要时自动规避冲突。
 
-        返回值：
-            ``True``      端口规划完成，可继续启动服务。
-            ``False``     发生致命错误，需中止启动。
-            ``"attach"`` 默认端口已由现有 N.E.K.O 后端完整占用。
+    返回值：
+        ``True``      端口规划完成，可继续启动服务。
+        ``False``     发生致命错误，需中止启动。
+        ``"attach"`` 默认端口已由现有 N.E.K.O 后端完整占用。
 
-        策略：
-        1. 默认端口若已是 N.E.K.O 服务，则视为可复用。
-        2. 若被 Hyper-V/WSL 保留或其他进程占用，则选择 fallback 端口。
-        """
+    策略：
+    1. 默认端口若已是 N.E.K.O 服务，则视为可复用。
+    2. 若被 Hyper-V/WSL 保留或其他进程占用，则选择 fallback 端口。
+    """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
     chosen: dict[str, int] = {}
     chosen_internal: dict[str, int] = {}
@@ -679,13 +686,7 @@ def start_server(server: Dict) -> bool:
     try:
         port = server.get('port')
 
-        # Map module name to port key for _existing_neko_services lookup
-        _MODULE_TO_PORT_KEY = {
-            "memory_server": "MEMORY_SERVER_PORT",
-            "agent_server": "TOOL_SERVER_PORT",
-            "main_server": "MAIN_SERVER_PORT",
-        }
-        port_key = _MODULE_TO_PORT_KEY.get(server['module'])
+        port_key = MODULE_TO_PORT_KEY.get(server['module'])
 
         # If this service's port already has a running N.E.K.O instance,
         # skip launching (the existing process will serve requests).
@@ -940,12 +941,9 @@ def main():
         # 持续运行，监控服务器状态
         while True:
             time.sleep(1)
-            # 检查服务器是否还活着
-            all_alive = all(
-                server['process'] and server['process'].is_alive() 
-                for server in SERVERS
-            )
-            if not all_alive:
+            # 仅检查已实际启动的进程，跳过复用已有实例而未创建进程的服务
+            started = [s for s in SERVERS if s.get('process') is not None]
+            if started and not all(s['process'].is_alive() for s in started):
                 print("\n检测到服务器异常退出！", flush=True)
                 break
         

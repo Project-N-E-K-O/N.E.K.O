@@ -47,7 +47,9 @@ def build_health_response(
     if version:
         resp["version"] = version
     if extra:
-        resp.update(extra)
+        # 合并附加字段，但禁止覆盖核心签名键
+        _reserved = {"app", "service", "status", "instance_id"}
+        resp.update({k: v for k, v in extra.items() if k not in _reserved})
     return resp
 
 
@@ -65,6 +67,7 @@ def probe_neko_health(
     这里使用原生 socket，避免 launcher 引入 ``httpx`` / ``requests``，
     保持启动器轻量。
     """
+    sock: socket.socket | None = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -87,7 +90,6 @@ def probe_neko_health(
                 chunks.append(data)
             except socket.timeout:
                 break
-        sock.close()
 
         raw = b"".join(chunks).decode("utf-8", errors="replace")
         # 分离响应头与响应体
@@ -107,6 +109,12 @@ def probe_neko_health(
             return payload
     except Exception:
         pass
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
     return None
 
 
@@ -229,10 +237,15 @@ def _acquire_file_lock() -> bool:
     try:
         import fcntl
 
-        _lock_fd = open(_LOCK_FILE, "w")
-        fcntl.flock(_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_fd.write(str(os.getpid()))
-        _lock_fd.flush()
+        fd = open(_LOCK_FILE, "w")
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError):
+            fd.close()
+            return False
+        fd.write(str(os.getpid()))
+        fd.flush()
+        _lock_fd = fd
         return True
     except (OSError, IOError):
         return False
