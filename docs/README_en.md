@@ -1,8 +1,8 @@
 <div align="center">
 
-![Logo](../assets/neko_logo.jpg)
+![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
-[中文](../README.MD) | [日本語](README_ja.md)
+[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md)
 
 # Project N.E.K.O. :kissing_cat: <br>**A Living AI Companion Metaverse, Built Together by You and Me.**
 
@@ -11,12 +11,13 @@
 > N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)]()
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 [![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
+[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
 
 **:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
 
@@ -237,7 +238,7 @@ N.E.K.O/
 
 **Data Flow**
 
-![Framework](../assets/framework.drawio.svg)
+![Framework](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/framework.drawio.svg)
 
 ### Contributing to Development
 
