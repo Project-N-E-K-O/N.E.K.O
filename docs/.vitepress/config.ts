@@ -400,11 +400,12 @@ export default defineConfig({
   description: 'Developer documentation for the AI companion metaverse platform',
 
   head: [
-    ['link', { rel: 'icon', href: '/N.E.K.O./favicon.ico' }],
+    ['link', { rel: 'icon', href: '/favicon.ico' }],
   ],
 
-  // Deploy to GitHub Pages at https://project-n-e-k-o.github.io/N.E.K.O/
-  base: '/N.E.K.O/',
+  // Custom domain: project-neko.online → base must be '/'
+  // (was '/N.E.K.O/' for github.io subdirectory, but custom domain serves at root)
+  base: '/',
 
   lastUpdated: true,
   cleanUrls: true,
