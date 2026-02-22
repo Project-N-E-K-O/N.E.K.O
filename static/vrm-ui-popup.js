@@ -53,7 +53,7 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             white-space: nowrap;
         }
         .vrm-toggle-item:focus-within {
-            outline: 2px solid var(--neko-popup-active, #44b7fe);
+            outline: 2px solid var(--neko-popup-active, #2a7bc4);
             outline-offset: 2px;
         }
         .vrm-toggle-item[aria-disabled="true"] {
@@ -75,8 +75,8 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             justify-content: center;
         }
         .vrm-toggle-indicator[aria-checked="true"] {
-            background-color: var(--neko-popup-active, #44b7fe);
-            border-color: var(--neko-popup-active, #44b7fe);
+            background-color: var(--neko-popup-active, #2a7bc4);
+            border-color: var(--neko-popup-active, #2a7bc4);
         }
         .vrm-toggle-checkmark {
             color: #fff;
@@ -125,10 +125,10 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
         }
         .vrm-agent-status {
             font-size: 12px;
-            color: var(--neko-popup-accent, #44b7fe);
+            color: var(--neko-popup-accent, #2a7bc4);
             padding: 6px 8px;
             border-radius: 4px;
-            background: var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05));
+            background: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
             margin-bottom: 8px;
             min-height: 20px;
             text-align: center;
@@ -156,6 +156,12 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
         popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
+    } else if (buttonId === 'screen') {
+        // 屏幕/窗口源选择列表：与 Live2D 保持一致的宽度与滚动行为
+        popup.style.width = '420px';
+        popup.style.maxHeight = '400px';
+        popup.style.overflowX = 'hidden';
+        popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add('vrm-popup-agent');
         this._createAgentPopupContent(popup);
@@ -283,7 +289,7 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
                     padding: '4px 8px',
                     marginLeft: '-6px',
                     fontSize: '12px',
-                    color: 'var(--neko-popup-text-sub, #666)',
+                    color: 'var(--neko-popup-text, #333)',
                     cursor: 'pointer',
                     borderRadius: '6px',
                     transition: 'background 0.2s ease',
@@ -409,7 +415,7 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
     container.style.padding = '10px 14px';
 
     const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
-    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text-sub, #666)' };
+    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
     const SLIDER_STYLE = { flex: '1', minWidth: '0', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' };
 
     // --- 画质滑动条 ---
@@ -518,7 +524,7 @@ VRMManager.prototype._createSidePanelContainer = function () {
         gap: '6px',
         padding: '6px 12px',
         fontSize: '12px',
-        color: 'var(--neko-popup-text-sub, #666)',
+        color: 'var(--neko-popup-text, #333)',
         opacity: '0',
         zIndex: '100001',
         background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
@@ -594,11 +600,46 @@ VRMManager.prototype._createSidePanelContainer = function () {
 // 附加侧边面板悬停逻辑（公共方法，供按钮和开关复用）
 VRMManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
     const self = this;
-    const expandPanel = () => sidePanel._expand();
+    const popupEl = sidePanel._popupElement || null;
+    const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+
+    if (ownerId) {
+        sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
+    }
+
+    const collapseWithDelay = (delay = 80) => {
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._hoverCollapseTimer = setTimeout(() => {
+            const anchorHovered = anchorEl.matches(':hover');
+            const panelHovered = sidePanel.matches(':hover');
+            if (!anchorHovered && !panelHovered) {
+                sidePanel._collapse();
+            }
+            sidePanel._hoverCollapseTimer = null;
+        }, delay);
+    };
+
+    const expandPanel = () => {
+        if (ownerId) {
+            document.querySelectorAll(`[data-neko-sidepanel-owner="${ownerId}"]`).forEach((panel) => {
+                if (panel !== sidePanel && typeof panel._collapse === 'function') {
+                    panel._collapse();
+                }
+            });
+        }
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._expand();
+    };
     const collapsePanel = (e) => {
         const target = e.relatedTarget;
-        if (!anchorEl.contains(target) && !sidePanel.contains(target)) {
-            sidePanel._collapse();
+        if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+            collapseWithDelay();
         }
     };
 
@@ -620,6 +661,16 @@ VRMManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
             self.interaction._isMouseOverButtons = false;
         }
     });
+
+    // 快速离开整个 settings popup 时，兜底收起侧栏
+    if (popupEl) {
+        popupEl.addEventListener('mouseleave', (e) => {
+            const target = e.relatedTarget;
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+                collapseWithDelay(60);
+            }
+        });
+    }
 };
 
 // 创建时间间隔控件（侧边弹出面板）
@@ -629,11 +680,12 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
-        alignItems: 'center',
+        alignItems: 'stretch',
+        flexDirection: 'column',
         gap: '6px',
         padding: '6px 12px',
         fontSize: '12px',
-        color: 'var(--neko-popup-text-sub, #666)',
+        color: 'var(--neko-popup-text, #333)',
         opacity: '0',
         zIndex: '100001',
         background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
@@ -644,8 +696,9 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
-        flexWrap: 'wrap',
-        maxWidth: '300px'
+        flexWrap: 'nowrap',
+        width: 'max-content',
+        maxWidth: 'min(320px, calc(100vw - 24px))'
     });
 
     // 阻止指针事件传播到底层
@@ -660,7 +713,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         display: 'flex',
         alignItems: 'center',
         gap: '4px',
-        width: '100%'
+        width: 'auto'
     });
 
     // 间隔标签
@@ -814,7 +867,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.id = `live2d-${toggle.id}`;
+    checkbox.id = `vrm-${toggle.id}`;
     checkbox.style.position = 'absolute';
     checkbox.style.opacity = '0';
     checkbox.style.width = '1px';
@@ -841,7 +894,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     label.className = 'vrm-toggle-label';
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
-    label.htmlFor = `live2d-${toggle.id}`;
+    label.htmlFor = `vrm-${toggle.id}`;
     toggleItem.setAttribute('aria-label', toggle.label);
 
     // 更新标签文本的函数
@@ -1091,20 +1144,41 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
             const submenuContainer = this._createSubmenuContainer(item.submenu);
             popup.appendChild(submenuContainer);
 
-            // 鼠标悬停展开/收缩
-            menuItem.addEventListener('mouseenter', () => {
-                submenuContainer._expand();
-            });
-            menuItem.addEventListener('mouseleave', (e) => {
-                if (!submenuContainer.contains(e.relatedTarget)) {
-                    submenuContainer._collapse();
+            // 鼠标悬停展开/收缩：增加缓冲，避免主项和子项之间小缝隙导致抖动
+            let submenuCollapseTimer = null;
+            const clearSubmenuCollapseTimer = () => {
+                if (submenuCollapseTimer) {
+                    clearTimeout(submenuCollapseTimer);
+                    submenuCollapseTimer = null;
                 }
-            });
-            submenuContainer.addEventListener('mouseenter', () => {
+            };
+            const expandSubmenu = () => {
+                clearSubmenuCollapseTimer();
                 submenuContainer._expand();
+            };
+            const scheduleSubmenuCollapse = () => {
+                clearSubmenuCollapseTimer();
+                submenuCollapseTimer = setTimeout(() => {
+                    submenuContainer._collapse();
+                    submenuCollapseTimer = null;
+                }, 110);
+            };
+
+            menuItem.addEventListener('mouseenter', expandSubmenu);
+            menuItem.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
-            submenuContainer.addEventListener('mouseleave', () => {
-                submenuContainer._collapse();
+            submenuContainer.addEventListener('mouseenter', expandSubmenu);
+            submenuContainer.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
         }
     });

@@ -15,15 +15,19 @@
     };
 
     const byId = (id) => document.getElementById(id);
+    const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
     const el = () => ({
-        master: byId('live2d-agent-master'),
-        keyboard: byId('live2d-agent-keyboard'),
-        browser: byId('live2d-agent-browser'),
-        userPlugin: byId('live2d-agent-user-plugin'),
-        status: byId('live2d-agent-status'),
+        master: getEls('live2d-agent-master', 'vrm-agent-master'),
+        keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard'),
+        browser: getEls('live2d-agent-browser', 'vrm-agent-browser'),
+        userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin'),
+        status: getEls('live2d-agent-status', 'vrm-agent-status'),
     });
-    const sync = (cb) => {
-        if (cb && typeof cb._updateStyle === 'function') cb._updateStyle();
+    const sync = (cbs) => {
+        if (!cbs) return;
+        (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
+            if (cb && typeof cb._updateStyle === 'function') cb._updateStyle();
+        });
     };
     const getName = (key) => {
         const map = {
@@ -35,7 +39,7 @@
     };
     const setStatus = (msg) => {
         const { status } = el();
-        if (status) status.textContent = msg || '';
+        status.forEach(s => { if (s) s.textContent = msg || ''; });
     };
     const setGlobalBusy = (busy, statusText) => {
         state.globalBusy = !!busy;
@@ -112,17 +116,20 @@
 
     function render(source = 'render') {
         const { master, keyboard, browser, userPlugin } = el();
-        if (!master) return;
+        if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
-            master.disabled = true;
-            master.checked = false;
+            master.forEach(m => {
+                m.disabled = true;
+                m.checked = false;
+            });
             sync(master);
-            [keyboard, browser, userPlugin].forEach(cb => {
-                if (!cb) return;
-                cb.disabled = true;
-                cb.checked = false;
-                sync(cb);
+            [keyboard, browser, userPlugin].forEach(list => {
+                list.forEach(cb => {
+                    cb.disabled = true;
+                    cb.checked = false;
+                });
+                sync(list);
             });
             setStatus(window.t ? window.t('agent.status.connecting') : 'Agent状态同步中...');
             return;
@@ -138,31 +145,36 @@
 
         state.suppressChange = true;
         if (!online) {
-            master.checked = false;
-            master.disabled = true;
-            master.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
+            master.forEach(m => {
+                m.checked = false;
+                m.disabled = true;
+                m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
+            });
             sync(master);
-            [keyboard, browser, userPlugin].forEach(cb => {
-                if (!cb) return;
-                cb.checked = false;
-                cb.disabled = true;
-                sync(cb);
+            [keyboard, browser, userPlugin].forEach(list => {
+                list.forEach(cb => {
+                    cb.checked = false;
+                    cb.disabled = true;
+                });
+                sync(list);
             });
             setStatus(window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动');
             state.suppressChange = false;
             return;
         }
 
-        master.checked = effectiveAnalyzerEnabled;
-        master.disabled = !!state.globalBusy;
-        master.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+        master.forEach(m => {
+            m.checked = effectiveAnalyzerEnabled;
+            m.disabled = !!state.globalBusy;
+            m.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+        });
         sync(master);
 
         FLAG_KEYS.forEach((k) => {
-            const target = k === 'computer_use_enabled'
+            const list = k === 'computer_use_enabled'
                 ? keyboard
-                : (k === 'browser_use_enabled' ? browser : (k === 'user_plugin_enabled' ? userPlugin : null));
-            if (!target) return;
+                : (k === 'browser_use_enabled' ? browser : (k === 'user_plugin_enabled' ? userPlugin : []));
+            if (!list.length) return;
             const ready = capabilityReady(snap, k);
             const reason = capabilityReason(snap, k);
             const disabledByPending = state.pending.has(k);
@@ -170,10 +182,12 @@
                 ? !!state.optimistic[k]
                 : !!flags[k];
             const canUse = effectiveAnalyzerEnabled && ready;
-            target.checked = optimisticValue && canUse;
-            target.disabled = !!state.globalBusy || disabledByPending || !canUse;
-            target.title = canUse ? getName(k) : (reason || (window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关'));
-            sync(target);
+            list.forEach(target => {
+                target.checked = optimisticValue && canUse;
+                target.disabled = !!state.globalBusy || disabledByPending || !canUse;
+                target.title = canUse ? getName(k) : (reason || (window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关'));
+            });
+            sync(list);
         });
 
         if (state.globalBusy) {
@@ -188,20 +202,22 @@
 
     function bindEvents() {
         const { master, keyboard, browser, userPlugin } = el();
-        if (!master) return;
-        const clearProcessing = (cb) => {
-            if (!cb) return;
-            cb._processing = false;
-            cb._processingEvent = null;
-            cb._processingTime = null;
+        if (!master.length) return;
+        const clearProcessing = (cbs) => {
+            (Array.isArray(cbs) ? cbs : [cbs]).forEach(cb => {
+                if (!cb) return;
+                cb._processing = false;
+                cb._processingEvent = null;
+                cb._processingTime = null;
+            });
         };
 
-        const onMasterChange = async () => {
+        const onMasterChange = async (e) => {
             if (state.suppressChange) {
                 clearProcessing(master);
                 return;
             }
-            const enabled = !!master.checked;
+            const enabled = !!e.target.checked;
             const opSeq = ++state.masterOpSeq;
             state.pending.add('agent_enabled');
             state.optimistic.agent_enabled = enabled;
@@ -226,7 +242,6 @@
                 }
                 return;
             } finally {
-                // live2d-ui-popup.js sets this flag for debounce; v2 must clear it explicitly.
                 clearProcessing(master);
             }
             if (opSeq === state.masterOpSeq) {
@@ -236,41 +251,43 @@
                 render('command');
             }
         };
-        master.addEventListener('change', onMasterChange);
+        master.forEach(m => m.addEventListener('change', onMasterChange));
 
-        const bindFlag = (cb, key) => {
-            if (!cb) return;
-            cb.addEventListener('change', async () => {
-                if (state.suppressChange) {
-                    clearProcessing(cb);
-                    return;
-                }
-                const value = !!cb.checked;
-                state.pending.add(key);
-                state.optimistic[key] = value;
-                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
-                render('command');
-                try {
-                    await sendCommand('set_flag', { key, value });
-                    const ts = performance.now();
-                    await fetchSnapshot().catch(() => { });
-                    console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
-                } catch (e) {
+        const bindFlag = (cbs, key) => {
+            if (!cbs || !cbs.length) return;
+            cbs.forEach(cb => {
+                cb.addEventListener('change', async (e) => {
+                    if (state.suppressChange) {
+                        clearProcessing(cbs);
+                        return;
+                    }
+                    const value = !!e.target.checked;
+                    state.pending.add(key);
+                    state.optimistic[key] = value;
+                    setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+                    render('command');
+                    try {
+                        await sendCommand('set_flag', { key, value });
+                        const ts = performance.now();
+                        await fetchSnapshot().catch(() => { });
+                        console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_flag', key, ms: Number((performance.now() - ts).toFixed(2)) });
+                    } catch (err) {
+                        state.pending.delete(key);
+                        state.optimistic = {};
+                        setGlobalBusy(false);
+                        fetchSnapshot().catch(() => { });
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(`${getName(key)}切换失败: ${err.message}`, 2500);
+                        }
+                        return;
+                    } finally {
+                        clearProcessing(cbs);
+                    }
                     state.pending.delete(key);
                     state.optimistic = {};
                     setGlobalBusy(false);
-                    fetchSnapshot().catch(() => { });
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(`${getName(key)}切换失败: ${e.message}`, 2500);
-                    }
-                    return;
-                } finally {
-                    clearProcessing(cb);
-                }
-                state.pending.delete(key);
-                state.optimistic = {};
-                setGlobalBusy(false);
-                render('command');
+                    render('command');
+                });
             });
         };
 

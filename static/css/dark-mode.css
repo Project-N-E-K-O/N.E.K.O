@@ -55,14 +55,14 @@ html #chat-container {
   --neko-popup-text: #333;
   --neko-popup-text-sub: #666;
   --neko-popup-indicator-border: #ccc;
-  --neko-popup-active: #44b7fe;
-  --neko-popup-hover: rgba(68, 183, 254, 0.1);
-  --neko-popup-hover-subtle: rgba(68, 183, 254, 0.08);
-  --neko-popup-selected-bg: rgba(68, 183, 254, 0.1);
-  --neko-popup-selected-hover: rgba(68, 183, 254, 0.15);
+  --neko-popup-active: #2a7bc4;
+  --neko-popup-hover: rgba(42, 123, 196, 0.1);
+  --neko-popup-hover-subtle: rgba(42, 123, 196, 0.08);
+  --neko-popup-selected-bg: rgba(42, 123, 196, 0.1);
+  --neko-popup-selected-hover: rgba(42, 123, 196, 0.15);
   --neko-popup-separator: rgba(0, 0, 0, 0.1);
-  --neko-popup-accent: #44b7fe;
-  --neko-popup-accent-bg: rgba(68, 183, 254, 0.05);
+  --neko-popup-accent: #2a7bc4;
+  --neko-popup-accent-bg: rgba(42, 123, 196, 0.05);
   --neko-popup-error: #dc3545;
   /* 浮动按钮变量 */
   --neko-btn-bg: rgba(255, 255, 255, 0.65);

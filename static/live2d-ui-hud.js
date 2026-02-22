@@ -87,10 +87,10 @@ Live2DManager.prototype._createAgentPopupContent = function (popup) {
     statusDiv.id = 'live2d-agent-status';
     Object.assign(statusDiv.style, {
         fontSize: '12px',
-        color: '#44b7fe',  // 主题浅蓝色
+        color: 'var(--neko-popup-accent, #2a7bc4)',
         padding: '6px 8px',
         borderRadius: '4px',
-        background: 'var(--neko-popup-accent-bg, rgba(68, 183, 254, 0.05))',  // 浅蓝背景
+        background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))',
         marginBottom: '8px',
         minHeight: '20px',
         textAlign: 'center'
@@ -249,14 +249,18 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingBottom: '12px',
+        padding: '12px 16px',
+        margin: '-16px -16px 16px -16px',
+        backgroundColor: 'rgba(255, 255, 255, 0.85)',
+        borderTopLeftRadius: '8px',
+        borderTopRightRadius: '8px',
         borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
-        transition: 'padding 0.3s ease, border-color 0.3s ease'
+        transition: 'padding 0.3s ease, margin 0.3s ease, border-color 0.3s ease, border-radius 0.3s ease, background-color 0.3s ease'
     });
 
     const title = document.createElement('div');
     title.id = 'agent-task-hud-title';
-    title.innerHTML = `<span style="color: #44b7fe; margin-right: 8px;">⚡</span>${window.t ? window.t('agent.taskHud.title') : 'Agent 任务'}`;
+    title.innerHTML = `<span style="color: var(--neko-popup-accent, #2a7bc4); margin-right: 8px;">⚡</span>${window.t ? window.t('agent.taskHud.title') : 'Agent 任务'}`;
     Object.assign(title.style, {
         fontWeight: '600',
         fontSize: '15px',
@@ -275,8 +279,8 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         fontSize: '11px'
     });
     stats.innerHTML = `
-        <span style="color: #44b7fe;" title="${window.t ? window.t('agent.taskHud.running') : '运行中'}">● <span id="hud-running-count">0</span></span>
-        <span style="color: #94a3b8;" title="${window.t ? window.t('agent.taskHud.queued') : '队列中'}">◐ <span id="hud-queued-count">0</span></span>
+        <span style="color: var(--neko-popup-accent, #2a7bc4);" title="${window.t ? window.t('agent.taskHud.running') : '运行中'}">● <span id="hud-running-count">0</span></span>
+        <span style="color: var(--neko-popup-text-sub, #666);" title="${window.t ? window.t('agent.taskHud.queued') : '队列中'}">◐ <span id="hud-queued-count">0</span></span>
     `;
 
     // 右侧容器（stats + minimize）
@@ -291,18 +295,18 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     // 最小化按钮
     const minimizeBtn = document.createElement('div');
     minimizeBtn.id = 'agent-task-hud-minimize';
-    minimizeBtn.innerHTML = '−';
+    minimizeBtn.innerHTML = '▼';
     Object.assign(minimizeBtn.style, {
         width: '22px',
         height: '22px',
         borderRadius: '6px',
-        background: 'rgba(68, 183, 254, 0.12)',
+        background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '14px',
+        fontSize: '10px',
         fontWeight: 'bold',
-        color: '#44b7fe',
+        color: 'var(--neko-popup-accent, #2a7bc4)',
         cursor: 'pointer',
         transition: 'all 0.2s ease',
         flexShrink: '0'
@@ -331,30 +335,34 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     const hudCollapsedKey = 'agent-task-hud-collapsed-v2';
     const applyHudCollapsed = (collapsed) => {
         if (collapsed) {
-            hud.style.width = '60px';
+            hud.style.width = 'auto';
             hud.style.padding = '8px 12px';
             title.style.display = 'none';
-            stats.style.display = 'none';
-            header.style.paddingBottom = '0';
+            stats.style.display = 'flex';
+            header.style.padding = '0';
+            header.style.margin = '0';
+            header.style.backgroundColor = 'transparent';
             header.style.borderBottom = 'none';
-            header.style.justifyContent = 'flex-end';
+            header.style.justifyContent = 'center';
             taskList.style.maxHeight = '0';
             taskList.style.opacity = '0';
             taskList.style.overflow = 'hidden';
-            minimizeBtn.innerHTML = '+';
+            minimizeBtn.style.transform = 'rotate(-90deg)';
         } else {
             hud.style.width = '320px';
             hud.style.padding = '16px';
             title.style.display = '';
             stats.style.display = 'flex';
-            header.style.paddingBottom = '12px';
+            header.style.padding = '12px 16px';
+            header.style.margin = '-16px -16px 16px -16px';
+            header.style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
             header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
             header.style.justifyContent = 'space-between';
             taskList.style.maxHeight = 'calc(60vh - 80px)';
             taskList.style.opacity = '1';
             taskList.style.overflow = '';
             taskList.style.overflowY = 'auto';
-            minimizeBtn.innerHTML = '−';
+            minimizeBtn.style.transform = 'rotate(0deg)';
         }
     };
 
@@ -385,29 +393,6 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         transition: 'all 0.3s ease'
     });
 
-    // 折叠控制按钮
-    const collapseButton = document.createElement('div');
-    collapseButton.className = 'collapse-button';
-    collapseButton.innerHTML = '▼';
-    // ARIA properties for accessibility
-    collapseButton.setAttribute('role', 'button');
-    collapseButton.setAttribute('aria-expanded', 'true');
-    Object.assign(collapseButton.style, {
-        position: 'absolute',
-        top: '8px',
-        right: '8px',
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '10px',
-        cursor: 'pointer',
-        transition: 'all 0.2s ease',
-        zIndex: '1'
-    });
-
     // 设置空状态容器样式
     Object.assign(emptyState.style, {
         position: 'relative',
@@ -415,11 +400,7 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     });
 
     emptyState.appendChild(emptyContent);
-    emptyState.appendChild(collapseButton);
     taskList.appendChild(emptyState);
-
-    // 初始化折叠状态
-    this._setupCollapseFunctionality(emptyState, collapseButton, emptyContent);
 
     hud.appendChild(taskList);
 
@@ -431,56 +412,9 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
     return hud;
 };
 
-// 设置空状态折叠功能
+// 设置空状态折叠功能 (已移除, 之前的 empty-state triangle 不再使用)
 Live2DManager.prototype._setupCollapseFunctionality = function (emptyState, collapseButton, emptyContent) {
-    const HUD_EMPTY_COLLAPSED_KEY = 'agent-task-empty-collapsed';
-    let isCollapsed = false;
-
-    // 添加类名以匹配CSS规则
-    emptyContent.classList.add('empty-state');
-
-    try {
-        isCollapsed = localStorage.getItem(HUD_EMPTY_COLLAPSED_KEY) === 'true';
-    } catch (e) {
-        console.warn('Failed to read collapsed state', e);
-    }
-
-    const applyState = (collapsed) => {
-        if (collapsed) {
-            collapseButton.classList.add('collapsed');
-            emptyContent.classList.add('collapsed');
-
-            emptyContent.style.maxHeight = '0px';
-            emptyContent.style.opacity = '0';
-            emptyContent.style.margin = '0';
-            emptyContent.style.padding = '0';
-            collapseButton.style.transform = 'rotate(-90deg)';
-
-            collapseButton.setAttribute('aria-expanded', 'false');
-        } else {
-            collapseButton.classList.remove('collapsed');
-            emptyContent.classList.remove('collapsed');
-
-            emptyContent.style.maxHeight = '100px';
-            emptyContent.style.opacity = '1';
-            emptyContent.style.margin = '';
-            emptyContent.style.padding = '20px';
-            collapseButton.style.transform = 'rotate(0deg)';
-
-            collapseButton.setAttribute('aria-expanded', 'true');
-        }
-    };
-
-    applyState(isCollapsed);
-
-    collapseButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        isCollapsed = !isCollapsed;
-        applyState(isCollapsed);
-        try {
-            localStorage.setItem(HUD_EMPTY_COLLAPSED_KEY, String(isCollapsed));
-        } catch (e) { }
-    });
+    // Legacy function, kept for signature compatibility if referenced
 };
 
 // 显示任务 HUD
@@ -574,16 +508,16 @@ Live2DManager.prototype._createTaskCard = function (task) {
     }
 
     const isRunning = task.status === 'running';
-    const statusColor = isRunning ? '#44b7fe' : '#94a3b8';
+    const statusColor = isRunning ? 'var(--neko-popup-accent, #2a7bc4)' : 'var(--neko-popup-text-sub, #666)';
     const statusText = isRunning
         ? (window.t ? window.t('agent.taskHud.statusRunning') : '运行中')
         : (window.t ? window.t('agent.taskHud.statusQueued') : '队列中');
 
     Object.assign(card.style, {
-        background: isRunning ? 'rgba(68, 183, 254, 0.08)' : 'rgba(249, 249, 249, 0.6)',
+        background: isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))' : 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))',
         borderRadius: '8px',
         padding: '12px',
-        border: `1px solid ${isRunning ? 'rgba(68, 183, 254, 0.25)' : 'rgba(0, 0, 0, 0.06)'}`,
+        border: `1px solid ${isRunning ? 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))' : 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))'}`,
         transition: 'all 0.2s ease'
     });
 
@@ -610,7 +544,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '2px 8px',
-        background: isRunning ? 'rgba(68, 183, 254, 0.12)' : 'rgba(0, 0, 0, 0.05)',
+        background: isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px'
     });
 
@@ -673,7 +607,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         const progressBar = document.createElement('div');
         Object.assign(progressBar.style, {
             height: '2px',
-            background: 'rgba(68, 183, 254, 0.15)',
+            background: 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.15))',
             borderRadius: '1px',
             marginTop: '8px',
             overflow: 'hidden'
@@ -683,7 +617,7 @@ Live2DManager.prototype._createTaskCard = function (task) {
         Object.assign(progressFill.style, {
             height: '100%',
             width: '30%',
-            background: 'linear-gradient(90deg, #44b7fe, #96e8ff)',
+            background: 'linear-gradient(90deg, var(--neko-popup-accent, #2a7bc4), #66b5ff)',
             borderRadius: '1px',
             animation: 'taskProgress 1.5s ease-in-out infinite'
         });

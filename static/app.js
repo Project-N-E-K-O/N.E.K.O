@@ -6099,27 +6099,29 @@ function init_app() {
 
     // 浮动Agent status更新函数
     function setFloatingAgentStatus(msg, taskStatus) {
-        const statusEl = document.getElementById('live2d-agent-status');
-        if (statusEl) {
-            statusEl.textContent = msg || '';
-            // Apply status-specific color for task result notifications
-            const colorMap = {
-                completed: '#52c41a',  // green
-                partial: '#faad14',  // amber
-                failed: '#ff4d4f',  // red
-            };
-            if (taskStatus && colorMap[taskStatus]) {
-                statusEl.style.color = colorMap[taskStatus];
-                // Auto-reset to theme blue after 6 seconds
-                clearTimeout(statusEl._statusResetTimer);
-                statusEl._statusResetTimer = setTimeout(() => {
-                    statusEl.style.color = '#44b7fe';
-                }, 6000);
-            } else {
-                clearTimeout(statusEl._statusResetTimer);
-                statusEl.style.color = '#44b7fe';
+        ['live2d-agent-status', 'vrm-agent-status'].forEach(id => {
+            const statusEl = document.getElementById(id);
+            if (statusEl) {
+                statusEl.textContent = msg || '';
+                // Apply status-specific color for task result notifications
+                const colorMap = {
+                    completed: '#52c41a',  // green
+                    partial: '#faad14',  // amber
+                    failed: '#ff4d4f',  // red
+                };
+                if (taskStatus && colorMap[taskStatus]) {
+                    statusEl.style.color = colorMap[taskStatus];
+                    // Auto-reset to theme blue after 6 seconds
+                    clearTimeout(statusEl._statusResetTimer);
+                    statusEl._statusResetTimer = setTimeout(() => {
+                        statusEl.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+                    }, 6000);
+                } else {
+                    clearTimeout(statusEl._statusResetTimer);
+                    statusEl.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+                }
             }
-        }
+        });
     }
 
     // 检查Agent服务器健康状态

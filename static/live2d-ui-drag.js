@@ -387,7 +387,7 @@ window.createChatModeToggle = function(options) {
     label.htmlFor = checkboxId;
     Object.assign(label.style, {
         fontSize: '12px',
-        color: '#666',
+        color: 'var(--neko-popup-text, #333)',
         cursor: 'pointer',
         whiteSpace: 'nowrap'
     });
