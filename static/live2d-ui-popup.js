@@ -250,7 +250,7 @@ Live2DManager.prototype._createAnimationSettingsSidePanel = function () {
     container.style.padding = '10px 14px';
 
     const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
-    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text-sub, #666)' };
+    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
     const SLIDER_STYLE = { flex: '1', minWidth: '0', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' };
 
     // --- 画质滑动条 ---
@@ -359,7 +359,7 @@ Live2DManager.prototype._createSidePanelContainer = function () {
         gap: '6px',
         padding: '6px 12px',
         fontSize: '12px',
-        color: 'var(--neko-popup-text-sub, #666)',
+        color: 'var(--neko-popup-text, #333)',
         opacity: '0',
         zIndex: '100001',
         background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
@@ -435,11 +435,46 @@ Live2DManager.prototype._createSidePanelContainer = function () {
 // 附加侧边面板悬停逻辑（公共方法，供按钮和开关复用）
 Live2DManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
     const self = this;
-    const expandPanel = () => sidePanel._expand();
+    const popupEl = sidePanel._popupElement || null;
+    const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+
+    if (ownerId) {
+        sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
+    }
+
+    const collapseWithDelay = (delay = 80) => {
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._hoverCollapseTimer = setTimeout(() => {
+            const anchorHovered = anchorEl.matches(':hover');
+            const panelHovered = sidePanel.matches(':hover');
+            if (!anchorHovered && !panelHovered) {
+                sidePanel._collapse();
+            }
+            sidePanel._hoverCollapseTimer = null;
+        }, delay);
+    };
+
+    const expandPanel = () => {
+        if (ownerId) {
+            document.querySelectorAll(`[data-neko-sidepanel-owner="${ownerId}"]`).forEach((panel) => {
+                if (panel !== sidePanel && typeof panel._collapse === 'function') {
+                    panel._collapse();
+                }
+            });
+        }
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._expand();
+    };
     const collapsePanel = (e) => {
         const target = e.relatedTarget;
-        if (!anchorEl.contains(target) && !sidePanel.contains(target)) {
-            sidePanel._collapse();
+        if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+            collapseWithDelay();
         }
     };
 
@@ -457,6 +492,16 @@ Live2DManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
         collapsePanel(e);
         self._isMouseOverButtons = false;
     });
+
+    // 快速离开整个 settings popup 时，兜底收起侧栏
+    if (popupEl) {
+        popupEl.addEventListener('mouseleave', (e) => {
+            const target = e.relatedTarget;
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+                collapseWithDelay(60);
+            }
+        });
+    }
 };
 
 // 创建时间间隔控件（侧边弹出面板）
@@ -466,11 +511,12 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
-        alignItems: 'center',
+        alignItems: 'stretch',
+        flexDirection: 'column',
         gap: '6px',
         padding: '6px 12px',
         fontSize: '12px',
-        color: 'var(--neko-popup-text-sub, #666)',
+        color: 'var(--neko-popup-text, #333)',
         opacity: '0',
         zIndex: '100001',
         background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
@@ -481,8 +527,9 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
-        flexWrap: 'wrap',
-        maxWidth: '300px'
+        flexWrap: 'nowrap',
+        width: 'max-content',
+        maxWidth: 'min(320px, calc(100vw - 24px))'
     });
 
     // 阻止指针事件传播到底层（避免触发live2d拖拽）
@@ -497,7 +544,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
         display: 'flex',
         alignItems: 'center',
         gap: '4px',
-        width: '100%'
+        width: 'auto'
     });
 
     // 间隔标签
@@ -650,7 +697,7 @@ Live2DManager.prototype._createSettingsLinkItem = function (item, popup) {
         gap: '6px',
         padding: '0 12px 0 44px',
         fontSize: '12px',
-        color: 'var(--neko-popup-text-sub, #666)',
+        color: 'var(--neko-popup-text, #333)',
         height: '0',
         overflow: 'hidden',
         opacity: '0',
@@ -1222,20 +1269,41 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
             const submenuContainer = this._createSubmenuContainer(item.submenu);
             popup.appendChild(submenuContainer);
 
-            // 鼠标悬停展开/收缩
-            menuItem.addEventListener('mouseenter', () => {
-                submenuContainer._expand();
-            });
-            menuItem.addEventListener('mouseleave', (e) => {
-                if (!submenuContainer.contains(e.relatedTarget)) {
-                    submenuContainer._collapse();
+            // 鼠标悬停展开/收缩：增加缓冲，避免主项和子项之间小缝隙导致抖动
+            let submenuCollapseTimer = null;
+            const clearSubmenuCollapseTimer = () => {
+                if (submenuCollapseTimer) {
+                    clearTimeout(submenuCollapseTimer);
+                    submenuCollapseTimer = null;
                 }
-            });
-            submenuContainer.addEventListener('mouseenter', () => {
+            };
+            const expandSubmenu = () => {
+                clearSubmenuCollapseTimer();
                 submenuContainer._expand();
+            };
+            const scheduleSubmenuCollapse = () => {
+                clearSubmenuCollapseTimer();
+                submenuCollapseTimer = setTimeout(() => {
+                    submenuContainer._collapse();
+                    submenuCollapseTimer = null;
+                }, 110);
+            };
+
+            menuItem.addEventListener('mouseenter', expandSubmenu);
+            menuItem.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
-            submenuContainer.addEventListener('mouseleave', () => {
-                submenuContainer._collapse();
+            submenuContainer.addEventListener('mouseenter', expandSubmenu);
+            submenuContainer.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
         }
     });
