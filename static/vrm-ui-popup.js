@@ -994,16 +994,9 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
+    toggleItem.setAttribute('aria-label', toggle.label);
     Object.assign(toggleItem.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '8px 12px',
-        cursor: 'pointer',
-        borderRadius: '6px',
-        transition: 'background 0.2s ease',
-        fontSize: '13px',
-        whiteSpace: 'nowrap'
+        padding: '8px 12px'
     });
 
     const checkbox = document.createElement('input');
@@ -1038,33 +1031,11 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     indicator.className = 'vrm-toggle-indicator';
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
-    Object.assign(indicator.style, {
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
-        backgroundColor: 'transparent',
-        cursor: 'pointer',
-        flexShrink: '0',
-        transition: 'all 0.2s ease',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-    });
 
     const checkmark = document.createElement('div');
     checkmark.className = 'vrm-toggle-checkmark';
     checkmark.setAttribute('aria-hidden', 'true');
     checkmark.innerHTML = '✓';
-    Object.assign(checkmark.style, {
-        color: '#fff',
-        fontSize: '13px',
-        fontWeight: 'bold',
-        opacity: '0',
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'none',
-        userSelect: 'none'
-    });
     indicator.appendChild(checkmark);
 
     const updateIndicatorStyle = (checked) => {
