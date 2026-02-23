@@ -985,6 +985,9 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
     toggleItem.id = `vrm-toggle-${toggle.id}`;
+    toggleItem.setAttribute('role', 'switch');
+    toggleItem.setAttribute('tabIndex', '0');
+    toggleItem.setAttribute('aria-checked', 'false');
     Object.assign(toggleItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -1001,8 +1004,17 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     checkbox.type = 'checkbox';
     checkbox.id = `vrm-${toggle.id}`;
     Object.assign(checkbox.style, {
-        display: 'none'
+        position: 'absolute',
+        width: '1px',
+        height: '1px',
+        padding: '0',
+        margin: '-1px',
+        overflow: 'hidden',
+        clip: 'rect(0, 0, 0, 0)',
+        whiteSpace: 'nowrap',
+        border: '0'
     });
+    checkbox.setAttribute('aria-hidden', 'true');
 
     if (toggle.id === 'merge-messages') {
         if (typeof window.mergeMessagesEnabled !== 'undefined') {
@@ -1017,6 +1029,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     }
 
     const indicator = document.createElement('div');
+    indicator.className = 'vrm-toggle-indicator';
     Object.assign(indicator.style, {
         width: '20px',
         height: '20px',
@@ -1032,6 +1045,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     const checkmark = document.createElement('div');
+    checkmark.className = 'vrm-toggle-checkmark';
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
         color: '#fff',
@@ -1058,7 +1072,6 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
-    label.htmlFor = `vrm-${toggle.id}`;
     if (toggle.labelKey) {
         label.setAttribute('data-i18n', toggle.labelKey);
     }
@@ -1072,8 +1085,10 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     label.style.height = '20px';
 
     const updateStyle = () => {
-        updateIndicatorStyle(checkbox.checked);
-        toggleItem.style.background = checkbox.checked
+        const isChecked = checkbox.checked;
+        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        updateIndicatorStyle(isChecked);
+        toggleItem.style.background = isChecked
             ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
             : 'transparent';
     };
@@ -1148,35 +1163,40 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         }
     };
 
-    checkbox.addEventListener('change', (e) => {
-        e.stopPropagation();
-        handleToggleChange(checkbox.checked);
+    const performToggle = () => {
+        const newChecked = !checkbox.checked;
+        checkbox.checked = newChecked;
+        handleToggleChange(newChecked);
+    };
+
+    toggleItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            performToggle();
+        }
     });
 
     toggleItem.addEventListener('click', (e) => {
-        if (e.target !== checkbox && e.target !== indicator) {
+        if (e.target !== checkbox && e.target !== indicator && e.target !== label) {
             e.preventDefault();
             e.stopPropagation();
-            const newChecked = !checkbox.checked;
-            checkbox.checked = newChecked;
-            handleToggleChange(newChecked);
+            performToggle();
         }
     });
 
     indicator.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
-        const newChecked = !checkbox.checked;
-        checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
+        performToggle();
     });
 
     label.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const newChecked = !checkbox.checked;
-        checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
+        performToggle();
     });
+
+    checkbox.updateStyle = updateStyle;
 
     return toggleItem;
 };
@@ -1442,49 +1462,37 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 
 // 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
-    // 使用 display === 'flex' 判断弹窗是否可见（避免动画中误判）
     const isVisible = popup.style.display === 'flex';
 
-    // 如果是设置弹出框，每次显示时更新开关状态
     if (buttonId === 'settings') {
-        const updateCheckboxStyle = (checkbox) => {
+        const syncCheckbox = (checkbox, checked) => {
             if (!checkbox) return;
-            const toggleItem = checkbox.parentElement;
-            // 使用 class 选择器查找元素，避免依赖 DOM 结构顺序
-            const indicator = toggleItem?.querySelector('.vrm-toggle-indicator');
-            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
-            if (!indicator || !checkmark) {
-                console.warn('[VRM UI Popup] 无法找到 toggle indicator 或 checkmark 元素');
-                return;
-            }
-            if (checkbox.checked) {
-                indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)'; indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)'; checkmark.style.opacity = '1'; toggleItem.style.background = 'var(--neko-popup-selected-bg, rgba(68, 183, 254, 0.1))';
-            } else {
-                indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)'; checkmark.style.opacity = '0'; toggleItem.style.background = 'transparent';
+            checkbox.checked = checked;
+            if (typeof checkbox.updateStyle === 'function') {
+                checkbox.updateStyle();
             }
         };
 
         const mergeCheckbox = document.querySelector('#vrm-merge-messages');
         if (mergeCheckbox && typeof window.mergeMessagesEnabled !== 'undefined') {
-            mergeCheckbox.checked = window.mergeMessagesEnabled; updateCheckboxStyle(mergeCheckbox);
+            syncCheckbox(mergeCheckbox, window.mergeMessagesEnabled);
         }
 
         const focusCheckbox = document.querySelector('#vrm-focus-mode');
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
-            focusCheckbox.checked = !window.focusModeEnabled; updateCheckboxStyle(focusCheckbox);
+            syncCheckbox(focusCheckbox, !window.focusModeEnabled);
         }
 
         const proactiveChatCheckbox = popup.querySelector('#vrm-proactive-chat');
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
-            proactiveChatCheckbox.checked = window.proactiveChatEnabled; updateCheckboxStyle(proactiveChatCheckbox);
+            syncCheckbox(proactiveChatCheckbox, window.proactiveChatEnabled);
         }
 
         const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
-            proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
+            syncCheckbox(proactiveVisionCheckbox, window.proactiveVisionEnabled);
         }
 
-        // 同步搭话方式选项状态
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const checkbox = document.querySelector(`#vrm-proactive-${config.mode}-chat`);
