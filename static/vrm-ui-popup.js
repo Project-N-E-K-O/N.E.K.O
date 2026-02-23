@@ -11,6 +11,11 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
     const style = document.createElement('style');
     style.id = 'vrm-popup-styles';
     style.textContent = `
+        :root {
+            --neko-popup-selected-bg: rgba(68, 183, 254, 0.1);
+            --neko-popup-selected-hover: rgba(68, 183, 254, 0.15);
+            --neko-popup-hover-subtle: rgba(68, 183, 254, 0.08);
+        }
         .vrm-popup {
             position: absolute;
             left: 100%;
