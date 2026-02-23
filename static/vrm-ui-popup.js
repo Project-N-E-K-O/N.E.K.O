@@ -270,7 +270,7 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
     ];
 
     settingsToggles.forEach(toggle => {
-        const toggleItem = this._createSettingsToggleItem(toggle, popup);
+        const toggleItem = this._createSettingsToggleItem(toggle);
         popup.appendChild(toggleItem);
 
         if (toggle.hasInterval) {
@@ -396,7 +396,7 @@ VRMManager.prototype._createChatSettingsSidePanel = function (popup) {
     ];
 
     chatToggles.forEach(toggle => {
-        const toggleItem = this._createSettingsToggleItem(toggle, popup);
+        const toggleItem = this._createSettingsToggleItem(toggle);
         container.appendChild(toggleItem);
     });
 
@@ -982,7 +982,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 };
 
 // 创建设置开关项
-VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
+VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = 'vrm-toggle-item';
     toggleItem.id = `vrm-toggle-${toggle.id}`;
