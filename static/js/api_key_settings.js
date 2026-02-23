@@ -472,7 +472,10 @@ function selectGsvVoice(voiceId) {
     const grid = document.getElementById('gsv-voices-grid');
     if (!grid) return;
     grid.querySelectorAll('.gsv-voice-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.voiceId === voiceId);
+        const isSelected = card.dataset.voiceId === voiceId;
+        card.classList.toggle('selected', isSelected);
+        card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+        card.tabIndex = isSelected ? 0 : -1;
     });
 }
 
@@ -506,11 +509,17 @@ async function fetchGptSovitsVoices(silent = false) {
             if (result.voices.length === 0) {
                 grid.innerHTML = '<div class="gsv-voices-empty">' + (window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --') + '</div>';
             } else {
+                let hasSelectedCard = false;
                 result.voices.forEach(v => {
                     const card = document.createElement('div');
                     card.className = 'gsv-voice-card';
                     card.dataset.voiceId = v.id;
-                    if (v.id === currentValue) card.classList.add('selected');
+                    const isSelected = v.id === currentValue;
+                    if (isSelected) card.classList.add('selected');
+                    if (isSelected) hasSelectedCard = true;
+                    card.setAttribute('role', 'radio');
+                    card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+                    card.tabIndex = isSelected ? 0 : -1;
 
                     // 卡片内容
                     let html = '';
@@ -527,8 +536,36 @@ async function fetchGptSovitsVoices(silent = false) {
                     card.innerHTML = html;
 
                     card.addEventListener('click', () => selectGsvVoice(v.id));
+                    card.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectGsvVoice(v.id);
+                            return;
+                        }
+
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            const cards = Array.from(grid.querySelectorAll('.gsv-voice-card'));
+                            const currentIndex = cards.indexOf(card);
+                            if (currentIndex === -1 || cards.length === 0) return;
+
+                            const step = (event.key === 'ArrowRight' || event.key === 'ArrowDown') ? 1 : -1;
+                            const nextIndex = (currentIndex + step + cards.length) % cards.length;
+                            const nextCard = cards[nextIndex];
+                            if (nextCard) {
+                                selectGsvVoice(nextCard.dataset.voiceId || '');
+                                nextCard.focus();
+                            }
+                        }
+                    });
                     grid.appendChild(card);
                 });
+
+                // 当没有任何已选项时，保证网格中至少一个卡片可被键盘 Tab 聚焦
+                if (!hasSelectedCard) {
+                    const firstCard = grid.querySelector('.gsv-voice-card');
+                    if (firstCard) firstCard.tabIndex = 0;
+                }
             }
 
             if (!silent) {

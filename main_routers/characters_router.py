@@ -1165,7 +1165,14 @@ async def list_gptsovits_voices_for_characters():
         if not isinstance(voices_data, list):
             logger.warning(f"GPT-SoVITS /api/v3/voices 返回了非列表格式: {type(voices_data).__name__}")
         if isinstance(voices_data, list):
-            for v in voices_data:
+            for idx, v in enumerate(voices_data):
+                if not isinstance(v, dict):
+                    logger.warning(
+                        "GPT-SoVITS /api/v3/voices 第 %d 项不是对象，已跳过: %s",
+                        idx,
+                        type(v).__name__,
+                    )
+                    continue
                 raw_id = v.get('id', '')
                 if not raw_id:
                     continue
