@@ -743,7 +743,7 @@
         "wsWarning": {
             "title": "协议错误",
             "message": "URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
-            "messageWithType": "<strong>{{apiType}}</strong> 的 URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
+            "messageWithType": "{{apiType}} 的 URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
             "correctExamples": "正确示例：",
             "wrongExamples": "错误示例：",
             "confirm": "我知道了"

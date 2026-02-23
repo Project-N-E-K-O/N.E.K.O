@@ -743,7 +743,7 @@
         "wsWarning": {
             "title": "Protocol Error",
             "message": "URL must use WebSocket protocol (starting with ws:// or wss://)",
-            "messageWithType": "<strong>{{apiType}}</strong> URL must use WebSocket protocol (starting with ws:// or wss://)",
+            "messageWithType": "{{apiType}} URL must use WebSocket protocol (starting with ws:// or wss://)",
             "correctExamples": "Correct examples:",
             "wrongExamples": "Wrong examples:",
             "confirm": "I understand"

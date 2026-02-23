@@ -1241,7 +1241,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     extra_params = {}
     raw_voice = voice_id.strip() if voice_id else ""
     if raw_voice.startswith(GSV_VOICE_PREFIX):
-        raw_voice = raw_voice[len(GSV_VOICE_PREFIX):]
+        raw_voice = raw_voice[len(GSV_VOICE_PREFIX):].strip()
     if '|' in raw_voice:
         parts = raw_voice.split('|', 1)
         v3_voice_id = parts[0].strip() or "_default"
@@ -1488,29 +1488,26 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             break
 
 
-def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
+def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     根据 core_api 类型和是否有自定义音色，返回对应的 TTS worker 函数
     
     Args:
         core_api_type: core API 类型 ('qwen', 'step', 'glm' 等)
         has_custom_voice: 是否有自定义音色 (voice_id)
+        voice_id: 当前 voice_id，用于检测 gsv: 前缀
     
     Returns:
         对应的 TTS worker 函数
     """
 
+    # gsv: 前缀的 voice_id 强制使用 GPT-SoVITS worker
+    if voice_id and voice_id.startswith(GSV_VOICE_PREFIX):
+        logger.info(f"🎤 检测到 GPT-SoVITS voice_id: '{voice_id}'，使用 gptsovits_tts_worker")
+        return gptsovits_tts_worker
+
     try:
         cm = get_config_manager()
-
-        # 检测当前角色是否使用 gsv: 前缀的 voice_id，如果是则强制使用 GPT-SoVITS worker
-        # 这样即使 API 设置页面没有配置自定义 TTS，gsv: voice_id 也能直接驱动 GPT-SoVITS 推理
-        _, current_name, _, catgirl_data, _, _, _, _, _, _ = cm.get_character_data()
-        current_voice_id = catgirl_data.get(current_name, {}).get('voice_id', '')
-        if current_voice_id.startswith(GSV_VOICE_PREFIX):
-            logger.info(f"🎤 检测到 GPT-SoVITS voice_id: '{current_voice_id}'，强制使用 gptsovits_tts_worker")
-            return gptsovits_tts_worker
-
         tts_config = cm.get_model_api_config('tts_custom')
         # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):

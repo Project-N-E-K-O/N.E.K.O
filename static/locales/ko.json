@@ -743,7 +743,7 @@
     "wsWarning": {
       "title": "프로토콜 오류",
       "message": "URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
-      "messageWithType": "<strong>{{apiType}}</strong> URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
+      "messageWithType": "{{apiType}} URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
       "correctExamples": "올바른 예:",
       "wrongExamples": "잘못된 예:",
       "confirm": "이해해요"

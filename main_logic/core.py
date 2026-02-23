@@ -19,7 +19,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT, GSV_VOICE_PREFIX
 from utils.config_manager import get_config_manager
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code
@@ -839,9 +839,12 @@ class LLMSessionManager:
             
             # 启动TTS线程
             if self.tts_thread is None or not self.tts_thread.is_alive():
-                # 判断是否使用自定义 TTS：有 voice_id（但不是免费预设）或 配置了自定义 TTS URL
+                # 检测 GPT-SoVITS voice_id（gsv: 前缀）
+                is_gsv_voice = bool(self.voice_id) and self.voice_id.startswith(GSV_VOICE_PREFIX)
+                
+                # 判断是否使用自定义 TTS：有 voice_id（但不是免费预设）或 配置了自定义 TTS URL 或 gsv: 前缀
                 core_config = self._config_manager.get_core_config()
-                has_custom_tts = (bool(self.voice_id) and not self._is_free_preset_voice) or (
+                has_custom_tts = is_gsv_voice or (bool(self.voice_id) and not self._is_free_preset_voice) or (
                     core_config.get('ENABLE_CUSTOM_API') and 
                     core_config.get('TTS_MODEL_URL')
                 )
@@ -849,7 +852,8 @@ class LLMSessionManager:
                 # 使用工厂函数获取合适的 TTS worker
                 tts_worker = get_tts_worker(
                     core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_tts
+                    has_custom_voice=has_custom_tts,
+                    voice_id=self.voice_id
                 )
                 
                 self.tts_request_queue = Queue()  # TTS request (线程队列)
@@ -860,9 +864,12 @@ class LLMSessionManager:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
+                
+                # gsv: 前缀的 voice_id 需要去掉前缀，传递真实的 v3 voice_id 给 worker
+                worker_voice_id = self.voice_id[len(GSV_VOICE_PREFIX):] if is_gsv_voice else self.voice_id
                 self.tts_thread = Thread(
                     target=tts_worker,
-                    args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+                    args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], worker_voice_id)
                 )
                 self.tts_thread.daemon = True
                 self.tts_thread.start()

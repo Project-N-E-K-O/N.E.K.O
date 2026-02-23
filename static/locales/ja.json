@@ -743,7 +743,7 @@
     "wsWarning": {
       "title": "プロトコルエラー",
       "message": "URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
-      "messageWithType": "<strong>{{apiType}}</strong> のURLはWebSocketプロトコル（ws:// または wss://）である必要があります",
+      "messageWithType": "{{apiType}} のURLはWebSocketプロトコル（ws:// または wss://）である必要があります",
       "correctExamples": "正しい例:",
       "wrongExamples": "誤った例:",
       "confirm": "理解しました"
