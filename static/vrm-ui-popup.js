@@ -1091,6 +1091,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         updateIndicatorStyle(isChecked);
         toggleItem.style.background = isChecked
             ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
@@ -1138,7 +1139,6 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
             } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
-            console.log(`主动搭话已${isChecked ? '开启' : '关闭'}`);
         } else if (toggle.id === 'proactive-vision') {
             window.proactiveVisionEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
@@ -1163,7 +1163,6 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                     window.stopProactiveVisionDuringSpeech();
                 }
             }
-            console.log(`主动视觉已${isChecked ? '开启' : '关闭'}`);
         }
     };
 
@@ -1183,11 +1182,9 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         handleToggleChange(newChecked);
 
         setTimeout(() => {
-            if (checkbox._processing && Date.now() - checkbox._processingTime > 5000) {
-                checkbox._processing = false;
-                checkbox._processingTime = null;
-            }
-        }, 5500);
+            checkbox._processing = false;
+            checkbox._processingTime = null;
+        }, 500);
     };
 
     toggleItem.addEventListener('keydown', (e) => {
@@ -1198,7 +1195,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     toggleItem.addEventListener('click', (e) => {
-        if (e.target !== checkbox && e.target !== indicator && e.target !== label) {
+        if (e.target !== checkbox) {
             e.preventDefault();
             e.stopPropagation();
             performToggle();
