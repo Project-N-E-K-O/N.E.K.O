@@ -984,6 +984,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 // 创建设置开关项
 VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
+    toggleItem.className = 'vrm-toggle-item';
     toggleItem.id = `vrm-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
@@ -1030,6 +1031,8 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = 'vrm-toggle-indicator';
+    indicator.setAttribute('role', 'presentation');
+    indicator.setAttribute('aria-hidden', 'true');
     Object.assign(indicator.style, {
         width: '20px',
         height: '20px',
@@ -1046,6 +1049,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const checkmark = document.createElement('div');
     checkmark.className = 'vrm-toggle-checkmark';
+    checkmark.setAttribute('aria-hidden', 'true');
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
         color: '#fff',
@@ -1060,8 +1064,8 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const updateIndicatorStyle = (checked) => {
         if (checked) {
-            indicator.style.backgroundColor = 'var(--neko-popup-active, #44b7fe)';
-            indicator.style.borderColor = 'var(--neko-popup-active, #44b7fe)';
+            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
             checkmark.style.opacity = '1';
         } else {
             indicator.style.backgroundColor = 'transparent';
@@ -1164,9 +1168,26 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     };
 
     const performToggle = () => {
+        if (checkbox._processing) {
+            const elapsed = Date.now() - (checkbox._processingTime || 0);
+            if (elapsed < 500) {
+                return;
+            }
+        }
+
+        checkbox._processing = true;
+        checkbox._processingTime = Date.now();
+
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
         handleToggleChange(newChecked);
+
+        setTimeout(() => {
+            if (checkbox._processing && Date.now() - checkbox._processingTime > 5000) {
+                checkbox._processing = false;
+                checkbox._processingTime = null;
+            }
+        }, 5500);
     };
 
     toggleItem.addEventListener('keydown', (e) => {
