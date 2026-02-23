@@ -1488,23 +1488,17 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             break
 
 
-def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
+def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     """
     根据 core_api 类型和是否有自定义音色，返回对应的 TTS worker 函数
     
     Args:
         core_api_type: core API 类型 ('qwen', 'step', 'glm' 等)
         has_custom_voice: 是否有自定义音色 (voice_id)
-        voice_id: 当前 voice_id，用于检测 gsv: 前缀
     
     Returns:
         对应的 TTS worker 函数
     """
-
-    # gsv: 前缀的 voice_id 强制使用 GPT-SoVITS worker
-    if voice_id and voice_id.startswith(GSV_VOICE_PREFIX):
-        logger.info(f"🎤 检测到 GPT-SoVITS voice_id: '{voice_id}'，使用 gptsovits_tts_worker")
-        return gptsovits_tts_worker
 
     try:
         cm = get_config_manager()
