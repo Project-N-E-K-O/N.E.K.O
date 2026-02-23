@@ -1135,7 +1135,8 @@
         "unregisterError": "解除注册时发生错误",
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
-        "freePresetVoices": "免费预设音色"
+        "freePresetVoices": "免费预设音色",
+        "gptsovitsVoices": "GPT-SoVITS 声音"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",

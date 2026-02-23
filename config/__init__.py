@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
 
+# GPT-SoVITS voice_id 前缀（角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音）
+GSV_VOICE_PREFIX = "gsv:"
+
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>
 # - 兼容键：<PORT_NAME>
@@ -465,6 +468,7 @@ def get_extra_body(model: str) -> dict | None:
 
 __all__ = [
     'APP_NAME',
+    'GSV_VOICE_PREFIX',
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',

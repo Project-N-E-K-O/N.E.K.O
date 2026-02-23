@@ -1135,7 +1135,8 @@
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
-        "freePresetVoices": "── 免費預設音色 ──"
+        "freePresetVoices": "── 免費預設音色 ──",
+        "gptsovitsVoices": "GPT-SoVITS 聲音"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",

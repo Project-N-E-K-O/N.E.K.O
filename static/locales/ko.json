@@ -1135,7 +1135,8 @@
     "unregisterError": "등록을 취소하는 동안 오류가 발생했습니다.",
     "switchFailed": "전환 실패",
     "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
-    "freePresetVoices": "── 무료 사전 설정 음색 ──"
+    "freePresetVoices": "── 무료 사전 설정 음색 ──",
+    "gptsovitsVoices": "GPT-SoVITS 음성"
   },
   "app": {
     "welcomeBack": "{{name}}이 돌아왔습니다!",

@@ -28,7 +28,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, GSV_VOICE_PREFIX
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = logging.getLogger("Main")
@@ -1121,6 +1121,81 @@ async def clear_voice_ids():
         }, status_code=500)
 
 
+@router.get('/gptsovits_voices')
+async def list_gptsovits_voices_for_characters():
+    """获取 GPT-SoVITS v3 可用声音列表（用于角色管理页面的音色选择）
+    
+    返回的 voice_id 已带 gsv: 前缀，可直接设置到角色配置中。
+    需要在 API 设置中启用自定义 TTS 并配置 GPT-SoVITS API URL。
+    """
+    try:
+        _config_manager = get_config_manager()
+        
+        # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
+        tts_config = _config_manager.get_model_api_config('tts_custom')
+        base_url = (tts_config.get('base_url') or '').rstrip('/')
+        if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
+            return JSONResponse({
+                'success': False,
+                'error': '未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS',
+                'voices': []
+            })
+        
+        # SSRF 防护：GPT-SoVITS 仅限 localhost
+        from urllib.parse import urlparse
+        import ipaddress
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ''
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []})
+        except ValueError:
+            if host not in ('localhost',):
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []})
+        
+        # 请求 GPT-SoVITS v3 API 获取声音列表
+        api_url = base_url
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{api_url}/api/v3/voices")
+            resp.raise_for_status()
+            voices_data = resp.json()
+        
+        # 转换为带 gsv: 前缀的格式，过滤空 ID
+        voices = []
+        if not isinstance(voices_data, list):
+            logger.warning(f"GPT-SoVITS /api/v3/voices 返回了非列表格式: {type(voices_data).__name__}")
+        if isinstance(voices_data, list):
+            for v in voices_data:
+                raw_id = v.get('id', '')
+                if not raw_id:
+                    continue
+                voices.append({
+                    'voice_id': f"{GSV_VOICE_PREFIX}{raw_id}",
+                    'raw_id': raw_id,
+                    'name': v.get('name', raw_id),
+                    'description': v.get('description', ''),
+                    'version': v.get('version', ''),
+                })
+        
+        return JSONResponse({
+            'success': True,
+            'voices': voices,
+            'api_url': api_url
+        })
+    except httpx.HTTPError as e:
+        return JSONResponse({
+            'success': False,
+            'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
+            'voices': []
+        })
+    except Exception as e:
+        return JSONResponse({
+            'success': False,
+            'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
+            'voices': []
+        })
+
+
 @router.post('/set_microphone')
 async def set_microphone(request: Request):
     try:
@@ -1178,6 +1253,15 @@ async def get_voices():
             free_voices = get_free_voices()
             if free_voices:
                 result["free_voices"] = free_voices
+    
+    # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
+    characters = _config_manager.load_characters()
+    voice_owners = {}
+    for cat_name, cat_config in characters.get('猫娘', {}).items():
+        vid = cat_config.get('voice_id', '')
+        if vid:
+            voice_owners.setdefault(vid, []).append(cat_name)
+    result["voice_owners"] = voice_owners
     
     return result
 

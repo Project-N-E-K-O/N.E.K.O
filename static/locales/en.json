@@ -1135,7 +1135,8 @@
         "unregisterError": "An error occurred while unregistering",
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
-        "freePresetVoices": "Free Preset Voices"
+        "freePresetVoices": "Free Preset Voices",
+        "gptsovitsVoices": "GPT-SoVITS Voices"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",

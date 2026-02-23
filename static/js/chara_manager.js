@@ -1500,10 +1500,21 @@ function showCatgirlForm(key, container) {
                 defaultOption.textContent = voiceNotSetText;
                 select.appendChild(defaultOption);
                 // 添加音色选项
+                const voiceOwners = data.voice_owners || {};
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    option.textContent = voiceData.prefix || voiceId;
+                    // 显示优先级：使用该音色的角色名 > prefix > 截断的 voice_id
+                    const owners = voiceOwners[voiceId];
+                    let displayName = '';
+                    if (owners && owners.length > 0) {
+                        displayName = owners.join(', ');
+                    } else if (voiceData.prefix) {
+                        displayName = voiceData.prefix;
+                    }
+                    const shortId = voiceId.length > 20 ? voiceId.substring(0, 18) + '…' : voiceId;
+                    option.textContent = displayName ? displayName + ' (' + shortId + ')' : voiceId;
+                    option.title = voiceId;
                     if (voiceId === (cat['voice_id'] || '')) option.selected = true;
                     select.appendChild(option);
                 });
@@ -1522,8 +1533,52 @@ function showCatgirlForm(key, container) {
                     select.appendChild(freeGroup);
                 }
             }
+            // 加载 GPT-SoVITS 声音列表（等待完成以避免表单提交时丢失 gsv: 音色）
+            await loadGsvVoices(select, cat['voice_id'] || '');
         } catch (error) {
             console.error('加载音色列表失败:', error);
+        }
+    }
+
+    // 加载 GPT-SoVITS 声音列表并追加到 select
+    const GSV_PREFIX = 'gsv:';
+    async function loadGsvVoices(select, currentVoiceId) {
+        if (!select) return;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        try {
+            const resp = await fetch('/api/characters/gptsovits_voices', { signal: controller.signal });
+            clearTimeout(timeoutId);
+            const result = await resp.json();
+            if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
+                const gsvGroup = document.createElement('optgroup');
+                const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                gsvGroup.label = '── ' + gsvLabel + ' ──';
+                result.voices.forEach(v => {
+                    const option = document.createElement('option');
+                    option.value = v.voice_id;
+                    option.textContent = v.name + (v.version ? ' (' + v.version + ')' : '');
+                    if (v.description) option.title = v.description;
+                    if (v.voice_id === currentVoiceId) option.selected = true;
+                    gsvGroup.appendChild(option);
+                });
+                select.appendChild(gsvGroup);
+                // 如果当前 voice_id 是 gsv: 前缀但不在已有选项中，手动添加
+                if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX) && !select.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                    const fallbackOpt = document.createElement('option');
+                    fallbackOpt.value = currentVoiceId;
+                    fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+                    gsvGroup.appendChild(fallbackOpt);
+                }
+                // 确保 select.value 与 currentVoiceId 一致（可靠地取消默认选项）
+                if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
+                    select.value = currentVoiceId;
+                }
+            }
+        } catch (e) {
+            clearTimeout(timeoutId);
+            // GPT-SoVITS 不可用时静默忽略
+            console.debug('GPT-SoVITS voices not available:', e.message);
         }
     }
 
@@ -2039,10 +2094,20 @@ window.addEventListener('message', function (event) {
                 defaultOption.textContent = voiceNotSetText;
                 select.appendChild(defaultOption);
 
+                const voiceOwners2 = data.voice_owners || {};
                 Object.entries(data.voices).forEach(([id, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = id;
-                    option.textContent = voiceData.prefix || id;
+                    const owners = voiceOwners2[id];
+                    let dn = '';
+                    if (owners && owners.length > 0) {
+                        dn = owners.join(', ');
+                    } else if (voiceData.prefix) {
+                        dn = voiceData.prefix;
+                    }
+                    const shortId = id.length > 20 ? id.substring(0, 18) + '…' : id;
+                    option.textContent = dn ? dn + ' (' + shortId + ')' : id;
+                    option.title = id;
                     select.appendChild(option);
                 });
 

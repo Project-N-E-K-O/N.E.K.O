@@ -535,7 +535,7 @@ async function fetchGptSovitsVoices(silent = false) {
                 showStatus(window.t ? window.t('api.gptsovitsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个语音配置`, 'success');
             }
         } else {
-            grid.innerHTML = '<div class="gsv-voices-empty">' + (result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败')) + '</div>';
+            grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败')) + '</div>';
             if (!silent) {
                 showStatus(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败'), 'error');
             }

@@ -1135,7 +1135,8 @@
     "unregisterError": "登録解除中にエラーが発生しました",
     "switchFailed": "切り替えに失敗しました",
     "switchError": "neko の切り替え中にエラーが発生しました",
-    "freePresetVoices": "── 無料プリセット音色 ──"
+    "freePresetVoices": "── 無料プリセット音色 ──",
+    "gptsovitsVoices": "GPT-SoVITS 音声"
   },
   "app": {
     "welcomeBack": "{{name}}が戻りました！",
