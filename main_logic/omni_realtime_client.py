@@ -603,7 +603,7 @@ class OmniRealtimeClient:
             "audio": audio_b64
         }
         await self.send_event(append_event)
-    
+
     async def _stream_audio_gemini(self, audio_chunk: bytes) -> None:
         """Send audio data to Gemini Live API."""
         if not self._gemini_session:
@@ -920,21 +920,16 @@ class OmniRealtimeClient:
         if self._is_gemini:
             await self._handle_messages_gemini()
             return
-            
+
         try:
             if not self.ws:
                 logger.error("WebSocket connection is not established")
                 return
-                
+
             async for message in self.ws:
                 event = json.loads(message)
                 event_type = event.get("type")
-                
-                # if event_type not in ["response.audio.delta", "response.audio_transcript.delta",  "response.output_audio.delta", "response.output_audio_transcript.delta"]:
-                #     # print(f"Received event: {event}")
-                #     print(f"Received event: {event_type}")
-                # else:
-                #     print(f"Event type: {event_type}")
+
                 if event_type == "error":
                     error_msg = str(event.get('error', ''))
                     logger.error(f"API Error: {error_msg}")
@@ -1175,7 +1170,7 @@ class OmniRealtimeClient:
                         break
         except Exception as e:
             logger.error(f"Gemini message handler error: {e}")
-    
+
     async def _process_gemini_response(self, response) -> None:
         """Process a single Gemini response event."""
         try:
@@ -1235,10 +1230,13 @@ class OmniRealtimeClient:
                             if isinstance(part.inline_data.data, bytes):
                                 if self.on_audio_delta:
                                     await self.on_audio_delta(part.inline_data.data)
-                
+
                 # 检查是否 turn 完成
                 if server_content.turn_complete:
                     self._is_responding = False
+                    # 🔧 修复：Gemini 不发送 VAD 事件，需要在 turn 完成时重置
+                    # 确保下一条消息被正确标记为新消息（isNewMessage=True）
+                    self._is_first_text_chunk = True
                     # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
                     if self.on_response_done:
                         await self.on_response_done()

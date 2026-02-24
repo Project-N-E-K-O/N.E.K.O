@@ -1986,7 +1986,13 @@ class LLMSessionManager:
                         await self.end_session()
                     # 再创建新的语音模式 session
                     await self.start_session(self.websocket, new=False, input_mode='audio')
-                    
+
+                    # 🔧 修复：从文本切换到语音时，重置首条消息标记
+                    # 确保 Gemini 的第一条语音回复被正确标记为新消息
+                    if self.session and hasattr(self.session, '_is_first_text_chunk'):
+                        self.session._is_first_text_chunk = True
+                        logger.info("🔄 已重置 _is_first_text_chunk，确保语音回复为新消息")
+
                     # 检查重建是否成功
                     if not self.session or not self.is_active or not isinstance(self.session, OmniRealtimeClient):
                         logger.error("💥 语音模式Session重建失败，放弃本次数据流")
