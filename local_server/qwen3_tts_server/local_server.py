@@ -13,7 +13,7 @@ import numpy as np
 import re
 from pathlib import Path
 
-ENABLE_TRUE_STREAMING = False
+ENABLE_TRUE_STREAMING = True
 # ========================================================
 # 1. 初始化 Logging
 # ========================================================
@@ -77,11 +77,17 @@ class QwenLocalServer:
         self.chunk_size = int(chunk_size) if chunk_size else 4096
         self.buffer_fallback_chars = int(buffer_fallback_chars) if buffer_fallback_chars else 30
         self.inference_lock =threading.Lock()
-
         # --- 任务队列 (解决并发卡顿) ---
         self.task_queue = queue.Queue()
 
-        self._load_engine(model_path)
+        self.is_06b = "0.6B" in model_path.upper()
+
+        if self.is_06b:
+            logger.info("🛣️ 探测到 0.6B 模型，走专属极速通道...")
+            self._load_engine_06b(model_path)
+        else:
+            logger.info("🛣️ 走 1.7B 原版通道...")
+            self._load_engine(model_path)
         # 启动后台工人
         threading.Thread(target=self._worker_loop, daemon=True).start()
 
@@ -283,7 +289,12 @@ class QwenLocalServer:
                 self.task_queue.task_done()
                 continue
 
-            self._do_inference(full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language)
+            #  任务分发 判断是不是qwen_0.6B
+            if getattr(self, 'is_06b', False):
+                self._do_inference_06b(full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language)
+            else:
+                self._do_inference(full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language)
+
             self.task_queue.task_done()
 
     def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language):
@@ -415,6 +426,157 @@ class QwenLocalServer:
             logger.error(traceback.format_exc())
         finally:
             loop.call_soon_threadsafe(audio_queue.put_nowait, b"__END__")
+
+
+    def _load_engine_06b(self, model_path):
+        try:
+            t0 = time.time()
+            logger.info(f"正在启动 0.6B 专属引擎 (Device: {self.device})...")
+
+            # 锁死全局默认精度，防止内部隐式生成 fp32 张量（保持为 bfloat16，不再还原）
+            torch.set_default_dtype(torch.bfloat16)
+
+            processor = Qwen3TTSProcessor.from_pretrained(model_path, fix_mistral_regex=True)
+
+            # 剔除 device_map，防止 Accelerate 干扰精度
+            raw_model = Qwen3TTSForConditionalGeneration.from_pretrained(
+                model_path,
+                dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",
+                device_map=self.device,
+                low_cpu_mem_usage=True
+            )
+
+
+            raw_model = raw_model.to(device=self.device, dtype=torch.bfloat16)
+            # 0.6B 的 code_predictor 子模块很小(5层)，强制用 eager attention 避免 Flash Attention dtype 问题
+            cp = raw_model.talker.code_predictor
+            cp.config._attn_implementation = "eager"
+            for layer in cp.model.layers:
+                if hasattr(layer, 'self_attn'):
+                    layer.self_attn.config._attn_implementation = "eager"
+            raw_model.eval()
+
+            self.model = Qwen3TTSModel(model=raw_model, processor=processor)
+            self.model_hidden_size = raw_model.config.talker_config.hidden_size
+            logger.info(f"📐 0.6B 模型 hidden_size = {self.model_hidden_size}")
+
+            self.pad_token_id = raw_model.config.pad_token_id or raw_model.config.eos_token_id
+            if hasattr(self.model, 'generation_config'):
+                self.model.generation_config.pad_token_id = self.pad_token_id
+
+            if os.path.exists(self.pt_path):
+                logger.info(f"✨ 发现音色特征 {self.pt_path}，加载中...")
+                self.cached_prompt = self._load_prompt_from_pt(self.pt_path)
+            else:
+                logger.warning("🎙️ 未发现音色特征，跳过自动提取")
+
+            logger.info(f"🚀 0.6B 引擎就绪 | 精度: {raw_model.dtype} | 耗时: {time.time() - t0:.2f}s")
+        except Exception as e:
+            logger.error(f"❌ 0.6B 加载引擎异常: {e}")
+
+    def _do_inference_06b(self, full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language):
+        try:
+            if not self.model or prompt_snapshot is None: return
+
+            start_time = time.time()
+            USE_STREAMING_GENERATOR = True
+
+            stream_func = None
+            search_target = self.model
+            depth = 0
+            while search_target is not None and depth < 3:
+                if hasattr(search_target, "stream_generate_voice_clone"):
+                    stream_func = getattr(search_target, "stream_generate_voice_clone")
+                    break
+                search_target = getattr(search_target, "model", None)
+                depth += 1
+
+            # --- 深度洗数据，杜绝音色精度报错 ---
+            if isinstance(prompt_snapshot, str):
+                try:
+                    prompt_snapshot = torch.load(prompt_snapshot, map_location=self.device, weights_only=False)
+                except Exception as e:
+                    logger.error(f"❌ 加载音色文件失败: {e}")
+                    return
+
+            prompt_items = prompt_snapshot.get("items", []) if isinstance(prompt_snapshot,
+                                                                          dict) else prompt_snapshot
+            if not isinstance(prompt_items, list):
+                prompt_items = [prompt_items]
+
+            for item in prompt_items:
+                if hasattr(item, 'ref_code') and item.ref_code is not None:
+                    item.ref_code = item.ref_code.to(device=self.device, dtype=torch.long)
+                if hasattr(item, 'ref_spk_embedding') and item.ref_spk_embedding is not None:
+                    item.ref_spk_embedding = item.ref_spk_embedding.to(device=self.device, dtype=torch.bfloat16)
+
+            # 防止动态生成的 code_predictor 变成 fp32
+            original_dtype = torch.get_default_dtype()
+            torch.set_default_dtype(torch.bfloat16)
+
+            try:
+                if hasattr(self.model, 'model'):
+                    self.model.model.to(device=self.device, dtype=torch.bfloat16)
+
+                # --- 推理开始 ---
+                if ENABLE_TRUE_STREAMING and USE_STREAMING_GENERATOR and stream_func:
+                    logger.info(f"🌊 [{job_id}] 0.6B 专属真流式")
+                    total_samples = 0
+                    with torch.inference_mode():
+                        with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
+                            for pcm_chunk in stream_func(
+                                text=full_text,
+                                voice_clone_prompt=prompt_snapshot,
+                                language=language,
+                                pad_token_id=self.pad_token_id,
+                                emit_every_frames=12,  # 0.6B 专属的 12 帧对齐
+                                first_chunk_emit_every=3,
+                                overlap_samples=512,
+                            ):
+                                if cancel_event.is_set(): break
+                                if pcm_chunk is not None:
+                                    audio_raw = pcm_chunk[0] if isinstance(pcm_chunk, (tuple, list)) else pcm_chunk
+                                    audio_data = np.asarray(audio_raw).flatten()
+                                    if len(audio_data) == 0: continue
+                                    total_samples += len(audio_data)
+                                    audio_int16 = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+                                    loop.call_soon_threadsafe(audio_queue.put_nowait, audio_int16.tobytes())
+
+                    inference_duration = time.time() - start_time
+                    audio_real_duration = total_samples / 24000.0
+                    rtf = inference_duration / audio_real_duration if audio_real_duration > 0 else 0
+                    logger.info(
+                        f"✅ [{job_id}] 0.6B 真流式完成 | 耗时:{inference_duration:.3f}s | 音频:{audio_real_duration:.2f}s | RTF:{rtf:.4f}")
+                else:
+                    logger.info(f"🐢 [{job_id}] 0.6B 原版生成")
+                    with torch.inference_mode():
+                        with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
+                            wavs, sr = self.model.generate_voice_clone(
+                                text=full_text, voice_clone_prompt=prompt_snapshot, language=language,
+                                pad_token_id=self.pad_token_id
+                            )
+                    if torch.cuda.is_available(): torch.cuda.synchronize()
+                    inference_duration = time.time() - start_time
+                    audio_data = wavs[0].flatten()
+                    audio_int16 = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+                    audio_real_duration = len(audio_int16) / sr
+                    rtf = inference_duration / audio_real_duration if audio_real_duration > 0 else 0
+                    logger.info(
+                        f"✅ [{job_id}] 0.6B 完成 | 耗时:{inference_duration:.3f}s | 音频:{audio_real_duration:.2f}s | RTF:{rtf:.4f}")
+
+                    chunk_size = self.chunk_size
+                    for i in range(0, len(audio_int16), chunk_size):
+                        if cancel_event.is_set(): break
+                        chunk = audio_int16[i:i + chunk_size].tobytes()
+                        loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
+            finally:
+                pass
+        except Exception as e:
+            logger.error(f"❌ 0.6B 推理错误: {e}")
+        finally:
+            loop.call_soon_threadsafe(audio_queue.put_nowait, b"__END__")
+
     async def handle_tts(self, websocket):
         logger.info(f"客户端连接: {websocket.remote_address}")
         loop = asyncio.get_running_loop()
