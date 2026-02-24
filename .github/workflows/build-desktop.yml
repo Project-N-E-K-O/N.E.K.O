@@ -1,0 +1,387 @@
+name: Build Desktop App (Cross-Platform)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0-beta.1)'
+        required: false
+        default: ''
+      electron_repo:
+        description: 'Electron frontend repo (owner/repo)'
+        required: false
+        default: 'Project-N-E-K-O/N.E.K.O.-PC'
+      electron_ref:
+        description: 'Electron repo branch/tag/commit'
+        required: false
+        default: 'main'
+      skip_signing:
+        description: 'Skip code signing'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '20'
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Step 0: Calculate version
+  # ──────────────────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate version
+        id: calc
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            DATE=$(date +%Y%m%d)
+            VERSION="${DATE}-${COMMIT_SHORT}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION"
+
+  # ──────────────────────────────────────────────
+  # Step 1: Build Python backend with PyInstaller
+  # ──────────────────────────────────────────────
+  build-python:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            artifact_name: python-backend-win
+            binary_name: server.exe
+          - os: macos-13         # Intel runner
+            platform: mac-x64
+            artifact_name: python-backend-mac-x64
+            binary_name: server
+          - os: macos-latest     # Apple Silicon runner
+            platform: mac-arm64
+            artifact_name: python-backend-mac-arm64
+            binary_name: server
+          - os: ubuntu-latest
+            platform: linux
+            artifact_name: python-backend-linux
+            binary_name: server
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout backend repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install dependencies
+        shell: bash
+        run: |
+          uv venv .venv
+          uv sync
+          uv pip install --python .venv pyinstaller
+
+      # --- Platform-specific system dependencies ---
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            portaudio19-dev \
+            tesseract-ocr \
+            xvfb
+
+      # --- Steam SDK files (platform-specific) ---
+      - name: Prepare Steam SDK (Windows)
+        if: matrix.platform == 'win'
+        run: |
+          # steam_api64.dll, steam_api64.lib, SteamworksPy64.dll
+          # are checked into the repo for Windows
+          echo "Steam DLLs present:"
+          if (Test-Path steam_api64.dll) { echo "  steam_api64.dll" }
+          if (Test-Path steam_api64.lib) { echo "  steam_api64.lib" }
+          if (Test-Path SteamworksPy64.dll) { echo "  SteamworksPy64.dll" }
+        shell: pwsh
+
+      - name: Prepare Steam SDK (macOS)
+        if: startsWith(matrix.platform, 'mac')
+        run: |
+          # macOS Steam dylibs - download from Steam SDK or skip if not available
+          echo "Note: macOS Steam dylibs (libsteam_api.dylib, libSteamworksPy.dylib)"
+          echo "will be resolved from secrets or skipped for non-Steam builds."
+          # If Steam SDK artifacts are provided via secrets:
+          if [ -n "${{ secrets.STEAM_SDK_MAC_URL }}" ]; then
+            curl -sL "${{ secrets.STEAM_SDK_MAC_URL }}" -o steam_sdk_mac.zip
+            unzip -o steam_sdk_mac.zip -d .
+          fi
+
+      - name: Prepare Steam SDK (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          echo "Note: Linux Steam .so files will be resolved from secrets or skipped."
+          if [ -n "${{ secrets.STEAM_SDK_LINUX_URL }}" ]; then
+            curl -sL "${{ secrets.STEAM_SDK_LINUX_URL }}" -o steam_sdk_linux.zip
+            unzip -o steam_sdk_linux.zip -d .
+          fi
+
+      # --- Build with PyInstaller ---
+      - name: Build Python backend (PyInstaller, Unix)
+        if: runner.os != 'Windows'
+        run: |
+          .venv/bin/python -m PyInstaller specs/launcher.spec --noconfirm
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Build Python backend (PyInstaller, Windows)
+        if: runner.os == 'Windows'
+        run: |
+          .venv\Scripts\python.exe -m PyInstaller specs\launcher.spec --noconfirm
+        shell: cmd
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Verify build output
+        run: |
+          echo "--- Build output ---"
+          ls -la dist/N.E.K.O/ || true
+          echo "--- Binary check ---"
+          ls -la "dist/N.E.K.O/${{ matrix.binary_name }}" || echo "Binary not found!"
+        shell: bash
+
+      - name: Upload Python backend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/N.E.K.O/
+          retention-days: 7
+          compression-level: 6
+
+  # ──────────────────────────────────────────────
+  # Step 2: Build Electron desktop app
+  # ──────────────────────────────────────────────
+  build-electron:
+    needs: [version, build-python]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            python_artifact: python-backend-win
+            electron_args: '--win'
+            artifact_name: desktop-win-x64
+          - os: macos-13
+            platform: mac-x64
+            python_artifact: python-backend-mac-x64
+            electron_args: '--mac --x64'
+            artifact_name: desktop-mac-x64
+          - os: macos-latest
+            platform: mac-arm64
+            python_artifact: python-backend-mac-arm64
+            electron_args: '--mac --arm64'
+            artifact_name: desktop-mac-arm64
+          - os: ubuntu-latest
+            platform: linux
+            python_artifact: python-backend-linux
+            electron_args: '--linux'
+            artifact_name: desktop-linux-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Electron frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
+          ref: ${{ github.event.inputs.electron_ref || 'main' }}
+          token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          path: electron-app
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: electron-app/package-lock.json
+
+      - name: Download Python backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.python_artifact }}
+          path: electron-app/bin
+
+      - name: Make server binary executable (Unix)
+        if: runner.os != 'Windows'
+        run: chmod +x electron-app/bin/server
+
+      - name: Install npm dependencies
+        working-directory: electron-app
+        run: npm ci || npm install
+
+      - name: Update version in package.json
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
+            // Ensure semver-compatible version
+            if (!/^\d+\.\d+\.\d+/.test(pkg.version)) {
+              pkg.version = '0.0.0-' + pkg.version;
+            }
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Updated version to:', pkg.version);
+          "
+
+      # --- Platform-specific electron-builder config patches ---
+      - name: Configure Linux build targets
+        if: matrix.platform == 'linux'
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.build = pkg.build || {};
+            pkg.build.linux = {
+              target: [
+                { target: 'AppImage', arch: ['x64'] },
+                { target: 'deb', arch: ['x64'] },
+                { target: 'tar.gz', arch: ['x64'] }
+              ],
+              category: 'Utility',
+              icon: 'build/icons'
+            };
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Linux build targets configured');
+          "
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg \
+            fakeroot \
+            rpm \
+            libarchive-tools
+
+      # --- Build Electron app ---
+      - name: Build Electron app
+        working-directory: electron-app
+        run: npx electron-builder ${{ matrix.electron_args }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable code signing in CI unless explicitly enabled
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: List build output
+        working-directory: electron-app/dist
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lahR . || dir /s
+        shell: bash
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            electron-app/dist/*.exe
+            electron-app/dist/*.dmg
+            electron-app/dist/*.zip
+            electron-app/dist/*.AppImage
+            electron-app/dist/*.deb
+            electron-app/dist/*.tar.gz
+            electron-app/dist/*.rpm
+            electron-app/dist/*.blockmap
+            electron-app/dist/latest*.yml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ──────────────────────────────────────────────
+  # Step 3: Create GitHub Release (only on tag push)
+  # ──────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, build-electron]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: desktop-*
+
+      - name: Organize release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( \
+            -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
+            -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
+            -o -name "*.rpm" -o -name "latest*.yml" \
+          \) -exec cp {} release/ \;
+          echo "=== Release files ==="
+          ls -lah release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "N.E.K.O. v${{ needs.version.outputs.version }}"
+          body: |
+            ## N.E.K.O. v${{ needs.version.outputs.version }}
+
+            ### Downloads
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Windows | x64 | `N.E.K.O.exe` (Portable) |
+            | macOS | Intel (x64) | `N.E.K.O-*.dmg` or `.zip` |
+            | macOS | Apple Silicon (arm64) | `N.E.K.O-*-arm64.dmg` or `.zip` |
+            | Linux | x64 | `N.E.K.O-*.AppImage` / `.deb` / `.tar.gz` |
+
+            ### Notes
+            - First launch may take a moment as the Python backend initializes
+            - Default server port: `48911`
+
+            ---
+            Built by GitHub Actions
+          files: release/*
+          draft: true
+          prerelease: ${{ contains(needs.version.outputs.version, 'beta') || contains(needs.version.outputs.version, 'alpha') || contains(needs.version.outputs.version, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
