@@ -22,45 +22,87 @@ import importlib.util
 import json
 import sys
 
-# ==================================================
-# 增加缺失的 bilibili_api 数据文件修复逻辑，防止打包后环境缺失导致的错误
-# ==================================================
-def fix_missing_bilibili_api_json():
-    """
-    修复缺失的 bilibili_api 数据文件
+logger = logging.getLogger(__name__)
 
-    当打包后的环境中缺少 bilibili_api 数据文件时，尝试修复该问题。
-    该函数会检查是否存在 bilibili_api 包，并根据环境判断是否需要回退到默认路径。
+
+def _fix_bilibili_api_env():
     """
+    针对 Nuitka 打包环境的修复函数：
+    在程序运行时检测并强制创建 bilibili_api 缺失的 data 目录和关键 JSON 配置文件。
+    """
+    logger.info("正在检查 Bilibili API 运行环境兼容性...")
+    
+    # 检查是否处于打包环境 (Nuitka 会定义 __nuitka_binary_dir)
+    is_compiled = "__nuitka_binary_dir" in globals() or getattr(sys, 'frozen', False)
+    
     try:
-        # 优先判断是否是打包后环境
-        if hasattr(sys, '_MEIPASS'):
-            pkg_path = Path(sys._MEIPASS) / "bilibili_api"
+        import bilibili_api
+
+        # 1. 定位 bilibili_api 库路径
+        try:
+            lib_path = os.path.dirname(bilibili_api.__file__)
+            base_path = Path(lib_path)
+            logger.info(f"检测到 bilibili_api 安装路径: {base_path}")
+        except Exception as e:
+            logger.warning(f"无法确定 bilibili_api 安装路径，尝试跳过修复: {e}")
+            return
+
+        data_dir = base_path / "data"
+
+        # 2. 强制创建 data 目录
+        if not data_dir.exists():
+            try:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"✅ 已补全缺失的 B站数据目录: {data_dir}")
+            except Exception as e:
+                logger.warning(f"❌ 无法创建数据目录 (可能是权限问题): {data_dir}, 错误: {e}")
+                return
         else:
-            spec = importlib.util.spec("bilibili_api")
-            if spec and spec.origin:
-                pkg_dir = Path(spec.origin).resolve().parent
-                logger.info(f"bilibili_api 包路径: {pkg_dir}")
+            logger.debug("B站数据目录已存在，检查配置文件...")
+
+        # 3. 定义必须存在的配置文件及其默认内容
+        # video_uploader_lines.json: 核心报错文件，必须是列表格式 []
+        # gevent_patch.json: 部分环境需要的补丁配置，通常是 {}
+        missing_files = {
+            "video_uploader_lines.json": [],
+            "gevent_patch.json": {}
+        }
+
+        fixed_count = 0
+        for file_name, default_content in missing_files.items():
+            file_path = data_dir / file_name
+            if not file_path.exists():
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        json.dump(default_content, f)
+                    logger.info(f"✅ 已强制补全缺失配置文件: {file_name}")
+                    fixed_count += 1
+                except Exception as e:
+                    logger.warning(f"❌ 写入配置文件 {file_name} 失败: {e}")
             else:
-                pkg_dir = Path(__file__).resolve().parent / "bilibili_api"
-                logger.info(f"bilibili_api 回退路径: {pkg_dir}")
-        # 构造缺失的文件路径
-        data_dir = pkg_dir / "data"
-        json_file = data_dir / "video_uploader_lines.json"
+                # 检查文件是否为空或损坏 (可选)
+                try:
+                    if file_path.stat().st_size == 0:
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            json.dump(default_content, f)
+                        logger.info(f"⚠️ 发现空文件 {file_name}，已重置为默认值")
+                except:
+                    pass
 
-        # 不存在就创建
-        if not os.path.exists(json_file):
-            os.makedirs(data_dir, exist_ok=True)
-            with open(json_file, 'w', encoding='utf-8') as f:
-                json.dump({"uploaders": [], "lines": []}, f, ensure_ascii=False)
-            logger.info("✅ 已修复缺失的 bilibili_api 数据文件")
+        if is_compiled:
+            if fixed_count > 0:
+                logger.info(f"打包环境修复完成，共修复 {fixed_count} 个资源文件。")
+            else:
+                logger.info("打包环境资源完整，无需修复。")
 
+    except ImportError:
+        logger.warning("未检测到 bilibili_api 库，跳过环境修复逻辑。")
     except Exception as e:
-        logger.getLogger(__name__).warning(f"修复 bilibili_api 数据文件失败: {e}")
+        # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
+        logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 执行修复
-fix_missing_bilibili_api_json()
-
+# 在模块加载时立即执行
+_fix_bilibili_api_env()
 
 # ==================================================
 # 从 language_utils 导入区域检测功能
@@ -123,7 +165,6 @@ except ImportError:
         except Exception:
             return False
 
-logger = logging.getLogger(__name__)
 
 # User-Agent池，随机选择以避免被识别
 USER_AGENTS = [
