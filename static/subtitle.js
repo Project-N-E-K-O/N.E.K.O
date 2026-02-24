@@ -14,6 +14,8 @@ function normalizeLanguageCode(lang) {
         return 'en';
     } else if (langLower.startsWith('ko')) {
         return 'ko';
+    } else if (langLower.startsWith('ru')) {
+        return 'ru';
     }
     return 'zh'; // 默认中文
 }
@@ -86,24 +88,32 @@ function detectLanguage(text) {
     const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
     // 韩文检测（谚文）
     const koreanPattern = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g;
+    // 俄文检测（西里尔字母）
+    const russianPattern = /[\u0400-\u04ff]/g;
     // 英文检测
     const englishPattern = /[a-zA-Z]/g;
-    
+
     const chineseCount = (text.match(chinesePattern) || []).length;
     const japaneseCount = (text.match(japanesePattern) || []).length;
     const koreanCount = (text.match(koreanPattern) || []).length;
+    const russianCount = (text.match(russianPattern) || []).length;
     const englishCount = (text.match(englishPattern) || []).length;
-    
+
     // 如果包含日文假名，优先判断为日语
     if (japaneseCount > 0) {
         return 'ja';
     }
-    
+
     // 如果包含韩文，优先判断为韩语
     if (koreanCount > 0) {
         return 'ko';
     }
-    
+
+    // 如果包含俄文西里尔字母，判断为俄语
+    if (russianCount >= englishCount && russianCount >= chineseCount && russianCount > 0) {
+        return 'ru';
+    }
+
     // 判断主要语言
     if (chineseCount > englishCount && chineseCount > 0) {
         return 'zh';
@@ -447,7 +457,8 @@ function showSubtitlePrompt() {
         'zh': '开启字幕翻译',
         'en': 'Enable Subtitle Translation',
         'ja': '字幕翻訳を有効にする',
-        'ko': '자막 번역 켜기'
+        'ko': '자막 번역 켜기',
+        'ru': 'Включить перевод субтитров'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');

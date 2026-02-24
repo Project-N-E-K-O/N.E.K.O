@@ -2,167 +2,173 @@
 
 html,
 body {
-height: 100%;
-margin: 0;
-padding: 0;
-background: transparent;
-color: #333;
-font-family: 'Segoe UI', Arial, sans-serif;
-position: relative;
-overflow: auto; /* 允许 body 滚动 */
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    color: #333;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    position: relative;
+    overflow: auto;
+    /* 允许 body 滚动 */
 }
 
 /* 主容器 - 无边框窗口样式 */
 .container {
-max-width: 100%;
-margin: 0;
-background: #fff;
-border-radius: 0;
-box-shadow: none;
-padding: 0;
-padding-bottom: 24px; /* 底部留出空间 */
-overflow: visible; /* 让内容自然扩展 */
-position: relative;
-min-height: 100vh;
+    max-width: 100%;
+    margin: 0;
+    background: #fff;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
+    padding-bottom: 24px;
+    /* 底部留出空间 */
+    overflow: visible;
+    /* 让内容自然扩展 */
+    position: relative;
+    min-height: 100vh;
 }
 
 /* 标题栏 */
 .container-header {
-background: #40C5F1;
-padding: 18px 24px;
-display: flex;
-justify-content: space-between;
-align-items: center;
-border-radius: 0;
--webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+    background: #40C5F1;
+    padding: 18px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    -webkit-app-region: drag;
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */
 .container-header .close-btn {
--webkit-app-region: no-drag;
+    -webkit-app-region: no-drag;
 }
 
 .container-header h2 {
-margin: 0;
-font-size: 1.5rem;
-font-weight: 600;
-position: relative;
-font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
-letter-spacing: 1px;
-color: transparent;
---button-text-stroke-color: #22b3ff;
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+    position: relative;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    letter-spacing: 1px;
+    color: transparent;
+    --button-text-stroke-color: #22b3ff;
 }
-        
+
 .container-header h2::before {
-content: attr(data-text);
-position: absolute;
-left: 0;
-top: 0;
-width: 100%;
-height: 100%;
-z-index: -1;
-color: var(--button-text-stroke-color);
--webkit-text-stroke: 1px var(--button-text-stroke-color);
-text-shadow: 
-2px 0 0 var(--button-text-stroke-color), 
-0 2px 0 var(--button-text-stroke-color), 
--2px 0 0 var(--button-text-stroke-color), 
-0 -2px 0 var(--button-text-stroke-color),
-1.4px 1.4px 0 var(--button-text-stroke-color), 
--1.4px 1.4px 0 var(--button-text-stroke-color), 
-1.4px -1.4px 0 var(--button-text-stroke-color), 
--1.4px -1.4px 0 var(--button-text-stroke-color),
-1.8px 0.8px 0 var(--button-text-stroke-color), 
--1.8px 0.8px 0 var(--button-text-stroke-color), 
-1.8px -0.8px 0 var(--button-text-stroke-color), 
--1.8px -0.8px 0 var(--button-text-stroke-color),
-0.8px 1.8px 0 var(--button-text-stroke-color), 
--0.8px 1.8px 0 var(--button-text-stroke-color), 
-0.8px -1.8px 0 var(--button-text-stroke-color), 
--0.8px -1.8px 0 var(--button-text-stroke-color),
-1px 0 0 var(--button-text-stroke-color), 
--1px 0 0 var(--button-text-stroke-color), 
-0 1px 0 var(--button-text-stroke-color), 
-0 -1px 0 var(--button-text-stroke-color);
-white-space: nowrap;
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+    white-space: nowrap;
 }
-        
+
 .container-header h2::after {
-content: attr(data-text);
-position: absolute;
-left: 0;
-top: 0;
-width: 100%;
-height: 100%;
-z-index: 10;
-background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
--webkit-background-clip: text;
-background-clip: text;
-color: transparent;
-text-shadow: none;
-white-space: nowrap;
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+    white-space: nowrap;
 }
 
 .close-btn {
-background: transparent;
-border: none;
-color: #fff;
-cursor: pointer;
-padding: 0;
-line-height: 1;
-border-radius: 4px;
-transition: background 0.2s, transform 0.1s ease;
-width: 32px;
-height: 32px;
-display: flex;
-align-items: center;
-justify-content: center;
+    background: transparent;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    border-radius: 4px;
+    transition: background 0.2s, transform 0.1s ease;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
-        
+
 .close-btn img {
-width: 32px;
-height: 32px;
-display: block;
+    width: 32px;
+    height: 32px;
+    display: block;
 }
 
 .close-btn:hover:not(:disabled) {
-background: rgba(255, 255, 255, 0.2);
-transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
 }
 
 .close-btn:active:not(:disabled) {
-background: rgba(255, 255, 255, 0.3);
-transform: translateY(1px) scale(0.95);
-opacity: 0.9;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
 }
 
 .container-content {
-padding: 24px 32px;
-background: #fff;
-border-radius: 0 0 20px 20px;
+    padding: 24px 32px;
+    background: #fff;
+    border-radius: 0 0 20px 20px;
 }
 
 /* 主人档案卡片 */
 #master-section {
-margin-top: 32px;
-margin-bottom: 15px;
+    margin-top: 32px;
+    margin-bottom: 15px;
 }
 
 .master-section-title {
-font-size: 1.1rem;
-font-weight: 600;
-color: #40C5F1;
-margin-bottom: 8px;
-display: flex;
-align-items: center;
-gap: 8px;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #40C5F1;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .master-section-header {
-display: flex;
-justify-content: space-between;
-align-items: center;
-margin-bottom: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
 }
 
 .header-tips-container {
@@ -181,7 +187,8 @@ margin-bottom: 24px;
     color: red;
 }
 
-.delete-icon, .add-icon {
+.delete-icon,
+.add-icon {
     width: 20px;
     height: 20px;
     vertical-align: middle;
@@ -200,74 +207,76 @@ margin-bottom: 24px;
 }
 
 .master-section-header .tips {
-margin: 0;
-color: #40C5F1;
-font-size: 1.1rem;
-flex: 1;
+    margin: 0;
+    color: #40C5F1;
+    font-size: 1.1rem;
+    flex: 1;
 }
 
 .master-card {
-border: 2px solid #b3e5fc;
-border-radius: 20px;
-background: #f0f8ff;
-padding: 16px 20px;
-overflow: hidden;
+    border: 2px solid #b3e5fc;
+    border-radius: 20px;
+    background: #f0f8ff;
+    padding: 16px 20px;
+    overflow: hidden;
 }
 
 .master-card-body {
-background: transparent;
+    background: transparent;
 }
 
 /* 猫娘档案卡片 */
 #catgirl-section {
-margin-bottom: 24px;
+    margin-bottom: 24px;
 }
 
 .catgirl-section-header {
-display: flex;
-align-items: center;
-color: #40C5F1;
-gap: 8px;
-margin-bottom: 24px;
-line-height: 1; /* 确保容器行高不影响对齐 */
+    display: flex;
+    align-items: center;
+    color: #40C5F1;
+    gap: 8px;
+    margin-bottom: 24px;
+    line-height: 1;
+    /* 确保容器行高不影响对齐 */
 }
 
 .catgirl-card {
-border: 2px solid #b3e5fc;
-border-radius: 20px;
-background: #f0f8ff;
-padding: 16px 20px;
-overflow: hidden;
+    border: 2px solid #b3e5fc;
+    border-radius: 20px;
+    background: #f0f8ff;
+    padding: 16px 20px;
+    overflow: hidden;
 }
 
 .catgirl-card-body {
-background: transparent;
+    background: transparent;
 }
 
 .section {
-margin-bottom: 32px;
-padding: 0 32px;
+    margin-bottom: 32px;
+    padding: 0 32px;
 }
 
 /* 字段行包装器 - 包含标签和输入框 */
 .field-row-wrapper {
-display: flex;
-align-items: center;
-margin-bottom: 10px;
-gap: 12px;
-position: relative;
-overflow: visible;
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    gap: 12px;
+    position: relative;
+    overflow: visible;
 }
-        
+
 /* 包含 select 的 field-row-wrapper 需要特殊处理 */
 .field-row-wrapper:has(select) {
-align-items: center;
-overflow: visible;
+    align-items: center;
+    overflow: visible;
 }
 
 /* 标签在胶囊框外面 */
 .field-row-wrapper label {
-    min-width: 110px; /* 增加最小宽度以适应英文 */
+    min-width: 110px;
+    /* 增加最小宽度以适应英文 */
     font-weight: 700;
     color: #40C5F1;
     font-size: 1.2rem;
@@ -278,60 +287,61 @@ overflow: visible;
 }
 
 .field-row-wrapper label span[style*="color:red"] {
-color: #ff5252 !important;
+    color: #ff5252 !important;
 }
 
 /* 输入字段行 - 胶囊形状（只包含输入框和按钮） */
 .field-row {
-display: flex;
-align-items: center;
-flex: 1;
-padding: 2px;
-border: 2px solid #b3e5fc;
-border-radius: 50px;
-background: #fff;
-transition: border-color 0.2s;
-min-height: 30px;
-overflow: visible;
-min-width: 150px; /* 减小最小宽度，让 flex 更自由 */
-position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    padding: 2px;
+    border: 2px solid #b3e5fc;
+    border-radius: 50px;
+    background: #fff;
+    transition: border-color 0.2s;
+    min-height: 30px;
+    overflow: visible;
+    min-width: 150px;
+    /* 减小最小宽度，让 flex 更自由 */
+    position: relative;
 }
-        
+
 /* voice_id 的 field-row 特殊处理 - 缩短宽度 */
 .field-row:has(select[name="voice_id"]) {
-flex: 0 0 auto;
-width: auto;
-min-width: 200px;
-max-width: 300px;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 200px;
+    max-width: 300px;
 }
-        
+
 /* select 下拉框需要可见 - 统一处理 */
 .field-row:has(select) {
-overflow: visible !important;
-z-index: 100;
-position: relative;
+    overflow: visible !important;
+    z-index: 100;
+    position: relative;
 }
-        
+
 .field-row select {
-overflow: visible !important;
-position: relative;
-z-index: 1000;
-border-radius: 0;
-border: none;
-background: transparent;
-appearance: auto;
--webkit-appearance: menulist;
--moz-appearance: menulist;
+    overflow: visible !important;
+    position: relative;
+    z-index: 1000;
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    appearance: auto;
+    -webkit-appearance: menulist;
+    -moz-appearance: menulist;
 }
-        
+
 .field-row select:focus,
 .field-row select:active {
-z-index: 1001;
-outline: none;
+    z-index: 1001;
+    outline: none;
 }
 
 .field-row:focus-within {
-border-color: #40C5F1;
+    border-color: #40C5F1;
 }
 
 /* 档案名超限反馈：红框 + 临时提示 */
@@ -365,82 +375,83 @@ border-color: #40C5F1;
 .field-row input,
 .field-row select,
 .field-row textarea {
-flex: 1;
-padding: 4px 12px;
-border: none !important;
-border-radius: 48px;
-font-size: 0.9rem;
-resize: none !important;
-min-height: 30px;
-max-height: none;
-line-height: 1.4;
-font-family: 'Segoe UI', Arial, sans-serif;
-box-sizing: border-box;
-background: #fff;
-color: #40C5F1;
-outline: none !important;
-outline-offset: 0 !important;
-box-shadow: none !important;
--webkit-appearance: none;
--moz-appearance: none;
-appearance: none;
+    flex: 1;
+    padding: 4px 12px;
+    border: none !important;
+    border-radius: 48px;
+    font-size: 0.9rem;
+    resize: none !important;
+    min-height: 30px;
+    max-height: none;
+    line-height: 1.4;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    box-sizing: border-box;
+    background: #fff;
+    color: #40C5F1;
+    outline: none !important;
+    outline-offset: 0 !important;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
 }
 
 .field-row input::placeholder,
 .field-row textarea::placeholder {
-color: #b3e5fc;
+    color: #b3e5fc;
 }
 
 .field-row input:focus,
 .field-row select:focus,
 .field-row textarea:focus {
-outline: none !important;
-outline-offset: 0 !important;
-border: none !important;
-background: #fff;
-color: #40C5F1;
-box-shadow: none !important;
+    outline: none !important;
+    outline-offset: 0 !important;
+    border: none !important;
+    background: #fff;
+    color: #40C5F1;
+    box-shadow: none !important;
 }
 
 .field-row input:hover,
 .field-row select:hover,
 .field-row textarea:hover {
-outline: none !important;
-border: none !important;
-box-shadow: none !important;
+    outline: none !important;
+    border: none !important;
+    box-shadow: none !important;
 }
 
 .field-row textarea {
-overflow-y: hidden;
-transition: height 0.2s ease;
-max-height: 80px;
-border-radius: 48px;
-resize: none !important;
+    overflow-y: hidden;
+    transition: height 0.2s ease;
+    max-height: 80px;
+    border-radius: 48px;
+    resize: none !important;
 }
 
 /* 移除所有可能的边框和轮廓 */
 .field-row input::-webkit-inner-spin-button,
 .field-row input::-webkit-outer-spin-button {
--webkit-appearance: none;
-margin: 0;
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .field-row textarea::-webkit-resizer {
-display: none;
+    display: none;
 }
 
 /* 删除按钮在胶囊框外面 */
 .field-row-wrapper .btn.delete {
-flex-shrink: 0;
-margin-left: 8px;
+    flex-shrink: 0;
+    margin-left: 8px;
 }
 
 /* 确保按钮在field-row-wrapper中正确对齐 */
-.field-row-wrapper > .btn.sm {
-flex-shrink: 0;
-margin-left: 8px;
-min-width: 100px; /* 减小强制最小宽度，改用 padding 支撑 */
-padding: 0 15px;
+.field-row-wrapper>.btn.sm {
+    flex-shrink: 0;
+    margin-left: 8px;
+    min-width: 100px;
+    /* 减小强制最小宽度，改用 padding 支撑 */
+    padding: 0 15px;
 }
 
 /* 强制限制按钮内图标的大小，防止被动态脚本或i18n覆盖 */
@@ -473,295 +484,297 @@ padding: 0 15px;
 }
 
 /* 在进阶设定中，确保按钮对齐 */
-.fold-content .field-row-wrapper > .btn.sm {
-margin-left: 8px;
-min-width: 120px;
+.fold-content .field-row-wrapper>.btn.sm {
+    margin-left: 8px;
+    min-width: 120px;
 }
 
 /* 自定义滚动条样式 */
 .field-row textarea::-webkit-scrollbar {
-width: 6px;
+    width: 6px;
 }
 
 .field-row textarea::-webkit-scrollbar-track {
-background: transparent;
+    background: transparent;
 }
 
 .field-row textarea::-webkit-scrollbar-thumb {
-background-color: rgba(64, 197, 241, 0.3);
-border-radius: 3px;
+    background-color: rgba(64, 197, 241, 0.3);
+    border-radius: 3px;
 }
 
 .field-row textarea::-webkit-scrollbar-thumb:hover {
-background-color: rgba(64, 197, 241, 0.5);
+    background-color: rgba(64, 197, 241, 0.5);
 }
 
 .field-row .optional {
-color: #888;
-font-size: 0.95em;
-margin-left: 8px;
+    color: #888;
+    font-size: 0.95em;
+    margin-left: 8px;
 }
 
 /* 按钮 - 圆角胶囊/药丸形状 */
 .btn {
-padding: 10px 20px;
-border-radius: 999px;
-border: none;
-background: #40C5F1;
-color: #fff;
-font-size: 0.95rem;
-cursor: pointer;
-margin-right: 8px;
-transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
-font-weight: 500;
-white-space: nowrap;
-display: inline-flex;
-align-items: center;
-gap: 6px;
+    padding: 10px 20px;
+    border-radius: 999px;
+    border: none;
+    background: #40C5F1;
+    color: #fff;
+    font-size: 0.95rem;
+    cursor: pointer;
+    margin-right: 8px;
+    transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
+    font-weight: 500;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 
 .btn:hover:not(:disabled) {
-background: #3ab8e0;
-transform: translateY(-1px);
-box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
 }
 
 .btn:active:not(:disabled) {
-background: #2fa8d0;
-transform: translateY(1px) scale(0.98);
-box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
-opacity: 0.95;
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
 }
 
 .btn.delete {
-background: #ff5252;
+    background: #ff5252;
 }
 
 .btn.delete:hover:not(:disabled) {
-background: #ff4444;
-transform: translateY(-1px);
-box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
+    background: #ff4444;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
 }
 
 .btn.delete:active:not(:disabled) {
-background: #e53935;
-transform: translateY(1px) scale(0.98);
-box-shadow: 0 1px 3px rgba(255, 82, 82, 0.2);
-opacity: 0.95;
+    background: #e53935;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(255, 82, 82, 0.2);
+    opacity: 0.95;
 }
 
 .btn.add {
-background: #40C5F1;
+    background: #40C5F1;
 }
 
 .btn.add:hover:not(:disabled) {
-background: #3ab8e0;
-transform: translateY(-1px);
-box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
 }
 
 .btn.add:active:not(:disabled) {
-background: #2fa8d0;
-transform: translateY(1px) scale(0.98);
-box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
-opacity: 0.95;
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
 }
 
 /* 小号按钮 */
 .btn.sm {
-padding: 0 15px;
-border-radius: 999px;
-margin-right: 0;
-/* 修改：不再强制 120px，而是根据内容自适应 */
-min-width: 80px;       
-justify-content: center; /* 确保文字和图标在按钮中间 */
-height: 30px;       /* 强制设置高度，确保大家都一样高 */
-line-height: 1;     /* 防止文字行高把按钮撑大 */
-font-size: 0.8rem;  
-width: auto;
+    padding: 0 15px;
+    border-radius: 999px;
+    margin-right: 0;
+    /* 修改：不再强制 120px，而是根据内容自适应 */
+    min-width: 80px;
+    justify-content: center;
+    /* 确保文字和图标在按钮中间 */
+    height: 30px;
+    /* 强制设置高度，确保大家都一样高 */
+    line-height: 1;
+    /* 防止文字行高把按钮撑大 */
+    font-size: 0.8rem;
+    width: auto;
 }
 
 .btn.sm.delete {
-background: #ff5252;
-padding: 6px 12px;
+    background: #ff5252;
+    padding: 6px 12px;
 }
 
 .btn.sm.add {
-background: #40C5F1;
+    background: #40C5F1;
 }
 
 /* 胶囊行内的按钮 */
 .field-row .btn {
-margin-right: 0;
-padding: 6px 12px;
-font-size: 0.8rem;
+    margin-right: 0;
+    padding: 6px 12px;
+    font-size: 0.8rem;
 }
 
 /* 折叠面板 */
 .fold {
-background: transparent;
-border-radius: 20px;
-margin-bottom: 12px;
-padding: 0;
-border: none;
-overflow: visible;
+    background: transparent;
+    border-radius: 20px;
+    margin-bottom: 12px;
+    padding: 0;
+    border: none;
+    overflow: visible;
 }
 
 .fold-toggle {
-cursor: pointer;
-color: #fff;
-font-weight: 600;
-user-select: none;
-padding: 12px 16px;
-border-radius: 20px 20px 0 0;
-background: linear-gradient(135deg, #40C5F1 0%, #b3e5fc 100%);
-display: flex;
-align-items: center;
-gap: 8px;
-transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
-margin-bottom: 0;
-font-size: 0.95rem;
-width: 100%;
-box-sizing: border-box;
+    cursor: pointer;
+    color: #fff;
+    font-weight: 600;
+    user-select: none;
+    padding: 12px 16px;
+    border-radius: 20px 20px 0 0;
+    background: linear-gradient(135deg, #40C5F1 0%, #b3e5fc 100%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s, transform 0.1s ease, box-shadow 0.1s ease;
+    margin-bottom: 0;
+    font-size: 0.95rem;
+    width: 100%;
+    box-sizing: border-box;
 }
-        
+
 /* 当折叠状态（未展开）时，底部也使用圆角 */
 .fold:not(.open) .fold-toggle {
-border-radius: 20px;
+    border-radius: 20px;
 }
 
 .fold-toggle:hover:not(:disabled) {
-background: #3ab8e0;
-transform: translateY(-1px);
-box-shadow: 0 2px 6px rgba(64, 197, 241, 0.3);
+    background: #3ab8e0;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.3);
 }
 
 .fold-toggle:active:not(:disabled) {
-background: #2fa8d0;
-transform: translateY(1px) scale(0.98);
-box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
-opacity: 0.95;
+    background: #2fa8d0;
+    transform: translateY(1px) scale(0.98);
+    box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+    opacity: 0.95;
 }
 
 .fold-toggle .arrow {
-font-size: 0.8rem;
+    font-size: 0.8rem;
 }
-        
+
 /* 箭头图片样式 */
 .fold-toggle .arrow[src],
 .catgirl-expand[src] {
-display: inline-block;
+    display: inline-block;
 }
 
 .fold-content {
-display: none;
-margin-top: 0;
-background: #fff;
-border: 2px solid #b3e5fc;
-border-top: none;
-border-radius: 0 0 20px 20px;
-padding: 16px 16px 8px 16px;
-margin-left: 0;
-margin-right: 0;
-width: 100%;
-box-sizing: border-box;
-overflow: visible;
+    display: none;
+    margin-top: 0;
+    background: #fff;
+    border: 2px solid #b3e5fc;
+    border-top: none;
+    border-radius: 0 0 20px 20px;
+    padding: 16px 16px 8px 16px;
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
+    box-sizing: border-box;
+    overflow: visible;
 }
 
 .fold.open>.fold-content {
-display: block;
+    display: block;
 }
 
 /* System Prompt 特殊样式 - 故意设计得不起眼 */
 .fold-content .system-prompt-fold {
-background: transparent;
-border: none;
-border-radius: 0;
-padding: 0;
-margin-top: 8px;
-margin-bottom: 0;
-overflow: visible;
-box-sizing: border-box;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-top: 8px;
+    margin-bottom: 0;
+    overflow: visible;
+    box-sizing: border-box;
 }
 
 /* 展开时显示圆角框 */
 .fold-content .system-prompt-fold.open {
-background: #f9f9f9;
-border: 1px solid #e0e0e0;
-border-radius: 12px;
-padding: 8px 12px;
-margin-bottom: 0;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 8px 12px;
+    margin-bottom: 0;
 }
 
 .fold-content .system-prompt-fold .fold-toggle {
-color: #aaa;
-background: transparent;
-font-style: italic;
-font-weight: normal;
-padding: 4px 8px;
-margin-bottom: 0;
-font-size: 0.75rem;
-font-family: 'Segoe UI', Arial, sans-serif;
-word-wrap: break-word;
-overflow-wrap: break-word;
-max-width: fit-content;
-opacity: 0.7;
-border-radius: 4px;
+    color: #aaa;
+    background: transparent;
+    font-style: italic;
+    font-weight: normal;
+    padding: 4px 8px;
+    margin-bottom: 0;
+    font-size: 0.75rem;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow-wrap: break-word;
+    max-width: fit-content;
+    opacity: 0.7;
+    border-radius: 4px;
 }
 
 .fold-content .system-prompt-fold .fold-toggle:hover {
-background: rgba(0, 0, 0, 0.05);
-transform: none;
-box-shadow: none;
+    background: rgba(0, 0, 0, 0.05);
+    transform: none;
+    box-shadow: none;
 }
 
 .fold-content .system-prompt-fold .fold-content {
-background: transparent;
-border: none;
-padding: 8px 0 0 0;
+    background: transparent;
+    border: none;
+    padding: 8px 0 0 0;
 }
 
 .fold-content .system-prompt-fold .fold-content textarea {
-color: #888;
-font-size: 0.85rem;
-font-family: 'Segoe UI', Arial, sans-serif;
-border: 1px solid #e0e0e0 !important;
-background: #fff !important;
-padding: 8px;
-line-height: 1.4;
-width: 100%;
-resize: none !important;
-border-radius: 8px;
-box-sizing: border-box;
+    color: #888;
+    font-size: 0.85rem;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    border: 1px solid #e0e0e0 !important;
+    background: #fff !important;
+    padding: 8px;
+    line-height: 1.4;
+    width: 100%;
+    resize: none !important;
+    border-radius: 8px;
+    box-sizing: border-box;
 }
 
 /* 限制live2d-link的可点击区域 */
 .fold-content .live2d-link {
-display: inline-block;
-flex: 0 0 auto;
-max-width: fit-content;
-width: auto;
-cursor: pointer;
-color: #40C5F1;
-text-decoration: underline;
-padding: 6px 0;
+    display: inline-block;
+    flex: 0 0 auto;
+    max-width: fit-content;
+    width: auto;
+    cursor: pointer;
+    color: #40C5F1;
+    text-decoration: underline;
+    padding: 6px 0;
 }
 
 /* 确保field-row的空白区域不触发链接点击 */
 .fold-content .field-row::after {
-content: '';
-flex: 1;
-pointer-events: none;
+    content: '';
+    flex: 1;
+    pointer-events: none;
 }
 
 /* 猫娘块样式 - 更轻的设计 */
 .catgirl-block {
-border: 2px solid #b3e5fc;
-border-radius: 20px;
-margin-bottom: 12px;
-padding: 0;
-background: #f0f8ff;
-overflow: hidden;
+    border: 2px solid #b3e5fc;
+    border-radius: 20px;
+    margin-bottom: 12px;
+    padding: 0;
+    background: #f0f8ff;
+    overflow: hidden;
 }
 
 .catgirl-header {
@@ -779,12 +792,12 @@ overflow: hidden;
 }
 
 .catgirl-expand {
-color: #40C5F1;
-margin-right: 8px;
-font-size: 1rem;
-cursor: pointer;
-user-select: none;
-flex-shrink: 0;
+    color: #40C5F1;
+    margin-right: 8px;
+    font-size: 1rem;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
 }
 
 .catgirl-title {
@@ -810,40 +823,41 @@ flex-shrink: 0;
 }
 
 .catgirl-details {
-padding: 16px 20px;
-background: #f0f8ff;
-overflow: visible;
+    padding: 16px 20px;
+    background: #f0f8ff;
+    overflow: visible;
 }
 
 /* 进阶设定框在猫娘详情中时，扩展宽度并确保对齐 */
 .catgirl-details .fold {
-margin-left: -8px;
-margin-right: -8px;
-width: calc(100% + 16px);
+    margin-left: -8px;
+    margin-right: -8px;
+    width: calc(100% + 16px);
 }
-        
+
 .catgirl-details .fold-toggle {
-margin-left: 0;
-margin-right: 0;
+    margin-left: 0;
+    margin-right: 0;
 }
-        
+
 .catgirl-details .fold-content {
-margin-left: 0;
-margin-right: 0;
+    margin-left: 0;
+    margin-right: 0;
 }
 
 .tips {
-color: #40C5F1;
-font-size: 1.1rem;
-margin-bottom: 0; /* 移除底部外边距，防止干扰垂直居中 */
-line-height: 1.5;
+    color: #40C5F1;
+    font-size: 1.1rem;
+    margin-bottom: 0;
+    /* 移除底部外边距，防止干扰垂直居中 */
+    line-height: 1.5;
 }
 
 /* 确保按钮在胶囊行内正确对齐 */
 .field-row .btn.sm {
-height: 32px;
-display: inline-flex;
-align-items: center;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
 }
 
 /* API Key 按钮特殊样式 */
@@ -856,53 +870,53 @@ align-items: center;
 
 /* 当前猫娘指示条 */
 .current-catgirl-bar {
-background: #40C5F1;
-color: #fff;
-padding: 8px 16px;
-display: flex;
-justify-content: space-between;
-align-items: center;
-font-size: 0.9rem;
+    background: #40C5F1;
+    color: #fff;
+    padding: 8px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
 }
 
 @media (max-width: 600px) {
-.container {
-margin: 20px 10px;
-border-radius: 16px;
-}
+    .container {
+        margin: 20px 10px;
+        border-radius: 16px;
+    }
 
-.container-content {
-padding: 16px 20px;
-}
+    .container-content {
+        padding: 16px 20px;
+    }
 
-.section {
-padding: 0 20px;
-}
+    .section {
+        padding: 0 20px;
+    }
 
-.field-row-wrapper {
-flex-direction: column;
-align-items: stretch;
-gap: 8px;
-}
+    .field-row-wrapper {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
 
-.field-row-wrapper label {
-min-width: auto;
-width: 100%;
-}
+    .field-row-wrapper label {
+        min-width: auto;
+        width: 100%;
+    }
 
-.field-row {
-width: 100%;
-}
+    .field-row {
+        width: 100%;
+    }
 
-.field-row input,
-.field-row select,
-.field-row textarea {
-width: 100%;
-padding: 8px 12px;
-}
+    .field-row input,
+    .field-row select,
+    .field-row textarea {
+        width: 100%;
+        padding: 8px 12px;
+    }
 
-.field-row .btn {
-margin-top: 4px;
-align-self: flex-end;
-}
+    .field-row .btn {
+        margin-top: 4px;
+        align-self: flex-end;
+    }
 }

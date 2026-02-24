@@ -31,6 +31,27 @@ window.LIPSYNC_PARAMS = [
     'ParamO'
 ];
 
+// 模型偏好验证常量
+const MODEL_PREFERENCES = {
+    SCALE_MIN: 0,
+    SCALE_MAX: 10,
+    POSITION_MAX: 100000
+};
+
+// 验证模型偏好是否有效
+function isValidModelPreferences(scale, position) {
+    if (!scale || !position) return false;
+    const scaleX = scale.x;
+    const scaleY = scale.y;
+    const posX = position.x;
+    const posY = position.y;
+    const isValidScale = Number.isFinite(scaleX) && scaleX > MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
+                        Number.isFinite(scaleY) && scaleY > MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
+    const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
+                           Math.abs(posX) < MODEL_PREFERENCES.POSITION_MAX && Math.abs(posY) < MODEL_PREFERENCES.POSITION_MAX;
+    return isValidScale && isValidPosition;
+}
+
 // Live2D 管理器类
 class Live2DManager {
     constructor() {
@@ -173,6 +194,10 @@ class Live2DManager {
             }
 
             this.isInitialized = true;
+            // 应用初始帧率设置
+            if (window.targetFrameRate && this.pixi_app.ticker) {
+                this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+            }
             console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
             return this.pixi_app;
         } catch (error) {
@@ -203,6 +228,17 @@ class Live2DManager {
         }
     }
 
+    /**
+     * 设置目标帧率
+     * @param {number} fps - 目标帧率（30 或 60）
+     */
+    setTargetFPS(fps) {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.maxFPS = fps;
+            console.log(`[Live2D Core] 目标帧率设置为 ${fps}fps`);
+        }
+    }
+
     // 加载用户偏好
     async loadUserPreferences() {
         try {
@@ -220,21 +256,8 @@ class Live2DManager {
     async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
-            if (!position || typeof position !== 'object' ||
-                !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
-                console.error('位置值无效:', position);
-                return false;
-            }
-
-            if (!scale || typeof scale !== 'object' ||
-                !Number.isFinite(scale.x) || !Number.isFinite(scale.y)) {
-                console.error('缩放值无效:', scale);
-                return false;
-            }
-
-            // 验证缩放值必须为正数
-            if (scale.x <= 0 || scale.y <= 0) {
-                console.error('缩放值必须为正数:', scale);
+            if (!isValidModelPreferences(scale, position)) {
+                console.error('位置或缩放值无效:', { scale, position });
                 return false;
             }
 
@@ -458,4 +481,64 @@ class Live2DManager {
 window.Live2DModel = Live2DModel;
 window.Live2DManager = Live2DManager;
 window.isMobileWidth = isMobileWidth;
+
+// 监听帧率变更事件
+window.addEventListener('neko-frame-rate-changed', (e) => {
+    const fps = e.detail?.fps;
+    if (fps && window.live2dManager) {
+        window.live2dManager.setTargetFPS(fps);
+    }
+});
+
+// 监听画质变更事件：需要重新加载模型以应用新的纹理降采样
+window.addEventListener('neko-render-quality-changed', (e) => {
+    const quality = e.detail?.quality;
+    if (!quality || !window.live2dManager) return;
+    const mgr = window.live2dManager;
+    const modelPath = mgr._lastLoadedModelPath;
+    if (modelPath && mgr.currentModel) {
+        console.log(`[Live2D] 画质变更为 ${quality}，重新加载模型以应用纹理降采样`);
+        // 显式销毁当前模型的 BaseTexture，清除 PIXI 纹理缓存
+        // 否则 PIXI.BaseTexture.from(url) 会返回被降采样过的缓存纹理
+        try {
+            const textures = mgr.currentModel.textures;
+            if (textures) {
+                textures.forEach(tex => {
+                    if (tex?.baseTexture) {
+                        tex.baseTexture.destroy();
+                    }
+                });
+            }
+        } catch (err) {
+            console.warn('[Live2D] 清理纹理缓存时出错:', err);
+        }
+        
+        // 保存当前模型的 scale 和 position，以便重新加载后恢复
+        const modelForSave = mgr.currentModel;
+        
+        const scaleX = modelForSave.scale.x;
+        const scaleY = modelForSave.scale.y;
+        const posX = modelForSave.x;
+        const posY = modelForSave.y;
+        
+        const scaleObj = { x: scaleX, y: scaleY };
+        const positionObj = { x: posX, y: posY };
+        let savedPreferences = null;
+        
+        if (isValidModelPreferences(scaleObj, positionObj)) {
+            savedPreferences = {
+                scale: scaleObj,
+                position: positionObj
+            };
+        } else {
+            console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
+                scaleX, scaleY, posX, posY
+            });
+        }
+        
+        mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined).catch(err => {
+            console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
+        });
+    }
+});
 

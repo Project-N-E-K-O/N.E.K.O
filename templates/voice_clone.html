@@ -8,6 +8,8 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <link rel="stylesheet" href="/static/css/voice_clone.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
 </head>
 <body>
     <div class="container">
@@ -23,7 +25,7 @@
             </div>
             <label style="display: flex; align-items: center; gap: 8px;">
                 <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; flex-shrink: 0;">
-                <span data-i18n="voice.selectFile">选择本地音频文件（15秒最佳，请勿超过30秒，wav/mp3格式）</span>
+                <span data-i18n="voice.selectFile">选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）</span>
             </label>
             <div class="file-input-wrapper">
                 <input type="file" id="audioFile" accept="audio/*">
@@ -74,7 +76,7 @@
                         <span data-i18n="voice.refresh">刷新</span>
                     </button>
                 </div>
-                <div id="voice-list-container" style="background: white; border-radius: 8px; padding: 16px; min-height: 100px; max-height: 400px; overflow-y: auto; border: 1px solid #ccc;">
+                <div id="voice-list-container" class="voice-list-bg" style="border-radius: 8px; padding: 16px; min-height: 100px; max-height: 400px; overflow-y: auto;">
                     <div style="text-align: center; color: #999; padding: 20px;" id="voice-list-loading">
                         <span data-i18n="voice.loading">加载中...</span>
                     </div>

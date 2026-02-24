@@ -14,8 +14,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         this._uiWindowHandlers = [];
     }
     if (this._uiWindowHandlers.length > 0) {
-        this._uiWindowHandlers.forEach(({ event, handler }) => {
-            window.removeEventListener(event, handler);
+        this._uiWindowHandlers.forEach(({ event, handler, target, options }) => {
+            const eventTarget = target || window;
+            eventTarget.removeEventListener(event, handler, options);
         });
         this._uiWindowHandlers = [];
     }
@@ -54,6 +55,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
+    buttonsContainer.addEventListener('mouseenter', () => { this._vrmButtonsHovered = true; });
+    buttonsContainer.addEventListener('mouseleave', () => { this._vrmButtonsHovered = false; });
+
     const applyResponsiveFloatingLayout = () => {
         if (this._isInReturnState) {
             buttonsContainer.style.display = 'none';
@@ -77,11 +81,55 @@ VRMManager.prototype.setupFloatingButtons = function () {
             buttonsContainer.style.right = '';
             buttonsContainer.style.left = '';
             buttonsContainer.style.top = '';
-            buttonsContainer.style.display = 'flex';
+            // 桌面端显示由更新循环中的距离判定控制，这里不强制显示
         }
     };
     applyResponsiveFloatingLayout();
-    this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
+    const shouldShowLockIcon = () => {
+        const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+        if (this._isInReturnState) return false;
+        if (isLocked) return true;
+
+        const mouse = this._vrmMousePos;
+        if (!mouse) return false;
+        if (!this._vrmMousePosTs || (Date.now() - this._vrmMousePosTs > 1500)) return false;
+
+        // 锁图标命中使用整块矩形（包含中间透明区域），并向外扩展若干像素增加吸附手感
+        if (this._vrmLockIcon) {
+            const rect = this._vrmLockIcon.getBoundingClientRect();
+            const expandPx = 8;
+            const inExpandedRect =
+                mouse.x >= rect.left - expandPx &&
+                mouse.x <= rect.right + expandPx &&
+                mouse.y >= rect.top - expandPx &&
+                mouse.y <= rect.bottom + expandPx;
+            if (inExpandedRect) return true;
+        }
+
+        const centerX = this._vrmModelCenterX;
+        const centerY = this._vrmModelCenterY;
+        if (!mouse || typeof centerX !== 'number' || typeof centerY !== 'number') return false;
+
+        const dx = mouse.x - centerX;
+        const dy = mouse.y - centerY;
+        const dist = Math.hypot(dx, dy);
+        const modelHeight = Math.max(0, Number(this._vrmModelScreenHeight) || 0);
+        const threshold = Math.max(90, Math.min(260, modelHeight * 0.55));
+        return dist <= threshold;
+    };
+    this._shouldShowVrmLockIcon = shouldShowLockIcon;
+
+    const updateMousePosition = (e) => {
+        this._vrmMousePos = {
+            x: typeof e.clientX === 'number' ? e.clientX : 0,
+            y: typeof e.clientY === 'number' ? e.clientY : 0
+        };
+        this._vrmMousePosTs = Date.now();
+    };
+    const mouseListenerOptions = { passive: true, capture: true };
+    this._uiWindowHandlers.push({ event: 'mousemove', handler: updateMousePosition, target: window, options: mouseListenerOptions });
+    window.addEventListener('mousemove', updateMousePosition, mouseListenerOptions);
+    this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout, target: window });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
     const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
@@ -110,10 +158,10 @@ VRMManager.prototype.setupFloatingButtons = function () {
         btn.className = 'vrm-floating-btn';
 
         Object.assign(btn.style, {
-            width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
-            backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
+            width: '48px', height: '48px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+            backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
+            cursor: 'pointer', userSelect: 'none', boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
             transition: 'all 0.1s ease', pointerEvents: 'auto'
         });
 
@@ -146,8 +194,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
             // 悬停效果
             btn.addEventListener('mouseenter', () => {
                 btn.style.transform = 'scale(1.05)';
-                btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
-                btn.style.background = 'rgba(255, 255, 255, 0.8)';
+                btn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+                btn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
 
                 // 检查是否有单独的弹窗触发器且弹窗已打开
                 if (config.separatePopupTrigger) {
@@ -161,7 +209,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             btn.addEventListener('mouseleave', () => {
                 btn.style.transform = 'scale(1)';
-                btn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
+                btn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
                 const isActive = btn.dataset.active === 'true';
                 const popup = document.getElementById(`vrm-popup-${config.id}`);
                 const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
@@ -171,7 +219,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     ? isActive
                     : (isActive || isPopupVisible);
 
-                btn.style.background = shouldShowOnIcon ? 'rgba(255, 255, 255, 0.75)' : 'rgba(255, 255, 255, 0.65)';
+                btn.style.background = shouldShowOnIcon ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
                 if (imgOff && imgOn) {
                     imgOff.style.opacity = shouldShowOnIcon ? '0' : '1';
                     imgOn.style.opacity = shouldShowOnIcon ? '1' : '0';
@@ -224,7 +272,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     return;
                 }
 
-                btn.style.background = targetActive ? 'rgba(255, 255, 255, 0.75)' : 'rgba(255, 255, 255, 0.8)';
+                btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
             });
         }
 
@@ -245,18 +293,19 @@ VRMManager.prototype.setupFloatingButtons = function () {
             const triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
-            triggerImg.setAttribute('aria-hidden', 'true');
+            triggerImg.className = `vrm-trigger-icon-${config.id}`;
             Object.assign(triggerImg.style, {
                 width: '22px', height: '22px', objectFit: 'contain',
-                pointerEvents: 'none', imageRendering: 'crisp-edges'
+                pointerEvents: 'none', imageRendering: 'crisp-edges',
+                transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
             });
             Object.assign(triggerBtn.style, {
                 width: '24px', height: '24px', borderRadius: '50%',
-                background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'saturate(180%) blur(20px)',
-                border: '1px solid rgba(255, 255, 255, 0.18)',
+                background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))', backdropFilter: 'saturate(180%) blur(20px)',
+                border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 cursor: 'pointer', userSelect: 'none',
-                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)', transition: 'all 0.1s ease', pointerEvents: 'auto',
+                boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))', transition: 'all 0.1s ease', pointerEvents: 'auto',
                 marginLeft: '-10px'
             });
             triggerBtn.appendChild(triggerImg);
@@ -301,10 +350,29 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     popup.style.opacity !== '';
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
+                    // 更新被关闭的互斥按钮的图标
+                    const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                        exclusiveData.imgOff.style.opacity = '1';
+                        exclusiveData.imgOn.style.opacity = '0';
+                    }
                 }
                 isToggling = true;
                 this.showPopup(config.id, popup);
+                // 更新图标状态
                 setTimeout(() => {
+                    const newPopupVisible = popup.style.display === 'flex' &&
+                        popup.style.opacity !== '0' &&
+                        popup.style.opacity !== '';
+                    if (imgOff && imgOn) {
+                        if (newPopupVisible) {
+                            imgOff.style.opacity = '0';
+                            imgOn.style.opacity = '1';
+                        } else {
+                            imgOff.style.opacity = '1';
+                            imgOn.style.opacity = '0';
+                        }
+                    }
                     isToggling = false;
                 }, 200);
             });
@@ -413,9 +481,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             this._vrmLockIcon.style.backgroundImage = isLocked
                 ? 'url(/static/icons/locked_icon.png)'
                 : 'url(/static/icons/unlocked_icon.png)';
-            if (!isLocked) {
-                this._vrmLockIcon.style.display = 'block';
-            }
+            this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
         }
     };
 
@@ -451,22 +517,22 @@ VRMManager.prototype.setupFloatingButtons = function () {
     Object.assign(returnImgOn.style, { position: 'absolute', width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease' });
 
     Object.assign(returnBtn.style, {
-        width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
-        backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
+        width: '64px', height: '64px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
+        boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
     });
 
     returnBtn.addEventListener('mouseenter', () => {
         returnBtn.style.transform = 'scale(1.05)';
-        returnBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.08)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+        returnBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+        returnBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
         returnImgOff.style.opacity = '0'; returnImgOn.style.opacity = '1';
     });
     returnBtn.addEventListener('mouseleave', () => {
         returnBtn.style.transform = 'scale(1)';
-        returnBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)';
-        returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        returnBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
+        returnBtn.style.background = 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
         returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {
@@ -500,7 +566,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._vrmLockIcon = lockIcon;
 
     Object.assign(lockIcon.style, {
-        position: 'fixed', zIndex: '99999', width: '44px', height: '44px',
+        position: 'fixed', zIndex: '99999', width: '32px', height: '32px',
         cursor: 'pointer', display: 'none',
         backgroundImage: 'url(/static/icons/unlocked_icon.png)',
         backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center',
@@ -564,7 +630,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             lockIcon.style.transform = `scale(${baseScale})`;
         }, 100);
 
-        lockIcon.style.display = 'block';
+        lockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
 
         // 刷新浮动按钮布局，立即反映新的锁定状态
         applyResponsiveFloatingLayout();
@@ -581,12 +647,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         // 使用响应式布局函数，会检查锁定状态和视口
         applyResponsiveFloatingLayout();
 
-        // 显示锁图标（检查锁定状态，只有在未锁定时才显示）
+        // 锁图标显示由锁定状态和悬停状态共同决定
         if (this._vrmLockIcon) {
-            const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
-            if (!isLocked) {
-                this._vrmLockIcon.style.display = 'block';
-            }
+            this._vrmLockIcon.style.display = shouldShowLockIcon() ? 'block' : 'none';
         }
     }, 100); // 延迟100ms确保位置已计算
 
@@ -711,6 +774,24 @@ VRMManager.prototype._startUIUpdateLoop = function () {
             // 现在 screenLeft/Right/Top/Bottom 就是模型在屏幕上 的 2D 边界（与 Live2D bounds 等价）
             const modelScreenHeight = screenBottom - screenTop;
             const modelCenterY = (screenTop + screenBottom) / 2;
+            const modelCenterX = (screenLeft + screenRight) / 2;
+            this._vrmModelCenterX = modelCenterX;
+            this._vrmModelCenterY = modelCenterY;
+            this._vrmModelScreenHeight = modelScreenHeight;
+
+            const mouse = this._vrmMousePos;
+            const mouseStale = !this._vrmMousePosTs || (Date.now() - this._vrmMousePosTs > 1500);
+            const mouseDist = (mouse && !mouseStale) ? Math.hypot(mouse.x - modelCenterX, mouse.y - modelCenterY) : Infinity;
+            const baseThreshold = Math.max(90, Math.min(260, modelScreenHeight * 0.55));
+            const showThreshold = baseThreshold;
+            const hideThreshold = baseThreshold * 1.2;
+            if (this._vrmUiNearModel !== true && mouseDist <= showThreshold) {
+                this._vrmUiNearModel = true;
+            } else if (this._vrmUiNearModel !== false && mouseDist >= hideThreshold) {
+                this._vrmUiNearModel = false;
+            } else if (typeof this._vrmUiNearModel !== 'boolean') {
+                this._vrmUiNearModel = false;
+            }
 
             // ========== 按钮缩放（与之前相同） ==========
             const visibleCount = getVisibleButtonCount();
@@ -726,8 +807,16 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 const isMobile = window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
+                    // 移动端保持常驻，桌面端使用距离判定
+                    buttonsContainer.style.display = 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
+                    const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+                    const hoveringButtons = this._vrmButtonsHovered === true;
+                    const hasOpenPopup = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+                        .some((popup) => popup.style.display === 'flex' && popup.style.opacity !== '0');
+                    const shouldShowButtons = !isLocked && (this._vrmUiNearModel || hoveringButtons || hasOpenPopup);
+                    buttonsContainer.style.display = shouldShowButtons ? 'flex' : 'none';
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
 
@@ -772,7 +861,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                         lockIcon.style.transformOrigin = 'center center';
                         lockIcon.style.transform = `scale(${scale})`;
 
-                        const baseLockIconSize = 44;
+                        const baseLockIconSize = 32;
                         const actualLockIconSize = baseLockIconSize * scale;
                         const maxLockX = screenWidth - actualLockIconSize;
                         const maxLockY = screenHeight - actualLockIconSize - 20;
@@ -786,7 +875,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                             lockIcon.style.left = `${boundedLockX}px`;
                             lockIcon.style.top = `${boundedLockY}px`;
                         }
-                        lockIcon.style.display = 'block';
+                        lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
                     }
                 }
             }
@@ -987,8 +1076,8 @@ VRMManager.prototype.setButtonActive = function (buttonId, active) {
 
     // 更新背景色
     buttonData.button.style.background = active
-        ? 'rgba(68, 183, 254, 0.3)'
-        : 'rgba(255, 255, 255, 0.65)';
+        ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))'
+        : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
 
     // 更新图标
     if (buttonData.imgOff) {

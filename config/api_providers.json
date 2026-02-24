@@ -43,10 +43,12 @@
       "name": "免费版（猫娘专属福利）",
       "description": "阶跃星辰赞助，完全免费，无需API Key，但不支持自定义语音",
       "openrouter_url": "https://lanlan.tech/text/v1",
+      "conversation_model": "free-model",
       "summary_model": "free-model",
       "correction_model": "free-model",
       "emotion_model": "free-mini-model",
       "vision_model": "free-vision-model",
+      "agent_model": "free-agent-model",
       "audio_api_key": "free-access",
       "openrouter_api_key": "free-access",
       "is_free_version": true
@@ -56,60 +58,84 @@
       "name": "阿里（推荐）",
       "description": "推荐选择，支持自定义语音和Agent模式，价格适中",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "summary_model": "qwen3-next-80b-a3b-instruct",
-      "correction_model": "qwen3-235b-a22b-instruct-2507",
-      "emotion_model": "qwen-flash-2025-07-28",
-      "vision_model": "qwen3-vl-plus-2025-12-19"
+      "conversation_model": "qwen3.5-plus",
+      "summary_model": "qwen-plus",
+      "correction_model": "qwen3.5-plus",
+      "emotion_model": "qwen-flash",
+      "vision_model": "qwen3.5-plus",
+      "agent_model": "qwen3.5-plus"
     },
     "openai": {
       "key": "openai",
       "name": "OpenAI",
       "description": "记忆管理能力强，价格很贵，不支持自定义语音",
       "openrouter_url": "https://api.openai.com/v1",
-      "summary_model": "gpt-4.1-mini",
+      "conversation_model": "gpt-5-chat-latest",
+      "summary_model": "gpt-5-chat-latest",
       "correction_model": "gpt-5-chat-latest",
       "emotion_model": "gpt-4.1-nano",
-      "vision_model": "gpt-5-chat-latest"
+      "vision_model": "gpt-5-chat-latest",
+      "agent_model": "gpt-5.2-codex"
     },
     "glm": {
       "key": "glm",
       "name": "智谱",
       "description": "目前完全免费，支持Agent模式，不支持自定义语音",
       "openrouter_url": "https://open.bigmodel.cn/api/paas/v4",
+      "conversation_model": "glm-4.7-flash",
       "summary_model": "glm-4.7-flash",
       "correction_model": "glm-4.7-flash",
       "emotion_model": "glm-4.7-flash",
-      "vision_model": "glm-4.6v-flash"
+      "vision_model": "glm-4.6v-flash",
+      "agent_model": "glm-4.6v"
     },
     "step": {
       "key": "step",
       "name": "阶跃星辰",
       "description": "价格便宜，功能较少，不支持Agent模式和自定义语音",
       "openrouter_url": "https://api.stepfun.com/v1",
+      "conversation_model": "step-2-mini",
       "summary_model": "step-2-mini",
       "correction_model": "step-2-mini",
       "emotion_model": "step-2-mini",
-      "vision_model": "step-1o-turbo-vision"
+      "vision_model": "step-1o-turbo-vision",
+      "agent_model": "step-3"
     },
     "silicon": {
       "key": "silicon",
       "name": "硅基流动",
       "description": "性价比高，支持Agent模式，不支持自定义语音",
       "openrouter_url": "https://api.siliconflow.cn/v1",
+      "conversation_model": "deepseek-ai/DeepSeek-V3.2",
       "summary_model": "inclusionAI/Ling-flash-2.0",
       "correction_model": "deepseek-ai/DeepSeek-V3.2",
       "emotion_model": "inclusionAI/Ling-mini-2.0",
-      "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct"
+      "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+      "agent_model": "zai-org/GLM-4.6V"
     },
     "gemini": {
       "key": "gemini",
       "name": "Gemini（Google）",
       "description": "智能和性价比极高的辅助模型，国内版不支持",
       "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "conversation_model": "gemini-3-flash-preview",
       "summary_model": "gemini-2.5-flash",
       "correction_model": "gemini-3-flash-preview",
       "emotion_model": "gemini-2.5-flash-lite",
-      "vision_model": "gemini-3-flash-preview"
+      "vision_model": "gemini-3-flash-preview",
+      "agent_model": "gemini-3-flash-preview"
+    },
+    "kimi": {
+      "key": "kimi",
+      "name": "Kimi（月之暗面）",
+      "description": "国内可用，支持长上下文和视觉，不支持自定义语音",
+      "openrouter_url": "https://api.moonshot.cn/v1",
+      "conversation_model": "kimi-k2-0905-preview",
+      "summary_model": "kimi-k2-0905-preview",
+      "correction_model": "kimi-k2-0905-preview",
+      "emotion_model": "kimi-k2-0905-preview",
+      "vision_model": "kimi-k2.5",
+      "agent_model": "kimi-k2.5"
     }
   },
   "default_models": {
@@ -132,7 +158,8 @@
     "glm": "ASSIST_API_KEY_GLM",
     "step": "ASSIST_API_KEY_STEP",
     "silicon": "ASSIST_API_KEY_SILICON",
-    "gemini": "ASSIST_API_KEY_GEMINI"
+    "gemini": "ASSIST_API_KEY_GEMINI",
+    "kimi": "ASSIST_API_KEY_KIMI"
   },
   "free_voices": {
     "俏皮女孩": "voice-tone-OdVwaw2Az2",

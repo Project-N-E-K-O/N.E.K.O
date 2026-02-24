@@ -1,3 +1,9 @@
+// 统一的暗色模式检测辅助函数
+function getIsDarkTheme() {
+    return (window.nekoTheme && typeof window.nekoTheme.isDark === 'function' && window.nekoTheme.isDark()) ||
+        document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
 // JavaScript控制的tooltip实现
 document.addEventListener('DOMContentLoaded', function () {
     const tabButtons = document.querySelectorAll('.tabs button');
@@ -98,7 +104,7 @@ function isDefaultModel() {
     const currentModel = window.currentCharacterCardModel || '';
     return currentModel === 'mao_pro';
 }
-        
+
 // 更新上传按钮状态（不再依赖model-select元素）
 function updateModelDisplayAndUploadState() {
     const isDefault = isDefaultModel();
@@ -171,7 +177,7 @@ function closeDuplicateUploadModal() {
         modal.style.display = 'none';
     }
 }
-        
+
 function closeDuplicateUploadModalOnOutsideClick(event) {
     const modal = document.getElementById('duplicateUploadModal');
     if (event.target === modal) {
@@ -238,7 +244,7 @@ function closeUploadModal() {
         window.location.reload();
     }
 }
-        
+
 // 点击modal外部关闭
 function closeUploadModalOnOutsideClick(event) {
     const modal = document.getElementById('uploadToWorkshopModal');
@@ -317,7 +323,7 @@ function applyWorkshopSyncData() {
         console.error('应用同步数据时出错:', error);
     }
 }
-        
+
 function switchTab(tabId, event) {
     // 隐藏所有标签内容
     const tabContents = document.querySelectorAll('.tab-content');
@@ -457,70 +463,36 @@ function scanLocalItems() {
         },
         body: JSON.stringify({})
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP错误，状态码: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP错误，状态码: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
 
-        if (data.success) {
-            // 获取本地物品列表
-            const localItems = data.local_items || [];
-            const publishedItems = data.published_items || [];
+            if (data.success) {
+                // 获取本地物品列表
+                const localItems = data.local_items || [];
+                const publishedItems = data.published_items || [];
 
-            // 更新UI显示本地物品
-            displayLocalItems(localItems, publishedItems);
+                // 更新UI显示本地物品
+                displayLocalItems(localItems, publishedItems);
 
-            // 直接显示扫描完成提示，使用简单清晰的消息
-            const successMessage = window.t ? window.t('steam.scanComplete', {count: localItems.length}) : `扫描完成，共找到 ${localItems.length} 个物品`;
+                // 直接显示扫描完成提示，使用简单清晰的消息
+                const successMessage = window.t ? window.t('steam.scanComplete', { count: localItems.length }) : `扫描完成，共找到 ${localItems.length} 个物品`;
 
-            // 使用独立的提示元素，确保与开始提示分开
-            const messageElement = document.createElement('div');
-            messageElement.innerHTML = successMessage;
-            messageElement.style.cssText = `
-                position: fixed;
-                top: 60px;
-                right: 20px;
-                padding: 15px 20px;
-                background: #e8f5e9;
-                color: #2e7d32;
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                z-index: 99999;
-                font-weight: bold;
-                opacity: 0;
-                transform: translateY(-10px);
-                transition: opacity 0.3s ease, transform 0.3s ease;
-            `;
+                showToast(successMessage);
 
-            document.body.appendChild(messageElement);
-
-            // 触发动画
-            setTimeout(() => {
-                messageElement.style.opacity = '1';
-                messageElement.style.transform = 'translateY(0)';
-            }, 10);
-
-            // 5秒后自动消失
-            setTimeout(() => {
-                messageElement.style.opacity = '0';
-                messageElement.style.transform = 'translateY(-10px)';
-                setTimeout(() => {
-                    messageElement.remove();
-                }, 300);
-            }, 3000);
-
-        } else {
-            const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
-            showMessage(errorMessage, 'error', 3000);
-        }
-    })
-    .catch(error => {
-        console.error('扫描本地物品失败:', error);
-        showMessage(window.t ? window.t('steam.workshopScanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
-    });
+            } else {
+                const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
+                showMessage(errorMessage, 'error', 3000);
+            }
+        })
+        .catch(error => {
+            console.error('扫描本地物品失败:', error);
+            showMessage(window.t ? window.t('steam.workshopScanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
+        });
 }
 
 // 检查文件是否存在
@@ -637,7 +609,7 @@ function displayLocalItems(localItems, publishedItems) {
         const isPublished = publishedItems.some(published =>
             published.localId === item.id ||
             (published.title && item.name &&
-            published.title.toLowerCase() === item.name.toLowerCase())
+                published.title.toLowerCase() === item.name.toLowerCase())
         );
 
         // 确定状态类和文本
@@ -672,33 +644,33 @@ function checkUploadStatusForLocalItems() {
         if (itemPath) {
             // 调用后端API检查上传标记文件
             fetch(`/api/steam/workshop/check-upload-status?item_path=${itemPath}`)
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP错误，状态码: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success && data.is_published) {
-                    // 如果存在上传标记文件，更新状态为已发布
-                    const statusBadge = card.querySelector('.status-badge');
-                    if (statusBadge) {
-                        statusBadge.className = 'status-badge status-published';
-                        statusBadge.textContent = window.t ? window.t('steam.status.published') : '已发布';
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP错误，状态码: ${response.status}`);
                     }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success && data.is_published) {
+                        // 如果存在上传标记文件，更新状态为已发布
+                        const statusBadge = card.querySelector('.status-badge');
+                        if (statusBadge) {
+                            statusBadge.className = 'status-badge status-published';
+                            statusBadge.textContent = window.t ? window.t('steam.status.published') : '已发布';
+                        }
 
-                    // 更新上传按钮状态为已发布
-                    const actionButton = card.querySelector('.card-actions button');
-                    if (actionButton) {
-                        actionButton.className = 'button button-disabled';
-                        actionButton.disabled = true;
-                        actionButton.textContent = window.t ? window.t('steam.status.published') : '已发布';
+                        // 更新上传按钮状态为已发布
+                        const actionButton = card.querySelector('.card-actions button');
+                        if (actionButton) {
+                            actionButton.className = 'button button-disabled';
+                            actionButton.disabled = true;
+                            actionButton.textContent = window.t ? window.t('steam.status.published') : '已发布';
+                        }
                     }
-                }
-            })
-            .catch(error => {
-                console.error('检查上传标记文件失败:', error);
-            });
+                })
+                .catch(error => {
+                    console.error('检查上传标记文件失败:', error);
+                });
         }
     });
 }
@@ -709,37 +681,37 @@ function prepareItemForUpload(itemId, folderPath) {
     const normalizedPath = folderPath.replace(/\\/g, '/');
     // 调用API获取物品详情
     fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`)
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP错误，状态码: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            const item = data.item;
-
-            // 填充上传表单（title 现在是 div 元素）
-            document.getElementById('item-title').textContent = item.name || '';
-            document.getElementById('content-folder').value = item.path || '';
-
-            // 如果有预览图片，填充预览图片路径
-            if (item.previewImage) {
-                document.getElementById('preview-image').value = item.previewImage;
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP错误，状态码: ${response.status}`);
             }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                const item = data.item;
 
-            // 切换到上传区域
-            toggleUploadSection();
+                // 填充上传表单（title 现在是 div 元素）
+                document.getElementById('item-title').textContent = item.name || '';
+                document.getElementById('content-folder').value = item.path || '';
 
-            showMessage(window.t ? window.t('steam.itemDetailsLoaded') : '物品详情加载成功', 'success');
-        } else {
-            showMessage(window.t ? window.t('steam.itemDetailsFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
-        }
-    })
-    .catch(error => {
-        console.error('准备上传失败:', error);
-        showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `准备上传出错: ${error.message}`, 'error');
-    });
+                // 如果有预览图片，填充预览图片路径
+                if (item.previewImage) {
+                    document.getElementById('preview-image').value = item.previewImage;
+                }
+
+                // 切换到上传区域
+                toggleUploadSection();
+
+                showMessage(window.t ? window.t('steam.itemDetailsLoaded') : '物品详情加载成功', 'success');
+            } else {
+                showMessage(window.t ? window.t('steam.itemDetailsFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
+            }
+        })
+        .catch(error => {
+            console.error('准备上传失败:', error);
+            showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `准备上传出错: ${error.message}`, 'error');
+        });
 }
 
 // 添加完整版本的formatDate函数（包含日期和时间）
@@ -922,68 +894,82 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
     modalContainer.appendChild(modalContent);
     modalOverlay.appendChild(modalContainer);
 
+    const isDark = getIsDarkTheme();
+    if (isDark) {
+        modalContent.classList.add('dark-theme');
+    }
+
     // 添加到页面
     document.body.appendChild(modalOverlay);
 
     // 添加CSS样式
-    const style = document.createElement('style');
-    style.textContent = `
-        .confirm-modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 9999;
-            animation: fadeIn 0.3s ease;
-        }
+    if (!document.getElementById('confirm-modal-styles')) {
+        const style = document.createElement('style');
+        style.id = 'confirm-modal-styles';
+        style.textContent = `
+            .confirm-modal-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: rgba(0, 0, 0, 0.5);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 9999;
+                animation: fadeIn 0.3s ease;
+            }
 
-        .confirm-modal-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            width: 100%;
-            height: 100%;
-        }
+            .confirm-modal-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                width: 100%;
+                height: 100%;
+            }
 
-        .confirm-modal-content {
-            background-color: white;
-            border-radius: 8px;
-            padding: 24px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-            min-width: 400px;
-            max-width: 90%;
-            animation: slideUp 0.3s ease;
-        }
+            .confirm-modal-content {
+                background-color: white;
+                border-radius: 8px;
+                padding: 24px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+                min-width: 400px;
+                max-width: 90%;
+                animation: slideUp 0.3s ease;
+                color: #333;
+            }
+            
+            .confirm-modal-content.dark-theme {
+                background-color: #333;
+                color: #e0e0e0;
+            }
 
-        .confirm-modal-message {
-            font-size: 16px;
-            color: #333;
-            margin-bottom: 20px;
-            line-height: 1.5;
-        }
+            .confirm-modal-message {
+                font-size: 16px;
+                margin-bottom: 20px;
+                line-height: 1.5;
+                color: inherit;
+            }
 
-        .confirm-modal-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        }
+            .confirm-modal-actions {
+                display: flex;
+                justify-content: flex-end;
+                gap: 10px;
+            }
 
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
 
-        @keyframes slideUp {
-            from { transform: translateY(20px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-    `;
-    document.head.appendChild(style);
+            @keyframes slideUp {
+                from { transform: translateY(20px); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
@@ -1046,14 +1032,16 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageElement.style.position = 'relative';
     messageElement.style.zIndex = '1000';
 
-    // 为不同类型设置背景色
-    const bgColors = {
-        error: '#ffebee',
-        warning: '#fff8e1',
-        success: '#e8f5e9',
-        info: '#e3f2fd'
-    };
-    messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
+    // 为不同类型设置背景色（区分暗色模式）
+    const isDark = getIsDarkTheme();
+    const bgColors = isDark
+        ? { error: 'rgba(198,40,40,0.2)', warning: 'rgba(255,143,0,0.15)', success: 'rgba(46,125,50,0.2)', info: 'rgba(58,159,216,0.15)' }
+        : { error: '#ffebee', warning: '#fff8e1', success: '#e8f5e9', info: '#e3f2fd' };
+    messageElement.style.backgroundColor = bgColors[type] || (isDark ? '#333' : '#f5f5f5');
+    if (isDark) {
+        const textColors = { error: '#ef9a9a', warning: '#ffd54f', success: '#81c784', info: '#64b5f6' };
+        messageElement.style.color = textColors[type] || '#e0e0e0';
+    }
 
     // 设置消息显示动画
     setTimeout(() => {
@@ -1106,6 +1094,60 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+
+// 共享的提示框功能
+function showToast(message, duration = 3000) {
+    let container = document.getElementById('message-area');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'message-area';
+        container.className = 'message-area';
+        document.body.appendChild(container);
+
+        container.style.position = 'fixed';
+        container.style.top = '20px';
+        container.style.right = '20px';
+        container.style.maxWidth = '400px';
+        container.style.zIndex = '99999';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.alignItems = 'flex-end';
+        container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    }
+
+    const messageElement = document.createElement('div');
+    // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
+    messageElement.textContent = message;
+    const isDark = getIsDarkTheme();
+    messageElement.style.cssText = `
+        padding: 15px 20px;
+        margin-bottom: 10px;
+        background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
+        color: ${isDark ? '#81c784' : '#2e7d32'};
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
+        font-weight: bold;
+        opacity: 0;
+        transform: translateY(-10px);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+    `;
+
+    container.appendChild(messageElement);
+
+    setTimeout(() => {
+        messageElement.style.opacity = '1';
+        messageElement.style.transform = 'translateY(0)';
+    }, 10);
+
+    setTimeout(() => {
+        messageElement.style.opacity = '0';
+        messageElement.style.transform = 'translateY(-10px)';
+        setTimeout(() => {
+            messageElement.remove();
+        }, 300);
+    }, duration);
+}
+
 // 加载状态管理器
 function LoadingManager() {
     const loadingCount = { value: 0 };
@@ -1116,13 +1158,14 @@ function LoadingManager() {
             if (loadingCount.value === 1) {
                 const loadingOverlay = document.createElement('div');
                 loadingOverlay.id = 'loading-overlay';
+                const isDark = getIsDarkTheme();
                 loadingOverlay.style.cssText = `
                     position: fixed;
                     top: 0;
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    background: rgba(255, 255, 255, 0.8);
+                    background: ${isDark ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.8)'};
                     display: flex;
                     flex-direction: column;
                     align-items: center;
@@ -1133,8 +1176,8 @@ function LoadingManager() {
 
                 const loadingSpinner = document.createElement('div');
                 loadingSpinner.style.cssText = `
-                    border: 4px solid #f3f3f3;
-                    border-top: 4px solid #3498db;
+                    border: 4px solid ${isDark ? '#444' : '#f3f3f3'};
+                    border-top: 4px solid ${isDark ? '#3a9fd8' : '#3498db'};
                     border-radius: 50%;
                     width: 40px;
                     height: 40px;
@@ -1145,21 +1188,25 @@ function LoadingManager() {
                 const loadingText = document.createElement('div');
                 loadingText.textContent = message;
                 loadingText.style.fontSize = '16px';
-                loadingText.style.color = '#333';
+                loadingText.style.color = isDark ? '#e0e0e0' : '#333';
 
                 // 添加CSS动画
-                const style = document.createElement('style');
-                style.textContent = `
-                    @keyframes spin {
-                        0% { transform: rotate(0deg); }
-                        100% { transform: rotate(360deg); }
-                    }
-                `;
+                let style = document.getElementById('loading-overlay-style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'loading-overlay-style';
+                    style.textContent = `
+                        @keyframes spin {
+                            0% { transform: rotate(0deg); }
+                            100% { transform: rotate(360deg); }
+                        }
+                    `;
+                    document.head.appendChild(style);
+                }
 
                 loadingOverlay.appendChild(loadingSpinner);
                 loadingOverlay.appendChild(loadingText);
                 document.body.appendChild(loadingOverlay);
-                document.body.appendChild(style);
             }
         },
 
@@ -1348,187 +1395,187 @@ function uploadItem() {
         },
         body: JSON.stringify(uploadData)
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP错误，状态码: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        // 恢复按钮状态
-        if (uploadButton) {
-            uploadButton.textContent = originalText;
-            setButtonState(uploadButton, false);
-        }
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP错误，状态码: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            // 恢复按钮状态
+            if (uploadButton) {
+                uploadButton.textContent = originalText;
+                setButtonState(uploadButton, false);
+            }
 
-        // 清除所有现有消息
-        const messageArea = document.getElementById('message-area');
-        if (messageArea) {
-            messageArea.innerHTML = '';
-        }
+            // 清除所有现有消息
+            const messageArea = document.getElementById('message-area');
+            if (messageArea) {
+                messageArea.innerHTML = '';
+            }
 
-        if (data.success) {
-            // 标记上传已完成
-            isUploadCompleted = true;
+            if (data.success) {
+                // 标记上传已完成
+                isUploadCompleted = true;
 
-            showMessage(window.t ? window.t('steam.uploadSuccess') : '上传成功！', 'success', 5000);
+                showMessage(window.t ? window.t('steam.uploadSuccess') : '上传成功！', 'success', 5000);
 
-            // 显示物品ID
-            if (data.published_file_id) {
-                showMessage(window.t ? window.t('steam.itemIdDisplay', { itemId: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
+                // 显示物品ID
+                if (data.published_file_id) {
+                    showMessage(window.t ? window.t('steam.itemIdDisplay', { itemId: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
 
-                // 上传成功后，自动删除临时目录
-                if (currentUploadTempFolder) {
-                    cleanupTempFolder(currentUploadTempFolder, true);
-                }
-
-                // 使用Steam overlay打开物品页面
-                try {
-                    const published_id = data.published_file_id;
-                    const url = `steam://url/CommunityFilePage/${published_id}`;
-
-                    // 检查是否支持Steam overlay
-                    if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
-                        window.steam.ActivateGameOverlayToWebPage(url);
-                    } else {
-                        // 备选方案：尝试直接打开URL
-                        window.open(url);
+                    // 上传成功后，自动删除临时目录
+                    if (currentUploadTempFolder) {
+                        cleanupTempFolder(currentUploadTempFolder, true);
                     }
-                } catch (e) {
-                    console.error('无法打开Steam overlay:', e);
+
+                    // 使用Steam overlay打开物品页面
+                    try {
+                        const published_id = data.published_file_id;
+                        const url = `steam://url/CommunityFilePage/${published_id}`;
+
+                        // 检查是否支持Steam overlay
+                        if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
+                            window.steam.ActivateGameOverlayToWebPage(url);
+                        } else {
+                            // 备选方案：尝试直接打开URL
+                            window.open(url);
+                        }
+                    } catch (e) {
+                        console.error('无法打开Steam overlay:', e);
+                    }
+
+                    // 【成就】解锁创意工坊成就
+                    if (window.parent && window.parent.unlockAchievement) {
+                        window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                            console.error('解锁创意工坊成就失败:', err);
+                        });
+                    } else if (window.opener && window.opener.unlockAchievement) {
+                        window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                            console.error('解锁创意工坊成就失败:', err);
+                        });
+                    } else if (window.unlockAchievement) {
+                        window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                            console.error('解锁创意工坊成就失败:', err);
+                        });
+                    }
+
+                    // 延迟关闭modal并跳转到角色卡页面
+                    setTimeout(() => {
+                        // 关闭上传modal
+                        const uploadModal = document.getElementById('uploadToWorkshopModal');
+                        if (uploadModal) {
+                            uploadModal.style.display = 'none';
+                        }
+                        // 重置状态
+                        currentUploadTempFolder = null;
+                        isUploadCompleted = false;
+                        // 跳转到角色卡页面
+                        switchTab('character-cards-content');
+                    }, 2000); // 2秒后关闭并跳转
                 }
 
-                // 【成就】解锁创意工坊成就
-                if (window.parent && window.parent.unlockAchievement) {
-                    window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                        console.error('解锁创意工坊成就失败:', err);
-                    });
-                } else if (window.opener && window.opener.unlockAchievement) {
-                    window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                        console.error('解锁创意工坊成就失败:', err);
-                    });
-                } else if (window.unlockAchievement) {
-                    window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                        console.error('解锁创意工坊成就失败:', err);
-                    });
+                // 如果需要接受协议
+                if (data.needs_to_accept_agreement) {
+                    showMessage(window.t ? window.t('steam.workshopAgreementRequired') : '请先同意Steam Workshop使用协议', 'warning', 8000);
                 }
 
-                // 延迟关闭modal并跳转到角色卡页面
+                // 清空表单（title 和 description 现在是 div 元素，使用 textContent）
+                const formElements = [
+                    { id: 'item-title', property: 'textContent', value: '' },
+                    { id: 'item-description', property: 'textContent', value: '' },
+                    { id: 'content-folder', property: 'value', value: '' },
+                    { id: 'preview-image', property: 'value', value: '' },
+                    { id: 'visibility', property: 'value', value: 'public' },
+                    { id: 'allow-comments', property: 'checked', value: true }
+                ];
+
+                formElements.forEach(element => {
+                    const el = document.getElementById(element.id);
+                    if (el) {
+                        el[element.property] = element.value;
+                    }
+                });
+
+                // 清空标签
+                const tagsContainer = document.getElementById('tags-container');
+                if (tagsContainer) {
+                    tagsContainer.innerHTML = '';
+                }
+
+                // 添加默认标签
+                addTag('模组');
+
+                // 显示成功提示和操作选项
                 setTimeout(() => {
-                    // 关闭上传modal
-                    const uploadModal = document.getElementById('uploadToWorkshopModal');
-                    if (uploadModal) {
-                        uploadModal.style.display = 'none';
-                    }
-                    // 重置状态
-                    currentUploadTempFolder = null;
-                    isUploadCompleted = false;
-                    // 跳转到角色卡页面
-                    switchTab('character-cards-content');
-                }, 2000); // 2秒后关闭并跳转
-            }
-
-            // 如果需要接受协议
-            if (data.needs_to_accept_agreement) {
-                showMessage(window.t ? window.t('steam.workshopAgreementRequired') : '请先同意Steam Workshop使用协议', 'warning', 8000);
-            }
-
-            // 清空表单（title 和 description 现在是 div 元素，使用 textContent）
-            const formElements = [
-                { id: 'item-title', property: 'textContent', value: '' },
-                { id: 'item-description', property: 'textContent', value: '' },
-                { id: 'content-folder', property: 'value', value: '' },
-                { id: 'preview-image', property: 'value', value: '' },
-                { id: 'visibility', property: 'value', value: 'public' },
-                { id: 'allow-comments', property: 'checked', value: true }
-            ];
-
-            formElements.forEach(element => {
-                const el = document.getElementById(element.id);
-                if (el) {
-                    el[element.property] = element.value;
-                }
-            });
-
-            // 清空标签
-            const tagsContainer = document.getElementById('tags-container');
-            if (tagsContainer) {
-                tagsContainer.innerHTML = '';
-            }
-
-            // 添加默认标签
-            addTag('模组');
-
-            // 显示成功提示和操作选项
-            setTimeout(() => {
-                const messageArea = document.getElementById('message-area');
-                const actionMessage = document.createElement('div');
-                actionMessage.className = 'success-message';
-                actionMessage.innerHTML = `
+                    const messageArea = document.getElementById('message-area');
+                    const actionMessage = document.createElement('div');
+                    actionMessage.className = 'success-message';
+                    actionMessage.innerHTML = `
                     <span>${window.t ? window.t('steam.operationComplete') : 'Operation complete, you can:'}</span>
                     <button class="button button-sm" onclick="closeUploadModal()">${window.t ? window.t('steam.hideUploadSection') : 'Hide Upload Section'}</button>
                     <span class="message-close" onclick="this.parentElement.remove()">×</span>
                 `;
-                messageArea.appendChild(actionMessage);
-            }, 1000);
-        } else {
-            // 上传失败，重置上传完成标志
-            isUploadCompleted = false;
-            showMessage(window.t ? window.t('steam.uploadError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `上传失败: ${data.error || '未知错误'}`, 'error', 8000);
-            if (data.message) {
-                showMessage(window.t ? window.t('steam.uploadWarning', { message: data.message }) : `警告: ${data.message}`, 'warning', 8000);
-            }
+                    messageArea.appendChild(actionMessage);
+                }, 1000);
+            } else {
+                // 上传失败，重置上传完成标志
+                isUploadCompleted = false;
+                showMessage(window.t ? window.t('steam.uploadError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `上传失败: ${data.error || '未知错误'}`, 'error', 8000);
+                if (data.message) {
+                    showMessage(window.t ? window.t('steam.uploadWarning', { message: data.message }) : `警告: ${data.message}`, 'warning', 8000);
+                }
 
-            // 提供重试建议
-            setTimeout(() => {
-                const retryButton = document.createElement('button');
-                retryButton.className = 'button button-sm';
-                retryButton.textContent = window.t ? window.t('steam.retryUpload') : '重试上传';
-                retryButton.onclick = uploadItem;
+                // 提供重试建议
+                setTimeout(() => {
+                    const retryButton = document.createElement('button');
+                    retryButton.className = 'button button-sm';
+                    retryButton.textContent = window.t ? window.t('steam.retryUpload') : '重试上传';
+                    retryButton.onclick = uploadItem;
 
-                const messageArea = document.getElementById('message-area');
-                const retryMessage = document.createElement('div');
-                retryMessage.className = 'error-message';
-                retryMessage.innerHTML = `<span>${window.t ? window.t('steam.retryPrompt') : 'Would you like to retry the upload?'}</span>
+                    const messageArea = document.getElementById('message-area');
+                    const retryMessage = document.createElement('div');
+                    retryMessage.className = 'error-message';
+                    retryMessage.innerHTML = `<span>${window.t ? window.t('steam.retryPrompt') : 'Would you like to retry the upload?'}</span>
                     <button class="button button-sm" onclick="uploadItem()">${window.t ? window.t('steam.retryUpload') : 'Retry Upload'}</button>
                     <span class="message-close" onclick="this.parentElement.remove()">×</span>`;
-                messageArea.appendChild(retryMessage);
-            }, 2000);
-        }
-    })
-    .catch(error => {
-        console.error('上传失败:', error);
+                    messageArea.appendChild(retryMessage);
+                }, 2000);
+            }
+        })
+        .catch(error => {
+            console.error('上传失败:', error);
 
-        // 上传失败，重置上传完成标志
-        isUploadCompleted = false;
+            // 上传失败，重置上传完成标志
+            isUploadCompleted = false;
 
-        // 恢复按钮状态
-        if (uploadButton) {
-            uploadButton.textContent = originalText;
-            setButtonState(uploadButton, false);
-        }
+            // 恢复按钮状态
+            if (uploadButton) {
+                uploadButton.textContent = originalText;
+                setButtonState(uploadButton, false);
+            }
 
-        // 清除所有现有消息
-        const messageArea = document.getElementById('message-area');
-        if (messageArea) {
-            messageArea.innerHTML = '';
-        }
+            // 清除所有现有消息
+            const messageArea = document.getElementById('message-area');
+            if (messageArea) {
+                messageArea.innerHTML = '';
+            }
 
-        let errorMessage = window.t ? window.t('steam.uploadGeneralError') : '上传失败';
+            let errorMessage = window.t ? window.t('steam.uploadGeneralError') : '上传失败';
 
-        // 根据错误类型提供更具体的提示
-        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-            errorMessage = window.t ? window.t('steam.uploadNetworkError') : '网络错误，请检查您的连接';
-            showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
-            showMessage(window.t ? window.t('steam.checkNetworkConnection') : '请检查您的网络连接', 'warning', 8000);
-        } else if (error.message.includes('HTTP错误')) {
-            errorMessage = window.t ? window.t('steam.uploadHttpError', { error: error.message }) : `HTTP错误: ${error.message}`;
-            showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
-            showMessage(window.t ? window.t('steam.serverProblem', { message: window.t ? window.t('common.tryAgainLater') : '请稍后重试' }) : '服务器问题，请稍后重试', 'warning', 8000);
-        } else {
-            showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: window.t ? window.t('steam.uploadErrorWithMessage', { error: error.message }) : `错误: ${error.message}` }) : `错误: ${error.message}`, 'error', 8000);
-        }
-    });
+            // 根据错误类型提供更具体的提示
+            if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                errorMessage = window.t ? window.t('steam.uploadNetworkError') : '网络错误，请检查您的连接';
+                showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
+                showMessage(window.t ? window.t('steam.checkNetworkConnection') : '请检查您的网络连接', 'warning', 8000);
+            } else if (error.message.includes('HTTP错误')) {
+                errorMessage = window.t ? window.t('steam.uploadHttpError', { error: error.message }) : `HTTP错误: ${error.message}`;
+                showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
+                showMessage(window.t ? window.t('steam.serverProblem', { message: window.t ? window.t('common.tryAgainLater') : '请稍后重试' }) : '服务器问题，请稍后重试', 'warning', 8000);
+            } else {
+                showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: window.t ? window.t('steam.uploadErrorWithMessage', { error: error.message }) : `错误: ${error.message}` }) : `错误: ${error.message}`, 'error', 8000);
+            }
+        });
 }
 
 // 分页相关变量
@@ -1546,52 +1593,52 @@ function loadSubscriptions() {
 
     // 调用后端API获取订阅物品列表
     fetch('/api/steam/workshop/subscribed-items')
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (!data.success) {
-            subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : 'Failed to fetch subscribed items'}: ${data.error || (window.t ? window.t('common.unknownError') : 'Unknown error')}</p></div>`;
-            // 如果有消息提示，显示给用户
-            if (data.message) {
-                showMessage(data.message, 'error');
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
-            updatePagination(); // 更新分页状态
-            return;
-        }
+            return response.json();
+        })
+        .then(data => {
+            if (!data.success) {
+                subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : 'Failed to fetch subscribed items'}: ${data.error || (window.t ? window.t('common.unknownError') : 'Unknown error')}</p></div>`;
+                // 如果有消息提示，显示给用户
+                if (data.message) {
+                    showMessage(data.message, 'error');
+                }
+                updatePagination(); // 更新分页状态
+                return;
+            }
 
-        // 保存所有订阅物品到全局变量
-        allSubscriptions = data.items || [];
+            // 保存所有订阅物品到全局变量
+            allSubscriptions = data.items || [];
 
-        // 应用排序（从下拉框获取排序方式）
-        const sortSelect = document.getElementById('sort-subscription');
-        if (sortSelect) {
-            const [field, order] = sortSelect.value.split('_');
-            sortSubscriptions(field, order);
-        } else {
-            // 默认按日期降序排序
-            sortSubscriptions('date', 'desc');
-        }
+            // 应用排序（从下拉框获取排序方式）
+            const sortSelect = document.getElementById('sort-subscription');
+            if (sortSelect) {
+                const [field, order] = sortSelect.value.split('_');
+                sortSubscriptions(field, order);
+            } else {
+                // 默认按日期降序排序
+                sortSubscriptions('date', 'desc');
+            }
 
-        // 计算总页数
-        totalPages = Math.ceil(allSubscriptions.length / itemsPerPage);
-        if (totalPages < 1) totalPages = 1;
-        if (currentPage > totalPages) currentPage = totalPages;
+            // 计算总页数
+            totalPages = Math.ceil(allSubscriptions.length / itemsPerPage);
+            if (totalPages < 1) totalPages = 1;
+            if (currentPage > totalPages) currentPage = totalPages;
 
-        // 显示当前页的数据
-        renderSubscriptionsPage();
+            // 显示当前页的数据
+            renderSubscriptionsPage();
 
-        // 更新分页UI
-        updatePagination();
-    })
-    .catch(error => {
-        console.error('获取订阅物品失败:', error);
-        subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : '获取订阅物品失败'}: ${error.message}</p></div>`;
-        showMessage(window.t ? window.t('steam.cannotConnectToServer') : '无法连接到服务器，请稍后重试', 'error');
-    });
+            // 更新分页UI
+            updatePagination();
+        })
+        .catch(error => {
+            console.error('获取订阅物品失败:', error);
+            subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : '获取订阅物品失败'}: ${error.message}</p></div>`;
+            showMessage(window.t ? window.t('steam.cannotConnectToServer') : '无法连接到服务器，请稍后重试', 'error');
+        });
 }
 
 // 渲染当前页的订阅物品
@@ -1661,14 +1708,14 @@ function renderSubscriptionsPage() {
                         <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小'}:</span> <span class="info-value">${formattedItem.size}</span></div>
                     </div>
                     ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
-                        `<div class="download-progress">
+                `<div class="download-progress">
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${item.downloadProgress.percentage}%">
                                     ${item.downloadProgress.percentage.toFixed(1)}%
                                 </div>
                             </div>
                         </div>` : ''
-                    }
+            }
                     <div class="card-actions">
                         <!-- 查看详情下次再加，一时半会儿搞不定 -->
                         <button class="button button-danger" onclick="unsubscribeItem('${formattedItem.id}', '${formattedItem.name}')">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
@@ -1888,54 +1935,54 @@ function viewItemDetails(itemId) {
 
     // 调用后端API获取物品详情
     fetch(`/api/steam/workshop/item/${itemId}`)
-    .then(response => {
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        if (!data.success) {
-            showMessage(window.t ? window.t('steam.getItemDetailsFailedWithError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `获取物品详情失败: ${data.error || '未知错误'}`, 'error');
-            return;
-        }
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (!data.success) {
+                showMessage(window.t ? window.t('steam.getItemDetailsFailedWithError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `获取物品详情失败: ${data.error || '未知错误'}`, 'error');
+                return;
+            }
 
-        const item = data.item;
-        const formattedItem = {
-            id: item.publishedFileId.toString(),
-            name: item.title,
-            author: item.steamIDOwner.toString(),
-            subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
-            lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
-            size: formatFileSize(item.fileSize),
-            previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
-            description: item.description || '暂无描述',
-            downloadCount: 'N/A',
-            rating: 'N/A',
-            tags: ['模组'], // 默认标签，实际应用中应该从API获取
-            state: item.state || {} // 添加state属性，确保后续代码可以正常访问
-        };
+            const item = data.item;
+            const formattedItem = {
+                id: item.publishedFileId.toString(),
+                name: item.title,
+                author: item.steamIDOwner.toString(),
+                subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
+                lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
+                size: formatFileSize(item.fileSize),
+                previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+                description: item.description || '暂无描述',
+                downloadCount: 'N/A',
+                rating: 'N/A',
+                tags: ['模组'], // 默认标签，实际应用中应该从API获取
+                state: item.state || {} // 添加state属性，确保后续代码可以正常访问
+            };
 
-        // 确定状态类和文本
-        let statusClass = 'status-subscribed';
-        let statusText = getStatusText(formattedItem.state || {});
+            // 确定状态类和文本
+            let statusClass = 'status-subscribed';
+            let statusText = getStatusText(formattedItem.state || {});
 
-        if (formattedItem.state && formattedItem.state.downloading) {
-            statusClass = 'status-downloading';
-        } else if (formattedItem.state && formattedItem.state.needsUpdate) {
-            statusClass = 'status-needs-update';
-        } else if (formattedItem.state && formattedItem.state.installed) {
-            statusClass = 'status-installed';
-        }
+            if (formattedItem.state && formattedItem.state.downloading) {
+                statusClass = 'status-downloading';
+            } else if (formattedItem.state && formattedItem.state.needsUpdate) {
+                statusClass = 'status-needs-update';
+            } else if (formattedItem.state && formattedItem.state.installed) {
+                statusClass = 'status-installed';
+            }
 
-        // 获取作者头像（使用首字母作为占位符）
-        const authorInitial = formattedItem.author.substring(0, 2).toUpperCase();
+            // 获取作者头像（使用首字母作为占位符）
+            const authorInitial = formattedItem.author.substring(0, 2).toUpperCase();
 
-        // 更新模态框内容
-        document.getElementById('modalTitle').textContent = formattedItem.name;
+            // 更新模态框内容
+            document.getElementById('modalTitle').textContent = formattedItem.name;
 
-        const detailContent = document.getElementById('itemDetailContent');
-        detailContent.innerHTML = `
+            const detailContent = document.getElementById('itemDetailContent');
+            detailContent.innerHTML = `
             <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="item-preview-large" onerror="this.src='../static/icons/Steam_icon_logo.png'">
 
             <div class="item-info-grid">
@@ -1982,13 +2029,13 @@ function viewItemDetails(itemId) {
             </div>
         `;
 
-        // 打开模态框
-        openModal();
-    })
-    .catch(error => {
-        console.error('获取物品详情失败:', error);
-        showMessage(window.t ? window.t('steam.cannotLoadItemDetails') : '无法加载物品详情', 'error');
-    });
+            // 打开模态框
+            openModal();
+        })
+        .catch(error => {
+            console.error('获取物品详情失败:', error);
+            showMessage(window.t ? window.t('steam.cannotLoadItemDetails') : '无法加载物品详情', 'error');
+        });
 }
 
 // 取消订阅功能
@@ -2016,43 +2063,43 @@ function unsubscribeItem(itemId, itemName) {
             },
             body: JSON.stringify({ item_id: itemId })
         })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                // 显示异步操作状态
-                let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', {name: itemName}) : `已接受取消订阅: ${itemName}`;
-                if (data.status === 'accepted') {
-                    statusMessage = window.t ? window.t('steam.unsubscribeProcessing', {name: itemName}) : `正在处理取消订阅: ${itemName}`;
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                showMessage(statusMessage, 'success');
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    // 显示异步操作状态
+                    let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', { name: itemName }) : `已接受取消订阅: ${itemName}`;
+                    if (data.status === 'accepted') {
+                        statusMessage = window.t ? window.t('steam.unsubscribeProcessing', { name: itemName }) : `正在处理取消订阅: ${itemName}`;
+                    }
+                    showMessage(statusMessage, 'success');
 
-                // 立即重新加载订阅列表
-                loadSubscriptions();
-
-                // 添加短暂延迟后再次刷新，确保获取最新状态
-                setTimeout(() => {
+                    // 立即重新加载订阅列表
                     loadSubscriptions();
-                    showMessage(window.t ? window.t('steam.subscriptionsUpdated') : '订阅更新完成', 'success');
-                }, 1000);
 
-            } else {
-                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                showMessage(window.t ? window.t('steam.unsubscribeFailed') : `取消订阅失败: ${errorMsg}`, 'error');
-                // 如果有消息提示，显示给用户
-                if (data.message) {
-                    showMessage(data.message, 'warning');
+                    // 添加短暂延迟后再次刷新，确保获取最新状态
+                    setTimeout(() => {
+                        loadSubscriptions();
+                        showMessage(window.t ? window.t('steam.subscriptionsUpdated') : '订阅更新完成', 'success');
+                    }, 1000);
+
+                } else {
+                    const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                    showMessage(window.t ? window.t('steam.unsubscribeFailed') : `取消订阅失败: ${errorMsg}`, 'error');
+                    // 如果有消息提示，显示给用户
+                    if (data.message) {
+                        showMessage(data.message, 'warning');
+                    }
                 }
-            }
-        })
-        .catch(error => {
-            console.error('取消订阅失败:', error);
-            showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
-        });
+            })
+            .catch(error => {
+                console.error('取消订阅失败:', error);
+                showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
+            });
     }
 }
 
@@ -2181,7 +2228,7 @@ async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
                     byteNumbers[i] = byteCharacters.charCodeAt(i);
                 }
                 const byteArray = new Uint8Array(byteNumbers);
-                return new Blob([byteArray], {type: mimeType});
+                return new Blob([byteArray], { type: mimeType });
             };
 
             // 确定文件类型
@@ -2301,7 +2348,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
 }
 
 // 初始化页面
-window.onload = function() {
+window.addEventListener('load', function () {
     // 检查是否需要切换到特定标签页
     const lastActiveTab = localStorage.getItem('lastActiveTab');
     if (lastActiveTab) {
@@ -2336,7 +2383,7 @@ window.onload = function() {
     // 页面加载时自动扫描创意工坊角色卡并添加到系统
     autoScanAndAddWorkshopCharacterCards();
 
-};
+});
 
 // 角色卡相关函数
 
@@ -2500,7 +2547,7 @@ async function loadCharacterCards() {
             });
 
             // 添加change事件监听器
-            characterCardSelect.onchange = function() {
+            characterCardSelect.onchange = function () {
                 const selectedId = this.value;
                 if (selectedId) {
                     // 注意：select.value 返回字符串，card.id 可能是数字或字符串，使用 == 进行宽松比较
@@ -2701,10 +2748,11 @@ function showWorkshopSnapshot() {
     const tagsContainer = document.getElementById('snapshot-tags-container');
     tagsContainer.innerHTML = '';
     if (snapshot.tags && snapshot.tags.length > 0) {
+        const isDark = getIsDarkTheme();
         snapshot.tags.forEach(tag => {
             const tagEl = document.createElement('span');
             tagEl.className = 'tag';
-            tagEl.style.cssText = 'background-color: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 12px;';
+            tagEl.style.cssText = `background-color: ${isDark ? '#3a3a3a' : '#e0e0e0'}; color: ${isDark ? '#e0e0e0' : 'inherit'}; padding: 4px 8px; border-radius: 4px; font-size: 12px;`;
             tagEl.textContent = tag;
             tagsContainer.appendChild(tagEl);
         });
@@ -2790,32 +2838,32 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
                 temp_folder: tempFolder
             })
         })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(data => {
-                    throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
-                });
-            }
-            return response.json();
-        })
-        .then(result => {
-            if (result.success) {
-                showMessage(window.t ? window.t('steam.tempFolderDeleted') : '临时目录已删除', 'success');
-            } else {
-                console.error('删除临时目录失败:', result.error);
-                showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: result.error }) : `删除临时目录失败: ${result.error}`, 'error');
-            }
-            // 清除临时目录路径和上传状态
-            currentUploadTempFolder = null;
-            isUploadCompleted = false;
-        })
-        .catch(error => {
-            console.error('删除临时目录失败:', error);
-            showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: error.message }) : `删除临时目录失败: ${error.message}`, 'error');
-            // 即使删除失败，也清除临时目录路径和上传状态
-            currentUploadTempFolder = null;
-            isUploadCompleted = false;
-        });
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
+                    });
+                }
+                return response.json();
+            })
+            .then(result => {
+                if (result.success) {
+                    showMessage(window.t ? window.t('steam.tempFolderDeleted') : '临时目录已删除', 'success');
+                } else {
+                    console.error('删除临时目录失败:', result.error);
+                    showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: result.error }) : `删除临时目录失败: ${result.error}`, 'error');
+                }
+                // 清除临时目录路径和上传状态
+                currentUploadTempFolder = null;
+                isUploadCompleted = false;
+            })
+            .catch(error => {
+                console.error('删除临时目录失败:', error);
+                showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: error.message }) : `删除临时目录失败: ${error.message}`, 'error');
+                // 即使删除失败，也清除临时目录路径和上传状态
+                currentUploadTempFolder = null;
+                isUploadCompleted = false;
+            });
     } else {
         showMessage(window.t ? window.t('steam.tempFolderRetained') : '临时目录已保留', 'info');
         // 清除临时目录路径和上传状态
@@ -2968,7 +3016,7 @@ async function performUpload(data) {
         // 步骤1: 调用API创建临时目录并复制文件
         // 保存上传数据的名称，供错误处理使用（避免回调中的参数覆盖）
         const uploadDataName = data.name;
-        fetch('/api/steam/workshop/prepare-upload', {
+        await fetch('/api/steam/workshop/prepare-upload', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -2980,113 +3028,113 @@ async function performUpload(data) {
                 character_card_name: data.name  // 传递角色卡名称，用于读取 .workshop_meta.json
             })
         })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(data => {
-                    // 如果是已上传的错误，显示modal提示
-                    if (data.error && (data.error.includes('已上传') || data.error.includes('已存在') || data.error.includes('already been uploaded'))) {
-                        // 使用i18n构建错误消息
-                        let errorMessage;
-                        if (data.workshop_item_id && window.t) {
-                            // 从上传数据中获取角色卡名称
-                            const cardName = uploadDataName || '未知角色卡';
-                            errorMessage = window.t('steam.characterCardAlreadyUploadedWithId', {
-                                name: cardName,
-                                itemId: data.workshop_item_id
-                            });
-                        } else {
-                            errorMessage = data.message || data.error;
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        // 如果是已上传的错误，显示modal提示
+                        if (data.error && (data.error.includes('已上传') || data.error.includes('已存在') || data.error.includes('already been uploaded'))) {
+                            // 使用i18n构建错误消息
+                            let errorMessage;
+                            if (data.workshop_item_id && window.t) {
+                                // 从上传数据中获取角色卡名称
+                                const cardName = uploadDataName || '未知角色卡';
+                                errorMessage = window.t('steam.characterCardAlreadyUploadedWithId', {
+                                    name: cardName,
+                                    itemId: data.workshop_item_id
+                                });
+                            } else {
+                                errorMessage = data.message || data.error;
+                            }
+                            // 显示错误消息
+                            showMessage(errorMessage, 'error', 10000);
+                            // 显示modal提示
+                            openDuplicateUploadModal(errorMessage);
+                            throw new Error(errorMessage);
                         }
-                        // 显示错误消息
-                        showMessage(errorMessage, 'error', 10000);
-                        // 显示modal提示
-                        openDuplicateUploadModal(errorMessage);
-                        throw new Error(errorMessage);
-                    }
-                    throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
-                });
-            }
-            return response.json();
-        })
-        .then(result => {
-            if (result.success) {
-                // 不再显示"上传准备完成"消息，模态框弹出本身就表明准备工作已完成
-
-                // 保存临时目录路径
-                currentUploadTempFolder = result.temp_folder;
-                // 重置上传完成标志
-                isUploadCompleted = false;
-
-                // 步骤2: 填充上传表单并打开填写信息窗口
-                const itemTitle = document.getElementById('item-title');
-                const itemDescription = document.getElementById('item-description');
-                const contentFolder = document.getElementById('content-folder');
-                const tagsContainer = document.getElementById('tags-container');
-
-
-                // 从data中获取名称和描述
-                const cardName = data.name || '';
-                const cardDescription = data.catgirlData?.['描述'] || data.catgirlData?.['description'] || '';
-
-                // Title 和 Description 现在是 div 元素，使用 textContent
-                if (itemTitle) itemTitle.textContent = cardName;
-                if (itemDescription) {
-                    itemDescription.textContent = cardDescription;
-                }
-                // 使用临时目录路径（隐藏字段）
-                if (contentFolder) contentFolder.value = result.temp_folder;
-
-                // 添加角色卡标签到上传标签（允许用户编辑）
-                if (tagsContainer) {
-                    tagsContainer.innerHTML = '';
-
-                    // 检查是否包含system_prompt（自定义模板）
-                    const catgirlData = data.catgirlData || {};
-                    const hasSystemPrompt = catgirlData['设定'] || catgirlData['system_prompt'] || catgirlData['prompt_setting'];
-
-                    // 如果包含system_prompt，先添加锁定的"自定义模板"标签
-                    if (hasSystemPrompt && String(hasSystemPrompt).trim() !== '') {
-                        const customTemplateTagText = window.t ? window.t('steam.customTemplateTag') : '自定义模板';
-                        addTag(customTemplateTagText, '', true); // locked = true
-                    }
-
-                    // 从角色卡标签容器中读取当前标签
-                    const characterCardTagElements = document.querySelectorAll('#character-card-tags-container .tag');
-                    const currentCharacterCardTags = Array.from(characterCardTagElements).map(tag =>
-                        tag.textContent.replace('×', '').replace('🔒', '').trim()
-                    ).filter(tag => tag);
-
-                    // 如果有角色卡标签，使用它们；否则使用传入的标签
-                    const tagsToAdd = currentCharacterCardTags.length > 0 ? currentCharacterCardTags : (data.characterCardTags || []);
-                    tagsToAdd.forEach(tag => {
-                        // 使用addTag函数，会自动添加删除按钮，允许用户编辑
-                        addTag(tag);
+                        throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
                     });
-
-                    // 确保标签输入框可编辑
-                    const tagInput = document.getElementById('item-tags');
-                    if (tagInput) {
-                        tagInput.disabled = false;
-                        tagInput.style.opacity = '';
-                        tagInput.style.cursor = '';
-                        tagInput.style.backgroundColor = '';
-                        tagInput.placeholder = window.t ? window.t('steam.tagsPlaceholderInput') : '输入标签，按空格添加';
-                    }
                 }
+                return response.json();
+            })
+            .then(result => {
+                if (result.success) {
+                    // 不再显示"上传准备完成"消息，模态框弹出本身就表明准备工作已完成
 
-                // 步骤3: 打开填写信息窗口（modal）
-                // 先确保本地物品标签页可见
-                switchTab('local-items-content');
-                // 然后显示上传表单区域
-                toggleUploadSection();
-            } else {
-                showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
-            }
-        })
-        .catch(error => {
-            console.error('准备上传失败:', error);
-            showMessage(window.t ? window.t('steam.prepareUploadFailed', { error: error.message }) : `准备上传失败: ${error.message}`, 'error');
-        });
+                    // 保存临时目录路径
+                    currentUploadTempFolder = result.temp_folder;
+                    // 重置上传完成标志
+                    isUploadCompleted = false;
+
+                    // 步骤2: 填充上传表单并打开填写信息窗口
+                    const itemTitle = document.getElementById('item-title');
+                    const itemDescription = document.getElementById('item-description');
+                    const contentFolder = document.getElementById('content-folder');
+                    const tagsContainer = document.getElementById('tags-container');
+
+
+                    // 从data中获取名称和描述
+                    const cardName = data.name || '';
+                    const cardDescription = data.catgirlData?.['描述'] || data.catgirlData?.['description'] || '';
+
+                    // Title 和 Description 现在是 div 元素，使用 textContent
+                    if (itemTitle) itemTitle.textContent = cardName;
+                    if (itemDescription) {
+                        itemDescription.textContent = cardDescription;
+                    }
+                    // 使用临时目录路径（隐藏字段）
+                    if (contentFolder) contentFolder.value = result.temp_folder;
+
+                    // 添加角色卡标签到上传标签（允许用户编辑）
+                    if (tagsContainer) {
+                        tagsContainer.innerHTML = '';
+
+                        // 检查是否包含system_prompt（自定义模板）
+                        const catgirlData = data.catgirlData || {};
+                        const hasSystemPrompt = catgirlData['设定'] || catgirlData['system_prompt'] || catgirlData['prompt_setting'];
+
+                        // 如果包含system_prompt，先添加锁定的"自定义模板"标签
+                        if (hasSystemPrompt && String(hasSystemPrompt).trim() !== '') {
+                            const customTemplateTagText = window.t ? window.t('steam.customTemplateTag') : '自定义模板';
+                            addTag(customTemplateTagText, '', true); // locked = true
+                        }
+
+                        // 从角色卡标签容器中读取当前标签
+                        const characterCardTagElements = document.querySelectorAll('#character-card-tags-container .tag');
+                        const currentCharacterCardTags = Array.from(characterCardTagElements).map(tag =>
+                            tag.textContent.replace('×', '').replace('🔒', '').trim()
+                        ).filter(tag => tag);
+
+                        // 如果有角色卡标签，使用它们；否则使用传入的标签
+                        const tagsToAdd = currentCharacterCardTags.length > 0 ? currentCharacterCardTags : (data.characterCardTags || []);
+                        tagsToAdd.forEach(tag => {
+                            // 使用addTag函数，会自动添加删除按钮，允许用户编辑
+                            addTag(tag);
+                        });
+
+                        // 确保标签输入框可编辑
+                        const tagInput = document.getElementById('item-tags');
+                        if (tagInput) {
+                            tagInput.disabled = false;
+                            tagInput.style.opacity = '';
+                            tagInput.style.cursor = '';
+                            tagInput.style.backgroundColor = '';
+                            tagInput.placeholder = window.t ? window.t('steam.tagsPlaceholderInput') : '输入标签，按空格添加';
+                        }
+                    }
+
+                    // 步骤3: 打开填写信息窗口（modal）
+                    // 先确保本地物品标签页可见
+                    switchTab('local-items-content');
+                    // 然后显示上传表单区域
+                    toggleUploadSection();
+                } else {
+                    showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('准备上传失败:', error);
+                showMessage(window.t ? window.t('steam.prepareUploadFailed', { error: error.message }) : `准备上传失败: ${error.message}`, 'error');
+            });
     } catch (error) {
         console.error('performUpload执行出错:', error);
         showMessage(window.t ? window.t('steam.uploadExecutionError', { message: error.message }) : `上传执行出错: ${error.message}`, 'error');
@@ -3156,43 +3204,9 @@ async function loadVoices() {
             const voiceCount = Object.keys(data.voices).length;
 
             // 显示扫描完成提示
-            const successMessage = window.t ? window.t('steam.scanComplete', {count: voiceCount}) : `扫描完成，共找到 ${voiceCount} 个音色`;
+            const successMessage = window.t ? window.t('steam.scanComplete', { count: voiceCount }) : `扫描完成，共找到 ${voiceCount} 个音色`;
 
-            // 使用与物品扫描相同的成功提示样式
-            const messageElement = document.createElement('div');
-            messageElement.innerHTML = successMessage;
-            messageElement.style.cssText = `
-                position: fixed;
-                top: 60px;
-                right: 20px;
-                padding: 15px 20px;
-                background: #e8f5e9;
-                color: #2e7d32;
-                border-radius: 6px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                z-index: 99999;
-                font-weight: bold;
-                opacity: 0;
-                transform: translateY(-10px);
-                transition: opacity 0.3s ease, transform 0.3s ease;
-            `;
-
-            document.body.appendChild(messageElement);
-
-            // 触发动画
-            setTimeout(() => {
-                messageElement.style.opacity = '1';
-                messageElement.style.transform = 'translateY(0)';
-            }, 10);
-
-            // 3秒后自动消失
-            setTimeout(() => {
-                messageElement.style.opacity = '0';
-                messageElement.style.transform = 'translateY(-10px)';
-                setTimeout(() => {
-                    messageElement.remove();
-                }, 300);
-            }, 3000);
+            showToast(successMessage);
         }
     } catch (error) {
         console.error('加载音色列表失败:', error);
@@ -3313,59 +3327,59 @@ function registerVoice() {
         method: 'POST',
         body: formData
     })
-    .then(res => res.json())
-    .then(data => {
-        if (data.voice_id) {
-            resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', {voiceId: data.voice_id}) : '注册成功！voice_id: ' + data.voice_id;
-            resultDiv.style.color = 'green';
+        .then(res => res.json())
+        .then(data => {
+            if (data.voice_id) {
+                resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                resultDiv.style.color = 'green';
 
-            // 自动更新voice_id到后端
-            const lanlanName = document.getElementById('lanlan_name').value;
-            if (lanlanName) {
-                fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ voice_id: data.voice_id })
-                }).then(resp => resp.json()).then(res => {
-                    if (!res.success) {
-                        const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                        resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveFailed', {error: errorMsg}) : 'voice_id自动保存失败: ' + errorMsg) + '</span>';
-                    } else {
-                        resultDiv.innerHTML += '<br>' + (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
-                        // 如果session被结束，页面会自动刷新
-                        if (res.session_restarted) {
-                            resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音') + '</span>';
-                            setTimeout(() => {
-                                location.reload();
-                            }, 2000);
+                // 自动更新voice_id到后端
+                const lanlanName = document.getElementById('lanlan_name').value;
+                if (lanlanName) {
+                    fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ voice_id: data.voice_id })
+                    }).then(resp => resp.json()).then(res => {
+                        if (!res.success) {
+                            const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                            resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveFailed', { error: errorMsg }) : 'voice_id自动保存失败: ' + errorMsg) + '</span>';
                         } else {
-                            resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效') + '</span>';
+                            resultDiv.innerHTML += '<br>' + (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
+                            // 如果session被结束，页面会自动刷新
+                            if (res.session_restarted) {
+                                resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音') + '</span>';
+                                setTimeout(() => {
+                                    location.reload();
+                                }, 2000);
+                            } else {
+                                resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效') + '</span>';
+                            }
                         }
-                    }
-                }).catch(e => {
-                    resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
-                });
-            }
+                    }).catch(e => {
+                        resultDiv.innerHTML += '<br><span class="error" style="color: red;">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
+                    });
+                }
 
-            // 重新扫描音色以更新列表
-            setTimeout(() => {
-                loadVoices();
-            }, 1000);
-        } else {
-            const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-            resultDiv.innerHTML = window.t ? window.t('voice.registerFailed', {error: errorMsg}) : '注册失败：' + errorMsg;
+                // 重新扫描音色以更新列表
+                setTimeout(() => {
+                    loadVoices();
+                }, 1000);
+            } else {
+                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                resultDiv.innerHTML = window.t ? window.t('voice.registerFailed', { error: errorMsg }) : '注册失败：' + errorMsg;
+                resultDiv.className = 'result error';
+                resultDiv.style.color = 'red';
+            }
+            setFormDisabled(false);
+        })
+        .catch(err => {
+            const errorMsg = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+            resultDiv.textContent = window.t ? window.t('voice.requestError', { error: errorMsg }) : '请求出错：' + errorMsg;
             resultDiv.className = 'result error';
             resultDiv.style.color = 'red';
-        }
-        setFormDisabled(false);
-    })
-    .catch(err => {
-        const errorMsg = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
-        resultDiv.textContent = window.t ? window.t('voice.requestError', {error: errorMsg}) : '请求出错：' + errorMsg;
-        resultDiv.className = 'result error';
-        resultDiv.style.color = 'red';
-        setFormDisabled(false);
-    });
+            setFormDisabled(false);
+        });
 }
 
 // 页面加载时初始化文件选择显示
@@ -3630,16 +3644,18 @@ function updateCardPreview() {
     const container = document.getElementById('card-info-dynamic-content');
     if (!container) return;
 
+    const isDark = getIsDarkTheme();
+
     // 从已加载的角色卡列表中获取当前角色卡数据
     if (!currentCharacterCardId || !window.characterCards) {
-        container.innerHTML = '<p style="color: #999; text-align: center;">' +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡') + '</p>';
         return;
     }
 
     const currentCard = window.characterCards.find(card => card.id === currentCharacterCardId);
     if (!currentCard) {
-        container.innerHTML = '<p style="color: #999; text-align: center;">' +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.characterCardNotFound') : '找不到角色卡数据') + '</p>';
         return;
     }
@@ -3670,7 +3686,7 @@ function updateCardPreview() {
 
         // 创建属性行
         const row = document.createElement('div');
-        row.style.cssText = 'color: #555; margin-bottom: 8px;';
+        row.style.cssText = `color: ${isDark ? '#b0b0b0' : '#555'}; margin-bottom: 8px;`;
 
         // 格式化值
         let displayValue = '';
@@ -3695,20 +3711,14 @@ function updateCardPreview() {
 
     // 如果没有任何属性显示，显示提示
     if (container.children.length === 0) {
-        container.innerHTML = '<p style="color: #999; text-align: center;">' +
+        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
             (window.t ? window.t('steam.noCardProperties') : '暂无属性信息') + '</p>';
     }
 }
 
-// HTML转义函数（防止XSS）
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 // 为输入字段添加事件监听器，自动更新预览
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     // 只有 description 输入框仍然存在，为其添加事件监听器
     const descriptionInput = document.getElementById('character-card-description');
 
@@ -3789,7 +3799,7 @@ async function initLive2DPreview() {
 
         // 覆盖applyModelSettings方法，为预览模式实现专门的显示逻辑
         const originalApplyModelSettings = live2dPreviewManager.applyModelSettings;
-        live2dPreviewManager.applyModelSettings = function(model, options) {
+        live2dPreviewManager.applyModelSettings = function (model, options) {
             // 获取预览容器的尺寸
             const container = document.getElementById('live2d-preview-content');
             if (!container) {
@@ -3827,7 +3837,7 @@ async function initLive2DPreview() {
 
         // 添加removeModel方法的fallback，防止调用时出错
         if (!live2dPreviewManager.removeModel) {
-            live2dPreviewManager.removeModel = async function(force) {
+            live2dPreviewManager.removeModel = async function (force) {
                 try {
                     if (this.currentModel && this.app && this.app.stage) {
                         // 移除当前模型
@@ -3954,7 +3964,7 @@ async function loadLive2DModelFromFolder(files) {
 
     } catch (error) {
         console.error('Failed to load Live2D model:', error);
-        showMessage(window.t('steam.live2dPreviewLoadFailed', {error: error.message}), 'error');
+        showMessage(window.t('steam.live2dPreviewLoadFailed', { error: error.message }), 'error');
 
         // 在加载失败时隐藏预览控件
         hidePreviewControls();
@@ -4079,7 +4089,7 @@ if (playMotionBtn) {
             currentPreviewModel.motion('PreviewAll', motionIndex, 3);
         } catch (error) {
             console.error('Failed to play motion:', error);
-            showMessage(window.t('live2d.playMotionFailed', {motion: motionIndex}), 'error');
+            showMessage(window.t('live2d.playMotionFailed', { motion: motionIndex }), 'error');
         }
     });
 }
@@ -4099,19 +4109,19 @@ if (playExpressionBtn) {
             currentPreviewModel.expression(expressionName);
         } catch (error) {
             console.error('Failed to play expression:', error);
-            showMessage(window.t('live2d.playExpressionFailed', {expression: expressionName}), 'error');
+            showMessage(window.t('live2d.playExpressionFailed', { expression: expressionName }), 'error');
         }
     });
 }
 
 // 页面加载完成后初始化Live2D预览环境
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     // 延迟初始化，确保其他资源已加载
     setTimeout(initLive2DPreview, 1000);
 });
 
 // 注意事项标签功能
-(function() {
+(function () {
     const tagsContainer = document.getElementById('notes-tags-container');
     const notesInput = document.getElementById('workshop-notes-input');
     let notesTags = [];
@@ -4159,7 +4169,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 删除标签
-    window.removeNotesTag = function(index) {
+    window.removeNotesTag = function (index) {
         notesTags.splice(index, 1);
         renderTags();
     }
@@ -4194,7 +4204,7 @@ function selectPreviewImage() {
     fileInput.onchange = null;
 
     // 添加新的事件监听
-    fileInput.onchange = function(e) {
+    fileInput.onchange = function (e) {
         if (e.target.files && e.target.files[0]) {
             const file = e.target.files[0];
             const hintElement = document.getElementById('preview-image-size-hint');
@@ -4211,9 +4221,9 @@ function selectPreviewImage() {
                 e.target.value = '';
                 return;
             } else {
-                // 文件大小符合要求，将提示文字恢复为黑色
+                // 文件大小符合要求，将提示文字恢复为默认色
                 if (hintElement) {
-                    hintElement.style.color = '#333';
+                    hintElement.style.color = getIsDarkTheme() ? '#b0b0b0' : '#333';
                 }
             }
 
@@ -4242,21 +4252,21 @@ function selectPreviewImage() {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    // 设置服务器返回的临时文件路径
-                    document.getElementById('preview-image').value = data.file_path;
-                    showMessage(window.t ? window.t('steam.previewImageUploaded') : '预览图片上传成功', 'success');
-                } else {
-                    console.error("上传预览图片失败:", data.message);
-                    showMessage(window.t ? window.t('steam.previewImageUploadFailed', {error: data.message}) : `预览图片上传失败: ${data.message}`, 'error');
-                }
-            })
-            .catch(error => {
-                console.error("上传预览图片出错:", error);
-                showMessage(window.t ? window.t('steam.previewImageUploadError', {error: error.message}) : `预览图片上传出错: ${error.message}`, 'error');
-            });
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // 设置服务器返回的临时文件路径
+                        document.getElementById('preview-image').value = data.file_path;
+                        showMessage(window.t ? window.t('steam.previewImageUploaded') : '预览图片上传成功', 'success');
+                    } else {
+                        console.error("上传预览图片失败:", data.message);
+                        showMessage(window.t ? window.t('steam.previewImageUploadFailed', { error: data.message }) : `预览图片上传失败: ${data.message}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error("上传预览图片出错:", error);
+                    showMessage(window.t ? window.t('steam.previewImageUploadError', { error: error.message }) : `预览图片上传出错: ${error.message}`, 'error');
+                });
         }
     };
 

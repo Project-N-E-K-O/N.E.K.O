@@ -16,6 +16,7 @@
 [![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
+[![Docs](https://img.shields.io/badge/📖_开发者文档-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
 
 **:older_woman: 零配置开箱即用，我奶奶都能玩转的赛博猫娘！**
 
@@ -81,9 +82,9 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 QQ群：1022939659
 
-## 快速开始（Windows用户）
+## 快速开始（Windows用户、Macbook用户）
 
-对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`即可启动。
+对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（Macbook用户需要手动解除系统隔离）
 
 ## Docker部署（Linux用户）
 
@@ -145,38 +146,6 @@ networks:
     driver: bridge
 ```
 
-#### 核心 API 配置
-
-| 环境变量 | 说明 | 默认值 | 示例 |
-|---------|------|--------|------|
-| `NEKO_CORE_API_KEY` | 核心 API Key（必填） | - | `sk-xxxxx` |
-| `NEKO_CORE_API` | 核心 API 提供商 | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
-| `NEKO_ASSIST_API` | 辅助 API 提供商 | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
-| `NEKO_ASSIST_API_KEY_QWEN` | 阿里云 API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_GLM` | 智谱 API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_STEP` | 阶跃星辰 API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_SILICON` | 硅基流动 API Key | - | `xxxxx` |
-| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
-
-#### 服务器端口配置（不要更改！！！）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_MAIN_SERVER_PORT` | 主服务器端口 | `48911` |
-| `NEKO_MEMORY_SERVER_PORT` | 记忆服务器端口 | `48912` |
-| `NEKO_MONITOR_SERVER_PORT` | 监控服务器端口 | `48913` |
-| `NEKO_TOOL_SERVER_PORT` | 工具服务器端口 | `48915` |
-
-#### 模型配置（高级）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_SUMMARY_MODEL` | 摘要模型 | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | 纠错模型 | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | 情感分析模型 | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | 视觉模型 | `qwen3-vl-plus-2025-09-23` |
-
 **注：** 目前docker部署方案由 *倒霉蛋HINS* 提供
 
 ## 进阶使用
@@ -193,7 +162,7 @@ networks:
 
 - 网页版访问`http://localhost:48911/chara_manager`即可进入人设编辑页面。初始 ~~猫娘~~ 伙伴的预设名称为`小天`，建议直接修改名字，并一项一项添加或修改基础人设，但尽量控制数量。
 
-- 进阶人设主要包括**Live2D模型设置(live2d)**和**声音设置(voice_id)**。如果你想要更改**Live2D模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入Live2D模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段15秒左右的连贯、干净的语音录音。通过进阶设置进入语音设置页面，上传录音即可完成自定义语音。
+- 进阶人设主要包括**Live2D模型设置(live2d)**和**声音设置(voice_id)**。如果你想要更改**Live2D模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入Live2D模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段5秒左右的连贯、干净的语音录音。通过进阶设置进入语音设置页面，上传录音即可完成自定义语音。
 
 - 进阶人设中还有一个`system_prompt`，可以对系统指令进行完全自定义，但不建议修改。
 
@@ -211,18 +180,18 @@ networks:
 
 ```
 N.E.K.O/
-├── 📁 brain/                    # 🧠 背景Agent模块，根据前端对话内容，控制键鼠和MCP
+├── 📁 brain/                    # 🧠 背景Agent模块，根据对话内容进行工具调用
 ├── 📁 config/                   # ⚙️ 配置管理模块
 │   ├── api_providers.json       # API服务商配置
 │   ├── prompts_chara.py         # 角色提示词
 │   └── prompts_sys.py           # 系统提示词
-├── 📁 main_logic/              # 🔧 核心模块
+├── 📁 main_logic/              # 🔧 核心逻辑模块（负责对话）
 │   ├── core.py                  # 核心对话模块
 │   ├── cross_server.py         # 跨服务器通信
 │   ├── omni_realtime_client.py  # 实时API客户端（Relatime API）
 │   ├── omni_offline_client.py  # 文本API客户端（Response API）
 │   └── tts_client.py            # 🔊 TTS引擎适配器
-├── 📁 main_routers/             # 🌐 API路由模块
+├── 📁 main_routers/             # 🌐 前端网页路由模块
 ├── 📁 memory/                   # 🧠 记忆管理系统
 │   ├── store/                   # 记忆数据存储
 ├── 📁 plugin/                   # 🔌 插件系统
@@ -240,26 +209,20 @@ N.E.K.O/
 
 ### 参与开发
 
-本项目环境依赖非常简单，请在`python3.11`环境中执行`uv sync`或`pip install -r requirements.txt`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
+本项目环境依赖非常简单，请执行`uv sync`（推荐）或在`python3.11`环境中执行`pip install -r requirements.txt`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
 
-开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`uv sync`或`pip install -r requirements.txt`安装依赖。(3)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
+开发者详细启动步骤如下：(1)准备好`uv`环境。(2)执行`uv sync`安装依赖。(3)执行`uv run python memory_server.py`, `uv run python main_server.py`(可选`uv run python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
 
 
 ### TODO List（开发计划）
 
-- 完善memory server中已有的语义索引的部分；开放已有的settings update功能。
+v0.7: 完善Agent相关功能，预计2026年2月完成。
 
-- 完善已有的主动对话功能。
+v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月完成。
 
-- 用React对前端进行重构，筹备手机端独立运行版本。
+v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
 
-- 引入VRM支持3D模型。
-
-- 猫娘网络，允许猫娘之间自行通信。
-
-- 接入QQ/cursor等外部软件。
-
-- 完善原生工具调用。
+v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
 
 ## Star History
 

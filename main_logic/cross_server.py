@@ -48,7 +48,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             retries=1,
         )
         if sent:
-            logger.info(
+            logger.debug(
                 "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
                 lanlan_name,
                 trigger,
@@ -78,80 +78,45 @@ def normalize_text(text):  # 对文本进行基本预处理
     return text
 
 
-def cleanup_consecutive_assistant_messages(chat_history):
+def merge_unsynced_tail_assistants(chat_history, last_synced_index):
+    """合并 last_synced_index 之后末尾连续的 assistant 消息为一条。
+
+    只触碰未同步到 memory 的主动搭话消息，不影响已同步的正常回复。
+    返回被消除的消息数（0 表示无需合并）。
     """
-    清理聊天历史中末尾连续的assistant消息。
-    这是为了处理主动搭话未被响应的情况，避免纠错LLM混淆角色。
-    
-    逻辑：
-    1. 保留最后一轮正常对话 [user, assistant]
-    2. 如果之后有连续的assistant消息（主动搭话），合并为一条
-    3. 在合并的消息前插入一个 user 消息说明用户沉默了
-    
-    例如：[user, assistant, assistant, assistant] 
-       -> [user, assistant, user("(用户沉默了一轮)"), assistant(合并后的内容)]
-    """
-    if len(chat_history) < 3:
-        return chat_history
-    
-    # 找到末尾连续的assistant消息数量
-    consecutive_assistant_count = 0
-    for i in range(len(chat_history) - 1, -1, -1):
-        if chat_history[i].get('role') == 'assistant':
-            consecutive_assistant_count += 1
+    tail = chat_history[last_synced_index:]
+    if len(tail) < 2:
+        return 0
+
+    consecutive = 0
+    for msg in reversed(tail):
+        if msg.get('role') == 'assistant':
+            consecutive += 1
         else:
             break
-    
-    # 如果末尾只有0或1条assistant消息，无需处理
-    if consecutive_assistant_count <= 1:
-        return chat_history
-    
-    # 检查在这些连续assistant之前是否有正常的对话轮（至少 user + assistant）
-    # 我们需要保留第一条assistant（正常对话的回复），合并后续的（主动搭话）
-    non_assistant_index = len(chat_history) - consecutive_assistant_count - 1
-    
-    if non_assistant_index < 0:
-        # 全是assistant消息，保留最后一条并加上沉默提示
-        last_assistant = chat_history[-1]
-        silent_user = {'role': 'user', 'content': [{"type": "text", "text": "(沉默了一轮)"}]}
-        logger.info("[cleanup] 全是AI消息，保留最后1条并添加沉默提示")
-        return [silent_user, last_assistant]
-    
-    # 正常情况：保留 non_assistant 及之前的内容 + 第一条 assistant，然后合并剩余的
-    # 结构：[...正常对话..., assistant(正常回复), assistant(主动1), assistant(主动2), ...]
-    # 保留第一条assistant作为正常回复，合并后续的主动搭话
-    
-    if consecutive_assistant_count >= 2:
-        # 找到第一条连续assistant的索引（这是正常对话的回复）
-        first_assistant_index = len(chat_history) - consecutive_assistant_count
-        
-        # 保留到第一条assistant（包括它）
-        preserved = chat_history[:first_assistant_index + 1]
-        
-        # 合并后续的assistant消息内容
-        proactive_messages = chat_history[first_assistant_index + 1:]
-        merged_content_parts = []
-        for msg in proactive_messages:
-            try:
-                content = msg.get('content', [])
-                if isinstance(content, list) and len(content) > 0:
-                    text = content[0].get('text', '')
-                    if text:
-                        merged_content_parts.append(text)
-            except Exception:
-                pass
-        
-        if merged_content_parts:
-            # 插入沉默提示和合并后的主动搭话
-            silent_user = {'role': 'user', 'content': [{"type": "text", "text": "(沉默了一轮)"}]}
-            merged_assistant = {'role': 'assistant', 'content': [{"type": "text", "text": "(尝试主动搭话)"+"\n".join(merged_content_parts)}]}
-            preserved.append(silent_user)
-            preserved.append(merged_assistant)
-            logger.info(f"[cleanup] 检测到{len(proactive_messages)}条连续主动搭话，已合并并添加沉默提示")
-        
-        return preserved
-    
-    return chat_history
+
+    if consecutive < 2:
+        return 0
+
+    first_idx = len(chat_history) - consecutive
+    parts = []
+    for msg in chat_history[first_idx:]:
+        try:
+            text = msg['content'][0]['text']
+            if text:
+                parts.append(text)
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    if not parts:
+        return 0
+
+    merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': '\n'.join(parts)}]}
+    removed = consecutive - 1
+    chat_history[first_idx:] = [merged]
+    logger.info(f"[cleanup] 合并了 {consecutive} 条未同步的连续主动搭话消息")
+    return removed
+
 
 async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
     """保持 WebSocket 连接活跃的读取循环"""
@@ -195,6 +160,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         user_input_cache = ''
         text_output_cache = '' # lanlan的当前消息
         current_turn = 'user'
+        had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
         last_screen = None
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
 
@@ -212,6 +178,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                         # Only treat assistant turn when it's a gemini_response
                         if message["data"].get("type") == "gemini_response":
                             if current_turn == 'user':  # assistant new message starts
+                                had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
                                     user_input_cache = ''
@@ -293,9 +260,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
-                                
-                                # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
-                                chat_history = cleanup_consecutive_assistant_messages(chat_history)
+                                # 合并未同步的连续主动搭话消息
+                                merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 
                                 # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
                                 if config.get('message_plane', True):
@@ -322,26 +288,29 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.clear()
                                     break
                                 
-                                logger.info(f"[{lanlan_name}] 热重置：聊天历史长度 {len(chat_history)} 条消息")
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.post(
-                                            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
-                                            json={'input_history': json.dumps(chat_history, indent=2, ensure_ascii=False)},
-                                            timeout=aiohttp.ClientTimeout(total=30.0)
-                                        ) as response:
-                                            result = await response.json()
-                                            if result.get('status') == 'error':
-                                                logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {result.get('message')}")
-                                            else:
-                                                logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
-                                except RuntimeError as e:
-                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                        logger.info(f"[{lanlan_name}] 进程正在关闭，renew请求已取消")
-                                    else:
+                                # 增量发送：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
+                                remaining = chat_history[last_synced_index:]
+                                logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
+                                if remaining:
+                                    try:
+                                        async with aiohttp.ClientSession() as session:
+                                            async with session.post(
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
+                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                timeout=aiohttp.ClientTimeout(total=30.0)
+                                            ) as response:
+                                                result = await response.json()
+                                                if result.get('status') == 'error':
+                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {result.get('message')}")
+                                                else:
+                                                    logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
+                                    except RuntimeError as e:
+                                        if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，renew请求已取消")
+                                        else:
+                                            logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
+                                    except Exception as e:
                                         logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
-                                except Exception as e:
-                                    logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
 
@@ -352,6 +321,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                # 主动搭话（无用户输入）时：合并未同步的连续 assistant 消息，不写入 /cache
+                                if not had_user_input_this_turn:
+                                    merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
                                 
@@ -374,7 +346,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     txt = ''
                                                 if txt == '':
                                                     continue
-                                                recent.append({'role': item.get('role'), 'text': txt})
+                                                recent.append({'role': item.get('role'), 'content': txt})
                                         if recent:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
@@ -382,7 +354,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 messages=recent,
                                             )
                                             if sent:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
@@ -403,24 +375,22 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     except Exception:
                                         pass  # 静默失败
                                 
-                                # Turn end 时同步新增消息到 Memory Server，使 memory_browser 及时更新（T1/T2 记忆验收）
-                                if not shutdown_event.is_set() and last_synced_index < len(chat_history):
+                                # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
+                                # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
+                                if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
                                     new_messages = chat_history[last_synced_index:]
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
                                                 json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=30.0)
+                                                timeout=aiohttp.ClientTimeout(total=10.0)
                                             ) as response:
                                                 result = await response.json()
-                                                if result.get('status') == 'error':
-                                                    logger.debug(f"[{lanlan_name}] turn end 记忆同步失败: {result.get('message')}")
-                                                else:
+                                                if result.get('status') != 'error':
                                                     last_synced_index = len(chat_history)
-                                                    logger.debug(f"[{lanlan_name}] turn end 已同步 {len(new_messages)} 条消息到 memory_server")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] turn end 同步 memory_server 失败: {e}")
+                                        logger.debug(f"[{lanlan_name}] turn end cache 失败: {e}")
 
                             elif message["data"] == 'session end': # 当前session结束了
                                 # 检查是否正在关闭，如果是则跳过网络操作
@@ -440,6 +410,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                # 合并未同步的连续主动搭话消息
+                                merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 
                                 # 生成 conversation_id，用于关联触发事件和对话上下文
                                 # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
@@ -460,7 +432,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     txt = ''
                                                 if txt == '':
                                                     continue
-                                                recent.append({'role': item.get('role'), 'text': txt})
+                                                recent.append({'role': item.get('role'), 'content': txt})
                                         if recent:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
@@ -490,8 +462,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         pass  # 静默失败
                                 
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
-                                chat_history = cleanup_consecutive_assistant_messages(chat_history)
-                                
+                                merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 # 再次检查关闭状态
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")
@@ -499,29 +470,24 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     last_synced_index = 0
                                     break
                                 
-                                # Session end 前兜底同步：若仍有未同步消息（例如 turn end 前崩溃），再发送一次增量
-                                if not shutdown_event.is_set() and last_synced_index < len(chat_history):
-                                    new_messages = chat_history[last_synced_index:]
+                                # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
+                                remaining = chat_history[last_synced_index:]
+                                logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
+                                if not shutdown_event.is_set() and remaining:
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
                                                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
-                                                json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
+                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
                                                 timeout=aiohttp.ClientTimeout(total=30.0)
                                             ) as response:
                                                 result = await response.json()
                                                 if result.get('status') == 'error':
-                                                    logger.debug(f"[{lanlan_name}] session end 记忆同步失败: {result.get('message')}")
+                                                    logger.debug(f"[{lanlan_name}] session end 记忆结算失败: {result.get('message')}")
                                                 else:
-                                                    last_synced_index = len(chat_history)
-                                                    logger.debug(f"[{lanlan_name}] session end 兜底同步 {len(new_messages)} 条消息到 memory_server")
+                                                    logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] session end 同步 memory_server 失败: {e}")
-
-                                # Session end 不再向 memory_server 发送完整 chat_history，避免重复写入：
-                                # 每轮已在 turn end 时把新增消息同步到 /process，memory 中已有完整对话；
-                                # 若 session end 再发一次完整历史，recent_history 会 extend() 导致整段对话重复。
-                                logger.info(f"[{lanlan_name}] 会话结束：聊天历史共 {len(chat_history)} 条（已按轮次在 turn end 同步，不再重复提交）")
+                                        logger.debug(f"[{lanlan_name}] session end 记忆结算失败: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
                         except Exception as e:

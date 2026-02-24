@@ -1,8 +1,8 @@
 <div align="center">
 
-![Logo](../assets/neko_logo.jpg)
+![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
-[中文](../README.MD) | [日本語](README_ja.md)
+[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md)
 
 # Project N.E.K.O. :kissing_cat: <br>**A Living AI Companion Metaverse, Built Together by You and Me.**
 
@@ -11,12 +11,13 @@
 > N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)]()
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 [![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
+[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
 
 **:older_woman: Zero-configuration, ready-to-use cyber catgirl that even my grandma can master!**
 
@@ -82,9 +83,9 @@ Our ultimate goal is to build a N.E.K.O. metaverse that seamlessly integrates in
 
 QQ Group: 1022939659
 
-# Quick Start (Windows Users)
+# Quick Start (Windows Users, Macbook Users)
 
-For *one-click package users*, simply run `N.E.K.O.exe` after extracting to start.
+For *one-click package users*, simply run `N.E.K.O.exe` or `N.E.K.O.app` after extracting to start. (Macbook users need to manually bypass system quarantine)
 
 ## Docker Deployment (Linux Users)
 
@@ -111,7 +112,6 @@ services:
       - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
       - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
       - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
 
       # API Providers
       - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
@@ -146,45 +146,13 @@ networks:
     driver: bridge
 ```
 
-#### Core API Configuration
-
-| Environment Variable | Description | Default | Example |
-|---------------------|-------------|---------|---------|
-| `NEKO_CORE_API_KEY` | Core API Key (Required) | - | `sk-xxxxx` |
-| `NEKO_CORE_API` | Core API Provider | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
-| `NEKO_ASSIST_API` | Assist API Provider | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
-| `NEKO_ASSIST_API_KEY_QWEN` | Alibaba Cloud API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_GLM` | Zhipu API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_STEP` | StepFun API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_SILICON` | SiliconFlow API Key | - | `xxxxx` |
-| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
-
-#### Server Port Configuration (DO NOT CHANGE!)
-
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `NEKO_MAIN_SERVER_PORT` | Main Server Port | `48911` |
-| `NEKO_MEMORY_SERVER_PORT` | Memory Server Port | `48912` |
-| `NEKO_MONITOR_SERVER_PORT` | Monitor Server Port | `48913` |
-| `NEKO_TOOL_SERVER_PORT` | Tool Server Port | `48915` |
-
-#### Model Configuration (Advanced)
-
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `NEKO_SUMMARY_MODEL` | Summary Model | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | Correction Model | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | Emotion Analysis Model | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | Vision Model | `qwen3-vl-plus-2025-09-23` |
-
 **Note:** The current Docker deployment solution is provided by *HINS*
 
 # Advanced Usage
 
 #### Configuring API Key
 
-When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface. **We will adapt to more international service providers in 2026 Spring.**
+When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *Gemini*, *OpenAI*, *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
 
 > Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
 
@@ -194,7 +162,7 @@ When you want to obtain additional features by configuring your own API, you can
 
 - Access `http://localhost:48911/chara_manager` on the web version to enter the character editing page. The default ~~catgirl~~ companion preset name is `小天` (XiaoTian); it's recommended to directly modify the name and add or change basic persona items one by one, but try to limit the quantity.
 
-- Advanced persona settings mainly include **Live2D model settings (live2d)** and **voice settings (voice_id)**. If you want to change the **Live2D model**, first copy the model directory to the `static` folder in this project. You can enter the Live2D model management interface from advanced settings, where you can switch models and adjust their position and size by dragging and scrolling. If you want to change the **character voice**, prepare a continuous, clean voice recording of about 15 seconds. Enter the voice settings page through advanced settings and upload the recording to complete custom voice setup.
+- Advanced persona settings mainly include **Live2D model settings (live2d)** and **voice settings (voice_id)**. If you want to change the **Live2D model**, first copy the model directory to the `static` folder in this project. You can enter the Live2D model management interface from advanced settings, where you can switch models and adjust their position and size by dragging and scrolling. If you want to change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice settings page through advanced settings and upload the recording to complete custom voice setup.
 
 - Advanced persona also has a `system_prompt` option for complete system instruction customization, but modification is not recommended.
 
@@ -237,30 +205,24 @@ N.E.K.O/
 
 **Data Flow**
 
-![Framework](../assets/framework.drawio.svg)
+![Framework](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/framework.drawio.svg)
 
 ### Contributing to Development
 
 This project has very simple environment dependencies. Just run `pip install -r requirements.txt` or `uv sync` in a `python3.11` environment. Developers are encouraged to join QQ group 1022939659; the catgirl's name is in the project title.
 
-Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` or `uv sync` to install dependencies. (3) Run `python memory_server.py`, `python main_server.py` (optional `python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
+Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `uv sync` to install dependencies. (3) Run `uv run python memory_server.py`, `uv run python main_server.py` (optional `uv run python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
 
 
 ### TODO List (Development Plan)
 
-- Improve the semantic indexing part in memory server; open the existing settings update functionality.
+v0.7: Improve Agent-related features. Expected completion: February.
 
-- Improve the existing proactive dialogue functionality.
+v0.8: Improve memory-related features, improve OpenClaw-like functionality. Expected completion: March.
 
-- Refactor frontend with React and prepare standalone mobile version.
+v0.9: Improve multi-system support, including Linux and mobile. N.E.K.O. Network launch. Expected completion: April.
 
-- Introduce VRM support for 3D models.
-
-- N.E.K.O. Network, allowing N.E.K.O.s to communicate autonomously.
-
-- Integrate with external software like Discord/Cursor.
-
-- Improve native tool calling.
+v1.0: Drop support for some model providers, focus on in-house large models and agent systems. Expected completion: June.
 
 ## Star History
 

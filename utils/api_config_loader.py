@@ -128,10 +128,12 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     # 转换字段名：snake_case -> UPPER_SNAKE_CASE
     field_mapping = {
         'openrouter_url': 'OPENROUTER_URL',
+        'conversation_model': 'CONVERSATION_MODEL',
         'summary_model': 'SUMMARY_MODEL',
         'correction_model': 'CORRECTION_MODEL',
         'emotion_model': 'EMOTION_MODEL',
         'vision_model': 'VISION_MODEL',
+        'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
         'is_free_version': 'IS_FREE_VERSION',

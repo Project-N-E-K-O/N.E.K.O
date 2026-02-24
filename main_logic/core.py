@@ -19,7 +19,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-from config import MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.config_manager import get_config_manager
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code
@@ -50,6 +50,7 @@ class LLMSessionManager:
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
+        self._screenshot_future: asyncio.Future | None = None
         self.current_speech_id = None
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -109,13 +110,16 @@ class LLMSessionManager:
         self.final_swap_task = None
         self.receive_task = None
         self.message_handler_task = None
-        # 任务完成后的额外回复队列（将在下一次切换时统一汇报）
+        # 任务完成后的额外回复队列（将在下一次切换时统一汇报，语音模式使用）
         self.pending_extra_replies = []
+        # 结构化 agent 任务回调队列（用于按会话类型注入）
+        self.pending_agent_callbacks: list[dict] = []
+        # 防止 trigger_agent_callbacks 重入
+        self._agent_delivery_in_progress: bool = False
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
             'computer_use_enabled': False,
-            'mcp_enabled': False,
             'browser_use_enabled': False,
         }
         
@@ -175,26 +179,26 @@ class LLMSessionManager:
         except Exception:
             return 200
 
-    async def handle_new_message(self):
-        """处理新模型输出：清空TTS队列并通知前端"""
-        # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
-        self.audio_resampler.clear()
+    async def _clear_tts_pipeline(self):
+        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            # 清空响应队列中待发送的音频数据
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
                 except: # noqa
                     break
-            # 发送终止信号以清空TTS请求队列并停止当前合成
             try:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS中断信号失败: {e}")
-        
-        # 清空待处理的TTS缓存
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+
+    async def handle_new_message(self):
+        """处理新模型输出：清空TTS队列并通知前端"""
+        # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
+        self.audio_resampler.clear()
+        await self._clear_tts_pipeline()
         
         await self.send_user_activity()
         
@@ -264,19 +268,63 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Turn End Error: {e}")
 
-        # 如果有挂起的额外提示：触发热切换准备并安排renew，会在最终swap时统一植入提示
-        try:
-            if getattr(self, 'pending_extra_replies', None) and len(self.pending_extra_replies) > 0 \
-               and not self.is_preparing_new_session and not self.is_hot_swap_imminent:
-                await self._trigger_immediate_preparation_for_extra()
-        except Exception as e:
-            logger.error(f"💥 Extra reply preparation error: {e}")
+        # ── 热切换逻辑 ─────────────────────────────────────────────────────────
+        # 正在切换过程中则跳过所有热切换判断
+        if not self.is_hot_swap_imminent:
+            try:
+                # 1. 时间驱动（40s）：session 运行超时 → 开始准备新 session + 触发记忆归档
+                if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
+                    if self.session_start_time and \
+                            (datetime.now() - self.session_start_time).total_seconds() >= 40:
+                        logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
+                        self.is_preparing_new_session = True
+                        self.summary_triggered_time = datetime.now()
+                        self.message_cache_for_new_session = []
+                        self.initial_cache_snapshot_len = 0
+                        self.sync_message_queue.put({'type': 'system', 'data': 'renew session'})
+
+                # 2. agent 任务结果即时触发（无需等待 40s）：有挂起的额外提示 → 立刻启动预热
+                has_extra = bool(getattr(self, 'pending_extra_replies', None))
+                if has_extra and not self.is_preparing_new_session:
+                    await self._trigger_immediate_preparation_for_extra()
+
+                # 3. 后台预热（10s 延迟，适用于定时触发路径；
+                #    即时路径由 _trigger_immediate_preparation_for_extra 在内部直接启动，不走这里）
+                if self.is_preparing_new_session and \
+                        self.summary_triggered_time and \
+                        (datetime.now() - self.summary_triggered_time).total_seconds() >= 10 and \
+                        (not self.background_preparation_task or self.background_preparation_task.done()) and \
+                        not (self.pending_session_warmed_up_event and self.pending_session_warmed_up_event.is_set()):
+                    logger.info(f"[{self.lanlan_name}] Main Listener: Conditions met to start BACKGROUND PREPARATION of pending session.")
+                    self.pending_session_warmed_up_event = asyncio.Event()
+                    self.background_preparation_task = asyncio.create_task(self._background_prepare_pending_session())
+
+                # 4. 后台预热完成 + 当前轮次结束 → 执行最终热切换
+                elif self.pending_session_warmed_up_event and \
+                        self.pending_session_warmed_up_event.is_set() and \
+                        not self.is_hot_swap_imminent and \
+                        (not self.final_swap_task or self.final_swap_task.done()):
+                    logger.info(
+                        "Main Listener: OLD session completed a turn & PENDING session is warmed up. Triggering FINAL SWAP sequence.")
+                    self.is_hot_swap_imminent = True
+                    self.pending_session_final_prime_complete_event = asyncio.Event()
+                    self.final_swap_task = asyncio.create_task(
+                        self._perform_final_swap_sequence()
+                    )
+            except Exception as e:
+                logger.error(f"💥 Hot-swap preparation error: {e}")
+
+        # After each turn: deliver any queued agent task callbacks via LLM rephrase
+        if self.pending_agent_callbacks:
+            asyncio.create_task(self.trigger_agent_callbacks())
 
     async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
-        处理响应被丢弃的通知：清空当前前端输出，必要时发送 turn end
+        处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
+        
+        await self._clear_tts_pipeline()
         
         if self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -720,9 +768,9 @@ class LLMSessionManager:
         
         # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
         _realtime_model = realtime_config.get('model', '')
-        _correction_model = self._config_manager.get_model_api_config('correction').get('model', '')
+        _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
         _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_correction_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
@@ -881,6 +929,9 @@ class LLMSessionManager:
             # 获取初始 prompt
             initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             
+            # 注入当前活跃的Agent任务列表
+            initial_prompt += await self._fetch_active_agent_tasks_prompt()
+            
             # 连接 Memory Server 获取记忆上下文
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
@@ -898,12 +949,12 @@ class LLMSessionManager:
             # 根据input_mode创建不同的session
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
-                correction_config = self._config_manager.get_model_api_config('correction')
+                conversation_config = self._config_manager.get_model_api_config('conversation')
                 vision_config = self._config_manager.get_model_api_config('vision')
                 self.session = OmniOfflineClient(
-                    base_url=correction_config['base_url'],
-                    api_key=correction_config['api_key'],
-                    model=correction_config['model'],
+                    base_url=conversation_config['base_url'],
+                    api_key=conversation_config['api_key'],
+                    model=conversation_config['model'],
                     vision_model=vision_config['model'],
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
@@ -1047,6 +1098,10 @@ class LLMSessionManager:
                 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
+
+                # WebSocket 重连后，投递因断线积压的 agent 任务回调
+                if self.pending_agent_callbacks:
+                    asyncio.create_task(self.trigger_agent_callbacks())
             else:
                 raise Exception("Session not initialized")
         
@@ -1094,10 +1149,11 @@ class LLMSessionManager:
                 else:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
-            await self.cleanup()
-            
             # 通知前端 session 启动失败，让前端重置状态
+            # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
             await self.send_session_failed(input_mode)
+            
+            await self.cleanup()
         
         finally:
             # 无论成功还是失败，都重置启动标志
@@ -1131,9 +1187,40 @@ class LLMSessionManager:
             gate_ok = False
         return gate_ok and self.agent_flags['agent_enabled'] and (
             self.agent_flags['computer_use_enabled']
-            or self.agent_flags['mcp_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
         )
+
+    async def _fetch_active_agent_tasks_prompt(self) -> str:
+        """Query agent server for active tasks and return a prompt snippet."""
+        if not self._is_agent_enabled():
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as client:
+                resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
+                if resp.status_code != 200:
+                    return ""
+                data = resp.json()
+                tasks = data.get("tasks", [])
+                active = [t for t in tasks if t.get("status") in ("running", "queued")]
+                if not active:
+                    return ""
+                lines = []
+                for t in active:
+                    params = t.get("params") or {}
+                    desc = params.get("query") or params.get("instruction") or t.get("original_query") or t.get("id", "")[:8]
+                    status = "进行中" if t.get("status") == "running" else "排队中"
+                    lines.append(f"  - [{status}] {desc}")
+                if len(lines) > 0:
+                    return (
+                        "\n【当前正在执行的Agent任务】\n"
+                        + "\n".join(lines)
+                        + "\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。"
+                        "任务完成后系统会自动通知你真实结果，届时再据实回答。\n"
+                    )
+                else:
+                    return ""
+        except Exception:
+            return ""
 
     async def _background_prepare_pending_session(self):
         """[热切换相关] 后台预热pending session"""
@@ -1174,13 +1261,13 @@ class LLMSessionManager:
             # 根据input_mode创建对应类型的pending session
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                correction_config = self._config_manager.get_model_api_config('correction')
+                conversation_config = self._config_manager.get_model_api_config('conversation')
                 vision_config = self._config_manager.get_model_api_config('vision')
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
-                    base_url=correction_config['base_url'],
-                    api_key=correction_config['api_key'],
-                    model=correction_config['model'],
+                    base_url=conversation_config['base_url'],
+                    api_key=conversation_config['api_key'],
+                    model=conversation_config['model'],
                     vision_model=vision_config['model'],
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
@@ -1215,6 +1302,7 @@ class LLMSessionManager:
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
+            initial_prompt += await self._fetch_active_agent_tasks_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
@@ -1265,11 +1353,322 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'mcp_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
             pass
+
+    async def deliver_text_proactively(
+        self,
+        text: str,
+        min_idle_secs: float = 30.0,
+    ) -> bool:
+        """Directly deliver text as an AI proactive message without LLM generation.
+
+        Used when an agent task finishes and the user hasn't spoken recently.
+        Mirrors the delivery block in system_router.proactive_chat (post-LLM step).
+
+        Returns True if the message was delivered, False if skipped/aborted.
+        """
+        if not text or not text.strip():
+            return False
+
+        # Skip if user was active recently
+        if self.last_user_activity_time is not None:
+            time_since = time.time() - self.last_user_activity_time
+            if time_since < min_idle_secs:
+                logger.info(
+                    "[%s] deliver_text_proactively skipped: user active %.1fs ago",
+                    self.lanlan_name, time_since,
+                )
+                return False
+
+        # Skip if voice session is currently running (don't interrupt)
+        if self.is_active and isinstance(self.session, OmniRealtimeClient):
+            logger.info(
+                "[%s] deliver_text_proactively skipped: voice session active",
+                self.lanlan_name,
+            )
+            return False
+
+        # Need a live WebSocket
+        if not self.websocket:
+            return False
+        try:
+            if (
+                hasattr(self.websocket, 'client_state')
+                and self.websocket.client_state != self.websocket.client_state.CONNECTED
+            ):
+                return False
+        except Exception:
+            pass
+
+        # Ensure a text session exists (create if absent)
+        if not self.session or not hasattr(self.session, '_conversation_history'):
+            try:
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] deliver_text_proactively: failed to start session: %s", self.lanlan_name, e)
+                return False
+            if not self.session or not hasattr(self.session, '_conversation_history'):
+                return False
+
+        # Record in conversation history so the LLM remembers it said this
+        from langchain_core.messages import AIMessage as _AIMsg
+        self.session._conversation_history.append(_AIMsg(content=text))
+
+        # Fresh speech_id for TTS / lipsync
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
+
+        output_start_time = time.time()
+
+        # Deliver in small chunks to allow mid-delivery interruption and smooth TTS
+        chunks = [text[i:i + 10] for i in range(0, len(text), 10)]
+        for i, chunk in enumerate(chunks):
+            # Abort if the user started speaking mid-delivery
+            if (
+                self.last_user_activity_time is not None
+                and self.last_user_activity_time > output_start_time
+            ):
+                logger.info("[%s] deliver_text_proactively: user active mid-delivery, aborting", self.lanlan_name)
+                await self.handle_new_message()
+                return False
+            await self.handle_text_data(chunk, is_first_chunk=(i == 0))
+            await asyncio.sleep(0.15)
+
+        # TTS end signal
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            try:
+                self.tts_request_queue.put((None, None))
+            except Exception:
+                pass
+
+        # Turn-end (mirrors proactive_chat — does NOT trigger hot-swap)
+        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        try:
+            if (
+                self.websocket
+                and hasattr(self.websocket, 'client_state')
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception:
+            pass
+
+        logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
+        return True
+
+    # ------------------------------------------------------------------
+    # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
+    # ------------------------------------------------------------------
+
+    async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
+        """通过 WebSocket 向前端请求最新截图，返回压缩后的 base64（超时返回空串）。"""
+        if not self.websocket:
+            return ''
+        try:
+            loop = asyncio.get_running_loop()
+            self._screenshot_future = loop.create_future()
+            await self.websocket.send_json({"type": "request_screenshot"})
+            b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
+            return b64 or ''
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning("[%s] request_fresh_screenshot failed: %s", self.lanlan_name, e)
+            return ''
+        finally:
+            self._screenshot_future = None
+
+    def resolve_screenshot_request(self, b64: str):
+        """由 WebSocket router 调用，将前端回传的截图交给等待中的 future。"""
+        if self._screenshot_future and not self._screenshot_future.done():
+            self._screenshot_future.set_result(b64)
+
+    async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
+        """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        if self.last_user_activity_time is not None:
+            if time.time() - self.last_user_activity_time < min_idle_secs:
+                logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
+                return False
+        if self.is_active and isinstance(self.session, OmniRealtimeClient):
+            logger.info("[%s] prepare_proactive_delivery: voice session active", self.lanlan_name)
+            return False
+        if not self.websocket:
+            return False
+        try:
+            if (hasattr(self.websocket, 'client_state')
+                    and self.websocket.client_state != self.websocket.client_state.CONNECTED):
+                return False
+        except Exception:
+            pass
+        if not self.session or not hasattr(self.session, '_conversation_history'):
+            try:
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
+                return False
+            if not self.session or not hasattr(self.session, '_conversation_history'):
+                return False
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
+        return True
+
+    async def feed_tts_chunk(self, text: str):
+        """只把文本喂给 TTS 管线，不发送到前端显示。"""
+        if not self.use_tts:
+            return
+        async with self.tts_cache_lock:
+            if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                try:
+                    self.tts_request_queue.put((self.current_speech_id, text))
+                except Exception as e:
+                    logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
+            else:
+                self.tts_pending_chunks.append((self.current_speech_id, text))
+
+    async def finish_proactive_delivery(self, full_text: str):
+        """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
+        await self.send_lanlan_response(full_text, is_first_chunk=True)
+
+        from langchain_core.messages import AIMessage as _AIMsg
+        if self.session and hasattr(self.session, '_conversation_history'):
+            self.session._conversation_history.append(_AIMsg(content=full_text))
+
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            try:
+                self.tts_request_queue.put((None, None))
+            except Exception:
+                pass
+
+        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        try:
+            if (self.websocket
+                    and hasattr(self.websocket, 'client_state')
+                    and self.websocket.client_state == self.websocket.client_state.CONNECTED):
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception:
+            pass
+        logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
+
+    async def trigger_agent_callbacks(self) -> None:
+        """Proactively deliver pending agent task results via LLM rephrase.
+
+        Design:
+        - Text mode (OmniOfflineClient): calls session.stream_proactive() so the
+          LLM generates a styled response in the character's voice.
+        - Voice mode (OmniRealtimeClient): calls session.create_response() to
+          trigger a proactive AI turn.
+        - On failure or when the session is busy, restores callbacks so the next
+          handle_response_complete() call will retry automatically.
+        - Re-entrance guard prevents concurrent deliveries.
+        """
+        if self._agent_delivery_in_progress:
+            return
+        if not self.pending_agent_callbacks:
+            return
+
+        # Build the instruction from all pending callbacks
+        items: list[str] = []
+        for cb in self.pending_agent_callbacks:
+            status = cb.get("status", "completed")
+            summary = (cb.get("summary") or "").strip()
+            if not summary:
+                continue
+            tag = "✅" if status == "completed" else ("⚠️" if status == "partial" else "❌")
+            detail = (cb.get("detail") or "").strip()
+            if detail and detail != summary and len(detail) > len(summary):
+                items.append(f"{tag} {summary}\n详细结果：{detail}")
+            else:
+                items.append(f"{tag} {summary}")
+
+        if not items:
+            self.pending_agent_callbacks.clear()
+            self.pending_extra_replies.clear()
+            return
+
+        instruction = (
+            f"========[系统通知] 以下后台任务已完成，请{self.lanlan_name}先用自然、简洁的口吻向"
+            f"{self.master_name}汇报，再恢复正常对话========\n" + "\n".join(items)
+        )
+
+        callbacks_snapshot = list(self.pending_agent_callbacks)
+
+        self._agent_delivery_in_progress = True
+        try:
+            if isinstance(self.session, OmniRealtimeClient):
+                # 语音模式：pending_extra_replies 已由 enqueue_agent_callback 填充，
+                # 热切换（handle_response_complete → _perform_final_swap_sequence）
+                # 会在下一轮结束后自动注入并汇报。
+                # 只需清空 pending_agent_callbacks，避免后续重复触发。
+                # !! 不能清 pending_extra_replies —— 热切换靠它驱动 !!
+                self.pending_agent_callbacks.clear()
+                logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
+
+            elif isinstance(self.session, OmniOfflineClient):
+                if getattr(self.session, "_is_responding", False):
+                    # 当前正在响应，等待 handle_response_complete 后重试
+                    logger.debug("[%s] trigger_agent_callbacks: text session busy, re-queuing", self.lanlan_name)
+                    return
+                # 文字模式直接走 LLM 重新生成（不经热切换）
+                # 清空 pending_extra_replies 以免热切换被多余触发
+                self.pending_agent_callbacks.clear()
+                self.pending_extra_replies.clear()
+                delivered = await self.session.stream_proactive(instruction)
+                if not delivered:
+                    # 被打断/空响应 → 恢复 callbacks，下一轮 handle_response_complete 重试
+                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+
+            else:
+                # 没有 session；等待 start_session 后触发
+                logger.debug("[%s] trigger_agent_callbacks: no session, keeping for start_session", self.lanlan_name)
+
+        except Exception as e:
+            logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
+            self.pending_agent_callbacks.extend(callbacks_snapshot)
+        finally:
+            self._agent_delivery_in_progress = False
+
+    def enqueue_agent_callback(self, callback: dict) -> None:
+        """Enqueue a structured agent task callback for LLM injection.
+
+        Text mode: drained before the next stream_text call and injected as
+        system context, OR proactively via trigger_agent_callbacks().
+        Voice mode: also appended to pending_extra_replies for hot-swap injection.
+        """
+        try:
+            self.pending_agent_callbacks.append(callback)
+            text = (callback.get("summary") or callback.get("detail") or "").strip()
+            if text:
+                self.pending_extra_replies.append(text)
+        except Exception:
+            pass
+
+    def drain_agent_callbacks_for_llm(self) -> str:
+        """Drain pending_agent_callbacks and format as a system context string.
+
+        Clears pending_agent_callbacks (NOT pending_extra_replies, which is
+        consumed separately by the voice-mode hot-swap path).
+        Returns an empty string if there are no callbacks.
+        """
+        if not self.pending_agent_callbacks:
+            return ""
+        lines: list[str] = []
+        for cb in self.pending_agent_callbacks:
+            status = cb.get("status", "completed")
+            summary = (cb.get("summary") or "").strip()
+            detail = (cb.get("detail") or "").strip()
+            if status == "completed":
+                tag = "[任务完成]"
+            elif status == "partial":
+                tag = "[任务部分完成]"
+            else:
+                tag = "[任务失败]"
+            lines.append(f"{tag} {summary}")
+            if detail and detail != summary:
+                lines.append(f"  详情：{detail[:300]}")
+        self.pending_agent_callbacks.clear()
+        return "\n".join(lines)
 
     async def _perform_final_swap_sequence(self):
         """[热切换相关] 执行最终的swap序列"""
@@ -1554,6 +1953,19 @@ class LLMSessionManager:
                         self.current_speech_id = str(uuid4())
 
                     await self.send_user_activity()
+
+                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调注入 LLM 上下文
+                    if self.pending_agent_callbacks:
+                        try:
+                            ctx = self.drain_agent_callbacks_for_llm()
+                            if ctx:
+                                await self.session.create_response(
+                                    f"========[系统通知：以下是最近完成的后台任务情况，请在回复中自然地提及或确认]\n{ctx}",
+                                    skipped=False,
+                                )
+                        except Exception as _cb_err:
+                            logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
+
                     await self.session.stream_text(data)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
@@ -1834,7 +2246,7 @@ class LLMSessionManager:
     def _get_translation_service(self):
         """获取翻译服务实例（延迟初始化）"""
         if self._translation_service is None:
-            from utils.translation_service import get_translation_service
+            from utils.language_utils import get_translation_service
             self._translation_service = get_translation_service(self._config_manager)
         return self._translation_service
     
@@ -1879,7 +2291,7 @@ class LLMSessionManager:
         
         try:
             translation_service = self._get_translation_service()
-            translated = await translation_service.translate_text(text, self.user_language)
+            translated = await translation_service.translate_text_robust(text, self.user_language)
             return translated
         except Exception as e:
             logger.error(f"翻译失败: {e}，返回原文")
