@@ -1,9 +1,9 @@
-import asyncio
 import pytest
 import os
 import logging
 import base64
 from typing import Optional, Callable, Awaitable, TypeVar
+from unittest.mock import AsyncMock
 
 # Adjust path to import project modules
 import sys
@@ -97,7 +97,7 @@ def create_offline_client(test_provider: str = TEST_PROVIDER, model_override: Op
     return OmniOfflineClient(
         base_url=base_url,
         api_key=api_key,
-        model=model_override or profile['CORRECTION_MODEL'],  # Use override model if provided
+        model=model_override or model,
         vision_model=profile.get('VISION_MODEL', ''),
         vision_base_url=profile.get('VISION_BASE_URL', ''),
         vision_api_key=profile.get('VISION_API_KEY', ''),
@@ -107,7 +107,7 @@ def create_offline_client(test_provider: str = TEST_PROVIDER, model_override: Op
 
 
 # 10-round conversation prompts — designed to test context retention & natural flow
-MULTI_TURN_PROMPTS = [
+MULTI_TURN_PROMPTS = [  # noqa: RUF001
     "你好呀！最近过得怎么样？",
     "有什么有趣的事情发生吗？跟我说说。",
     "我最近在学做饭，你有什么推荐的菜吗？",
@@ -122,7 +122,7 @@ MULTI_TURN_PROMPTS = [
 
 
 @pytest.fixture
-def offline_client():
+async def offline_client():
     """Returns an OmniOfflineClient instance configured with Qwen (default). Skips test if creation fails."""
     try:
         client = create_offline_client()
@@ -131,7 +131,7 @@ def offline_client():
     try:
         yield client
     finally:
-        asyncio.run(client.close())
+        await client.close()
 
 @pytest.mark.unit
 async def test_simple_text_chat(offline_client, llm_judger):
