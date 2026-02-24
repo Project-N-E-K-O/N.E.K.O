@@ -67,7 +67,7 @@ def _get_system_language() -> str:
     从系统设置获取语言
     
     Returns:
-        语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
+        语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
     """
     try:
         # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
@@ -81,9 +81,11 @@ def _get_system_language() -> str:
                 return 'ja'
             elif system_locale_lower.startswith('ko') or 'korean' in system_locale_lower:
                 return 'ko'
+            elif system_locale_lower.startswith('ru') or 'russian' in system_locale_lower:
+                return 'ru'
             elif system_locale_lower.startswith('en'):
                 return 'en'
-        
+
         lang_env = os.environ.get('LANG', '').lower()
         if lang_env.startswith('zh') or 'chinese' in lang_env:
             return 'zh'
@@ -91,9 +93,11 @@ def _get_system_language() -> str:
             return 'ja'
         elif lang_env.startswith('ko'):
             return 'ko'
+        elif lang_env.startswith('ru'):
+            return 'ru'
         elif lang_env.startswith('en'):
             return 'en'
-        
+
         return 'zh'  # 默认中文
     except Exception as e:
         logger.warning(f"获取系统语言失败: {e}，使用默认中文")
@@ -105,15 +109,15 @@ def _get_steam_language() -> Optional[str]:
     从 Steam 设置获取语言
     
     Returns:
-        语言代码 ('zh', 'en', 'ja', 'ko')，如果无法获取则返回 None
+        语言代码 ('zh', 'en', 'ja', 'ko', 'ru')，如果无法获取则返回 None
     """
     try:
         from main_routers.shared_state import get_steamworks
-        
+
         steamworks = get_steamworks()
         if steamworks is None:
             return None
-        
+
         # Steam 语言代码到我们的语言代码的映射
         STEAM_TO_LANG_MAP = {
             'schinese': 'zh',
@@ -124,6 +128,8 @@ def _get_steam_language() -> Optional[str]:
             'koreana': 'ko',
             'korean': 'ko',
             'ko': 'ko',
+            'russian': 'ru',
+            'ru': 'ru',
         }
         
         # 获取 Steam 当前游戏语言
@@ -209,6 +215,8 @@ def set_global_language(language: str) -> None:
         normalized_lang = 'ja'
     elif lang_lower.startswith('ko'):
         normalized_lang = 'ko'
+    elif lang_lower.startswith('ru'):
+        normalized_lang = 'ru'
     elif lang_lower.startswith('en'):
         normalized_lang = 'en'
     else:
@@ -294,6 +302,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         'japanese': 'ja',      # 日语
         'koreana': 'ko',       # 韩语
         'korean': 'ko',        # 兼容
+        'russian': 'ru',       # 俄语
     }
     
     # 先检查是否是 Steam 语言代码
@@ -309,6 +318,8 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
                 return 'en'
             elif normalized.startswith('ko'):
                 return 'ko'
+            elif normalized.startswith('ru'):
+                return 'ru'
         elif format == 'full' and normalized == 'zh':
             return 'zh-CN'
         return normalized
@@ -324,6 +335,8 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         return 'ja'
     elif lang_lower.startswith('ko'):
         return 'ko'
+    elif lang_lower.startswith('ru'):
+        return 'ru'
     elif lang_lower.startswith('en'):
         return 'en'
     else:
@@ -381,6 +394,7 @@ CHINESE_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 JAPANESE_PATTERN = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]')  # 平假名、片假名、汉字
 ENGLISH_PATTERN = re.compile(r'[a-zA-Z]')
 KOREAN_PATTERN = re.compile(r'[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]')  # 谚文
+RUSSIAN_PATTERN = re.compile(r'[\u0400-\u04ff]')  # 西里尔字母（俄语）
 
 
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
@@ -456,6 +470,7 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             'en': 'English',
             'ja': 'Japanese',
             'ko': 'Korean',
+            'ru': 'Russian',
             'auto': 'auto'
         }
         
@@ -557,22 +572,25 @@ def detect_language(text: str) -> str:
     """
     if not text or not text.strip():
         return 'unknown'
-    
+
     # 统计各语言字符数量
     chinese_count = len(CHINESE_PATTERN.findall(text))
     japanese_count = len(JAPANESE_PATTERN.findall(text)) - chinese_count  # 减去汉字（因为中日共用）
     korean_count = len(KOREAN_PATTERN.findall(text))
     english_count = len(ENGLISH_PATTERN.findall(text))
-    
+    russian_count = len(RUSSIAN_PATTERN.findall(text))
+
     # 如果包含日文假名，优先判断为日语
     if japanese_count > 0:
         if japanese_count >= chinese_count * 0.2:
             return 'ja'
-    
+
     # 判断主要语言
     # 注意：如果包含假名已经在上面返回 'ja' 了，这里只需要判断中文和英文
-    if korean_count >= chinese_count and korean_count >= english_count and korean_count > 0:
+    if korean_count >= chinese_count and korean_count >= english_count and korean_count >= russian_count and korean_count > 0:
         return 'ko'
+    if russian_count >= chinese_count and russian_count >= english_count and russian_count > 0:
+        return 'ru'
     if chinese_count >= english_count and chinese_count > 0:
         return 'zh'
     elif english_count > 0:
@@ -632,6 +650,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         'en': 'en',
         'ja': 'ja',
         'ko': 'ko',
+        'ru': 'ru',
     }
     
     google_target = GOOGLE_LANG_MAP.get(target_lang, target_lang)
@@ -752,6 +771,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             'en': '英文',
             'ja': '日语',
             'ko': '韩语',
+            'ru': '俄语',
         }
         
         source_name = lang_names.get(source_lang, source_lang)
@@ -825,7 +845,7 @@ async def get_user_language_async() -> str:
 
 # 缓存配置
 CACHE_MAX_SIZE = 1000
-SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko']
+SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko', 'ru']
 DEFAULT_LANGUAGE = 'zh-CN'
 
 class TranslationService:
@@ -952,9 +972,12 @@ class TranslationService:
             elif target_lang_normalized == 'ko':
                 target_lang_name = "Korean"
                 source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+            elif target_lang_normalized == 'ru':
+                target_lang_name = "Russian"
+                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
             else:  # zh-CN
                 target_lang_name = "简体中文"
-                source_lang_name = "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+                source_lang_name = "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "Russian" if detected_lang_normalized == 'ru' else "the source language"
             
             system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
 

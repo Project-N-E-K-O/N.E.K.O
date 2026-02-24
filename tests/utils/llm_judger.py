@@ -9,6 +9,11 @@ from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
 
+# Set to a specific provider to force judger selection.
+# Supported values: "openai", "siliconflow", "qwen", "glm"
+# Leave as "" to keep automatic fallback order.
+JUDGER_PROVIDER = "qwen"
+
 
 class LLMJudger:
     def __init__(self, api_keys_path: str = "tests/api_keys.json"):
@@ -19,6 +24,18 @@ class LLMJudger:
         self.api_keys = self._load_api_keys(api_keys_path)
         self.llms = self._init_llms()
         self._results: List[Dict[str, Any]] = []
+        self._run_tag: str = ""
+
+    def set_run_tag(self, run_tag: str = "") -> None:
+        """Set an optional run tag to be prefixed to test_name in results."""
+        self._run_tag = (run_tag or "").strip()
+
+    def _tagged_test_name(self, test_name: str) -> str:
+        if not self._run_tag:
+            return test_name
+        if test_name:
+            return f"{self._run_tag}::{test_name}"
+        return self._run_tag
 
     def _load_api_keys(self, path: str) -> Dict[str, Any]:
         if not os.path.exists(path):
@@ -61,6 +78,25 @@ class LLMJudger:
                 "base_url": "https://open.bigmodel.cn/api/paas/v4/"
             }
         ]
+
+        selected = (JUDGER_PROVIDER or "").strip().lower()
+        if selected:
+            provider_aliases = {
+                "openai": "OpenAI",
+                "siliconflow": "SiliconFlow",
+                "silicon": "SiliconFlow",
+                "qwen": "Qwen",
+                "glm": "GLM",
+            }
+            target_name = provider_aliases.get(selected)
+            if not target_name:
+                logger.warning(
+                    f"Unsupported JUDGER_PROVIDER='{JUDGER_PROVIDER}'. "
+                    "Falling back to default provider order."
+                )
+            else:
+                providers = [p for p in providers if p["name"] == target_name]
+                logger.info(f"LLM Judger provider forced to: {target_name}")
 
         llms = []
         for p in providers:
@@ -112,7 +148,7 @@ class LLMJudger:
         """
         result_entry = {
             "timestamp": datetime.now().isoformat(),
-            "test_name": test_name,
+            "test_name": self._tagged_test_name(test_name),
             "type": "single",
             "input": input_text[:1000],
             "output": output_text[:2000],
@@ -197,7 +233,7 @@ Your final answer must be exactly one word: either "YES" or "NO". Do NOT provide
         """
         result_entry = {
             "timestamp": datetime.now().isoformat(),
-            "test_name": test_name,
+            "test_name": self._tagged_test_name(test_name),
             "type": "conversation",
             "conversation_log": conversation,
             "criteria": criteria,
