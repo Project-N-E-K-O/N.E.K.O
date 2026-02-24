@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import pytest
 
 from tests.unit.test_text_chat import (
+    OfflineClientError,
     create_offline_client,
     test_multi_turn_conversation,
     test_simple_text_chat,
@@ -122,7 +123,7 @@ async def _run_target_suite(judger: LLMJudger, target: Dict[str, Optional[str]])
     judger.set_run_tag(tag)
     try:
         client = create_offline_client(test_provider=provider, model_override=model_override)
-    except pytest.skip.Exception as e:
+    except (OfflineClientError, pytest.skip.Exception) as e:
         print(f"[SKIP] target {tag}: {e}")
         return {"target": tag, "simple": "skipped", "multi_turn": "skipped", "vision": "skipped"}
 

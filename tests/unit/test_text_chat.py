@@ -47,23 +47,17 @@ def _is_transient_network_error(error: Exception) -> bool:
     return any(signal in text for signal in transient_signals)
 
 
-async def _run_with_network_retry(
+async def _skip_on_transient_network_error(
     op_name: str,
     operation: Callable[[], Awaitable[T]],
 ) -> T:
-    """Abort current test immediately when a transient network issue is detected."""
+    """Run the operation; on transient network/provider errors, skip the test instead of retrying."""
     try:
         return await operation()
     except Exception as e:
         if _is_transient_network_error(e):
             pytest.skip(f"NETWORK_ISSUE: {op_name} failed due to transient network/provider issue: {e}")
         raise
-
-
-@pytest.fixture
-def offline_client():
-    """Pytest fixture that builds OmniOfflineClient using TEST_PROVIDER."""
-    return create_offline_client(test_provider=TEST_PROVIDER)
 
 
 def create_offline_client(test_provider: str = TEST_PROVIDER, model_override: Optional[str] = None):
@@ -74,8 +68,8 @@ def create_offline_client(test_provider: str = TEST_PROVIDER, model_override: Op
     provider = test_provider
     if provider not in assist_profiles:
         available = ", ".join(sorted(assist_profiles.keys()))
-        pytest.skip(f"Provider '{provider}' not found in assist profiles. Available: {available}")
-        
+        raise OfflineClientError(f"Provider '{provider}' not found in assist profiles. Available: {available}")
+
     print(f"test_text_chat provider: {provider}\n")
     profile = assist_profiles[provider]
 
@@ -169,7 +163,7 @@ async def test_simple_text_chat(offline_client, llm_judger):
                 raise ConnectionError("empty response from provider")
             return response
 
-        full_response = await _run_with_network_retry("simple_text_chat", _send_once)
+        full_response = await _skip_on_transient_network_error("simple_text_chat", _send_once)
         
         logger.info(f"Received response: {full_response}")
         print(f"\tAI:   {full_response[:150]}{'...' if len(full_response) > 150 else ''}")
@@ -215,7 +209,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
     offline_client.on_response_done = on_response_done
     
     # Initialize client with a system prompt
-    await _run_with_network_retry(
+    await _skip_on_transient_network_error(
         "multi_turn_connect",
         lambda: offline_client.connect(
             instructions="你是一个友善、活泼、可爱的AI猫娘助手。请用中文自然地和用户聊天。"
@@ -236,7 +230,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
         print(f"  👤 User: {prompt}")
         
         try:
-            async def _round_once() -> str:
+            async def _round_once(prompt=prompt, i=i) -> str:
                 response_accumulator.clear()
                 await offline_client.stream_text(prompt)
                 response = "".join(response_accumulator)
@@ -244,7 +238,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
                     raise ConnectionError(f"empty response at round {i}")
                 return response
 
-            full_response = await _run_with_network_retry(
+            full_response = await _skip_on_transient_network_error(
                 f"multi_turn_round_{i}",
                 _round_once,
             )
@@ -312,6 +306,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
 @pytest.mark.unit
 async def test_vision_chat(offline_client, llm_judger):
     """Test sending an image and asking for a description."""
+    # Skip when vision model is not configured in the assist profile.
     if not offline_client.vision_model:
         pytest.skip("No vision model configured; skip vision test.")
 
@@ -349,7 +344,7 @@ async def test_vision_chat(offline_client, llm_judger):
                 raise ConnectionError("empty response in vision test")
             return response
 
-        full_response = await _run_with_network_retry("vision_chat", _vision_once)
+        full_response = await _skip_on_transient_network_error("vision_chat", _vision_once)
 
         logger.info(f"Received vision response: {full_response}")
         
