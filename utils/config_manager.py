@@ -25,6 +25,7 @@ from utils.api_config_loader import (
     get_assist_api_profiles,
     get_assist_api_key_fields,
 )
+from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
@@ -616,15 +617,9 @@ class ConfigManager:
         if voice_id.startswith("cosyvoice-v2"):
             return False
 
-        # gsv: 前缀表示 GPT-SoVITS voice_id，仅当后缀非空且 tts_custom 配置指向 http(s) 服务时放行
-        if voice_id.startswith(GSV_VOICE_PREFIX):
-            if not voice_id[len(GSV_VOICE_PREFIX):].strip():
-                return False
-            tts_config = self.get_model_api_config('tts_custom')
-            base_url = tts_config.get('base_url') or ''
-            if tts_config.get('is_custom') and base_url.startswith(('http://', 'https://')):
-                return True
-            return False
+        custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
+        if custom_tts_allowed is not None:
+            return custom_tts_allowed
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
