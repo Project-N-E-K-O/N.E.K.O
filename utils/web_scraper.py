@@ -18,6 +18,7 @@ from langchain_core.messages import SystemMessage
 from bs4 import BeautifulSoup
 import os
 from pathlib import Path
+import importlib.util
 import json
 import sys
 
@@ -25,26 +26,39 @@ import sys
 # 增加缺失的 bilibili_api 数据文件修复逻辑，防止打包后环境缺失导致的错误
 # ==================================================
 def fix_missing_bilibili_api_json():
+    """
+    修复缺失的 bilibili_api 数据文件
+
+    当打包后的环境中缺少 bilibili_api 数据文件时，尝试修复该问题。
+    该函数会检查是否存在 bilibili_api 包，并根据环境判断是否需要回退到默认路径。
+    """
     try:
         # 优先判断是否是打包后环境
         if hasattr(sys, '_MEIPASS'):
-            base = sys._MEIPASS
+            pkg_path = Path(sys._MEIPASS) / "bilibili_api"
         else:
-            base = os.path.dirname(os.path.abspath(__file__))
-
+            spec = importlib.util.spec("bilibili_api")
+            if spec and spec.origin:
+                pkg_dir = Path(spec.origin).resolve().parent
+                logger.info(f"bilibili_api 包路径: {pkg_dir}")
+            else:
+                pkg_dir = Path(__file__).resolve().parent / "bilibili_api"
+                logger.info(f"bilibili_api 回退路径: {pkg_dir}")
         # 构造缺失的文件路径
-        data_dir = os.path.join(base, "bilibili_api", "data")
-        json_file = os.path.join(data_dir, "video_uploader_lines.json")
+        data_dir = pkg_dir / "data"
+        json_file = data_dir / "video_uploader_lines.json"
 
         # 不存在就创建
         if not os.path.exists(json_file):
             os.makedirs(data_dir, exist_ok=True)
             with open(json_file, 'w', encoding='utf-8') as f:
                 json.dump({"uploaders": [], "lines": []}, f, ensure_ascii=False)
-    except Exception:
-        pass
+            logger.info("✅ 已修复缺失的 bilibili_api 数据文件")
 
-# 启动就执行修复
+    except Exception as e:
+        logger.getLogger(__name__).warning(f"修复 bilibili_api 数据文件失败: {e}")
+
+# 执行修复
 fix_missing_bilibili_api_json()
 
 
