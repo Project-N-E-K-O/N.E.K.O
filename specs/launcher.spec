@@ -29,7 +29,8 @@ critical_packages = [
     'langchain',         # brain 和 memory 使用
     'langchain_community',
     'langchain_core',
-    'langchain_openai'
+    'langchain_openai',
+    'browser_use',       # browser-use agent 需要 .md 模板文件
 ]
 
 for pkg in critical_packages:
@@ -79,6 +80,7 @@ add_data('static/*.ico', 'static')
 add_data('static/*.png', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
+add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（必须放在根目录）

@@ -1,0 +1,55 @@
+/**
+ * Project N.E.K.O. Documentation Theme
+ *
+ * A warm, approachable palette that reflects the AI companion personality
+ * while maintaining technical credibility.
+ */
+
+:root {
+  /* Brand colors - soft pink/magenta accent */
+  --vp-c-brand-1: #d966c6;
+  --vp-c-brand-2: #c454b2;
+  --vp-c-brand-3: #ae429e;
+  --vp-c-brand-soft: rgba(217, 102, 198, 0.14);
+
+  /* Hero gradient */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(135deg, #d966c6 10%, #6c63ff 100%);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, rgba(217, 102, 198, 0.2) 10%, rgba(108, 99, 255, 0.2) 100%);
+  --vp-home-hero-image-filter: blur(56px);
+
+  /* Slightly warmer code blocks */
+  --vp-code-block-bg: #faf5fa;
+}
+
+.dark {
+  --vp-c-brand-1: #e88bd9;
+  --vp-c-brand-2: #d470c4;
+  --vp-c-brand-3: #c05aaf;
+  --vp-c-brand-soft: rgba(232, 139, 217, 0.14);
+
+  --vp-c-bg: #1a1a2e;
+  --vp-c-bg-soft: #16213e;
+  --vp-c-bg-mute: #1f2b47;
+
+  --vp-code-block-bg: #16213e;
+}
+
+/* Logo styling */
+.VPNavBarTitle .logo {
+  border-radius: 50%;
+}
+
+/* Feature card hover effect */
+.VPFeature {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.VPFeature:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(217, 102, 198, 0.15);
+}
+
+/* Custom badge styling */
+.VPBadge {
+  font-weight: 600;
+}

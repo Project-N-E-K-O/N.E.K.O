@@ -115,6 +115,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = True
                 asyncio.create_task(session_manager[lanlan_name].end_session())
 
+            elif action == "screenshot_response":
+                raw = message.get("data", "")
+                b64 = raw.split(",", 1)[1] if "," in raw else raw
+                session_manager[lanlan_name].resolve_screenshot_request(b64)
+
             elif action == "ping":
                 # 心跳保活消息，回复pong
                 await websocket.send_text(json.dumps({"type": "pong"}))

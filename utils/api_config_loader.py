@@ -133,6 +133,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'correction_model': 'CORRECTION_MODEL',
         'emotion_model': 'EMOTION_MODEL',
         'vision_model': 'VISION_MODEL',
+        'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
         'is_free_version': 'IS_FREE_VERSION',

@@ -1,8 +1,8 @@
 <div align="center">
 
-![ロゴ](../assets/neko_logo.jpg)
+![ロゴ](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
-[中文](../README.MD) | [English](README_en.md)
+[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [English](README_en.md)
 
 # Project N.E.K.O. :kissing_cat: <br>**あなたと私が共に築く「生きた」AI伴侶メタバース**
 
@@ -11,12 +11,13 @@
 > N.E.K.O.は、理解を求め、繋がりを築き、私たちと共に成長するデジタル生命です。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](../LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)]()
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
 [![QQグループ](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
+[![Docs](https://img.shields.io/badge/📖_開発者ドキュメント-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
 
 **:older_woman: ゼロコンフィグで即座に使える、おばあちゃんでも使いこなせるサイバー猫娘！**
 
@@ -82,9 +83,9 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 QQグループ：1022939659
 
-# クイックスタート（Windowsユーザー）
+# クイックスタート（Windowsユーザー、Macbookユーザー）
 
-*ワンクリックパッケージユーザー*の場合、解凍後に`N.E.K.O.exe`を実行するだけで起動できます。
+*ワンクリックパッケージユーザー*の場合、解凍後に`N.E.K.O.exe`または`N.E.K.O.app`を実行するだけで起動できます。（Macbookユーザーはシステム隔離を手動で解除する必要があります）
 
 ## Dockerデプロイ（Linuxユーザー）
 
@@ -111,7 +112,6 @@ services:
       - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
       - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
       - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
 
       # API Providers
       - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
@@ -146,38 +146,6 @@ networks:
     driver: bridge
 ```
 
-#### コアAPI設定
-
-| 環境変数 | 説明 | デフォルト | 例 |
-|---------|------|-----------|-----|
-| `NEKO_CORE_API_KEY` | コアAPI Key（必須） | - | `sk-xxxxx` |
-| `NEKO_CORE_API` | コアAPIプロバイダー | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
-| `NEKO_ASSIST_API` | 補助APIプロバイダー | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
-| `NEKO_ASSIST_API_KEY_QWEN` | Alibaba Cloud API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_GLM` | Zhipu API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_STEP` | StepFun API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_SILICON` | SiliconFlow API Key | - | `xxxxx` |
-| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
-
-#### サーバーポート設定（変更しないでください！）
-
-| 環境変数 | 説明 | デフォルト |
-|---------|------|-----------|
-| `NEKO_MAIN_SERVER_PORT` | メインサーバーポート | `48911` |
-| `NEKO_MEMORY_SERVER_PORT` | メモリサーバーポート | `48912` |
-| `NEKO_MONITOR_SERVER_PORT` | モニターサーバーポート | `48913` |
-| `NEKO_TOOL_SERVER_PORT` | ツールサーバーポート | `48915` |
-
-#### モデル設定（上級）
-
-| 環境変数 | 説明 | デフォルト |
-|---------|------|-----------|
-| `NEKO_SUMMARY_MODEL` | 要約モデル | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | 校正モデル | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | 感情分析モデル | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | 視覚モデル | `qwen3-vl-plus-2025-09-23` |
-
 **注：** 現在のDockerデプロイソリューションは *HINS* により提供されています
 
 # 上級使用
@@ -194,7 +162,7 @@ networks:
 
 - ウェブ版で`http://localhost:48911/chara_manager`にアクセスするとキャラクター編集ページに入れます。初期の~~猫娘~~伴侶のプリセット名は`小天`（XiaoTian）です。名前を直接変更し、基本設定を一つずつ追加または変更することをお勧めしますが、数量は制限してください。
 
-- 上級設定には主に**Live2Dモデル設定(live2d)**と**音声設定(voice_id)**が含まれます。**Live2Dモデル**を変更したい場合は、まずモデルディレクトリを本プロジェクトの`static`フォルダにコピーしてください。上級設定からLive2Dモデル管理画面に入り、モデルを切り替え、ドラッグとマウスホイールでモデルの位置とサイズを調整できます。**キャラクター音声**を変更したい場合は、約15秒の連続したクリーンな音声録音を準備してください。上級設定から音声設定ページに入り、録音をアップロードするとカスタム音声の設定が完了します。
+- 上級設定には主に**Live2Dモデル設定(live2d)**と**音声設定(voice_id)**が含まれます。**Live2Dモデル**を変更したい場合は、まずモデルディレクトリを本プロジェクトの`static`フォルダにコピーしてください。上級設定からLive2Dモデル管理画面に入り、モデルを切り替え、ドラッグとマウスホイールでモデルの位置とサイズを調整できます。**キャラクター音声**を変更したい場合は、約5秒の連続したクリーンな音声録音を準備してください。上級設定から音声設定ページに入り、録音をアップロードするとカスタム音声の設定が完了します。
 
 - 上級設定にはさらに`system_prompt`があり、システム命令を完全にカスタマイズできますが、変更は推奨されません。
 
@@ -237,7 +205,7 @@ N.E.K.O/
 
 **データフロー**
 
-![Framework](../assets/framework.drawio.svg)
+![Framework](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/framework.drawio.svg)
 
 ### 開発への参加
 

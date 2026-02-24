@@ -15,23 +15,28 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
+from utils.logger_config import setup_logging, ThrottledLogger
+
+# Configure logging as early as possible so import-time failures are persisted.
+logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
+
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
-from brain.planner import TaskPlanner
-from brain.analyzer import ConversationAnalyzer
-from brain.computer_use import ComputerUseAdapter
-from brain.browser_use_adapter import BrowserUseAdapter
-from brain.deduper import TaskDeduper
-from brain.task_executor import DirectTaskExecutor
-from brain.agent_session import get_session_manager
 from utils.config_manager import get_config_manager
 from main_logic.agent_event_bus import AgentServerEventBridge
+try:
+    from brain.planner import TaskPlanner
+    from brain.analyzer import ConversationAnalyzer
+    from brain.computer_use import ComputerUseAdapter
+    from brain.browser_use_adapter import BrowserUseAdapter
+    from brain.deduper import TaskDeduper
+    from brain.task_executor import DirectTaskExecutor
+    from brain.agent_session import get_session_manager
+except Exception as e:
+    logger.exception(f"[Agent] Module import failed during startup: {e}")
+    raise
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
-
-# Configure logging
-from utils.logger_config import setup_logging, ThrottledLogger
-logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 
 class Modules:
@@ -52,7 +57,7 @@ class Modules:
     active_computer_use_task_id: Optional[str] = None
     active_computer_use_async_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
-    agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
+    agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
     # 使用统一的速率限制日志记录器（业务逻辑层面）
@@ -65,7 +70,6 @@ class Modules:
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "not checked"},
-        "mcp": {"ready": False, "reason": "not checked"},
         "browser_use": {"ready": False, "reason": "not checked"},
         "user_plugin": {"ready": False, "reason": "not checked"},
     }
@@ -160,6 +164,7 @@ async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> t
         res = await Modules.deduper.judge(query, candidates)
         return bool(res.get("duplicate")), res.get("matched_id")
     except Exception as e:
+        logger.warning(f"[Agent] Deduper judge failed: {e}")
         return False, None
 
 
@@ -256,10 +261,11 @@ async def _emit_task_result(
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
     try:
-        ok, reasons = get_config_manager().is_agent_api_ready()
-        return {"ready": ok, "reasons": reasons}
+        cm = get_config_manager()
+        ok, reasons = cm.is_agent_api_ready()
+        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
     except Exception as e:
-        return {"ready": False, "reasons": [f"Agent API check failed: {e}"]}
+        return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
@@ -364,6 +370,9 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
         logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
+        if not Modules.analyzer_enabled:
+            logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
+            return
         if event_id:
             ack_task = asyncio.create_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
             Modules._background_tasks.add(ack_task)
@@ -517,24 +526,26 @@ async def _run_computer_use_task(
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
-    # Initialize queue if missing
     if Modules.computer_use_queue is None:
         Modules.computer_use_queue = asyncio.Queue()
     while True:
         try:
             await asyncio.sleep(0.05)
-            # If a task is running, wait until _run_computer_use_task marks it done
             if Modules.computer_use_running:
                 continue
-            # No active task: try to dequeue next
             if Modules.computer_use_queue.empty():
                 continue
+            if not Modules.analyzer_enabled or not Modules.agent_flags.get("computer_use_enabled", False):
+                while not Modules.computer_use_queue.empty():
+                    try:
+                        Modules.computer_use_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                continue
             next_task = await Modules.computer_use_queue.get()
-            # Validate registry presence
             tid = next_task.get("task_id")
             if not tid or tid not in Modules.task_registry:
                 continue
-            # Run task in thread pool (non-blocking for the scheduler)
             Modules.active_computer_use_async_task = asyncio.create_task(_run_computer_use_task(
                 tid, next_task.get("instruction", ""),
             ))
@@ -570,6 +581,9 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
 async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
     """Inner implementation, always called under analyze_lock."""
     try:
+        if not Modules.analyzer_enabled:
+            logger.info("[TaskExecutor] Skipping analysis: analyzer disabled (master switch off)")
+            return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
         # testUserPlugin: log before analysis when user_plugin_enabled is true
@@ -608,11 +622,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             pass
 
         if result is None:
-            # 没有检测到任务
             return
         
         if not result.has_task:
-            logger.debug(f"[TaskExecutor] No actionable task found")
+            logger.debug("[TaskExecutor] No actionable task found")
+            return
+
+        if not Modules.analyzer_enabled:
+            logger.info("[TaskExecutor] Skipping dispatch: analyzer disabled during analysis")
             return
         
         logger.info(f"[TaskExecutor] Task: {result.task_description}, method: {result.execution_method}")
@@ -686,7 +703,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning(f"[ComputerUse] Task requires ComputerUse but it's disabled")
+                logger.warning("[ComputerUse] Task requires ComputerUse but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 # Session management for multi-turn browser tasks
@@ -798,12 +815,6 @@ async def startup():
     except Exception:
         _set_capability("browser_use", False, "Browser Use check failed")
     
-    # Warm up router discovery
-    try:
-        await Modules.task_executor.refresh_capabilities()
-    except Exception:
-        pass
-
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
             url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
@@ -851,7 +862,13 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "agent_flags": Modules.agent_flags}
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response(
+        "agent",
+        instance_id=INSTANCE_ID,
+        extra={"agent_flags": Modules.agent_flags},
+    )
 
 
 # 插件直接触发路由（放在顶层，确保不在其它函数体内）
@@ -950,13 +967,7 @@ async def get_task(task_id: str):
 
 @app.get("/capabilities")
 async def capabilities():
-    if not Modules.planner:
-        raise HTTPException(503, "Planner not ready")
-    try:
-        caps = await Modules.planner.refresh_capabilities()
-        return {"success": True, "capabilities": caps}
-    except Exception as e:
-        return JSONResponse(content={"success": False, "capabilities": {}, "error": str(e)})
+    return {"success": True, "capabilities": {}}
 
 
 @app.get("/agent/flags")
@@ -986,7 +997,6 @@ async def get_agent_state():
 @app.post("/agent/flags")
 async def set_agent_flags(payload: Dict[str, Any]):
     lanlan_name = (payload or {}).get("lanlan_name")
-    mf = (payload or {}).get("mcp_enabled")
     cf = (payload or {}).get("computer_use_enabled")
     bf = (payload or {}).get("browser_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
@@ -995,8 +1005,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
-    if gate.get("ready") is not True and any(x is True for x in (mf, cf, bf, uf)):
-        Modules.agent_flags["mcp_enabled"] = False
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf)):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
@@ -1007,35 +1016,8 @@ async def set_agent_flags(payload: Dict[str, Any]):
         return {"success": True, "agent_flags": Modules.agent_flags}
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
-    
-    # 1. Handle MCP Flag with Capability Check
-    if isinstance(mf, bool):
-        if mf: # Attempting to enable
-            if not Modules.planner:
-                Modules.agent_flags["mcp_enabled"] = False
-                Modules.notification = "无法开启 MCP: Planner 未就绪"
-                logger.warning("[Agent] Cannot enable MCP: Planner not ready")
-            else:
-                try:
-                    # Check actual availability
-                    caps = await Modules.planner.refresh_capabilities(force_refresh=False)
-                    if caps:
-                        _set_capability("mcp", True, "")
-                        Modules.agent_flags["mcp_enabled"] = True
-                    else:
-                        _set_capability("mcp", False, "MCP router unreachable or no servers discovered")
-                        Modules.agent_flags["mcp_enabled"] = False
-                        Modules.notification = "无法开启 MCP: 未发现可用工具或 Router 未连接"
-                        logger.warning("[Agent] Cannot enable MCP: No capabilities found")
-                except Exception as e:
-                    _set_capability("mcp", False, str(e))
-                    Modules.agent_flags["mcp_enabled"] = False
-                    Modules.notification = f"开启 MCP 失败: {str(e)}"
-                    logger.error(f"[Agent] Cannot enable MCP: Check failed {e}")
-        else: # Disabling
-            Modules.agent_flags["mcp_enabled"] = False
 
-    # 2. Handle Computer Use Flag with Capability Check
+    # 1. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
         if cf: # Attempting to enable
             # If startup happened before API config was ready, try self-heal once.
@@ -1148,7 +1130,6 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
-            Modules.agent_flags["mcp_enabled"] = False
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
@@ -1161,7 +1142,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"mcp_enabled", "computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})
@@ -1264,44 +1245,7 @@ async def browser_use_run(payload: Dict[str, Any]):
 
 @app.get("/mcp/availability")
 async def mcp_availability():
-    gate = _check_agent_api_gate()
-    if gate.get("ready") is not True:
-        return {"ready": False, "capabilities_count": 0, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    if not Modules.planner:
-        # Auto-update flag if planner missing
-        if Modules.agent_flags.get("mcp_enabled"):
-            Modules.agent_flags["mcp_enabled"] = False
-            Modules.notification = "Planner 模块未就绪，MCP 已自动关闭"
-        raise HTTPException(503, "Planner not ready")
-    try:
-        # 使用缓存检查可用性，避免每次都请求 MCP Router（缓存 TTL 10秒）
-        caps = await Modules.planner.refresh_capabilities(force_refresh=False)
-        count = len(caps or {})
-        ready = count > 0
-        reasons = [] if ready else ["MCP router unreachable or no servers discovered"]
-        _set_capability("mcp", ready, reasons[0] if reasons else "")
-        
-        # Auto-update flag if capability lost
-        if not ready and Modules.agent_flags.get("mcp_enabled"):
-            logger.info("[Agent] MCP capability lost, disabling flag")
-            Modules.agent_flags["mcp_enabled"] = False
-            Modules.notification = "MCP 服务连接断开，已自动关闭"
-        
-        # 使用统一的速率限制日志记录器
-        if Modules.throttled_logger is None:
-            Modules.throttled_logger = ThrottledLogger(logger, interval=15.0)
-        
-        # Log MCP availability check (throttled)
-        Modules.throttled_logger.info(
-            "mcp_availability", 
-            f"[MCP] Availability check - Found {count} capabilities, ready: {ready}"
-        )
-        
-        return {"ready": ready, "capabilities_count": count, "reasons": reasons}
-    except Exception as e:
-        logger.error(f"[MCP] Availability check failed: {e}")
-        _set_capability("mcp", False, str(e))
-        return {"ready": False, "capabilities_count": 0, "reasons": [str(e)]}
+    return {"ready": False, "capabilities_count": 0, "reasons": ["MCP 已移除"]}
 
 
 @app.get("/tasks")
@@ -1404,6 +1348,24 @@ async def admin_control(payload: Dict[str, Any]):
             if Modules.computer_use_queue is not None:
                 while not Modules.computer_use_queue.empty():
                     await Modules.computer_use_queue.get()
+        except Exception:
+            pass
+        # Discard browser-use agents/overlay but keep the browser window for user inspection
+        try:
+            if Modules.browser_use:
+                Modules.browser_use._stop_overlay()
+                Modules.browser_use._agents.clear()
+                try:
+                    if Modules.browser_use._browser_session is not None:
+                        await Modules.browser_use._remove_overlay(Modules.browser_use._browser_session)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+        # Reset computer-use step history so stale context is cleared
+        try:
+            if Modules.computer_use:
+                Modules.computer_use.reset()
         except Exception:
             pass
         return {"success": True, "message": "all tasks terminated and cleared"}
