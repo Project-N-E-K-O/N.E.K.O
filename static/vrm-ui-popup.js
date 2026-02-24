@@ -1014,6 +1014,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
         border: '0'
     });
     checkbox.setAttribute('aria-hidden', 'true');
+    checkbox.setAttribute('tabindex', '-1');
 
     if (toggle.id === 'merge-messages') {
         if (typeof window.mergeMessagesEnabled !== 'undefined') {
@@ -1143,6 +1144,10 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     };
 
     const performToggle = () => {
+        if (checkbox.disabled) {
+            return;
+        }
+
         if (checkbox._processing) {
             const elapsed = Date.now() - (checkbox._processingTime || 0);
             if (elapsed < 500) {
@@ -1156,6 +1161,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
         handleToggleChange(newChecked);
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
 
         setTimeout(() => {
             checkbox._processing = false;
