@@ -675,12 +675,39 @@ class BrowserUseAdapter:
 
             try:
                 await asyncio.wait_for(self._browser_session.stop(), timeout=10)
-            except Exception:
-                pass
+            except asyncio.TimeoutError:
+                logger.warning("[BrowserUse] _browser_session.stop() timed out after 10s")
+                self._force_kill_browser(browser_pid)
+            except Exception as exc:
+                logger.warning("[BrowserUse] _browser_session.stop() raised: %s", exc)
+                self._force_kill_browser(browser_pid)
 
             self._browser_session = None
         self._session_ever_started = False
         self._agents.clear()
+
+    @staticmethod
+    def _force_kill_browser(browser_pid: Optional[int]) -> None:
+        """Force-kill a browser process tree by PID when graceful .stop() fails."""
+        if browser_pid is None:
+            return
+        import signal
+        try:
+            import psutil
+            parent = psutil.Process(browser_pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            parent.kill()
+            logger.info("[BrowserUse] force-killed browser tree (pid=%d) via psutil", browser_pid)
+        except Exception:
+            try:
+                os.kill(browser_pid, signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM)
+                logger.info("[BrowserUse] force-killed browser pid=%d via os.kill", browser_pid)
+            except (OSError, PermissionError) as e:
+                logger.warning("[BrowserUse] failed to kill browser pid=%d: %s", browser_pid, e)
 
     async def close(self) -> None:
         """Graceful shutdown."""

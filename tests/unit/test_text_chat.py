@@ -1,8 +1,9 @@
+import asyncio
 import pytest
 import os
 import logging
-from unittest.mock import AsyncMock
 import base64
+from unittest.mock import AsyncMock
 
 # Adjust path to import project modules
 import sys
@@ -40,10 +41,15 @@ def create_offline_client():
     if not api_key:
         raise OfflineClientError(f"API key for {provider} not found.")
 
+    base_url = profile.get('OPENROUTER_URL')
+    model = profile.get('CORRECTION_MODEL')
+    if not base_url or not model:
+        raise OfflineClientError("Profile missing OPENROUTER_URL or CORRECTION_MODEL.")
+
     return OmniOfflineClient(
-        base_url=profile['OPENROUTER_URL'],
+        base_url=base_url,
         api_key=api_key,
-        model=profile['CORRECTION_MODEL'],
+        model=model,
         vision_model=profile.get('VISION_MODEL', ''),
         vision_base_url=profile.get('VISION_BASE_URL', ''),
         vision_api_key=profile.get('VISION_API_KEY', ''),
@@ -51,9 +57,6 @@ def create_offline_client():
         on_response_done=AsyncMock()
     )
 
-
-# Dummy 1x1 pixel PNG image in base64
-DUMMY_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKwjwAAAAABJRU5ErkJggg=="
 
 # 10-round conversation prompts — designed to test context retention & natural flow
 MULTI_TURN_PROMPTS = [
@@ -74,9 +77,13 @@ MULTI_TURN_PROMPTS = [
 def offline_client():
     """Returns an OmniOfflineClient instance configured with Qwen (default). Skips test if creation fails."""
     try:
-        return create_offline_client()
+        client = create_offline_client()
     except OfflineClientError as e:
         pytest.skip(str(e))
+    try:
+        yield client
+    finally:
+        asyncio.run(client.close())
 
 @pytest.mark.unit
 async def test_simple_text_chat(offline_client, llm_judger):
