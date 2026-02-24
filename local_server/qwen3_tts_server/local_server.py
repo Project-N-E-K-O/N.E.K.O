@@ -192,11 +192,17 @@ class QwenLocalServer:
             ):
                 return self.cached_prompt, self.voice_version
 
-            if desired_path in self.prompt_cache:
-                self.cached_prompt = self.prompt_cache[desired_path]
+            cached = self.prompt_cache.get(desired_path)
+            if cached is not None:
+                cached_mtime, cached_prompt = cached
+                if cached_mtime == mtime:
+                    self.cached_prompt = cached_prompt
+                else:
+                    self.cached_prompt = self._load_prompt_from_pt(desired_path)
+                    self.prompt_cache[desired_path] = (mtime, self.cached_prompt)
             else:
                 self.cached_prompt = self._load_prompt_from_pt(desired_path)
-                self.prompt_cache[desired_path] = self.cached_prompt
+                self.prompt_cache[desired_path] = (mtime, self.cached_prompt)
 
             self.active_voice_path = desired_path
             self.active_voice_mtime = mtime
@@ -268,7 +274,8 @@ class QwenLocalServer:
         logger.info("👷 智能拼句队列服务已启动")
         while True:
             task = self.task_queue.get()
-            if task is None: break
+            if task is None:
+                break
 
             full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language = task
 
@@ -281,7 +288,8 @@ class QwenLocalServer:
 
     def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event, prompt_snapshot, language):
         try:
-            if not self.model or prompt_snapshot is None: return
+            if not self.model or prompt_snapshot is None:
+                return
 
             start_time = time.time()
 
@@ -343,12 +351,14 @@ class QwenLocalServer:
                             first_chunk_emit_every=4,
                             overlap_samples=512,
                         ):
-                            if cancel_event.is_set(): break
+                            if cancel_event.is_set():
+                                break
                             if pcm_chunk is not None:
                                 # 兼容魔改库返回元组的格式
                                 audio_raw = pcm_chunk[0] if isinstance(pcm_chunk, (tuple, list)) else pcm_chunk
                                 audio_data = np.asarray(audio_raw).flatten()
-                                if len(audio_data) == 0: continue
+                                if len(audio_data) == 0:
+                                    continue
 
                                 # 累加采样的点数
                                 total_samples += len(audio_data)
@@ -394,7 +404,8 @@ class QwenLocalServer:
 
                 chunk_size = self.chunk_size
                 for i in range(0, len(audio_int16), chunk_size):
-                    if cancel_event.is_set(): break
+                    if cancel_event.is_set():
+                        break
                     chunk = audio_int16[i:i + chunk_size].tobytes()
                     loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
 
@@ -424,7 +435,7 @@ class QwenLocalServer:
             while not audio_queue.empty():
                 try:
                     audio_queue.get_nowait()
-                except:
+                except Exception:
                     break
             if not keep_buffer:
                 sentence_buffer = ""
@@ -451,10 +462,11 @@ class QwenLocalServer:
             await websocket.send(json.dumps({"type": "ready"}))
 
             async for message in websocket:
-                if isinstance(message, bytes): continue
+                if isinstance(message, bytes):
+                    continue
                 try:
                     data = json.loads(message)
-                except:
+                except Exception:
                     continue
 
                 msg_type = data.get("type")

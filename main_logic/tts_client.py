@@ -1597,6 +1597,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         ws = None
         receive_task = None
         current_speech_id = None
+        response_done_event = asyncio.Event()
 
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
@@ -1791,6 +1792,9 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
                         except Exception as e:
                             logger.debug(f"local_qwen3 parse message error:{e}")
                             continue
+                        if evt.get("type") == "response.done":
+                            response_done_event.set()
+                            continue
                         if evt.get("type") == "audio.meta":
                             sr = int(evt.get("sample_rate", src_rate))
                             if sr != src_rate:
@@ -1820,51 +1824,62 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
                 try:
                     await ws.send(json.dumps({
                         "type": "session.update",
-                        "language": "Chinese"
-                    }))
-                except:
-                    pass
+                        "voice_pt_path": voice_pt_path,
+                        "language": "Chinese",
+                    }, ensure_ascii=False))
+                except Exception as e:
+                    logger.debug(f"local_qwen3 session.update failed: {e}")
 
                 return ws
             except Exception as e:
                 logger.error(f"连接 TTS 服务失败: {e}")
-                raise e
+                raise
 
-        async def close_connection():
-            """清理当前连接"""
+        async def _cleanup_ws():
+            """关闭 ws 并停止接收任务（用于重连/退出清理）"""
             nonlocal ws, receive_task
-            ws = await websockets.connect(WS_URL, ping_interval=None, max_size=None)
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+            receive_task = None
 
-            # session.update
-            await ws.send(json.dumps({
-                "type": "session.update",
-                "voice_pt_path": voice_pt_path,
-                "language": "Chinese",
-            }, ensure_ascii=False))
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            ws = None
 
-            receive_task = asyncio.create_task(receive_loop(ws))
-            return ws
+        async def reconnect():
+            """cancel/切换 speech 后重连，避免服务端/接收 loop 状态脏掉"""
+            await _cleanup_ws()
+            await connect()
 
         async def send_cancel():
             if ws:
                 try:
                     await ws.send(json.dumps({"type": "cancel"}))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"local_qwen3 send_cancel failed: {e}")
 
         async def send_append(txt: str):
             if ws and txt:
                 try:
                     await ws.send(json.dumps({"type": "input_text_buffer.append", "text": txt}, ensure_ascii=False))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"local_qwen3 send_append failed: {e}")
 
         async def send_commit():
             if ws:
                 try:
                     await ws.send(json.dumps({"type": "input_text_buffer.commit"}))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"local_qwen3 send_commit failed: {e}")
 
         # init connect
         try:
@@ -1878,46 +1893,57 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
 
         loop = asyncio.get_running_loop()
 
-        while True:
-            try:
-                sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-            except Exception:
-                break
+        try:
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
 
-            # end signal from N.E.K.O
-            if sid is None:
-                if text_buf.strip():
+                # end signal from N.E.K.O
+                if sid is None:
+                    if text_buf.strip():
+                        response_done_event.clear()
+                        await send_append(text_buf)
+                        await send_commit()
+                        text_buf = ""
+                        try:
+                            await asyncio.wait_for(response_done_event.wait(), timeout=10.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("local_qwen3 wait response.done timeout")
+                    current_speech_id = None
+                    continue
+
+                # speech_id changed -> cancel old
+                if current_speech_id is not None and sid != current_speech_id:
+                    await send_cancel()
+                    try:
+                        await reconnect()
+                    except Exception as e:
+                        logger.error(f"local_qwen3 reconnect failed: {e}")
+                    text_buf = ""
+                    resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
+
+                if current_speech_id != sid:
+                    current_speech_id = sid
+
+                if not tts_text or not tts_text.strip():
+                    continue
+
+                text_buf += tts_text
+
+                should_commit = False
+                if len(text_buf) >= COMMIT_CHARS:
+                    should_commit = True
+                elif any(p in tts_text for p in COMMIT_PUNCS):
+                    should_commit = True
+
+                if should_commit:
                     await send_append(text_buf)
                     await send_commit()
                     text_buf = ""
-
-                current_speech_id = None
-                continue
-
-            # speech_id changed -> cancel old
-            if current_speech_id is not None and sid != current_speech_id:
-                await send_cancel()
-                text_buf = ""
-                resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
-
-            if current_speech_id != sid:
-                current_speech_id = sid
-
-            if not tts_text or not tts_text.strip():
-                continue
-
-            text_buf += tts_text
-
-            should_commit = False
-            if len(text_buf) >= COMMIT_CHARS:
-                should_commit = True
-            elif any(p in tts_text for p in COMMIT_PUNCS):
-                should_commit = True
-
-            if should_commit:
-                await send_append(text_buf)
-                await send_commit()
-                text_buf = ""
+        finally:
+            await _cleanup_ws()
 
     try:
         asyncio.run(async_worker())
