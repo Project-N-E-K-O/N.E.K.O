@@ -1755,9 +1755,7 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
     # voice_id 可扩展成选择不同 pt/不同 ref
     # 这里先做最小可用：固定使用你 advanced_demo 的缓存文件
     # CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    voice_pt_path = os.path.join(os.path.dirname(__file__), "..", "local_server", "qwen3_tts_server", "nyaning_voice.pt")
-    # voice_pt_path = os.path.abspath(voice_pt_path)
-
+    voice_pt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "local_server", "qwen3_tts_server", "nyaning_voice.pt"))
     # 目标采样率：前端 PCM 默认按 48k 播
     DST_RATE = 48000
 

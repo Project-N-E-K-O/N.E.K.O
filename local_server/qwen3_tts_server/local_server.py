@@ -13,7 +13,7 @@ import numpy as np
 import re
 from pathlib import Path
 
-ENABLE_TRUE_STREAMING = True
+ENABLE_TRUE_STREAMING = False
 # ========================================================
 # 1. 初始化 Logging
 # ========================================================
@@ -60,7 +60,7 @@ class QwenLocalServer:
         buffer_fallback_chars=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt") # 注意 这里的nyaning_voice 是测试用音声的音色 hidden2048 适配1.7B
+        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "06B_arona.pt") # 注意 这里的nyaning_voice 是测试用音声的音色 hidden2048 适配1.7B
         self.model = None
         self.model_hidden_size = None
         self.cached_prompt = None
@@ -545,8 +545,8 @@ async def main():
         repo_root = None
 
 
-    model_path = tts_custom.get("model_path") or "/home/amadeus/models/qwen3_tts" # [旧的 1.7B 路径]
-    # model_path = tts_custom.get("model_path") or "/home/amadeus/models/Qwen3-TTS-12Hz-0.6B-Base" # 0.6B 路径 按需更改 这里是硬编码
+    # model_path = tts_custom.get("model_path") or "/home/amadeus/models/qwen3_tts" # [旧的 1.7B 路径]
+    model_path = tts_custom.get("model_path") or "/home/amadeus/models/Qwen3-TTS-12Hz-0.6B-Base" # 0.6B 路径 按需更改 这里是硬编码
     host = tts_custom.get("host") or "127.0.0.1"
     port = int(tts_custom.get("port") or 8765)
 
