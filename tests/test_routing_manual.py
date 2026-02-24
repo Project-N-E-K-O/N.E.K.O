@@ -45,7 +45,6 @@ def _make_messages(user_text: str):
 
 
 ALL_ENABLED = {
-    "mcp_enabled": False,
     "computer_use_enabled": True,
     "browser_use_enabled": True,
     "user_plugin_enabled": False,

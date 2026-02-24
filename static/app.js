@@ -789,6 +789,7 @@ function init_app() {
                     const msg = typeof response.text === 'string' ? response.text : '';
                     if (msg) {
                         setFloatingAgentStatus(msg, response.status || 'completed');
+                        maybeShowAgentQuotaExceededModal(msg);
                     }
                 } else if (response.type === 'agent_task_update') {
                     try {
@@ -809,6 +810,12 @@ function init_app() {
                                 failed_count: tasks.filter(t => t.status === 'failed').length,
                                 timestamp: new Date().toISOString()
                             });
+                        }
+                        if (task && task.status === 'failed') {
+                            const errMsg = task.error || task.reason || '';
+                            if (errMsg) {
+                                maybeShowAgentQuotaExceededModal(errMsg);
+                            }
                         }
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
@@ -954,6 +961,21 @@ function init_app() {
                     // Reject Promise 让等待的代码能处理失败情况，避免 Promise 永远 pending
                     if (sessionStartedRejecter) {
                         sessionStartedRejecter(new Error(response.message || (window.t ? window.t('app.sessionFailed') : 'Session启动失败')));
+                    } else {
+                        // 兜底：如果 Promise 已被消费（超时或其他原因），直接重置 UI 状态
+                        micButton.classList.remove('active');
+                        micButton.classList.remove('recording');
+                        micButton.disabled = false;
+                        muteButton.disabled = true;
+                        screenButton.disabled = true;
+                        stopButton.disabled = true;
+                        resetSessionButton.disabled = false;
+                        syncFloatingMicButtonState(false);
+                        syncFloatingScreenButtonState(false);
+                        window.isMicStarting = false;
+                        isSwitchingMode = false;
+                        const _textInputArea = document.getElementById('text-input-area');
+                        if (_textInputArea) _textInputArea.classList.remove('hidden');
                     }
                     sessionStartedResolver = null;
                     sessionStartedRejecter = null;
@@ -1778,10 +1800,17 @@ function init_app() {
             const s = normalizeGeminiText(buffer);
             let start = 0;
 
+            const isPunctForBoundary = (ch) => {
+                return ch === '。' || ch === '！' || ch === '？' || ch === '!' || ch === '?' || ch === '.' || ch === '…';
+            };
+
             const isBoundary = (ch, next) => {
                 if (ch === '\n') return true;
+                // 连续标点只在最后一个标点处分段，避免 "！？"、"..." 被拆开
+                if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
                 if (ch === '。' || ch === '！' || ch === '？') return true;
                 if (ch === '!' || ch === '?') return true;
+                if (ch === '…') return true;
                 if (ch === '.') {
                     // 英文句点：尽量避免把小数/缩写切断，要求后面是空白/换行/结束/常见结束符
                     if (!next) return true;
@@ -3319,8 +3348,16 @@ function init_app() {
             // 隐藏准备提示
             hideVoicePreparingToast();
 
+            // 停止可能已启动的录音（startMicCapture 与 session 并行，可能已经开始）
+            stopRecording();
+
             // 失败时：移除激活状态（按钮变暗），恢复按钮（允许再次点击）
             micButton.classList.remove('active');
+            micButton.classList.remove('recording');
+
+            // 重置录音标志
+            isRecording = false;
+            window.isRecording = false;
 
             // 同步更新浮动按钮状态，确保浮动按钮也变灰
             syncFloatingMicButtonState(false);
@@ -4919,31 +4956,27 @@ function init_app() {
 
     // 连接浮动按钮到原有功能
 
-    // 麦克风按钮（toggle模式）
-    // 麦克风按钮（toggle模式）
+    // 麦克风按钮（toggle模式） — Live2D / VRM 浮动按钮共用
     window.addEventListener('live2d-mic-toggle', async (e) => {
         if (e.detail.active) {
-            // 想要开启语音：如果已经在录音，直接返回
             if (window.isRecording) {
                 return;
             }
-            // 开始语音
+            // 如果没有活跃的语音会话，走完整的 session 启动流程（与主面板按钮一致）
+            if (!micButton.classList.contains('active')) {
+                micButton.click();
+                return;
+            }
+            // 会话已建立（按钮 active），仅恢复麦克风采集（mute → unmute）
             if (typeof startMicCapture === 'function') {
                 await startMicCapture();
-            } else {
-                console.error('startMicCapture function not found');
             }
         } else {
-            // 想要关闭语音
-            // 如果已经停止录音，直接返回
             if (!window.isRecording) {
                 return;
             }
-            // 关闭语音
             if (typeof stopMicCapture === 'function') {
                 await stopMicCapture();
-            } else {
-                console.error('stopMicCapture function not found');
             }
         }
     });
@@ -6130,6 +6163,41 @@ function init_app() {
         });
     }
 
+    let _agentQuotaModalOpen = false;
+    let _agentQuotaModalCooldownUntil = 0;
+
+    function _isAgentQuotaExceededMessage(text) {
+        if (!text) return false;
+        const s = String(text).toLowerCase();
+        return (
+            s.includes('免费 agent 模型今日试用次数已达上限') ||
+            s.includes('agent quota exceeded') ||
+            (s.includes('agent') && s.includes('上限') && s.includes('试用'))
+        );
+    }
+
+    function maybeShowAgentQuotaExceededModal(rawMessage) {
+        if (!_isAgentQuotaExceededMessage(rawMessage)) return;
+        if (typeof window.showAlert !== 'function') return;
+
+        const now = Date.now();
+        if (_agentQuotaModalOpen || now < _agentQuotaModalCooldownUntil) return;
+
+        _agentQuotaModalOpen = true;
+        _agentQuotaModalCooldownUntil = now + 3000;
+
+        const title = window.t ? window.t('common.alert') : '提示';
+        const msg = window.t
+            ? window.t('agent.quotaExceeded', { limit: 300 })
+            : '免费 Agent 模型今日试用次数已达上限（300次），请明日再试。';
+
+        Promise.resolve(window.showAlert(msg, title))
+            .catch(() => { /* ignore */ })
+            .finally(() => {
+                _agentQuotaModalOpen = false;
+            });
+    }
+
     // 检查Agent服务器健康状态
     async function checkToolServerHealth() {
         // 兼容服务启动竞态：首次失败时做短重试，避免必须手动刷新。
@@ -6151,7 +6219,6 @@ function init_app() {
     async function checkCapability(kind, showError = true) {
         const apis = {
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
-            mcp: { url: '/api/agent/mcp/availability', nameKey: 'mcpTools' },
             user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' }
         };
         const config = apis[kind];
@@ -6416,6 +6483,7 @@ function init_app() {
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
+                        const flagsResult = await r.json();
 
                         if (isExpired()) {
                             console.log('[App] flags API 完成后操作已过期');
@@ -6440,34 +6508,6 @@ function init_app() {
 
                         // 启动定时检查器
                         window.startAgentAvailabilityCheck();
-
-                        // 免费模型警告：Agent 模式开启后检查是否为免费版
-                        try {
-                            const gateResp = await fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null);
-                            if (gateResp?.agent_api_gate?.is_free_version) {
-                                const msg = window.t ? window.t('agent.status.freeModelWarning') : '由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型';
-                                const warn = document.createElement('div');
-                                warn.textContent = msg;
-                                warn.style.cssText = `
-                                    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                                    z-index: 999999; max-width: 420px; padding: 20px 28px;
-                                    background: rgba(30, 30, 30, 0.92); color: #ffcc00;
-                                    border: 1.5px solid rgba(255, 204, 0, 0.5); border-radius: 12px;
-                                    font-size: 14px; line-height: 1.6; text-align: center;
-                                    backdrop-filter: blur(8px); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-                                    opacity: 0; transition: opacity 0.35s ease;
-                                    pointer-events: auto; cursor: pointer;
-                                `;
-                                document.body.appendChild(warn);
-                                requestAnimationFrame(() => { warn.style.opacity = '1'; });
-                                const dismiss = () => {
-                                    warn.style.opacity = '0';
-                                    setTimeout(() => warn.remove(), 350);
-                                };
-                                warn.addEventListener('click', dismiss);
-                                setTimeout(dismiss, 8000);
-                            }
-                        } catch (_) { }
                     } catch (e) {
                         if (isExpired()) return;
                         agentStateMachine.endOperation(false, true);
@@ -8703,6 +8743,16 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块调用
     window.saveNEKOSettings = saveSettings;
 
+    function _isUserRegionChina() {
+        try {
+            const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone || '').toLowerCase();
+            if (/^asia\/(shanghai|chongqing|urumqi|harbin|kashgar)$/.test(tz)) return true;
+            const lang = (navigator.language || '').toLowerCase();
+            if (lang === 'zh' || lang.startsWith('zh-cn') || lang.startsWith('zh-hans')) return true;
+        } catch (_) {}
+        return false;
+    }
+
     // 从localStorage加载设置
     function loadSettings() {
         try {
@@ -8794,7 +8844,12 @@ function init_app() {
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 如果没有保存的设置，也要确保全局变量被初始化
+                // 首次启动：检查用户地区，中国用户自动开启自主视觉
+                if (_isUserRegionChina()) {
+                    proactiveVisionEnabled = true;
+                    console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
+                }
+
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
                 window.proactiveVisionEnabled = proactiveVisionEnabled;
@@ -8808,6 +8863,9 @@ function init_app() {
                 window.proactiveVisionInterval = proactiveVisionInterval;
                 window.renderQuality = renderQuality;
                 window.targetFrameRate = targetFrameRate;
+
+                // 持久化首次启动设置，避免每次重新检测
+                saveSettings();
             }
         } catch (error) {
             console.error('加载设置失败:', error);

@@ -119,7 +119,6 @@ def test_agent_router_update_flags_has_safe_rollback_defaults():
         "agent_enabled",
         "computer_use_enabled",
         "browser_use_enabled",
-        "mcp_enabled",
         "user_plugin_enabled",
     }
 
@@ -171,18 +170,18 @@ def test_cross_server_analyze_request_no_http_fallback_endpoint():
     assert "/api/agent/internal/analyze_request" not in source
 
 
-def test_is_agent_api_ready_rejects_free_profile():
+def test_is_agent_api_ready_allows_free_profile():
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {"IS_FREE_VERSION": True}
     manager.get_model_api_config = lambda _model_type: {
-        "model": "agent-model",
-        "base_url": "https://example.invalid/v1",
-        "api_key": "sk-test",
+        "model": "free-agent-model",
+        "base_url": "https://lanlan.tech/text/v1",
+        "api_key": "free-access",
     }
 
     ready, reasons = manager.is_agent_api_ready()
-    assert ready is False
-    assert "free API 不支持 Agent 模式" in reasons
+    assert ready is True
+    assert len(reasons) == 0
 
 
 @pytest.mark.parametrize(

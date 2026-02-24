@@ -250,6 +250,12 @@ async def get_steam_language():
             print("=" * 60)
             
             logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+            # Write back to ConfigManager so URL adjustment uses the same result
+            try:
+                from utils.config_manager import ConfigManager
+                ConfigManager._region_cache = not is_mainland_china
+            except Exception:
+                pass
         except Exception as geo_error:
             print(f"[GeoIP API DEBUG] Exception: {geo_error}")
             logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
