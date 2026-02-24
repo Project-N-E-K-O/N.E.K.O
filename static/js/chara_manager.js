@@ -1546,6 +1546,30 @@ function showCatgirlForm(key, container) {
         if (!select) return;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+        const ensureGsvFallback = () => {
+            if (!currentVoiceId || !currentVoiceId.startsWith(GSV_PREFIX)) return;
+            if (select.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                select.value = currentVoiceId;
+                return;
+            }
+
+            let gsvGroup = select.querySelector('optgroup[data-gsv-group="true"]');
+            if (!gsvGroup) {
+                gsvGroup = document.createElement('optgroup');
+                const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                gsvGroup.label = '── ' + gsvLabel + ' ──';
+                gsvGroup.dataset.gsvGroup = 'true';
+                select.appendChild(gsvGroup);
+            }
+
+            const fallbackOpt = document.createElement('option');
+            fallbackOpt.value = currentVoiceId;
+            fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+            gsvGroup.appendChild(fallbackOpt);
+            select.value = currentVoiceId;
+        };
+
         try {
             const resp = await fetch('/api/characters/gptsovits_voices', { signal: controller.signal });
             clearTimeout(timeoutId);
@@ -1554,6 +1578,7 @@ function showCatgirlForm(key, container) {
                 const gsvGroup = document.createElement('optgroup');
                 const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
                 gsvGroup.label = '── ' + gsvLabel + ' ──';
+                gsvGroup.dataset.gsvGroup = 'true';
                 result.voices.forEach(v => {
                     const option = document.createElement('option');
                     option.value = v.voice_id;
@@ -1575,10 +1600,12 @@ function showCatgirlForm(key, container) {
                     select.value = currentVoiceId;
                 }
             }
+            ensureGsvFallback();
         } catch (e) {
             clearTimeout(timeoutId);
             // GPT-SoVITS 不可用时静默忽略
             console.debug('GPT-SoVITS voices not available:', e.message);
+            ensureGsvFallback();
         }
     }
 
@@ -2123,6 +2150,20 @@ window.addEventListener('message', function (event) {
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);
+                }
+
+                // 处理 GPT-SoVITS voice_id：若当前列表没有该 gsv: 选项，添加兜底项避免 select.value 失效
+                const hasVoiceOption = Array.from(select.options).some(opt => opt.value === voiceId);
+                if (voiceId.startsWith('gsv:') && !hasVoiceOption) {
+                    const gsvGroup = document.createElement('optgroup');
+                    const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                    gsvGroup.label = '── ' + gsvLabel + ' ──';
+
+                    const gsvOption = document.createElement('option');
+                    gsvOption.value = voiceId;
+                    gsvOption.textContent = voiceId.substring(4) + ' (?)';
+                    gsvGroup.appendChild(gsvOption);
+                    select.appendChild(gsvGroup);
                 }
 
                 select.value = voiceId;

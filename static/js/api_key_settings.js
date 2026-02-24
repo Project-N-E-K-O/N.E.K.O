@@ -493,7 +493,7 @@ async function fetchGptSovitsVoices(silent = false) {
     const currentValue = hiddenInput ? hiddenInput.value : '';
 
     // 显示加载状态
-    grid.innerHTML = '<div class="gsv-voices-loading">⏳ ' + (window.t ? window.t('api.loadingConfig') : '正在加载...') + '</div>';
+    grid.innerHTML = '<div class="gsv-voices-loading">⏳ ' + _escHtml(window.t ? window.t('api.loadingConfig') : '正在加载...') + '</div>';
 
     try {
         const resp = await fetch('/api/config/gptsovits/list_voices', {
@@ -507,7 +507,7 @@ async function fetchGptSovitsVoices(silent = false) {
             grid.innerHTML = '';
 
             if (result.voices.length === 0) {
-                grid.innerHTML = '<div class="gsv-voices-empty">' + (window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --') + '</div>';
+                grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --') + '</div>';
             } else {
                 let hasSelectedCard = false;
                 result.voices.forEach(v => {
@@ -578,7 +578,7 @@ async function fetchGptSovitsVoices(silent = false) {
             }
         }
     } catch (e) {
-        grid.innerHTML = '<div class="gsv-voices-empty">❌ ' + (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败') + '</div>';
+        grid.innerHTML = '<div class="gsv-voices-empty">❌ ' + _escHtml(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败') + '</div>';
         if (!silent) {
             showStatus(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败: ' + e.message, 'error');
         }
