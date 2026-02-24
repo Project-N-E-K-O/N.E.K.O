@@ -31,6 +31,27 @@ window.LIPSYNC_PARAMS = [
     'ParamO'
 ];
 
+// 模型偏好验证常量
+const MODEL_PREFERENCES = {
+    SCALE_MIN: 0,
+    SCALE_MAX: 10,
+    POSITION_MAX: 100000
+};
+
+// 验证模型偏好是否有效
+function isValidModelPreferences(scale, position) {
+    if (!scale || !position) return false;
+    const scaleX = scale.x;
+    const scaleY = scale.y;
+    const posX = position.x;
+    const posY = position.y;
+    const isValidScale = Number.isFinite(scaleX) && scaleX > MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
+                        Number.isFinite(scaleY) && scaleY > MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
+    const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
+                           Math.abs(posX) < MODEL_PREFERENCES.POSITION_MAX && Math.abs(posY) < MODEL_PREFERENCES.POSITION_MAX;
+    return isValidScale && isValidPosition;
+}
+
 // Live2D 管理器类
 class Live2DManager {
     constructor() {
@@ -235,21 +256,8 @@ class Live2DManager {
     async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
-            if (!position || typeof position !== 'object' ||
-                !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
-                console.error('位置值无效:', position);
-                return false;
-            }
-
-            if (!scale || typeof scale !== 'object' ||
-                !Number.isFinite(scale.x) || !Number.isFinite(scale.y)) {
-                console.error('缩放值无效:', scale);
-                return false;
-            }
-
-            // 验证缩放值必须为正数
-            if (scale.x <= 0 || scale.y <= 0) {
-                console.error('缩放值必须为正数:', scale);
+            if (!isValidModelPreferences(scale, position)) {
+                console.error('位置或缩放值无效:', { scale, position });
                 return false;
             }
 
@@ -513,21 +521,18 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         const posX = modelForSave.x;
         const posY = modelForSave.y;
         
-        // 验证数值有效性
-        const isValidScale = Number.isFinite(scaleX) && scaleX > 0 && scaleX < 10 &&
-                            Number.isFinite(scaleY) && scaleY > 0 && scaleY < 10;
-        const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
-                               Math.abs(posX) < 100000 && Math.abs(posY) < 100000;
-        
+        const scaleObj = { x: scaleX, y: scaleY };
+        const positionObj = { x: posX, y: posY };
         let savedPreferences = null;
-        if (isValidScale && isValidPosition) {
+        
+        if (isValidModelPreferences(scaleObj, positionObj)) {
             savedPreferences = {
-                scale: { x: scaleX, y: scaleY },
-                position: { x: posX, y: posY }
+                scale: scaleObj,
+                position: positionObj
             };
         } else {
             console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
-                scaleX, scaleY, posX, posY, isValidScale, isValidPosition
+                scaleX, scaleY, posX, posY
             });
         }
         
