@@ -1510,7 +1510,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
                 return gptsovits_tts_worker
             if base_url.startswith('ws://') or base_url.startswith('wss://'):
                 return local_qwen3_tts_worker
-            return local_cosyvoice_worker # 旧cosyvoice 的启用 正常情况下似乎不能使用
+            # return local_cosyvoice_worker # 旧cosyvoice 的启用 正常情况下似乎不能使用
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
@@ -1753,9 +1753,9 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
 
     # voice_id 可扩展成选择不同 pt/不同 ref
     # 这里先做最小可用：固定使用你 advanced_demo 的缓存文件
-    CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    # CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
     voice_pt_path = os.path.join(os.path.dirname(__file__), "..", "local_server", "qwen3_tts_server", "nyaning_voice.pt")
-    voice_pt_path = os.path.abspath(voice_pt_path)
+    # voice_pt_path = os.path.abspath(voice_pt_path)
 
     # 目标采样率：前端 PCM 默认按 48k 播
     DST_RATE = 48000
@@ -1890,6 +1890,7 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
                     await send_append(text_buf)
                     await send_commit()
                     text_buf = ""
+
                 current_speech_id = None
                 continue
 
@@ -1897,6 +1898,7 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
             if current_speech_id is not None and sid != current_speech_id:
                 await send_cancel()
                 text_buf = ""
+                resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
 
             if current_speech_id != sid:
                 current_speech_id = sid

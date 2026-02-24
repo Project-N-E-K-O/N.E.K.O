@@ -13,6 +13,7 @@ import numpy as np
 import re
 from pathlib import Path
 
+ENABLE_TRUE_STREAMING = True
 # ========================================================
 # 1. 初始化 Logging
 # ========================================================
@@ -27,10 +28,10 @@ logger = logging.getLogger("Qwen3-TTS-Server")
 # ========================================================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # 假设你还在 WSL 的这个位置
-MODEL_SOURCE_DIR = os.path.join(PROJECT_ROOT, "Qwen3-TTS")
+MODEL_SOURCE_DIR = os.path.join(PROJECT_ROOT, "Qwen3-TTS-streaming")
 
 if MODEL_SOURCE_DIR not in sys.path:
-    sys.path.append(MODEL_SOURCE_DIR)
+    sys.path.insert(0, MODEL_SOURCE_DIR)
 
 try:
     from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSForConditionalGeneration
@@ -59,8 +60,9 @@ class QwenLocalServer:
         buffer_fallback_chars=None,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt") # 注意 这里的nyaning_voice 是测试用音声的音色
+        self.pt_path = voice_pt_path or os.path.join(PROJECT_ROOT, "nyaning_voice.pt") # 注意 这里的nyaning_voice 是测试用音声的音色 hidden2048 适配1.7B
         self.model = None
+        self.model_hidden_size = None
         self.cached_prompt = None
         self.voice_lock = threading.Lock()
         self.prompt_cache = {}
@@ -83,6 +85,20 @@ class QwenLocalServer:
         # 启动后台工人
         threading.Thread(target=self._worker_loop, daemon=True).start()
 
+    def _validate_prompt_dim(self, ref_spk, pt_path: str):
+        """校验 ref_spk_embedding 维度是否匹配当前模型 hidden_size"""
+        if self.model_hidden_size is None or ref_spk is None:
+            return True
+        spk_dim = ref_spk.shape[-1]
+        if spk_dim != self.model_hidden_size:
+            logger.error(
+                f"❌ 音色文件 {pt_path} 的 ref_spk_embedding 维度 ({spk_dim}) "
+                f"与当前模型 hidden_size ({self.model_hidden_size}) 不匹配！"
+                f"请用当前模型重新生成 .pt 文件。"
+            )
+            return False
+        return True
+
     def _load_prompt_from_pt(self, pt_path: str):
         payload = torch.load(pt_path, map_location=self.device, weights_only=False)
 
@@ -99,11 +115,20 @@ class QwenLocalServer:
                     ref_code = it.get("ref_code", None)
                     if ref_code is not None and not torch.is_tensor(ref_code):
                         ref_code = torch.tensor(ref_code, device=self.device)
+                    if ref_code is not None:
+                        ref_code = ref_code.to(device=self.device).long()
                     ref_spk = it.get("ref_spk_embedding", None)
                     if ref_spk is None:
                         raise ValueError("Missing ref_spk_embedding")
                     if not torch.is_tensor(ref_spk):
                         ref_spk = torch.tensor(ref_spk, device=self.device)
+                    ref_spk = ref_spk.to(device=self.device, dtype=torch.bfloat16)
+                    if not self._validate_prompt_dim(ref_spk, pt_path):
+                        raise ValueError(
+                            f"Prompt 维度不匹配: ref_spk={ref_spk.shape[-1]} "
+                            f"vs model={self.model_hidden_size}。"
+                            f"请用当前模型重新生成 .pt 文件。"
+                        )
                     items.append(
                         VoiceClonePromptItem(
                             ref_code=ref_code,
@@ -116,6 +141,18 @@ class QwenLocalServer:
                 return items
 
         if isinstance(payload, list):
+            for it in payload:
+                if isinstance(it, VoiceClonePromptItem):
+                    if it.ref_code is not None:
+                        it.ref_code = it.ref_code.to(device=self.device).long()
+                    if it.ref_spk_embedding is not None:
+                        it.ref_spk_embedding = it.ref_spk_embedding.to(device=self.device, dtype=torch.bfloat16)
+                        if not self._validate_prompt_dim(it.ref_spk_embedding, pt_path):
+                            raise ValueError(
+                                f"Prompt 维度不匹配: ref_spk={it.ref_spk_embedding.shape[-1]} "
+                                f"vs model={self.model_hidden_size}。"
+                                f"请用当前模型重新生成 .pt 文件。"
+                            )
             return payload
 
         return payload
@@ -181,12 +218,23 @@ class QwenLocalServer:
                 torch_dtype=torch.bfloat16,  # 给 transformers 看
                 dtype=torch.bfloat16,  # 给 qwen 看
                 attn_implementation="flash_attention_2",
-                device_map="cuda",
+                device_map=self.device,  # 旧的是cuda 硬编码
                 low_cpu_mem_usage=True
             )
             raw_model.eval()
 
+            # --- 兼容修复: 0.6B 模型的 code_predictor 可能被默认初始化为 float32 ---
+            # device_map 模式下 .to(dtype) 会被 Accelerate 拦截，必须逐参数强制转换
+            for param in raw_model.parameters():
+                if param.data.dtype == torch.float32:
+                    param.data = param.data.to(dtype=torch.bfloat16)
+            for buf in raw_model.buffers():
+                if buf.dtype == torch.float32:
+                    buf.data = buf.data.to(dtype=torch.bfloat16)
+
             self.model = Qwen3TTSModel(model=raw_model, processor=processor)
+            self.model_hidden_size = raw_model.config.talker_config.hidden_size
+            logger.info(f"📐 模型 hidden_size = {self.model_hidden_size}")
 
             # --- 关键优化 2: 预设 Config 防止推理时反复初始化 ---
             self.pad_token_id = raw_model.config.pad_token_id or raw_model.config.eos_token_id
@@ -196,7 +244,7 @@ class QwenLocalServer:
             # 加载/提取音色
             if os.path.exists(self.pt_path):
                 logger.info(f"✨ 发现音色特征 {self.pt_path}，加载中...")
-                self.cached_prompt = torch.load(self.pt_path, map_location=self.device, weights_only=False)
+                self.cached_prompt = self._load_prompt_from_pt(self.pt_path)
             else:
                 logger.warning("🎙️ 未发现音色特征，尝试提取...")
                 ref_wav = self.ref_wav
@@ -214,6 +262,7 @@ class QwenLocalServer:
             logger.info(f"🚀 引擎就绪 | 精度: {raw_model.dtype} | 耗时: {time.time() - t0:.2f}s")
         except Exception as e:
             logger.error(f"❌ 加载引擎异常: {e}")
+            sys.exit(1)
 
     def _worker_loop(self):
         logger.info("👷 智能拼句队列服务已启动")
@@ -236,39 +285,118 @@ class QwenLocalServer:
 
             start_time = time.time()
 
-            # --- 关键优化 3: 使用 inference_mode 和 autocast ---
-            with torch.inference_mode():
-                with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
-                    wavs, sr = self.model.generate_voice_clone(
-                        text=full_text,
-                        voice_clone_prompt=prompt_snapshot,
-                        language=language,
-                        pad_token_id=self.pad_token_id
-                    )
+            # 🟢 [核心开关]：在这里切换
+            # True: 使用魔改版的流式 Generator (算出一点发一点)
+            # False: 使用魔改版提供的普通接口 (算完一整句再发)
+            USE_STREAMING_GENERATOR = True
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            # 探测流式方法
+            stream_func = None
+            search_target = self.model
+            depth = 0
+            while search_target is not None and depth < 3:
+                if hasattr(search_target, "stream_generate_voice_clone"):
+                    stream_func = getattr(search_target, "stream_generate_voice_clone")
+                    break
+                search_target = getattr(search_target, "model", None)
+                depth += 1
 
-            inference_duration = time.time() - start_time
+            # =======================================================
+            # 🛠️ --- 精度与类型预处理 (彻底消灭 Casting fp32 警告) ---
+            # =======================================================
+            # 1. 如果传入的是路径字符串，手动加载成张量对象
+            if isinstance(prompt_snapshot, str):
+                try:
+                    prompt_snapshot = torch.load(prompt_snapshot, map_location=self.device, weights_only=False)
+                except Exception as e:
+                    logger.error(f"❌ 加载音色文件失败: {e}")
+                    return
 
-            # --- 🚨 核心修复：找回丢失的 Int16 转换 (这就是没声音的原因！) ---
-            # 兔老师的代码可能直接发了 float，我们需要转回 int16
-            audio_data = wavs[0].flatten()
-            audio_int16 = (audio_data * 32767).astype(np.int16)
+            # 兼容最新版带 "items" 字典包装的 .pt 文件
+            prompt_items = prompt_snapshot.get("items", []) if isinstance(prompt_snapshot, dict) else prompt_snapshot
 
-            audio_real_duration = len(audio_int16) / sr
-            rtf = inference_duration / audio_real_duration if audio_real_duration > 0 else 0
+            if isinstance(prompt_items, list):
+                for item in prompt_items:
+                    # 强转至设备与精度，匹配 Flash-Attention 2
+                    if hasattr(item, 'ref_code') and item.ref_code is not None:
+                        item.ref_code = item.ref_code.to(device=self.device, dtype=torch.long)
+                    if hasattr(item, 'ref_spk_embedding') and item.ref_spk_embedding is not None:
+                        item.ref_spk_embedding = item.ref_spk_embedding.to(device=self.device, dtype=torch.bfloat16)
+            # =======================================================
 
-            logger.info(
-                f"✅ [{job_id}] 完成 | 耗时:{inference_duration:.3f}s | 音频:{audio_real_duration:.2f}s | RTF:{rtf:.4f}"
-            )
+            # =======================================================
+            # 🚀 模式 A：真流式 (Generator 模式)
+            # =======================================================
+            if ENABLE_TRUE_STREAMING and USE_STREAMING_GENERATOR and stream_func:
+                logger.info(f"🌊 [{job_id}] 模式：真流式 (Generator)")
 
-            # 发送数据
-            chunk_size = self.chunk_size
-            for i in range(0, len(audio_int16), chunk_size):
-                if cancel_event.is_set(): break
-                chunk = audio_int16[i:i + chunk_size].tobytes()
-                loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
+                total_samples = 0  # 统计总采样点，用于计算 RTF
+
+                with torch.inference_mode():
+                    with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
+                        for pcm_chunk in stream_func(
+                            text=full_text,
+                            voice_clone_prompt=prompt_snapshot,
+                            language=language,
+                            pad_token_id=self.pad_token_id,
+                            emit_every_frames=16,        # 1.7B 推荐 16 帧
+                            first_chunk_emit_every=4,
+                            overlap_samples=512,
+                        ):
+                            if cancel_event.is_set(): break
+                            if pcm_chunk is not None:
+                                # 兼容魔改库返回元组的格式
+                                audio_raw = pcm_chunk[0] if isinstance(pcm_chunk, (tuple, list)) else pcm_chunk
+                                audio_data = np.asarray(audio_raw).flatten()
+                                if len(audio_data) == 0: continue
+
+                                # 累加采样的点数
+                                total_samples += len(audio_data)
+
+                                audio_int16 = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+                                loop.call_soon_threadsafe(audio_queue.put_nowait, audio_int16.tobytes())
+
+                inference_duration = time.time() - start_time
+                # Qwen3-TTS 默认采样率是 24000
+                audio_real_duration = total_samples / 24000.0
+                rtf = inference_duration / audio_real_duration if audio_real_duration > 0 else 0
+
+                logger.info(f"✅ [{job_id}] 真流式完成 | 耗时:{inference_duration:.3f}s | 音频:{audio_real_duration:.2f}s | RTF:{rtf:.4f}")
+
+            # =======================================================
+            # 🐢 模式 B：块生成 (原本的整句逻辑)
+            # =======================================================
+            else:
+                mode_str = "原版块生成" if not stream_func else "流式库-整句模式"
+                logger.info(f"🐢 [{job_id}] 模式：{mode_str}")
+                with torch.inference_mode():
+                    with self.inference_lock, torch.amp.autocast(self.device, dtype=torch.bfloat16):
+                        wavs, sr = self.model.generate_voice_clone(
+                            text=full_text,
+                            voice_clone_prompt=prompt_snapshot,
+                            language=language,
+                            pad_token_id=self.pad_token_id
+                        )
+
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+                inference_duration = time.time() - start_time
+                audio_data = wavs[0].flatten()
+                audio_int16 = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+
+                audio_real_duration = len(audio_int16) / sr
+                rtf = inference_duration / audio_real_duration if audio_real_duration > 0 else 0
+
+                logger.info(
+                    f"✅ [{job_id}] 完成 | 耗时:{inference_duration:.3f}s | 音频:{audio_real_duration:.2f}s | RTF:{rtf:.4f}"
+                )
+
+                chunk_size = self.chunk_size
+                for i in range(0, len(audio_int16), chunk_size):
+                    if cancel_event.is_set(): break
+                    chunk = audio_int16[i:i + chunk_size].tobytes()
+                    loop.call_soon_threadsafe(audio_queue.put_nowait, chunk)
 
         except Exception as e:
             logger.error(f"❌ 推理错误: {e}")
@@ -276,7 +404,6 @@ class QwenLocalServer:
             logger.error(traceback.format_exc())
         finally:
             loop.call_soon_threadsafe(audio_queue.put_nowait, b"__END__")
-
     async def handle_tts(self, websocket):
         logger.info(f"客户端连接: {websocket.remote_address}")
         loop = asyncio.get_running_loop()
@@ -405,8 +532,10 @@ async def main():
         tts_custom = {}
         repo_root = None
 
-    model_path = tts_custom.get("model_path") or "/home/amadeus/models/qwen3_tts"
-    host = tts_custom.get("host") or "0.0.0.0"
+
+    model_path = tts_custom.get("model_path") or "/home/amadeus/models/qwen3_tts" # [旧的 1.7B 路径]
+    # model_path = tts_custom.get("model_path") or "/home/amadeus/models/Qwen3-TTS-12Hz-0.6B-Base" # 0.6B 路径 按需更改 这里是硬编码
+    host = tts_custom.get("host") or "127.0.0.1"
     port = int(tts_custom.get("port") or 8765)
 
     voice_pt_path = tts_custom.get("voice_pt_path")
