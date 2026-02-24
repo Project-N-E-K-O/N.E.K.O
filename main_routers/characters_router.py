@@ -1139,7 +1139,7 @@ async def list_gptsovits_voices_for_characters():
                 'success': False,
                 'error': '未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS',
                 'voices': []
-            })
+            }, status_code=400)
         
         # SSRF 防护：GPT-SoVITS 仅限 localhost
         from urllib.parse import urlparse
@@ -1148,10 +1148,10 @@ async def list_gptsovits_voices_for_characters():
         host = parsed.hostname or ''
         try:
             if not ipaddress.ip_address(host).is_loopback:
-                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []})
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
         except ValueError:
             if host not in ('localhost',):
-                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []})
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
         
         # 请求 GPT-SoVITS v3 API 获取声音列表
         api_url = base_url
@@ -1194,13 +1194,13 @@ async def list_gptsovits_voices_for_characters():
             'success': False,
             'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
             'voices': []
-        })
+        }, status_code=502)
     except Exception as e:
         return JSONResponse({
             'success': False,
             'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
             'voices': []
-        })
+        }, status_code=500)
 
 
 @router.post('/set_microphone')

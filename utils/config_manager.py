@@ -616,8 +616,10 @@ class ConfigManager:
         if voice_id.startswith("cosyvoice-v2"):
             return False
 
-        # gsv: 前缀表示 GPT-SoVITS voice_id，仅当 tts_custom 配置指向 http(s) 服务时放行
+        # gsv: 前缀表示 GPT-SoVITS voice_id，仅当后缀非空且 tts_custom 配置指向 http(s) 服务时放行
         if voice_id.startswith(GSV_VOICE_PREFIX):
+            if not voice_id[len(GSV_VOICE_PREFIX):].strip():
+                return False
             tts_config = self.get_model_api_config('tts_custom')
             base_url = tts_config.get('base_url') or ''
             if tts_config.get('is_custom') and base_url.startswith(('http://', 'https://')):
@@ -650,8 +652,8 @@ class ConfigManager:
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            if voice_id and voice_id.startswith(GSV_VOICE_PREFIX):
-                continue  # gsv: 前缀的 GPT-SoVITS voice_id 不参与清理
+            if voice_id and voice_id.startswith(GSV_VOICE_PREFIX) and voice_id[len(GSV_VOICE_PREFIX):].strip():
+                continue  # gsv: 前缀且后缀非空的 GPT-SoVITS voice_id 不参与清理
             if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
