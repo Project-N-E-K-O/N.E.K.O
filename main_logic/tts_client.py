@@ -1781,6 +1781,7 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
         text_buf = ""
         src_rate = 24000  # default, will be overridden by audio.meta
         resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
+        response_done_event = asyncio.Event()
 
         async def receive_loop(ws_conn):
             nonlocal src_rate, resampler
@@ -1801,6 +1802,7 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
                                 src_rate = sr
                                 resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
                         continue
+
 
                     if isinstance(message, bytes):
                         audio_i16 = np.frombuffer(message, dtype=np.int16)
