@@ -31,6 +31,104 @@ function addNewMessage(messageHTML) {
     setTimeout(scrollToBottom, 10); // 短暂延迟确保DOM更新
 }
 
+// --- 文本输入框可拖拽调节高度（含主题适配） ---
+function setupResizableTextInput() {
+    const textInputBox = document.getElementById('textInputBox');
+    if (!textInputBox) return;
+
+    const STORAGE_KEY = 'neko.chatInputHeight';
+    const DEFAULT_HEIGHT = 102;
+    const MIN_HEIGHT = 80;
+
+    // 注入一次样式：保持现有主题风格，并在暗色模式下增强可见性
+    if (!document.getElementById('chat-input-resize-style')) {
+        const style = document.createElement('style');
+        style.id = 'chat-input-resize-style';
+        style.textContent = `
+            #textInputBox {
+                resize: vertical !important;
+                min-height: ${MIN_HEIGHT}px;
+                max-height: 45vh;
+                overflow-y: auto;
+                transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+                background-image:
+                    linear-gradient(135deg, transparent 0 62%, rgba(68, 183, 254, 0.18) 62% 66%, transparent 66% 70%, rgba(68, 183, 254, 0.22) 70% 74%, transparent 74% 78%, rgba(68, 183, 254, 0.28) 78% 82%, transparent 82% 100%);
+                background-repeat: no-repeat;
+                background-size: 18px 18px;
+                background-position: right 6px bottom 6px;
+            }
+
+            #textInputBox:hover:not(:disabled) {
+                border-color: rgba(68, 183, 254, 0.75);
+            }
+
+            #textInputBox:focus:not(:disabled) {
+                box-shadow: 0 0 0 2px rgba(68, 183, 254, 0.15);
+            }
+
+            #textInputBox:disabled {
+                resize: none !important;
+                background-image: none;
+            }
+
+            [data-theme="dark"] #textInputBox {
+                background-image:
+                    linear-gradient(135deg, transparent 0 62%, rgba(74, 163, 223, 0.22) 62% 66%, transparent 66% 70%, rgba(74, 163, 223, 0.28) 70% 74%, transparent 74% 78%, rgba(74, 163, 223, 0.34) 78% 82%, transparent 82% 100%);
+            }
+
+            [data-theme="dark"] #textInputBox:hover:not(:disabled) {
+                border-color: rgba(74, 163, 223, 0.8);
+            }
+
+            [data-theme="dark"] #textInputBox:focus:not(:disabled) {
+                box-shadow: 0 0 0 2px rgba(74, 163, 223, 0.22);
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const clampHeight = (height) => {
+        const viewportLimit = Math.floor(window.innerHeight * 0.45);
+        const maxHeight = Math.max(MIN_HEIGHT, viewportLimit);
+        return Math.max(MIN_HEIGHT, Math.min(maxHeight, height));
+    };
+
+    let savedHeightRaw = null;
+    try {
+        savedHeightRaw = localStorage.getItem(STORAGE_KEY);
+    } catch (_) {
+        /* localStorage unavailable (e.g. privacy/disabled-storage); use DEFAULT_HEIGHT and skip persistence */
+    }
+    const savedHeight = Number(savedHeightRaw);
+    if (Number.isFinite(savedHeight) && savedHeight > 0) {
+        textInputBox.style.height = `${clampHeight(savedHeight)}px`;
+    } else if (!textInputBox.style.height) {
+        textInputBox.style.height = `${DEFAULT_HEIGHT}px`;
+    }
+
+    // 在用户拖拽或脚本调整后持久化高度（storage 不可用时静默跳过）
+    const persistCurrentHeight = () => {
+        try {
+            const current = Math.round(textInputBox.getBoundingClientRect().height);
+            localStorage.setItem(STORAGE_KEY, String(clampHeight(current)));
+        } catch (_) {
+            /* localStorage unavailable; skip persistence */
+        }
+    };
+
+    textInputBox.addEventListener('mouseup', persistCurrentHeight);
+    textInputBox.addEventListener('touchend', persistCurrentHeight, { passive: true });
+    window.addEventListener('resize', () => {
+        try {
+            const current = Math.round(textInputBox.getBoundingClientRect().height);
+            textInputBox.style.height = `${clampHeight(current)}px`;
+            persistCurrentHeight();
+        } catch (_) {
+            /* avoid errors (e.g. from storage) interrupting the UI */
+        }
+    });
+}
+
 // --- 切换聊天框最小化/展开状态 ---
 // 用于跟踪是否刚刚发生了拖动
 let justDragged = false;
@@ -546,6 +644,8 @@ const sidebar = document.getElementById('sidebar');
 
 // --- 初始化 ---
 document.addEventListener('DOMContentLoaded', () => {
+    setupResizableTextInput();
+
     // 设置初始按钮状态 - 聊天框
     if (chatContainer && toggleBtn) {
         // 获取图标元素（HTML中应该已经有img标签）

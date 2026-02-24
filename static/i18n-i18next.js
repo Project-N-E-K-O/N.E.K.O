@@ -667,9 +667,16 @@
             const key = element.getAttribute('data-i18n');
             let params = {};
 
-            if (element.hasAttribute('data-i18n-params')) {
+            // 兼容两种参数属性：
+            // - data-i18n-params: 当前规范
+            // - data-i18n-options: 历史用法（例如创意工坊分页）
+            const paramsAttr = element.hasAttribute('data-i18n-params')
+                ? 'data-i18n-params'
+                : (element.hasAttribute('data-i18n-options') ? 'data-i18n-options' : null);
+
+            if (paramsAttr) {
                 try {
-                    params = JSON.parse(element.getAttribute('data-i18n-params'));
+                    params = JSON.parse(element.getAttribute(paramsAttr));
                 } catch (e) {
                     console.warn(`[i18n] Failed to parse params for ${key}:`, e);
                 }
