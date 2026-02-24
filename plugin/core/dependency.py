@@ -580,8 +580,6 @@ def _get_dependency_plugin_ids(dep: PluginDependency, logger: Any) -> List[str]:
                     out.append(pid_part)
             except Exception:
                 logger.debug("Failed to parse dependency entry spec '{}'", entry, exc_info=True)
-        elif entry:
-            out.append(entry)
     
     custom_event = getattr(dep, "custom_event", None)
     if isinstance(custom_event, str):
@@ -615,6 +613,19 @@ def _topological_sort_plugins(
     
     # 构建依赖图
     graph: Dict[str, set] = {ctx.pid: set() for ctx in plugin_contexts}
+
+    # 仅基于当前待加载集合构建 entry provider 映射，避免依赖运行时全局状态。
+    # 这里采用配置中声明的 entries（conf/pdata）来近似 entry provider 关系。
+    entry_providers: Dict[str, set[str]] = {}
+    for pctx in plugin_contexts:
+        entries = pctx.conf.get("entries") or pctx.pdata.get("entries") or []
+        for ent in entries:
+            try:
+                entry_id = ent.get("id") if isinstance(ent, dict) else str(ent)
+            except Exception:
+                entry_id = None
+            if entry_id:
+                entry_providers.setdefault(str(entry_id), set()).add(pctx.pid)
     
     for ctx in plugin_contexts:
         for dep in ctx.dependencies:
@@ -622,6 +633,12 @@ def _topological_sort_plugins(
                 if dep_pid in pid_to_context:
                     graph[ctx.pid].add(dep_pid)
                     logger.debug("Dependency edge: {} -> {}", ctx.pid, dep_pid)
+            entry_spec = getattr(dep, "entry", None)
+            if isinstance(entry_spec, str) and ":" not in entry_spec and entry_spec:
+                for provider_pid in entry_providers.get(entry_spec, set()):
+                    if provider_pid != ctx.pid and provider_pid in pid_to_context:
+                        graph[ctx.pid].add(provider_pid)
+                        logger.debug("Dependency edge (entry): {} -> {} via entry '{}'", ctx.pid, provider_pid, entry_spec)
     
     # Kahn 算法：构建邻接表和入度表
     adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
@@ -634,6 +651,12 @@ def _topological_sort_plugins(
                 if dependency in pid_to_context:
                     adj_list[dependency].append(dependent)
                     in_degree[dependent] += 1
+            entry_spec = getattr(dep, "entry", None)
+            if isinstance(entry_spec, str) and ":" not in entry_spec and entry_spec:
+                for provider_pid in entry_providers.get(entry_spec, set()):
+                    if provider_pid != dependent and provider_pid in pid_to_context:
+                        adj_list[provider_pid].append(dependent)
+                        in_degree[dependent] += 1
     
     def _queue_sort_key(pid: str) -> tuple[int, int, int, str]:
         """

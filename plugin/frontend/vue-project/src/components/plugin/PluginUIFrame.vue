@@ -30,7 +30,7 @@
       :src="uiUrl"
       :title="pluginId"
       class="plugin-iframe"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      sandbox="allow-scripts allow-forms allow-popups"
       @load="onIframeLoad"
       @error="onIframeError"
     />
@@ -126,7 +126,7 @@ function sendMessage(payload: any) {
   iframeRef.value.contentWindow.postMessage({
     type: 'neko-host-message',
     payload
-  }, window.location.origin)
+  }, '*')
 }
 
 defineExpose({

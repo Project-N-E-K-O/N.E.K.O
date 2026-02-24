@@ -588,13 +588,13 @@ async function save() {
       try {
         // 提供热更新选项
         const action = await ElMessageBox.confirm(
-          t('plugins.configHotUpdatePrompt') || '配置已保存。是否立即应用到运行中的插件？（热更新不需要重启插件）',
-          t('plugins.configApplyTitle') || '应用配置',
+          t('plugins.configHotUpdatePrompt'),
+          t('plugins.configApplyTitle'),
           {
             type: 'info',
             distinguishCancelAndClose: true,
-            confirmButtonText: t('plugins.hotUpdate') || '热更新',
-            cancelButtonText: t('plugins.reloadPlugin') || '重启插件'
+            confirmButtonText: t('plugins.hotUpdate'),
+            cancelButtonText: t('plugins.reloadPlugin')
           }
         )
         // 用户点击了"热更新"
@@ -633,15 +633,15 @@ async function hotUpdateConfig() {
     
     if (result.success) {
       if (result.hot_reloaded) {
-        ElMessage.success(t('plugins.hotUpdateSuccess') || '配置已热更新成功')
+        ElMessage.success(t('plugins.hotUpdateSuccess'))
       } else {
-        ElMessage.warning(t('plugins.hotUpdatePartial') || '配置已保存，但插件未运行，需要启动后生效')
+        ElMessage.warning(t('plugins.hotUpdatePartial'))
       }
     } else {
-      ElMessage.error(result.message || t('plugins.hotUpdateFailed') || '热更新失败')
+      ElMessage.error(result.message || t('plugins.hotUpdateFailed'))
     }
   } catch (e: any) {
-    ElMessage.error(e?.message || t('plugins.hotUpdateFailed') || '热更新失败')
+    ElMessage.error(e?.message || t('plugins.hotUpdateFailed'))
   }
 }
 

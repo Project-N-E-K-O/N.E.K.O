@@ -384,225 +384,9 @@ def _check_extension_type_guard(config_path: Path, plugin_id: str, logger: Any) 
     return False
 
 
-def _execute_method_with_timeout(
-    method: Any,
-    args: dict,
-    ctx: Any,
-    scope_name: str,
-    run_id: Optional[str],
-    timeout_seconds: Optional[float],
-    logger: Any,
-) -> Any:
-    """
-    执行方法，支持异步和超时。
-    
-    Args:
-        method: 要执行的方法
-        args: 参数字典
-        ctx: PluginContext
-        scope_name: 作用域名称（用于日志）
-        run_id: 运行 ID
-        timeout_seconds: 超时时间（None 表示无限等待）
-        logger: 日志记录器
-    
-    Returns:
-        方法执行结果
-    
-    Raises:
-        TimeoutError: 如果执行超时
-        Exception: 方法执行中的其他异常
-    """
-    if asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method):
-        logger.debug("[Plugin Process] Method is async, running in thread")
-        result_container = {"result": None, "exception": None, "done": False}
-        event = threading.Event()
-        
-        def run_async():
-            try:
-                with ctx._handler_scope(scope_name), ctx._run_scope(run_id):
-                    result_container["result"] = asyncio.run(method(**args))
-            except Exception as e:
-                result_container["exception"] = e
-            finally:
-                result_container["done"] = True
-                event.set()
-        
-        thread = threading.Thread(target=run_async, daemon=True)
-        thread.start()
-        
-        start_time = time.time()
-        check_interval = 0.01  # 10ms
-        
-        while not result_container["done"]:
-            if timeout_seconds is not None and time.time() - start_time > timeout_seconds:
-                logger.error("Method execution timed out after {}s", timeout_seconds)
-                raise TimeoutError(f"Method execution timed out after {timeout_seconds}s")
-            event.wait(timeout=check_interval)
-        
-        if result_container["exception"]:
-            raise result_container["exception"]
-        return result_container["result"]
-    else:
-        logger.debug("[Plugin Process] Method is sync, calling directly")
-        with ctx._handler_scope(scope_name), ctx._run_scope(run_id):
-            res = method(**args)
-        # 防御性检查：如果返回值是协程，执行它
-        if asyncio.iscoroutine(res):
-            res = asyncio.run(res)
-        return res
-
-
-def _handle_freeze_command(
-    msg: dict,
-    lifecycle_events: dict,
-    freezable_keys: list,
-    instance: Any,
-    ctx: Any,
-    res_queue: Queue,
-    logger: Any,
-) -> bool:
-    """
-    处理 FREEZE 命令。
-    
-    Returns:
-        True 如果应该停止进程，False 否则
-    """
-    req_id = msg.get("req_id", "unknown")
-    logger.info("[Plugin Process] Received FREEZE command, req_id={}", req_id)
-    
-    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
-    
-    try:
-        # 触发 freeze lifecycle 事件
-        freeze_fn = lifecycle_events.get("freeze")
-        if freeze_fn:
-            logger.info("[Plugin Process] Executing freeze lifecycle...")
-            with ctx._handler_scope("lifecycle.freeze"):
-                if asyncio.iscoroutinefunction(freeze_fn):
-                    asyncio.run(freeze_fn())
-                else:
-                    freeze_fn()
-        
-        # 保存冻结状态
-        if freezable_keys:
-            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if sp:
-                sp.save(instance, freezable_keys, reason="freeze")
-                logger.info("[Plugin Process] Frozen state saved")
-        
-        ret_payload["success"] = True
-        ret_payload["data"] = {"frozen": True, "freezable_keys": freezable_keys}
-    except Exception as e:
-        logger.exception("[Plugin Process] Freeze failed")
-        ret_payload["error"] = str(e)
-    
-    res_queue.put(ret_payload)
-    
-    if ret_payload["success"]:
-        logger.info("[Plugin Process] Freeze successful, stopping process...")
-        return True
-    return False
-
-
-def _handle_bus_change_command(msg: dict, logger: Any) -> None:
-    """处理 BUS_CHANGE 命令。"""
-    try:
-        dispatch_bus_change(
-            sub_id=str(msg.get("sub_id") or ""),
-            bus=str(msg.get("bus") or ""),
-            op=str(msg.get("op") or ""),
-            delta=msg.get("delta") if isinstance(msg.get("delta"), dict) else None,
-        )
-    except Exception as e:
-        logger.debug("Failed to dispatch bus change: {}", e)
-
-
-def _handle_trigger_custom_command(
-    msg: dict,
-    events_by_type: dict,
-    ctx: Any,
-    res_queue: Queue,
-    plugin_id: str,
-    logger: Any,
-) -> None:
-    """处理 TRIGGER_CUSTOM 命令。"""
-    event_type = msg.get("event_type")
-    event_id = msg.get("event_id")
-    args = msg.get("args", {})
-    req_id = msg.get("req_id", "unknown")
-    
-    logger.info(
-        "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id={}, event_type={}, event_id={}, req_id={}",
-        plugin_id, event_type, event_id, req_id,
-    )
-    
-    custom_events = events_by_type.get(event_type, {})
-    method = custom_events.get(event_id)
-    
-    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
-    
-    try:
-        if not method:
-            ret_payload["error"] = f"Custom event '{event_type}.{event_id}' not found"
-        else:
-            logger.debug("[Plugin Process] Executing custom event {}.{}, req_id={}", event_type, event_id, req_id)
-            
-            if asyncio.iscoroutinefunction(method):
-                logger.debug("[Plugin Process] Custom event is async, running in thread")
-                result_container = {"result": None, "exception": None, "done": False}
-                event = threading.Event()
-                
-                def _run_async_thread():
-                    try:
-                        with ctx._handler_scope(f"{event_type}.{event_id}"):
-                            result_container["result"] = asyncio.run(method(**args))
-                    except Exception as e:
-                        result_container["exception"] = e
-                    finally:
-                        result_container["done"] = True
-                        event.set()
-                
-                thread = threading.Thread(target=_run_async_thread, daemon=True)
-                thread.start()
-                
-                start_time = time.time()
-                timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
-                check_interval = 0.01
-                
-                while not result_container["done"]:
-                    if time.time() - start_time > timeout_seconds:
-                        logger.error("Custom event {}.{} execution timed out", event_type, event_id)
-                        raise TimeoutError(f"Custom event execution timed out after {timeout_seconds}s")
-                    event.wait(timeout=check_interval)
-                
-                if result_container["exception"]:
-                    raise result_container["exception"]
-                res = result_container["result"]
-            else:
-                logger.debug("[Plugin Process] Custom event is sync, calling directly")
-                with ctx._handler_scope(f"{event_type}.{event_id}"):
-                    res = method(**args)
-            
-            ret_payload["success"] = True
-            ret_payload["data"] = res
-            logger.debug("[Plugin Process] Custom event {}.{} completed, req_id={}", event_type, event_id, req_id)
-    except Exception as e:
-        logger.exception("Error executing custom event {}.{}", event_type, event_id)
-        ret_payload["error"] = str(e)
-    
-    logger.debug("[Plugin Process] Sending response for req_id={}, success={}", req_id, ret_payload.get("success"))
-    try:
-        res_queue.put(ret_payload, timeout=10.0)
-        logger.debug("[Plugin Process] Response sent successfully for req_id={}", req_id)
-    except Exception:
-        logger.exception("[Plugin Process] Failed to send response for req_id={}", req_id)
-
-
 def _handle_config_update_command(
     msg: dict,
     ctx: Any,
-    instance: Any,
-    entry_map: dict,
     events_by_type: dict,
     plugin_id: str,
     res_queue: Queue,
@@ -622,8 +406,6 @@ def _handle_config_update_command(
             - profile: profile 名称（permanent 模式）
             - req_id: 请求ID
         ctx: 插件上下文
-        instance: 插件实例
-        entry_map: 入口映射
         events_by_type: 事件映射
         plugin_id: 插件ID
         res_queue: 响应队列
@@ -713,46 +495,6 @@ def _deep_merge(base: dict, updates: dict) -> None:
             _deep_merge(base[key], value)
         else:
             base[key] = value
-
-
-def _handle_extension_command(
-    msg: dict,
-    instance: Any,
-    rebuild_entry_map_fn: Any,
-    plugin_id: str,
-    res_queue: Queue,
-    logger: Any,
-) -> None:
-    """处理 DISABLE_EXTENSION 和 ENABLE_EXTENSION 命令。"""
-    cmd_type = msg["type"]
-    ext_name = msg.get("ext_name", "")
-    req_id = msg.get("req_id", "unknown")
-    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
-    
-    try:
-        if cmd_type == "DISABLE_EXTENSION":
-            ok = instance.exclude_router(ext_name)
-            if ok:
-                rebuild_entry_map_fn()
-                ret_payload["success"] = True
-                ret_payload["data"] = {"disabled": ext_name}
-                logger.info("[Extension] Disabled extension '{}' in host '{}'", ext_name, plugin_id)
-            else:
-                ret_payload["error"] = f"Extension '{ext_name}' not found or already disabled"
-        elif cmd_type == "ENABLE_EXTENSION":
-            ok = instance.include_router(ext_name)
-            if ok:
-                rebuild_entry_map_fn()
-                ret_payload["success"] = True
-                ret_payload["data"] = {"enabled": ext_name}
-                logger.info("[Extension] Enabled extension '{}' in host '{}'", ext_name, plugin_id)
-            else:
-                ret_payload["error"] = f"Extension '{ext_name}' not found or already enabled"
-    except Exception as e:
-        logger.exception("[Extension] Failed to {} extension '{}'", cmd_type.lower().replace("_", " "), ext_name)
-        ret_payload["error"] = str(e)
-    
-    res_queue.put(ret_payload)
 
 
 def _plugin_process_runner(
@@ -1164,8 +906,6 @@ def _plugin_process_runner(
                 _handle_config_update_command(
                     msg=msg,
                     ctx=ctx,
-                    instance=instance,
-                    entry_map=entry_map,
                     events_by_type=events_by_type,
                     plugin_id=plugin_id,
                     res_queue=res_queue,
@@ -1665,7 +1405,7 @@ class PluginHost:
         message_queue: Queue = multiprocessing.Queue()
         response_queue: Queue = multiprocessing.Queue()
         
-        # 创建并启动进程
+        # 创建进程（延迟到 start() 中启动）
         # 获取插件间通信队列（从 state 获取）
         plugin_comm_queue = state.plugin_comm_queue
 
@@ -1711,14 +1451,6 @@ class PluginHost:
             ),
             daemon=True,
         )
-        self.process.start()
-        self.logger.info(f"Plugin {plugin_id} process started (pid: {self.process.pid})")
-        
-        # 验证进程状态
-        if not self.process.is_alive():
-            self.logger.error(f"Plugin {plugin_id} process is not alive after initialization (exitcode: {self.process.exitcode})")
-        else:
-            self.logger.info(f"Plugin {plugin_id} process is alive and running (pid: {self.process.pid})")
         
         # 创建通信资源管理器
         self.comm_manager = PluginCommunicationResourceManager(
@@ -1744,6 +1476,31 @@ class PluginHost:
             message_target_queue: 主进程的消息队列，用于接收插件推送的消息
         """
         await self.comm_manager.start(message_target_queue=message_target_queue)
+
+        if self.process.is_alive():
+            self.logger.debug(
+                "Plugin {} process already running (pid: {})",
+                self.plugin_id,
+                self.process.pid,
+            )
+            return
+
+        await asyncio.to_thread(self.process.start)
+        self.logger.info("Plugin {} process started (pid: {})", self.plugin_id, self.process.pid)
+
+        # 验证进程状态
+        if not self.process.is_alive():
+            self.logger.error(
+                "Plugin {} process is not alive after startup (exitcode: {})",
+                self.plugin_id,
+                self.process.exitcode,
+            )
+        else:
+            self.logger.info(
+                "Plugin {} process is alive and running (pid: {})",
+                self.plugin_id,
+                self.process.pid,
+            )
     
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """

@@ -1,7 +1,7 @@
 """
 Plugin API 模块（已弃用）
 
-此模块已弃用，请使用 plugin.types 代替。
+此模块已弃用，请使用 plugin._types 代替。
 
 Usage:
     # 旧方式（已弃用）
@@ -13,7 +13,7 @@ Usage:
 import warnings
 
 warnings.warn(
-    "plugin.api is deprecated, use plugin.types instead",
+    "plugin.api is deprecated, use plugin._types instead",
     DeprecationWarning,
     stacklevel=2
 )

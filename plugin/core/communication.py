@@ -365,12 +365,21 @@ class PluginCommunicationResourceManager:
             "type": "FREEZE",
             "req_id": req_id,
         }
-        
-        result = await self._send_command_and_wait(req_id, freeze_msg, timeout, "freeze")
+
+        try:
+            result = await self._send_command_and_wait(req_id, freeze_msg, timeout, "freeze")
+        except Exception as e:
+            self.logger.warning(
+                "[CommManager] FREEZE command failed: plugin_id={}, req_id={}, error={}",
+                self.plugin_id,
+                req_id,
+                e,
+            )
+            return {"success": False, "data": None, "error": str(e)}
         
         # 规范化返回格式，确保包含 success, data, error 键
         if not isinstance(result, dict):
-            return {"success": False, "data": None, "error": f"Unexpected result type: {type(result)}"}
+            return {"success": True, "data": result, "error": None}
         
         # 如果结果已经有 success 键，直接返回
         if "success" in result:
@@ -616,7 +625,7 @@ class PluginCommunicationResourceManager:
                 if not shutdown_event.is_set():
                     self.logger.error(f"System error consuming results for plugin {self.plugin_id}: {e}")
                 await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
-            except Exception as e:
+            except Exception:
                 # 其他未知异常，记录详细信息
                 if not shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}")
@@ -767,7 +776,7 @@ class PluginCommunicationResourceManager:
                     )
                 except (AttributeError, RuntimeError) as e:
                     self.logger.error(f"Queue error forwarding message from plugin {self.plugin_id}: {e}")
-                except Exception as e:
+                except Exception:
                     self.logger.exception(
                         f"Unexpected error forwarding message from plugin {self.plugin_id}"
                     )
@@ -781,7 +790,7 @@ class PluginCommunicationResourceManager:
                 if not shutdown_event.is_set():
                     self.logger.error(f"System error consuming messages for plugin {self.plugin_id}: {e}")
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
-            except Exception as e:
+            except Exception:
                 # 其他未知异常
                 if not shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}")

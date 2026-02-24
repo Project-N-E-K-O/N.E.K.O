@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Callable, Type, Optional, cast
 
 from loguru import logger
 
+_DEFAULT_LOGGER = logger
+
 
 _pending_async_shutdown_tasks: set = set()
 
@@ -341,7 +343,7 @@ def register_plugin(
     Returns:
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
-    logger_ = cast(Any, _wrap_logger(logger or logger))
+    logger_ = cast(Any, _wrap_logger(logger or _DEFAULT_LOGGER))
     
     # 准备插件数据用于哈希计算
     plugin_data = {
