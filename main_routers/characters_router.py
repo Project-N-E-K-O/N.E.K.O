@@ -107,7 +107,7 @@ async def get_characters(request: Request):
     
     # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
     try:
-        from utils.translation_service import get_translation_service
+        from utils.language_utils import get_translation_service
         translation_service = get_translation_service(_config_manager)
         
         # 翻译主人数据

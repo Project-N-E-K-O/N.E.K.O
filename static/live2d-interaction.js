@@ -751,6 +751,16 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     const startHideTimer = (delay = 1000) => {
         const lockIcon = document.getElementById('live2d-lock-icon');
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+        const isPointerNearLock = () => {
+            if (!lockIcon || lockIcon.style.display !== 'block') return false;
+            const x = this._lastMouseX;
+            const y = this._lastMouseY;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+            const rect = lockIcon.getBoundingClientRect();
+            const expandPx = 8;
+            return x >= rect.left - expandPx && x <= rect.right + expandPx &&
+                y >= rect.top - expandPx && y <= rect.bottom + expandPx;
+        };
 
         if (this._goodbyeClicked) return;
 
@@ -768,7 +778,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
 
             // 再次检查鼠标是否在按钮区域内
-            if (this._isMouseOverButtons) {
+            if (this._isMouseOverButtons || isPointerNearLock()) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
                 this._hideButtonsTimer = null;
                 startHideTimer(delay);
@@ -895,6 +905,8 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         
         // 使用 clientX/Y 作为全局坐标
         const pointer = { x: event.clientX, y: event.clientY };
+        this._lastMouseX = pointer.x;
+        this._lastMouseY = pointer.y;
 
         // 在拖拽期间不执行任何操作
         if (model.interactive && model.dragging) {
@@ -971,8 +983,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
             setLockedHoverFade(shouldFade);
 
+            const canvasEl = document.getElementById('live2d-canvas');
             if (distance < threshold) {
                 showButtons();
+                if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
+                    canvasEl.style.cursor = 'grab';
+                }
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
                 if (this.isFocusing) {
                     model.focus(pointer.x, pointer.y);
@@ -980,8 +996,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             } else {
                 // 鼠标离开模型区域，启动隐藏定时器
                 this.isFocusing = false;
-                const lockIcon = document.getElementById('live2d-lock-icon');
-                if (lockIcon) lockIcon.style.display = 'none';
+                if (canvasEl && !(model.interactive && model.dragging)) {
+                    canvasEl.style.cursor = '';
+                }
                 startHideTimer();
             }
         } catch (error) {

@@ -47,7 +47,7 @@ class ConversationAnalyzer:
         for attempt in range(max_retries):
             try:
                 # 使用与 emotion_analysis 相同的调用方式
-                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
                 
                 request_params = {
                     "model": model,

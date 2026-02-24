@@ -2,24 +2,32 @@
  * VRM UI Popup - 弹出框组件（功能同步修复版）
  */
 
+// 动画时长常量（与 CSS transition duration 保持一致）
+const VRM_POPUP_ANIMATION_DURATION_MS = 200;
+
 // 注入 CSS 样式（如果尚未注入）
-(function() {
+(function () {
     if (document.getElementById('vrm-popup-styles')) return;
     const style = document.createElement('style');
     style.id = 'vrm-popup-styles';
     style.textContent = `
+        :root {
+            --neko-popup-selected-bg: rgba(68, 183, 254, 0.1);
+            --neko-popup-selected-hover: rgba(68, 183, 254, 0.15);
+            --neko-popup-hover-subtle: rgba(68, 183, 254, 0.08);
+        }
         .vrm-popup {
             position: absolute;
             left: 100%;
             top: 0;
             margin-left: 8px;
             z-index: 100001;
-            background: rgba(255, 255, 255, 0.65);
+            background: var(--neko-popup-bg, rgba(255, 255, 255, 0.65));
             backdrop-filter: saturate(180%) blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.18);
+            border: var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18));
             border-radius: 8px;
             padding: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
+            box-shadow: var(--neko-popup-shadow, 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04));
             display: none;
             flex-direction: column;
             gap: 6px;
@@ -50,7 +58,7 @@
             white-space: nowrap;
         }
         .vrm-toggle-item:focus-within {
-            outline: 2px solid #44b7fe;
+            outline: 2px solid var(--neko-popup-active, #2a7bc4);
             outline-offset: 2px;
         }
         .vrm-toggle-item[aria-disabled="true"] {
@@ -61,7 +69,7 @@
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            border: 2px solid #ccc;
+            border: 2px solid var(--neko-popup-indicator-border, #ccc);
             background-color: transparent;
             cursor: pointer;
             flex-shrink: 0;
@@ -72,8 +80,8 @@
             justify-content: center;
         }
         .vrm-toggle-indicator[aria-checked="true"] {
-            background-color: #44b7fe;
-            border-color: #44b7fe;
+            background-color: var(--neko-popup-active, #2a7bc4);
+            border-color: var(--neko-popup-active, #2a7bc4);
         }
         .vrm-toggle-checkmark {
             color: #fff;
@@ -92,10 +100,10 @@
             cursor: pointer;
             user-select: none;
             font-size: 13px;
-            color: #333;
+            color: var(--neko-popup-text, #333);
         }
         .vrm-toggle-item:hover:not([aria-disabled="true"]) {
-            background: rgba(68, 183, 254, 0.1);
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
         .vrm-settings-menu-item {
             display: flex;
@@ -107,25 +115,25 @@
             transition: background 0.2s ease;
             font-size: 13px;
             white-space: nowrap;
-            color: #333;
+            color: var(--neko-popup-text, #333);
             pointer-events: auto !important;
             position: relative;
             z-index: 100002;
         }
         .vrm-settings-menu-item:hover {
-            background: rgba(68, 183, 254, 0.1);
+            background: var(--neko-popup-hover, rgba(68, 183, 254, 0.1));
         }
         .vrm-settings-separator {
             height: 1px;
-            background: rgba(0,0,0,0.1);
+            background: var(--neko-popup-separator, rgba(0, 0, 0, 0.1));
             margin: 4px 0;
         }
         .vrm-agent-status {
             font-size: 12px;
-            color: #44b7fe;
+            color: var(--neko-popup-accent, #2a7bc4);
             padding: 6px 8px;
             border-radius: 4px;
-            background: rgba(68, 183, 254, 0.05);
+            background: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
             margin-bottom: 8px;
             min-height: 20px;
             text-align: center;
@@ -141,7 +149,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
     popup.className = 'vrm-popup';
 
     const stopEventPropagation = (e) => { e.stopPropagation(); };
-    ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt => {
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         popup.addEventListener(evt, stopEventPropagation, true);
     });
 
@@ -153,10 +161,16 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.style.flexDirection = 'row';
         popup.style.gap = '0';
         popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
+    } else if (buttonId === 'screen') {
+        // 屏幕/窗口源选择列表：与 Live2D 保持一致的宽度与滚动行为
+        popup.style.width = '420px';
+        popup.style.maxHeight = '400px';
+        popup.style.overflowX = 'hidden';
+        popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         popup.classList.add('vrm-popup-agent');
-        this._createAgentPopupContent(popup);
-    } else     if (buttonId === 'settings') {
+        window.AgentHUD._createAgentPopupContent.call(this, popup);
+    } else if (buttonId === 'settings') {
         // 避免小屏溢出：限制高度并允许滚动
         popup.classList.add('vrm-popup-settings');
         this._createSettingsPopupContent(popup);
@@ -168,7 +182,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
 // 创建Agent弹出框内容
 VRMManager.prototype._createAgentPopupContent = function (popup) {
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'live2d-agent-status';
+    statusDiv.id = 'vrm-agent-status';
     statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);
@@ -202,7 +216,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
             whiteSpace: 'nowrap',
             opacity: '0.5',
             cursor: 'not-allowed',
-            color: '#666'
+            color: 'var(--neko-popup-text-sub, #666)'
         });
 
         const indicator = document.createElement('div');
@@ -210,7 +224,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            border: '2px solid #ccc',
+            border: '2px solid var(--neko-popup-indicator-border, #ccc)',
             backgroundColor: 'transparent',
             flexShrink: '0'
         });
@@ -220,7 +234,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
         label.setAttribute('data-i18n', item.labelKey);
         label.style.userSelect = 'none';
         label.style.fontSize = '13px';
-        label.style.color = '#999';
+        label.style.color = 'var(--neko-popup-text-sub, #666)';
 
         adaptingItem.appendChild(indicator);
         adaptingItem.appendChild(label);
@@ -230,72 +244,484 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
 
 // 创建设置弹出框内容
 VRMManager.prototype._createSettingsPopupContent = function (popup) {
-    // 添加开关项
+    // 1. 对话设置按钮（侧边弹出：合并消息 + 允许打断）
+    const chatSettingsBtn = this._createSettingsMenuButton({
+        label: window.t ? window.t('settings.toggles.chatSettings') : '对话设置',
+        labelKey: 'settings.toggles.chatSettings'
+    });
+    popup.appendChild(chatSettingsBtn);
+
+    const chatSidePanel = this._createChatSettingsSidePanel(popup);
+    chatSidePanel._anchorElement = chatSettingsBtn;
+    chatSidePanel._popupElement = popup;
+    this._attachSidePanelHover(chatSettingsBtn, chatSidePanel);
+
+    // 2. 动画设置按钮（侧边弹出：画质 + 帧率）
+    const animSettingsBtn = this._createSettingsMenuButton({
+        label: window.t ? window.t('settings.toggles.animationSettings') : '动画设置',
+        labelKey: 'settings.toggles.animationSettings'
+    });
+    popup.appendChild(animSettingsBtn);
+
+    const animSidePanel = this._createAnimationSettingsSidePanel();
+    animSidePanel._anchorElement = animSettingsBtn;
+    animSidePanel._popupElement = popup;
+    this._attachSidePanelHover(animSettingsBtn, animSidePanel);
+
+    // 3. 主动搭话和自主视觉（保持原有逻辑）
     const settingsToggles = [
-        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
-        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 30 },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
     ];
 
     settingsToggles.forEach(toggle => {
-        const toggleItem = this._createSettingsToggleItem(toggle, popup);
+        const toggleItem = this._createSettingsToggleItem(toggle);
         popup.appendChild(toggleItem);
 
-        // 为带有时间间隔的开关添加间隔控件（可折叠）
         if (toggle.hasInterval) {
-            const intervalControl = this._createIntervalControl(toggle);
-            popup.appendChild(intervalControl);
+            const sidePanel = this._createIntervalControl(toggle);
+            sidePanel._anchorElement = toggleItem;
+            sidePanel._popupElement = popup;
 
-            // 鼠标悬停时展开间隔控件
-            toggleItem.addEventListener('mouseenter', () => {
-                intervalControl._expand();
-            });
-            toggleItem.addEventListener('mouseleave', (e) => {
-                // 如果鼠标移动到间隔控件上，不收缩
-                if (!intervalControl.contains(e.relatedTarget)) {
-                    intervalControl._collapse();
-                }
-            });
-            intervalControl.addEventListener('mouseenter', () => {
-                intervalControl._expand();
-            });
-            intervalControl.addEventListener('mouseleave', () => {
-                intervalControl._collapse();
-            });
+            if (toggle.id === 'proactive-chat') {
+                const AUTH_I18N_KEY = 'settings.menu.mediaCredentials';
+                const AUTH_FALLBACK_LABEL = '配置媒体凭证';
+                const authLink = document.createElement('div');
+                Object.assign(authLink.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 8px',
+                    marginLeft: '-6px',
+                    fontSize: '12px',
+                    color: 'var(--neko-popup-text, #333)',
+                    cursor: 'pointer',
+                    borderRadius: '6px',
+                    transition: 'background 0.2s ease',
+                    width: '100%'
+                });
+
+                const authIcon = document.createElement('img');
+                authIcon.src = '/static/icons/cookies_icon.png';
+                authIcon.alt = '';
+                Object.assign(authIcon.style, {
+                    width: '16px', height: '16px', objectFit: 'contain', flexShrink: '0'
+                });
+                authLink.appendChild(authIcon);
+
+                const authLabel = document.createElement('span');
+                authLabel.textContent = window.t ? window.t(AUTH_I18N_KEY) : AUTH_FALLBACK_LABEL;
+                authLabel.setAttribute('data-i18n', AUTH_I18N_KEY);
+                Object.assign(authLabel.style, { fontSize: '12px', userSelect: 'none' });
+                authLink.appendChild(authLabel);
+
+                authLink.addEventListener('mouseenter', () => {
+                    authLink.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+                });
+                authLink.addEventListener('mouseleave', () => {
+                    authLink.style.background = 'transparent';
+                });
+                let isOpening = false;
+                authLink.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (isOpening) return;
+                    isOpening = true;
+                    if (typeof window.openOrFocusWindow === 'function') {
+                        window.openOrFocusWindow('/api/auth/page', 'neko_auth-page');
+                    } else {
+                        window.open('/api/auth/page', 'neko_auth-page');
+                    }
+                    setTimeout(() => { isOpening = false; }, 500);
+                });
+                sidePanel.appendChild(authLink);
+            }
+
+            this._attachSidePanelHover(toggleItem, sidePanel);
         }
     });
 
     // 桌面端添加导航菜单
     if (!window.isMobileWidth()) {
-        // 添加分隔线
         const separator = document.createElement('div');
         separator.className = 'vrm-settings-separator';
         popup.appendChild(separator);
 
-        // 然后添加导航菜单项
         this._createSettingsMenuItems(popup);
     }
 };
 
-// 创建时间间隔控件（可折叠的滑动条）
+// 创建设置菜单按钮（非开关型，带右箭头指示器）
+VRMManager.prototype._createSettingsMenuButton = function (config) {
+    const btn = document.createElement('div');
+    btn.className = 'vrm-settings-menu-item';
+    Object.assign(btn.style, {
+        justifyContent: 'space-between'
+    });
+
+    const label = document.createElement('span');
+    label.textContent = config.label;
+    if (config.labelKey) label.setAttribute('data-i18n', config.labelKey);
+    Object.assign(label.style, {
+        userSelect: 'none',
+        fontSize: '13px'
+    });
+    btn.appendChild(label);
+
+    const arrow = document.createElement('span');
+    arrow.textContent = '›';
+    Object.assign(arrow.style, {
+        fontSize: '16px',
+        color: 'var(--neko-popup-text-sub, #999)',
+        lineHeight: '1',
+        flexShrink: '0'
+    });
+    btn.appendChild(arrow);
+
+    if (config.labelKey) {
+        btn._updateLabelText = () => {
+            if (window.t) label.textContent = window.t(config.labelKey);
+        };
+    }
+
+    return btn;
+};
+
+// 创建对话设置侧边弹出面板（合并消息 + 允许打断）
+VRMManager.prototype._createChatSettingsSidePanel = function (popup) {
+    const container = this._createSidePanelContainer();
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '2px';
+    container.style.minWidth = '160px';
+    container.style.padding = '4px 4px';
+
+    const chatToggles = [
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
+    ];
+
+    chatToggles.forEach(toggle => {
+        const toggleItem = this._createSettingsToggleItem(toggle);
+        container.appendChild(toggleItem);
+    });
+
+    document.body.appendChild(container);
+    return container;
+};
+
+// 创建动画设置侧边弹出面板（画质 + 帧率滑动条）
+VRMManager.prototype._createAnimationSettingsSidePanel = function () {
+    const container = this._createSidePanelContainer();
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '8px';
+    container.style.width = '168px';
+    container.style.minWidth = '0';
+    container.style.padding = '10px 14px';
+
+    const LABEL_STYLE = { width: '36px', flexShrink: '0', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
+    const VALUE_STYLE = { width: '36px', flexShrink: '0', textAlign: 'right', fontSize: '12px', color: 'var(--neko-popup-text, #333)' };
+    const SLIDER_STYLE = { flex: '1', minWidth: '0', height: '4px', cursor: 'pointer', accentColor: 'var(--neko-popup-accent, #44b7fe)' };
+
+    // --- 画质滑动条 ---
+    const qualityRow = document.createElement('div');
+    Object.assign(qualityRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' });
+
+    const qualityLabel = document.createElement('span');
+    qualityLabel.textContent = window.t ? window.t('settings.toggles.renderQuality') : '画质';
+    qualityLabel.setAttribute('data-i18n', 'settings.toggles.renderQuality');
+    Object.assign(qualityLabel.style, LABEL_STYLE);
+
+    const qualitySlider = document.createElement('input');
+    qualitySlider.type = 'range';
+    qualitySlider.min = '0';
+    qualitySlider.max = '2';
+    qualitySlider.step = '1';
+    const qualityMap = { 'low': 0, 'medium': 1, 'high': 2 };
+    const qualityNames = ['low', 'medium', 'high'];
+    qualitySlider.value = qualityMap[window.renderQuality || 'medium'] ?? 1;
+    Object.assign(qualitySlider.style, SLIDER_STYLE);
+
+    const qualityLabelKeys = [
+        'settings.toggles.renderQualityLow',
+        'settings.toggles.renderQualityMedium',
+        'settings.toggles.renderQualityHigh'
+    ];
+    const qualityDefaults = ['低', '中', '高'];
+    const qualityValue = document.createElement('span');
+    const curQIdx = parseInt(qualitySlider.value, 10);
+    qualityValue.textContent = window.t ? window.t(qualityLabelKeys[curQIdx]) : qualityDefaults[curQIdx];
+    Object.assign(qualityValue.style, VALUE_STYLE);
+
+    qualitySlider.addEventListener('input', () => {
+        const idx = parseInt(qualitySlider.value, 10);
+        qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
+    });
+    qualitySlider.addEventListener('change', () => {
+        const idx = parseInt(qualitySlider.value, 10);
+        window.renderQuality = qualityNames[idx];
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: qualityNames[idx] } }));
+    });
+    qualitySlider.addEventListener('click', (e) => e.stopPropagation());
+    qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    qualityRow.appendChild(qualityLabel);
+    qualityRow.appendChild(qualitySlider);
+    qualityRow.appendChild(qualityValue);
+    container.appendChild(qualityRow);
+
+    // --- 帧率滑动条 ---
+    const fpsRow = document.createElement('div');
+    Object.assign(fpsRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%' });
+
+    const fpsLabel = document.createElement('span');
+    fpsLabel.textContent = window.t ? window.t('settings.toggles.frameRate') : '帧率';
+    fpsLabel.setAttribute('data-i18n', 'settings.toggles.frameRate');
+    Object.assign(fpsLabel.style, LABEL_STYLE);
+
+    const fpsSlider = document.createElement('input');
+    fpsSlider.type = 'range';
+    fpsSlider.min = '0';
+    fpsSlider.max = '2';
+    fpsSlider.step = '1';
+    const fpsValues = [30, 45, 60];
+    const curFps = window.targetFrameRate || 60;
+    fpsSlider.value = curFps >= 60 ? '2' : curFps >= 45 ? '1' : '0';
+    Object.assign(fpsSlider.style, SLIDER_STYLE);
+
+    const fpsLabelKeys = ['settings.toggles.frameRateLow', 'settings.toggles.frameRateMedium', 'settings.toggles.frameRateHigh'];
+    const fpsDefaults = ['30fps', '45fps', '60fps'];
+    const fpsValue = document.createElement('span');
+    const curFIdx = parseInt(fpsSlider.value, 10);
+    fpsValue.textContent = window.t ? window.t(fpsLabelKeys[curFIdx]) : fpsDefaults[curFIdx];
+    Object.assign(fpsValue.style, VALUE_STYLE);
+
+    fpsSlider.addEventListener('input', () => {
+        const idx = parseInt(fpsSlider.value, 10);
+        fpsValue.textContent = window.t ? window.t(fpsLabelKeys[idx]) : fpsDefaults[idx];
+    });
+    fpsSlider.addEventListener('change', () => {
+        const idx = parseInt(fpsSlider.value, 10);
+        window.targetFrameRate = fpsValues[idx];
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        window.dispatchEvent(new CustomEvent('neko-frame-rate-changed', { detail: { fps: fpsValues[idx] } }));
+    });
+    fpsSlider.addEventListener('click', (e) => e.stopPropagation());
+    fpsSlider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    fpsRow.appendChild(fpsLabel);
+    fpsRow.appendChild(fpsSlider);
+    fpsRow.appendChild(fpsValue);
+    container.appendChild(fpsRow);
+
+    document.body.appendChild(container);
+    return container;
+};
+
+// 创建侧边弹出面板容器（公共基础样式）
+VRMManager.prototype._createSidePanelContainer = function () {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        position: 'fixed',
+        display: 'none',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '6px 12px',
+        fontSize: '12px',
+        color: 'var(--neko-popup-text, #333)',
+        opacity: '0',
+        zIndex: '100001',
+        background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
+        borderRadius: '8px',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',
+        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
+        transform: 'translateX(-6px)',
+        pointerEvents: 'auto',
+        flexWrap: 'wrap',
+        maxWidth: '300px'
+    });
+
+    const stopEventPropagation = (e) => e.stopPropagation();
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+        container.addEventListener(evt, stopEventPropagation, true);
+    });
+
+    container._expand = () => {
+        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        container.style.display = 'flex';
+        container.style.left = '';
+        container.style.right = '';
+        container.style.transform = 'translateX(-6px)';
+
+        const anchor = container._anchorElement;
+        const popupEl = container._popupElement;
+        if (anchor) {
+            const anchorRect = anchor.getBoundingClientRect();
+            const popupRect = popupEl ? popupEl.getBoundingClientRect() : anchorRect;
+            container.style.top = `${anchorRect.top}px`;
+            container.style.left = `${popupRect.right - 8}px`;
+        }
+
+        requestAnimationFrame(() => {
+            const containerRect = container.getBoundingClientRect();
+            if (containerRect.right > window.innerWidth - 10) {
+                const popupEl2 = container._popupElement;
+                const popupRect = popupEl2 ? popupEl2.getBoundingClientRect() : null;
+                if (popupRect) {
+                    container.style.left = '';
+                    container.style.right = `${window.innerWidth - popupRect.left - 8}px`;
+                    container.style.transform = 'translateX(6px)';
+                }
+            }
+            requestAnimationFrame(() => {
+                container.style.opacity = '1';
+                container.style.transform = 'translateX(0)';
+            });
+        });
+    };
+
+    container._collapse = () => {
+        if (container.style.display === 'none') return;
+        if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        container.style.opacity = '0';
+        if (container.style.right && container.style.right !== '') {
+            container.style.transform = 'translateX(6px)';
+        } else {
+            container.style.transform = 'translateX(-6px)';
+        }
+        container._collapseTimeout = setTimeout(() => {
+            if (container.style.opacity === '0') container.style.display = 'none';
+            container._collapseTimeout = null;
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
+    };
+
+    return container;
+};
+
+// 附加侧边面板悬停逻辑（公共方法，供按钮和开关复用）
+VRMManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
+    const self = this;
+    const popupEl = sidePanel._popupElement || null;
+    const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+
+    if (ownerId) {
+        sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
+    }
+
+    const collapseWithDelay = (delay = 80) => {
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._hoverCollapseTimer = setTimeout(() => {
+            const anchorHovered = anchorEl.matches(':hover');
+            const panelHovered = sidePanel.matches(':hover');
+            if (!anchorHovered && !panelHovered) {
+                sidePanel._collapse();
+            }
+            sidePanel._hoverCollapseTimer = null;
+        }, delay);
+    };
+
+    const expandPanel = () => {
+        if (ownerId) {
+            document.querySelectorAll(`[data-neko-sidepanel-owner="${ownerId}"]`).forEach((panel) => {
+                if (panel !== sidePanel && typeof panel._collapse === 'function') {
+                    panel._collapse();
+                }
+            });
+        }
+        if (sidePanel._hoverCollapseTimer) {
+            clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        sidePanel._expand();
+    };
+    const collapsePanel = (e) => {
+        const target = e.relatedTarget;
+        if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+            collapseWithDelay();
+        }
+    };
+
+    anchorEl.addEventListener('mouseenter', expandPanel);
+    anchorEl.addEventListener('mouseleave', collapsePanel);
+    sidePanel.addEventListener('mouseenter', () => {
+        expandPanel();
+        if (self.interaction) {
+            self.interaction._isMouseOverButtons = true;
+            if (self.interaction._hideButtonsTimer) {
+                clearTimeout(self.interaction._hideButtonsTimer);
+                self.interaction._hideButtonsTimer = null;
+            }
+        }
+    });
+    sidePanel.addEventListener('mouseleave', (e) => {
+        collapsePanel(e);
+        if (self.interaction) {
+            self.interaction._isMouseOverButtons = false;
+        }
+    });
+
+    // 快速离开整个 settings popup 时，兜底收起侧栏
+    if (popupEl) {
+        popupEl.addEventListener('mouseleave', (e) => {
+            const target = e.relatedTarget;
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) {
+                collapseWithDelay(60);
+            }
+        });
+    }
+};
+
+// 创建时间间隔控件（侧边弹出面板）
 VRMManager.prototype._createIntervalControl = function (toggle) {
     const container = document.createElement('div');
     container.className = `vrm-interval-control-${toggle.id}`;
     Object.assign(container.style, {
-        display: 'none',  // 初始完全隐藏，不占用空间
-        alignItems: 'center',
-        gap: '2px',
-        padding: '0 12px 0 44px',
+        position: 'fixed',
+        display: 'none',
+        alignItems: 'stretch',
+        flexDirection: 'column',
+        gap: '6px',
+        padding: '6px 12px',
         fontSize: '12px',
-        color: '#666',
-        height: '0',
-        overflow: 'hidden',
+        color: 'var(--neko-popup-text, #333)',
         opacity: '0',
-        transition: 'height 0.2s ease, opacity 0.2s ease, padding 0.2s ease'
+        zIndex: '100001',
+        background: 'var(--neko-popup-bg, rgba(255,255,255,0.65))',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
+        borderRadius: '8px',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',
+        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
+        transform: 'translateX(-6px)',
+        pointerEvents: 'auto',
+        flexWrap: 'nowrap',
+        width: 'max-content',
+        maxWidth: 'min(320px, calc(100vw - 24px))'
     });
 
-    // 间隔标签（包含"基础"提示，主动搭话会指数退避）
+    // 阻止指针事件传播到底层
+    const stopEventPropagation = (e) => e.stopPropagation();
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+        container.addEventListener(evt, stopEventPropagation, true);
+    });
+
+    // 滑动条行容器
+    const sliderRow = document.createElement('div');
+    Object.assign(sliderRow.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        width: 'auto'
+    });
+
+    // 间隔标签
     const labelText = document.createElement('span');
     const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
     const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
@@ -303,16 +729,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
     labelText.setAttribute('data-i18n', labelKey);
     Object.assign(labelText.style, {
         flexShrink: '0',
-        fontSize: '10px'
-    });
-
-    // 滑动条容器
-    const sliderWrapper = document.createElement('div');
-    Object.assign(sliderWrapper.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '1px',
-        flexShrink: '0'
+        fontSize: '12px'
     });
 
     // 滑动条
@@ -321,20 +738,18 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
     slider.id = `vrm-${toggle.id}-interval`;
     const minVal = toggle.id === 'proactive-chat' ? 10 : 5;
     slider.min = minVal;
-    slider.max = '120';  // 最大120秒
+    slider.max = '120';
     slider.step = '5';
-    // 从 window 获取当前值
     let currentValue = typeof window[toggle.intervalKey] !== 'undefined'
         ? window[toggle.intervalKey]
         : toggle.defaultInterval;
-    // 限制在新的最大值范围内
     if (currentValue > 120) currentValue = 120;
     slider.value = currentValue;
     Object.assign(slider.style, {
-        width: '55px',
+        width: '60px',
         height: '4px',
         cursor: 'pointer',
-        accentColor: '#44b7fe'
+        accentColor: 'var(--neko-popup-accent, #44b7fe)'
     });
 
     // 数值显示
@@ -344,56 +759,104 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         minWidth: '26px',
         textAlign: 'right',
         fontFamily: 'monospace',
-        fontSize: '11px',
+        fontSize: '12px',
         flexShrink: '0'
     });
 
-    // 滑动条变化时更新显示和保存设置
+    // 滑动条事件
     slider.addEventListener('input', () => {
-        const value = parseInt(slider.value, 10);
-        valueDisplay.textContent = `${value}s`;
+        valueDisplay.textContent = `${parseInt(slider.value, 10)}s`;
     });
-
     slider.addEventListener('change', () => {
         const value = parseInt(slider.value, 10);
-        // 保存到 window 和 localStorage
         window[toggle.intervalKey] = value;
         if (typeof window.saveNEKOSettings === 'function') {
             window.saveNEKOSettings();
         }
         console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
     });
-
-    // 阻止事件冒泡
     slider.addEventListener('click', (e) => e.stopPropagation());
     slider.addEventListener('mousedown', (e) => e.stopPropagation());
 
-    sliderWrapper.appendChild(slider);
-    sliderWrapper.appendChild(valueDisplay);
-    container.appendChild(labelText);
-    container.appendChild(sliderWrapper);
+    sliderRow.appendChild(labelText);
+    sliderRow.appendChild(slider);
+    sliderRow.appendChild(valueDisplay);
+    container.appendChild(sliderRow);
 
-    // 存储展开/收缩方法供外部调用
+    // 如果是主动搭话，在间隔控件内添加搭话方式选项
+    if (toggle.id === 'proactive-chat') {
+        if (typeof window.createChatModeToggles === 'function') {
+            const chatModesContainer = window.createChatModeToggles('vrm');
+            container.appendChild(chatModesContainer);
+        }
+    }
+
+    // 侧边弹出展开方法
     container._expand = () => {
+        if (container.style.display === 'flex' && container.style.opacity !== '0') return;
+
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
+
         container.style.display = 'flex';
-        // 使用 requestAnimationFrame 确保 display 变化后再触发动画
+        container.style.left = '';
+        container.style.right = '';
+        container.style.transform = 'translateX(-6px)';
+
+        // 根据锚点元素和 popup 计算位置
+        const anchor = container._anchorElement;
+        const popupEl = container._popupElement;
+        if (anchor) {
+            const anchorRect = anchor.getBoundingClientRect();
+            const popupRect = popupEl ? popupEl.getBoundingClientRect() : anchorRect;
+            container.style.top = `${anchorRect.top}px`;
+            container.style.left = `${popupRect.right - 8}px`;
+        }
+
         requestAnimationFrame(() => {
-            container.style.height = '24px';
-            container.style.opacity = '1';
-            container.style.padding = '4px 12px 8px 44px';
+            // 检测右侧是否溢出视口
+            const containerRect = container.getBoundingClientRect();
+            if (containerRect.right > window.innerWidth - 10) {
+                const popupEl2 = container._popupElement;
+                const popupRect = popupEl2 ? popupEl2.getBoundingClientRect() : null;
+                if (popupRect) {
+                    container.style.left = '';
+                    container.style.right = `${window.innerWidth - popupRect.left - 8}px`;
+                    container.style.transform = 'translateX(6px)';
+                }
+            }
+            requestAnimationFrame(() => {
+                container.style.opacity = '1';
+                container.style.transform = 'translateX(0)';
+            });
         });
     };
+
+    // 侧边弹出收缩方法
     container._collapse = () => {
-        container.style.height = '0';
+        if (container.style.display === 'none') return;
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
         container.style.opacity = '0';
-        container.style.padding = '0 12px 0 44px';
-        // 动画结束后隐藏
-        setTimeout(() => {
+        if (container.style.right && container.style.right !== '') {
+            container.style.transform = 'translateX(6px)';
+        } else {
+            container.style.transform = 'translateX(-6px)';
+        }
+        container._collapseTimeout = setTimeout(() => {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+            container._collapseTimeout = null;
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
+
+    // 附加到 body（不在 popup 流中，避免被 popup 的 overflow 裁剪）
+    document.body.appendChild(container);
 
     return container;
 };
@@ -409,7 +872,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.id = `live2d-${toggle.id}`;
+    checkbox.id = `vrm-${toggle.id}`;
     checkbox.style.position = 'absolute';
     checkbox.style.opacity = '0';
     checkbox.style.width = '1px';
@@ -436,7 +899,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     label.className = 'vrm-toggle-label';
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
-    label.htmlFor = `live2d-${toggle.id}`;
+    label.htmlFor = `vrm-${toggle.id}`;
     toggleItem.setAttribute('aria-label', toggle.label);
 
     // 更新标签文本的函数
@@ -494,7 +957,6 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
         updateDisabledStyle();
         updateTitle();
     };
-    
     const handleToggle = (e) => {
         if (checkbox.disabled) return;
         if (checkbox._processing) {
@@ -525,28 +987,39 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 };
 
 // 创建设置开关项
-VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
+VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = 'vrm-toggle-item';
+    toggleItem.id = `vrm-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
-    toggleItem.style.padding = '8px 12px';
-    toggleItem.style.borderBottom = '1px solid rgba(0,0,0,0.05)';
+    toggleItem.setAttribute('aria-label', toggle.label);
+    Object.assign(toggleItem.style, {
+        padding: '8px 12px'
+    });
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `vrm-${toggle.id}`;
-    checkbox.style.position = 'absolute';
-    checkbox.style.opacity = '0';
-    checkbox.style.width = '1px';
-    checkbox.style.height = '1px';
-    checkbox.style.overflow = 'hidden';
+    Object.assign(checkbox.style, {
+        position: 'absolute',
+        width: '1px',
+        height: '1px',
+        padding: '0',
+        margin: '-1px',
+        overflow: 'hidden',
+        clip: 'rect(0, 0, 0, 0)',
+        whiteSpace: 'nowrap',
+        border: '0'
+    });
     checkbox.setAttribute('aria-hidden', 'true');
+    checkbox.setAttribute('tabindex', '-1');
 
-    // 初始化状态
-    if (toggle.id === 'merge-messages' && typeof window.mergeMessagesEnabled !== 'undefined') {
-        checkbox.checked = window.mergeMessagesEnabled;
+    if (toggle.id === 'merge-messages') {
+        if (typeof window.mergeMessagesEnabled !== 'undefined') {
+            checkbox.checked = window.mergeMessagesEnabled;
+        }
     } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
@@ -562,91 +1035,168 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const checkmark = document.createElement('div');
     checkmark.className = 'vrm-toggle-checkmark';
+    checkmark.setAttribute('aria-hidden', 'true');
     checkmark.innerHTML = '✓';
     indicator.appendChild(checkmark);
 
-    const label = document.createElement('label');
-    label.className = 'vrm-toggle-label';
-    label.innerText = toggle.label;
-    if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
-    label.htmlFor = `vrm-${toggle.id}`;
-    label.style.display = 'flex';
-    label.style.alignItems = 'center';
-    label.style.height = '20px';
-    toggleItem.setAttribute('aria-label', toggle.label);
-
-    // 更新标签文本的函数
-    const updateLabelText = () => {
-        if (toggle.labelKey && window.t) {
-            label.innerText = window.t(toggle.labelKey);
-            toggleItem.setAttribute('aria-label', window.t(toggle.labelKey));
+    const updateIndicatorStyle = (checked) => {
+        if (checked) {
+            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
         }
     };
+
+    const label = document.createElement('label');
+    label.innerText = toggle.label;
     if (toggle.labelKey) {
-        toggleItem._updateLabelText = updateLabelText;
+        label.setAttribute('data-i18n', toggle.labelKey);
     }
+    label.style.cursor = 'pointer';
+    label.style.userSelect = 'none';
+    label.style.fontSize = '13px';
+    label.style.color = 'var(--neko-popup-text, #333)';
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.lineHeight = '1';
+    label.style.height = '20px';
 
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
-        if (isChecked) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
-        } else {
-            toggleItem.style.background = 'transparent';
-        }
+        updateIndicatorStyle(isChecked);
+        toggleItem.style.background = isChecked
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : 'transparent';
     };
+
     updateStyle();
 
-    toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
+    toggleItem.appendChild(checkbox);
+    toggleItem.appendChild(indicator);
+    toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
-    toggleItem.addEventListener('mouseleave', updateStyle);
-
-    // 键盘支持
-    toggleItem.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            checkbox.checked = !checkbox.checked;
-            handleToggleChange(checkbox.checked);
+    toggleItem.addEventListener('mouseenter', () => {
+        if (checkbox.checked) {
+            toggleItem.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+        } else {
+            toggleItem.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
         }
+    });
+    toggleItem.addEventListener('mouseleave', () => {
+        updateStyle();
     });
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
-        if (typeof window.saveNEKOSettings === 'function') {
-            if (toggle.id === 'merge-messages') {
-                window.mergeMessagesEnabled = isChecked;
+
+        if (toggle.id === 'merge-messages') {
+            window.mergeMessagesEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
-            } else if (toggle.id === 'focus-mode') {
-                window.focusModeEnabled = toggle.inverted ? !isChecked : isChecked;
+            }
+        } else if (toggle.id === 'focus-mode') {
+            const actualValue = toggle.inverted ? !isChecked : isChecked;
+            window.focusModeEnabled = actualValue;
+            if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
-            } else if (toggle.id === 'proactive-chat') {
-                window.proactiveChatEnabled = isChecked;
+            }
+        } else if (toggle.id === 'proactive-chat') {
+            window.proactiveChatEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
-                if (isChecked) {
-                    window.resetProactiveChatBackoff && window.resetProactiveChatBackoff();
-                } else {
-                    window.stopProactiveChatSchedule && window.stopProactiveChatSchedule();
+            }
+            if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
+                window.resetProactiveChatBackoff();
+            } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
+                window.stopProactiveChatSchedule();
+            }
+        } else if (toggle.id === 'proactive-vision') {
+            window.proactiveVisionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            if (isChecked) {
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
                 }
-            } else if (toggle.id === 'proactive-vision') {
-                window.proactiveVisionEnabled = isChecked;
-                window.saveNEKOSettings();
-                if (isChecked) {
-                    window.resetProactiveChatBackoff && window.resetProactiveChatBackoff();
-                    if (window.isRecording && window.startProactiveVisionDuringSpeech) window.startProactiveVisionDuringSpeech();
-                } else {
-                    if (!window.proactiveChatEnabled && window.stopProactiveChatSchedule) window.stopProactiveChatSchedule();
-                    window.stopProactiveVisionDuringSpeech && window.stopProactiveVisionDuringSpeech();
+                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                    if (typeof window.startProactiveVisionDuringSpeech === 'function') {
+                        window.startProactiveVisionDuringSpeech();
+                    }
+                }
+            } else {
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    if (!window.proactiveChatEnabled) {
+                        window.stopProactiveChatSchedule();
+                    }
+                }
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
                 }
             }
         }
     };
 
-    checkbox.addEventListener('change', (e) => { e.stopPropagation(); handleToggleChange(checkbox.checked); });
-    [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
-        if(e.target !== checkbox) { e.preventDefault(); e.stopPropagation(); checkbox.checked = !checkbox.checked; handleToggleChange(checkbox.checked); }
-    }));
+    const performToggle = () => {
+        if (checkbox.disabled) {
+            return;
+        }
+
+        if (checkbox._processing) {
+            const elapsed = Date.now() - (checkbox._processingTime || 0);
+            if (elapsed < 500) {
+                return;
+            }
+        }
+
+        checkbox._processing = true;
+        checkbox._processingTime = Date.now();
+
+        const newChecked = !checkbox.checked;
+        checkbox.checked = newChecked;
+        handleToggleChange(newChecked);
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+
+        setTimeout(() => {
+            checkbox._processing = false;
+            checkbox._processingTime = null;
+        }, 500);
+    };
+
+    toggleItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            performToggle();
+        }
+    });
+
+    toggleItem.addEventListener('click', (e) => {
+        if (e.target !== checkbox) {
+            e.preventDefault();
+            e.stopPropagation();
+            performToggle();
+        }
+    });
+
+    indicator.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        performToggle();
+    });
+
+    label.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        performToggle();
+    });
+
+    checkbox.updateStyle = updateStyle;
 
     return toggleItem;
 };
@@ -654,12 +1204,12 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 // 创建设置菜单项 (保持与Live2D一致)
 VRMManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
-        { 
-            id: 'character', 
-            label: window.t ? window.t('settings.menu.characterManage') : '角色管理', 
-            labelKey: 'settings.menu.characterManage', 
-            icon: '/static/icons/character_icon.png', 
-            action: 'navigate', 
+        {
+            id: 'character',
+            label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
+            labelKey: 'settings.menu.characterManage',
+            icon: '/static/icons/character_icon.png',
+            action: 'navigate',
             url: '/chara_manager',
             // 子菜单：通用设置、模型管理、声音克隆
             submenu: [
@@ -682,20 +1232,41 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
             const submenuContainer = this._createSubmenuContainer(item.submenu);
             popup.appendChild(submenuContainer);
 
-            // 鼠标悬停展开/收缩
-            menuItem.addEventListener('mouseenter', () => {
-                submenuContainer._expand();
-            });
-            menuItem.addEventListener('mouseleave', (e) => {
-                if (!submenuContainer.contains(e.relatedTarget)) {
-                    submenuContainer._collapse();
+            // 鼠标悬停展开/收缩：增加缓冲，避免主项和子项之间小缝隙导致抖动
+            let submenuCollapseTimer = null;
+            const clearSubmenuCollapseTimer = () => {
+                if (submenuCollapseTimer) {
+                    clearTimeout(submenuCollapseTimer);
+                    submenuCollapseTimer = null;
                 }
-            });
-            submenuContainer.addEventListener('mouseenter', () => {
+            };
+            const expandSubmenu = () => {
+                clearSubmenuCollapseTimer();
                 submenuContainer._expand();
+            };
+            const scheduleSubmenuCollapse = () => {
+                clearSubmenuCollapseTimer();
+                submenuCollapseTimer = setTimeout(() => {
+                    submenuContainer._collapse();
+                    submenuCollapseTimer = null;
+                }, 110);
+            };
+
+            menuItem.addEventListener('mouseenter', expandSubmenu);
+            menuItem.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
-            submenuContainer.addEventListener('mouseleave', () => {
-                submenuContainer._collapse();
+            submenuContainer.addEventListener('mouseenter', expandSubmenu);
+            submenuContainer.addEventListener('mouseleave', (e) => {
+                const target = e.relatedTarget;
+                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
+                    return;
+                }
+                scheduleSubmenuCollapse();
             });
         }
     });
@@ -715,7 +1286,7 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
         transition: 'background 0.2s ease',
         fontSize: isSubmenuItem ? '12px' : '13px',
         whiteSpace: 'nowrap',
-        color: '#333'
+        color: 'var(--neko-popup-text, #333)'
     });
 
     if (item.icon) {
@@ -753,7 +1324,7 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
         };
     }
 
-    menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'rgba(68, 183, 254, 0.1)');
+    menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
     menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
     // 防抖标志：防止快速多次点击导致多开窗口
@@ -830,7 +1401,8 @@ VRMManager.prototype._createSubmenuContainer = function (submenuItems) {
     container._expand = () => {
         container.style.display = 'flex';
         requestAnimationFrame(() => {
-            container.style.height = `${submenuItems.length * 32}px`;
+            const calculatedHeight = Math.max(submenuItems.length * 32, container.scrollHeight);
+            container.style.height = `${calculatedHeight}px`;
             container.style.opacity = '1';
         });
     };
@@ -841,7 +1413,7 @@ VRMManager.prototype._createSubmenuContainer = function (submenuItems) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;
@@ -856,7 +1428,7 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
     popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
-    setTimeout(() => popup.style.display = 'none', 200);
+    setTimeout(() => popup.style.display = 'none', VRM_POPUP_ANIMATION_DURATION_MS);
 
     // 更新按钮状态
     if (typeof this.setButtonActive === 'function') {
@@ -883,53 +1455,56 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
             clearTimeout(this._windowCheckTimers[url]);
             delete this._windowCheckTimers[url];
         }
-        try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) {}
+        try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) { }
         delete this._openSettingsWindows[url];
     });
 };
 
 // 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
-    // 使用 display === 'flex' 判断弹窗是否可见（避免动画中误判）
     const isVisible = popup.style.display === 'flex';
 
-    // 如果是设置弹出框，每次显示时更新开关状态
     if (buttonId === 'settings') {
-        const updateCheckboxStyle = (checkbox) => {
+        const syncCheckbox = (checkbox, checked) => {
             if (!checkbox) return;
-            const toggleItem = checkbox.parentElement;
-            // 使用 class 选择器查找元素，避免依赖 DOM 结构顺序
-            const indicator = toggleItem?.querySelector('.vrm-toggle-indicator');
-            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
-            if (!indicator || !checkmark) {
-                console.warn('[VRM UI Popup] 无法找到 toggle indicator 或 checkmark 元素');
-                return;
-            }
-            if (checkbox.checked) {
-                indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1'; toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
-            } else {
-                indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0'; toggleItem.style.background = 'transparent';
+            checkbox.checked = checked;
+            if (typeof checkbox.updateStyle === 'function') {
+                checkbox.updateStyle();
             }
         };
 
-        const mergeCheckbox = popup.querySelector('#vrm-merge-messages');
+        const mergeCheckbox = document.querySelector('#vrm-merge-messages');
         if (mergeCheckbox && typeof window.mergeMessagesEnabled !== 'undefined') {
-            mergeCheckbox.checked = window.mergeMessagesEnabled; updateCheckboxStyle(mergeCheckbox);
+            syncCheckbox(mergeCheckbox, window.mergeMessagesEnabled);
         }
 
-        const focusCheckbox = popup.querySelector('#vrm-focus-mode');
+        const focusCheckbox = document.querySelector('#vrm-focus-mode');
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
-            focusCheckbox.checked = !window.focusModeEnabled; updateCheckboxStyle(focusCheckbox);
+            syncCheckbox(focusCheckbox, !window.focusModeEnabled);
         }
-        
+
         const proactiveChatCheckbox = popup.querySelector('#vrm-proactive-chat');
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
-            proactiveChatCheckbox.checked = window.proactiveChatEnabled; updateCheckboxStyle(proactiveChatCheckbox);
+            syncCheckbox(proactiveChatCheckbox, window.proactiveChatEnabled);
         }
-        
+
         const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
-            proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
+            syncCheckbox(proactiveVisionCheckbox, window.proactiveVisionEnabled);
+        }
+
+        if (window.CHAT_MODE_CONFIG) {
+            window.CHAT_MODE_CONFIG.forEach(config => {
+                const checkbox = document.querySelector(`#vrm-proactive-${config.mode}-chat`);
+                if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
+                    checkbox.checked = window[config.globalVarName];
+                    if (typeof window.updateChatModeStyle === 'function') {
+                        requestAnimationFrame(() => {
+                            window.updateChatModeStyle(checkbox);
+                        });
+                    }
+                }
+            });
         }
     }
 
@@ -937,21 +1512,23 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
 
     if (isVisible) {
         popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
+        const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
+        if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
-        
+
         // 更新按钮状态为关闭
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, false);
         }
-        
+
         // 存储 timeout ID，以便在快速重新打开时能够清除
-        const hideTimeoutId = setTimeout(() => { 
-            popup.style.display = 'none'; 
-            popup.style.left = '100%'; 
+        const hideTimeoutId = setTimeout(() => {
+            popup.style.display = 'none';
+            popup.style.left = '100%';
             popup.style.top = '0';
             // 清除 timeout ID 引用
             popup._hideTimeoutId = null;
-        }, 200);
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
         popup._hideTimeoutId = hideTimeoutId;
     } else {
         // 清除之前可能存在的隐藏 timeout，防止旧的 timeout 关闭新打开的 popup
@@ -959,15 +1536,15 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
             clearTimeout(popup._hideTimeoutId);
             popup._hideTimeoutId = null;
         }
-        
+
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
-        
+
         // 更新按钮状态为打开
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, true);
         }
-        
+
         // 预加载图片
         const images = popup.querySelectorAll('img');
         Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
@@ -980,6 +1557,11 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                     const button = document.getElementById(`vrm-btn-${buttonId}`);
                     const buttonWidth = button ? button.offsetWidth : 48;
                     popup.style.left = 'auto'; popup.style.right = '0'; popup.style.marginLeft = '0'; popup.style.marginRight = `${buttonWidth + 8}px`;
+                    const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
+                    if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
+                } else {
+                    const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
+                    if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
                 }
                 if (buttonId === 'settings' || buttonId === 'agent') {
                     if (popupRect.bottom > screenHeight - 60) {
@@ -1010,7 +1592,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
         if (audioInputs.length === 0) {
             const noDev = document.createElement('div');
             noDev.textContent = window.t ? window.t('microphone.noDevices') : '未检测到麦克风';
-            Object.assign(noDev.style, { padding:'8px', fontSize:'13px', color:'#666' });
+            Object.assign(noDev.style, { padding: '8px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)' });
             popup.appendChild(noDev);
             return;
         }
@@ -1023,13 +1605,13 @@ VRMManager.prototype.renderMicList = async function (popup) {
             Object.assign(btn.style, {
                 padding: '8px 12px', cursor: 'pointer', fontSize: '13px',
                 borderRadius: '6px', transition: 'background 0.2s',
-                color: '#333'
+                color: 'var(--neko-popup-text, #333)'
             });
-            
+
             // 选中高亮逻辑（简单模拟）
-            btn.addEventListener('mouseenter', () => btn.style.background = 'rgba(68, 183, 254, 0.1)');
+            btn.addEventListener('mouseenter', () => btn.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))');
             btn.addEventListener('mouseleave', () => btn.style.background = 'transparent');
-            
+
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 if (deviceId) {
@@ -1039,7 +1621,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ microphone_id: deviceId })
                         });
-                        
+
                         if (!response.ok) {
                             // 解析错误信息
                             let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
@@ -1050,7 +1632,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                                 try {
                                     const errorText = await response.text();
                                     if (errorText) errorMessage = errorText;
-                                } catch {}
+                                } catch { }
                             }
                             if (window.showStatusToast) {
                                 const message = window.t ? window.t('microphone.switchFailed', { error: errorMessage }) : `切换麦克风失败: ${errorMessage}`;
@@ -1064,7 +1646,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
                             window.showStatusToast(message, 2000);
                         }
-                    } catch(e) {
+                    } catch (e) {
                         console.error('[VRM UI] 切换麦克风时发生网络错误:', e);
                         if (window.showStatusToast) {
                             const message = window.t ? window.t('microphone.networkError') : '切换麦克风失败：网络错误';
@@ -1150,7 +1732,7 @@ function createScreenSourceOption(source) {
             height: '56px',
             objectFit: 'cover',
             borderRadius: '4px',
-            border: '1px solid #ddd',
+            border: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
             marginBottom: '4px'
         });
         option.appendChild(thumb);
@@ -1165,7 +1747,7 @@ function createScreenSourceOption(source) {
             alignItems: 'center',
             justifyContent: 'center',
             fontSize: '24px',
-            background: '#f5f5f5',
+            background: 'var(--neko-screen-placeholder-bg, #f5f5f5)',
             borderRadius: '4px',
             marginBottom: '4px'
         });
@@ -1177,7 +1759,7 @@ function createScreenSourceOption(source) {
     label.textContent = source.name;
     Object.assign(label.style, {
         fontSize: '10px',
-        color: '#333',
+        color: 'var(--neko-popup-text, #333)',
         width: '100%',
         textAlign: 'center',
         lineHeight: '1.3',
@@ -1192,7 +1774,7 @@ function createScreenSourceOption(source) {
 
     // 悬停效果
     option.addEventListener('mouseenter', () => {
-        option.style.background = 'rgba(68, 183, 254, 0.1)';
+        option.style.background = 'var(--neko-popup-hover, rgba(68, 183, 254, 0.1))';
     });
     option.addEventListener('mouseleave', () => {
         option.style.background = 'transparent';
@@ -1222,7 +1804,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
     if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
         const notAvailableItem = document.createElement('div');
         notAvailableItem.textContent = t('app.screenSource.notAvailable') || '仅在桌面版可用';
-        Object.assign(notAvailableItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        Object.assign(notAvailableItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
         popup.appendChild(notAvailableItem);
         return;
     }
@@ -1231,7 +1813,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         // 显示加载中
         const loadingItem = document.createElement('div');
         loadingItem.textContent = t('app.screenSource.loading') || '加载中...';
-        Object.assign(loadingItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        Object.assign(loadingItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
         popup.appendChild(loadingItem);
 
         // 获取屏幕源
@@ -1245,7 +1827,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         if (!sources || sources.length === 0) {
             const noSourcesItem = document.createElement('div');
             noSourcesItem.textContent = t('app.screenSource.noSources') || '没有可用的屏幕源';
-            Object.assign(noSourcesItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+            Object.assign(noSourcesItem.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-text-sub, #666)', textAlign: 'center' });
             popup.appendChild(noSourcesItem);
             return;
         }
@@ -1262,8 +1844,8 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 padding: '6px 8px',
                 fontSize: '11px',
                 fontWeight: '600',
-                color: '#666',
-                borderBottom: '1px solid #eee',
+                color: 'var(--neko-popup-text-sub, #666)',
+                borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
                 marginBottom: '4px'
             });
             popup.appendChild(screenTitle);
@@ -1283,8 +1865,8 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 padding: '6px 8px',
                 fontSize: '11px',
                 fontWeight: '600',
-                color: '#666',
-                borderBottom: '1px solid #eee',
+                color: 'var(--neko-popup-text-sub, #666)',
+                borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.1))',
                 marginTop: windows.length > 0 && screens.length > 0 ? '8px' : '0',
                 marginBottom: '4px'
             });
@@ -1302,7 +1884,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         popup.innerHTML = '';
         const errDiv = document.createElement('div');
         errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
-        Object.assign(errDiv.style, { padding:'12px', fontSize:'13px', color:'#dc3545', textAlign:'center' });
+        Object.assign(errDiv.style, { padding: '12px', fontSize: '13px', color: 'var(--neko-popup-error, #dc3545)', textAlign: 'center' });
         popup.appendChild(errDiv);
     }
 };

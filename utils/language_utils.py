@@ -14,7 +14,9 @@ import logging
 import threading
 import asyncio
 import os
-from typing import Optional, Tuple, List
+import hashlib
+from collections import OrderedDict
+from typing import Optional, Tuple, List, Any, Dict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
@@ -741,8 +743,8 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     logger.debug(f"🔄 [翻译服务] 回退到 LLM 翻译: {source_lang} -> {target_lang}")
     try:
         config_manager = get_config_manager()
-        # 使用correction模型配置（轻量级模型，适合翻译任务）
-        correction_config = config_manager.get_model_api_config('correction')
+        # 复用emotion模型配置
+        emotion_config = config_manager.get_model_api_config('emotion')
         
         # 语言名称映射
         lang_names = {
@@ -756,9 +758,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         target_name = lang_names.get(target_lang, target_lang)
         
         llm = ChatOpenAI(
-            model=correction_config['model'],
-            base_url=correction_config['base_url'],
-            api_key=correction_config['api_key'],
+            model=emotion_config['model'],
+            base_url=emotion_config['base_url'],
+            api_key=emotion_config['api_key'],
             temperature=0.3,  # 低temperature保证翻译准确性
             timeout=10.0
         )
@@ -813,4 +815,233 @@ async def get_user_language_async() -> str:
     except Exception as e:
         logger.warning(f"获取全局语言失败: {e}，使用默认中文")
         return 'zh'  # 默认中文
+
+
+# ============================================================================
+# 面向内部组件的强稳定翻译服务（原 translation_service.py）
+# ============================================================================
+
+
+
+# 缓存配置
+CACHE_MAX_SIZE = 1000
+SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko']
+DEFAULT_LANGUAGE = 'zh-CN'
+
+class TranslationService:
+    """翻译服务类"""
+    
+    def __init__(self, config_manager):
+        """
+        初始化翻译服务
+        
+        Args:
+            config_manager: 配置管理器实例，用于获取API配置
+        """
+        self.config_manager = config_manager
+        self._llm_client = None
+        self._cache = OrderedDict()
+        self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
+        self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
+
+    def _get_llm_client(self) -> Optional[ChatOpenAI]:
+        """获取LLM客户端（用于翻译，复用 emotion 模型配置）"""
+        try:
+            config = self.config_manager.get_model_api_config('emotion')
+            
+            if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
+                logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
+                return None
+            
+            if self._llm_client is not None:
+                return self._llm_client
+            
+            self._llm_client = ChatOpenAI(
+                model=config['model'],
+                base_url=config['base_url'],
+                api_key=config['api_key'],
+                temperature=0.3,
+                max_tokens=2000,
+                timeout=30.0,
+            )
+            
+            return self._llm_client
+        except Exception as e:
+            logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
+            return None
+    
+    async def _get_from_cache(self, text: str, target_lang: str) -> Optional[str]:
+        """从缓存获取翻译结果"""
+        async with self._get_cache_lock():
+            cache_key = self._get_cache_key(text, target_lang)
+            return self._cache.get(cache_key)
+    
+    def _get_cache_lock(self):
+        """懒加载获取缓存锁"""
+        if self._cache_lock is None:
+            with self._cache_lock_init_lock:
+                if self._cache_lock is None:
+                    self._cache_lock = asyncio.Lock()
+        return self._cache_lock
+    
+    async def _save_to_cache(self, text: str, target_lang: str, translated: str):
+        """保存翻译结果到缓存"""
+        async with self._get_cache_lock():
+            if len(self._cache) >= CACHE_MAX_SIZE:
+                first_key = next(iter(self._cache))
+                del self._cache[first_key]
+                
+            cache_key = self._get_cache_key(text, target_lang)
+            self._cache[cache_key] = translated
+    
+    def _normalize_language_code(self, lang: str) -> str:
+        """归一化语言代码"""
+        if not lang:
+            return DEFAULT_LANGUAGE
+        return normalize_language_code(lang, format='full')
+    
+    def _get_cache_key(self, text: str, target_lang: str) -> str:
+        """生成缓存键"""
+        normalized_lang = self._normalize_language_code(target_lang)
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        return f"{normalized_lang}:{text_hash}"
+
+    def _detect_language(self, text: str) -> str:
+        """检测文本语言"""
+        lang = detect_language(text)
+        if lang == 'zh':
+            return 'zh-CN'
+        elif lang == 'unknown':
+            return 'en'
+        return lang
+    
+    async def translate_text_robust(self, text: str, target_lang: str) -> str:
+        """
+        稳健的翻译文本服务 (核心内部组件使用)
+        """
+        if not text or not text.strip():
+            return text
+        
+        target_lang_normalized = self._normalize_language_code(target_lang)
+        
+        if target_lang_normalized not in SUPPORTED_LANGUAGES:
+            logger.warning(f"翻译服务：不支持的目标语言 {target_lang} (归一化后: {target_lang_normalized})，返回原文")
+            return text
+        
+        detected_lang = self._detect_language(text)
+        detected_lang_normalized = self._normalize_language_code(detected_lang)
+        if detected_lang_normalized == target_lang_normalized:
+            return text
+        
+        cached = await self._get_from_cache(text, target_lang_normalized)
+        if cached is not None:
+            return cached
+        
+        llm = self._get_llm_client()
+        if llm is None:
+            logger.warning("翻译服务：LLM客户端不可用，返回原文")
+            return text
+        
+        try:
+            if target_lang_normalized == 'en':
+                target_lang_name = "English"
+                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+            elif target_lang_normalized == 'ja':
+                target_lang_name = "Japanese"
+                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "the source language"
+            elif target_lang_normalized == 'ko':
+                target_lang_name = "Korean"
+                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+            else:  # zh-CN
+                target_lang_name = "简体中文"
+                source_lang_name = "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+            
+            system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
+
+Rules:
+1. Keep the meaning and tone exactly the same
+2. Maintain any special formatting (like commas, spaces)
+3. For character names or nicknames, translate naturally
+4. Return ONLY the translated text, no explanations or additional text
+5. If the text is already in {target_lang_name}, return it unchanged"""
+
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=text)
+            ])
+            
+            translated = response.content.strip()
+            if not translated:
+                logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
+                return text            
+            await self._save_to_cache(text, target_lang_normalized, translated)
+            
+            logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
+            return translated
+            
+        except Exception as e:
+            logger.error(f"翻译服务：翻译失败: {e}，返回原文")
+            return text
+    
+    async def translate_dict(
+        self,
+        data: Dict[str, Any],
+        target_lang: str,
+        fields_to_translate: Optional[list] = None
+    ) -> Dict[str, Any]:
+        """
+        翻译字典中的指定字段
+        """
+        if not data:
+            return data
+        
+        result = data.copy()
+        
+        if fields_to_translate is None:
+            translate_all = True
+            fields_set = set()
+        elif len(fields_to_translate) == 0:
+            translate_all = False
+            fields_set = set()
+        else:
+            translate_all = False
+            fields_set = set(fields_to_translate)
+        
+        for key, value in result.items():
+            should_translate = translate_all or key in fields_set
+            
+            if should_translate and isinstance(value, str) and value.strip():
+                if key in {'昵称', 'nickname'} and ', ' in value:
+                    items = [item.strip() for item in value.split(', ')]
+                    translated_items = await asyncio.gather(*[
+                        self.translate_text_robust(item, target_lang) for item in items
+                    ])
+                    result[key] = ', '.join(translated_items)
+                else:
+                    result[key] = await self.translate_text_robust(value, target_lang)
+            elif isinstance(value, dict):
+                if should_translate:
+                    result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
+            elif isinstance(value, list):
+                if should_translate and value and all(isinstance(item, str) for item in value):
+                    result[key] = await asyncio.gather(*[
+                        self.translate_text_robust(item, target_lang) for item in value
+                    ])
+        return result
+
+# 全局翻译服务实例（延迟初始化）
+_translation_service_instance: Optional[TranslationService] = None
+_instance_lock = threading.Lock()
+
+def get_translation_service(config_manager) -> TranslationService:
+    """获取翻译服务实例（单例）"""
+    global _translation_service_instance
+    if _translation_service_instance is None:
+        with _instance_lock:
+            if _translation_service_instance is None:
+                _translation_service_instance = TranslationService(config_manager)
+    elif _translation_service_instance.config_manager is not config_manager:
+        logger.warning("get_translation_service: 传入了不同的 config_manager，但会使用第一次创建时的实例")
+    return _translation_service_instance
+
 

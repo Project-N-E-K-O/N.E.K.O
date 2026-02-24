@@ -129,7 +129,7 @@ history_review_prompt = """请审阅%s和%s之间的对话历史记录，识别�
 
 emotion_analysis_prompt = """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy(开心), sad(悲伤), angry(愤怒), neutral(中性),surprised(惊讶)。"""
 
-proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
+proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
 ======以下为对话历史======
 {memory_context}
@@ -141,7 +141,7 @@ proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页
 
 请根据以下原则决定是否主动搭话：
 1. 如果内容很有趣、新鲜或值得讨论，可以主动提起
-2. 如果内容与你们之前的对话或{master_name}的兴趣相关，更应该提起
+2. 如果内容与你们之前的对话或你自己的兴趣相关，更应该提起
 3. 如果内容比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
 4. 说话时要自然、简短，像是刚刷到有趣内容想分享给对方
 5. 尽量选一个最有意思的主题进行分享和搭话，但不要和对话历史中已经有的内容重复。
@@ -151,7 +151,7 @@ proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页
 - 如果选择不搭话，只回复"[PASS]"
 """
 
-proactive_chat_prompt_en = """You are {lanlan_name}. You just saw some homepage recommendations and trending topics. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about them.
+proactive_chat_prompt_en = """You are {lanlan_name}. You just saw some homepage recommendations and trending topics. Based on your chat history with {master_name} and your own interests, decide whether to proactively talk about them.
 
 ======以下为对话历史======
 {memory_context}
@@ -163,7 +163,7 @@ proactive_chat_prompt_en = """You are {lanlan_name}. You just saw some homepage 
 
 Decide whether to proactively speak based on these rules:
 1. If the content is interesting, fresh, or worth discussing, you can bring it up.
-2. If it relates to your previous conversations or {master_name}'s interests, you should bring it up.
+2. If it relates to your previous conversations or your own interests, you should bring it up.
 3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
 4. Keep it natural and short, like sharing something you just noticed.
 5. Pick only the most interesting topic and avoid repeating what's already in the chat history.
@@ -173,7 +173,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホームのおすすめやトレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホームのおすすめやトレンド話題を見ました。{master_name}との会話履歴やあなた自身の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -185,7 +185,7 @@ proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホーム�
 
 以下の原則で判断してください：
 1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
-2. 過去の会話や{master_name}の興味に関連するなら、なお良い。
+2. 過去の会話やあなた自身の興味に関連するなら、なお良い。
 3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
 4. 表現は自然で短く、ふと見かけた話題を共有する感じにする。
 5. もっとも面白い話題を一つ選び、会話履歴の重複は避ける。
@@ -195,7 +195,139 @@ proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホーム�
 - 話しかけない場合は "[PASS]" のみを返してください。
 """
 
-proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一些屏幕画面。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊屏幕上的内容。
+proactive_chat_prompt_news = """你是{lanlan_name}，现在看到了一些热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些话题。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+请根据以下原则决定是否主动搭话：
+1. 如果话题很有趣、新鲜或值得讨论，可以主动提起
+2. 如果话题与你们之前的对话或你自己的兴趣相关，更应该提起
+3. 如果话题比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚看到有趣话题想分享给对方
+5. 尽量选一个最有意思的话题进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_news_en = """You are {lanlan_name}. You just saw some trending topics. Based on your chat history with {master_name} and your own interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+Decide whether to proactively speak based on these rules:
+1. If the topic is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or your own interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed.
+5. Pick only the most interesting topic and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_news_ja = """あなたは{lanlan_name}です。今、トレンド話題を見ました。{master_name}との会話履歴やあなた自身の興味を踏まえて、自発的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是トレンド話題======
+{trending_content}
+======以上为トレンド話題======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話やあなた自身の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、ふと見かけた話題を共有する感じにする。
+5. もっとも面白い話題を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
+proactive_chat_prompt_video = """你是{lanlan_name}，现在看到了一些视频推荐。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些视频内容。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+请根据以下原则决定是否主动搭话：
+1. 如果视频很有趣、新鲜或值得讨论，可以主动提起
+2. 如果视频与你们之前的对话或你自己的兴趣相关，更应该提起
+3. 如果视频比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚刷到有趣视频想分享给对方
+5. 尽量选一个最有意思的视频进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_video_en = """You are {lanlan_name}. You just saw some video recommendations. Based on your chat history with {master_name} and your own interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+Decide whether to proactively speak based on these rules:
+1. If the video is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or your own interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed.
+5. Pick only the most interesting video and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_video_ja = """あなたは{lanlan_name}です。今、動画のおすすめを見ました。{master_name}との会話履歴やあなた自身の興味を踏まえて、自発的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是動画のおすすめ======
+{trending_content}
+======以上为動画のおすすめ======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話やあなた自身の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、ふと見かけた話題を共有する感じにする。
+5. もっとも面白い動画を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
+proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一些屏幕画面。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊屏幕上的内容。
 
 ======以下为对话历史======
 {memory_context}
@@ -204,6 +336,7 @@ proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一�
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 请根据以下原则决定是否主动搭话：
 1. 聚焦当前场景仅围绕屏幕呈现的具体内容展开交流
@@ -216,7 +349,7 @@ proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一�
 - 如果选择不搭话，只回复"[PASS]"
 """
 
-proactive_chat_prompt_screenshot_en = """You are {lanlan_name}. You are now seeing what is on the screen. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about what's on the screen.
+proactive_chat_prompt_screenshot_en = """You are {lanlan_name}. You are now seeing what is on the screen. Based on your chat history with {master_name} and your own interests, decide whether to proactively talk about what's on the screen.
 
 ======以下为对话历史======
 {memory_context}
@@ -225,6 +358,7 @@ proactive_chat_prompt_screenshot_en = """You are {lanlan_name}. You are now seei
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 Decide whether to proactively speak based on these rules:
 1. Focus strictly on what is shown on the screen.
@@ -237,7 +371,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今、画面に表示されている内容を見ています。{master_name}との会話履歴や{master_name}の興味を踏まえて、画面の内容について主动的に話しかけるか判断してください。
+proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今、画面に表示されている内容を見ています。{master_name}との会話履歴やあなた自身の興味を踏まえて、画面の内容について自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -246,6 +380,7 @@ proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今�
 ======以下是当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
+{window_title_section}
 
 以下の原則で判断してください：
 1. 画面に表示されている具体的内容に絞って話す。
@@ -258,7 +393,7 @@ proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今�
 - 話しかけない場合は "[PASS]" のみを返してください。
 """
 
-proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{master_name}正在使用的程序或浏览的内容，并且搜索到了一些相关的信息。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
+proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{master_name}正在使用的程序或浏览的内容，并且搜索到了一些相关的信息。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
 ======以下为对话历史======
 {memory_context}
@@ -280,7 +415,7 @@ proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{m
 - 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
 - 如果选择不搭话，只回复"[PASS]"。 """
 
-proactive_chat_prompt_window_search_en = """You are {lanlan_name}. You can see what {master_name} is currently doing, and you found some related information. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about it.
+proactive_chat_prompt_window_search_en = """You are {lanlan_name}. You can see what {master_name} is currently doing, and you found some related information. Based on your chat history with {master_name} and your own interests, decide whether to proactively talk about it.
 
 ======以下为对话历史======
 {memory_context}
@@ -303,7 +438,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{master_name}が使っているアプリや見ている内容が分かり、関連情報も見つかりました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{master_name}が使っているアプリや見ている内容が分かり、関連情報も見つかりました。{master_name}との会話履歴やあなた自身の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -324,6 +459,95 @@ proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{m
 返答：
 - 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
 - 話しかけない場合は "[PASS]" のみを返してください。
+"""
+# ==================== 新增：个人动态专属 Prompt ====================
+
+proactive_chat_prompt_personal = """你是{lanlan_name}，现在看到了一些你关注的UP主或博主的最新动态。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+请根据以下原则决定是否主动搭话：
+1. 如果内容很有趣、新鲜或值得讨论，可以主动提起
+2. 如果内容与你们之前的对话或{master_name}的兴趣相关，更应该提起
+3. 如果内容比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚刷到关注列表里的有趣内容想分享给对方
+5. 尽量选一个最有意思的主题进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_personal_en = """You are {lanlan_name}. You just saw some new posts from content creators you follow. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+Decide whether to proactively speak based on these rules:
+1. If the content is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or {master_name}'s interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed from your following list.
+5. Pick only the most interesting topic and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_personal_ja = """あなたは{lanlan_name}です。今、フォローしているクリエイターの最新の動向を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是个人动态内容======
+{personal_dynamic}
+======以上为个人动态内容======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話や{master_name}の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、フォローリストで見かけた話題を共有する感じにする。
+5. もっとも面白い話題を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
+proactive_chat_prompt_personal_ko = """당신은 {lanlan_name}입니다. 지금 당신이 구독 중인 업로더 또는 블로거의 최신 소식들을 보았습니다. {master_name}와의 대화 기록과 {master_name}의 관심사를 바탕으로, 이 내용들에 대해 {master_name}에게 먼저 말을 걸지 여부를 판단해 주세요.
+
+======이하는 대화 기록입니다======
+{memory_context}
+======以上为对话历史======
+
+======이하는 개인 소식 내용입니다======
+{personal_dynamic}
+======이상이 개인 소식 내용입니다======
+
+다음 원칙에 따라 먼저 말을 걸지 여부를 결정해 주세요:
+1. 내용이 매우 재미있거나 새롭거나 토론할 가치가 있다면, 먼저 꺼낼 수 있습니다.
+2. 내용이 이전 대화 내용 또는 {master_name}의 관심사와 관련이 있다면, 더 적극적으로 꺼내야 합니다.
+3. 내용이 지루하거나 토론하기에 적합하지 않거나, {master_name}이 대화를 원하지 않는다고 명확히 밝힌 경우, 말을 걸지 않을 수 있습니다.
+4. 말을 걸 때는 자연스럽고 간결하게, 구독 목록에서 재미있는 내용을 막 발견해서 상대방에게 공유하고 싶어하는 듯한 말투를 사용해 주세요.
+5. 가장 재미있는 주제 하나를 골라 공유하고 말을 거는 것을 기본으로 하되, 대화 기록에 이미 나온 내용과 중복되지 않게 해 주세요.
+
+답변 규칙:
+- 먼저 말을 걸기로 선택한 경우, 하고 싶은 말을 직접 적어 주세요(자연스럽고 간결하게 작성). 사고 과정을 생성하지 마세요.
+- 말을 걸지 않기로 선택한 경우, "[PASS]"만 답변해 주세요.
 """
 
 proactive_chat_rewrite_prompt = """你是一个文本清洁专家。请将以下LLM生成的主动搭话内容进行改写和清洁。
@@ -360,7 +584,7 @@ Rules:
 
 Return only the cleaned content with no extra explanation."""
 
-proactive_chat_rewrite_prompt_ja = """あなたはテキストのクリーンアップ担当です。LLMが生成した主动搭话の内容を整形・清掃してください。
+proactive_chat_rewrite_prompt_ja = """あなたはテキストのクリーンアップ担当です。LLMが生成した自発的な話しかけ内容を整形・清掃してください。
 
 ======以下为原始输出======
 {raw_output}
@@ -369,13 +593,442 @@ proactive_chat_rewrite_prompt_ja = """あなたはテキストのクリーンア
 ルール：
 1. '|' を削除する。'|' が含まれる場合は、最後の '|' の後の発話内容のみを残す。複数ターンがある場合は最初の段落のみ。
 2. 思考や分析のマーカー（例: <thinking>、【分析】）をすべて削除し、最終的な発話内容だけを残す。
-3. 主动搭话の核心内容は以下を満たすこと：
+3. 自発的な話しかけの核心内容は以下を満たすこと：
    - 短く自然（100語/字以内）
    - 口語で友人同士の会話のように
    - 直接話題に入る（理由の説明は不要）
 4. 適切な内容が残らない場合は "[PASS]" を返す。
 
 清掃後の内容のみを返し、他の説明は不要です。"""
+
+proactive_chat_prompt_ko = """당신은 {lanlan_name}입니다. 방금 홈 추천과 화제의 토픽을 보았습니다. {master_name}과의 대화 기록과 당신의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+======이하 홈 추천 콘텐츠======
+{trending_content}
+======이상 홈 추천 콘텐츠======
+
+다음 원칙에 따라 판단하세요:
+1. 콘텐츠가 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 당신의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 발견한 것을 공유하듯이 말하세요.
+5. 가장 흥미로운 주제 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_screenshot_ko = """당신은 {lanlan_name}입니다. 지금 화면에 표시된 내용을 보고 있습니다. {master_name}과의 대화 기록과 당신의 관심사를 바탕으로, 화면 내용에 대해 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+======이하 현재 화면 내용======
+{screenshot_content}
+======이상 현재 화면 내용======
+{window_title_section}
+
+다음 원칙에 따라 판단하세요:
+1. 화면에 표시된 구체적인 내용에만 집중하세요.
+2. 이전 대화의 관련 주제나 관심사와 연결하여 자연스럽게 이어가세요.
+3. {master_name}이 최근 같은 주제를 다루었거나 바빠 보이면 말을 걸지 마세요.
+4. 간결하고 자연스러우며 약간의 재미가 있는 표현을 사용하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_window_search_ko = """당신은 {lanlan_name}입니다. {master_name}이 현재 사용 중인 프로그램이나 보고 있는 콘텐츠를 확인했고, 관련 정보도 검색했습니다. {master_name}과의 대화 기록과 당신의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+======이하 {master_name}이 현재 관심 가지고 있는 내용======
+{window_context}
+======이상 현재 관심 내용======
+
+다음 원칙에 따라 판단하세요:
+1. 현재 활동에 주목하고 흥미로운 진입점을 찾으세요.
+2. 검색에서 얻은 관련 정보를 활용하여 주제를 풍부하게 하고 유용하거나 재미있는 것을 공유하세요.
+3. 이전 대화의 관련 주제나 관심사와 자연스럽게 연결하세요.
+4. {master_name}이 최근 같은 주제를 다루었거나 바빠 보이면 말을 걸지 마세요.
+5. 간결하고 자연스럽게, 우연히 알아챈 것처럼 말하세요.
+6. 가벼운 호기심은 좋지만 과도한 질문은 삼가세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_news_ko = """당신은 {lanlan_name}입니다. 방금 화제의 토픽을 보았습니다. {master_name}과의 대화 기록과 당신의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+======이하 화제의 토픽======
+{trending_content}
+======이상 화제의 토픽======
+
+다음 원칙에 따라 판단하세요:
+1. 토픽이 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 당신의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 본 흥미로운 토픽을 공유하듯이 말하세요.
+5. 가장 흥미로운 토픽 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_prompt_video_ko = """당신은 {lanlan_name}입니다. 방금 동영상 추천을 보았습니다. {master_name}과의 대화 기록과 당신의 관심사를 바탕으로 먼저 말을 걸지 판단해 주세요.
+
+======이하 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+======이하 동영상 추천======
+{trending_content}
+======이상 동영상 추천======
+
+다음 원칙에 따라 판단하세요:
+1. 동영상이 재미있거나 신선하거나 논의할 가치가 있으면 말을 걸어도 좋습니다.
+2. 이전 대화나 당신의 관심사와 관련이 있으면 더욱 좋습니다.
+3. 지루하거나 부적절하거나, {master_name}이 대화를 원하지 않는다면 침묵하세요.
+4. 자연스럽고 짧게, 방금 발견한 재미있는 동영상을 공유하듯이 말하세요.
+5. 가장 흥미로운 동영상 하나만 골라서 대화 기록과 중복되지 않게 공유하세요.
+
+응답:
+- 말을 걸기로 했다면, 하고 싶은 말을 직접 짧고 자연스럽게 하세요. 사고 과정은 포함하지 마세요.
+- 말을 걸지 않기로 했다면, "[PASS]"만 응답하세요.
+"""
+
+proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니다. LLM이 생성한 능동적 대화 내용을 정리하고 다듬어 주세요.
+
+======이하 원본 출력======
+{raw_output}
+======以上为对话======
+
+규칙:
+1. '|' 문자를 제거하세요. '|'가 포함된 경우 마지막 '|' 뒤의 실제 발화 내용만 남기세요. 여러 턴이 있으면 첫 번째 부분만 남기세요.
+2. 사고 과정이나 분석 마커(예: <thinking>, 【분석】)를 모두 제거하고 최종 발화 내용만 남기세요.
+3. 핵심 대화 내용은 다음을 충족해야 합니다:
+   - 짧고 자연스러운 표현 (100단어/글자 이내)
+   - 구어체, 친구 사이의 대화처럼
+   - 바로 주제에 들어가기 (이유 설명 불필요)
+4. 적절한 내용이 남지 않으면 "[PASS]"를 반환하세요.
+
+정리된 내용만 반환하고 다른 설명은 하지 마세요."""
+
+
+# =====================================================================
+# Phase 1: Screening Prompts — 筛选阶段 prompt（不生成搭话，只筛选话题）
+# =====================================================================
+#
+# 视觉通道：不需要 Phase 1 LLM 调用。
+# analyze_screenshot_from_data_url 已使用"图像描述助手"prompt 生成 250 字描述，
+# 直接作为 topic_summary 传入 Phase 2。
+#
+# Web 通道：合并所有文本源，让 LLM 选出最佳话题并保留原始来源信息和链接。
+
+
+# 注意： ======开头的内容中包含安全水印，不要修改。
+# --- Phase 1 Web Screening (文本源合并筛选) ---
+
+proactive_screen_web_zh = """你是一个面向年轻人的话题筛选助手。从下面汇总的多源内容中，选出1个最适合和朋友闲聊的话题。
+
+选题偏好（按优先级）：
+- 有梗、有反转、能引发讨论的内容（meme、整活、争议观点等）
+- 年轻人关注的领域：游戏、动画、科技、互联网文化、明星八卦、社会热议
+- 新鲜感：刚出的、正在发酵的优先
+- 有聊天切入点：容易自然地开口说"诶你看到这个没"
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+重要规则：
+1. 不要选和对话历史或近期搭话记录重复/雷同的内容
+2. 如果近期搭话已多次用同类话题（如连续分享新闻/视频），优先选不同类型，或返回 [PASS]
+3. 所有内容都不够有趣就返回 [PASS]
+
+回复格式（严格遵守）：
+- 有值得分享的话题：
+来源：[来源平台名称，如Twitter/Reddit/微博/B站等]
+序号：[选中条目在其分类中的编号，如 3]
+话题：[选中的原始标题，必须与汇总内容中的标题完全一致]
+简述：[2-3句话，为什么有趣、聊天切入点是什么]
+- 都不值得聊：只回复 [PASS]
+"""
+
+proactive_screen_web_en = """You are a topic curator for young adults. Pick the single most chat-worthy topic from the aggregated content below.
+
+Topic preferences (in priority order):
+- Content with humor, twists, or debate potential (memes, hot takes, controversy, etc.)
+- Areas young people care about: gaming, anime, tech, internet culture, celebrity gossip, social issues
+- Freshness: breaking or trending topics first
+- Conversation starters: easy to casually say "hey, did you see this?"
+
+======Chat History======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======Aggregated Content======
+{merged_content}
+======End Aggregated Content======
+
+Critical rules:
+1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
+2. If recent proactive chats have repeatedly used the same type of topic (e.g. multiple news stories in a row), pick a different type or return [PASS]
+3. If nothing is interesting enough, return [PASS]
+
+Reply format (strict):
+- If there's a worthy topic:
+Source: [platform name, e.g. Twitter/Reddit/Weibo/Bilibili]
+No: [item number within its category, e.g. 3]
+Topic: [original title exactly as shown in the content]
+Summary: [2-3 sentences on why it's interesting, what's the chat angle]
+- If nothing is worth sharing: reply only [PASS]
+"""
+
+proactive_screen_web_ja = """あなたは若者向けの話題キュレーターです。以下の複数ソースから集めた内容から、友達と話すのに最も適した話題を1つ選んでください。
+
+選定の優先基準：
+- ネタ性がある、展開が面白い、議論を呼ぶ内容（ミーム、ネタ、炎上案件など）
+- 若者が関心を持つ分野：ゲーム、アニメ、テクノロジー、ネット文化、芸能ゴシップ、社会問題
+- 鮮度：出たばかり、今まさに話題になっているもの優先
+- 会話の切り口がある：「ねえ、これ見た？」と自然に言えるもの
+
+======会話履歴======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======集約コンテンツ======
+{merged_content}
+======集約コンテンツここまで======
+
+重要ルール：
+1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
+2. 最近の話しかけで同じタイプの話題が続いている場合（ニュース連続など）、別タイプを選ぶか [PASS] を返す
+3. どれも面白くなければ [PASS] を返す
+
+回答形式（厳守）：
+- 共有する価値のある話題がある場合：
+出典：[出典プラットフォーム名、例: Twitter/Reddit]
+番号：[カテゴリ内の番号、例: 3]
+話題：[元のタイトルと完全一致させること]
+概要：[2〜3文で、なぜ面白いか・会話の切り口は何か]
+- 全て価値なし：[PASS] のみ回答
+"""
+
+proactive_screen_web_ko = """당신은 젊은 세대를 위한 주제 큐레이터입니다. 아래 여러 소스에서 모은 콘텐츠 중 친구와 이야기하기에 가장 적합한 주제를 1개 골라주세요.
+
+선정 기준 (우선순위순):
+- 밈, 반전, 논쟁을 일으킬 수 있는 콘텐츠 (짤, 핫테이크, 논란 등)
+- 젊은 세대가 관심있는 분야: 게임, 애니메이션, IT, 인터넷 문화, 연예 가십, 사회 이슈
+- 신선함: 방금 나온, 현재 화제인 것 우선
+- 대화 시작점: "야, 이거 봤어?" 하고 자연스럽게 말할 수 있는 것
+
+======대화 기록======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+
+======종합 콘텐츠======
+{merged_content}
+======종합 콘텐츠 끝======
+
+중요 규칙:
+1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
+2. 최근 말 건넨 기록에서 같은 유형의 주제가 반복되었다면 (예: 연속 뉴스 공유), 다른 유형을 선택하거나 [PASS] 반환
+3. 흥미로운 것이 없으면 [PASS] 반환
+
+답변 형식 (엄격 준수):
+- 공유할 가치가 있는 주제:
+출처: [출처 플랫폼명, 예: Twitter/Reddit]
+번호: [카테고리 내 번호, 예: 3]
+주제: [원제목과 정확히 일치]
+요약: [2-3문장, 왜 흥미로운지, 대화 포인트는 무엇인지]
+- 가치 없음: [PASS]만 답변
+"""
+
+
+# =====================================================================
+# Phase 2: Generation Prompt — 生成阶段 prompt（用完整人设 + 话题生成搭话）
+# =====================================================================
+
+proactive_generate_zh = """以下是你的人设：
+======角色设定======
+{character_prompt}
+======角色设定结束======
+
+======当前状态======
+{inner_thoughts}
+======状态结束======
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+
+请以你的角色身份，自然地向{master_name}搭话。要求：
+1. 完全符合你的角色性格和说话习惯
+2. 简短自然，像是随口分享或搭话，不超过2-3句话
+3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话
+4. 要契合当前的对话氛围和主人的近期兴趣
+5. 绝对不要重复"近期搭话记录"中已经说过的内容，话题、句式和口吻都要有新意
+6. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
+7. 不要生成思考过程
+
+输出格式（严格遵守）：
+- 放弃搭话 → 只输出 [PASS]
+- 否则第一行写来源标签，第二行起写你要说的话：
+  [SCREEN] = 基于屏幕内容
+  [WEB] = 基于外部话题
+  [BOTH] = 结合了两者
+
+示例：
+[SCREEN]
+你在看这个啊？看起来挺有意思的..."""
+
+proactive_generate_en = """Here is your persona:
+======Character Persona======
+{character_prompt}
+======Persona End======
+
+======Current State======
+{inner_thoughts}
+======State End======
+
+======Chat History with Master======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+
+As your character, naturally start a conversation with {master_name}. Requirements:
+1. Stay perfectly in character—match your personality and speaking style
+2. Keep it short and natural, like a casual remark or share (max 2-3 sentences)
+3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at
+4. Match the current conversation mood and the master's recent interests
+5. Absolutely do NOT repeat anything from your "recent proactive chats"—vary your topic, phrasing, and tone
+6. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
+7. Do not include any reasoning
+
+Output format (strict):
+- To skip: reply only [PASS]
+- Otherwise, first line = source tag, then your message on the next line(s):
+  [SCREEN] = based on screen content
+  [WEB] = based on external topic
+  [BOTH] = combined both
+
+Example:
+[SCREEN]
+Hey, what are you looking at? That looks interesting..."""
+
+proactive_generate_ja = """以下はあなたのキャラクター設定です：
+======キャラクター設定======
+{character_prompt}
+======キャラクター設定ここまで======
+
+======現在の状態======
+{inner_thoughts}
+======状態ここまで======
+
+======ご主人との会話履歴======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+
+あなたのキャラクターとして、自然に{master_name}に話しかけてください。条件：
+1. キャラクターの性格と話し方に完全に合わせる
+2. 短く自然に、何気なく共有する感じで（2〜3文まで）
+3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先
+4. 現在の会話の雰囲気とご主人の最近の関心に合わせる
+5.「最近の話しかけ記録」にある内容は絶対に繰り返さない—話題・言い回し・トーンすべて新鮮にする
+6. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
+7. 推論は含めない
+
+出力形式（厳守）：
+- パス → [PASS] のみ
+- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：
+  [SCREEN] = 画面の内容に基づく
+  [WEB] = 外部話題に基づく
+  [BOTH] = 両方を組み合わせ
+
+例：
+[SCREEN]
+何見てるの？面白そうだね..."""
+
+proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
+======캐릭터 설정======
+{character_prompt}
+======캐릭터 설정 끝======
+
+======현재 상태======
+{inner_thoughts}
+======상태 끝======
+
+======주인과의 대화 기록======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+{screen_section}
+{external_section}
+
+캐릭터로서 자연스럽게 {master_name}에게 말을 걸어주세요. 요구사항:
+1. 캐릭터의 성격과 말투를 완벽히 유지
+2. 짧고 자연스럽게, 캐주얼한 한마디처럼 (2-3문장 이내)
+3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선
+4. 현재 대화 분위기와 주인의 최근 관심사에 맞추기
+5.「최근 말 건넨 기록」의 내용을 절대 반복하지 않기—주제, 문체, 톤 모두 새롭게
+6. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
+7. 추론 과정 생략
+
+출력 형식 (엄격 준수):
+- 패스 → [PASS]만
+- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:
+  [SCREEN] = 화면 내용 기반
+  [WEB] = 외부 주제 기반
+  [BOTH] = 둘 다 결합
+
+예시:
+[SCREEN]
+뭐 보고 있어? 재밌어 보이는데..."""
+
+
+# =====================================================================
+# Dispatch tables and helper functions
+# =====================================================================
 
 def _normalize_prompt_language(lang: str) -> str:
     if not lang:
@@ -387,6 +1040,8 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'ja'
     if lang_lower.startswith('en'):
         return 'en'
+    if lang_lower.startswith('ko'):
+        return 'ko'
     return 'zh'
 
 
@@ -395,16 +1050,33 @@ PROACTIVE_CHAT_PROMPTS = {
         'home': proactive_chat_prompt,
         'screenshot': proactive_chat_prompt_screenshot,
         'window': proactive_chat_prompt_window_search,
+        'news': proactive_chat_prompt_news,
+        'video': proactive_chat_prompt_video,
+        'personal': proactive_chat_prompt_personal,
     },
     'en': {
         'home': proactive_chat_prompt_en,
         'screenshot': proactive_chat_prompt_screenshot_en,
         'window': proactive_chat_prompt_window_search_en,
+        'news': proactive_chat_prompt_news_en,
+        'video': proactive_chat_prompt_video_en,
+        'personal': proactive_chat_prompt_personal_en,
     },
     'ja': {
         'home': proactive_chat_prompt_ja,
         'screenshot': proactive_chat_prompt_screenshot_ja,
         'window': proactive_chat_prompt_window_search_ja,
+        'news': proactive_chat_prompt_news_ja,
+        'video': proactive_chat_prompt_video_ja,
+        'personal': proactive_chat_prompt_personal_ja,
+    },
+    'ko': {
+        'home': proactive_chat_prompt_ko,
+        'screenshot': proactive_chat_prompt_screenshot_ko,
+        'window': proactive_chat_prompt_window_search_ko,
+        'news': proactive_chat_prompt_news_ko,
+        'video': proactive_chat_prompt_video_ko,
+        'personal': proactive_chat_prompt_personal_ko,
     }
 }
 
@@ -412,6 +1084,29 @@ PROACTIVE_CHAT_REWRITE_PROMPTS = {
     'zh': proactive_chat_rewrite_prompt,
     'en': proactive_chat_rewrite_prompt_en,
     'ja': proactive_chat_rewrite_prompt_ja,
+    'ko': proactive_chat_rewrite_prompt_ko,
+}
+
+PROACTIVE_SCREEN_PROMPTS = {
+    'zh': {
+        'web': proactive_screen_web_zh,
+    },
+    'en': {
+        'web': proactive_screen_web_en,
+    },
+    'ja': {
+        'web': proactive_screen_web_ja,
+    },
+    'ko': {
+        'web': proactive_screen_web_ko,
+    }
+}
+
+PROACTIVE_GENERATE_PROMPTS = {
+    'zh': proactive_generate_zh,
+    'en': proactive_generate_en,
+    'ja': proactive_generate_ja,
+    'ko': proactive_generate_ko,
 }
 
 
@@ -424,4 +1119,19 @@ def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
 def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS['zh'])
+
+
+def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
+    """获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。"""
+    lang_key = _normalize_prompt_language(lang)
+    prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS['zh'])
+    if channel not in prompt_set:
+        raise ValueError(f"Unsupported channel '{channel}'. Vision is handled before Phase 1 and should not be passed here; only 'web' is supported.")
+    return prompt_set[channel]
+
+
+def get_proactive_generate_prompt(lang: str = 'zh') -> str:
+    """获取 Phase 2 生成阶段 prompt"""
+    lang_key = _normalize_prompt_language(lang)
+    return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
 

@@ -17,7 +17,6 @@ body {
     border-radius: 0;
     box-shadow: none;
     padding: 0;
-    overflow: hidden;
     position: relative;
     min-height: 100vh;
 }
@@ -29,8 +28,10 @@ body {
     justify-content: space-between;
     align-items: center;
     border-radius: 0;
-    position: relative;
-    -webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    -webkit-app-region: drag;
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */
@@ -79,7 +80,7 @@ body {
     color: transparent;
     --button-text-stroke-color: #22b3ff;
 }
-        
+
 .container-header h2::before {
     content: attr(data-text);
     position: absolute;
@@ -90,30 +91,30 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
-    text-shadow: 
-        2px 0 0 var(--button-text-stroke-color), 
-        0 2px 0 var(--button-text-stroke-color), 
-        -2px 0 0 var(--button-text-stroke-color), 
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
         0 -2px 0 var(--button-text-stroke-color),
-        1.4px 1.4px 0 var(--button-text-stroke-color), 
-        -1.4px 1.4px 0 var(--button-text-stroke-color), 
-        1.4px -1.4px 0 var(--button-text-stroke-color), 
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
         -1.4px -1.4px 0 var(--button-text-stroke-color),
-        1.8px 0.8px 0 var(--button-text-stroke-color), 
-        -1.8px 0.8px 0 var(--button-text-stroke-color), 
-        1.8px -0.8px 0 var(--button-text-stroke-color), 
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
         -1.8px -0.8px 0 var(--button-text-stroke-color),
-        0.8px 1.8px 0 var(--button-text-stroke-color), 
-        -0.8px 1.8px 0 var(--button-text-stroke-color), 
-        0.8px -1.8px 0 var(--button-text-stroke-color), 
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
         -0.8px -1.8px 0 var(--button-text-stroke-color),
-        1px 0 0 var(--button-text-stroke-color), 
-        -1px 0 0 var(--button-text-stroke-color), 
-        0 1px 0 var(--button-text-stroke-color), 
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
         0 -1px 0 var(--button-text-stroke-color);
     white-space: nowrap;
 }
-        
+
 .container-header h2::after {
     content: attr(data-text);
     position: absolute;
@@ -316,7 +317,7 @@ body {
     transition: all 0.3s ease;
 }
 
-#review-toggle-checkbox:checked + .auto-review-toggle-btn .auto-review-toggle-icon::after {
+#review-toggle-checkbox:checked+.auto-review-toggle-btn .auto-review-toggle-icon::after {
     opacity: 1;
     transform: scale(1);
 }
@@ -487,7 +488,7 @@ body {
     margin: 6px 0;
     display: inline-block;
     max-width: 90%;
-    word-wrap: break-word;
+    overflow-wrap: break-word;
     line-height: 1.6;
     font-size: 1rem;
 }

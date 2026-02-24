@@ -17,7 +17,6 @@ body {
     border-radius: 0;
     box-shadow: none;
     padding: 0;
-    overflow: hidden;
     position: relative;
     min-height: 100vh;
 }
@@ -29,8 +28,10 @@ body {
     justify-content: space-between;
     align-items: center;
     border-radius: 0;
-    position: relative;
-    -webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    -webkit-app-region: drag;
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */
@@ -592,6 +593,12 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     flex: none !important; /* 不拉伸，确保整体居中 */
     text-align: left !important;
     font-size: 18px !important; /* 稍微缩小字号 */
+}
+
+/* 音色列表容器背景 */
+.voice-list-bg {
+    background: white;
+    border: 1px solid #ccc;
 }
 
 .voice-list-item {

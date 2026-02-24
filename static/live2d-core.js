@@ -173,6 +173,10 @@ class Live2DManager {
             }
 
             this.isInitialized = true;
+            // 应用初始帧率设置
+            if (window.targetFrameRate && this.pixi_app.ticker) {
+                this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+            }
             console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
             return this.pixi_app;
         } catch (error) {
@@ -200,6 +204,17 @@ class Live2DManager {
         if (this.pixi_app && this.pixi_app.ticker) {
             this.pixi_app.ticker.start();
             console.log('[Live2D Core] 渲染循环已恢复');
+        }
+    }
+
+    /**
+     * 设置目标帧率
+     * @param {number} fps - 目标帧率（30 或 60）
+     */
+    setTargetFPS(fps) {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.maxFPS = fps;
+            console.log(`[Live2D Core] 目标帧率设置为 ${fps}fps`);
         }
     }
 
@@ -458,4 +473,40 @@ class Live2DManager {
 window.Live2DModel = Live2DModel;
 window.Live2DManager = Live2DManager;
 window.isMobileWidth = isMobileWidth;
+
+// 监听帧率变更事件
+window.addEventListener('neko-frame-rate-changed', (e) => {
+    const fps = e.detail?.fps;
+    if (fps && window.live2dManager) {
+        window.live2dManager.setTargetFPS(fps);
+    }
+});
+
+// 监听画质变更事件：需要重新加载模型以应用新的纹理降采样
+window.addEventListener('neko-render-quality-changed', (e) => {
+    const quality = e.detail?.quality;
+    if (!quality || !window.live2dManager) return;
+    const mgr = window.live2dManager;
+    const modelPath = mgr._lastLoadedModelPath;
+    if (modelPath && mgr.currentModel) {
+        console.log(`[Live2D] 画质变更为 ${quality}，重新加载模型以应用纹理降采样`);
+        // 显式销毁当前模型的 BaseTexture，清除 PIXI 纹理缓存
+        // 否则 PIXI.BaseTexture.from(url) 会返回被降采样过的缓存纹理
+        try {
+            const textures = mgr.currentModel.textures;
+            if (textures) {
+                textures.forEach(tex => {
+                    if (tex?.baseTexture) {
+                        tex.baseTexture.destroy();
+                    }
+                });
+            }
+        } catch (err) {
+            console.warn('[Live2D] 清理纹理缓存时出错:', err);
+        }
+        mgr.loadModel(modelPath).catch(err => {
+            console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
+        });
+    }
+});
 
