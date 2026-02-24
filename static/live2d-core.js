@@ -504,7 +504,21 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         } catch (err) {
             console.warn('[Live2D] 清理纹理缓存时出错:', err);
         }
-        mgr.loadModel(modelPath).catch(err => {
+        
+        // 保存当前模型的 scale 和 position，以便重新加载后恢复
+        const modelForSave = mgr.currentModel;
+        const savedPreferences = {
+            scale: {
+                x: modelForSave.scale.x,
+                y: modelForSave.scale.y
+            },
+            position: {
+                x: modelForSave.x,
+                y: modelForSave.y
+            }
+        };
+        
+        mgr.loadModel(modelPath, { preferences: savedPreferences }).catch(err => {
             console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
         });
     }
