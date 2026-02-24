@@ -117,40 +117,9 @@ jobs:
             tesseract-ocr \
             xvfb
 
-      # --- Steam SDK files (platform-specific) ---
-      - name: Prepare Steam SDK (Windows)
-        if: matrix.platform == 'win'
-        run: |
-          # steam_api64.dll, steam_api64.lib, SteamworksPy64.dll
-          # are checked into the repo for Windows
-          echo "Steam DLLs present:"
-          if (Test-Path steam_api64.dll) { echo "  steam_api64.dll" }
-          if (Test-Path steam_api64.lib) { echo "  steam_api64.lib" }
-          if (Test-Path SteamworksPy64.dll) { echo "  SteamworksPy64.dll" }
-        shell: pwsh
-
-      - name: Prepare Steam SDK (macOS)
-        if: startsWith(matrix.platform, 'mac')
-        run: |
-          # macOS Steam dylibs - download from Steam SDK or skip if not available
-          echo "Note: macOS Steam dylibs (libsteam_api.dylib, libSteamworksPy.dylib)"
-          echo "will be resolved from secrets or skipped for non-Steam builds."
-          # If Steam SDK artifacts are provided via secrets:
-          if [ -n "${{ secrets.STEAM_SDK_MAC_URL }}" ]; then
-            curl -sL "${{ secrets.STEAM_SDK_MAC_URL }}" -o steam_sdk_mac.zip
-            unzip -o steam_sdk_mac.zip -d .
-          fi
-
-      - name: Prepare Steam SDK (Linux)
-        if: matrix.platform == 'linux'
-        run: |
-          echo "Note: Linux Steam .so files will be resolved from secrets or skipped."
-          if [ -n "${{ secrets.STEAM_SDK_LINUX_URL }}" ]; then
-            curl -sL "${{ secrets.STEAM_SDK_LINUX_URL }}" -o steam_sdk_linux.zip
-            unzip -o steam_sdk_linux.zip -d .
-          fi
-
       # --- Build with PyInstaller ---
+      # Steam SDK: Windows DLLs are in repo; macOS/Linux dylibs are optional
+      # (launcher.spec uses os.path.exists() and skips gracefully if missing)
       - name: Build Python backend (PyInstaller, Unix)
         if: runner.os != 'Windows'
         run: |
