@@ -536,16 +536,9 @@ window.addEventListener('neko-render-quality-changed', (e) => {
             });
         }
         
-        if (savedPreferences) {
-            mgr.loadModel(modelPath, { preferences: savedPreferences }).catch(err => {
-                console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
-            });
-        } else {
-            // 如果没有有效偏好，直接重新加载（使用默认位置/大小）
-            mgr.loadModel(modelPath).catch(err => {
-                console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
-            });
-        }
+        mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined).catch(err => {
+            console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
+        });
     }
 });
 
