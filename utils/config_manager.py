@@ -652,8 +652,14 @@ class ConfigManager:
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            if voice_id and voice_id.startswith(GSV_VOICE_PREFIX) and voice_id[len(GSV_VOICE_PREFIX):].strip():
-                continue  # gsv: 前缀且后缀非空的 GPT-SoVITS voice_id 不参与清理
+            is_valid_gsv = (
+                voice_id
+                and voice_id.startswith(GSV_VOICE_PREFIX)
+                and voice_id[len(GSV_VOICE_PREFIX):].strip()
+                and self.validate_voice_id(voice_id)
+            )
+            if is_valid_gsv:
+                continue  # 仅保留通过完整校验的 gsv: voice_id
             if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",

@@ -588,13 +588,14 @@ async function fetchGptSovitsVoices(silent = false) {
 /** HTML escape helper */
 function _escHtml(str) {
     const d = document.createElement('div');
-    d.textContent = str;
+    d.textContent = (str == null ? '' : String(str));
     return d.innerHTML;
 }
 
 /** Attribute escape helper */
 function _escAttr(str) {
-    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const s = (str == null ? '' : String(str));
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**

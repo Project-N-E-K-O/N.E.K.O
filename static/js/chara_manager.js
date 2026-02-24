@@ -1571,7 +1571,7 @@ function showCatgirlForm(key, container) {
         };
 
         try {
-            const resp = await fetch('/api/characters/gptsovits_voices', { signal: controller.signal });
+            const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
             clearTimeout(timeoutId);
             const result = await resp.json();
             if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {

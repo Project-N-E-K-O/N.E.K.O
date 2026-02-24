@@ -26,9 +26,10 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, GSV_VOICE_PREFIX
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = logging.getLogger("Main")
@@ -1121,12 +1122,11 @@ async def clear_voice_ids():
         }, status_code=500)
 
 
-@router.get('/gptsovits_voices')
-async def list_gptsovits_voices_for_characters():
-    """获取 GPT-SoVITS v3 可用声音列表（用于角色管理页面的音色选择）
-    
-    返回的 voice_id 已带 gsv: 前缀，可直接设置到角色配置中。
-    需要在 API 设置中启用自定义 TTS 并配置 GPT-SoVITS API URL。
+@router.get('/custom_tts_voices')
+async def list_custom_tts_voices_for_characters():
+    """获取自定义 TTS 可用声音列表（用于角色管理页面的音色选择）。
+
+    当前由适配层处理 GPT-SoVITS provider 的路径映射与 voice_id 前缀规则。
     """
     try:
         _config_manager = get_config_manager()
@@ -1153,43 +1153,15 @@ async def list_gptsovits_voices_for_characters():
             if host not in ('localhost',):
                 return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
         
-        # 请求 GPT-SoVITS v3 API 获取声音列表
-        api_url = base_url
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{api_url}/api/v3/voices")
-            resp.raise_for_status()
-            voices_data = resp.json()
-        
-        # 转换为带 gsv: 前缀的格式，过滤空 ID
-        voices = []
-        if not isinstance(voices_data, list):
-            logger.warning(f"GPT-SoVITS /api/v3/voices 返回了非列表格式: {type(voices_data).__name__}")
-        if isinstance(voices_data, list):
-            for idx, v in enumerate(voices_data):
-                if not isinstance(v, dict):
-                    logger.warning(
-                        "GPT-SoVITS /api/v3/voices 第 %d 项不是对象，已跳过: %s",
-                        idx,
-                        type(v).__name__,
-                    )
-                    continue
-                raw_id = v.get('id', '')
-                if not raw_id:
-                    continue
-                voices.append({
-                    'voice_id': f"{GSV_VOICE_PREFIX}{raw_id}",
-                    'raw_id': raw_id,
-                    'name': v.get('name', raw_id),
-                    'description': v.get('description', ''),
-                    'version': v.get('version', ''),
-                })
+        # 通过适配层获取并标准化自定义 TTS voices
+        voices = await get_custom_tts_voices(base_url, provider='gptsovits')
         
         return JSONResponse({
             'success': True,
             'voices': voices,
-            'api_url': api_url
+            'api_url': base_url
         })
-    except httpx.HTTPError as e:
+    except (CustomTTSVoiceFetchError, ValueError) as e:
         return JSONResponse({
             'success': False,
             'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
