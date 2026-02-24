@@ -507,20 +507,40 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         
         // 保存当前模型的 scale 和 position，以便重新加载后恢复
         const modelForSave = mgr.currentModel;
-        const savedPreferences = {
-            scale: {
-                x: modelForSave.scale.x,
-                y: modelForSave.scale.y
-            },
-            position: {
-                x: modelForSave.x,
-                y: modelForSave.y
-            }
-        };
         
-        mgr.loadModel(modelPath, { preferences: savedPreferences }).catch(err => {
-            console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
-        });
+        const scaleX = modelForSave.scale.x;
+        const scaleY = modelForSave.scale.y;
+        const posX = modelForSave.x;
+        const posY = modelForSave.y;
+        
+        // 验证数值有效性
+        const isValidScale = Number.isFinite(scaleX) && scaleX > 0 && scaleX < 10 &&
+                            Number.isFinite(scaleY) && scaleY > 0 && scaleY < 10;
+        const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
+                               Math.abs(posX) < 100000 && Math.abs(posY) < 100000;
+        
+        let savedPreferences = null;
+        if (isValidScale && isValidPosition) {
+            savedPreferences = {
+                scale: { x: scaleX, y: scaleY },
+                position: { x: posX, y: posY }
+            };
+        } else {
+            console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
+                scaleX, scaleY, posX, posY, isValidScale, isValidPosition
+            });
+        }
+        
+        if (savedPreferences) {
+            mgr.loadModel(modelPath, { preferences: savedPreferences }).catch(err => {
+                console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
+            });
+        } else {
+            // 如果没有有效偏好，直接重新加载（使用默认位置/大小）
+            mgr.loadModel(modelPath).catch(err => {
+                console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
+            });
+        }
     }
 });
 
