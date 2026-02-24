@@ -46,7 +46,7 @@ class ErrorCode(IntEnum):
         DEPENDENCY_MISSING: 依赖缺失 (502)
         NOT_READY: 服务未就绪 (503)
         TIMEOUT: 超时 (504)
-        INVALID_RESPONSE: 响应格式无效 (502)
+        INVALID_RESPONSE: 响应格式无效 (422)
         PLUGIN_NOT_RUNNING: 插件未运行 (1001)
         PLUGIN_CRASHED: 插件崩溃 (1002)
         CIRCULAR_CALL: 循环调用 (1003)
@@ -109,25 +109,7 @@ class ErrorCode(IntEnum):
 
 
 # 错误码名称映射（用于序列化）
-ERROR_NAMES: Dict[ErrorCode, str] = {
-    ErrorCode.SUCCESS: "SUCCESS",
-    ErrorCode.VALIDATION_ERROR: "VALIDATION_ERROR",
-    ErrorCode.UNAUTHORIZED: "UNAUTHORIZED",
-    ErrorCode.FORBIDDEN: "FORBIDDEN",
-    ErrorCode.NOT_FOUND: "NOT_FOUND",
-    ErrorCode.CONFLICT: "CONFLICT",
-    ErrorCode.RATE_LIMITED: "RATE_LIMITED",
-    ErrorCode.INTERNAL: "INTERNAL",
-    ErrorCode.NOT_IMPLEMENTED: "NOT_IMPLEMENTED",
-    ErrorCode.DEPENDENCY_MISSING: "DEPENDENCY_MISSING",
-    ErrorCode.NOT_READY: "NOT_READY",
-    ErrorCode.TIMEOUT: "TIMEOUT",
-    ErrorCode.INVALID_RESPONSE: "INVALID_RESPONSE",
-    ErrorCode.PLUGIN_NOT_RUNNING: "PLUGIN_NOT_RUNNING",
-    ErrorCode.PLUGIN_CRASHED: "PLUGIN_CRASHED",
-    ErrorCode.CIRCULAR_CALL: "CIRCULAR_CALL",
-    ErrorCode.PLUGIN_RATE_LIMITED: "PLUGIN_RATE_LIMITED",
-}
+ERROR_NAMES: Dict[ErrorCode, str] = {member: member.name for member in ErrorCode}
 
 
 def get_error_name(code: ErrorCode) -> str:

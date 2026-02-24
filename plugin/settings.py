@@ -165,9 +165,6 @@ NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
 # 插件标签（用于标记插件类）
 NEKO_PLUGIN_TAG = "__neko_plugin__"
 
-# 事件元数据属性名（用于标记事件处理器）
-EVENT_META_ATTR = "__neko_event_meta__"
-
 
 # ========== 其他运行时配置 ==========
 
@@ -539,7 +536,6 @@ __all__ = [
     # SDK 元数据属性
     "NEKO_PLUGIN_META_ATTR",
     "NEKO_PLUGIN_TAG",
-    "EVENT_META_ATTR",
     
     # Message schema 校验
     "MESSAGE_SCHEMA_STRICT",

@@ -1111,8 +1111,8 @@ async def analyze_and_plan(payload: Dict[str, Any]):
     # 检查 analyzer 是否已启用（由 agent 总开关控制）
     if not Modules.analyzer_enabled:
         return {"success": False, "status": "analyzer_disabled", "message": "Analyzer is disabled"}
-    if not Modules.analyzer or not Modules.planner:
-        raise HTTPException(503, "Analyzer/Planner not ready")
+    if not Modules.task_executor:
+        raise HTTPException(503, "Task executor not ready")
     messages = (payload or {}).get("messages", [])
     if not isinstance(messages, list):
         raise HTTPException(400, "messages must be a list of {role, text}")

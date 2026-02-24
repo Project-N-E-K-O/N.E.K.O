@@ -4,14 +4,10 @@
 提供事件元数据和事件处理器定义。
 """
 from dataclasses import dataclass
-from typing import Dict, Any, Callable, Literal, Optional, Union
+from typing import Dict, Any, Callable, Literal, get_args
 
 # 事件元数据属性名（用于标记事件处理器）
-# 注意：这个常量也在 settings.py 中定义，保持同步
 EVENT_META_ATTR = "__neko_event_meta__"
-
-# 标准事件类型集合（与 StandardEventType Literal 保持同步）
-STANDARD_EVENT_TYPES: tuple[str, ...] = ("plugin_entry", "lifecycle", "message", "timer")
 
 # 标准事件类型
 StandardEventType = Literal[
@@ -21,8 +17,11 @@ StandardEventType = Literal[
     "timer",         # 将来的定时事件
 ]
 
+# 标准事件类型集合（自动与 StandardEventType 保持同步）
+STANDARD_EVENT_TYPES: tuple[str, ...] = get_args(StandardEventType)
+
 # 事件类型：标准类型或自定义字符串
-EventType = Union[StandardEventType, str]
+EventType = str
 
 @dataclass
 class EventMeta:

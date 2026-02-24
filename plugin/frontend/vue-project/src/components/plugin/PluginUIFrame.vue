@@ -60,7 +60,7 @@ const iframeRef = ref<HTMLIFrameElement | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
-const uiInfo = ref<any>(null)
+let currentRequestId = 0
 
 const uiUrl = computed(() => {
   if (!props.pluginId) return ''
@@ -69,22 +69,27 @@ const uiUrl = computed(() => {
 
 async function checkUIAvailability() {
   if (!props.pluginId) {
+    currentRequestId += 1
     hasUI.value = false
+    loading.value = false
+    error.value = null
     return
   }
+  const requestId = ++currentRequestId
   
   loading.value = true
   error.value = null
   
   try {
     const info = await get(`/plugin/${encodeURIComponent(props.pluginId)}/ui-info`)
-    uiInfo.value = info
+    if (requestId !== currentRequestId) return
     hasUI.value = info?.has_ui ?? false
     
     if (!hasUI.value) {
       loading.value = false
     }
   } catch (e: any) {
+    if (requestId !== currentRequestId) return
     error.value = e?.message || t('plugins.ui.loadError')
     hasUI.value = false
     loading.value = false

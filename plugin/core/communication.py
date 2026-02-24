@@ -498,8 +498,8 @@ class PluginCommunicationResourceManager:
             else:
                 self.logger.warning(f"Unknown ENTRY_UPDATE action: {action}")
                 
-        except Exception as e:
-            self.logger.exception(f"Failed to handle ENTRY_UPDATE: {e}")
+        except Exception:
+            self.logger.exception("Failed to handle ENTRY_UPDATE")
     
     async def _handle_static_ui_register(self, msg: Dict[str, Any]) -> None:
         """处理静态 UI 注册消息
@@ -529,8 +529,8 @@ class PluginCommunicationResourceManager:
                 else:
                     self.logger.warning(f"Plugin {plugin_id} not found in state.plugins")
                     
-        except Exception as e:
-            self.logger.exception(f"Failed to handle STATIC_UI_REGISTER: {e}")
+        except Exception:
+            self.logger.exception("Failed to handle STATIC_UI_REGISTER")
     
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""

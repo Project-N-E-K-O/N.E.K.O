@@ -15,6 +15,7 @@ except ImportError:
 import uuid
 import threading
 import functools
+import itertools
 
 # 模块级初始化锁，用于 _push_lock 的双检初始化
 _PUSH_LOCK_INIT = threading.Lock()
@@ -143,6 +144,15 @@ class PluginContext:
 
         mp_batcher = getattr(self, "_message_plane_push_batcher", None)
         if mp_batcher is not None:
+            push_lock = getattr(self, "_push_lock", None)
+            acquired_push_lock = False
+            if push_lock is not None:
+                try:
+                    acquired_push_lock = bool(push_lock.acquire(timeout=3.0))
+                except TypeError:
+                    acquired_push_lock = bool(push_lock.acquire())
+                except Exception:
+                    acquired_push_lock = False
             try:
                 mp_batcher.stop(timeout=2.0)
             except Exception as e:
@@ -154,6 +164,12 @@ class PluginContext:
                 self._message_plane_push_batcher = None
             except Exception:
                 pass
+            finally:
+                if acquired_push_lock and push_lock is not None:
+                    try:
+                        push_lock.release()
+                    except Exception:
+                        pass
 
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is not None:
@@ -233,8 +249,8 @@ class PluginContext:
             )
             if policy not in ("warn", "reject"):
                 policy = SYNC_CALL_IN_HANDLER_POLICY
-            setattr(self, "_a1_policy_mtime", st.st_mtime)
-            setattr(self, "_a1_policy_value", policy)
+            self._a1_policy_mtime = st.st_mtime
+            self._a1_policy_value = policy
             return policy
         except Exception:
             return SYNC_CALL_IN_HANDLER_POLICY
@@ -841,7 +857,7 @@ class PluginContext:
                                 else:
                                     # 另一个线程已经创建了，关闭我们创建的
                                     try:
-                                        new_batcher.stop(timeout=0.1)
+                                        new_batcher.stop(timeout=2.0)
                                     except Exception:
                                         pass
                         
@@ -850,7 +866,6 @@ class PluginContext:
                             # Fast path: use counter instead of UUID, use float timestamp instead of ISO
                             msg_counter = getattr(self, "_msg_counter", None)
                             if msg_counter is None:
-                                import itertools
                                 msg_counter = itertools.count(1)
                                 try:
                                     object.__setattr__(self, "_msg_counter", msg_counter)

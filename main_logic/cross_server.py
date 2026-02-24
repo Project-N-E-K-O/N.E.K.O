@@ -311,7 +311,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 if txt:
                                                     recent_renew.append({'role': item.get('role'), 'text': txt})
                                         if recent_renew:
-                                            from main_logic.conversation_bridge import generate_conversation_id, publish_conversation
                                             renew_conversation_id = generate_conversation_id()
                                             publish_conversation(recent_renew, lanlan_name, "renew_session", renew_conversation_id)
                                     except Exception:

@@ -579,7 +579,7 @@ Return only the JSON object, nothing else.
                         (repr(raw_text)[:2000] if raw_text is not None else None),
                     )
                     # ERROR 级别只记录错误信息，不包含敏感内容
-                    logger.exception("[UserPlugin Assessment] JSON parse error: %s", str(e))
+                    logger.exception("[UserPlugin Assessment] JSON parse error")
                     # Try to extract JSON from the text if it's embedded in other text
                     try:
                         # Try to find JSON object in the text (improved regex to handle nested objects)
