@@ -133,11 +133,20 @@ class BusHubProtocol(Protocol):
         memory: 内存客户端，用于查询内存数据
         conversations: 对话客户端，用于查询对话上下文
     """
-    messages: _MessageClientProto
-    events: _EventClientProto
-    lifecycle: _LifecycleClientProto
-    memory: _MemoryClientProto
-    conversations: _ConversationClientProto
+    @property
+    def messages(self) -> _MessageClientProto: ...
+
+    @property
+    def events(self) -> _EventClientProto: ...
+
+    @property
+    def lifecycle(self) -> _LifecycleClientProto: ...
+
+    @property
+    def memory(self) -> _MemoryClientProto: ...
+
+    @property
+    def conversations(self) -> _ConversationClientProto: ...
 
 
 class BusReplayContext(Protocol):

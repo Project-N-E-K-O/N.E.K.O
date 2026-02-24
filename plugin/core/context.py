@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 try:
     import ormsgpack
@@ -47,6 +47,7 @@ from plugin.settings import (
 )
 
 if TYPE_CHECKING:
+    from plugin.sdk.bus.types import BusHubProtocol
     from plugin.sdk.bus.events import EventClient
     from plugin.sdk.bus.lifecycle import LifecycleClient
     from plugin.sdk.memory import MemoryClient
@@ -112,14 +113,19 @@ class PluginContext:
     _response_pending: Optional[Dict[str, Any]] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
+    _bus_hub: Optional[Any] = None
     _push_seq: int = 0
     _push_lock: Optional[Any] = None
     _push_batcher: Optional[Any] = None
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
 
-    @functools.cached_property
-    def bus(self) -> _BusHub:
-        return _BusHub(self)
+    @property
+    def bus(self) -> "BusHubProtocol":
+        hub = self._bus_hub
+        if hub is None:
+            hub = _BusHub(self)
+            self._bus_hub = hub
+        return cast("BusHubProtocol", hub)
 
     def close(self) -> None:
         """Release per-context resources such as the ZeroMQ push batcher.
