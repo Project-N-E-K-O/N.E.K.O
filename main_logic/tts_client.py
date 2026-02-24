@@ -407,7 +407,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
     if not voice_id:
         voice_id = "Momo"
-    
+
     async def async_worker():
         """异步TTS worker主循环"""
         tts_url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime-2025-09-18"
@@ -1760,8 +1760,16 @@ def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_i
     # 目标采样率：前端 PCM 默认按 48k 播
     DST_RATE = 48000
 
+    # 🟢 [新增] 客户端极速发送策略开关
+    # 配合服务端的 ENABLE_TRUE_STREAMING 使用
+    TRUE_STREAM_MODE = True
+
     # 提交策略
-    COMMIT_CHARS = 60
+    if TRUE_STREAM_MODE:
+        COMMIT_CHARS = 8  # 极速模式：只要拿到 8 个字就立刻发给服务端合成
+    else:
+        COMMIT_CHARS = 60  # 兜底模式：等满 60 个字再发
+
     COMMIT_PUNCS = ("。", "！", "？", ".", "!", "?", "\n")
 
     async def async_worker():
