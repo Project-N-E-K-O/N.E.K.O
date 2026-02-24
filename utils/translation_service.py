@@ -21,7 +21,7 @@ from utils.language_utils import detect_language as _detect_language_impl, norma
 logger = logging.getLogger(__name__)
 
 # 支持的语言列表（支持多种格式以兼容不同调用方式）
-SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko']
+SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko', 'ru']
 DEFAULT_LANGUAGE = 'zh-CN'
 
 # 缓存配置
@@ -208,6 +208,8 @@ class TranslationService:
                     source_lang_name = "Chinese"
                 elif detected_lang_normalized == 'ja':
                     source_lang_name = "Japanese"
+                elif detected_lang_normalized == 'ru':
+                    source_lang_name = "Russian"
                 else:
                     source_lang_name = "the source language"
             elif target_lang_normalized == 'ja':
@@ -216,6 +218,8 @@ class TranslationService:
                     source_lang_name = "Chinese"
                 elif detected_lang_normalized == 'en':
                     source_lang_name = "English"
+                elif detected_lang_normalized == 'ru':
+                    source_lang_name = "Russian"
                 else:
                     source_lang_name = "the source language"
             elif target_lang_normalized == 'ko':
@@ -226,6 +230,20 @@ class TranslationService:
                     source_lang_name = "English"
                 elif detected_lang_normalized == 'ja':
                     source_lang_name = "Japanese"
+                elif detected_lang_normalized == 'ru':
+                    source_lang_name = "Russian"
+                else:
+                    source_lang_name = "the source language"
+            elif target_lang_normalized == 'ru':
+                target_lang_name = "Russian"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
+                elif detected_lang_normalized == 'ko':
+                    source_lang_name = "Korean"
                 else:
                     source_lang_name = "the source language"
             else:  # zh-CN
@@ -234,6 +252,8 @@ class TranslationService:
                     source_lang_name = "English"
                 elif detected_lang_normalized == 'ja':
                     source_lang_name = "Japanese"
+                elif detected_lang_normalized == 'ru':
+                    source_lang_name = "Russian"
                 else:
                     source_lang_name = "the source language"
             
