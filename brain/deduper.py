@@ -53,6 +53,17 @@ class TaskDeduper:
         
         for attempt in range(max_retries):
             try:
+                ok, info = get_config_manager().consume_agent_daily_quota(
+                    source="deduper.judge",
+                    units=1,
+                )
+                if not ok:
+                    logger.warning(
+                        "[Deduper] Agent quota exceeded: used=%s, limit=%s",
+                        info.get("used"),
+                        info.get("limit"),
+                    )
+                    return {"duplicate": False, "matched_id": None}
                 resp = await self.llm.ainvoke([
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},

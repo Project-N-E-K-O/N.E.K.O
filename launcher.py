@@ -38,6 +38,7 @@ import ctypes
 import atexit
 import signal
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Dict
@@ -864,6 +865,65 @@ def register_shutdown_hooks():
         except Exception:
             pass
 
+def _ensure_playwright_browsers():
+    """Auto-install Playwright Chromium if missing (needed by browser-use).
+
+    Uses playwright's bundled driver binary directly, so it works inside
+    a Nuitka standalone build where ``python -m playwright`` is unavailable.
+    The ``install chromium`` command is idempotent – if the browser already
+    exists it returns almost instantly.
+
+    When running frozen (Nuitka/PyInstaller), PLAYWRIGHT_BROWSERS_PATH is set
+    to the bundled ``playwright_browsers`` dir so that build-time cached
+    Chromium is used and no on-site download is needed.
+    """
+    try:
+        from playwright._impl._driver import compute_driver_executable, get_driver_env
+    except ImportError:
+        return
+
+    try:
+        if getattr(sys, "frozen", False):
+            if hasattr(sys, "_MEIPASS"):
+                _bundle = sys._MEIPASS
+            else:
+                _bundle = os.path.dirname(os.path.abspath(__file__))
+            _bundled_browsers = os.path.join(_bundle, "playwright_browsers")
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bundled_browsers
+
+            if os.path.isdir(_bundled_browsers) and os.listdir(_bundled_browsers):
+                print("[Launcher] ✓ Playwright Chromium ready (bundled)", flush=True)
+                emit_frontend_event("playwright_check", {"status": "ready"})
+                return
+
+        driver = str(compute_driver_executable())
+        env = get_driver_env()
+        print("[Launcher] Checking Playwright Chromium browser...", flush=True)
+        emit_frontend_event("playwright_check", {"status": "checking"})
+
+        result = subprocess.run(
+            [driver, "install", "chromium"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if result.returncode == 0:
+            print("[Launcher] ✓ Playwright Chromium ready", flush=True)
+            emit_frontend_event("playwright_check", {"status": "ready"})
+        else:
+            msg = (result.stderr or "").strip()[:300]
+            logging.getLogger(__name__).info("[Launcher] Playwright install warning: %s", msg)
+            emit_frontend_event("playwright_check", {"status": "warning", "message": msg})
+    except subprocess.TimeoutExpired:
+        logging.getLogger(__name__).info("[Launcher] Playwright browser install timed out (300s)")
+        emit_frontend_event("playwright_check", {"status": "timeout"})
+    except Exception as e:
+        logging.getLogger(__name__).info("[Launcher] Playwright browser check skipped: %s", e)
+        emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
+
+
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -893,6 +953,9 @@ def main():
 
         # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
         setup_job_object()
+
+        # 自动安装 Playwright Chromium（browser-use 依赖）
+        _ensure_playwright_browsers()
 
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)

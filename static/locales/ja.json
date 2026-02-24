@@ -961,7 +961,7 @@
   "voice": {
     "title": "ボイス登録",
     "alibabaApiRequired": "⚠️ この機能はCosyVoiceモデルが必要です。APIキー設定でAlibaba Assist APIまたはローカル音声サーバーを設定してください",
-    "selectFile": "ローカル音声ファイルを選択（15秒推奨、最大30秒、wav/mp3形式）",
+    "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
     "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",
     "customPrefixNote": "最大10文字、数字と英字のみ",
     "prefixPlaceholder": "最大10文字、数字と英字のみ",
@@ -1297,8 +1297,11 @@
       "disabledError": "エージェントモード無効 (部分的なクリーンアップに失敗)",
       "enableFailed": "有効化に失敗",
       "disconnected": "サーバー接続が失われました",
-      "agentDisconnected": "エージェントサーバー接続が失われました"
+      "agentDisconnected": "エージェントサーバー接続が失われました",
+      "freeModelWarning": "クォータの制限により、無料モデルではAgentモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
+      "freeModelWarningTitle": "無料モデルのお知らせ"
     },
+    "quotaExceeded": "無料 Agent モデルの本日の試用上限（{{limit}}回）に達しました。明日もう一度お試しください。",
     "taskHud": {
       "title": "エージェントタスク",
       "running": "実行中",

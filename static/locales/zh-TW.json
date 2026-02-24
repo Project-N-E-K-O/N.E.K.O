@@ -961,7 +961,7 @@
     "voice": {
         "title": "音色注冊",
         "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，請在API密鑰設置頁中配置阿里輔助API或本地語音服務器",
-        "selectFile": "選擇本地音頻文件（15秒最佳，請勿超過30秒，wav/mp3格式）",
+        "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
         "customPrefixNote": "不超過10個字符，隻支持數字和英文字母",
         "prefixPlaceholder": "不超過10個字符，隻支持數字和英文字母",
@@ -1297,8 +1297,11 @@
             "disabledError": "Agent模式已關閉（部分清理失敗）",
             "enableFailed": "開啓失敗",
             "disconnected": "服務器連接已斷開",
-            "agentDisconnected": "Agent 服務器連接已斷開"
+            "agentDisconnected": "Agent 服務器連接已斷開",
+            "freeModelWarning": "由於限額問題，免費模型使用Agent模式容易阻塞，建議您切換至自費模型。\n\n如果您已經配置好自費API，請嘗試重啟NEKO。",
+            "freeModelWarningTitle": "免費模型提示"
         },
+        "quotaExceeded": "免費 Agent 模型今日試用次數已達上限（{{limit}}次），請明日再試。",
         "taskHud": {
             "title": "Agent 任務",
             "running": "運行中",

@@ -120,7 +120,6 @@ class LLMSessionManager:
         self.agent_flags = {
             'agent_enabled': False,
             'computer_use_enabled': False,
-            'mcp_enabled': False,
             'browser_use_enabled': False,
         }
         
@@ -1150,10 +1149,11 @@ class LLMSessionManager:
                 else:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
-            await self.cleanup()
-            
             # 通知前端 session 启动失败，让前端重置状态
+            # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
             await self.send_session_failed(input_mode)
+            
+            await self.cleanup()
         
         finally:
             # 无论成功还是失败，都重置启动标志
@@ -1187,7 +1187,6 @@ class LLMSessionManager:
             gate_ok = False
         return gate_ok and self.agent_flags['agent_enabled'] and (
             self.agent_flags['computer_use_enabled']
-            or self.agent_flags['mcp_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
         )
 
@@ -1354,7 +1353,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'mcp_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:

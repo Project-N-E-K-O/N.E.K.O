@@ -961,7 +961,7 @@
   "voice": {
     "title": "음성 등록",
     "alibabaApiRequired": "⚠️ 이 기능을 사용하려면 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Assist API 또는 로컬 음성 서버를 구성하세요.",
-    "selectFile": "로컬 오디오 파일 선택(15초 권장, 최대 30초, wav/mp3 형식)",
+    "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
     "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
     "customPrefixNote": "UI : 최대 10자, 숫자, 영문만 가능",
     "prefixPlaceholder": "UI : 최대 10자, 숫자, 영문만 가능",
@@ -1297,8 +1297,11 @@
       "disabledError": "에이전트 모드 비활성화됨(부분 정리 실패)",
       "enableFailed": "활성화 실패",
       "disconnected": "서버 연결이 끊어졌습니다.",
-      "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다."
+      "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다.",
+      "freeModelWarning": "할당량 제한으로 인해 무료 모델은 Agent 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
+      "freeModelWarningTitle": "무료 모델 안내"
     },
+    "quotaExceeded": "무료 Agent 모델의 일일 체험 한도({{limit}}회)에 도달했습니다. 내일 다시 시도해 주세요.",
     "taskHud": {
       "title": "에이전트 작업",
       "running": "실행 중",

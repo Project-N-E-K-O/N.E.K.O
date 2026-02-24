@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 DirectTaskExecutor: 合并 Analyzer + Planner 的功能
-并行评估 MCP 和 ComputerUse 和 UserPlugin 可行性（三个独立 LLM 调用）
-优先使用 MCP,其次使用 ComputerUse,最后使用 UserPlugin
+并行评估 ComputerUse / BrowserUse / UserPlugin 可行性
 """
 import json
 import asyncio
@@ -13,7 +12,6 @@ from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLim
 import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
-from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 
@@ -26,21 +24,10 @@ class TaskResult:
     task_id: str
     has_task: bool = False
     task_description: str = ""
-    execution_method: str = "none"  # "mcp" | "computer_use" | "none"
+    execution_method: str = "none"  # "computer_use" | "browser_use" | "user_plugin" | "none"
     success: bool = False
     result: Any = None
     error: Optional[str] = None
-    tool_name: Optional[str] = None
-    tool_args: Optional[Dict] = None
-    reason: str = ""
-
-
-@dataclass
-class McpDecision:
-    """MCP 可行性评估结果"""
-    has_task: bool = False
-    can_execute: bool = False
-    task_description: str = ""
     tool_name: Optional[str] = None
     tool_args: Optional[Dict] = None
     reason: str = ""
@@ -75,17 +62,10 @@ class UserPluginDecision:
     reason: str = ""
 class DirectTaskExecutor:
     """
-    直接任务执行器：并行评估 MCP、UserPlugin 与 ComputerUse 可行性
-    
-    流程:
-    1. 并行调用多个评估器:_assess_mcp、_assess_user_plugin、_assess_computer_use
-    2. 优先使用 MCP(如果可行),其次 ComputerUse,再次 UserPlugin (优先级可调整)
-    3. 执行选中的方法
+    直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
-        self.router = McpRouterClient()
-        self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
         self.browser_use = browser_use or BrowserUseAdapter()
         self._config_manager = get_config_manager()
@@ -150,6 +130,16 @@ class DirectTaskExecutor:
         """获取模型名称"""
         api_config = self._config_manager.get_model_api_config('summary')
         return api_config['model']
+
+    def _check_agent_quota(self, source: str) -> Optional[str]:
+        """免费版 Agent 模型每日 300 次本地限流。"""
+        ok, info = self._config_manager.consume_agent_daily_quota(source=source, units=1)
+        if ok:
+            return None
+        return (
+            f"免费 Agent 模型今日试用次数已达上限 "
+            f"({info.get('used', 0)}/{info.get('limit', 300)})，请明日再试。"
+        )
     
     def _format_messages(self, messages: List[Dict[str, str]]) -> str:
         """格式化对话消息"""
@@ -195,98 +185,6 @@ class DirectTaskExecutor:
         
         return "\n".join(lines)
     
-    async def _assess_mcp(
-        self, 
-        conversation: str, 
-        capabilities: Dict[str, Dict[str, Any]]
-    ) -> McpDecision:
-        """
-        独立评估 MCP 可行性（专注于 MCP 工具）
-        """
-        if not capabilities:
-            return McpDecision(has_task=False, can_execute=False, reason="No MCP tools available")
-        
-        tools_desc = self._format_tools(capabilities)
-        
-        system_prompt = f"""You are an MCP tool selection agent. Your ONLY job is to determine if the user's request can be handled by the available MCP tools.
-
-AVAILABLE MCP TOOLS:
-{tools_desc}
-
-INSTRUCTIONS:
-1. Analyze if the conversation contains an actionable task request
-2. If yes, determine if ANY of the available MCP tools can handle it
-3. If a tool can handle it, provide the exact tool name and arguments
-4. Be precise with the tool arguments - they must match the tool's schema
-5. If `LATEST_USER_REQUEST` exists, prioritize it over assistant claims like "already done".
-
-OUTPUT FORMAT (strict JSON):
-{{
-    "has_task": boolean,
-    "can_execute": boolean,
-    "task_description": "brief description of the task",
-    "tool_name": "exact_tool_name or null",
-    "tool_args": {{...}} or null,
-    "reason": "why this decision"
-}}"""
-
-        user_prompt = f"Conversation:\n{conversation}"
-        
-        # Retry策略：重试2次，间隔1秒、2秒
-        max_retries = 3
-        retry_delays = [1, 2]
-        
-        for attempt in range(max_retries):
-            try:
-                client = self._get_client()
-                model = self._get_model()
-                
-                request_params = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 600
-                }
-                
-                extra_body = get_extra_body(model)
-                if extra_body:
-                    request_params["extra_body"] = extra_body
-                
-                response = await client.chat.completions.create(**request_params)
-                text = response.choices[0].message.content.strip()
-                
-                logger.debug(f"[MCP Assessment] Raw response: {text[:200]}...")
-                
-                # 解析 JSON
-                if text.startswith("```"):
-                    text = text.replace("```json", "").replace("```", "").strip()
-                decision = json.loads(text)
-                
-                return McpDecision(
-                    has_task=decision.get('has_task', False),
-                    can_execute=decision.get('can_execute', False),
-                    task_description=decision.get('task_description', ''),
-                    tool_name=decision.get('tool_name'),
-                    tool_args=decision.get('tool_args'),
-                    reason=decision.get('reason', '')
-                )
-                
-            except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
-                if attempt < max_retries - 1:
-                    wait_time = retry_delays[attempt]
-                    logger.warning(f"[MCP Assessment] 调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"[MCP Assessment] Failed after {max_retries} attempts: {e}")
-                    return McpDecision(has_task=False, can_execute=False, reason=f"Assessment error after {max_retries} attempts: {e}")
-            except Exception as e:
-                logger.error(f"[MCP Assessment] Failed: {e}")
-                return McpDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
-    
     async def _assess_computer_use(
         self, 
         conversation: str,
@@ -302,7 +200,7 @@ OUTPUT FORMAT (strict JSON):
                 reason="ComputerUse not available"
             )
         
-        system_prompt = """You are a GUI automation assessment agent. Your ONLY job is to determine if the user's request requires GUI/desktop automation.
+        system_prompt = """You are a GUI automation assessment agent, your ONLY job is to determine if the user's request requires GUI/desktop automation.
 
 GUI AUTOMATION CAPABILITIES:
 - Control mouse (click, move, drag)
@@ -344,13 +242,18 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 500
                 }
                 
                 extra_body = get_extra_body(model)
                 if extra_body:
                     request_params["extra_body"] = extra_body
-                
+
+                quota_error = self._check_agent_quota("task_executor.assess_computer_use")
+                if quota_error:
+                    return ComputerUseDecision(
+                        has_task=False, can_execute=False, reason=quota_error
+                    )
                 response = await client.chat.completions.create(**request_params)
                 text = response.choices[0].message.content.strip()
                 
@@ -359,7 +262,19 @@ OUTPUT FORMAT (strict JSON):
                 # 解析 JSON
                 if text.startswith("```"):
                     text = text.replace("```json", "").replace("```", "").strip()
-                decision = json.loads(text)
+                try:
+                    decision = json.loads(text)
+                except json.JSONDecodeError as e:
+                    logger.error(
+                        "[ComputerUse Assessment] Invalid JSON response: error=%s, raw=%r",
+                        e,
+                        text,
+                    )
+                    return ComputerUseDecision(
+                        has_task=False,
+                        can_execute=False,
+                        reason=f"Assessment parse error: {e}",
+                    )
                 
                 return ComputerUseDecision(
                     has_task=decision.get('has_task', False),
@@ -384,7 +299,7 @@ OUTPUT FORMAT (strict JSON):
     async def _assess_browser_use(self, conversation: str, browser_available: bool) -> BrowserUseDecision:
         if not browser_available:
             return BrowserUseDecision(has_task=False, can_execute=False, reason="BrowserUse not available")
-        system_prompt = """You assess if the task should be handled by browser automation.
+        system_prompt = """You are a browser automation assessment agent, assess if the task should be handled by browser automation.
 Return strict JSON:
 {
   "has_task": boolean,
@@ -407,16 +322,33 @@ Rules:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0,
-                "max_tokens": 300,
+                "max_tokens": 500,
             }
             extra_body = get_extra_body(model)
             if extra_body:
                 req["extra_body"] = extra_body
+            quota_error = self._check_agent_quota("task_executor.assess_browser_use")
+            if quota_error:
+                return BrowserUseDecision(has_task=False, can_execute=False, reason=quota_error)
             response = await client.chat.completions.create(**req)
             text = response.choices[0].message.content.strip()
             if text.startswith("```"):
                 text = text.replace("```json", "").replace("```", "").strip()
-            decision = json.loads(text)
+            try:
+                decision = json.loads(text)
+            except json.JSONDecodeError as e:
+                raw_prefix = (text or "")[:10]
+                logger.warning(
+                    "[BrowserUse Assessment] Invalid JSON, prefix=%r, len=%d, error=%s",
+                    raw_prefix,
+                    len(text or ""),
+                    e,
+                )
+                return BrowserUseDecision(
+                    has_task=False,
+                    can_execute=False,
+                    reason=f"Assessment parse error: {e}; prefix={raw_prefix!r}",
+                )
             return BrowserUseDecision(
                 has_task=decision.get("has_task", False),
                 can_execute=decision.get("can_execute", False),
@@ -547,13 +479,23 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 500
                 }
                 
                 extra_body = get_extra_body(model)
                 if extra_body:
                     request_params["extra_body"] = extra_body
-                
+
+                quota_error = self._check_agent_quota("task_executor.assess_user_plugin")
+                if quota_error:
+                    return UserPluginDecision(
+                        has_task=False,
+                        can_execute=False,
+                        task_description="",
+                        plugin_id=None,
+                        plugin_args=None,
+                        reason=quota_error,
+                    )
                 response = await client.chat.completions.create(**request_params)
                 # Capture raw response and log prompts/response at INFO so it's visible in runtime logs
                 try:
@@ -611,17 +553,14 @@ Return only the JSON object, nothing else.
         agent_flags: Optional[Dict[str, bool]] = None
     ) -> Optional[TaskResult]:
         """
-        并行评估 MCP 和 ComputerUse，然后执行任务
-        
-        优先级: MCP > ComputerUse > UserPlugin
+        并行评估 ComputerUse / BrowserUse / UserPlugin，然后执行任务
         """
         import uuid
         task_id = str(uuid.uuid4())
         
         if agent_flags is None:
-            agent_flags = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}
+            agent_flags = {"computer_use_enabled": False, "browser_use_enabled": False}
         
-        mcp_enabled = agent_flags.get("mcp_enabled", False)
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
@@ -629,11 +568,11 @@ Return only the JSON object, nothing else.
         # testUserPlugin: log entry with flags and short message summary for debugging
         try:
             msgs_summary = self._format_messages(messages)[:400].replace("\n", " ")
-            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
+            print(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
         except Exception:
             logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
         
-        if not mcp_enabled and not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
+        if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
         
@@ -644,15 +583,6 @@ Return only the JSON object, nothing else.
         
         # 准备并行评估任务
         assessment_tasks = []
-        
-        # MCP 评估任务
-        capabilities = {}
-        if mcp_enabled:
-            try:
-                capabilities = await self.catalog.get_capabilities(force_refresh=True)
-                logger.info(f"[TaskExecutor] Found {len(capabilities)} MCP tools")
-            except Exception as e:
-                logger.warning(f"[TaskExecutor] Failed to get MCP capabilities: {e}")
         
         # ComputerUse 可用性检查
         cu_available = False
@@ -672,14 +602,10 @@ Return only the JSON object, nothing else.
                 logger.warning(f"[TaskExecutor] Failed to check BrowserUse: {e}")
         
         # 并行执行评估（包含 user_plugin 分支）
-        mcp_decision = None
         cu_decision = None
         bu_decision = None
         up_decision = None
-        
-        if mcp_enabled and capabilities:
-            assessment_tasks.append(('mcp', self._assess_mcp(conversation, capabilities)))
-        
+
         # user plugin 支路（由外部 provider 提供插件列表）
         plugins = []
         if user_plugin_enabled:
@@ -710,10 +636,7 @@ Return only the JSON object, nothing else.
                 logger.error(f"[TaskExecutor] {task_type} assessment failed: {result}")
                 continue
             # safe attribute access via getattr to avoid type issues
-            if task_type == 'mcp':
-                mcp_decision = result
-                logger.info(f"[MCP] has_task={getattr(mcp_decision,'has_task',None)}, can_execute={getattr(mcp_decision,'can_execute',None)}, reason={getattr(mcp_decision,'reason',None)}")
-            elif task_type == 'up':
+            if task_type == 'up':
                 up_decision = result
                 logger.info(f"[UserPlugin] has_task={getattr(up_decision,'has_task',None)}, can_execute={getattr(up_decision,'can_execute',None)}, reason={getattr(up_decision,'reason',None)}")
             elif task_type == 'cu':
@@ -723,32 +646,8 @@ Return only the JSON object, nothing else.
                 bu_decision = result
                 logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
         
-        # 决策逻辑：MCP 优先
-        # 1. 如果 MCP 可以执行，使用 MCP
-        if mcp_decision and mcp_decision.has_task and mcp_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using MCP: {mcp_decision.task_description}")
-            result_obj = await self._execute_mcp(
-                task_id=task_id,
-                decision=mcp_decision
-            )
-            # Structured log of TaskResult (truncated)
-            try:
-                res_preview = str(result_obj.result) if result_obj.result is not None else ""
-                if len(res_preview) > 800:
-                    res_preview = res_preview[:800] + "...(truncated)"
-                logger.info("TaskExecutor-OUT: %s", json.dumps({
-                    "task_id": result_obj.task_id,
-                    "execution_method": result_obj.execution_method,
-                    "success": result_obj.success,
-                    "reason": result_obj.reason,
-                    "tool_name": result_obj.tool_name,
-                    "result_preview": res_preview
-                }, ensure_ascii=False))
-            except Exception:
-                logger.info("TaskExecutor-OUT: (failed to serialize TaskResult)")
-            return result_obj
-
-        # 2. 如果 MCP 不行，但 ComputerUse 可以，返回 ComputerUse 任务
+        # 决策逻辑
+        # 1. BrowserUse
         if bu_decision and bu_decision.has_task and bu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
             return TaskResult(
@@ -760,7 +659,7 @@ Return only the JSON object, nothing else.
                 reason=bu_decision.reason
             )
 
-        # 3. 如果 MCP/BrowserUse 不行，但 ComputerUse 可以，返回 ComputerUse 任务
+        # 2. ComputerUse
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
             return TaskResult(
@@ -772,7 +671,7 @@ Return only the JSON object, nothing else.
                 reason=cu_decision.reason
             )
         
-        # 4. 如果前面都不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
+        # 3. UserPlugin
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
@@ -789,10 +688,8 @@ Return only the JSON object, nothing else.
                     reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
                 )
                 
-        # 3. 没有可执行的分支，汇总原因（包含 UserPlugin）
+        # 4. 没有可执行的分支，汇总原因
         reason_parts = []
-        if mcp_decision:
-            reason_parts.append(f"MCP: {mcp_decision.reason}")
         if cu_decision:
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
         if bu_decision:
@@ -800,17 +697,13 @@ Return only the JSON object, nothing else.
         if up_decision:
             reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
         
-        # 检查是否有任务但无法执行（包含 UserPlugin）
         has_any_task = (
-            (mcp_decision and mcp_decision.has_task)
-            or (bu_decision and bu_decision.has_task)
+            (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
             or (up_decision and getattr(up_decision, "has_task", False))
         )
         if has_any_task:
-            if mcp_decision and mcp_decision.has_task:
-                task_desc = mcp_decision.task_description
-            elif cu_decision and cu_decision.has_task:
+            if cu_decision and cu_decision.has_task:
                 task_desc = cu_decision.task_description
             elif bu_decision and bu_decision.has_task:
                 task_desc = bu_decision.task_description
@@ -831,73 +724,6 @@ Return only the JSON object, nothing else.
         # 没有检测到任务
         logger.debug("[TaskExecutor] No task detected")
         return None
-    
-    async def _execute_mcp(
-        self, 
-        task_id: str, 
-        decision: McpDecision
-    ) -> TaskResult:
-        """执行 MCP 工具调用"""
-        tool_name = decision.tool_name
-        tool_args = decision.tool_args or {}
-        
-        if not tool_name:
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=decision.task_description,
-                execution_method='mcp',
-                success=False,
-                error="No tool name provided",
-                reason=decision.reason
-            )
-        
-        arg_keys = list(tool_args.keys()) if isinstance(tool_args, dict) else str(type(tool_args))
-        logger.info(f"[TaskExecutor] Executing MCP tool: {tool_name} (arg_keys={arg_keys})")
-        logger.debug(f"[TaskExecutor] MCP tool args payload: {tool_args}")
-        
-        try:
-            result = await self.router.call_tool(tool_name, tool_args)
-            
-            if result.get('success'):
-                logger.info(f"[TaskExecutor] ✅ MCP tool {tool_name} succeeded")
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=True,
-                    task_description=decision.task_description,
-                    execution_method='mcp',
-                    success=True,
-                    result=result.get('result'),
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    reason=decision.reason
-                )
-            else:
-                logger.error(f"[TaskExecutor] ❌ MCP tool {tool_name} failed: {result.get('error')}")
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=True,
-                    task_description=decision.task_description,
-                    execution_method='mcp',
-                    success=False,
-                    error=result.get('error', 'Tool execution failed'),
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    reason=decision.reason
-                )
-        except Exception as e:
-            logger.error(f"[TaskExecutor] MCP tool execution error: {e}")
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=decision.task_description,
-                execution_method='mcp',
-                success=False,
-                error=str(e),
-                tool_name=tool_name,
-                tool_args=tool_args,
-                reason=decision.reason
-            )
     
     async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
         """
@@ -1063,5 +889,5 @@ Return only the JSON object, nothing else.
         return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
-        """刷新并返回 MCP 工具能力列表"""
-        return await self.catalog.get_capabilities(force_refresh=True)
+        """保留接口兼容性，MCP 已移除，始终返回空。"""
+        return {}

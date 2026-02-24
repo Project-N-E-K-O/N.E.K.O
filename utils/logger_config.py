@@ -292,13 +292,24 @@ class RobustLoggerConfig:
         Returns:
             logging.Logger: 配置好的logger实例
         """
-        # 创建或获取logger
+        # 创建或获取logger。默认使用服务专属logger，避免落到root。
+        if not logger_name:
+            if self.service_name:
+                logger_name = f"{self.app_name}.{self.service_name}"
+            else:
+                logger_name = self.app_name
         logger = logging.getLogger(logger_name)
         logger.setLevel(self.log_level)
-        
-        # 避免重复添加handler
+        # 不向root传播，避免被外部handler劫持到错误文件。
+        logger.propagate = False
+        # 幂等重建：清理当前logger已有handler，避免重复写入。
         if logger.handlers:
-            return logger
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
         
         # 日志格式
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -401,6 +412,8 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         也可以使用logger.exception()来明确记录异常信息
     """
     config = RobustLoggerConfig(app_name=app_name, service_name=service_name, log_level=log_level)
+    # 使用带命名空间的 logger 名（如 N.E.K.O.Agent），
+    # 避免与第三方库的同名 logger 冲突（browser_use 内部有名为 "Agent" 的 logger）。
     base_logger = config.setup_logger()
     
     # 包装为增强logger

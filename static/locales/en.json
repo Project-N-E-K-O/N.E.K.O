@@ -961,7 +961,7 @@
     "voice": {
         "title": "Voice Registration",
         "alibabaApiRequired": "⚠️ This feature requires CosyVoice model. Please configure Alibaba Assist API or local voice server in API Keys settings.",
-        "selectFile": "Select local audio file (15 seconds recommended, max 30 seconds, wav/mp3 format)",
+        "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
         "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
@@ -1297,8 +1297,11 @@
             "disabledError": "Agent mode disabled (partial cleanup failed)",
             "enableFailed": "Enable failed",
             "disconnected": "Server connection lost",
-            "agentDisconnected": "Agent server connection lost"
+            "agentDisconnected": "Agent server connection lost",
+            "freeModelWarning": "Due to quota limitations, free models are prone to blocking in Agent mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
+            "freeModelWarningTitle": "Free Model Notice"
         },
+        "quotaExceeded": "The free Agent model daily trial limit has been reached ({{limit}} uses). Please try again tomorrow.",
         "taskHud": {
             "title": "Agent Tasks",
             "running": "Running",

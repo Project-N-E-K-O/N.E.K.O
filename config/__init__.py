@@ -46,9 +46,6 @@ MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 # 始终返回有效 id。
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 
-# MCP Router配置
-MCP_ROUTER_URL = 'http://localhost:3282'
-
 # tfLink 文件上传服务配置
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
 # tfLink 允许的主机名白名单（用于 SSRF 防护）
@@ -421,6 +418,10 @@ EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 
+# Agent 调用统一开关：是否加载 extra_body。
+# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
+AGENT_USE_EXTRA_BODY = True
+
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP = {
     # Qwen 系列
@@ -463,6 +464,13 @@ def get_extra_body(model: str) -> dict | None:
     return {}
 
 
+def get_agent_extra_body(model: str) -> dict | None:
+    """Return extra_body for Agent calls based on a single global switch."""
+    if not AGENT_USE_EXTRA_BODY:
+        return None
+    return get_extra_body(model)
+
+
 __all__ = [
     'APP_NAME',
     'CONFIG_FILES',
@@ -484,9 +492,11 @@ __all__ = [
     'TIME_COMPRESSED_TABLE_NAME',
     'MODELS_EXTRA_BODY_MAP',
     'get_extra_body',
+    'get_agent_extra_body',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
     'EXTRA_BODY_GEMINI',
+    'AGENT_USE_EXTRA_BODY',
     'MAIN_SERVER_PORT',
     'MEMORY_SERVER_PORT',
     'MONITOR_SERVER_PORT',
@@ -496,7 +506,6 @@ __all__ = [
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
     'INSTANCE_ID',
-    'MCP_ROUTER_URL',
     'TFLINK_UPLOAD_URL',
     'TFLINK_ALLOWED_HOSTS',
     'NATIVE_IMAGE_MIN_INTERVAL',
