@@ -692,6 +692,7 @@ class BrowserUseAdapter:
         if browser_pid is None:
             return
         import signal
+        import subprocess
         try:
             import psutil
             parent = psutil.Process(browser_pid)
@@ -702,12 +703,38 @@ class BrowserUseAdapter:
                     pass
             parent.kill()
             logger.info("[BrowserUse] force-killed browser tree (pid=%d) via psutil", browser_pid)
-        except Exception:
-            try:
+            return
+        except ImportError:
+            logger.warning("[BrowserUse] psutil not available, falling back to platform kill for pid=%d", browser_pid)
+        except Exception as exc:
+            logger.warning("[BrowserUse] psutil kill failed for pid=%d: %s, falling back", browser_pid, exc)
+
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(browser_pid), "/T", "/F"],
+                    capture_output=True, timeout=10,
+                )
+                logger.info("[BrowserUse] force-killed browser tree (pid=%d) via taskkill", browser_pid)
+            else:
+                subprocess.run(
+                    ["pkill", "-TERM", "-P", str(browser_pid)],
+                    capture_output=True, timeout=10,
+                )
+                subprocess.run(
+                    ["pkill", "-KILL", "-P", str(browser_pid)],
+                    capture_output=True, timeout=10,
+                )
+                logger.info("[BrowserUse] force-killed child processes of pid=%d via pkill", browser_pid)
                 os.kill(browser_pid, signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM)
                 logger.info("[BrowserUse] force-killed browser pid=%d via os.kill", browser_pid)
-            except (OSError, PermissionError) as e:
-                logger.warning("[BrowserUse] failed to kill browser pid=%d: %s", browser_pid, e)
+        except (subprocess.SubprocessError, OSError, PermissionError) as e:
+            logger.warning("[BrowserUse] platform kill failed for pid=%d: %s", browser_pid, e)
+            try:
+                os.kill(browser_pid, signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM)
+                logger.info("[BrowserUse] force-killed browser pid=%d via os.kill fallback", browser_pid)
+            except (OSError, PermissionError) as e2:
+                logger.warning("[BrowserUse] failed to kill browser pid=%d: %s", browser_pid, e2)
 
     async def close(self) -> None:
         """Graceful shutdown."""
