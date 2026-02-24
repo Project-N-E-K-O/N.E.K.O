@@ -60,7 +60,7 @@ jobs:
           echo "Resolved version: $VERSION"
 
   # ──────────────────────────────────────────────
-  # Step 1: Build Python backend with PyInstaller
+  # Step 1: Build Python backend with Nuitka
   # ──────────────────────────────────────────────
   build-python:
     needs: version
@@ -71,21 +71,22 @@ jobs:
           - os: windows-latest
             platform: win
             artifact_name: python-backend-win
-            binary_name: server.exe
-          - os: macos-13         # Intel runner
+            output_binary: projectneko_server.exe
+          - os: macos-13
             platform: mac-x64
             artifact_name: python-backend-mac-x64
-            binary_name: server
-          - os: macos-latest     # Apple Silicon runner
+            output_binary: projectneko_server
+          - os: macos-latest
             platform: mac-arm64
             artifact_name: python-backend-mac-arm64
-            binary_name: server
+            output_binary: projectneko_server
           - os: ubuntu-latest
             platform: linux
             artifact_name: python-backend-linux
-            binary_name: server
+            output_binary: projectneko_server
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
@@ -103,7 +104,7 @@ jobs:
         run: |
           uv venv .venv
           uv sync
-          uv pip install --python .venv pyinstaller
+          uv pip install --python .venv nuitka ordered-set zstandard
 
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
@@ -114,41 +115,218 @@ jobs:
             build-essential \
             pkg-config \
             portaudio19-dev \
-            tesseract-ocr \
-            xvfb
+            patchelf \
+            ccache
 
-      # --- Build with PyInstaller ---
-      # Steam SDK: Windows DLLs are in repo; macOS/Linux dylibs are optional
-      # (launcher.spec uses os.path.exists() and skips gracefully if missing)
-      - name: Build Python backend (PyInstaller, Unix)
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: |
+          brew install ccache || true
+
+      # --- Pre-install Playwright Chromium for bundle ---
+      - name: Install Playwright Chromium (Unix)
         if: runner.os != 'Windows'
-        run: |
-          .venv/bin/python -m PyInstaller specs/launcher.spec --noconfirm
         shell: bash
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          mkdir -p playwright_browsers
+          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" \
+            .venv/bin/python -m playwright install chromium || \
+            echo "[WARNING] Playwright Chromium install failed; will download on first run."
 
-      - name: Build Python backend (PyInstaller, Windows)
+      - name: Install Playwright Chromium (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          .venv\Scripts\python.exe -m PyInstaller specs\launcher.spec --noconfirm
-        shell: cmd
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+          if (-not (Test-Path "playwright_browsers")) { New-Item -ItemType Directory -Path "playwright_browsers" }
+          $env:PLAYWRIGHT_BROWSERS_PATH = "${{ github.workspace }}\playwright_browsers"
+          .venv\Scripts\python.exe -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Playwright Chromium install failed; will download on first run."
+          }
 
-      - name: Verify build output
-        run: |
-          echo "--- Build output ---"
-          ls -la dist/N.E.K.O/ || true
-          echo "--- Binary check ---"
-          ls -la "dist/N.E.K.O/${{ matrix.binary_name }}" || echo "Binary not found!"
+      # --- Build with Nuitka ---
+      - name: Build with Nuitka (Unix)
+        if: runner.os != 'Windows'
         shell: bash
+        run: |
+          NUITKA_OPTS="--standalone"
+          NUITKA_OPTS="$NUITKA_OPTS --output-dir=dist"
+          NUITKA_OPTS="$NUITKA_OPTS --output-filename=projectneko_server"
+
+          # Version metadata
+          NUITKA_OPTS="$NUITKA_OPTS --company-name=Project_N.E.K.O."
+          NUITKA_OPTS="$NUITKA_OPTS --product-name=N.E.K.O._AI_Assistant"
+          NUITKA_OPTS="$NUITKA_OPTS --file-version=${{ needs.version.outputs.version || '1.0.0.0' }}"
+          NUITKA_OPTS="$NUITKA_OPTS --product-version=${{ needs.version.outputs.version || '1.0.0.0' }}"
+
+          # Config data files
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/api_providers.json=config/api_providers.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.json=config/characters.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.en.json=config/characters.en.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ja.json=config/characters.ja.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.ko.json=config/characters.ko.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/core_config.json=config/core_config.json"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_chara.py=config/prompts_chara.py"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/prompts_sys.py=config/prompts_sys.py"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/user_preferences.json=config/user_preferences.json"
+
+          # Data directories
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
+
+          # Packages
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=uvicorn"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=fastapi"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=starlette"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=jinja2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=websockets"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_community"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_core"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=langchain_openai"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=main_server"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=memory_server"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=agent_server"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
+
+          # Package data
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=playwright"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
+
+          # Exclusions
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
+
+          # Plugin
+          NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
+
+          # Steam files (include if present in repo)
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
+          if [ -f "libsteam_api.dylib" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.dylib=libsteam_api.dylib"
+          fi
+          if [ -f "SteamworksPy.dylib" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.dylib=SteamworksPy.dylib"
+          fi
+          if [ -f "libsteam_api.so" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=libsteam_api.so=libsteam_api.so"
+          fi
+          if [ -f "SteamworksPy.so" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-files=SteamworksPy.so=SteamworksPy.so"
+          fi
+
+          echo "=== Nuitka options ==="
+          echo "$NUITKA_OPTS" | tr ' ' '\n'
+          echo "======================"
+
+          .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
+
+      - name: Build with Nuitka (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set NUITKA_OPTS=--standalone --output-dir="dist" --output-filename="projectneko_server.exe"
+          set NUITKA_OPTS=%NUITKA_OPTS% --windows-icon-from-ico=assets/icon.ico
+          set NUITKA_OPTS=%NUITKA_OPTS% --company-name="Project N.E.K.O."
+          set NUITKA_OPTS=%NUITKA_OPTS% --product-name="N.E.K.O. AI Assistant"
+          set NUITKA_OPTS=%NUITKA_OPTS% --file-version=${{ needs.version.outputs.version || '1.0.0.0' }}
+          set NUITKA_OPTS=%NUITKA_OPTS% --product-version=${{ needs.version.outputs.version || '1.0.0.0' }}
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/__init__.py=config/__init__.py
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/api_providers.json=config/api_providers.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.json=config/characters.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.en.json=config/characters.en.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ja.json=config/characters.ja.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.ko.json=config/characters.ko.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-CN.json=config/characters.zh-CN.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.zh-TW.json=config/characters.zh-TW.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/core_config.json=config/core_config.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_chara.py=config/prompts_chara.py
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/prompts_sys.py=config/prompts_sys.py
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/user_preferences.json=config/user_preferences.json
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=fastapi
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=starlette
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=jinja2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=websockets
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_community
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_core
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=langchain_openai
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_server
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory_server
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=agent_server
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.dll=steam_api64.dll
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_api64.lib=steam_api64.lib
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=SteamworksPy64.dll=SteamworksPy64.dll
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=steam_appid.txt=steam_appid.txt
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=audiolab
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pyrnnoise
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=audiolab
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=pyrnnoise
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=browser_use
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use_sdk
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=playwright
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=playwright
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
+          set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
+          set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
+
+          .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
+
+      # --- Rename Nuitka output directory ---
+      - name: Rename build output
+        shell: bash
+        run: |
+          if [ -d "dist/launcher.dist" ]; then
+            mv dist/launcher.dist dist/Xiao8
+          fi
+          echo "=== Build output ==="
+          ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/N.E.K.O/
+          path: dist/Xiao8/
           retention-days: 7
           compression-level: 6
 
@@ -207,7 +385,7 @@ jobs:
 
       - name: Make server binary executable (Unix)
         if: runner.os != 'Windows'
-        run: chmod +x electron-app/bin/server
+        run: chmod +x electron-app/bin/projectneko_server
 
       - name: Install npm dependencies
         working-directory: electron-app
@@ -220,7 +398,6 @@ jobs:
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
-            // Ensure semver-compatible version
             if (!/^\d+\.\d+\.\d+/.test(pkg.version)) {
               pkg.version = '0.0.0-' + pkg.version;
             }
@@ -266,7 +443,6 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable code signing in CI unless explicitly enabled
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
@@ -278,10 +454,10 @@ jobs:
 
       - name: List build output
         working-directory: electron-app/dist
+        shell: bash
         run: |
           echo "=== Build artifacts ==="
-          ls -lahR . || dir /s
-        shell: bash
+          ls -lahR . || true
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v4
