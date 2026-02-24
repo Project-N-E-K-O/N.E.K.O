@@ -196,23 +196,6 @@ def _find_chrome_path() -> Optional[str]:
     except Exception:
         return None
 
-
-def _kill_process_tree(pid: int) -> None:
-    """Best-effort kill of a process and all its children."""
-    try:
-        import psutil
-        parent = psutil.Process(pid)
-        children = parent.children(recursive=True)
-        for child in children:
-            try:
-                child.kill()
-            except Exception:
-                pass
-        parent.kill()
-    except Exception:
-        pass
-
-
 def _dump_history(history, mode: str) -> None:
     """Print detailed diagnostics from a browser-use AgentHistory."""
     try:
@@ -655,18 +638,18 @@ class BrowserUseAdapter:
                 }
             except asyncio.TimeoutError:
                 logger.warning("[BrowserUse] Task timed out after %ss", timeout_s)
-                self._stop_overlay()
+                if browser_session:
+                    await self._remove_overlay(browser_session)
                 if session_id and session_id in self._agents:
                     del self._agents[session_id]
-                await self._close_browser()
                 return {"success": False, "error": f"timed out after {timeout_s}s"}
             except Exception as e:
                 if browser_session:
                     await self._remove_overlay(browser_session)
                 if session_id and session_id in self._agents:
                     del self._agents[session_id]
-                await self._close_browser()
                 if launch_attempt == 0 and not self._is_response_format_error(e):
+                    await self._close_browser()
                     logger.warning("[BrowserUse] Browser error (attempt 1), retrying: %s", e)
                     continue
                 logger.error("[BrowserUse] Task failed: %s", e)
@@ -694,10 +677,6 @@ class BrowserUseAdapter:
                 await asyncio.wait_for(self._browser_session.stop(), timeout=10)
             except Exception:
                 pass
-
-            # Force-kill if graceful stop didn't finish
-            if browser_pid is not None:
-                _kill_process_tree(browser_pid)
 
             self._browser_session = None
         self._session_ever_started = False

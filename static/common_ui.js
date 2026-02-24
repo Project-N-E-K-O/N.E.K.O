@@ -93,7 +93,12 @@ function setupResizableTextInput() {
         return Math.max(MIN_HEIGHT, Math.min(maxHeight, height));
     };
 
-    const savedHeightRaw = localStorage.getItem(STORAGE_KEY);
+    let savedHeightRaw = null;
+    try {
+        savedHeightRaw = localStorage.getItem(STORAGE_KEY);
+    } catch (_) {
+        /* localStorage unavailable (e.g. privacy/disabled-storage); use DEFAULT_HEIGHT and skip persistence */
+    }
     const savedHeight = Number(savedHeightRaw);
     if (Number.isFinite(savedHeight) && savedHeight > 0) {
         textInputBox.style.height = `${clampHeight(savedHeight)}px`;
@@ -101,18 +106,26 @@ function setupResizableTextInput() {
         textInputBox.style.height = `${DEFAULT_HEIGHT}px`;
     }
 
-    // 在用户拖拽或脚本调整后持久化高度
+    // 在用户拖拽或脚本调整后持久化高度（storage 不可用时静默跳过）
     const persistCurrentHeight = () => {
-        const current = Math.round(textInputBox.getBoundingClientRect().height);
-        localStorage.setItem(STORAGE_KEY, String(clampHeight(current)));
+        try {
+            const current = Math.round(textInputBox.getBoundingClientRect().height);
+            localStorage.setItem(STORAGE_KEY, String(clampHeight(current)));
+        } catch (_) {
+            /* localStorage unavailable; skip persistence */
+        }
     };
 
     textInputBox.addEventListener('mouseup', persistCurrentHeight);
     textInputBox.addEventListener('touchend', persistCurrentHeight, { passive: true });
     window.addEventListener('resize', () => {
-        const current = Math.round(textInputBox.getBoundingClientRect().height);
-        textInputBox.style.height = `${clampHeight(current)}px`;
-        persistCurrentHeight();
+        try {
+            const current = Math.round(textInputBox.getBoundingClientRect().height);
+            textInputBox.style.height = `${clampHeight(current)}px`;
+            persistCurrentHeight();
+        } catch (_) {
+            /* avoid errors (e.g. from storage) interrupting the UI */
+        }
     });
 }
 

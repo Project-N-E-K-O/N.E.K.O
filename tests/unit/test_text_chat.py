@@ -12,6 +12,46 @@ from main_logic.omni_offline_client import OmniOfflineClient
 
 logger = logging.getLogger(__name__)
 
+
+class OfflineClientError(Exception):
+    """Raised when offline client cannot be created (missing provider or API key)."""
+
+
+def create_offline_client():
+    """
+    Create an OmniOfflineClient configured with Qwen (or OpenAI) from assist profiles.
+    Raises OfflineClientError when provider or API key is missing (so non-pytest callers
+    can handle it); tests use the offline_client fixture which catches and pytest.skip().
+    """
+    from utils.api_config_loader import get_assist_api_profiles
+    assist_profiles = get_assist_api_profiles()
+
+    provider = "qwen" if "qwen" in assist_profiles else "openai"
+    if provider not in assist_profiles:
+        raise OfflineClientError("No Qwen or OpenAI profile found for testing.")
+
+    profile = assist_profiles[provider]
+
+    api_key = profile.get('OPENROUTER_API_KEY')
+    if not api_key:
+        env_key = "ASSIST_API_KEY_QWEN" if provider == "qwen" else "ASSIST_API_KEY_OPENAI"
+        api_key = os.environ.get(env_key)
+
+    if not api_key:
+        raise OfflineClientError(f"API key for {provider} not found.")
+
+    return OmniOfflineClient(
+        base_url=profile['OPENROUTER_URL'],
+        api_key=api_key,
+        model=profile['CORRECTION_MODEL'],
+        vision_model=profile.get('VISION_MODEL', ''),
+        vision_base_url=profile.get('VISION_BASE_URL', ''),
+        vision_api_key=profile.get('VISION_API_KEY', ''),
+        on_text_delta=AsyncMock(),
+        on_response_done=AsyncMock()
+    )
+
+
 # Dummy 1x1 pixel PNG image in base64
 DUMMY_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKwjwAAAAABJRU5ErkJggg=="
 
@@ -32,37 +72,11 @@ MULTI_TURN_PROMPTS = [
 
 @pytest.fixture
 def offline_client():
-    """Returns an OmniOfflineClient instance configured with Qwen (default)."""
-    from utils.api_config_loader import get_assist_api_profiles
-    assist_profiles = get_assist_api_profiles()
-    
-    # Use Qwen as the standard test provider if available, else OpenAI
-    provider = "qwen" if "qwen" in assist_profiles else "openai"
-    if provider not in assist_profiles:
-        pytest.skip("No Qwen or OpenAI profile found for testing.")
-        
-    profile = assist_profiles[provider]
-    
-    api_key = profile.get('OPENROUTER_API_KEY')
-    if not api_key:
-        # Fallback for Qwen/OpenAI
-        env_key = "ASSIST_API_KEY_QWEN" if provider == "qwen" else "ASSIST_API_KEY_OPENAI"
-        api_key = os.environ.get(env_key)
-        
-    if not api_key:
-        pytest.skip(f"API key for {provider} not found.")
-
-    client = OmniOfflineClient(
-        base_url=profile['OPENROUTER_URL'],
-        api_key=api_key,
-        model=profile['CORRECTION_MODEL'], # Use correction model as it is usually a chat model
-        vision_model=profile.get('VISION_MODEL', ''),
-        vision_base_url=profile.get('VISION_BASE_URL', ''),
-        vision_api_key=profile.get('VISION_API_KEY', ''),
-        on_text_delta=AsyncMock(),
-        on_response_done=AsyncMock()
-    )
-    return client
+    """Returns an OmniOfflineClient instance configured with Qwen (default). Skips test if creation fails."""
+    try:
+        return create_offline_client()
+    except OfflineClientError as e:
+        pytest.skip(str(e))
 
 @pytest.mark.unit
 async def test_simple_text_chat(offline_client, llm_judger):
@@ -219,8 +233,7 @@ async def test_multi_turn_conversation(offline_client, llm_judger):
 async def test_vision_chat(offline_client, llm_judger):
     """Test sending an image and asking for a description."""
     if not offline_client.vision_model:
-        # Check if model itself supports vision (like gpt-4o) if vision_model is not explicitly set separate
-         pass
+        pytest.skip("No vision model configured; skip vision test.")
 
     # Read the actual test image
     image_path = os.path.join(os.path.dirname(__file__), '../test_inputs/screenshot.png')
