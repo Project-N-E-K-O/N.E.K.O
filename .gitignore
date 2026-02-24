@@ -43,6 +43,8 @@ __pycache__/
 .DS_Store
 .venv
 .venv_monitor/
+# Playwright browsers cache (used by build_nuitka.bat, not for repo)
+playwright_browsers/
 .env
 .env.local
 .env.development.local
@@ -105,3 +107,4 @@ local_server/cosyvoice_server/*wav
 tests/reports/
 latest_report.json
 sendText.js
+data/browser_use_prompts/*.md

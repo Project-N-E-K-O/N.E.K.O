@@ -43,7 +43,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             retries=1,
         )
         if sent:
-            logger.info(
+            logger.debug(
                 "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
                 lanlan_name,
                 trigger,
@@ -324,7 +324,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 messages=recent,
                                             )
                                             if sent:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
