@@ -1662,7 +1662,7 @@ function renderSubscriptionsPage() {
         const formattedItem = {
             id: String(item.publishedFileId),
             name: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
-            author: item.steamIDOwner ? String(item.steamIDOwner) : (window.t ? window.t('steam.unknownAuthor') : '未知作者'), // 暂时使用SteamID作为作者名
+            author: item.authorName || (item.steamIDOwner ? String(item.steamIDOwner) : (window.t ? window.t('steam.unknownAuthor') : '未知作者')),
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
@@ -1951,7 +1951,7 @@ function viewItemDetails(itemId) {
             const formattedItem = {
                 id: item.publishedFileId.toString(),
                 name: item.title,
-                author: item.steamIDOwner.toString(),
+                author: item.authorName || item.steamIDOwner.toString(),
                 subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
@@ -2137,11 +2137,27 @@ function saveProcessedAudioFiles() {
 // 页面加载时初始化
 loadProcessedAudioFiles();
 
-// 自动扫描创意工坊角色卡并添加到系统
+// 自动扫描创意工坊角色卡并添加到系统（通过服务端统一同步 + 前端音频扫描）
 async function autoScanAndAddWorkshopCharacterCards() {
     try {
+        // 1. 服务端统一同步角色卡（高效，不需要前端逐个fetch读取文件）
+        try {
+            const syncResponse = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
+            const syncResult = await syncResponse.json();
+            if (syncResult.success) {
+                if (syncResult.added > 0) {
+                    console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，跳过 ${syncResult.skipped} 个已存在`);
+                    // 刷新角色卡列表
+                    loadCharacterCards();
+                } else {
+                    console.log('[工坊同步] 服务端同步完成：无新增角色卡');
+                }
+            }
+        } catch (syncError) {
+            console.error('[工坊同步] 服务端角色卡同步失败:', syncError);
+        }
 
-        // 1. 获取所有订阅的创意工坊物品
+        // 2. 音频文件扫描仍在前端执行（涉及 voice_clone API 和 localStorage 追踪）
         const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
         const subscribedResult = await subscribedResponse.json();
 
@@ -2152,9 +2168,6 @@ async function autoScanAndAddWorkshopCharacterCards() {
 
         const subscribedItems = subscribedResult.items;
 
-        let addedCount = 0;
-
-        // 2. 遍历所有已安装的物品
         for (const item of subscribedItems) {
             if (!item.installedFolder) {
                 continue;
@@ -2163,44 +2176,21 @@ async function autoScanAndAddWorkshopCharacterCards() {
             const itemId = item.publishedFileId;
             const folderPath = item.installedFolder;
 
-
-            // 3. 使用新的API扫描目录中所有.chara.json文件
-            try {
-                const listResponse = await fetch(`/api/steam/workshop/list-chara-files?directory=${encodeURIComponent(folderPath)}`);
-                const listResult = await listResponse.json();
-
-                if (listResult.success && listResult.files.length > 0) {
-
-                    // 4. 遍历所有找到的.chara.json文件
-                    for (const file of listResult.files) {
-                        console.log(`  - ${file.name}`);
-                        await scanCharaFile(file.path, itemId, item.title);
-                    }
-                } else {
-                }
-            } catch (listError) {
-                console.error(`扫描目录 ${folderPath} 中的角色卡文件失败:`, listError);
-            }
-
-            // 5. 使用新的API扫描目录中所有音频文件(.mp3, .wav)
+            // 扫描目录中所有音频文件(.mp3, .wav)
             try {
                 const audioListResponse = await fetch(`/api/steam/workshop/list-audio-files?directory=${encodeURIComponent(folderPath)}`);
                 const audioListResult = await audioListResponse.json();
 
                 if (audioListResult.success && audioListResult.files.length > 0) {
-
-                    // 6. 遍历所有找到的音频文件
                     for (const audioFile of audioListResult.files) {
                         console.log(`  - ${audioFile.name}`);
                         await scanAudioFile(audioFile.path, audioFile.prefix, itemId, item.title);
                     }
-                } else {
                 }
             } catch (audioListError) {
                 console.error(`扫描目录 ${folderPath} 中的音频文件失败:`, audioListError);
             }
         }
-
 
     } catch (error) {
         console.error('自动扫描和添加角色卡失败:', error);

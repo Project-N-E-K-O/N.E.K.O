@@ -51,7 +51,7 @@ from utils.workshop_utils import ( # noqa
     get_workshop_path
 )
 # 导入创意工坊路由中的函数
-from main_routers.workshop_router import get_subscribed_workshop_items # noqa
+from main_routers.workshop_router import get_subscribed_workshop_items, sync_workshop_character_cards, warmup_ugc_cache # noqa
 
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
@@ -712,6 +712,28 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"Agent event bridge startup failed: {e}")
         await _init_and_mount_workshop()
+        
+        # 后台预热 UGC 缓存 + 同步角色卡（不阻塞启动）
+        if steamworks:
+            import main_routers.workshop_router as _wr
+            
+            async def _startup_workshop_tasks():
+                """启动时后台执行: 预热 UGC 缓存 → 同步角色卡"""
+                try:
+                    await warmup_ugc_cache()
+                except Exception as e:
+                    logger.warning(f"UGC 缓存预热失败: {e}")
+                try:
+                    sync_result = await sync_workshop_character_cards()
+                    if sync_result["added"] > 0:
+                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                    else:
+                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
+                except Exception as e:
+                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+            
+            _wr._ugc_warmup_task = asyncio.create_task(_startup_workshop_tasks())
+        
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
         # 初始化全局语言变量（优先级：Steam设置 > 系统设置）

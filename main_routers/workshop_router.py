@@ -33,6 +33,250 @@ router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
 publish_lock = threading.Lock()
 logger = get_module_logger(__name__, "Main")
 
+# ─── UGC 查询结果缓存 ──────────────────────────────────────────────────
+# Steam 的 k_UGCQueryHandleInvalid = 0xFFFFFFFFFFFFFFFF
+_INVALID_UGC_QUERY_HANDLE = 0xFFFFFFFFFFFFFFFF
+
+# 缓存 { publishedFileId(int): { title, description, steamIDOwner, authorName, ... } }
+_ugc_details_cache: dict[int, dict] = {}
+_ugc_cache_timestamp: float = 0.0
+_UGC_CACHE_TTL = 300  # 缓存有效期 5 分钟
+_ugc_warmup_task = None  # 后台预热任务
+
+
+def _is_ugc_cache_valid() -> bool:
+    """检查 UGC 缓存是否在有效期内"""
+    return bool(_ugc_details_cache) and (time.time() - _ugc_cache_timestamp < _UGC_CACHE_TTL)
+
+
+async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
+    """
+    批量查询 UGC 物品详情，带重试逻辑。
+    
+    Args:
+        steamworks: Steamworks 实例
+        item_ids: 物品 ID 列表（整数）
+        max_retries: 最大重试次数
+    
+    Returns:
+        dict: { publishedFileId(int): SteamUGCDetails_t }
+    """
+    if not item_ids:
+        return {}
+    
+    for attempt in range(max_retries):
+        try:
+            # 在发送查询前先泵一次回调，清除可能的残留状态
+            try:
+                steamworks.run_callbacks()
+            except Exception:
+                pass
+            
+            query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(item_ids)
+            
+            # 检查无效 handle（0 或 k_UGCQueryHandleInvalid）
+            if not query_handle or query_handle == _INVALID_UGC_QUERY_HANDLE:
+                logger.warning(f"UGC 批量查询: CreateQueryUGCDetailsRequest 返回无效 handle "
+                              f"(attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            
+            # 回调+轮询机制
+            query_completed = threading.Event()
+            query_result_info = {"success": False, "num_results": 0}
+            
+            def on_query_completed(result):
+                try:
+                    query_result_info["success"] = (result.result == 1)
+                    query_result_info["num_results"] = int(result.numResultsReturned)
+                    logger.info(f"UGC 查询回调: result={result.result}, numResults={result.numResultsReturned}")
+                except Exception as e:
+                    logger.warning(f"UGC 查询回调处理出错: {e}")
+                finally:
+                    query_completed.set()
+            
+            steamworks.Workshop.SendQueryUGCRequest(
+                query_handle, callback=on_query_completed, override_callback=True
+            )
+            
+            # 轮询等待（10ms 间隔，最多 15 秒）
+            start_time = time.time()
+            timeout = 15
+            while time.time() - start_time < timeout:
+                if query_completed.is_set():
+                    break
+                try:
+                    steamworks.run_callbacks()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.01)
+            
+            if not query_completed.is_set():
+                logger.warning(f"UGC 批量查询超时 (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                continue
+            
+            if not query_result_info["success"]:
+                logger.warning(f"UGC 批量查询失败: result_info={query_result_info} "
+                              f"(attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            
+            # 提取结果
+            num_results = query_result_info["num_results"]
+            results = {}
+            for i in range(num_results):
+                try:
+                    res = steamworks.Workshop.GetQueryUGCResult(query_handle, i)
+                    if res and res.publishedFileId:
+                        results[int(res.publishedFileId)] = res
+                except Exception as e:
+                    logger.warning(f"获取第 {i} 个 UGC 查询结果失败: {e}")
+            
+            logger.info(f"UGC 批量查询成功: {len(results)}/{len(item_ids)} 个物品 "
+                        f"(attempt {attempt + 1})")
+            
+            # 查询完成后泵一次回调，让 Steam 缓存 persona 数据
+            try:
+                steamworks.run_callbacks()
+            except Exception:
+                pass
+            
+            return results
+        
+        except Exception as e:
+            logger.warning(f"UGC 批量查询异常: {e} (attempt {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1.5 * (attempt + 1))
+    
+    logger.error("UGC 批量查询在所有重试后仍失败")
+    return {}
+
+
+def _resolve_author_name(steamworks, owner_id: int) -> str | None:
+    """
+    将 Steam ID 解析为显示名称。
+    
+    Returns:
+        str | None: 用户名或 None（解析失败时）
+    """
+    if not owner_id:
+        return None
+    try:
+        persona_name = steamworks.Friends.GetFriendPersonaName(owner_id)
+        if persona_name:
+            if isinstance(persona_name, bytes):
+                persona_name = persona_name.decode('utf-8', errors='replace')
+            # 过滤空串和纯数字 ID；保留 [unknown] 作为合法 fallback
+            if persona_name and persona_name.strip() and persona_name != str(owner_id):
+                return persona_name.strip()
+    except Exception as e:
+        logger.debug(f"解析 Steam ID {owner_id} 名称失败: {e}")
+    return None
+
+
+def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: dict) -> None:
+    """
+    从 UGC 查询结果(SteamUGCDetails_t)提取物品详情，填充到 item_info 字典。
+    同时更新全局缓存。
+    """
+    global _ugc_details_cache, _ugc_cache_timestamp
+    
+    try:
+        if hasattr(result, 'title') and result.title:
+            item_info['title'] = result.title.decode('utf-8', errors='replace')
+        if hasattr(result, 'description') and result.description:
+            item_info['description'] = result.description.decode('utf-8', errors='replace')
+        # timeAddedToUserList 是用户订阅时间，timeCreated 是物品创建时间
+        if hasattr(result, 'timeAddedToUserList') and result.timeAddedToUserList:
+            item_info['timeAdded'] = int(result.timeAddedToUserList)
+        elif hasattr(result, 'timeCreated') and result.timeCreated:
+            item_info['timeAdded'] = int(result.timeCreated)
+        if hasattr(result, 'timeUpdated') and result.timeUpdated:
+            item_info['timeUpdated'] = int(result.timeUpdated)
+        if hasattr(result, 'steamIDOwner') and result.steamIDOwner:
+            owner_id = int(result.steamIDOwner)
+            item_info['steamIDOwner'] = str(owner_id)
+            author_name = _resolve_author_name(steamworks, owner_id)
+            if author_name:
+                item_info['authorName'] = author_name
+        if hasattr(result, 'fileSize') and result.fileSize:
+            item_info['fileSizeOnDisk'] = int(result.fileSize)
+        # 提取标签
+        if hasattr(result, 'tags') and result.tags:
+            try:
+                tags_str = result.tags.decode('utf-8', errors='replace')
+                if tags_str:
+                    item_info['tags'] = [t.strip() for t in tags_str.split(',') if t.strip()]
+            except Exception:
+                pass
+        
+        # 更新缓存
+        cache_entry = {}
+        for key in ('title', 'description', 'timeAdded', 'timeUpdated',
+                     'steamIDOwner', 'authorName', 'tags'):
+            if key in item_info:
+                cache_entry[key] = item_info[key]
+        if cache_entry:
+            _ugc_details_cache[item_id_int] = cache_entry
+            _ugc_cache_timestamp = time.time()
+        
+        logger.debug(f"提取物品 {item_id_int} 详情: title={item_info.get('title', '?')}")
+    except Exception as detail_error:
+        logger.warning(f"提取物品 {item_id_int} 详情时出错: {detail_error}")
+
+
+async def warmup_ugc_cache() -> None:
+    """
+    在服务器启动时后台预热 UGC 缓存。
+    
+    获取所有订阅物品 ID，执行一次批量 UGC 查询，将结果存入缓存。
+    之后前端首次请求 /subscribed-items 时可以直接命中缓存，无需等待 Steam 网络查询。
+    """
+    global _ugc_warmup_task
+    
+    steamworks = get_steamworks()
+    if steamworks is None:
+        return
+    
+    try:
+        num_items = steamworks.Workshop.GetNumSubscribedItems()
+        if num_items == 0:
+            logger.info("UGC 缓存预热: 没有订阅物品，跳过")
+            return
+        
+        subscribed_ids = steamworks.Workshop.GetSubscribedItems()
+        all_item_ids = []
+        for sid in subscribed_ids:
+            try:
+                all_item_ids.append(int(sid))
+            except (ValueError, TypeError):
+                continue
+        
+        if not all_item_ids:
+            return
+        
+        logger.info(f"UGC 缓存预热: 开始查询 {len(all_item_ids)} 个物品...")
+        ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        
+        if ugc_results:
+            # 将结果写入缓存
+            for item_id_int, result in ugc_results.items():
+                dummy_info = {"publishedFileId": str(item_id_int),
+                              "title": f"未知物品_{item_id_int}", "description": ""}
+                _extract_ugc_item_details(steamworks, item_id_int, result, dummy_info)
+            
+            logger.info(f"UGC 缓存预热完成: {len(_ugc_details_cache)} 个物品已缓存")
+        else:
+            logger.warning("UGC 缓存预热: 批量查询无结果")
+    except Exception as e:
+        logger.warning(f"UGC 缓存预热失败（不影响正常使用）: {e}")
+    finally:
+        _ugc_warmup_task = None
+
 
 def get_workshop_meta_path(character_card_name: str) -> str:
     """
@@ -329,7 +573,7 @@ async def get_subscribed_workshop_items():
         # 存储处理后的物品信息
         items_info = []
         
-        # 批量查询所有物品的详情（一次查询，避免N次等待）
+        # 批量查询所有物品的详情（带重试+缓存）
         ugc_results = {}
         try:
             # 转换所有ID为整数
@@ -341,19 +585,23 @@ async def get_subscribed_workshop_items():
                     continue
             
             if all_item_ids:
-                logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
-                query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(all_item_ids)
-                
-                if query_handle:
-                    steamworks.Workshop.SendQueryUGCRequest(query_handle)
-                    await asyncio.sleep(0.5)  # 只等待一次
-                    
-                    for i in range(len(all_item_ids)):
-                        res = steamworks.Workshop.GetQueryUGCResult(query_handle, i)
-                        if res:
-                            ugc_results[all_item_ids[i]] = res
-                    
-                    logger.info(f"批量查询成功获取 {len(ugc_results)} 个物品的详情")
+                # 优先使用缓存（如果缓存覆盖了所有 ID 且仍在有效期内）
+                if _is_ugc_cache_valid() and all(iid in _ugc_details_cache for iid in all_item_ids):
+                    logger.info(f"使用 UGC 缓存（{len(all_item_ids)} 个物品）")
+                elif _ugc_warmup_task is not None and not _ugc_warmup_task.done():
+                    # 预热任务仍在运行，等待它完成而非发起重复查询
+                    logger.info("等待 UGC 缓存预热任务完成...")
+                    try:
+                        await asyncio.wait_for(asyncio.shield(_ugc_warmup_task), timeout=20)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    # 预热完成后检查缓存
+                    if not (_is_ugc_cache_valid() and all(iid in _ugc_details_cache for iid in all_item_ids)):
+                        logger.info(f'预热后缓存不完整，重新批量查询 {len(all_item_ids)} 个物品')
+                        ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
+                else:
+                    logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
+                    ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
         except Exception as batch_error:
             logger.warning(f"批量查询物品详情失败: {batch_error}")
         
@@ -368,7 +616,7 @@ async def get_subscribed_workshop_items():
                         logger.error(f"无效的物品ID: {item_id}")
                         continue
                 
-                logger.info(f'正在处理物品ID: {item_id}')
+                logger.debug(f'正在处理物品ID: {item_id}')
                 
                 # 获取物品状态
                 item_state = steamworks.Workshop.GetItemState(item_id)
@@ -497,25 +745,18 @@ async def get_subscribed_workshop_items():
                     logger.warning(f'获取物品 {item_id} 下载信息失败: {e}')
                     item_info["state"]["downloading"] = False
                 
-                # 从批量查询结果中提取物品详情
-                if item_id in ugc_results:
-                    result = ugc_results[item_id]
-                    try:
-                        if hasattr(result, 'title') and result.title:
-                            item_info['title'] = result.title.decode('utf-8', errors='replace')
-                        if hasattr(result, 'description') and result.description:
-                            item_info['description'] = result.description.decode('utf-8', errors='replace')
-                        if hasattr(result, 'timeCreated'):
-                            item_info['timeAdded'] = int(result.timeCreated)
-                        if hasattr(result, 'timeUpdated'):
-                            item_info['timeUpdated'] = int(result.timeUpdated)
-                        if hasattr(result, 'steamIDOwner'):
-                            item_info['steamIDOwner'] = str(result.steamIDOwner)
-                        if hasattr(result, 'fileSize'):
-                            item_info['fileSizeOnDisk'] = int(result.fileSize)
-                        logger.debug(f"从批量查询结果填充物品 {item_id} 详情")
-                    except Exception as detail_error:
-                        logger.warning(f"提取物品 {item_id} 详情时出错: {detail_error}")
+                # 从批量查询结果或缓存中提取物品详情
+                item_id_int = int(item_id)
+                if item_id_int in ugc_results:
+                    _extract_ugc_item_details(steamworks, item_id_int, ugc_results[item_id_int], item_info)
+                elif item_id_int in _ugc_details_cache:
+                    # 使用缓存数据填充
+                    cached = _ugc_details_cache[item_id_int]
+                    for key in ('title', 'description', 'timeAdded', 'timeUpdated',
+                                'steamIDOwner', 'authorName', 'tags'):
+                        if key in cached:
+                            item_info[key] = cached[key]
+                    logger.debug(f"从缓存填充物品 {item_id} 详情: title={item_info.get('title', '?')}")
                 
                 # 作为备选方案，如果本地有安装路径，尝试从本地文件获取信息
                 if item_info['title'].startswith('未知物品_') or not item_info['description']:
@@ -551,7 +792,7 @@ async def get_subscribed_workshop_items():
                                             first_line = f.readline().strip()
                                             if first_line and item_info['title'].startswith('未知物品_'):
                                                 item_info['title'] = first_line[:100]  # 限制长度
-                                    logger.info(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
+                                    logger.debug(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
                                     break
                                 except Exception as file_error:
                                     logger.warning(f"读取配置文件 {config_path} 时出错: {file_error}")
@@ -606,7 +847,7 @@ async def get_subscribed_workshop_items():
                         "error_message": str(item_error)
                     }
                     items_info.append(basic_item_info)
-                    logger.info(f'已添加物品 {item_id} 的基本信息到结果列表')
+                    logger.debug(f'已添加物品 {item_id} 的基本信息到结果列表')
                 except Exception as basic_error:
                     logger.error(f"添加基本物品信息也失败了: {basic_error}")
                 # 继续处理下一个物品
@@ -724,18 +965,19 @@ async def get_workshop_item_details(item_id: str):
         # 获取物品状态
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
-        # 创建查询请求，传入必要的published_file_ids参数
-        query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest([item_id_int])
+        # 使用统一的批量查询辅助函数（带重试）查询单个物品
+        ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        result = ugc_results.get(item_id_int)
         
-        # 发送查询请求
-        # 注意：SendQueryUGCRequest返回None而不是布尔值
-        steamworks.Workshop.SendQueryUGCRequest(query_handle)
-        await asyncio.sleep(0.5)
-        
-        # 直接获取查询结果，不检查handle
-        result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
+        # 如果查询失败，尝试使用缓存
+        if not result and item_id_int in _ugc_details_cache:
+            cached = _ugc_details_cache[item_id_int]
+            # 使用缓存数据构建响应
+            use_cache = True
+        else:
+            use_cache = False
             
-        if result:
+        if result or use_cache:
             # 获取物品安装信息 - 支持字典格式（根据workshop.py的实现）
             install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
             installed = bool(install_info)
@@ -763,25 +1005,66 @@ async def get_workshop_item_details(item_id: str):
                     # 兼容元组格式
                     downloading, bytes_downloaded, bytes_total = download_info
             
-            # 解码bytes类型的字段为字符串，避免JSON序列化错误
-            title = result.title.decode('utf-8', errors='replace') if hasattr(result, 'title') and isinstance(result.title, bytes) else getattr(result, 'title', '')
-            description = result.description.decode('utf-8', errors='replace') if hasattr(result, 'description') and isinstance(result.description, bytes) else getattr(result, 'description', '')
+            if use_cache:
+                # 从缓存构建结果
+                title = cached.get('title', f'未知物品_{item_id}')
+                description = cached.get('description', '')
+                owner_id_str = cached.get('steamIDOwner', '')
+                author_name = cached.get('authorName')
+                time_created = cached.get('timeAdded', 0)
+                time_updated = cached.get('timeUpdated', 0)
+                file_size = 0
+                preview_url = ''
+                file_url = ''
+                file_id = 0
+                preview_file_id = 0
+                tags = cached.get('tags', [])
+            else:
+                # 解码bytes类型的字段为字符串，避免JSON序列化错误
+                title = result.title.decode('utf-8', errors='replace') if hasattr(result, 'title') and isinstance(result.title, bytes) else getattr(result, 'title', '')
+                description = result.description.decode('utf-8', errors='replace') if hasattr(result, 'description') and isinstance(result.description, bytes) else getattr(result, 'description', '')
+                
+                # 将 steamIDOwner 解析为实际用户名
+                owner_id = int(result.steamIDOwner) if hasattr(result, 'steamIDOwner') and result.steamIDOwner else 0
+                owner_id_str = str(owner_id) if owner_id else ''
+                author_name = _resolve_author_name(steamworks, owner_id) if owner_id else None
+                time_created = getattr(result, 'timeCreated', 0)
+                time_updated = getattr(result, 'timeUpdated', 0)
+                file_size = getattr(result, 'fileSize', 0)
+                preview_url = getattr(result, 'URL', '')
+                file_url = getattr(result, 'URL', '')
+                file_id = getattr(result, 'file', 0)
+                preview_file_id = getattr(result, 'previewFile', 0)
+                tags = []
+                if hasattr(result, 'tags') and result.tags:
+                    try:
+                        tags_str = result.tags.decode('utf-8', errors='replace')
+                        if tags_str:
+                            tags = [t.strip() for t in tags_str.split(',') if t.strip()]
+                    except Exception:
+                        pass
+                
+                # 更新缓存
+                _extract_ugc_item_details(steamworks, item_id_int, result, {
+                    "publishedFileId": str(item_id_int),
+                    "title": f"未知物品_{item_id}", "description": ""
+                })
             
             # 构建详细的物品信息
             item_info = {
                 "publishedFileId": item_id_int,
                 "title": title,
                 "description": description,
-                "steamIDOwner": result.steamIDOwner,
-                "timeCreated": result.timeCreated,
-                "timeUpdated": result.timeUpdated,
-                "previewImageUrl": result.URL,  # 使用result.URL代替不存在的previewImageUrl
-                "fileUrl": result.URL,  # 使用result.URL代替不存在的fileUrl
-                "fileSize": result.fileSize,
-                "fileId": result.file,  # 使用result.file代替不存在的fileId
-                "previewFileId": result.previewFile,  # 使用result.previewFile代替不存在的previewFileId
-                # 移除不存在的appID属性
-                "tags": [],
+                "steamIDOwner": owner_id_str,
+                "authorName": author_name,
+                "timeCreated": time_created,
+                "timeUpdated": time_updated,
+                "previewImageUrl": preview_url,
+                "fileUrl": file_url,
+                "fileSize": file_size,
+                "fileId": file_id,
+                "previewFileId": preview_file_id,
+                "tags": tags,
                 "state": {
                     "subscribed": bool(item_state & 1),
                     "legacyItem": bool(item_state & 2),
@@ -2330,3 +2613,151 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             raise
 
 
+# ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
+
+# 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
+_RESERVED_FIELDS = [
+    '原始数据', '文件路径', '创意工坊物品ID',
+    'description', 'tags', 'name',
+    '描述', '标签', '关键词',
+    'live2d_item_id'
+]
+
+
+async def sync_workshop_character_cards() -> dict:
+    """
+    服务端自动扫描所有已订阅且已安装的创意工坊物品，
+    将其中的 .chara.json 角色卡同步到系统 characters.json。
+    
+    与前端 autoScanAndAddWorkshopCharacterCards() 等价，但在后端执行，
+    可在服务器启动时直接调用，无需等待用户打开创意工坊管理页面。
+    
+    Returns:
+        dict: {"added": int, "skipped": int, "errors": int}
+    """
+    added_count = 0
+    skipped_count = 0
+    error_count = 0
+    
+    try:
+        # 1. 获取所有订阅的创意工坊物品
+        items_result = await get_subscribed_workshop_items()
+        
+        # 兼容 JSONResponse 和普通 dict
+        if hasattr(items_result, 'body'):
+            # JSONResponse — 说明出错了，直接返回
+            logger.warning("sync_workshop_character_cards: 获取订阅物品失败（返回了 JSONResponse）")
+            return {"added": 0, "skipped": 0, "errors": 1}
+        
+        if not isinstance(items_result, dict) or not items_result.get('success'):
+            logger.warning("sync_workshop_character_cards: 获取订阅物品失败")
+            return {"added": 0, "skipped": 0, "errors": 1}
+        
+        subscribed_items = items_result.get('items', [])
+        if not subscribed_items:
+            logger.info("sync_workshop_character_cards: 没有订阅物品，跳过同步")
+            return {"added": 0, "skipped": 0, "errors": 0}
+        
+        config_mgr = get_config_manager()
+        characters = config_mgr.load_characters()
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
+        
+        need_save = False
+        
+        # 2. 遍历所有已安装的物品
+        for item in subscribed_items:
+            installed_folder = item.get('installedFolder')
+            if not installed_folder or not os.path.isdir(installed_folder):
+                continue
+            
+            item_id = item.get('publishedFileId', '')
+            
+            # 3. 扫描 .chara.json 文件
+            try:
+                chara_files = []
+                for filename in os.listdir(installed_folder):
+                    if filename.endswith('.chara.json'):
+                        chara_files.append(os.path.join(installed_folder, filename))
+                
+                for chara_file_path in chara_files:
+                    try:
+                        with open(chara_file_path, 'r', encoding='utf-8') as f:
+                            chara_data = json.load(f)
+                        
+                        chara_name = chara_data.get('档案名')
+                        if not chara_name:
+                            continue
+                        
+                        # 已存在则跳过
+                        if chara_name in characters['猫娘']:
+                            skipped_count += 1
+                            continue
+                        
+                        # 构建角色数据，过滤保留字段
+                        catgirl_data = {}
+                        skip_keys = ['档案名'] + _RESERVED_FIELDS
+                        for k, v in chara_data.items():
+                            if k not in skip_keys and v is not None and v != '':
+                                catgirl_data[k] = v
+                        
+                        # 如果角色卡有 live2d 字段，同时保存 live2d_item_id
+                        if catgirl_data.get('live2d') and item_id:
+                            catgirl_data['live2d_item_id'] = str(item_id)
+                        
+                        characters['猫娘'][chara_name] = catgirl_data
+                        need_save = True
+                        added_count += 1
+                        logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
+                        
+                    except Exception as e:
+                        logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
+                        error_count += 1
+                        
+            except Exception as e:
+                logger.warning(f"sync_workshop_character_cards: 扫描文件夹 {installed_folder} 失败: {e}")
+                error_count += 1
+        
+        # 4. 保存并重新加载角色配置
+        if need_save:
+            config_mgr.save_characters(characters)
+            logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
+            
+            try:
+                initialize_character_data = get_initialize_character_data()
+                if initialize_character_data:
+                    await initialize_character_data()
+                    logger.info("sync_workshop_character_cards: 已重新加载角色配置")
+            except Exception as e:
+                logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
+        else:
+            logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
+        
+    except Exception as e:
+        logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
+        error_count += 1
+    
+    return {"added": added_count, "skipped": skipped_count, "errors": error_count}
+
+
+@router.post('/sync-characters')
+async def api_sync_workshop_character_cards():
+    """
+    手动触发同步创意工坊角色卡到系统。
+    扫描所有已安装的订阅物品中的 .chara.json 并添加缺失的角色卡。
+    """
+    try:
+        result = await sync_workshop_character_cards()
+        return {
+            "success": True,
+            "added": result["added"],
+            "skipped": result["skipped"],
+            "errors": result["errors"],
+            "message": f"同步完成：新增 {result['added']} 个角色卡，跳过 {result['skipped']} 个已存在，{result['errors']} 个错误"
+        }
+    except Exception as e:
+        logger.error(f"API sync-characters 失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
