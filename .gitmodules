@@ -1,3 +1,7 @@
 [submodule "local_server/cosyvoice_server/CosyVoice"]
 	path = local_server/cosyvoice_server/CosyVoice
 	url = https://github.com/wehos/CosyVoice-v3
+[submodule "local_server/qwen3_tts_server/Qwen3-TTS"]
+	path = local_server/qwen3_tts_server/Qwen3-TTS
+	url = https://github.com/rophec/Qwen3-TTS.git
+	branch = qwen3_tts
