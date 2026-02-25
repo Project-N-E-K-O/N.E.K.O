@@ -363,7 +363,7 @@ class Live2DManager {
                 this.currentModel.x = this.pixi_app.renderer.width * 0.5;
                 this.currentModel.y = this.pixi_app.renderer.height * 0.28;
             } else {
-                // 桌面端默认设置（居中偏下）
+                // 桌面端默认设置（右下角）
                 const scale = Math.min(
                     0.5,
                     (window.innerHeight * 0.75) / 7000,
