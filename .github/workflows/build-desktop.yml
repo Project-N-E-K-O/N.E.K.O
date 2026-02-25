@@ -496,8 +496,7 @@ jobs:
                 { target: 'deb', arch: ['x64'] },
                 { target: 'tar.gz', arch: ['x64'] }
               ],
-              category: 'Utility',
-              icon: 'build/icons'
+              category: 'Utility'
             };
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
             console.log('Linux build targets configured');
@@ -513,17 +512,25 @@ jobs:
             rpm \
             libarchive-tools
 
+      # Explicitly disable macOS code signing via package.json patch
+      - name: Disable macOS code signing
+        if: runner.os == 'macOS' && github.event.inputs.skip_signing != 'false'
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.build = pkg.build || {};
+            pkg.build.mac = pkg.build.mac || {};
+            pkg.build.mac.identity = null;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('macOS code signing disabled (identity=null)');
+          "
+
       # --- Build Electron app ---
       - name: Build Electron app
         working-directory: electron-app
-        shell: bash
-        run: |
-          BUILDER_ARGS="${{ matrix.electron_args }}"
-          # Explicitly disable macOS code signing when skip_signing is true
-          if [[ "${{ github.event.inputs.skip_signing }}" != "false" && "$RUNNER_OS" == "macOS" ]]; then
-            BUILDER_ARGS="$BUILDER_ARGS --config.mac.identity=null"
-          fi
-          npx electron-builder $BUILDER_ARGS
+        run: npx electron-builder ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
