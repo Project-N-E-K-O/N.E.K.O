@@ -376,6 +376,12 @@ jobs:
           if [ -d "dist/launcher.dist" ]; then
             mv dist/launcher.dist dist/Xiao8
           fi
+          # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
+          # spaces in .app paths), copy it manually into the output directory
+          if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
+            cp -R playwright_browsers dist/Xiao8/playwright_browsers
+            echo "Copied playwright_browsers into dist/Xiao8/"
+          fi
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
