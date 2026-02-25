@@ -268,8 +268,9 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
           fi
 
-          # Plugin
+          # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
+          NUITKA_OPTS="$NUITKA_OPTS --assume-yes-for-downloads"
 
           # Steam files (include if present in repo)
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
