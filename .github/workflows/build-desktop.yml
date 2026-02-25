@@ -72,6 +72,11 @@ jobs:
             platform: win
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
+          - os: macos-15
+            platform: mac-x64
+            python_arch: x64
+            artifact_name: python-backend-mac-x64
+            output_binary: projectneko_server
           - os: macos-latest
             platform: mac-arm64
             artifact_name: python-backend-mac-arm64
@@ -91,6 +96,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch || '' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -388,6 +394,11 @@ jobs:
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
+          - os: macos-15
+            platform: mac-x64
+            python_artifact: python-backend-mac-x64
+            electron_args: '--mac --x64'
+            artifact_name: desktop-mac-x64
           - os: macos-latest
             platform: mac-arm64
             python_artifact: python-backend-mac-arm64
@@ -554,7 +565,8 @@ jobs:
             | Platform | Architecture | File |
             |----------|-------------|------|
             | Windows | x64 | `N.E.K.O.exe` (Portable) |
-            | macOS | Apple Silicon (arm64) | `N.E.K.O-*.dmg` or `.zip` |
+            | macOS | Intel (x64) | `N.E.K.O-*.dmg` or `.zip` |
+            | macOS | Apple Silicon (arm64) | `N.E.K.O-*-arm64.dmg` or `.zip` |
             | Linux | x64 | `N.E.K.O-*.AppImage` / `.deb` / `.tar.gz` |
 
             ### Notes
