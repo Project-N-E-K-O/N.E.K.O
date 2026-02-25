@@ -9,7 +9,6 @@ Supports thinking mode for models that provide it.
 from typing import Dict, Any, Optional, List, Tuple
 import re
 import base64
-import logging
 import platform
 import os
 import time
@@ -19,9 +18,10 @@ from openai import OpenAI
 from PIL import Image
 from config import get_agent_extra_body
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 from utils.screenshot_utils import compress_screenshot
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 try:
     if platform.system().lower() == "windows":
@@ -336,6 +336,7 @@ class ComputerUseAdapter:
     ):
         self.last_error: Optional[str] = None
         self.init_ok = False
+        self._cancelled: bool = False
         self.max_steps = max_steps
         self.max_image_history = max_image_history
         self.max_tokens = max_tokens
@@ -617,6 +618,11 @@ class ComputerUseAdapter:
 
         return {"thought": thought, "action": action, "code": code}, code
 
+    def cancel_running(self) -> None:
+        """Signal the currently running task to stop at the next step boundary."""
+        self._cancelled = True
+        logger.info("[CUA] cancel_running called, task will abort at next step")
+
     def run_instruction(
         self, instruction: str, session_id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -631,6 +637,8 @@ class ComputerUseAdapter:
         if not self._llm_client:
             return {"success": False, "error": "Agent not initialized"}
 
+        self._cancelled = False
+
         if session_id is None or session_id != self._current_session_id:
             self.reset()
             self._current_session_id = session_id
@@ -641,6 +649,10 @@ class ComputerUseAdapter:
 
         try:
             for step in range(1, self.max_steps + 1):
+                if self._cancelled:
+                    logger.info("[CUA] Task cancelled by user at step %d", step)
+                    return {"success": False, "error": "Task cancelled by user"}
+
                 t0 = time.monotonic()
                 shot = pyautogui.screenshot()
                 jpg_bytes = compress_screenshot(shot)

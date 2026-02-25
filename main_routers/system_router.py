@@ -13,7 +13,6 @@ import os
 import sys
 import asyncio
 import base64
-import logging
 import re
 import time
 from collections import deque
@@ -44,9 +43,10 @@ from utils.web_scraper import (
     fetch_news_content, format_news_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
+from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
@@ -1004,6 +1004,32 @@ async def get_window_title_api():
     except Exception as e:
         logger.error(f"获取窗口标题失败: {e}")
         return JSONResponse({"success": False, "window_title": None})
+
+
+@router.get('/screenshot')
+async def backend_screenshot(request: Request):
+    """后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
+    安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。"""
+    client_host = request.client.host if request.client else ''
+    if client_host not in ('127.0.0.1', '::1', 'localhost', '0.0.0.0'):
+        return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
+
+    try:
+        import pyautogui
+    except ImportError:
+        return JSONResponse({"success": False, "error": "pyautogui not installed"}, status_code=501)
+
+    try:
+        shot = pyautogui.screenshot()
+        if shot.mode in ('RGBA', 'LA', 'P'):
+            shot = shot.convert('RGB')
+        jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+        b64 = base64.b64encode(jpg_bytes).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{b64}"
+        return JSONResponse({"success": True, "data": data_url, "size": len(jpg_bytes)})
+    except Exception as e:
+        logger.error(f"后端截图失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 @router.post('/proactive_chat')

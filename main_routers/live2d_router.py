@@ -12,7 +12,6 @@ Handles Live2D model-related endpoints including:
 
 import os
 import json
-import logging
 import pathlib
 
 from fastapi import APIRouter, Request, File, UploadFile
@@ -20,9 +19,11 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.frontend_utils import find_models, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id
+from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
+from utils.logger_config import get_module_logger
+
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 
 @router.get("/models")

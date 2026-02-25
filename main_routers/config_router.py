@@ -10,19 +10,18 @@ Handles configuration-related API endpoints including:
 """
 
 import json
-import logging
 import os
 
-from pathlib import Path
 from fastapi import APIRouter, Request
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.logger_config import get_module_logger
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # VRM 模型路径常量
 VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径

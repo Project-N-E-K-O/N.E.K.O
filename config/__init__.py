@@ -9,10 +9,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
 
-logger = logging.getLogger(__name__)
-
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
+logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀（角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音）
 GSV_VOICE_PREFIX = "gsv:"

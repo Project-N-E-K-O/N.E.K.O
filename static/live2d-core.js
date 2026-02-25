@@ -173,7 +173,9 @@ class Live2DManager {
         const defaultOptions = {
             autoStart: true,
             transparent: true,
-            backgroundAlpha: 0
+            backgroundAlpha: 0,
+            resolution: window.devicePixelRatio || 1,
+            autoDensity: true
         };
 
         try {

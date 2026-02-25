@@ -16,14 +16,14 @@ Limiter：限幅器，防止音频削波
 """
 
 import numpy as np
-import logging
 from typing import Optional
+from utils.logger_config import get_module_logger
 import soxr
 import time
 import os
 import wave
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 # ============== DEBUG 音频存储功能 ==============
 # 设置为 True 可以将 RNNoise 处理前后的音频存储到文件中

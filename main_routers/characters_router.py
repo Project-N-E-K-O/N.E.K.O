@@ -11,7 +11,6 @@ Handles character (catgirl) management endpoints including:
 import json
 import io
 import os
-import logging
 import asyncio
 import copy
 import base64
@@ -29,10 +28,11 @@ from .shared_state import get_config_manager, get_session_manager, get_initializ
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
+from utils.logger_config import get_module_logger
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 
 PROFILE_NAME_MAX_UNITS = 20

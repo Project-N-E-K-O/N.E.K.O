@@ -1,11 +1,11 @@
 import asyncio
 import json
-import logging
 from typing import Any
 
 from config import MAIN_AGENT_EVENT_PORT
+from utils.logger_config import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 async def publish_main_event(event: dict[str, Any]) -> bool:
