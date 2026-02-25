@@ -72,8 +72,9 @@ jobs:
             platform: win
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
-          - os: macos-13
+          - os: macos-14
             platform: mac-x64
+            python_arch: x64
             artifact_name: python-backend-mac-x64
             output_binary: projectneko_server
           - os: macos-latest
@@ -95,6 +96,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch || '' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -105,6 +107,31 @@ jobs:
           uv venv .venv
           uv sync
           uv pip install --python .venv nuitka ordered-set zstandard
+
+      # --- Generate runtime config files (not tracked in git) ---
+      - name: Generate default config files
+        shell: bash
+        run: |
+          python -c "
+          import json, os
+          configs = {
+            'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
+            'config/core_config.json': {},
+            'config/user_preferences.json': [],
+          }
+          for path, data in configs.items():
+            if not os.path.exists(path):
+              with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+              print(f'Created {path}')
+          "
+          mkdir -p data/browser_use_prompts
+          echo "Default config files and directories ready."
 
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
@@ -121,7 +148,7 @@ jobs:
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: |
-          brew install ccache || true
+          brew install ccache portaudio || true
 
       # --- Pre-install Playwright Chromium for bundle ---
       - name: Install Playwright Chromium (Unix)
@@ -152,12 +179,6 @@ jobs:
           NUITKA_OPTS="--standalone"
           NUITKA_OPTS="$NUITKA_OPTS --output-dir=dist"
           NUITKA_OPTS="$NUITKA_OPTS --output-filename=projectneko_server"
-
-          # Version metadata
-          NUITKA_OPTS="$NUITKA_OPTS --company-name=Project_N.E.K.O."
-          NUITKA_OPTS="$NUITKA_OPTS --product-name=N.E.K.O._AI_Assistant"
-          NUITKA_OPTS="$NUITKA_OPTS --file-version=${{ needs.version.outputs.version || '1.0.0.0' }}"
-          NUITKA_OPTS="$NUITKA_OPTS --product-version=${{ needs.version.outputs.version || '1.0.0.0' }}"
 
           # Config data files
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
@@ -251,8 +272,8 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-icon-from-ico=assets/icon.ico
           set NUITKA_OPTS=%NUITKA_OPTS% --company-name="Project N.E.K.O."
           set NUITKA_OPTS=%NUITKA_OPTS% --product-name="N.E.K.O. AI Assistant"
-          set NUITKA_OPTS=%NUITKA_OPTS% --file-version=${{ needs.version.outputs.version || '1.0.0.0' }}
-          set NUITKA_OPTS=%NUITKA_OPTS% --product-version=${{ needs.version.outputs.version || '1.0.0.0' }}
+          set NUITKA_OPTS=%NUITKA_OPTS% --file-version=1.0.0.0
+          set NUITKA_OPTS=%NUITKA_OPTS% --product-version=1.0.0.0
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/__init__.py=config/__init__.py
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/api_providers.json=config/api_providers.json
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-files=config/characters.json=config/characters.json
@@ -344,7 +365,7 @@ jobs:
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
-          - os: macos-13
+          - os: macos-14
             platform: mac-x64
             python_artifact: python-backend-mac-x64
             electron_args: '--mac --x64'
