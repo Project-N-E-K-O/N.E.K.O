@@ -18,7 +18,7 @@ import logging
 import argparse
 from utils.frontend_utils import get_timestamp
 
-# Setup logger
+# 配置日志
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -26,6 +26,17 @@ class HistoryRequest(BaseModel):
     input_history: str
 
 app = FastAPI()
+
+
+# ── 健康检查 / 指纹端点 ──────────────────────────────────────────
+@app.get("/health")
+async def health():
+    """返回带 N.E.K.O 签名的健康响应，供 launcher/前端识别，
+    以区分当前服务与随机占用该端口的其他进程。"""
+    from utils.port_utils import build_health_response
+    from config import INSTANCE_ID
+    return build_health_response("memory", instance_id=INSTANCE_ID)
+
 
 def validate_lanlan_name(name: str) -> str:
     name = name.strip()

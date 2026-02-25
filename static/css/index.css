@@ -1049,17 +1049,14 @@ button * {
 #chat-container.minimized {
     background: rgba(68, 183, 254, 0.15);
     opacity: 1;
-    width: 50px;
-    /* 最小化宽度（正方形） */
-    height: 50px;
-    /* 最小化高度（正方形） */
-    max-height: 50px;
+    width: 50px !important;
+    height: 50px !important;
+    max-height: 50px !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
     padding: 0;
-    /* 移除内边距 */
     cursor: pointer;
-    /* 让整个小方块可点击（虽然按钮也在） */
     border-radius: 50%;
-    /* 圆形 */
     animation: breathingGlow 2s ease-in-out infinite;
 }
 

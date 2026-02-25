@@ -430,7 +430,8 @@
         "tempFolderRetained": "Temporary folder retained",
         "noAvailableModelsError": "No available models",
         "tagsPlaceholderInput": "Enter tags, press space to add",
-        "prepareUploadFailedMessage": "Prepare upload failed: {{error}}"
+        "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
+        "noCharacterCardSelected": "Please select a character card first"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
@@ -573,6 +574,7 @@
         "siliconAssist": "SiliconFlow: Good value, supports Agent mode",
         "openaiAssist": "OpenAI: Strong memory management capability",
         "geminiAssist": "Gemini: Excellent intelligence and value, but not available in China domestic version",
+        "kimiAssist": "Kimi: Available in China, supports long context and vision",
         "assistApiNote": "Note: Only Alibaba supports custom voice functionality. GLM and StepFun are not recommended.",
         "assistApiKeyQwen": "Assist API Key - Alibaba",
         "assistApiKeyOpenai": "Assist API Key - OpenAI",
@@ -580,6 +582,7 @@
         "assistApiKeyStep": "Assist API Key - StepFun",
         "assistApiKeySilicon": "Assist API Key - SiliconFlow",
         "assistApiKeyGemini": "Assist API Key - Gemini",
+        "assistApiKeyKimi": "Assist API Key - Kimi",
         "assistApiKeyHint": "(Only required when Assist API is {{provider}})",
         "assistApiKeyPlaceholder": "Optional, defaults to Core API Key",
         "providerNames": {
@@ -605,7 +608,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow (Good Value, Recommended)",
-            "gemini": "Gemini (Google, High Intelligence, not available in China)"
+            "gemini": "Gemini (Google, High Intelligence, not available in China)",
+            "kimi": "Kimi (Moonshot, Available in China, Long Context)"
         },
         "freeVersionNoApiKey": "Free version does not require API Key",
         "pleaseEnterApiKey": "Please enter your API Key",
@@ -746,7 +750,8 @@
         },
         "loadConfigFailed": "Failed to load configuration, please refresh the page and try again",
         "errorGettingCurrentApiKey": "Error getting current API Key",
-        "getCurrentApiKeyFailed": "Failed to get current API Key"
+        "getCurrentApiKeyFailed": "Failed to get current API Key",
+        "gptsovitsApiUrlRequired": "Please enter a valid http/https API URL"
     },
     "live2d": {
         "manager": "Live2D Model Manager",
@@ -953,12 +958,13 @@
             "saved": "Emotion mapping saved",
             "saveFailed": "Failed to save emotion mapping",
             "noModelSelected": "Please select a model first"
-        }
+        },
+        "noExpressionFiles": "No expression files"
     },
     "voice": {
         "title": "Voice Registration",
         "alibabaApiRequired": "⚠️ This feature requires CosyVoice model. Please configure Alibaba Assist API or local voice server in API Keys settings.",
-        "selectFile": "Select local audio file (15 seconds recommended, max 30 seconds, wav/mp3 format)",
+        "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
         "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
@@ -1131,7 +1137,12 @@
         "unregisterError": "An error occurred while unregistering",
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
-        "freePresetVoices": "Free Preset Voices"
+        "freePresetVoices": "Free Preset Voices",
+        "loadFailed": "Failed to load character data",
+        "renameError": "Rename failed: {{error}}",
+        "renameMasterTitle": "Rename Master",
+        "renameSuccess": "Rename successful",
+        "saveMasterError": "Failed to save master settings"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -1201,7 +1212,12 @@
             "windows": "Windows",
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
-        }
+        },
+        "deviceSwitchFailed": "Device switch failed",
+        "deviceSwitching": "Switching device...",
+        "modelPathEmpty": "Model path is empty",
+        "modelSwitchFailed": "Model switch failed",
+        "sessionFailed": "Session failed to start"
     },
     "buttons": {
         "voiceControl": "Voice Control",
@@ -1225,7 +1241,8 @@
             "live2dManage": "Live2D Management",
             "apiSettings": "API Settings",
             "language": "Language",
-            "general": "General"
+            "general": "General",
+            "mediaCredentials": "Media Credentials"
         },
         "language": {
             "title": "Select Language",
@@ -1244,11 +1261,11 @@
             "mergeMessages": "Merge Messages",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Proactive Vision",
-            "proactiveVisionChat": "Vision Chat",
+            "proactiveVisionChat": "Screen Share",
             "proactiveVisionChatTooltip": "Requires both Proactive Chat and Proactive Vision to be enabled",
-            "proactiveNewsChat": "News Chat",
+            "proactiveNewsChat": "News Website",
             "proactiveNewsChatTooltip": "Use trending topics for proactive chat",
-            "proactiveVideoChat": "Video Chat",
+            "proactiveVideoChat": "Video Website",
             "proactiveVideoChatTooltip": "Use video content for proactive chat",
             "agentMaster": "Agent Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
@@ -1264,7 +1281,17 @@
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
             "userPluginAdapting": "User Plugin (Developing)",
-            "moltbotAdapting": "moltbot (Developing)"
+            "moltbotAdapting": "moltbot (Developing)",
+            "chatSettings": "Chat Settings",
+            "animationSettings": "Animation Settings",
+            "renderQuality": "Quality",
+            "renderQualityLow": "Low",
+            "renderQualityMedium": "Medium",
+            "renderQualityHigh": "High",
+            "frameRate": "Frame Rate",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps"
         }
     },
     "subtitle": {
@@ -1283,8 +1310,11 @@
             "disabledError": "Agent mode disabled (partial cleanup failed)",
             "enableFailed": "Enable failed",
             "disconnected": "Server connection lost",
-            "agentDisconnected": "Agent server connection lost"
+            "agentDisconnected": "Agent server connection lost",
+            "freeModelWarning": "Due to quota limitations, free models are prone to blocking in Agent mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
+            "freeModelWarningTitle": "Free Model Notice"
         },
+        "quotaExceeded": "The free Agent model daily trial limit has been reached ({{limit}} uses). Please try again tomorrow.",
         "taskHud": {
             "title": "Agent Tasks",
             "running": "Running",
@@ -1293,7 +1323,10 @@
             "statusRunning": "Running",
             "statusQueued": "Queued",
             "statusCompleted": "Completed",
-            "statusFailed": "Failed"
+            "statusFailed": "Failed",
+            "minimize": "Collapse/Expand",
+            "cancelAll": "Cancel all tasks",
+            "cancelConfirm": "Cancel all running tasks?"
         }
     },
     "vrm": {
@@ -1311,7 +1344,10 @@
             "animationClipError": "Error creating animation clip: {{error}}",
             "animationClipNoBones": "Animation clip creation failed: No matching bones found",
             "cannotCreateAnimationAction": "Cannot create animation action",
-            "invalidModelPath": "Invalid VRM model path: {{path}}"
+            "invalidModelPath": "Invalid VRM model path: {{path}}",
+            "gltfLoaderImportFailed": "Failed to import GLTFLoader: {{error}}",
+            "threeIncomplete": "Three.js dependency incomplete, missing: {{missing}}",
+            "vrmLoaderImportFailed": "Failed to import VRMLoaderPlugin: {{error}}"
         },
         "lighting": {
             "title": "VRM Lighting Settings",
@@ -1813,7 +1849,8 @@
             "title": "🎓 Start Tutorial",
             "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
             "enterFullscreen": "Enter Fullscreen Tutorial"
-        }
+        },
+        "drag_hint": "Hold and drag to move the tooltip"
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",
@@ -1927,7 +1964,9 @@
         "translationApiResult": "Translation API returned result:",
         "translationError": "Translation error:",
         "translationException": "Translation request exception:",
-        "resetButtonNotFound": "[App] resetSessionButton not found!"
+        "resetButtonNotFound": "[App] resetSessionButton not found!",
+        "aiFailed": "Connection to catgirl encountered an error",
+        "aiRetrying": "Connection error, recalibrating..."
     },
     "emotionManager": {
         "title": "Live2D Emotion Mapping Manager - Project N.E.K.O.",
@@ -2001,5 +2040,6 @@
         "switchToDark": "Switch to Dark Mode",
         "switchToLight": "Switch to Light Mode",
         "themeChanged": "Theme changed"
-    }
+    },
+    "characterModelNotSet": "Current character has no model set"
 }

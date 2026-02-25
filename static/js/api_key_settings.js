@@ -347,6 +347,7 @@ async function loadCurrentApiKey() {
             setInputValue('assistApiKeyInputStep', data.assistApiKeyStep, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputSilicon', data.assistApiKeySilicon, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputGemini', data.assistApiKeyGemini, assistApiKeyPlaceholder);
+            setInputValue('assistApiKeyInputKimi', data.assistApiKeyKimi, assistApiKeyPlaceholder);
 
             // 加载用户自定义API配置
             setInputValue('conversationModelUrl', data.conversationModelUrl);
@@ -726,6 +727,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const assistApiKeyStep = document.getElementById('assistApiKeyInputStep') ? document.getElementById('assistApiKeyInputStep').value.trim() : '';
     const assistApiKeySilicon = document.getElementById('assistApiKeyInputSilicon') ? document.getElementById('assistApiKeyInputSilicon').value.trim() : '';
     const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
+    const assistApiKeyKimi = document.getElementById('assistApiKeyInputKimi') ? document.getElementById('assistApiKeyInputKimi').value.trim() : '';
 
     // 获取用户自定义API配置
     const conversationModelUrl = document.getElementById('conversationModelUrl') ? document.getElementById('conversationModelUrl').value.trim() : '';
@@ -807,7 +809,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 已有API Key，显示警告弹窗
         pendingApiKey = {
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
             conversationModelUrl, conversationModelId, conversationModelApiKey,
             summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -823,7 +825,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 没有现有API Key，直接保存
         await saveApiKey({
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
             conversationModelUrl, conversationModelId, conversationModelApiKey,
             summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -837,7 +839,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -866,6 +868,7 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 assistApiKeyStep: assistApiKeyStep || undefined,
                 assistApiKeySilicon: assistApiKeySilicon || undefined,
                 assistApiKeyGemini: assistApiKeyGemini || undefined,
+                assistApiKeyKimi: assistApiKeyKimi || undefined,
                 conversationModelUrl: conversationModelUrl || undefined,
                 conversationModelId: conversationModelId || undefined,
                 conversationModelApiKey: conversationModelApiKey || undefined,
@@ -999,7 +1002,8 @@ function isFreeVersionText(value) {
 function setAssistApiInputsDisabled(disabled) {
     const assistApiKeyInputs = [
         'assistApiKeyInputQwen', 'assistApiKeyInputOpenai', 'assistApiKeyInputGlm',
-        'assistApiKeyInputStep', 'assistApiKeyInputSilicon', 'assistApiKeyInputGemini'
+        'assistApiKeyInputStep', 'assistApiKeyInputSilicon', 'assistApiKeyInputGemini',
+        'assistApiKeyInputKimi'
     ];
     assistApiKeyInputs.forEach(id => {
         const input = document.getElementById(id);
@@ -1079,7 +1083,8 @@ function updateAssistApiRecommendation() {
             'glm': 'assistApiKeyInputGlm',
             'step': 'assistApiKeyInputStep',
             'silicon': 'assistApiKeyInputSilicon',
-            'gemini': 'assistApiKeyInputGemini'
+            'gemini': 'assistApiKeyInputGemini',
+            'kimi': 'assistApiKeyInputKimi'
         };
 
         // 检查辅助API是否有对应的API Key
@@ -1142,6 +1147,7 @@ function updateAssistApiRecommendation() {
             • <span>${window.t ? window.t('api.siliconAssist') : '硅基流动：性价比高'}</span><br>
             • <span>${window.t ? window.t('api.openaiAssist') : 'OpenAI：记忆管理能力强'}</span><br>
             • <span>${window.t ? window.t('api.geminiAssist') : 'Gemini：智能和性价比极高，但国内版不支持'}</span><br>
+            • <span>${window.t ? window.t('api.kimiAssist') : 'Kimi：国内可用，支持长上下文和视觉'}</span><br>
             <strong>${window.t ? window.t('api.assistApiNote') : '注意：只有阿里支持自定义语音功能'}</strong><br>
             <strong>${window.t ? window.t('api.currentSuggestion') : '当前建议：'}</strong>${recommendation}
         `;

@@ -1,4 +1,6 @@
 // 全局窗口管理函数
+// 上次用户输入时间（毫秒级）
+let lastUserInputTime = 0;
 // 关闭所有已打开的设置窗口（弹窗）
 window.closeAllSettingsWindows = function () {
     // 关闭 app.js 中跟踪的窗口
@@ -246,6 +248,7 @@ function init_app() {
     let proactiveNewsChatEnabled = false;
     let proactiveVideoChatEnabled = false;
     let mergeMessagesEnabled = false;
+    let proactivePersonalChatEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
@@ -301,8 +304,37 @@ function init_app() {
         return { dataUrl, width: targetWidth, height: targetHeight };
     }
 
+    /**
+     * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
+     * 安全限制：仅当页面来自 localhost / 127.0.0.1 / 0.0.0.0 时才调用（确保后端与用户在同一台机器）。
+     * @returns {Promise<string|null>} JPEG dataUrl 或 null
+     */
+    async function fetchBackendScreenshot() {
+        const h = window.location.hostname;
+        if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
+            return null;
+        }
+        try {
+            const resp = await fetch('/api/screenshot');
+            if (!resp.ok) return null;
+            const json = await resp.json();
+            if (json.success && json.data) {
+                console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
+                return json.data;
+            }
+            return null;
+        } catch (e) {
+            console.warn('[截图] 后端截图请求失败:', e);
+            return null;
+        }
+    }
+
     // Focus模式为true时，AI播放语音时会自动静音麦克风（不允许打断）
     let focusModeEnabled = false;
+
+    // 动画设置：画质和帧率
+    let renderQuality = 'medium';   // 'low' | 'medium' | 'high'
+    let targetFrameRate = 60;       // 30 | 45 | 60
 
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
@@ -310,10 +342,13 @@ function init_app() {
     window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
     window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
     window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
+    window.proactivePersonalChatEnabled = proactivePersonalChatEnabled;
     window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
     window.proactiveChatInterval = proactiveChatInterval;
     window.proactiveVisionInterval = proactiveVisionInterval;
+    window.renderQuality = renderQuality;
+    window.targetFrameRate = targetFrameRate;
 
     // WebSocket心跳保活
     let heartbeatInterval = null;
@@ -441,6 +476,8 @@ function init_app() {
                     }
 
                     window._geminiTurnFullText = '';
+
+                    (async () => { await clearAudioQueue(); })();
 
                     const retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                     const failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
@@ -759,8 +796,8 @@ function init_app() {
                                 if (t && t.id) window._agentTaskMap.set(t.id, t);
                             });
                             const tasks = Array.from(window._agentTaskMap.values());
-                            if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
-                                window.live2dManager.updateAgentTaskHUD({
+                            if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                window.AgentHUD.updateAgentTaskHUD({
                                     success: true,
                                     tasks,
                                     total_count: tasks.length,
@@ -777,6 +814,7 @@ function init_app() {
                     const msg = typeof response.text === 'string' ? response.text : '';
                     if (msg) {
                         setFloatingAgentStatus(msg, response.status || 'completed');
+                        maybeShowAgentQuotaExceededModal(msg);
                     }
                 } else if (response.type === 'agent_task_update') {
                     try {
@@ -786,8 +824,8 @@ function init_app() {
                             window._agentTaskMap.set(task.id, task);
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
-                        if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
-                            window.live2dManager.updateAgentTaskHUD({
+                        if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                            window.AgentHUD.updateAgentTaskHUD({
                                 success: true,
                                 tasks,
                                 total_count: tasks.length,
@@ -798,9 +836,26 @@ function init_app() {
                                 timestamp: new Date().toISOString()
                             });
                         }
+                        if (task && task.status === 'failed') {
+                            const errMsg = task.error || task.reason || '';
+                            if (errMsg) {
+                                maybeShowAgentQuotaExceededModal(errMsg);
+                            }
+                        }
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
+                } else if (response.type === 'request_screenshot') {
+                    (async () => {
+                        try {
+                            const dataUrl = await captureProactiveChatScreenshot();
+                            if (dataUrl && socket && socket.readyState === WebSocket.OPEN) {
+                                socket.send(JSON.stringify({ action: 'screenshot_response', data: dataUrl }));
+                            }
+                        } catch (e) {
+                            console.warn('[App] request_screenshot capture failed:', e);
+                        }
+                    })();
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
@@ -895,11 +950,11 @@ function init_app() {
                     }
                 } else if (response.type === 'session_preparing') {
                     console.log(window.t('console.sessionPreparingReceived'), response.input_mode);
-                    // 显示持续性的准备中提示
-                    const preparingMessage = response.input_mode === 'text'
-                        ? (window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...')
-                        : (window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...');
-                    showVoicePreparingToast(preparingMessage);
+                    // 显示持续性的准备中提示（仅语音模式，文本模式用 statusToast 即可）
+                    if (response.input_mode !== 'text') {
+                        const preparingMessage = window.t ? window.t('app.voiceSystemPreparing') : '语音系统准备中，请稍候...';
+                        showVoicePreparingToast(preparingMessage);
+                    }
                 } else if (response.type === 'session_started') {
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     // 延迟 500ms 以确保准备中提示不会消失得太快
@@ -931,6 +986,21 @@ function init_app() {
                     // Reject Promise 让等待的代码能处理失败情况，避免 Promise 永远 pending
                     if (sessionStartedRejecter) {
                         sessionStartedRejecter(new Error(response.message || (window.t ? window.t('app.sessionFailed') : 'Session启动失败')));
+                    } else {
+                        // 兜底：如果 Promise 已被消费（超时或其他原因），直接重置 UI 状态
+                        micButton.classList.remove('active');
+                        micButton.classList.remove('recording');
+                        micButton.disabled = false;
+                        muteButton.disabled = true;
+                        screenButton.disabled = true;
+                        stopButton.disabled = true;
+                        resetSessionButton.disabled = false;
+                        syncFloatingMicButtonState(false);
+                        syncFloatingScreenButtonState(false);
+                        window.isMicStarting = false;
+                        isSwitchingMode = false;
+                        const _textInputArea = document.getElementById('text-input-area');
+                        if (_textInputArea) _textInputArea.classList.remove('hidden');
                     }
                     sessionStartedResolver = null;
                     sessionStartedRejecter = null;
@@ -1755,10 +1825,17 @@ function init_app() {
             const s = normalizeGeminiText(buffer);
             let start = 0;
 
+            const isPunctForBoundary = (ch) => {
+                return ch === '。' || ch === '！' || ch === '？' || ch === '!' || ch === '?' || ch === '.' || ch === '…';
+            };
+
             const isBoundary = (ch, next) => {
                 if (ch === '\n') return true;
+                // 连续标点只在最后一个标点处分段，避免 "！？"、"..." 被拆开
+                if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
                 if (ch === '。' || ch === '！' || ch === '？') return true;
                 if (ch === '!' || ch === '?') return true;
+                if (ch === '…') return true;
                 if (ch === '.') {
                     // 英文句点：尽量避免把小数/缩写切断，要求后面是空白/换行/结束/常见结束符
                     if (!next) return true;
@@ -2713,56 +2790,131 @@ function init_app() {
                                 }
                             });
                         } catch (captureErr) {
-                            // getUserMedia 失败（竞态：验证时存在但捕获时已消失）
-                            console.warn('[屏幕源] 指定源捕获失败，回退到全屏:', captureErr);
-                            selectedScreenSourceId = null;
-                            try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                            console.warn('[屏幕源] 指定源捕获失败，尝试回退:', captureErr);
+                            let fallbackSucceeded = false;
 
-                            // 尝试回退到全屏源
-                            const fallbackSources = await window.electronDesktopCapturer.getSources({
-                                types: ['screen'],
-                                thumbnailSize: { width: 1, height: 1 }
-                            });
-                            if (fallbackSources.length > 0) {
-                                screenCaptureStream = await navigator.mediaDevices.getUserMedia({
-                                    audio: false,
-                                    video: {
-                                        mandatory: {
-                                            chromeMediaSource: 'desktop',
-                                            chromeMediaSourceId: fallbackSources[0].id,
-                                            maxFrameRate: 1
-                                        }
-                                    }
+                            // 回退策略1: 尝试其他全屏源（chromeMediaSource 方式）
+                            try {
+                                const fallbackSources = await window.electronDesktopCapturer.getSources({
+                                    types: ['screen'],
+                                    thumbnailSize: { width: 1, height: 1 }
                                 });
-                                selectedScreenSourceId = fallbackSources[0].id;
-                                try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
-                                showStatusToast(
-                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
-                                    3000
-                                );
-                            } else {
-                                throw captureErr; // 全屏也拿不到，重新抛出让外层 catch 处理
+                                if (fallbackSources.length > 0) {
+                                    screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                        audio: false,
+                                        video: {
+                                            mandatory: {
+                                                chromeMediaSource: 'desktop',
+                                                chromeMediaSourceId: fallbackSources[0].id,
+                                                maxFrameRate: 1
+                                            }
+                                        }
+                                    });
+                                    selectedScreenSourceId = fallbackSources[0].id;
+                                    try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                    showStatusToast(
+                                        safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                        3000
+                                    );
+                                    fallbackSucceeded = true;
+                                }
+                            } catch (fallback1Err) {
+                                console.warn('[屏幕源] chromeMediaSource 全屏回退也失败:', fallback1Err);
+                            }
+
+                            // 回退策略2: chromeMediaSource 在该系统上完全不可用，降级到 getDisplayMedia
+                            if (!fallbackSucceeded) {
+                                try {
+                                    console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
+                                    screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                                        video: { cursor: 'always', frameRate: 1 },
+                                        audio: false,
+                                    });
+                                    selectedScreenSourceId = null;
+                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    fallbackSucceeded = true;
+                                } catch (fallback2Err) {
+                                    console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
+                                }
+                            }
+
+                            if (!fallbackSucceeded) {
+                                console.warn('[屏幕源] 所有前端流方式均失败，将尝试后端轮询兜底');
                             }
                         }
-                        console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
+                        if (screenCaptureStream) {
+                            console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
+                        }
                     } else {
                         // 使用标准的getDisplayMedia（显示系统选择器）
-                        screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
-                            video: {
-                                cursor: 'always',
-                                frameRate: 1,
-                            },
-                            audio: false,
-                        });
+                        try {
+                            screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                                video: {
+                                    cursor: 'always',
+                                    frameRate: 1,
+                                },
+                                audio: false,
+                            });
+                        } catch (displayErr) {
+                            // 用户主动取消则直接抛出，不兜底
+                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                            console.warn('[屏幕源] getDisplayMedia 失败，将尝试后端轮询兜底:', displayErr);
+                        }
                     }
                 }
             }
 
-            // 更新最后使用时间并调度闲置检查
-            screenCaptureStreamLastUsed = Date.now();
-            scheduleScreenCaptureIdleCheck();
+            if (screenCaptureStream) {
+                // 正常流模式
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
 
-            startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
+                startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
+
+                // 当用户停止共享屏幕时
+                screenCaptureStream.getVideoTracks()[0].onended = () => {
+                    stopScreening();
+                    screenButton.classList.remove('active');
+                    syncFloatingScreenButtonState(false);
+
+                    if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
+                        screenCaptureStream.getTracks().forEach(track => {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    }
+                    screenCaptureStream = null;
+                    screenCaptureStreamLastUsed = null;
+
+                    if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
+                        clearTimeout(screenCaptureStreamIdleTimer);
+                        screenCaptureStreamIdleTimer = null;
+                    }
+                };
+            } else {
+                // 回退策略3: 后端 pyautogui 轮询模式（所有前端流方式均失败）
+                const backendTest = await fetchBackendScreenshot();
+                if (!backendTest) {
+                    throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
+                }
+                console.log('[屏幕源] 进入后端 pyautogui 轮询模式');
+
+                // 立即发送第一帧
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: 'stream_data', data: backendTest, input_type: 'screen' }));
+                }
+
+                // 复用 videoSenderInterval，stopScreening() 可统一清理
+                videoSenderInterval = setInterval(async () => {
+                    try {
+                        const frame = await fetchBackendScreenshot();
+                        if (frame && socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({ action: 'stream_data', data: frame, input_type: 'screen' }));
+                        }
+                    } catch (e) {
+                        console.warn('[屏幕源] 后端轮询帧失败:', e);
+                    }
+                }, 1000);
+            }
 
             micButton.disabled = true;
             muteButton.disabled = false;
@@ -2770,57 +2922,35 @@ function init_app() {
             stopButton.disabled = false;
             resetSessionButton.disabled = false;
 
-            // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
             syncFloatingScreenButtonState(true);
 
-            // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
             try {
                 stopProactiveVisionDuringSpeech();
             } catch (e) {
                 console.warn(window.t('console.stopVoiceActiveVisionFailed'), e);
             }
 
-            // 当用户停止共享屏幕时
-            screenCaptureStream.getVideoTracks()[0].onended = () => {
-                stopScreening();
-                screenButton.classList.remove('active');
-                syncFloatingScreenButtonState(false);
-
-                // 停止所有 tracks 并清理引用
-                if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
-                    screenCaptureStream.getTracks().forEach(track => {
-                        try {
-                            track.stop();
-                        } catch (e) { }
-                    });
-                }
-                screenCaptureStream = null;
-                screenCaptureStreamLastUsed = null;
-
-                // 清除闲置定时器
-                if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
-                    clearTimeout(screenCaptureStreamIdleTimer);
-                    screenCaptureStreamIdleTimer = null;
-                }
-            };
-
-            // 获取麦克风流
             if (!isRecording) showStatusToast(window.t ? window.t('app.micNotOpen') : '没开麦啊喂！', 3000);
         } catch (err) {
             console.error(isMobile() ? window.t('console.cameraAccessFailed') : window.t('console.screenShareFailed'), err);
             console.error(window.t('console.startupFailed'), err);
             let hint = '';
+            const isDesktop = !isMobile();
             switch (err.name) {
                 case 'NotAllowedError':
-                    hint = '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
+                    hint = isDesktop
+                        ? '用户取消了屏幕共享，或系统未授予屏幕录制权限'
+                        : '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
                     break;
                 case 'NotFoundError':
-                    hint = '未检测到摄像头设备';
+                    hint = isDesktop ? '未检测到可用的屏幕源' : '未检测到摄像头设备';
                     break;
                 case 'NotReadableError':
                 case 'AbortError':
-                    hint = '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
+                    hint = isDesktop
+                        ? '屏幕捕获启动失败，可能与显卡驱动或系统权限有关，请尝试重启应用'
+                        : '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
                     break;
             }
             showStatusToast(`${err.name}: ${err.message}${hint ? `\n${hint}` : ''}`, 5000);
@@ -2921,9 +3051,9 @@ function init_app() {
         // 确保样式始终一致（每次更新时都重新设置）
         toast.style.cssText = `
             position: fixed;
-            top: 50%;
+            bottom: 18%;
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translateX(-50%);
             background-image: url('/static/icons/reminder_blue.png');
             background-size: 100% 100%;
             background-position: center;
@@ -2953,11 +3083,11 @@ function init_app() {
                 @keyframes voiceToastFadeIn {
                     from {
                         opacity: 0;
-                        transform: translate(-50%, -50%) scale(0.8);
+                        transform: translateX(-50%) scale(0.8);
                     }
                     to {
                         opacity: 1;
-                        transform: translate(-50%, -50%) scale(1);
+                        transform: translateX(-50%) scale(1);
                     }
                 }
                 @keyframes voiceToastPulse {
@@ -3023,9 +3153,9 @@ function init_app() {
         // 确保样式始终一致（和前两个弹窗一样的大小）
         toast.style.cssText = `
             position: fixed;
-            top: 50%;
+            bottom: 18%;
             left: 50%;
-            transform: translate(-50%, -50%);
+            transform: translateX(-50%);
             background-image: url('/static/icons/reminder_midori.png');
             background-size: 100% 100%;
             background-position: center;
@@ -3296,8 +3426,16 @@ function init_app() {
             // 隐藏准备提示
             hideVoicePreparingToast();
 
+            // 停止可能已启动的录音（startMicCapture 与 session 并行，可能已经开始）
+            stopRecording();
+
             // 失败时：移除激活状态（按钮变暗），恢复按钮（允许再次点击）
             micButton.classList.remove('active');
+            micButton.classList.remove('recording');
+
+            // 重置录音标志
+            isRecording = false;
+            window.isRecording = false;
 
             // 同步更新浮动按钮状态，确保浮动按钮也变灰
             syncFloatingMicButtonState(false);
@@ -3468,7 +3606,6 @@ function init_app() {
 
             // 显示准备中提示
             showStatusToast(window.t ? window.t('app.initializingText') : '正在初始化文本对话...', 3000);
-            showVoicePreparingToast(window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...');
 
             // 创建一个 Promise 来等待 session_started 消息（复用已有模式）
             const sessionStartPromise = new Promise((resolve, reject) => {
@@ -3784,55 +3921,68 @@ function init_app() {
         let captureStream = null;
 
         try {
-            // 临时禁用截图按钮，防止重复点击
             screenshotButton.disabled = true;
             showStatusToast(window.t ? window.t('app.capturing') : '正在截图...', 2000);
 
-            // 获取屏幕或摄像头流
+            let dataUrl = null;
+            let width = 0, height = 0;
+
             if (isMobile()) {
-                // 移动端使用摄像头
                 captureStream = await getMobileCameraStream();
             } else {
-                // API 兼容性检测（桌面端）
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-                    throw new Error('UNSUPPORTED_API');
+                // 桌面端：尝试 getDisplayMedia
+                try {
+                    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                        captureStream = await navigator.mediaDevices.getDisplayMedia({
+                            video: { cursor: 'always' },
+                            audio: false,
+                        });
+                    } else {
+                        throw new Error('UNSUPPORTED_API');
+                    }
+                } catch (displayErr) {
+                    // 用户取消不做兜底
+                    if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                    console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
+                    const backendDataUrl = await fetchBackendScreenshot();
+                    if (backendDataUrl) {
+                        dataUrl = backendDataUrl;
+                    } else {
+                        throw displayErr;
+                    }
                 }
-                // 桌面端使用屏幕共享
-                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        cursor: 'always',
-                    },
-                    audio: false,
-                });
             }
 
-            // 创建video元素来加载流
-            const video = document.createElement('video');
-            video.srcObject = captureStream;
-            video.autoplay = true;
-            video.muted = true;
+            // 如果通过流获取（前端路径），从流中提取帧
+            if (!dataUrl && captureStream) {
+                const video = document.createElement('video');
+                video.srcObject = captureStream;
+                video.autoplay = true;
+                video.muted = true;
+                await video.play();
+                const frame = captureCanvasFrame(video);
+                dataUrl = frame.dataUrl;
+                width = frame.width;
+                height = frame.height;
+                video.srcObject = null;
+                video.remove();
+            }
 
-            // 等待视频加载完成
-            await video.play();
+            if (!dataUrl) {
+                throw new Error('所有截图方式均失败');
+            }
 
-            // 使用统一的截图辅助函数进行截取
-            const { dataUrl, width, height } = captureCanvasFrame(video);
+            if (width && height) {
+                console.log(window.t('console.screenshotSuccess'), `${width}x${height}`);
+            }
 
-            // 清理 video 元素释放资源
-            video.srcObject = null;
-            video.remove();
-
-            console.log(window.t('console.screenshotSuccess'), `${width}x${height}`);
-
-            // 添加截图到待发送列表（不立即发送）
             addScreenshotToList(dataUrl);
-
             showStatusToast(window.t ? window.t('app.screenshotAdded') : '截图已添加，点击发送一起发送', 3000);
 
         } catch (err) {
             console.error(window.t('console.screenshotFailed'), err);
 
-            // 根据错误类型显示不同提示
             let errorMsg = window.t ? window.t('app.screenshotFailed') : '截图失败';
             if (err.message === 'UNSUPPORTED_API') {
                 errorMsg = window.t ? window.t('app.screenshotUnsupported') : '当前浏览器不支持屏幕截图功能';
@@ -3848,11 +3998,9 @@ function init_app() {
 
             showStatusToast(errorMsg, 5000);
         } finally {
-            // 确保流被正确关闭，防止资源泄漏
             if (captureStream instanceof MediaStream) {
                 captureStream.getTracks().forEach(track => track.stop());
             }
-            // 重新启用截图按钮
             screenshotButton.disabled = false;
         }
     });
@@ -4216,10 +4364,10 @@ function init_app() {
             workletNode = null;
         }
 
-        // 通知服务器结束会话
+        // 通知服务器暂停会话
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
-                action: 'end_session'
+                action: 'pause_session'
             }));
         }
         // statusElement.textContent = '录制已停止';
@@ -4804,20 +4952,19 @@ function init_app() {
                     console.log('[showCurrentModel] 创建后VRM浮动按钮存在:', !!vrmFloatingButtons);
                 }
 
-                // 显示VRM浮动按钮（与 showLive2d 保持一致的处理方式）
+                // VRM 浮动按钮交给 vrm-ui-buttons 内部显隐逻辑管理（避免强制常显）
                 if (vrmFloatingButtons) {
-                    vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
-                    vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
-                    vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
+                    vrmFloatingButtons.style.removeProperty('display');
+                    vrmFloatingButtons.style.removeProperty('visibility');
+                    vrmFloatingButtons.style.removeProperty('opacity');
                 }
 
-                //  显示VRM锁图标（与 showLive2d 保持一致的处理方式）
+                // VRM 锁图标同样交给 vrm-ui-buttons 自主判定显示
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
                     vrmLockIcon.style.removeProperty('display');
                     vrmLockIcon.style.removeProperty('visibility');
                     vrmLockIcon.style.removeProperty('opacity');
-                    vrmLockIcon.style.display = 'block';
                 }
 
                 // 设置VRM解锁状态（统一使用 core.setLocked API）
@@ -4898,31 +5045,27 @@ function init_app() {
 
     // 连接浮动按钮到原有功能
 
-    // 麦克风按钮（toggle模式）
-    // 麦克风按钮（toggle模式）
+    // 麦克风按钮（toggle模式） — Live2D / VRM 浮动按钮共用
     window.addEventListener('live2d-mic-toggle', async (e) => {
         if (e.detail.active) {
-            // 想要开启语音：如果已经在录音，直接返回
             if (window.isRecording) {
                 return;
             }
-            // 开始语音
+            // 如果没有活跃的语音会话，走完整的 session 启动流程（与主面板按钮一致）
+            if (!micButton.classList.contains('active')) {
+                micButton.click();
+                return;
+            }
+            // 会话已建立（按钮 active），仅恢复麦克风采集（mute → unmute）
             if (typeof startMicCapture === 'function') {
                 await startMicCapture();
-            } else {
-                console.error('startMicCapture function not found');
             }
         } else {
-            // 想要关闭语音
-            // 如果已经停止录音，直接返回
             if (!window.isRecording) {
                 return;
             }
-            // 关闭语音
             if (typeof stopMicCapture === 'function') {
                 await stopMicCapture();
-            } else {
-                console.error('stopMicCapture function not found');
             }
         }
     });
@@ -5331,7 +5474,7 @@ function init_app() {
         // 恢复VRM的锁图标
         const vrmLockIcon = document.getElementById('vrm-lock-icon');
         if (vrmLockIcon) {
-            vrmLockIcon.style.display = 'block';
+            vrmLockIcon.style.removeProperty('display');
             vrmLockIcon.style.removeProperty('visibility');
             vrmLockIcon.style.removeProperty('opacity');
         }
@@ -5381,18 +5524,13 @@ function init_app() {
             console.log('[App] 已恢复所有Live2D弹窗的交互能力，数量:', allLive2dPopups.length);
         }
 
-        // 恢复VRM的浮动按钮系统（使用 !important 强制显示，覆盖之前的隐藏样式）
+        // 恢复VRM浮动按钮系统：仅清理强制隐藏样式，不强制设为常显
         const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
         if (vrmFloatingButtons) {
             // 先清除所有可能的隐藏样式
             vrmFloatingButtons.style.removeProperty('display');
             vrmFloatingButtons.style.removeProperty('visibility');
             vrmFloatingButtons.style.removeProperty('opacity');
-
-            // 使用 !important 强制显示，确保覆盖之前的隐藏样式（与Live2D保持一致）
-            vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
-            vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
-            vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
 
             // 恢复所有按钮的显示状态
             if (window.vrmManager && window.vrmManager._floatingButtons) {
@@ -6089,27 +6227,64 @@ function init_app() {
 
     // 浮动Agent status更新函数
     function setFloatingAgentStatus(msg, taskStatus) {
-        const statusEl = document.getElementById('live2d-agent-status');
-        if (statusEl) {
-            statusEl.textContent = msg || '';
-            // Apply status-specific color for task result notifications
-            const colorMap = {
-                completed: '#52c41a',  // green
-                partial: '#faad14',  // amber
-                failed: '#ff4d4f',  // red
-            };
-            if (taskStatus && colorMap[taskStatus]) {
-                statusEl.style.color = colorMap[taskStatus];
-                // Auto-reset to theme blue after 6 seconds
-                clearTimeout(statusEl._statusResetTimer);
-                statusEl._statusResetTimer = setTimeout(() => {
-                    statusEl.style.color = '#44b7fe';
-                }, 6000);
-            } else {
-                clearTimeout(statusEl._statusResetTimer);
-                statusEl.style.color = '#44b7fe';
+        ['live2d-agent-status', 'vrm-agent-status'].forEach(id => {
+            const statusEl = document.getElementById(id);
+            if (statusEl) {
+                statusEl.textContent = msg || '';
+                // Apply status-specific color for task result notifications
+                const colorMap = {
+                    completed: '#52c41a',  // green
+                    partial: '#faad14',  // amber
+                    failed: '#ff4d4f',  // red
+                };
+                if (taskStatus && colorMap[taskStatus]) {
+                    statusEl.style.color = colorMap[taskStatus];
+                    // Auto-reset to theme blue after 6 seconds
+                    clearTimeout(statusEl._statusResetTimer);
+                    statusEl._statusResetTimer = setTimeout(() => {
+                        statusEl.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+                    }, 6000);
+                } else {
+                    clearTimeout(statusEl._statusResetTimer);
+                    statusEl.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+                }
             }
-        }
+        });
+    }
+
+    let _agentQuotaModalOpen = false;
+    let _agentQuotaModalCooldownUntil = 0;
+
+    function _isAgentQuotaExceededMessage(text) {
+        if (!text) return false;
+        const s = String(text).toLowerCase();
+        return (
+            s.includes('免费 agent 模型今日试用次数已达上限') ||
+            s.includes('agent quota exceeded') ||
+            (s.includes('agent') && s.includes('上限') && s.includes('试用'))
+        );
+    }
+
+    function maybeShowAgentQuotaExceededModal(rawMessage) {
+        if (!_isAgentQuotaExceededMessage(rawMessage)) return;
+        if (typeof window.showAlert !== 'function') return;
+
+        const now = Date.now();
+        if (_agentQuotaModalOpen || now < _agentQuotaModalCooldownUntil) return;
+
+        _agentQuotaModalOpen = true;
+        _agentQuotaModalCooldownUntil = now + 3000;
+
+        const title = window.t ? window.t('common.alert') : '提示';
+        const msg = window.t
+            ? window.t('agent.quotaExceeded', { limit: 300 })
+            : '免费 Agent 模型今日试用次数已达上限（300次），请明日再试。';
+
+        Promise.resolve(window.showAlert(msg, title))
+            .catch(() => { /* ignore */ })
+            .finally(() => {
+                _agentQuotaModalOpen = false;
+            });
     }
 
     // 检查Agent服务器健康状态
@@ -6133,7 +6308,6 @@ function init_app() {
     async function checkCapability(kind, showError = true) {
         const apis = {
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
-            mcp: { url: '/api/agent/mcp/availability', nameKey: 'mcpTools' },
             user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' }
         };
         const config = apis[kind];
@@ -6398,6 +6572,7 @@ function init_app() {
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
+                        const flagsResult = await r.json();
 
                         if (isExpired()) {
                             console.log('[App] flags API 完成后操作已过期');
@@ -6917,10 +7092,11 @@ function init_app() {
 
     // 启动任务状态轮询
     window.startAgentTaskPolling = function () {
-        // Always attempt to show HUD (live2dManager may have loaded since last call)
-        if (window.live2dManager) {
-            window.live2dManager.createAgentTaskHUD();
-            window.live2dManager.showAgentTaskHUD();
+        console.trace('[App] startAgentTaskPolling');
+        // Always attempt to show HUD
+        if (window.AgentHUD && window.AgentHUD.createAgentTaskHUD) {
+            window.AgentHUD.createAgentTaskHUD();
+            window.AgentHUD.showAgentTaskHUD();
         }
 
         if (agentTaskPollingInterval) return;
@@ -6936,6 +7112,7 @@ function init_app() {
     // 停止任务状态轮询
     window.stopAgentTaskPolling = function () {
         console.log('[App] 停止 Agent 任务状态轮询');
+        console.trace('[App] stopAgentTaskPolling caller trace');
 
         if (agentTaskPollingInterval) {
             if (typeof agentTaskPollingInterval !== 'boolean') {
@@ -6950,8 +7127,8 @@ function init_app() {
         }
 
         // 隐藏 HUD
-        if (window.live2dManager) {
-            window.live2dManager.hideAgentTaskHUD();
+        if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
+            window.AgentHUD.hideAgentTaskHUD();
         }
     };
 
@@ -6981,57 +7158,106 @@ function init_app() {
     }
 
     function checkAndToggleTaskHUD() {
-        // DOM checkboxes (may not exist or may not be synced yet)
-        const masterCheckbox = document.getElementById('live2d-agent-master');
-        const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const browserCheckbox = document.getElementById('live2d-agent-browser');
+        const getEl = (ids) => {
+            for (let id of ids) {
+                const el = document.getElementById(id);
+                if (el) return el;
+            }
+            return null;
+        };
 
-        const userPlugin = document.getElementById('live2d-agent-user-plugin');
+        const masterCheckbox = getEl(['live2d-agent-master', 'vrm-agent-master']);
+        const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+        const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+        const userPlugin = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-        const domMaster = masterCheckbox && masterCheckbox.checked;
+        // Extract DOM states
+        const domMaster = masterCheckbox ? masterCheckbox.checked : false;
         const domChild = (keyboardCheckbox && keyboardCheckbox.checked)
             || (browserCheckbox && browserCheckbox.checked)
-
             || (userPlugin && userPlugin.checked);
 
-        // Cached flags from backend (always the source of truth)
-        const flags = window.agentStateMachine && window.agentStateMachine._cachedFlags;
-        const flagMaster = flags && !!flags.agent_enabled;
-        const flagChild = flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
+        // Extract backend/cached state
+        const snap = window._agentStatusSnapshot; 
+        const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
+        
+        // We prefer snapshot flags if they exist and are populated, else fallback to machine cached flags
+        const flags = (snap && snap.flags && Object.keys(snap.flags).length > 0) ? snap.flags : machineFlags;
 
-        if ((domMaster && domChild) || (flagMaster && flagChild)) {
+        // Extract optimistic state from agent_ui_v2 if available
+        let optMaster = undefined;
+        let optChild = undefined;
+        if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
+             const opt = window.agent_ui_v2_state.optimistic;
+             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
+             if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
+                 optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
+             }
+        }
+
+        let isMasterOn = false;
+        let isChildOn = false;
+
+        // Is the UI fully interactive? If masterCheckbox is missing or disabled, it usually means we are loading/syncing
+        const isUiInteractive = masterCheckbox && !masterCheckbox.disabled;
+
+        if (!isUiInteractive) {
+            // UI is loading, trust optimistic state first, then backend flags
+            isMasterOn = optMaster !== undefined ? optMaster : (flags && !!flags.agent_enabled);
+            isChildOn = optChild !== undefined ? optChild : (flags && !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled));
+        } else {
+            // UI is interactive. We strictly trust the explicit DOM state, plus any optimistic overrides.
+            isMasterOn = optMaster !== undefined ? optMaster : domMaster;
+            isChildOn = optChild !== undefined ? optChild : domChild;
+        }
+
+        if (isMasterOn && isChildOn) {
+            console.log('[DEBUG HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.startAgentTaskPolling();
         } else {
+            console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.stopAgentTaskPolling();
         }
     }
+
 
     // 暴露给其他模块使用
     window.checkAndToggleTaskHUD = checkAndToggleTaskHUD;
 
     // 监听 Agent 子开关变化来控制 HUD 显示
     window.addEventListener('live2d-floating-buttons-ready', () => {
-        // 延迟确保元素已创建
-        setTimeout(() => {
-            const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-            const browserCheckbox = document.getElementById('live2d-agent-browser');
+        // 等待 agent_ui_v2 初始化或者直接靠 DOM
+        const bindHUD = () => {
+            const getEl = (ids) => {
+                for (let id of ids) {
+                    const el = document.getElementById(id);
+                    if (el) return el;
+                }
+                return null;
+            };
 
-            const userPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
+            const keyboardCheckbox = getEl(['live2d-agent-keyboard', 'vrm-agent-keyboard']);
+            const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
+            const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-            if (keyboardCheckbox) {
-                keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            if (!keyboardCheckbox || !browserCheckbox) {
+                // 如果还不存在，稍后再试（应对动态创建的情况，比如 VRM 模式下的懒加载 popup）
+                setTimeout(bindHUD, 500);
+                return;
             }
-            if (browserCheckbox) {
-                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            }
 
+            keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            // Retry HUD show: snapshot may have enabled agent before live2dManager was ready
+            
             checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
-        }, 100);
+        };
+        
+        // 由于不同模型(Live2D/VRM)构建 popup DOM 的时机不同，这里采用递归轮询直到元素出现为止
+        setTimeout(bindHUD, 100);
     });
     // Agent 任务 HUD 轮询逻辑结束
 
@@ -7912,12 +8138,13 @@ function init_app() {
         proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
         proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
         proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+        proactivePersonalChatEnabled = typeof window.proactivePersonalChatEnabled !== 'undefined' ? window.proactivePersonalChatEnabled : proactivePersonalChatEnabled;
     }
 
     // 检查是否有任何搭话方式被选中
     function hasAnyChatModeEnabled() {
         syncProactiveFlags();
-        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled;
+        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled || proactivePersonalChatEnabled;
     }
 
     // 检查主动搭话前置条件是否满足
@@ -7930,13 +8157,18 @@ function init_app() {
         }
 
         // 必须选择至少一种搭话方式
-        if (!proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+        if (!proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled && !proactivePersonalChatEnabled) {
             return false;
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
-        if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+        if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled && !proactivePersonalChatEnabled) {
             return proactiveVisionEnabled;
+        }
+
+        // 如果只选择了个人动态搭话，需要同时开启个人动态
+        if (!proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled && proactivePersonalChatEnabled) {
+            return proactivePersonalChatEnabled;
         }
 
         return true;
@@ -8008,6 +8240,29 @@ function init_app() {
         }, delay);
     }
 
+    // 获取个人媒体cookies所有可用平台的函数
+    async function getAvailablePersonalPlatforms() {
+        try {
+            const response = await fetch('/api/auth/cookies/status');
+            if (!response.ok) return [];
+            
+            const result = await response.json();
+            let availablePlatforms = [];
+            
+            if (result.success && result.data) {
+                for (const [platform, info] of Object.entries(result.data)) {
+                    if (platform !== 'platforms' && info.has_cookies) {
+                        availablePlatforms.push(platform);
+                    }
+                }
+            }
+            return availablePlatforms;
+        } catch (error) {
+            console.error('获取可用平台列表失败:', error);
+            return [];
+        }
+    }
+
     async function triggerProactiveChat() {
         try {
             syncProactiveFlags();
@@ -8030,6 +8285,21 @@ function init_app() {
             // 视频搭话：使用B站首页视频
             if (proactiveVideoChatEnabled && proactiveChatEnabled) {
                 availableModes.push('video');
+            }
+
+            // 个人动态搭话：使用B站和微博个人动态
+            if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                // 检查是否有可用的 Cookie 凭证
+                const platforms = await getAvailablePersonalPlatforms();
+                    if (platforms.length > 0) {
+                        availableModes.push('personal');
+                        console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
+                    } else {
+                        // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
+                        console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
+                    }
+                }
             }
 
             // 如果没有选择任何搭话方式，跳过本次搭话
@@ -8083,6 +8353,11 @@ function init_app() {
                 if (proactiveVideoChatEnabled && proactiveChatEnabled) {
                     latestModes.push('video');
                 }
+                // 个人动态搭话：需要同时开启个人动态
+                if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                    latestModes.push('personal');
+                }
+                
                 availableModes = availableModes.filter(m => latestModes.includes(m));
                 requestBody.enabled_modes = availableModes;
                 if (availableModes.length === 0) {
@@ -8127,6 +8402,13 @@ function init_app() {
                 return;
             }
 
+            // 检测用户是否在20秒内有过输入，有过输入则作废本次主动搭话
+            const timeSinceLastInput = Date.now() - lastUserInputTime;
+            if (timeSinceLastInput < 20000) {
+                console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
+                return;
+            }
+
             const response = await fetch('/api/proactive_chat', {
                 method: 'POST',
                 headers: {
@@ -8139,13 +8421,6 @@ function init_app() {
 
             if (result.success) {
                 if (result.action === 'chat') {
-                    // 检测用户是否在20秒内有过输入
-                    const timeSinceLastInput = Date.now() - lastUserInputTime;
-                    if (timeSinceLastInput < 20000) {
-                        console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
-                        return;
-                    }
-
                     console.log('主动搭话已发送:', result.message, result.source_mode ? `(来源: ${result.source_mode})` : '');
 
                     // 如果有 source_links，延迟后在聊天中显示可点击链接（旁路，不进入 AI 记忆）
@@ -8192,6 +8467,16 @@ function init_app() {
 
             if (validLinks.length === 0) return;
 
+            // 超过 3 个旧卡片时，移除最早的
+            const MAX_LINK_CARDS = 3;
+            const existingCards = chatContent.querySelectorAll('.proactive-source-link-card');
+            const overflow = existingCards.length - MAX_LINK_CARDS + 1;
+            if (overflow > 0) {
+                for (let i = 0; i < overflow; i++) {
+                    existingCards[i].remove();
+                }
+            }
+
             const linkCard = document.createElement('div');
             linkCard.className = 'proactive-source-link-card';
             linkCard.style.cssText = `
@@ -8204,34 +8489,76 @@ function init_app() {
                 opacity: 0;
                 transition: opacity 0.4s ease;
                 max-width: 320px;
+                position: relative;
             `;
+
+            const closeBtn = document.createElement('span');
+            closeBtn.textContent = '✕';
+            closeBtn.style.cssText = `
+                position: absolute;
+                top: 6px;
+                right: 6px;
+                cursor: pointer;
+                color: var(--text-secondary, rgba(200,200,200,0.8));
+                font-size: 14px;
+                font-weight: bold;
+                line-height: 1;
+                width: 20px;
+                height: 20px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                background: rgba(255,255,255,0.08);
+                transition: color 0.2s, background 0.2s;
+                z-index: 1;
+            `;
+            closeBtn.addEventListener('mouseenter', () => {
+                closeBtn.style.color = '#fff';
+                closeBtn.style.background = 'rgba(255,255,255,0.2)';
+            });
+            closeBtn.addEventListener('mouseleave', () => {
+                closeBtn.style.color = 'var(--text-secondary, rgba(200,200,200,0.8))';
+                closeBtn.style.background = 'rgba(255,255,255,0.08)';
+            });
+            closeBtn.addEventListener('click', () => {
+                linkCard.style.opacity = '0';
+                setTimeout(() => { linkCard.remove(); }, 300);
+            });
+            linkCard.appendChild(closeBtn);
 
             for (const link of validLinks) {
                 const a = document.createElement('a');
                 a.href = link.safeUrl;
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
                 a.textContent = `🔗 ${link.source ? `[${link.source}] ` : ''}${link.title || link.url}`;
                 a.style.cssText = `
                     display: block;
                     color: var(--accent-color, #6c8cff);
                     text-decoration: none;
                     padding: 3px 0;
+                    padding-right: 20px;
                     word-break: break-all;
                     font-size: 12px;
+                    cursor: pointer;
                 `;
                 a.addEventListener('mouseenter', () => { a.style.textDecoration = 'underline'; });
                 a.addEventListener('mouseleave', () => { a.style.textDecoration = 'none'; });
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (window.electronShell && window.electronShell.openExternal) {
+                        window.electronShell.openExternal(link.safeUrl);
+                    } else {
+                        window.open(link.safeUrl, '_blank', 'noopener,noreferrer');
+                    }
+                });
                 linkCard.appendChild(a);
             }
 
             chatContent.appendChild(linkCard);
             chatContent.scrollTop = chatContent.scrollHeight;
 
-            // 淡入
             requestAnimationFrame(() => { linkCard.style.opacity = '1'; });
 
-            // 5 分钟后自动移除
             setTimeout(() => {
                 linkCard.style.opacity = '0';
                 setTimeout(() => { linkCard.remove(); }, 500);
@@ -8250,7 +8577,7 @@ function init_app() {
         scheduleProactiveChat();
     }
 
-    // 发送单帧屏幕数据（优先使用已存在的 screenCaptureStream，否则临时调用 getDisplayMedia）
+    // 发送单帧屏幕数据（优先已存在的 screenCaptureStream → captureProactiveChatScreenshot → 后端兜底）
     async function sendOneProactiveVisionFrame() {
         try {
             if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -8259,7 +8586,6 @@ function init_app() {
             let usedCachedStream = false;
 
             if (screenCaptureStream) {
-                // 刷新最后使用时间并确保闲置检查器在运行
                 screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
                 usedCachedStream = true;
@@ -8275,11 +8601,12 @@ function init_app() {
                 }
                 const frame = captureCanvasFrame(video, 0.8);
                 dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
-                // 清理 video 元素释放资源
                 video.srcObject = null;
                 video.remove();
-            } else {
-                // 临时调用捕获函数（会弹出授权），函数内部会关闭流
+            }
+
+            // 如果缓存流提取帧失败，或无缓存流，走 captureProactiveChatScreenshot（内含后端兜底）
+            if (!dataUrl) {
                 dataUrl = await captureProactiveChatScreenshot();
             }
 
@@ -8376,53 +8703,47 @@ function init_app() {
         }
     }
 
-    // 主动搭话截图函数
+    // 主动搭话截图函数（前端 getDisplayMedia → 后端 pyautogui 兜底）
     async function captureProactiveChatScreenshot() {
-        // API 兼容性检测
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-            console.warn('主动搭话截图失败：当前浏览器不支持 getDisplayMedia API');
-            return null;
-        }
+        // 策略1: 前端 getDisplayMedia
+        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+            let captureStream = null;
+            try {
+                captureStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always' },
+                    audio: false,
+                });
 
-        let captureStream = null;
+                const video = document.createElement('video');
+                video.srcObject = captureStream;
+                video.autoplay = true;
+                video.muted = true;
+                await video.play();
 
-        try {
-            // 使用屏幕共享API进行截图
-            captureStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    cursor: 'always',
-                },
-                audio: false,
-            });
+                const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
+                video.srcObject = null;
+                video.remove();
 
-            // 创建video元素来加载流
-            const video = document.createElement('video');
-            video.srcObject = captureStream;
-            video.autoplay = true;
-            video.muted = true;
-
-            // 等待视频加载完成
-            await video.play();
-
-            // 使用统一的截图辅助函数进行截取（使用0.85质量）
-            const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
-
-            // 清理 video 元素释放资源
-            video.srcObject = null;
-            video.remove();
-
-            console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
-            return dataUrl;
-
-        } catch (err) {
-            console.error('主动搭话截图失败:', err);
-            return null;
-        } finally {
-            // 确保流被正确关闭，防止资源泄漏
-            if (captureStream) {
-                captureStream.getTracks().forEach(track => track.stop());
+                console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
+                return dataUrl;
+            } catch (err) {
+                console.warn('[主动搭话截图] getDisplayMedia 失败，尝试后端兜底:', err);
+            } finally {
+                if (captureStream) {
+                    captureStream.getTracks().forEach(track => track.stop());
+                }
             }
         }
+
+        // 策略2: 后端 pyautogui 兜底
+        const backendDataUrl = await fetchBackendScreenshot();
+        if (backendDataUrl) {
+            console.log('[主动搭话截图] 后端兜底截图成功');
+            return backendDataUrl;
+        }
+
+        console.warn('[主动搭话截图] 所有截图方式均失败');
+        return null;
     }
 
     // 暴露函数到全局作用域，供 live2d.js 调用
@@ -8461,6 +8782,15 @@ function init_app() {
         const currentProactiveVisionInterval = typeof window.proactiveVisionInterval !== 'undefined'
             ? window.proactiveVisionInterval
             : proactiveVisionInterval;
+        const currentPersonalChat = typeof window.proactivePersonalChatEnabled !== 'undefined'
+            ? window.proactivePersonalChatEnabled
+            : proactivePersonalChatEnabled;
+        const currentRenderQuality = typeof window.renderQuality !== 'undefined'
+            ? window.renderQuality
+            : renderQuality;
+        const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
+            ? window.targetFrameRate
+            : targetFrameRate;
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -8471,7 +8801,10 @@ function init_app() {
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             proactiveChatInterval: currentProactiveChatInterval,
-            proactiveVisionInterval: currentProactiveVisionInterval
+            proactiveVisionInterval: currentProactiveVisionInterval,
+            proactivePersonalChatEnabled: currentPersonalChat,
+            renderQuality: currentRenderQuality,
+            targetFrameRate: currentTargetFrameRate
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
 
@@ -8485,10 +8818,23 @@ function init_app() {
         focusModeEnabled = currentFocus;
         proactiveChatInterval = currentProactiveChatInterval;
         proactiveVisionInterval = currentProactiveVisionInterval;
+        proactivePersonalChatEnabled = currentPersonalChat;
+        renderQuality = currentRenderQuality;
+        targetFrameRate = currentTargetFrameRate;
     }
 
     // 暴露到全局作用域，供 live2d.js 等其他模块调用
     window.saveNEKOSettings = saveSettings;
+
+    function _isUserRegionChina() {
+        try {
+            const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone || '').toLowerCase();
+            if (/^asia\/(shanghai|chongqing|urumqi|harbin|kashgar)$/.test(tz)) return true;
+            const lang = (navigator.language || '').toLowerCase();
+            if (lang === 'zh' || lang.startsWith('zh-cn') || lang.startsWith('zh-hans')) return true;
+        } catch (_) {}
+        return false;
+    }
 
     // 从localStorage加载设置
     function loadSettings() {
@@ -8503,7 +8849,8 @@ function init_app() {
                 if (settings.proactiveChatEnabled === true) {
                     const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
                         settings.proactiveNewsChatEnabled !== undefined ||
-                        settings.proactiveVideoChatEnabled !== undefined;
+                        settings.proactiveVideoChatEnabled !== undefined ||
+                        settings.proactivePersonalChatEnabled !== undefined;
                     if (!hasNewFlags) {
                         // 根据旧的视觉偏好决定迁移策略
                         if (settings.proactiveVisionEnabled === false) {
@@ -8511,11 +8858,13 @@ function init_app() {
                             settings.proactiveVisionEnabled = false;
                             settings.proactiveVisionChatEnabled = false;
                             settings.proactiveNewsChatEnabled = true;
+                            settings.proactivePersonalChatEnabled = false;
                             console.log('迁移旧版设置：保留禁用的视觉偏好，已启用新闻搭话');
                         } else {
                             // 视觉偏好为 true 或 undefined，默认启用视觉搭话
                             settings.proactiveVisionEnabled = true;
                             settings.proactiveVisionChatEnabled = true;
+                            settings.proactivePersonalChatEnabled = false;
                             console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
                         }
                         needsSave = true;
@@ -8542,6 +8891,9 @@ function init_app() {
                 // 视频搭话：从localStorage加载设置
                 proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
                 window.proactiveVideoChatEnabled = proactiveVideoChatEnabled; // 同步到全局
+                // 个人动态搭话：从localStorage加载设置
+                proactivePersonalChatEnabled = settings.proactivePersonalChatEnabled ?? false;
+                window.proactivePersonalChatEnabled = proactivePersonalChatEnabled; // 同步到全局
                 // 合并消息：从localStorage加载设置
                 mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
@@ -8554,6 +8906,12 @@ function init_app() {
                 // 主动视觉时间间隔：从localStorage加载设置
                 proactiveVisionInterval = settings.proactiveVisionInterval ?? DEFAULT_PROACTIVE_VISION_INTERVAL;
                 window.proactiveVisionInterval = proactiveVisionInterval; // 同步到全局
+                // 画质设置
+                renderQuality = settings.renderQuality ?? 'medium';
+                window.renderQuality = renderQuality;
+                // 帧率设置
+                targetFrameRate = settings.targetFrameRate ?? 60;
+                window.targetFrameRate = targetFrameRate;
 
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
@@ -8561,6 +8919,7 @@ function init_app() {
                     proactiveVisionChatEnabled: proactiveVisionChatEnabled,
                     proactiveNewsChatEnabled: proactiveNewsChatEnabled,
                     proactiveVideoChatEnabled: proactiveVideoChatEnabled,
+                    proactivePersonalChatEnabled: proactivePersonalChatEnabled,
                     mergeMessagesEnabled: mergeMessagesEnabled,
                     focusModeEnabled: focusModeEnabled,
                     proactiveChatInterval: proactiveChatInterval,
@@ -8568,17 +8927,28 @@ function init_app() {
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 如果没有保存的设置，也要确保全局变量被初始化
+                // 首次启动：检查用户地区，中国用户自动开启自主视觉
+                if (_isUserRegionChina()) {
+                    proactiveVisionEnabled = true;
+                    console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
+                }
+
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
                 window.proactiveVisionEnabled = proactiveVisionEnabled;
                 window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
                 window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
                 window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
+                window.proactivePersonalChatEnabled = proactivePersonalChatEnabled;
                 window.mergeMessagesEnabled = mergeMessagesEnabled;
                 window.focusModeEnabled = focusModeEnabled;
                 window.proactiveChatInterval = proactiveChatInterval;
                 window.proactiveVisionInterval = proactiveVisionInterval;
+                window.renderQuality = renderQuality;
+                window.targetFrameRate = targetFrameRate;
+
+                // 持久化首次启动设置，避免每次重新检测
+                saveSettings();
             }
         } catch (error) {
             console.error('加载设置失败:', error);
@@ -8588,10 +8958,13 @@ function init_app() {
             window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
             window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
             window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
+            window.proactivePersonalChatEnabled = proactivePersonalChatEnabled;
             window.mergeMessagesEnabled = mergeMessagesEnabled;
             window.focusModeEnabled = focusModeEnabled;
             window.proactiveChatInterval = proactiveChatInterval;
             window.proactiveVisionInterval = proactiveVisionInterval;
+            window.renderQuality = renderQuality;
+            window.targetFrameRate = targetFrameRate;
         }
     }
 
@@ -8605,7 +8978,7 @@ function init_app() {
     loadSpeakerVolumeSetting();
 
     // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-    if (proactiveChatEnabled && (proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled)) {
+    if (proactiveChatEnabled && (proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled || proactivePersonalChatEnabled)) {
         scheduleProactiveChat();
     }
 
@@ -9215,9 +9588,9 @@ function init_app() {
                     const vrmButtons = document.getElementById('vrm-floating-buttons');
                     console.log('[猫娘切换] VRM按钮检查 - 存在:', !!vrmButtons);
                     if (vrmButtons) {
-                        vrmButtons.style.setProperty('display', 'flex', 'important');
-                        vrmButtons.style.visibility = 'visible';
-                        vrmButtons.style.opacity = '1';
+                        vrmButtons.style.removeProperty('display');
+                        vrmButtons.style.removeProperty('visibility');
+                        vrmButtons.style.removeProperty('opacity');
                         console.log('[猫娘切换] VRM按钮已设置为可见');
                     } else {
                         console.warn('[猫娘切换] ⚠️ VRM浮动按钮不存在，尝试重新创建');

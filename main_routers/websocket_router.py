@@ -11,8 +11,8 @@ Handles WebSocket endpoints including:
 import json
 import uuid
 import asyncio
-import logging
 
+from utils.logger_config import get_module_logger
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .shared_state import (
@@ -22,7 +22,7 @@ from .shared_state import (
 )
 
 router = APIRouter(tags=["websocket"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # Lock for session management
 _lock = asyncio.Lock()
@@ -114,6 +114,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
                 asyncio.create_task(session_manager[lanlan_name].end_session())
+
+            elif action == "screenshot_response":
+                raw = message.get("data", "")
+                b64 = raw.split(",", 1)[1] if "," in raw else raw
+                session_manager[lanlan_name].resolve_screenshot_request(b64)
 
             elif action == "ping":
                 # 心跳保活消息，回复pong

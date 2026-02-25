@@ -236,7 +236,10 @@ class CursorFollowController {
             this._hasPointerInput = true;
         };
 
-        document.addEventListener('pointermove', this._onPointerMove, { passive: true });
+        // 同时监听 pointermove + mousemove，绑定到 window（非 document）
+        // Electron 透明窗口事件转发可能只产生 mousemove；window 级别确保转发事件可达
+        window.addEventListener('pointermove', this._onPointerMove, { passive: true });
+        window.addEventListener('mousemove', this._onPointerMove, { passive: true });
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -553,9 +556,10 @@ class CursorFollowController {
     //  销毁
     // ════════════════════════════════════════════════════════════════
     destroy() {
-        // 移除事件监听
+        // 移除事件监听（与 _bindEvents 对称）
         if (this._onPointerMove) {
-            document.removeEventListener('pointermove', this._onPointerMove);
+            window.removeEventListener('pointermove', this._onPointerMove);
+            window.removeEventListener('mousemove', this._onPointerMove);
             this._onPointerMove = null;
         }
 

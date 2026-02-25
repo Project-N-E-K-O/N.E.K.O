@@ -1,11 +1,8 @@
 import base64
 import wave
 import io
-from openai import OpenAI
 # from config import QWEN_OMNI_URL
-import copy
 # from funasr import AutoModel
-import numpy as np
 #########
 
 def make_wav_header(data_length, sample_rate, num_channels, sample_width):

@@ -1,7 +1,5 @@
 # from langchain_chroma import Chroma
 # ↑ 这个库引入了Chroma和onnx依赖，显著增大了一键包体积，暂时注释掉
-from typing import List
-from langchain_core.documents import Document
 from datetime import datetime
 from memory.recent import CompressedRecentHistoryManager
 from config import SEMANTIC_MODEL, RERANKER_MODEL, get_extra_body

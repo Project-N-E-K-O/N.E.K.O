@@ -12,16 +12,16 @@ import asyncio
 import time
 import pickle
 import aiohttp
-import logging
 from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
 import re
 from utils.frontend_utils import replace_blank, is_only_punctuation
+from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
 emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -43,7 +43,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             retries=1,
         )
         if sent:
-            logger.info(
+            logger.debug(
                 "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
                 lanlan_name,
                 trigger,
@@ -324,7 +324,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 messages=recent,
                                             )
                                             if sent:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:

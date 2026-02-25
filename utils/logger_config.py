@@ -11,10 +11,9 @@
 import os
 import sys
 import logging
-from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
-import shutil
 
 from config import APP_NAME
 
@@ -292,13 +291,24 @@ class RobustLoggerConfig:
         Returns:
             logging.Logger: 配置好的logger实例
         """
-        # 创建或获取logger
+        # 创建或获取logger。默认使用服务专属logger，避免落到root。
+        if not logger_name:
+            if self.service_name:
+                logger_name = f"{self.app_name}.{self.service_name}"
+            else:
+                logger_name = self.app_name
         logger = logging.getLogger(logger_name)
         logger.setLevel(self.log_level)
-        
-        # 避免重复添加handler
+        # 不向root传播，避免被外部handler劫持到错误文件。
+        logger.propagate = False
+        # 幂等重建：清理当前logger已有handler，避免重复写入。
         if logger.handlers:
-            return logger
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
         
         # 日志格式
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -401,7 +411,14 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         也可以使用logger.exception()来明确记录异常信息
     """
     config = RobustLoggerConfig(app_name=app_name, service_name=service_name, log_level=log_level)
+    # 使用带命名空间的 logger 名（如 N.E.K.O.Agent），
+    # 避免与第三方库的同名 logger 冲突（browser_use 内部有名为 "Agent" 的 logger）。
     base_logger = config.setup_logger()
+    
+    # 为 APP_NAME 父 logger 挂载 handler，使跨服务共享模块（utils, config 等）
+    # 的日志也能写入文件。共享模块使用 get_module_logger(__name__) 创建如
+    # N.E.K.O.utils.xxx 的 logger，向上传播到此父 logger 后被捕获。
+    _ensure_shared_parent_logger(config, base_logger)
     
     # 包装为增强logger
     logger = EnhancedLogger(base_logger)
@@ -641,11 +658,50 @@ def create_httpx_filter() -> RateLimitedEndpointFilter:
     )
 
 
+def _ensure_shared_parent_logger(config, service_logger):
+    """为 APP_NAME 父 logger 挂载与服务 logger 相同的 handler。
+
+    每个进程只配置一次（幂等）。这样 get_module_logger(__name__)（不带 service_name）
+    创建的共享 logger（如 N.E.K.O.utils.xxx）也能正确写入日志文件。
+    """
+    app_logger = logging.getLogger(config.app_name)
+    if app_logger.handlers:
+        return
+    app_logger.setLevel(service_logger.level)
+    app_logger.propagate = False
+    for handler in service_logger.handlers:
+        app_logger.addHandler(handler)
+
+
+def get_module_logger(module_name: str, service_name: str = None) -> logging.Logger:
+    """获取绑定到指定服务日志文件的模块级 logger。
+
+    通过 Python logging 的层级传播机制，子 logger 自动继承父 logger 的
+    file handler，无需为每个模块单独配置。
+
+    Args:
+        module_name: 模块名，通常传 __name__。
+        service_name: 所属服务名（如 "Main", "Agent", "Memory"）。
+                      如果为 None，创建共享 logger（挂在 APP_NAME 下）。
+
+    Examples:
+        # 属于 Main 服务的模块
+        logger = get_module_logger(__name__, "Main")   # → N.E.K.O.Main.main_logic.core
+
+        # 跨服务共享的工具模块
+        logger = get_module_logger(__name__)            # → N.E.K.O.utils.config_manager
+    """
+    if service_name:
+        return logging.getLogger(f"{APP_NAME}.{service_name}.{module_name}")
+    return logging.getLogger(f"{APP_NAME}.{module_name}")
+
+
 # 导出主要接口
 __all__ = [
     'RobustLoggerConfig', 
     'EnhancedLogger', 
     'setup_logging',
+    'get_module_logger',
     # 速率限制相关
     'RateLimitedEndpointFilter',
     'ThrottledLogger',

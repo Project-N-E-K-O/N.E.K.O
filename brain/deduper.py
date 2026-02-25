@@ -1,13 +1,13 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 import asyncio
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager
-import logging
+from utils.logger_config import get_module_logger
 import json
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 class TaskDeduper:
@@ -25,6 +25,7 @@ class TaskDeduper:
             base_url=api_config['base_url'],
             api_key=api_config['api_key'],
             temperature=0,
+            max_retries=0,
             extra_body=get_extra_body(api_config['model']) or None
         )
 
@@ -52,6 +53,17 @@ class TaskDeduper:
         
         for attempt in range(max_retries):
             try:
+                ok, info = get_config_manager().consume_agent_daily_quota(
+                    source="deduper.judge",
+                    units=1,
+                )
+                if not ok:
+                    logger.warning(
+                        "[Deduper] Agent quota exceeded: used=%s, limit=%s",
+                        info.get("used"),
+                        info.get("limit"),
+                    )
+                    return {"duplicate": False, "matched_id": None}
                 resp = await self.llm.ainvoke([
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},

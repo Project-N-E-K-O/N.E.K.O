@@ -1,11 +1,11 @@
 import asyncio
 import json
-import logging
 from typing import Any
 
 from config import AGENT_MQ_PORT
+from utils.logger_config import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 
 async def publish_analyze_and_plan_event(messages: list[dict[str, Any]], lanlan_name: str) -> bool:

@@ -9,16 +9,16 @@
 
 import os
 import pathlib
-import logging
 from typing import Optional, List, Dict, Any
 
+from utils.logger_config import get_module_logger
+
 # 初始化日志记录器
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 # 从config_manager导入workshop配置相关功能
 from utils.config_manager import (
     load_workshop_config,
-    save_workshop_config,
     save_workshop_path,
     get_workshop_path
 )

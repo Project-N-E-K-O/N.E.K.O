@@ -9,9 +9,9 @@ Handles agent-related endpoints including:
 - Admin control
 """
 
-import logging
 import time
 
+from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse
 import httpx
@@ -20,7 +20,7 @@ from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from main_logic.agent_event_bus import publish_session_event
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
@@ -59,13 +59,11 @@ async def update_agent_flags(request: Request):
             return JSONResponse({"success": False, "error": "lanlan not found"}, status_code=404)
         # Update core flags first
         mgr.update_agent_flags(flags)
-        # Forward to tool server for MCP/Computer-Use flags
+        # Forward to tool server for Computer-Use/Browser-Use/Plugin flags
         try:
             forward_payload = {}
             if lanlan:
                 forward_payload['lanlan_name'] = lanlan
-            if 'mcp_enabled' in flags:
-                forward_payload['mcp_enabled'] = bool(flags['mcp_enabled'])
             if 'computer_use_enabled' in flags:
                 forward_payload['computer_use_enabled'] = bool(flags['computer_use_enabled'])
             if 'browser_use_enabled' in flags:
@@ -80,9 +78,9 @@ async def update_agent_flags(request: Request):
                     raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
             # On failure, reset flags in core to safe state (include user_plugin flag)
-            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'browser_use_enabled': False, 'mcp_enabled': False, 'user_plugin_enabled': False})
+            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'browser_use_enabled': False, 'user_plugin_enabled': False})
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
-        return {"success": True}
+        return {"success": True, "is_free_version": _config_manager.is_free_version()}
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
@@ -145,12 +143,11 @@ async def post_agent_command(request: Request):
                     "agent_enabled": False,
                     "computer_use_enabled": False,
                     "browser_use_enabled": False,
-                    "mcp_enabled": False,
                     "user_plugin_enabled": False,
                 })
         elif mgr and command == "set_flag":
             key = data.get("key")
-            if key in {"computer_use_enabled", "browser_use_enabled", "mcp_enabled", "user_plugin_enabled"}:
+            if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
                 mgr.update_agent_flags({key: bool(data.get("value"))})
 
         t_proxy = time.perf_counter()
@@ -171,6 +168,8 @@ async def post_agent_command(request: Request):
             timing["main_proxy_ms"] = proxy_ms
             timing["main_total_ms"] = total_ms
             payload["timing"] = timing
+            if command == "set_agent_enabled" and bool(data.get("enabled")):
+                payload["is_free_version"] = cfg.is_free_version()
         return payload
     except Exception as e:
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -231,14 +230,7 @@ async def proxy_cu_availability():
 
 @router.get('/mcp/availability')
 async def proxy_mcp_availability():
-    try:
-        client = _get_http_client()
-        r = await client.get(f"{TOOL_SERVER_BASE}/mcp/availability", timeout=1.5)
-        if not r.is_success:
-            return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
-        return r.json()
-    except Exception as e:
-        return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
+    return {"ready": False, "capabilities_count": 0, "reasons": ["MCP 已移除"]}
 
 
 @router.get('/user_plugin/availability')
@@ -292,6 +284,19 @@ async def proxy_task_detail(task_id: str):
         return r.json()
     except Exception as e:
         return JSONResponse({"error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/tasks/{task_id}/cancel')
+async def proxy_task_cancel(task_id: str):
+    """Cancel a specific task via tool server proxy."""
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/tasks/{task_id}/cancel", timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
 @router.post('/admin/control')

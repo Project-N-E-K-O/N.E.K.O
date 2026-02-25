@@ -1,31 +1,44 @@
 """
-ZeroMQ event bus for main_server <-> agent_server communication.
+用于 main_server <-> agent_server 通信的 ZeroMQ 事件总线。
 
-IMPORTANT: We use **synchronous** zmq.Context + zmq.Socket with background
-daemon threads for recv, because zmq.asyncio.Socket.recv relies on
-event-loop fd polling (add_reader) which does NOT work on Windows
-ProactorEventLoop.  Sends use zmq.NOBLOCK and are called from the
-asyncio thread (fast, microsecond-level for local TCP).
+重要说明：这里使用 **同步** 的 zmq.Context + zmq.Socket，并通过后台
+守护线程执行 recv。原因是 zmq.asyncio.Socket.recv 依赖事件循环的
+fd 轮询（add_reader），而该机制在 Windows ProactorEventLoop 上不可用。
+发送侧使用 zmq.NOBLOCK，并在 asyncio 线程内调用（本地 TCP 延迟很低）。
 """
 
 import asyncio
-import logging
 import os
 import threading
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from utils.logger_config import get_module_logger
+
 try:
     import zmq
 except Exception:  # pragma: no cover - optional dependency at runtime
     zmq = None
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
-SESSION_PUB_ADDR = "tcp://127.0.0.1:48961"   # main -> agent  (PUB/SUB)
-AGENT_PUSH_ADDR = "tcp://127.0.0.1:48962"    # agent -> main  (PUSH/PULL)
-ANALYZE_PUSH_ADDR = "tcp://127.0.0.1:48963"  # main -> agent  (PUSH/PULL, reliable analyze queue)
+# ZMQ 地址：支持环境变量覆盖，便于 launcher 在默认端口落入
+# Hyper-V 保留区时进行迁移。
+def _zmq_addr(env_key: str, default_port: int) -> str:
+    raw = os.getenv(env_key, "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if 1 <= val <= 65535:
+                return f"tcp://127.0.0.1:{val}"
+        except (ValueError, TypeError):
+            pass
+    return f"tcp://127.0.0.1:{default_port}"
+
+SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
+AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
+ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
 
 _main_bridge_ref: Optional["MainServerAgentBridge"] = None
 _ack_waiters: dict[str, asyncio.Future] = {}
@@ -33,11 +46,11 @@ _ack_waiters_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-#  Main-server side bridge
+#  main_server 侧桥接器
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
-    """Runs inside main_server process. Binds PUB, PUSH(analyze), PULL(agent→main)."""
+    """运行于 main_server 进程内，绑定 PUB、PUSH(analyze)、PULL(agent→main)。"""
 
     def __init__(self, on_agent_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_agent_event = on_agent_event
@@ -81,7 +94,7 @@ class MainServerAgentBridge:
         self._recv_thread.start()
         logger.info("[EventBus] Main bridge started (pid=%s)", os.getpid())
 
-    # -- background recv (agent → main) ------------------------------------
+    # -- 后台接收（agent → main） -------------------------------------------
 
     def _recv_thread_fn(self) -> None:
         while not self._stop.is_set():
@@ -98,7 +111,7 @@ class MainServerAgentBridge:
                     logger.debug("[EventBus] main recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- send helpers (called from asyncio thread) --------------------------
+    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
 
     async def publish_session_event(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.pub is None:
@@ -133,11 +146,11 @@ class MainServerAgentBridge:
 
 
 # ---------------------------------------------------------------------------
-#  Agent-server side bridge
+#  agent_server 侧桥接器
 # ---------------------------------------------------------------------------
 
 class AgentServerEventBridge:
-    """Runs inside agent_server process. Connects SUB, PULL(analyze), PUSH(agent→main)."""
+    """运行于 agent_server 进程内，连接 SUB、PULL(analyze)、PUSH(agent→main)。"""
 
     def __init__(self, on_session_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_session_event = on_session_event
@@ -187,7 +200,7 @@ class AgentServerEventBridge:
         self._analyze_recv_thread.start()
         logger.info("[EventBus] Agent bridge started (pid=%s)", os.getpid())
 
-    # -- background recv threads -------------------------------------------
+    # -- 后台接收线程 -------------------------------------------------------
 
     def _recv_sub_fn(self) -> None:
         while not self._stop.is_set():
@@ -227,7 +240,7 @@ class AgentServerEventBridge:
                     logger.debug("[EventBus] agent analyze recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- send helper (called from asyncio thread) --------------------------
+    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
 
     async def emit_to_main(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.push is None:
@@ -240,7 +253,7 @@ class AgentServerEventBridge:
 
 
 # ---------------------------------------------------------------------------
-#  Module-level helpers (unchanged API)
+#  模块级辅助函数（API 保持不变）
 # ---------------------------------------------------------------------------
 
 def set_main_bridge(bridge: Optional[MainServerAgentBridge]) -> None:
@@ -288,7 +301,7 @@ async def publish_analyze_request_reliably(
     ack_timeout_s: float = 0.5,
     retries: int = 1,
 ) -> bool:
-    """Reliable analyze_request publish with event_id + ack + short retry."""
+    """可靠发布 analyze_request：携带 event_id + ack，并支持短重试。"""
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 

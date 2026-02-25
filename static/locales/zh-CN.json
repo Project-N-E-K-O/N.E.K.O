@@ -430,7 +430,8 @@
         "tempFolderRetained": "临时目录已保留",
         "noAvailableModelsError": "没有可用的模型",
         "tagsPlaceholderInput": "输入标签，按空格添加",
-        "prepareUploadFailedMessage": "准备上传失败: {{error}}"
+        "prepareUploadFailedMessage": "准备上传失败: {{error}}",
+        "noCharacterCardSelected": "请先选择一个角色卡"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -573,6 +574,7 @@
         "siliconAssist": "硅基流动：性价比高，支持Agent模式",
         "openaiAssist": "OpenAI：记忆管理能力强",
         "geminiAssist": "Gemini：智能和性价比极高，但国内版不支持",
+        "kimiAssist": "Kimi：国内可用，支持长上下文和视觉",
         "assistApiNote": "注意：只有阿里支持自定义语音功能。不建议使用智谱和阶跃星辰。",
         "assistApiKeyQwen": "辅助API Key - 阿里",
         "assistApiKeyOpenai": "辅助API Key - OpenAI",
@@ -580,6 +582,7 @@
         "assistApiKeyStep": "辅助API Key - 阶跃星辰",
         "assistApiKeySilicon": "辅助API Key - 硅基流动",
         "assistApiKeyGemini": "辅助API Key - Gemini",
+        "assistApiKeyKimi": "辅助API Key - Kimi",
         "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
         "assistApiKeyPlaceholder": "可选，默认为核心API Key",
         "providerNames": {
@@ -605,7 +608,8 @@
             "glm": "智谱 (GLM)",
             "step": "阶跃星辰 (StepFun)",
             "silicon": "硅基流动 (SiliconFlow，性价比高，推荐⭐)",
-            "gemini": "Gemini（谷歌，智能极高，国内版不支持）"
+            "gemini": "Gemini（谷歌，智能极高，国内版不支持）",
+            "kimi": "Kimi（月之暗面，国内可用，支持长上下文）"
         },
         "freeVersionNoApiKey": "免费版无需API Key",
         "pleaseEnterApiKey": "请输入您的API Key",
@@ -746,7 +750,8 @@
         },
         "loadConfigFailed": "加载配置失败，请刷新页面后重试",
         "errorGettingCurrentApiKey": "获取当前API Key失败",
-        "getCurrentApiKeyFailed": "获取当前API Key失败"
+        "getCurrentApiKeyFailed": "获取当前API Key失败",
+        "gptsovitsApiUrlRequired": "请填写正确的 http/https API URL"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -953,12 +958,13 @@
             "saved": "情感映射配置已保存",
             "saveFailed": "保存情感映射配置失败",
             "noModelSelected": "请先选择一个模型"
-        }
+        },
+        "noExpressionFiles": "没有表情文件"
     },
     "voice": {
         "title": "音色注册",
         "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器",
-        "selectFile": "选择本地音频文件（15秒最佳，请勿超过30秒，wav/mp3格式）",
+        "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
         "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
         "prefixPlaceholder": "不超过10个字符，只支持数字和英文字母",
@@ -1131,7 +1137,12 @@
         "unregisterError": "解除注册时发生错误",
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
-        "freePresetVoices": "免费预设音色"
+        "freePresetVoices": "免费预设音色",
+        "loadFailed": "加载角色数据失败",
+        "renameError": "重命名失败: {{error}}",
+        "renameMasterTitle": "重命名主人",
+        "renameSuccess": "重命名成功",
+        "saveMasterError": "保存主人设定失败"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -1201,7 +1212,12 @@
             "windows": "窗口",
             "selected": "已选择 {{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享"
-        }
+        },
+        "deviceSwitchFailed": "设备切换失败",
+        "deviceSwitching": "设备切换中...",
+        "modelPathEmpty": "模型路径为空",
+        "modelSwitchFailed": "模型切换失败",
+        "sessionFailed": "Session启动失败"
     },
     "buttons": {
         "voiceControl": "语音控制",
@@ -1225,7 +1241,8 @@
             "live2dManage": "Live2D管理",
             "apiSettings": "API设置",
             "language": "语言",
-            "general": "通用设置"
+            "general": "通用设置",
+            "mediaCredentials": "配置媒体凭证"
         },
         "language": {
             "title": "选择语言",
@@ -1244,11 +1261,11 @@
             "mergeMessages": "合并消息",
             "proactiveChat": "主动搭话",
             "proactiveVision": "自主视觉",
-            "proactiveVisionChat": "视觉搭话",
+            "proactiveVisionChat": "屏幕分享",
             "proactiveVisionChatTooltip": "需同时开启主动搭话和自主视觉",
-            "proactiveNewsChat": "新闻搭话",
+            "proactiveNewsChat": "新闻网站",
             "proactiveNewsChatTooltip": "使用热议话题进行搭话",
-            "proactiveVideoChat": "视频搭话",
+            "proactiveVideoChat": "视频网站",
             "proactiveVideoChatTooltip": "使用视频内容进行搭话",
             "agentMaster": "Agent总开关",
             "keyboardControl": "键鼠控制",
@@ -1264,7 +1281,17 @@
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
             "userPluginAdapting": "用户插件（开发中）",
-            "moltbotAdapting": "moltbot（开发中）"
+            "moltbotAdapting": "moltbot（开发中）",
+            "chatSettings": "对话设置",
+            "animationSettings": "动画设置",
+            "renderQuality": "画质",
+            "renderQualityLow": "低",
+            "renderQualityMedium": "中",
+            "renderQualityHigh": "高",
+            "frameRate": "帧率",
+            "frameRateLow": "30fps",
+            "frameRateMedium": "45fps",
+            "frameRateHigh": "60fps"
         }
     },
     "subtitle": {
@@ -1283,8 +1310,11 @@
             "disabledError": "Agent模式已关闭（部分清理失败）",
             "enableFailed": "开启失败",
             "disconnected": "服务器连接已断开",
-            "agentDisconnected": "Agent 服务器连接已断开"
+            "agentDisconnected": "Agent 服务器连接已断开",
+            "freeModelWarning": "由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
+            "freeModelWarningTitle": "免费模型提示"
         },
+        "quotaExceeded": "免费 Agent 模型今日试用次数已达上限（{{limit}}次），请明日再试。",
         "taskHud": {
             "title": "Agent 任务",
             "running": "运行中",
@@ -1293,7 +1323,10 @@
             "statusRunning": "运行中",
             "statusQueued": "队列中",
             "statusCompleted": "已完成",
-            "statusFailed": "失败"
+            "statusFailed": "失败",
+            "minimize": "折叠/展开",
+            "cancelAll": "终止所有任务",
+            "cancelConfirm": "确定要终止所有正在进行的任务吗？"
         }
     },
     "vrm": {
@@ -1311,7 +1344,10 @@
             "animationClipError": "创建动画 Clip 时出错: {{error}}",
             "animationClipNoBones": "动画 Clip 创建失败：没有找到匹配的骨骼",
             "cannotCreateAnimationAction": "无法创建动画动作",
-            "invalidModelPath": "VRM 模型路径无效: {{path}}"
+            "invalidModelPath": "VRM 模型路径无效: {{path}}",
+            "gltfLoaderImportFailed": "无法导入 GLTFLoader: {{error}}",
+            "threeIncomplete": "Three.js 依赖不完整，缺少: {{missing}}",
+            "vrmLoaderImportFailed": "无法导入 VRMLoaderPlugin: {{error}}"
         },
         "lighting": {
             "title": "VRM打光设置",
@@ -1813,7 +1849,8 @@
             "title": "🎓 开始新手引导",
             "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
             "enterFullscreen": "进入全屏引导"
-        }
+        },
+        "drag_hint": "按住拖动以移动提示框"
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失败，将允许重试:",
@@ -1927,7 +1964,9 @@
         "translationApiResult": "翻译API返回结果:",
         "translationError": "翻译错误:",
         "translationException": "翻译请求异常:",
-        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！"
+        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！",
+        "aiFailed": "猫娘链接出现异常",
+        "aiRetrying": "猫娘链接出现异常，校准中…"
     },
     "emotionManager": {
         "title": "Live2D 情感映射管理器 - Project N.E.K.O.",
@@ -2001,5 +2040,6 @@
         "switchToDark": "切换到暗色模式",
         "switchToLight": "切换到亮色模式",
         "themeChanged": "主题已切换"
-    }
+    },
+    "characterModelNotSet": "当前角色未设置模型"
 }

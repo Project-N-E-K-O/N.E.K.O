@@ -497,6 +497,10 @@ class VRMInteraction {
             this.manager.isLocked = locked;
         }
 
+        if (!locked && typeof this._setLockedHoverFade === 'function') {
+            this._setLockedHoverFade(false);
+        }
+
         // 不再修改 pointerEvents，改用逻辑拦截
         // 这样锁定时虽然不能移动/缩放，但依然可以点中模型弹出菜单
 
@@ -911,11 +915,23 @@ class VRMInteraction {
         if (!this.manager.renderer || !this.manager.currentModel) return;
 
         const canvas = this.manager.renderer.domElement;
+        const useUiLoopVisibility = () => typeof this.manager._shouldShowVrmLockIcon === 'function';
+        const threshold = 150;
+        const hoverFadeThreshold = 60;
 
-        // 只查找 VRM 专用 ID
-        let buttonsContainer = document.getElementById('vrm-floating-buttons');
-
-        if (!buttonsContainer) return;
+        // Ctrl+锁定+近距离 → 容器变淡（与 Live2D 侧 setLockedHoverFade 对齐）
+        // 注意：vrm-core.js init 时设置了 container.style.opacity='1'（内联样式），
+        // CSS class 优先级低于内联样式，因此必须直接操作 style.opacity 才能生效
+        const vrmContainer = document.getElementById('vrm-container');
+        let lockedHoverFadeActive = false;
+        let isCtrlPressed = false;
+        const setLockedHoverFade = (shouldFade) => {
+            if (!vrmContainer) return;
+            if (lockedHoverFadeActive === shouldFade) return;
+            lockedHoverFadeActive = shouldFade;
+            vrmContainer.style.opacity = shouldFade ? '0.12' : '1';
+        };
+        this._setLockedHoverFade = setLockedHoverFade;
 
         // 初始化缓存
         this.updateModelBoundsCache();
@@ -942,13 +958,16 @@ class VRMInteraction {
                 window.live2dManager.isFocusing = true;
             }
 
-            // 显示浮动按钮（位置由 _startUIUpdateLoop 自动更新）
-            currentButtonsContainer.style.display = 'flex';
+            // 新版显隐逻辑由 vrm-ui-buttons 的更新循环统一接管
+            if (!useUiLoopVisibility()) {
+                // 显示浮动按钮（位置由 _startUIUpdateLoop 自动更新）
+                currentButtonsContainer.style.display = 'flex';
 
-            // 鼠标靠近时显示锁图标
-            const lockIcon = document.getElementById('vrm-lock-icon');
-            if (lockIcon) {
-                lockIcon.style.display = 'block';
+                // 鼠标靠近时显示锁图标
+                const lockIcon = document.getElementById('vrm-lock-icon');
+                if (lockIcon) {
+                    lockIcon.style.display = 'block';
+                }
             }
 
             // 清除隐藏定时器（按钮显示时不需要隐藏）
@@ -1003,7 +1022,6 @@ class VRMInteraction {
                 const mouseX = this._lastMouseX || 0;
                 const mouseY = this._lastMouseY || 0;
                 const distance = calculateDistanceToModel(mouseX, mouseY);
-                const threshold = 150;
 
                 if (distance < threshold) {
                     // 鼠标仍在模型附近，重新启动定时器
@@ -1017,13 +1035,15 @@ class VRMInteraction {
                     window.live2dManager.isFocusing = false;
                 }
 
-                const currentButtonsContainer = document.getElementById('vrm-floating-buttons');
-                if (currentButtonsContainer) {
-                    currentButtonsContainer.style.display = 'none';
-                }
+                if (!useUiLoopVisibility()) {
+                    const currentButtonsContainer = document.getElementById('vrm-floating-buttons');
+                    if (currentButtonsContainer) {
+                        currentButtonsContainer.style.display = 'none';
+                    }
 
-                if (lockIcon && !lockIcon.dataset.clickProtection) {
-                    lockIcon.style.display = 'none';
+                    if (lockIcon && !lockIcon.dataset.clickProtection) {
+                        lockIcon.style.display = 'none';
+                    }
                 }
 
                 this._hideButtonsTimer = null;
@@ -1038,12 +1058,10 @@ class VRMInteraction {
             this._floatingButtonsPendingFrame = null;
 
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
-            if (this.checkLocked()) return;
             if (!this.manager.renderer || !this.manager.camera) return;
 
             // 更新缓存（如果模型已更新）
             const now = Date.now();
-            // 每 100ms 更新一次缓存（避免过于频繁）
             if (!this._cachedScreenBounds || (now - this._lastModelUpdateTime) > 100) {
                 this.updateModelBoundsCache();
             }
@@ -1070,29 +1088,41 @@ class VRMInteraction {
 
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
-            // 如果鼠标在按钮或锁图标上，直接显示
+            // 如果鼠标在按钮或锁图标上，不变淡，直接显示
             if (isOverButtons || isOverLock) {
+                setLockedHoverFade(false);
                 showButtons();
                 return;
             }
 
             // 使用缓存计算距离（避免重复的 Box3 计算）
             const distance = calculateDistanceToModel(mouseX, mouseY);
-            const threshold = 150;
+
+            // 锁定 + Ctrl + 鼠标在模型附近 → 变淡（与 Live2D 侧逻辑一致）
+            const ctrlKeyPressed = isCtrlPressed;
+            const shouldFade = this.checkLocked() && ctrlKeyPressed && distance < hoverFadeThreshold;
+            setLockedHoverFade(shouldFade);
+
+            // 锁定状态下不处理按钮显示/隐藏
+            if (this.checkLocked()) return;
 
             if (distance < threshold) {
-                // 鼠标在模型附近，显示按钮
                 showButtons();
             } else {
-                // 鼠标不在模型附近，启动隐藏定时器
                 startHideTimer();
             }
         };
 
         const onPointerMove = (event) => {
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
-            if (this.checkLocked()) return;
             if (!this.manager.renderer || !this.manager.camera) return;
+
+            // 从事件更新 Ctrl 键状态（与 Live2D 侧一致）
+            if (event.isTrusted) {
+                isCtrlPressed = event.ctrlKey || event.metaKey;
+            } else if (event.ctrlKey || event.metaKey) {
+                isCtrlPressed = true;
+            }
 
             // 更新鼠标位置（轻量级操作）
             this._lastMouseX = event.clientX;
@@ -1104,16 +1134,58 @@ class VRMInteraction {
             }
         };
 
+        // Ctrl 键跟踪（与 Live2D 侧 _ctrlKeyDownListener / _ctrlKeyUpListener 对齐）
+        const onKeyDown = (event) => {
+            if (event.ctrlKey || event.metaKey) {
+                isCtrlPressed = true;
+            }
+        };
+        const onKeyUp = (event) => {
+            if (!event.ctrlKey && !event.metaKey) {
+                isCtrlPressed = false;
+                if (lockedHoverFadeActive) {
+                    setLockedHoverFade(false);
+                }
+            }
+        };
+        const onBlur = () => {
+            isCtrlPressed = false;
+            if (lockedHoverFadeActive) {
+                setLockedHoverFade(false);
+            }
+        };
+
+        // 清理旧的键盘 / blur 监听器
+        if (this._vrmCtrlKeyDownListener) {
+            window.removeEventListener('keydown', this._vrmCtrlKeyDownListener);
+        }
+        if (this._vrmCtrlKeyUpListener) {
+            window.removeEventListener('keyup', this._vrmCtrlKeyUpListener);
+        }
+        if (this._vrmWindowBlurListener) {
+            window.removeEventListener('blur', this._vrmWindowBlurListener);
+        }
+
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
+        window.addEventListener('blur', onBlur);
+
         canvas.addEventListener('mouseenter', onMouseEnter);
         window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('mousemove', onPointerMove);
 
+        this._vrmCtrlKeyDownListener = onKeyDown;
+        this._vrmCtrlKeyUpListener = onKeyUp;
+        this._vrmWindowBlurListener = onBlur;
         this._floatingButtonsMouseEnter = onMouseEnter;
         this._floatingButtonsPointerMove = onPointerMove;
 
         if (this.manager.currentModel && !this.checkLocked()) {
             setTimeout(() => {
                 showButtons();
-                // 不再隐藏按钮，保持一直显示
+                if (!useUiLoopVisibility()) {
+                    startHideTimer();
+                }
             }, 100);
         }
     }
@@ -1136,7 +1208,26 @@ class VRMInteraction {
         }
         if (this._floatingButtonsPointerMove) {
             window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
+        }
+        // 清理 Ctrl 键 / blur 监听器
+        if (this._vrmCtrlKeyDownListener) {
+            window.removeEventListener('keydown', this._vrmCtrlKeyDownListener);
+            this._vrmCtrlKeyDownListener = null;
+        }
+        if (this._vrmCtrlKeyUpListener) {
+            window.removeEventListener('keyup', this._vrmCtrlKeyUpListener);
+            this._vrmCtrlKeyUpListener = null;
+        }
+        if (this._vrmWindowBlurListener) {
+            window.removeEventListener('blur', this._vrmWindowBlurListener);
+            this._vrmWindowBlurListener = null;
+        }
+        // 清除变淡状态
+        if (typeof this._setLockedHoverFade === 'function') {
+            this._setLockedHoverFade(false);
+            this._setLockedHoverFade = null;
         }
         if (this._hideButtonsTimer) {
             clearTimeout(this._hideButtonsTimer);

@@ -31,6 +31,204 @@ function addNewMessage(messageHTML) {
     setTimeout(scrollToBottom, 10); // 短暂延迟确保DOM更新
 }
 
+// --- 整个对话区可拖拽缩放（输入区/按钮高度固定，历史区自适应） ---
+function setupResizableChatContainer() {
+    if (!chatContainer) return;
+
+    const STORAGE_WIDTH_KEY = 'neko.chatContainerWidth';
+    const STORAGE_HEIGHT_KEY = 'neko.chatContainerHeight';
+    const DEFAULT_WIDTH = 400;
+    const DEFAULT_HEIGHT = 500;
+    const MIN_WIDTH = 320;
+    const MIN_HEIGHT = 340;
+
+    // 用角标手柄控制尺寸，避免误触输入框与按钮
+    let resizeHandle = chatContainer.querySelector('.chat-resize-handle');
+    if (!resizeHandle) {
+        resizeHandle = document.createElement('div');
+        resizeHandle.className = 'chat-resize-handle';
+        resizeHandle.setAttribute('aria-hidden', 'true');
+        chatContainer.appendChild(resizeHandle);
+    }
+
+    if (!document.getElementById('chat-container-resize-style')) {
+        const style = document.createElement('style');
+        style.id = 'chat-container-resize-style';
+        style.textContent = `
+            #chat-container.resizable-chat-container {
+                min-width: ${MIN_WIDTH}px;
+                min-height: ${MIN_HEIGHT}px;
+            }
+
+            #chat-container .chat-resize-handle {
+                position: absolute;
+                right: 6px;
+                bottom: 6px;
+                width: 16px;
+                height: 16px;
+                z-index: 35;
+                border-radius: 4px;
+                cursor: nwse-resize;
+                pointer-events: auto;
+                touch-action: none;
+                opacity: 0.75;
+                background-image:
+                    linear-gradient(135deg, transparent 0 35%, rgba(68, 183, 254, 0.42) 35% 43%, transparent 43% 52%, rgba(68, 183, 254, 0.58) 52% 60%, transparent 60% 70%, rgba(68, 183, 254, 0.78) 70% 78%, transparent 78% 100%);
+                transition: opacity 0.2s ease, transform 0.2s ease, filter 0.2s ease;
+            }
+
+            #chat-container .chat-resize-handle:hover {
+                opacity: 1;
+                transform: scale(1.06);
+                filter: drop-shadow(0 1px 2px rgba(68, 183, 254, 0.35));
+            }
+
+            #chat-container.is-resizing {
+                transition: none !important;
+                box-shadow:
+                    0 2px 4px rgba(0, 0, 0, 0.04),
+                    0 8px 16px rgba(0, 0, 0, 0.08),
+                    0 20px 36px rgba(68, 183, 254, 0.18);
+            }
+
+            #chat-container.is-resizing .chat-resize-handle {
+                opacity: 1;
+                transform: scale(1.08);
+            }
+
+            #chat-container.minimized .chat-resize-handle,
+            #chat-container.mobile-collapsed .chat-resize-handle {
+                display: none;
+            }
+
+            @media only screen and (max-width: 768px) {
+                #chat-container .chat-resize-handle {
+                    display: none !important;
+                }
+            }
+
+            [data-theme="dark"] #chat-container .chat-resize-handle {
+                background-image:
+                    linear-gradient(135deg, transparent 0 35%, rgba(74, 163, 223, 0.52) 35% 43%, transparent 43% 52%, rgba(74, 163, 223, 0.66) 52% 60%, transparent 60% 70%, rgba(74, 163, 223, 0.86) 70% 78%, transparent 78% 100%);
+                filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.32));
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    chatContainer.classList.add('resizable-chat-container');
+
+    const clampSize = (width, height) => {
+        const maxWidth = Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.9));
+        const maxHeight = Math.max(MIN_HEIGHT, Math.floor(window.innerHeight * 0.85));
+        return {
+            width: Math.max(MIN_WIDTH, Math.min(maxWidth, width)),
+            height: Math.max(MIN_HEIGHT, Math.min(maxHeight, height))
+        };
+    };
+
+    const applyContainerSize = (width, height) => {
+        const clamped = clampSize(width, height);
+        chatContainer.style.width = `${clamped.width}px`;
+        chatContainer.style.height = `${clamped.height}px`;
+        chatContainer.style.maxHeight = `${clamped.height}px`;
+        return clamped;
+    };
+
+    const persistContainerSize = () => {
+        const rect = chatContainer.getBoundingClientRect();
+        try {
+            localStorage.setItem(STORAGE_WIDTH_KEY, String(Math.round(rect.width)));
+            localStorage.setItem(STORAGE_HEIGHT_KEY, String(Math.round(rect.height)));
+        } catch (_) {
+            /* localStorage 不可用时静默跳过 */
+        }
+    };
+
+    const restoreContainerSize = () => {
+        let savedW = NaN;
+        let savedH = NaN;
+        try {
+            savedW = Number(localStorage.getItem(STORAGE_WIDTH_KEY));
+            savedH = Number(localStorage.getItem(STORAGE_HEIGHT_KEY));
+        } catch (_) {
+            /* localStorage 不可用时忽略 */
+        }
+        if (Number.isFinite(savedW) && Number.isFinite(savedH) && savedW > 0 && savedH > 0) {
+            applyContainerSize(savedW, savedH);
+        } else {
+            applyContainerSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        }
+    };
+
+    restoreContainerSize();
+
+    let isResizing = false;
+    let startX = 0;
+    let startY = 0;
+    let startWidth = 0;
+    let startHeight = 0;
+    let startBottom = 0;
+
+    const onResizeMove = (e) => {
+        if (!isResizing) return;
+        const clientX = e.type.startsWith('touch') ? e.touches[0].clientX : e.clientX;
+        const clientY = e.type.startsWith('touch') ? e.touches[0].clientY : e.clientY;
+        const nextWidth = startWidth + (clientX - startX);
+        const rawNextHeight = startHeight + (clientY - startY);
+        // 当底边触达屏幕底部后，继续向下拖拽不再增高（顶部保持锚定）
+        const bottomLimitedMaxHeight = startHeight + Math.max(0, startBottom);
+        const nextHeight = Math.min(rawNextHeight, bottomLimitedMaxHeight);
+        const applied = applyContainerSize(nextWidth, nextHeight);
+        // chat-container 采用 bottom 定位；同步调整 bottom 让垂直拉伸表现为“向下展开”
+        const consumedDeltaY = applied.height - startHeight;
+        chatContainer.style.bottom = `${Math.max(0, startBottom - consumedDeltaY)}px`;
+        e.preventDefault();
+    };
+
+    const stopResize = () => {
+        if (!isResizing) return;
+        isResizing = false;
+        chatContainer.classList.remove('is-resizing');
+        persistContainerSize();
+        if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
+            window.ChatDialogSnap.snapIntoScreen({ animate: true });
+        }
+    };
+
+    const startResize = (e) => {
+        if (uiIsMobileWidth() || isCollapsed()) return;
+        isResizing = true;
+        chatContainer.classList.add('is-resizing');
+
+        const point = e.type.startsWith('touch') ? e.touches[0] : e;
+        const rect = chatContainer.getBoundingClientRect();
+        startX = point.clientX;
+        startY = point.clientY;
+        startWidth = rect.width;
+        startHeight = rect.height;
+        const computedStyle = window.getComputedStyle(chatContainer);
+        const parsedBottom = parseFloat(computedStyle.bottom);
+        startBottom = Number.isFinite(parsedBottom) ? parsedBottom : (window.innerHeight - rect.bottom);
+
+        e.stopPropagation();
+        e.preventDefault();
+    };
+
+    resizeHandle.addEventListener('mousedown', startResize);
+    resizeHandle.addEventListener('touchstart', startResize, { passive: false });
+    document.addEventListener('mousemove', onResizeMove);
+    document.addEventListener('touchmove', onResizeMove, { passive: false });
+    document.addEventListener('mouseup', stopResize);
+    document.addEventListener('touchend', stopResize);
+
+    window.addEventListener('resize', () => {
+        const rect = chatContainer.getBoundingClientRect();
+        applyContainerSize(rect.width, rect.height);
+        persistContainerSize();
+    });
+}
+
 // --- 切换聊天框最小化/展开状态 ---
 // 用于跟踪是否刚刚发生了拖动
 let justDragged = false;
@@ -546,6 +744,8 @@ const sidebar = document.getElementById('sidebar');
 
 // --- 初始化 ---
 document.addEventListener('DOMContentLoaded', () => {
+    setupResizableChatContainer();
+
     // 设置初始按钮状态 - 聊天框
     if (chatContainer && toggleBtn) {
         // 获取图标元素（HTML中应该已经有img标签）

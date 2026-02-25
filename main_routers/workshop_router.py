@@ -12,7 +12,6 @@ Handles Steam Workshop-related endpoints including:
 import os
 import json
 import time
-import logging
 import asyncio
 import threading
 from datetime import datetime
@@ -26,12 +25,13 @@ from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
 )
+from utils.logger_config import get_module_logger
 import hashlib
 
 router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
 # 全局互斥锁，用于序列化创意工坊发布操作，防止并发回调混乱
 publish_lock = threading.Lock()
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 
 def get_workshop_meta_path(character_card_name: str) -> str:
@@ -1607,7 +1607,6 @@ async def prepare_workshop_upload(request: Request):
     """
     try:
         import shutil
-        import tempfile
         import uuid
         from utils.frontend_utils import find_model_directory
         

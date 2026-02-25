@@ -1,11 +1,11 @@
-import logging
 import platform
 from typing import Dict, List, Tuple
 
 from brain.cua.agents.grounding import ACI
+from utils.logger_config import get_module_logger
 from brain.cua.agents.worker import Worker
 
-logger = logging.getLogger("desktopenv.agent")
+logger = get_module_logger(__name__, "Agent")
 
 
 class UIAgent:
