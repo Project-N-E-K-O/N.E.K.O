@@ -13,7 +13,7 @@ import numpy as np
 import re
 from pathlib import Path
 
-ENABLE_TRUE_STREAMING = True
+ENABLE_TRUE_STREAMING = False
 # ========================================================
 # 1. 初始化 Logging
 # ========================================================
@@ -358,8 +358,8 @@ class QwenLocalServer:
                             voice_clone_prompt=prompt_snapshot,
                             language=language,
                             pad_token_id=self.pad_token_id,
-                            emit_every_frames=16,        # 1.7B 推荐 16 帧
-                            first_chunk_emit_every=4,
+                            emit_every_frames=24,        # 1.7B 推荐 16 帧
+                            first_chunk_emit_every=6,
                             overlap_samples=512,
                         ):
                             if cancel_event.is_set():
@@ -510,10 +510,6 @@ class QwenLocalServer:
                     item.ref_code = item.ref_code.to(device=self.device, dtype=torch.long)
                 if hasattr(item, 'ref_spk_embedding') and item.ref_spk_embedding is not None:
                     item.ref_spk_embedding = item.ref_spk_embedding.to(device=self.device, dtype=torch.bfloat16)
-
-            # 防止动态生成的 code_predictor 变成 fp32
-            original_dtype = torch.get_default_dtype()
-            torch.set_default_dtype(torch.bfloat16)
 
             try:
                 if hasattr(self.model, 'model'):
@@ -680,6 +676,23 @@ class QwenLocalServer:
 
                 elif msg_type == "cancel":
                     await _stop_current_job()
+
+                elif msg_type == "session.update":
+                    # 客户端会在连接后下发 voice_pt_path / language
+                    # 这里更新运行参数并强制刷新音色缓存
+                    new_pt = data.get("voice_pt_path")
+                    new_lang = data.get("language")
+                    if new_pt:
+                        with self.voice_lock:
+                            self.pt_path = str(new_pt)
+                            self.active_voice_path = None
+                            self.active_voice_mtime = None
+                            self.cached_prompt = None
+                            self.voice_version += 1
+                        logger.info(f"🔁 会话更新: voice_pt_path -> {self.pt_path}")
+                    if new_lang:
+                        self.language = new_lang
+                        logger.info(f"🔁 会话更新: language -> {self.language}")
 
         finally:
             await _stop_current_job()
