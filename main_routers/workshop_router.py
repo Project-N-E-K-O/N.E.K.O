@@ -42,6 +42,7 @@ _ugc_details_cache: dict[int, dict] = {}
 _ugc_cache_timestamp: float = 0.0
 _UGC_CACHE_TTL = 300  # 缓存有效期 5 分钟
 _ugc_warmup_task = None  # 后台预热任务
+_ugc_sync_task = None    # 后台角色卡同步任务
 
 
 def _is_ugc_cache_valid() -> bool:
@@ -69,8 +70,8 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
             # 在发送查询前先泵一次回调，清除可能的残留状态
             try:
                 steamworks.run_callbacks()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"run_callbacks (pre-query pump) 异常: {e}")
             
             query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(item_ids)
             
@@ -110,8 +111,8 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                     break
                 try:
                     steamworks.run_callbacks()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"run_callbacks (polling) 异常: {e}")
                 await asyncio.sleep(0.01)
             
             if not query_completed.is_set():
@@ -144,8 +145,8 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
             # 查询完成后泵一次回调，让 Steam 缓存 persona 数据
             try:
                 steamworks.run_callbacks()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"run_callbacks (post-query pump) 异常: {e}")
             
             return results
         
@@ -213,8 +214,8 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
                 tags_str = result.tags.decode('utf-8', errors='replace')
                 if tags_str:
                     item_info['tags'] = [t.strip() for t in tags_str.split(',') if t.strip()]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"解析 UGC 物品 {item_id_int} 标签失败: {e}")
         
         # 更新缓存
         cache_entry = {}
@@ -1043,8 +1044,8 @@ async def get_workshop_item_details(item_id: str):
                         tags_str = result.tags.decode('utf-8', errors='replace')
                         if tags_str:
                             tags = [t.strip() for t in tags_str.split(',') if t.strip()]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"解析物品 {item_id} 标签失败: {e}")
                 
                 # 更新缓存
                 _extract_ugc_item_details(steamworks, item_id_int, result, {
@@ -2675,12 +2676,13 @@ async def sync_workshop_character_cards() -> dict:
             
             item_id = item.get('publishedFileId', '')
             
-            # 3. 扫描 .chara.json 文件
+            # 3. 扫描 .chara.json 文件（递归遍历子目录）
             try:
                 chara_files = []
-                for filename in os.listdir(installed_folder):
-                    if filename.endswith('.chara.json'):
-                        chara_files.append(os.path.join(installed_folder, filename))
+                for root, _dirs, filenames in os.walk(installed_folder):
+                    for filename in filenames:
+                        if filename.endswith('.chara.json'):
+                            chara_files.append(os.path.join(root, filename))
                 
                 for chara_file_path in chara_files:
                     try:

@@ -743,7 +743,7 @@ async def on_startup():
             
             # _ugc_warmup_task 仅引用预热任务，等待它不会被角色卡同步阻塞
             _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-            asyncio.create_task(_sync_characters_only())
+            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
         
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
@@ -820,6 +820,20 @@ async def shutdown_server_async():
         # 短暂延时，确保 beacon 响应有机会先发送
         await asyncio.sleep(0.5)
         logger.info("正在关闭服务器...")
+
+        # 取消后台创意工坊任务，避免残留协程
+        try:
+            import main_routers.workshop_router as _wr
+            for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
+                task = getattr(_wr, task_attr, None)
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+        except Exception as e:
+            logger.debug(f"取消创意工坊后台任务时出错: {e}")
         
         # 向memory_server发送关闭信号
         try:

@@ -1586,11 +1586,7 @@ let totalPages = 1;
 let currentSortField = 'timeAdded'; // 默认按添加时间排序
 let currentSortOrder = 'desc'; // 默认降序
 
-// HTML 转义，防止 XSS
-function escapeHtml(str) {
-    if (typeof str !== 'string') return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
-}
+// escapeHtml 已在上方定义（DOM-based，非 string 走 String(text) 转换）
 
 // 安全获取作者显示名
 function safeAuthorName(item) {
