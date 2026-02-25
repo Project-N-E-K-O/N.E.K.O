@@ -981,14 +981,28 @@ async def get_workshop_item_details(item_id: str):
             use_cache = False
             
         if result or use_cache:
-            # 获取物品安装信息 - 支持字典格式（根据workshop.py的实现）
+            # 获取物品安装信息 - 兼容字典/元组/None 三种返回格式
             install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
-            installed = bool(install_info)
-            folder = install_info.get('folder', '') if installed else ''
+            installed = False
+            folder = ''
             size = 0
-            disk_size = install_info.get('disk_size')
-            if isinstance(disk_size, (int, float)):
-                size = int(disk_size)
+
+            if isinstance(install_info, dict):
+                installed = True
+                folder = install_info.get('folder', '') or ''
+                disk_size = install_info.get('disk_size')
+                if isinstance(disk_size, (int, float)):
+                    size = int(disk_size)
+            elif isinstance(install_info, tuple) and len(install_info) >= 3:
+                installed = bool(install_info[0])
+                raw_folder = install_info[1]
+                if isinstance(raw_folder, (str, bytes)):
+                    folder = str(raw_folder)
+                raw_size = install_info[2]
+                if isinstance(raw_size, (int, float)):
+                    size = int(raw_size)
+            elif install_info:
+                installed = True
             
             # 获取物品下载信息
             download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int)
@@ -2700,7 +2714,7 @@ async def sync_workshop_character_cards() -> dict:
                         
                         # 构建角色数据，过滤保留字段
                         catgirl_data = {}
-                        skip_keys = ['档案名', 'name'] + _RESERVED_FIELDS
+                        skip_keys = ['档案名', 'name', *_RESERVED_FIELDS]
                         for k, v in chara_data.items():
                             if k not in skip_keys and v is not None and v != '':
                                 catgirl_data[k] = v
