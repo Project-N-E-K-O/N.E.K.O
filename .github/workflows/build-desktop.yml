@@ -216,7 +216,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
+          # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
+          # that break Nuitka's xattr call; browser will download on first run)
+          if [[ "$RUNNER_OS" != "macOS" ]]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
 
           # Packages
