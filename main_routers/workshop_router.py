@@ -596,8 +596,10 @@ async def get_subscribed_workshop_items():
                     logger.info("等待 UGC 缓存预热任务完成...")
                     try:
                         await asyncio.wait_for(asyncio.shield(_ugc_warmup_task), timeout=20)
-                    except (asyncio.TimeoutError, Exception):
-                        pass
+                    except asyncio.TimeoutError:
+                        logger.info("等待 UGC 缓存预热超时（20s），将回退到直接查询")
+                    except Exception as e:
+                        logger.warning(f"UGC 缓存预热任务异常: {e}", exc_info=True)
                     # 预热完成后检查缓存
                     if not (_is_ugc_cache_valid() and all(iid in _ugc_details_cache for iid in all_item_ids)):
                         logger.info(f'预热后缓存不完整，重新批量查询 {len(all_item_ids)} 个物品')
@@ -1048,8 +1050,13 @@ async def get_workshop_item_details(item_id: str):
                 time_created = getattr(result, 'timeCreated', 0)
                 time_updated = getattr(result, 'timeUpdated', 0)
                 file_size = getattr(result, 'fileSize', 0)
-                preview_url = getattr(result, 'URL', '')
-                file_url = getattr(result, 'URL', '')
+                # 获取预览图 URL（SteamUGCDetails_t.URL 是物品网页/预览 URL）
+                raw_url = getattr(result, 'URL', b'')
+                if isinstance(raw_url, bytes):
+                    raw_url = raw_url.decode('utf-8', errors='replace')
+                preview_url = raw_url.strip('\x00').strip() if raw_url else ''
+                # file handle 和 preview file handle 是 UGC 文件句柄，不是下载 URL
+                file_url = ''
                 file_id = getattr(result, 'file', 0)
                 preview_file_id = getattr(result, 'previewFile', 0)
                 tags = []
@@ -2707,14 +2714,15 @@ async def sync_workshop_character_cards() -> dict:
                         if not chara_name:
                             continue
                         
-                        # 已存在则跳过
+                        # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
+                        # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
                         if chara_name in characters['猫娘']:
                             skipped_count += 1
                             continue
                         
                         # 构建角色数据，过滤保留字段
                         catgirl_data = {}
-                        skip_keys = ['档案名', 'name', *_RESERVED_FIELDS]
+                        skip_keys = ['档案名', *_RESERVED_FIELDS]
                         for k, v in chara_data.items():
                             if k not in skip_keys and v is not None and v != '':
                                 catgirl_data[k] = v
