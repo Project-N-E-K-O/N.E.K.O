@@ -363,15 +363,15 @@ class Live2DManager {
                 this.currentModel.x = this.pixi_app.renderer.width * 0.5;
                 this.currentModel.y = this.pixi_app.renderer.height * 0.28;
             } else {
-                // 桌面端默认设置（靠右下）
+                // 桌面端默认设置（右下角）
                 const scale = Math.min(
                     0.5,
                     (window.innerHeight * 0.75) / 7000,
                     (window.innerWidth * 0.6) / 7000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.width;
-                this.currentModel.y = this.pixi_app.renderer.height;
+                this.currentModel.x = this.pixi_app.renderer.width * 0.65;
+                this.currentModel.y = this.pixi_app.renderer.height * 0.6;
             }
 
             console.log('模型位置已复位到初始状态');
