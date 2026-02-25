@@ -18,12 +18,12 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
 
-
+from utils.logger_config import get_module_logger
 
 # ==========================================
 # 基础配置与日志
 # ==========================================
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 

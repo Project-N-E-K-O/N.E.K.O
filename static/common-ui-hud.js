@@ -315,7 +315,50 @@ window.AgentHUD.createAgentTaskHUD = function () {
     });
     minimizeBtn.title = window.t ? window.t('agent.taskHud.minimize') : '折叠/展开';
 
+    // 终止按钮
+    const cancelBtn = document.createElement('div');
+    cancelBtn.id = 'agent-task-hud-cancel';
+    cancelBtn.innerHTML = '✕';
+    Object.assign(cancelBtn.style, {
+        width: '22px',
+        height: '22px',
+        borderRadius: '6px',
+        background: 'rgba(220, 53, 69, 0.12)',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '11px',
+        fontWeight: 'bold',
+        color: '#dc3545',
+        cursor: 'pointer',
+        transition: 'all 0.2s ease',
+        flexShrink: '0'
+    });
+    cancelBtn.title = window.t ? window.t('agent.taskHud.cancelAll') : '终止所有任务';
+    cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const msg = window.t ? window.t('agent.taskHud.cancelConfirm') : '确定要终止所有正在进行的任务吗？';
+        const title = window.t ? window.t('agent.taskHud.cancelAll') : '终止所有任务';
+        const confirmed = await window.showConfirm(msg, title, { danger: true });
+        if (!confirmed) return;
+        try {
+            cancelBtn.style.opacity = '0.5';
+            cancelBtn.style.pointerEvents = 'none';
+            await fetch('/api/agent/admin/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'end_all' })
+            });
+        } catch (err) {
+            console.error('[AgentHUD] Cancel all tasks failed:', err);
+        } finally {
+            cancelBtn.style.opacity = '1';
+            cancelBtn.style.pointerEvents = 'auto';
+        }
+    });
+
     headerRight.appendChild(stats);
+    headerRight.appendChild(cancelBtn);
     headerRight.appendChild(minimizeBtn);
     header.appendChild(title);
     header.appendChild(headerRight);
@@ -511,6 +554,7 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     const emptyState = document.getElementById('agent-task-empty');
     const runningCount = document.getElementById('hud-running-count');
     const queuedCount = document.getElementById('hud-queued-count');
+    const cancelBtn = document.getElementById('agent-task-hud-cancel');
 
     if (!taskList) return;
 
@@ -522,6 +566,10 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     const activeTasks = (tasksData.tasks || []).filter(t =>
         t.status === 'running' || t.status === 'queued'
     );
+
+    if (cancelBtn) {
+        cancelBtn.style.display = activeTasks.length > 0 ? 'flex' : 'none';
+    }
 
     // 显示/隐藏空状态（保留折叠状态）
     if (emptyState) {
@@ -597,8 +645,45 @@ window.AgentHUD._createTaskCard = function (task) {
         borderRadius: '10px'
     });
 
-    header.appendChild(typeLabel);
-    header.appendChild(statusBadge);
+    const headerLeft = document.createElement('div');
+    Object.assign(headerLeft.style, { display: 'flex', alignItems: 'center', gap: '4px', minWidth: '0' });
+    headerLeft.appendChild(typeLabel);
+    headerLeft.appendChild(statusBadge);
+
+    const taskCancelBtn = document.createElement('div');
+    taskCancelBtn.className = 'task-card-cancel';
+    taskCancelBtn.innerHTML = '✕';
+    Object.assign(taskCancelBtn.style, {
+        width: '18px',
+        height: '18px',
+        borderRadius: '4px',
+        background: 'rgba(0, 0, 0, 0.06)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '10px',
+        color: '#999',
+        cursor: 'pointer',
+        transition: 'all 0.15s ease',
+        flexShrink: '0'
+    });
+    taskCancelBtn.title = window.t ? window.t('agent.taskHud.cancelAll') : '终止任务';
+    taskCancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        taskCancelBtn.style.opacity = '0.4';
+        taskCancelBtn.style.pointerEvents = 'none';
+        try {
+            await fetch(`/api/agent/tasks/${encodeURIComponent(task.id)}/cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+        } catch (err) {
+            console.error('[AgentHUD] Cancel task failed:', err);
+        }
+    });
+
+    header.appendChild(headerLeft);
+    header.appendChild(taskCancelBtn);
     card.appendChild(header);
 
     // 任务参数/描述
@@ -713,7 +798,7 @@ window.AgentHUD._setupDragging = function (hud) {
     // 鼠标按下事件 - 全局可拖动
     const handleMouseDown = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '#agent-task-hud-cancel', '.task-card-cancel', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -817,7 +902,7 @@ window.AgentHUD._setupDragging = function (hud) {
     // 触摸开始
     const handleTouchStart = (e) => {
         // 排除内部可交互元素
-        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '.collapse-button'];
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card', '#agent-task-hud-minimize', '#agent-task-hud-cancel', '.task-card-cancel', '.collapse-button'];
         const isInteractive = e.target.closest(interactiveSelectors.join(','));
 
         if (isInteractive) return;
@@ -1038,12 +1123,31 @@ window.AgentHUD._setupDragging = function (hud) {
             transform: translateX(-2px);
         }
         
+        .task-card-cancel:hover {
+            background: rgba(220, 53, 69, 0.15) !important;
+            color: #dc3545 !important;
+            transform: scale(1.15);
+        }
+        
+        .task-card-cancel:active {
+            transform: scale(0.9);
+        }
+        
         #agent-task-hud-minimize:hover {
             background: rgba(68, 183, 254, 0.25);
             transform: scale(1.1);
         }
         
         #agent-task-hud-minimize:active {
+            transform: scale(0.95);
+        }
+        
+        #agent-task-hud-cancel:hover {
+            background: rgba(220, 53, 69, 0.25);
+            transform: scale(1.1);
+        }
+        
+        #agent-task-hud-cancel:active {
             transform: scale(0.95);
         }
         

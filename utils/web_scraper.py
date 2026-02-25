@@ -11,18 +11,17 @@ import random
 import re
 import platform
 from typing import Dict, List, Any, Optional, Union
-import logging
 from urllib.parse import quote
+from utils.logger_config import get_module_logger
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from bs4 import BeautifulSoup
 import os
 from pathlib import Path
-import importlib.util
 import json
 import sys
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 def _fix_bilibili_api_env():

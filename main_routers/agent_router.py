@@ -9,9 +9,9 @@ Handles agent-related endpoints including:
 - Admin control
 """
 
-import logging
 import time
 
+from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse
 import httpx
@@ -20,7 +20,7 @@ from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from main_logic.agent_event_bus import publish_session_event
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 TOOL_SERVER_BASE = f"http://127.0.0.1:{TOOL_SERVER_PORT}"
 USER_PLUGIN_BASE = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
 _HTTP_CLIENT: httpx.AsyncClient | None = None
@@ -284,6 +284,19 @@ async def proxy_task_detail(task_id: str):
         return r.json()
     except Exception as e:
         return JSONResponse({"error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/tasks/{task_id}/cancel')
+async def proxy_task_cancel(task_id: str):
+    """Cancel a specific task via tool server proxy."""
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/tasks/{task_id}/cancel", timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
 @router.post('/admin/control')

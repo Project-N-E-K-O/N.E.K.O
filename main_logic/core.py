@@ -7,7 +7,6 @@ import asyncio
 import json
 import struct  # For packing audio data
 import re
-import logging
 import time
 from typing import Optional
 from datetime import datetime
@@ -21,6 +20,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code
 from threading import Thread
@@ -31,7 +31,7 @@ import soxr
 import httpx
 
 # Setup logger for this module
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -905,6 +905,7 @@ class LLMSessionManager:
             
             # 确保旧的 TTS handler task 已经停止
             if self.tts_handler_task and not self.tts_handler_task.done():
+                logger.info("🎧 Cancelling old tts_handler_task...")
                 self.tts_handler_task.cancel()
                 try:
                     await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
@@ -912,6 +913,7 @@ class LLMSessionManager:
                     pass
             
             # 启动新的 TTS handler task
+            logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
             
             # 标记TTS为就绪状态并处理可能已缓存的chunk
@@ -1465,20 +1467,45 @@ class LLMSessionManager:
     # ------------------------------------------------------------------
 
     async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
-        """通过 WebSocket 向前端请求最新截图，返回压缩后的 base64（超时返回空串）。"""
-        if not self.websocket:
-            return ''
+        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。返回 base64（不含前缀）。"""
+        # 策略1: 前端 WebSocket 截图
+        if self.websocket:
+            try:
+                loop = asyncio.get_running_loop()
+                self._screenshot_future = loop.create_future()
+                await self.websocket.send_json({"type": "request_screenshot"})
+                b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
+                if b64:
+                    return b64
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
+            finally:
+                self._screenshot_future = None
+
+        # 策略2: 后端 pyautogui 兜底（仅限本机连接，远程服务器截图无意义）
+        is_local = False
         try:
-            loop = asyncio.get_running_loop()
-            self._screenshot_future = loop.create_future()
-            await self.websocket.send_json({"type": "request_screenshot"})
-            b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
-            return b64 or ''
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning("[%s] request_fresh_screenshot failed: %s", self.lanlan_name, e)
-            return ''
-        finally:
-            self._screenshot_future = None
+            ws = self.websocket
+            if ws and hasattr(ws, 'client') and ws.client:
+                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost', '0.0.0.0')
+        except Exception:
+            pass
+        if is_local:
+            try:
+                import pyautogui
+                from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
+                import base64 as b64mod
+                shot = pyautogui.screenshot()
+                if shot.mode in ('RGBA', 'LA', 'P'):
+                    shot = shot.convert('RGB')
+                jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+                b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
+                logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
+                return b64_str
+            except Exception as e2:
+                logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
+
+        return ''
 
     def resolve_screenshot_request(self, b64: str):
         """由 WebSocket router 调用，将前端回传的截图交给等待中的 future。"""
@@ -2210,7 +2237,6 @@ class LLMSessionManager:
             self.pending_input_data.clear()
 
         self.last_time = None
-        await self.send_expressions()
         if not by_server:
             await self.send_status(f"{self.lanlan_name}已离开。")
             logger.info("End Session: Resources cleaned up.")
@@ -2361,76 +2387,46 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
 
-    async def send_expressions(self, prompt=""):
-        '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''
-        try:
-            expression_map = {}
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                if prompt in expression_map:
-                    if self.current_expression:
-                        await self.websocket.send_json({
-                            "type": "expression",
-                            "message": '-',
-                        })
-                    await self.websocket.send_json({
-                        "type": "expression",
-                        "message": expression_map[prompt] + '+',
-                    })
-                    self.current_expression = expression_map[prompt]
-                else:
-                    if self.current_expression:
-                        await self.websocket.send_json({
-                            "type": "expression",
-                            "message": '-',
-                        })
-
-                if prompt in expression_map:
-                    self.sync_message_queue.put({"type": "json",
-                                                 "data": {
-                        "type": "expression",
-                        "message": expression_map[prompt] + '+',
-                    }})
-                else:
-                    if self.current_expression:
-                        self.sync_message_queue.put({"type": "json",
-                         "data": {
-                             "type": "expression",
-                             "message": '-',
-                         }})
-                        self.current_expression = None
-
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            logger.error(f"💥 WS Send Response Error: {e}")
-
-
     async def send_speech(self, tts_audio):
         """发送语音数据到前端，先发送 speech_id 头信息用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                # 先发送 audio_chunk 头信息，包含 speech_id
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": self.current_speech_id
                 })
-                # 然后发送二进制音频数据
                 await self.websocket.send_bytes(tts_audio)
-
-                # 同步到同步服务器
+                logger.info(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={self.current_speech_id}")
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+            else:
+                ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+                logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
         except WebSocketDisconnect:
-            pass
+            logger.warning("⚠️ send_speech: WebSocket disconnected")
         except Exception as e:
             logger.error(f"💥 WS Send Response Error: {e}")
 
     async def tts_response_handler(self):
+        import queue as _queue_mod
+        q = self.tts_response_queue
+        logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
-            while not self.tts_response_queue.empty():
-                data = self.tts_response_queue.get_nowait()
-                # 过滤掉就绪信号（格式为 ("__ready__", True/False)）
-                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__ready__":
-                    # 这是就绪信号，不是音频数据，跳过
+            try:
+                try:
+                    data = q.get_nowait()
+                except _queue_mod.Empty:
+                    await asyncio.sleep(0.01)
                     continue
+
+                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__ready__":
+                    continue
+
+                size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
+                logger.info(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
-            await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                logger.info("🎧 tts_response_handler cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"💥 tts_response_handler error (will retry): {e}")
+                await asyncio.sleep(0.01)

@@ -430,7 +430,8 @@
         "tempFolderRetained": "臨時目錄已保留",
         "noAvailableModelsError": "沒有可用的模型",
         "tagsPlaceholderInput": "輸入標籤，按空格添加",
-        "prepareUploadFailedMessage": "準備上傳失敗: {{error}}"
+        "prepareUploadFailedMessage": "準備上傳失敗: {{error}}",
+        "noCharacterCardSelected": "請先選擇一個角色卡"
     },
     "dialogs": {
         "confirmLeave": "確認離開",
@@ -749,7 +750,8 @@
         },
         "loadConfigFailed": "載入配置失敗，請重新整理頁面重試",
         "errorGettingCurrentApiKey": "獲取目前 API Key 時出錯",
-        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗"
+        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗",
+        "gptsovitsApiUrlRequired": "請填寫正確的 http/https API URL"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -956,7 +958,8 @@
             "saved": "情感映射配置已保存",
             "saveFailed": "保存情感映射配置失敗",
             "noModelSelected": "請先選擇一個模型"
-        }
+        },
+        "noExpressionFiles": "沒有表情檔案"
     },
     "voice": {
         "title": "音色注冊",
@@ -1134,7 +1137,12 @@
         "unregisterError": "解除注冊時發生錯誤",
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
-        "freePresetVoices": "── 免費預設音色 ──"
+        "freePresetVoices": "── 免費預設音色 ──",
+        "loadFailed": "載入角色資料失敗",
+        "renameError": "重新命名失敗: {{error}}",
+        "renameMasterTitle": "重新命名主人",
+        "renameSuccess": "重新命名成功",
+        "saveMasterError": "儲存主人設定失敗"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",
@@ -1204,7 +1212,12 @@
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
             "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
-        }
+        },
+        "deviceSwitchFailed": "裝置切換失敗",
+        "deviceSwitching": "裝置切換中...",
+        "modelPathEmpty": "模型路徑為空",
+        "modelSwitchFailed": "模型切換失敗",
+        "sessionFailed": "Session啟動失敗"
     },
     "buttons": {
         "voiceControl": "語音控製",
@@ -1310,7 +1323,10 @@
             "statusRunning": "運行中",
             "statusQueued": "隊列中",
             "statusCompleted": "已完成",
-            "statusFailed": "失敗"
+            "statusFailed": "失敗",
+            "minimize": "摺疊/展開",
+            "cancelAll": "終止所有任務",
+            "cancelConfirm": "確定要終止所有正在進行的任務嗎？"
         }
     },
     "vrm": {
@@ -1328,7 +1344,10 @@
             "animationClipError": "創建動畫 Clip 時齣錯: {{error}}",
             "animationClipNoBones": "動畫 Clip 創建失敗：沒有找到匹配的骨骼",
             "cannotCreateAnimationAction": "無法創建動畫動作",
-            "invalidModelPath": "VRM 模型路徑無效: {{path}}"
+            "invalidModelPath": "VRM 模型路徑無效: {{path}}",
+            "gltfLoaderImportFailed": "無法匯入 GLTFLoader: {{error}}",
+            "threeIncomplete": "Three.js 依賴不完整，缺少: {{missing}}",
+            "vrmLoaderImportFailed": "無法匯入 VRMLoaderPlugin: {{error}}"
         },
         "lighting": {
             "title": "VRM打光設置",
@@ -1830,7 +1849,8 @@
             "title": "🎓 開始新手引導",
             "desc": "為了獲得最佳的引導體驗，建議進入全螢幕模式。\n全螢幕模式下，引導內容會更清晰，不會被其他元素遮擋。",
             "enterFullscreen": "進入全螢幕引導"
-        }
+        },
+        "drag_hint": "按住拖動以移動提示框"
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失敗，將允許重試:",
@@ -1944,7 +1964,9 @@
         "translationApiResult": "翻譯API返迴結果:",
         "translationError": "翻譯錯誤:",
         "translationException": "翻譯請求異常:",
-        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！"
+        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！",
+        "aiFailed": "貓娘連結出現異常",
+        "aiRetrying": "貓娘連結出現異常，校準中…"
     },
     "emotionManager": {
         "title": "Live2D 情感映射管理器 - Project N.E.K.O.",
@@ -2018,5 +2040,6 @@
         "switchToDark": "切換到暗色模式",
         "switchToLight": "切換到亮色模式",
         "themeChanged": "主題已切換"
-    }
+    },
+    "characterModelNotSet": "當前角色未設定模型"
 }

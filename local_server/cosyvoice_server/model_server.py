@@ -8,7 +8,6 @@ import uvicorn
 import numpy as np
 import config
 import queue
-import torch
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 

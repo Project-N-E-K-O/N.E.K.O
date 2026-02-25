@@ -433,7 +433,8 @@
         "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
         "validatingFolderPathWithName": "Validating folder: {{path}}",
         "validatingFolder": "Validating folder: {{path}}",
-        "manageLocalItems": "Manage Local Items"
+        "manageLocalItems": "Manage Local Items",
+        "noCharacterCardSelected": "Please select a character card first"
     },
     "dialogs": {
         "confirmLeave": "Confirm Leave",
@@ -754,7 +755,8 @@
         "errorGettingCurrentApiKey": "Error getting current API Key",
         "getCurrentApiKeyFailed": "Failed to get current API Key",
         "providerExamplePlaceholder": "e.g., openai, azure, custom",
-        "provider": "Provider"
+        "provider": "Provider",
+        "gptsovitsApiUrlRequired": "Please enter a valid http/https API URL"
     },
     "live2d": {
         "manager": "Live2D Model Manager",
@@ -961,7 +963,8 @@
             "saved": "Emotion mapping saved",
             "saveFailed": "Failed to save emotion mapping",
             "noModelSelected": "Please select a model first"
-        }
+        },
+        "noExpressionFiles": "No expression files"
     },
     "voice": {
         "title": "Voice Registration",
@@ -1139,7 +1142,12 @@
         "unregisterError": "An error occurred while unregistering",
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
-        "freePresetVoices": "Free Preset Voices"
+        "freePresetVoices": "Free Preset Voices",
+        "loadFailed": "Failed to load character data",
+        "renameError": "Rename failed: {{error}}",
+        "renameMasterTitle": "Rename Master",
+        "renameSuccess": "Rename successful",
+        "saveMasterError": "Failed to save master settings"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
@@ -1209,7 +1217,12 @@
             "windows": "Windows",
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
-        }
+        },
+        "deviceSwitchFailed": "Device switch failed",
+        "deviceSwitching": "Switching device...",
+        "modelPathEmpty": "Model path is empty",
+        "modelSwitchFailed": "Model switch failed",
+        "sessionFailed": "Session failed to start"
     },
     "buttons": {
         "voiceControl": "Voice Control",
@@ -1315,7 +1328,10 @@
             "statusRunning": "Running",
             "statusQueued": "Queued",
             "statusCompleted": "Completed",
-            "statusFailed": "Failed"
+            "statusFailed": "Failed",
+            "minimize": "Collapse/Expand",
+            "cancelAll": "Cancel all tasks",
+            "cancelConfirm": "Cancel all running tasks?"
         }
     },
     "vrm": {
@@ -1333,7 +1349,10 @@
             "animationClipError": "Error creating animation clip: {{error}}",
             "animationClipNoBones": "Animation clip creation failed: No matching bones found",
             "cannotCreateAnimationAction": "Cannot create animation action",
-            "invalidModelPath": "Invalid VRM model path: {{path}}"
+            "invalidModelPath": "Invalid VRM model path: {{path}}",
+            "gltfLoaderImportFailed": "Failed to import GLTFLoader: {{error}}",
+            "threeIncomplete": "Three.js dependency incomplete, missing: {{missing}}",
+            "vrmLoaderImportFailed": "Failed to import VRMLoaderPlugin: {{error}}"
         },
         "lighting": {
             "title": "VRM Lighting Settings",
@@ -1835,7 +1854,8 @@
             "title": "🎓 Start Tutorial",
             "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
             "enterFullscreen": "Enter Fullscreen Tutorial"
-        }
+        },
+        "drag_hint": "Hold and drag to move the tooltip"
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",
@@ -1949,7 +1969,9 @@
         "translationApiResult": "Translation API returned result:",
         "translationError": "Translation error:",
         "translationException": "Translation request exception:",
-        "resetButtonNotFound": "[App] resetSessionButton not found!"
+        "resetButtonNotFound": "[App] resetSessionButton not found!",
+        "aiFailed": "Connection to catgirl encountered an error",
+        "aiRetrying": "Connection error, recalibrating..."
     },
     "emotionManager": {
         "title": "Live2D Emotion Mapping Manager - Project N.E.K.O.",
@@ -2079,5 +2101,6 @@
         "currentEffectiveConfig": "Current effective config",
         "profilePreview": "Preview after applying profile",
         "editProfileOverlay": "Edit current profile override config"
-    }
+    },
+    "characterModelNotSet": "Current character has no model set"
 }

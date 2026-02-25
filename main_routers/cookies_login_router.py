@@ -6,7 +6,6 @@ Handles authentication-related endpoints with strict validation and
 unified logic for credential management.
 """
 
-import logging
 import re
 from typing import Dict, Optional
 
@@ -24,8 +23,9 @@ from utils.cookies_login import (
     COOKIE_FILES,
     CONFIG_DIR
 )
+from utils.logger_config import get_module_logger
 
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # 预编译恶意内容检测正则，避免每次请求时重复编译
 SUSPICIOUS_PATTERN = re.compile(

@@ -433,7 +433,8 @@
         "prepareUploadFailedMessage": "准备上传失败: {{error}}",
         "manageLocalItems": "管理本地物品",
         "validatingFolder": "正在验证文件夹: {{path}}",
-        "validatingFolderPathWithName": "正在验证文件夹: {{path}}"
+        "validatingFolderPathWithName": "正在验证文件夹: {{path}}",
+        "noCharacterCardSelected": "请先选择一个角色卡"
     },
     "dialogs": {
         "confirmLeave": "确认离开",
@@ -754,7 +755,8 @@
         "errorGettingCurrentApiKey": "获取当前API Key失败",
         "getCurrentApiKeyFailed": "获取当前API Key失败",
         "provider": "供应商",
-        "providerExamplePlaceholder": "如：openai、azure、custom"
+        "providerExamplePlaceholder": "如：openai、azure、custom",
+        "gptsovitsApiUrlRequired": "请填写正确的 http/https API URL"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -961,7 +963,8 @@
             "saved": "情感映射配置已保存",
             "saveFailed": "保存情感映射配置失败",
             "noModelSelected": "请先选择一个模型"
-        }
+        },
+        "noExpressionFiles": "没有表情文件"
     },
     "voice": {
         "title": "音色注册",
@@ -1139,7 +1142,12 @@
         "unregisterError": "解除注册时发生错误",
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
-        "freePresetVoices": "免费预设音色"
+        "freePresetVoices": "免费预设音色",
+        "loadFailed": "加载角色数据失败",
+        "renameError": "重命名失败: {{error}}",
+        "renameMasterTitle": "重命名主人",
+        "renameSuccess": "重命名成功",
+        "saveMasterError": "保存主人设定失败"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",
@@ -1209,7 +1217,12 @@
             "windows": "窗口",
             "selected": "已选择 {{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享"
-        }
+        },
+        "deviceSwitchFailed": "设备切换失败",
+        "deviceSwitching": "设备切换中...",
+        "modelPathEmpty": "模型路径为空",
+        "modelSwitchFailed": "模型切换失败",
+        "sessionFailed": "Session启动失败"
     },
     "buttons": {
         "voiceControl": "语音控制",
@@ -1315,7 +1328,10 @@
             "statusRunning": "运行中",
             "statusQueued": "队列中",
             "statusCompleted": "已完成",
-            "statusFailed": "失败"
+            "statusFailed": "失败",
+            "minimize": "折叠/展开",
+            "cancelAll": "终止所有任务",
+            "cancelConfirm": "确定要终止所有正在进行的任务吗？"
         }
     },
     "vrm": {
@@ -1333,7 +1349,10 @@
             "animationClipError": "创建动画 Clip 时出错: {{error}}",
             "animationClipNoBones": "动画 Clip 创建失败：没有找到匹配的骨骼",
             "cannotCreateAnimationAction": "无法创建动画动作",
-            "invalidModelPath": "VRM 模型路径无效: {{path}}"
+            "invalidModelPath": "VRM 模型路径无效: {{path}}",
+            "gltfLoaderImportFailed": "无法导入 GLTFLoader: {{error}}",
+            "threeIncomplete": "Three.js 依赖不完整，缺少: {{missing}}",
+            "vrmLoaderImportFailed": "无法导入 VRMLoaderPlugin: {{error}}"
         },
         "lighting": {
             "title": "VRM打光设置",
@@ -1835,7 +1854,8 @@
             "title": "🎓 开始新手引导",
             "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
             "enterFullscreen": "进入全屏引导"
-        }
+        },
+        "drag_hint": "按住拖动以移动提示框"
     },
     "console": {
         "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失败，将允许重试:",
@@ -1949,7 +1969,9 @@
         "translationApiResult": "翻译API返回结果:",
         "translationError": "翻译错误:",
         "translationException": "翻译请求异常:",
-        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！"
+        "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！",
+        "aiFailed": "猫娘链接出现异常",
+        "aiRetrying": "猫娘链接出现异常，校准中…"
     },
     "emotionManager": {
         "title": "Live2D 情感映射管理器 - Project N.E.K.O.",
@@ -2079,5 +2101,6 @@
         "currentEffectiveConfig": "当前生效配置",
         "profilePreview": "应用 Profile 后预览",
         "editProfileOverlay": "编辑当前 Profile 覆盖配置"
-    }
+    },
+    "characterModelNotSet": "当前角色未设置模型"
 }

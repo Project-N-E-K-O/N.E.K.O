@@ -7,7 +7,6 @@ import sys
 import os
 import json
 import shutil
-import logging
 import threading
 from datetime import date
 from copy import deepcopy
@@ -24,11 +23,12 @@ from utils.api_config_loader import (
     get_assist_api_profiles,
     get_assist_api_key_fields,
 )
+from utils.logger_config import get_module_logger
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 
 class ConfigManager:
