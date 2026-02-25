@@ -124,8 +124,25 @@ jobs:
                 json.dump(data, f, ensure_ascii=False, indent=2)
               print(f'Created {path}')
           "
+          # Copy browser_use prompt .md templates from installed package
           mkdir -p data/browser_use_prompts
-          touch data/browser_use_prompts/.gitkeep
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON -c "
+          import shutil
+          from pathlib import Path
+          import browser_use.agent.system_prompts as sp
+          src = Path(sp.__file__).parent
+          dst = Path('data/browser_use_prompts')
+          dst.mkdir(parents=True, exist_ok=True)
+          for md in src.glob('*.md'):
+              shutil.copy2(md, dst / md.name)
+              print(f'Copied {md.name}')
+          "
+          echo "=== browser_use_prompts ==="
+          ls -la data/browser_use_prompts/
           echo "Default config files and directories ready."
 
       # --- Platform-specific system dependencies ---
