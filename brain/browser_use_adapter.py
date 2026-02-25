@@ -142,6 +142,60 @@ _DEFAULT_TIMEOUT_S = 300
 _DEFAULT_KEEP_ALIVE = True
 
 
+def _seed_extension_cache() -> None:
+    """Copy bundled browser-use extensions into the runtime cache so that
+    ``BrowserProfile._ensure_default_extensions_downloaded()`` finds them
+    already extracted and skips the network download entirely.
+
+    The bundled extensions live in ``data/browser_use_extensions/`` next to
+    the executable (populated at build time by ``build_nuitka.bat``).
+    """
+    try:
+        from browser_use.config import CONFIG
+    except Exception:
+        return
+
+    target_dir = CONFIG.BROWSER_USE_EXTENSIONS_DIR
+    if not target_dir:
+        return
+
+    for root_candidate in (
+        os.path.dirname(os.path.abspath(sys.argv[0])),
+        os.path.dirname(os.path.abspath(__file__)),
+        os.getcwd(),
+    ):
+        src_dir = os.path.join(root_candidate, "data", "browser_use_extensions")
+        if os.path.isdir(src_dir):
+            break
+    else:
+        return
+
+    target = Path(target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for entry in os.listdir(src_dir):
+        src_ext = os.path.join(src_dir, entry)
+        if not os.path.isdir(src_ext):
+            continue
+        dest_ext = target / entry
+        manifest = dest_ext / "manifest.json"
+        if manifest.exists():
+            continue
+        try:
+            shutil.copytree(src_ext, str(dest_ext), dirs_exist_ok=True)
+            copied += 1
+        except Exception as exc:
+            logger.debug("[BrowserUse] Failed to seed extension %s: %s", entry, exc)
+    if copied:
+        print(
+            f"[BrowserUse] Seeded {copied} bundled extension(s) into cache",
+            flush=True,
+        )
+
+
+_seed_extension_cache()
+
+
 def _find_bundled_chromium() -> Optional[str]:
     """Find the Chromium executable bundled inside ``playwright_browsers/``.
 

@@ -72,7 +72,7 @@ jobs:
             platform: win
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
-          - os: macos-14
+          - os: macos-15
             platform: mac-x64
             python_arch: x64
             artifact_name: python-backend-mac-x64
@@ -87,7 +87,7 @@ jobs:
             output_binary: projectneko_server
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
@@ -130,7 +130,25 @@ jobs:
                 json.dump(data, f, ensure_ascii=False, indent=2)
               print(f'Created {path}')
           "
+          # Copy browser_use prompt .md templates from installed package
           mkdir -p data/browser_use_prompts
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          $VENV_PYTHON -c "
+          import shutil
+          from pathlib import Path
+          import browser_use.agent.system_prompts as sp
+          src = Path(sp.__file__).parent
+          dst = Path('data/browser_use_prompts')
+          dst.mkdir(parents=True, exist_ok=True)
+          for md in src.glob('*.md'):
+              shutil.copy2(md, dst / md.name)
+              print(f'Copied {md.name}')
+          "
+          echo "=== browser_use_prompts ==="
+          ls -la data/browser_use_prompts/
           echo "Default config files and directories ready."
 
       # --- Platform-specific system dependencies ---
@@ -198,7 +216,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
+          # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
+          # that break Nuitka's xattr call; browser will download on first run)
+          if [[ "$RUNNER_OS" != "macOS" ]]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
 
           # Packages
@@ -228,7 +250,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=playwright"
+          # NOTE: do NOT use --include-package-data=playwright here,
+          # Nuitka's built-in playwright plugin handles driver/node automatically
+          # and adding package-data would conflict with the exe at the same path.
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
@@ -240,8 +264,19 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
 
-          # Plugin
+          # macOS: exclude pyobjc frameworks (Foundation requires --mode=app)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=AppKit"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=objc"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=PyObjCTools"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=CoreFoundation"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
+          fi
+
+          # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
+          NUITKA_OPTS="$NUITKA_OPTS --assume-yes-for-downloads"
 
           # Steam files (include if present in repo)
           NUITKA_OPTS="$NUITKA_OPTS --include-data-files=steam_appid.txt=steam_appid.txt"
@@ -330,6 +365,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
+          set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
 
           .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
 
@@ -339,6 +375,12 @@ jobs:
         run: |
           if [ -d "dist/launcher.dist" ]; then
             mv dist/launcher.dist dist/Xiao8
+          fi
+          # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
+          # spaces in .app paths), copy it manually into the output directory
+          if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
+            cp -R playwright_browsers dist/Xiao8/playwright_browsers
+            echo "Copied playwright_browsers into dist/Xiao8/"
           fi
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
@@ -365,7 +407,7 @@ jobs:
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
-          - os: macos-14
+          - os: macos-15
             platform: mac-x64
             python_artifact: python-backend-mac-x64
             electron_args: '--mac --x64'
@@ -382,6 +424,7 @@ jobs:
             artifact_name: desktop-linux-x64
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
