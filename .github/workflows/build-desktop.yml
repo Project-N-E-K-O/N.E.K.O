@@ -72,11 +72,6 @@ jobs:
             platform: win
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
-          - os: macos-14
-            platform: mac-x64
-            python_arch: x64
-            artifact_name: python-backend-mac-x64
-            output_binary: projectneko_server
           - os: macos-latest
             platform: mac-arm64
             artifact_name: python-backend-mac-arm64
@@ -96,7 +91,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.python_arch || '' }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -131,6 +125,7 @@ jobs:
               print(f'Created {path}')
           "
           mkdir -p data/browser_use_prompts
+          touch data/browser_use_prompts/.gitkeep
           echo "Default config files and directories ready."
 
       # --- Platform-specific system dependencies ---
@@ -240,6 +235,16 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
 
+          # macOS: exclude pyobjc frameworks (Foundation requires --mode=app)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=AppKit"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=objc"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=PyObjCTools"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=CoreFoundation"
+            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
+          fi
+
           # Plugin
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
 
@@ -330,6 +335,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
+          set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
 
           .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
 
@@ -365,11 +371,6 @@ jobs:
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
-          - os: macos-14
-            platform: mac-x64
-            python_artifact: python-backend-mac-x64
-            electron_args: '--mac --x64'
-            artifact_name: desktop-mac-x64
           - os: macos-latest
             platform: mac-arm64
             python_artifact: python-backend-mac-arm64
@@ -536,8 +537,7 @@ jobs:
             | Platform | Architecture | File |
             |----------|-------------|------|
             | Windows | x64 | `N.E.K.O.exe` (Portable) |
-            | macOS | Intel (x64) | `N.E.K.O-*.dmg` or `.zip` |
-            | macOS | Apple Silicon (arm64) | `N.E.K.O-*-arm64.dmg` or `.zip` |
+            | macOS | Apple Silicon (arm64) | `N.E.K.O-*.dmg` or `.zip` |
             | Linux | x64 | `N.E.K.O-*.AppImage` / `.deb` / `.tar.gz` |
 
             ### Notes
