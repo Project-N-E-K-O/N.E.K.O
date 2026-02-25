@@ -246,7 +246,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=playwright"
+          # NOTE: do NOT use --include-package-data=playwright here,
+          # Nuitka's built-in playwright plugin handles driver/node automatically
+          # and adding package-data would conflict with the exe at the same path.
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
@@ -351,7 +353,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=browser_use
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use_sdk
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=playwright
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=playwright
+          REM Do NOT use --include-package-data=playwright: Nuitka playwright plugin handles it
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
