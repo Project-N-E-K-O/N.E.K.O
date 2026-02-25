@@ -451,6 +451,18 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x electron-app/bin/projectneko_server
 
+      # --- Cache Electron binary to avoid download failures ---
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/Library/Caches/electron
+            ~/.cache/electron
+          key: electron-${{ matrix.os }}-${{ matrix.platform }}-${{ hashFiles('electron-app/package-lock.json') }}
+          restore-keys: |
+            electron-${{ matrix.os }}-${{ matrix.platform }}-
+
       - name: Install npm dependencies
         working-directory: electron-app
         run: npm ci || npm install
@@ -504,7 +516,14 @@ jobs:
       # --- Build Electron app ---
       - name: Build Electron app
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }}
+        shell: bash
+        run: |
+          BUILDER_ARGS="${{ matrix.electron_args }}"
+          # Explicitly disable macOS code signing when skip_signing is true
+          if [[ "${{ github.event.inputs.skip_signing }}" != "false" && "$RUNNER_OS" == "macOS" ]]; then
+            BUILDER_ARGS="$BUILDER_ARGS --config.mac.identity=null"
+          fi
+          npx electron-builder $BUILDER_ARGS
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
