@@ -82,22 +82,24 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                     await asyncio.sleep(1.5 * (attempt + 1))
                 continue
             
-            # 回调+轮询机制
+            # 回调+轮询机制（每次迭代创建独立的 Event 和 dict，通过默认参数绑定避免闭包晚绑定）
             query_completed = threading.Event()
             query_result_info = {"success": False, "num_results": 0}
             
-            def on_query_completed(result):
-                try:
-                    query_result_info["success"] = (result.result == 1)
-                    query_result_info["num_results"] = int(result.numResultsReturned)
-                    logger.info(f"UGC 查询回调: result={result.result}, numResults={result.numResultsReturned}")
-                except Exception as e:
-                    logger.warning(f"UGC 查询回调处理出错: {e}")
-                finally:
-                    query_completed.set()
+            def _make_callback(_info=query_result_info, _event=query_completed):
+                def on_query_completed(result):
+                    try:
+                        _info["success"] = (result.result == 1)
+                        _info["num_results"] = int(result.numResultsReturned)
+                        logger.info(f"UGC 查询回调: result={result.result}, numResults={result.numResultsReturned}")
+                    except Exception as e:
+                        logger.warning(f"UGC 查询回调处理出错: {e}")
+                    finally:
+                        _event.set()
+                return on_query_completed
             
             steamworks.Workshop.SendQueryUGCRequest(
-                query_handle, callback=on_query_completed, override_callback=True
+                query_handle, callback=_make_callback(), override_callback=True
             )
             
             # 轮询等待（10ms 间隔，最多 15 秒）

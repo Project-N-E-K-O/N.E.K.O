@@ -713,16 +713,25 @@ async def on_startup():
             logger.warning(f"Agent event bridge startup failed: {e}")
         await _init_and_mount_workshop()
         
-        # 后台预热 UGC 缓存 + 同步角色卡（不阻塞启动）
+        # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
         if steamworks:
             import main_routers.workshop_router as _wr
             
-            async def _startup_workshop_tasks():
-                """启动时后台执行: 预热 UGC 缓存 → 同步角色卡"""
+            async def _warmup_only():
+                """仅预热 UGC 缓存"""
                 try:
                     await warmup_ugc_cache()
                 except Exception as e:
                     logger.warning(f"UGC 缓存预热失败: {e}")
+            
+            async def _sync_characters_only():
+                """等待预热完成后同步角色卡"""
+                # 先等预热完成，角色卡同步依赖订阅物品列表
+                if _wr._ugc_warmup_task is not None:
+                    try:
+                        await _wr._ugc_warmup_task
+                    except Exception:
+                        pass
                 try:
                     sync_result = await sync_workshop_character_cards()
                     if sync_result["added"] > 0:
@@ -732,7 +741,9 @@ async def on_startup():
                 except Exception as e:
                     logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
             
-            _wr._ugc_warmup_task = asyncio.create_task(_startup_workshop_tasks())
+            # _ugc_warmup_task 仅引用预热任务，等待它不会被角色卡同步阻塞
+            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+            asyncio.create_task(_sync_characters_only())
         
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 

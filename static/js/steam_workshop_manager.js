@@ -1586,6 +1586,18 @@ let totalPages = 1;
 let currentSortField = 'timeAdded'; // 默认按添加时间排序
 let currentSortOrder = 'desc'; // 默认降序
 
+// HTML 转义，防止 XSS
+function escapeHtml(str) {
+    if (typeof str !== 'string') return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+// 安全获取作者显示名
+function safeAuthorName(item) {
+    const raw = item.authorName || (item.steamIDOwner != null ? String(item.steamIDOwner) : '');
+    return raw || (window.t ? window.t('steam.unknownAuthor') : '未知作者');
+}
+
 // 加载订阅物品
 function loadSubscriptions() {
     const subscriptionsList = document.getElementById('subscriptions-list');
@@ -1662,7 +1674,7 @@ function renderSubscriptionsPage() {
         const formattedItem = {
             id: String(item.publishedFileId),
             name: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
-            author: item.authorName || (item.steamIDOwner ? String(item.steamIDOwner) : (window.t ? window.t('steam.unknownAuthor') : '未知作者')),
+            author: escapeHtml(safeAuthorName(item)),
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
@@ -1951,7 +1963,7 @@ function viewItemDetails(itemId) {
             const formattedItem = {
                 id: item.publishedFileId.toString(),
                 name: item.title,
-                author: item.authorName || item.steamIDOwner.toString(),
+                author: escapeHtml(safeAuthorName(item)),
                 subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
@@ -2143,18 +2155,24 @@ async function autoScanAndAddWorkshopCharacterCards() {
         // 1. 服务端统一同步角色卡（高效，不需要前端逐个fetch读取文件）
         try {
             const syncResponse = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
-            const syncResult = await syncResponse.json();
-            if (syncResult.success) {
-                if (syncResult.added > 0) {
-                    console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，跳过 ${syncResult.skipped} 个已存在`);
-                    // 刷新角色卡列表
-                    loadCharacterCards();
+            if (!syncResponse.ok) {
+                console.error(`[工坊同步] 服务端返回错误: HTTP ${syncResponse.status} ${syncResponse.statusText}`);
+            } else {
+                const syncResult = await syncResponse.json();
+                if (syncResult.success) {
+                    if (syncResult.added > 0) {
+                        console.log(`[工坊同步] 服务端同步完成：新增 ${syncResult.added} 个角色卡，跳过 ${syncResult.skipped} 个已存在`);
+                        // 刷新角色卡列表
+                        loadCharacterCards();
+                    } else {
+                        console.log('[工坊同步] 服务端同步完成：无新增角色卡');
+                    }
                 } else {
-                    console.log('[工坊同步] 服务端同步完成：无新增角色卡');
+                    console.error(`[工坊同步] 服务端同步失败: ${syncResult.error || '未知错误'}`, syncResult);
                 }
             }
         } catch (syncError) {
-            console.error('[工坊同步] 服务端角色卡同步失败:', syncError);
+            console.error('[工坊同步] 服务端角色卡同步请求失败:', syncError);
         }
 
         // 2. 音频文件扫描仍在前端执行（涉及 voice_clone API 和 localStorage 追踪）
