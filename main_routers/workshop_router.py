@@ -2687,7 +2687,7 @@ async def sync_workshop_character_cards() -> dict:
                         with open(chara_file_path, 'r', encoding='utf-8') as f:
                             chara_data = json.load(f)
                         
-                        chara_name = chara_data.get('档案名')
+                        chara_name = chara_data.get('档案名') or chara_data.get('name')
                         if not chara_name:
                             continue
                         
@@ -2698,7 +2698,7 @@ async def sync_workshop_character_cards() -> dict:
                         
                         # 构建角色数据，过滤保留字段
                         catgirl_data = {}
-                        skip_keys = ['档案名'] + _RESERVED_FIELDS
+                        skip_keys = ['档案名', 'name'] + _RESERVED_FIELDS
                         for k, v in chara_data.items():
                             if k not in skip_keys and v is not None and v != '':
                                 catgirl_data[k] = v

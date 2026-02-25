@@ -317,15 +317,24 @@ let characterData = null;
 async function autoScanWorkshopCharacterCards() {
     try {
         const response = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            console.error(`[工坊扫描] 服务端返回错误: HTTP ${response.status} ${response.statusText}`, errText);
+            return false;
+        }
         const result = await response.json();
-        if (result.success && result.added > 0) {
+        if (result.success === false) {
+            console.error(`[工坊扫描] 服务端同步失败: ${result.error || result.message || '未知错误'}`, result);
+            return false;
+        }
+        if (result.added > 0) {
             console.log(`[工坊扫描] 服务端同步完成：新增 ${result.added} 个角色卡，跳过 ${result.skipped} 个已存在`);
             return true;
         }
         console.log('[工坊扫描] 服务端同步完成：无新增角色卡');
         return false;
     } catch (error) {
-        console.log('[工坊扫描] 服务端同步失败，Steam未运行或未初始化');
+        console.error('[工坊扫描] 服务端角色卡同步请求异常:', error);
         return false;
     }
 }
