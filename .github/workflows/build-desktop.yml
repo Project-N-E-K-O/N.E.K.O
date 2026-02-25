@@ -87,7 +87,7 @@ jobs:
             output_binary: projectneko_server
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
@@ -424,6 +424,7 @@ jobs:
             artifact_name: desktop-linux-x64
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     steps:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
