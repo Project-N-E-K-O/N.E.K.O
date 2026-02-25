@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import json
 import uuid
 from typing import Dict, Any, List, Optional
@@ -8,11 +7,11 @@ from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager
-from .mcp_client import McpRouterClient, McpToolCatalog
+from utils.logger_config import get_module_logger
 from .computer_use import ComputerUseAdapter
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 @dataclass
@@ -31,8 +30,6 @@ class TaskPlanner:
     Planner module: preloads server capabilities, judges executability, decomposes task into executable queries.
     """
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None):
-        self.router = McpRouterClient()
-        self.catalog = McpToolCatalog(self.router)
         self.task_pool: Dict[str, Task] = {}
         self.computer_use = computer_use or ComputerUseAdapter()
         self._config_manager = get_config_manager()
@@ -40,19 +37,11 @@ class TaskPlanner:
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        return ChatOpenAI(model=api_config['model'], base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0, extra_body=get_extra_body(api_config['model']) or None)
+        return ChatOpenAI(model=api_config['model'], base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0, max_retries=0, extra_body=get_extra_body(api_config['model']) or None)
 
     async def refresh_capabilities(self, force_refresh: bool = True) -> Dict[str, Dict[str, Any]]:
-        """
-        刷新MCP能力列表
-        
-        Args:
-            force_refresh: 默认为True，强制刷新以获取最新的工具列表
-        """
-        try:
-            return await self.catalog.get_capabilities(force_refresh=force_refresh)
-        except Exception:
-            return {}
+        """MCP 已移除，始终返回空。"""
+        return {}
 
     async def assess_and_plan(self, task_id: str, query: str, register: bool = True) -> Task:
         # Phase 1: MCP-only decision

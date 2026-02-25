@@ -22,7 +22,8 @@ KEY_MAPPING = {
     "assistApiKeyGlm": "ASSIST_API_KEY_GLM",
     "assistApiKeyStep": "ASSIST_API_KEY_STEP",
     "assistApiKeySilicon": "ASSIST_API_KEY_SILICON",
-    "assistApiKeyGemini": "ASSIST_API_KEY_GEMINI"
+    "assistApiKeyGemini": "ASSIST_API_KEY_GEMINI",
+    "assistApiKeyKimi": "ASSIST_API_KEY_KIMI"
 }
 
 def pytest_addoption(parser):

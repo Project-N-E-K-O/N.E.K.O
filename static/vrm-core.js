@@ -175,6 +175,13 @@ class VRMCore {
             this.manager.interaction.setLocked(locked);
         }
 
+        if (!locked) {
+            const vrmContainer = document.getElementById('vrm-container');
+            if (vrmContainer) {
+                vrmContainer.style.opacity = '1';
+            }
+        }
+
         if (this.manager.controls) {
             this.manager.controls.enablePan = !locked;
         }
@@ -988,6 +995,8 @@ class VRMCore {
 
             // 优化材质设置（根据性能模式）
             this.optimizeMaterials();
+            // 根据当前画质设置应用阴影/描边/像素比
+            this.applyQualitySettings(window.renderQuality || 'medium');
 
             if (this.manager.controls) {
                 this.manager.controls.target.set(0, center.y, 0);
@@ -1271,8 +1280,58 @@ class VRMCore {
             return false;
         }
     }
+
+    /**
+     * 根据画质设置应用渲染优化（纯性能分级，不改变视觉风格）
+     * Low:    pixelRatio 0.8、无物理（render loop 控制）、禁描边
+     * Medium: pixelRatio 1.0、有物理（跳帧）、禁描边
+     * High:   pixelRatio = devicePixelRatio、有物理、有描边
+     */
+    applyQualitySettings(quality) {
+        if (!this.manager.renderer) return;
+
+        if (quality === 'low') {
+            this.manager.renderer.setPixelRatio(0.8);
+        } else if (quality === 'medium') {
+            this.manager.renderer.setPixelRatio(1.0);
+        } else {
+            this.applyPerformanceSettings();
+        }
+
+        if (!this.manager.currentModel?.vrm?.scene) return;
+        const disableOutline = (quality === 'low' || quality === 'medium');
+        this.manager.currentModel.vrm.scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach(mat => {
+                if (!mat) return;
+
+                if (mat._isOutline || mat.isOutline) {
+                    if (disableOutline) {
+                        if (mat._savedVisible === undefined) {
+                            mat._savedVisible = mat.visible;
+                        }
+                        mat.visible = false;
+                    } else {
+                        if (mat._savedVisible !== undefined) {
+                            mat.visible = mat._savedVisible;
+                            delete mat._savedVisible;
+                        }
+                    }
+                }
+            });
+        });
+    }
 }
 
 // 导出到全局
 window.VRMCore = VRMCore;
+
+// 监听画质变更事件，实时应用
+window.addEventListener('neko-render-quality-changed', (e) => {
+    const quality = e.detail?.quality;
+    if (quality && window.vrmManager?.core) {
+        window.vrmManager.core.applyQualitySettings(quality);
+    }
+});
 

@@ -1,16 +1,16 @@
 # -- coding: utf-8 --
 
 import asyncio
-import logging
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
+from utils.logger_config import get_module_logger
 
 # Setup logger for this module
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 class OmniOfflineClient:
     """

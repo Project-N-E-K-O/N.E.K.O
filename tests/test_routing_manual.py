@@ -17,10 +17,6 @@ Run with:
 """
 
 import asyncio
-import json
-import os
-import sys
-import time
 
 import pytest
 
@@ -45,7 +41,6 @@ def _make_messages(user_text: str):
 
 
 ALL_ENABLED = {
-    "mcp_enabled": False,
     "computer_use_enabled": True,
     "browser_use_enabled": True,
     "user_plugin_enabled": False,

@@ -1,11 +1,11 @@
-from typing import Dict, Any, List
-import logging
+from typing import Dict, List
 import asyncio
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 class ConversationAnalyzer:
@@ -47,7 +47,7 @@ class ConversationAnalyzer:
         for attempt in range(max_retries):
             try:
                 # 使用与 emotion_analysis 相同的调用方式
-                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
                 
                 request_params = {
                     "model": model,

@@ -38,10 +38,9 @@ font-family: 'Segoe UI', Arial, sans-serif;
 max-width: 100%;
 margin: 0;
 background: #fff;
-border-radius: 0; /* 无边框窗口不需要圆角 */
+border-radius: 0;
 box-shadow: none;
 padding: 0;
-overflow: hidden;
 position: relative;
 min-height: 100vh;
 }
@@ -53,7 +52,10 @@ display: flex;
 justify-content: space-between;
 align-items: center;
 border-radius: 0;
--webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+position: sticky;
+top: 0;
+z-index: 100;
+-webkit-app-region: drag;
 }
 
 /* 标题栏内的可交互元素需要禁用拖动 */

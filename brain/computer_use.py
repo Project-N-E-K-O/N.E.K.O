@@ -8,18 +8,20 @@ Supports thinking mode for models that provide it.
 """
 from typing import Dict, Any, Optional, List, Tuple
 import re
-import io
 import base64
-import logging
 import platform
 import os
 import time
 import traceback
+from io import BytesIO
 from openai import OpenAI
-from config import get_extra_body
+from PIL import Image
+from config import get_agent_extra_body
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
+from utils.screenshot_utils import compress_screenshot
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 try:
     if platform.system().lower() == "windows":
@@ -328,12 +330,13 @@ class ComputerUseAdapter:
     def __init__(
         self,
         max_steps: int = 50,
-        max_image_history: int = 3,
-        max_tokens: int = 4096,
+        max_image_history: int = 2,
+        max_tokens: int = 6000,
         thinking: bool = True,
     ):
         self.last_error: Optional[str] = None
         self.init_ok = False
+        self._cancelled: bool = False
         self.max_steps = max_steps
         self.max_image_history = max_image_history
         self.max_tokens = max_tokens
@@ -376,13 +379,16 @@ class ComputerUseAdapter:
                 self.last_error = "Agent model not configured"
                 return
 
-            self._llm_client = OpenAI(base_url=base_url, api_key=api_key)
+            self._llm_client = OpenAI(
+                base_url=base_url, api_key=api_key, timeout=65.0,
+                max_retries=0,
+            )
 
             # Connectivity test (via langchain for compatibility with extra_body)
             from langchain_openai import ChatOpenAI
             test_llm = ChatOpenAI(
                 model=model, base_url=base_url, api_key=api_key,
-                extra_body=get_extra_body(model) or None,
+                extra_body=get_agent_extra_body(model) or None,
             ).bind(max_tokens=5)
             _ = test_llm.invoke("ok").content
             self.init_ok = True
@@ -424,6 +430,69 @@ class ComputerUseAdapter:
         self.observations.clear()
         self.cots.clear()
 
+    def _compress_jpeg_to_target(self, jpeg_bytes: bytes, target_bytes: int) -> bytes:
+        """Best-effort compress one JPEG below target size."""
+        if len(jpeg_bytes) <= target_bytes:
+            return jpeg_bytes
+        try:
+            img = Image.open(BytesIO(jpeg_bytes)).convert("RGB")
+        except Exception:
+            return jpeg_bytes
+
+        # Quality-only first.
+        for q in (68, 60, 52, 44, 36, 30, 26):
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=q, optimize=True)
+            out = buf.getvalue()
+            if len(out) <= target_bytes:
+                return out
+
+        # Then downscale + quality.
+        w, h = img.size
+        for scale in (0.9, 0.8, 0.72, 0.64, 0.56):
+            nw = max(320, int(w * scale))
+            nh = max(180, int(h * scale))
+            resized = img.resize((nw, nh), Image.LANCZOS)
+            for q in (54, 46, 38, 32, 26):
+                buf = BytesIO()
+                resized.save(buf, format="JPEG", quality=q, optimize=True)
+                out = buf.getvalue()
+                if len(out) <= target_bytes:
+                    return out
+
+        # Fall back to smallest candidate.
+        resized = img.resize((max(320, int(w * 0.56)), max(180, int(h * 0.56))), Image.LANCZOS)
+        buf = BytesIO()
+        resized.save(buf, format="JPEG", quality=24, optimize=True)
+        return buf.getvalue()
+
+    def _fit_images_to_total_budget(self, images: List[bytes], total_budget_bytes: int) -> List[bytes]:
+        """Best-effort fit multiple images into a total size budget."""
+        if not images:
+            return images
+        if sum(len(x) for x in images) <= total_budget_bytes:
+            return images
+
+        per_img_budget = max(80 * 1024, total_budget_bytes // len(images))
+        out = [self._compress_jpeg_to_target(x, per_img_budget) for x in images]
+        if sum(len(x) for x in out) <= total_budget_bytes:
+            return out
+
+        # Tighten budgets based on current size ratio.
+        for _ in range(3):
+            total = sum(len(x) for x in out)
+            if total <= total_budget_bytes:
+                break
+            next_out: List[bytes] = []
+            for x in out:
+                share = max(
+                    64 * 1024,
+                    int(total_budget_bytes * (len(x) / max(total, 1)) * 0.9),
+                )
+                next_out.append(self._compress_jpeg_to_target(x, share))
+            out = next_out
+        return out
+
     def predict(
         self, instruction: str, obs: Dict[str, Any]
     ) -> Tuple[Dict[str, str], str]:
@@ -450,9 +519,24 @@ class ComputerUseAdapter:
 
         n = len(self.actions)
         text_parts: List[str] = []
+        # Request policy: at most 3 images per call (2 history + 1 current),
+        # and total payload budget <= 600KB to avoid Entity Too Large.
+        history_image_limit = max(0, min(self.max_image_history, 2))
+        history_start = max(0, n - history_image_limit)
+        history_indices = list(range(history_start, n))
+        history_images = [self.observations[i] for i in history_indices]
+        packed_images = self._fit_images_to_total_budget(
+            [*history_images, screenshot_bytes],
+            total_budget_bytes=600 * 1024,
+        )
+        packed_history = packed_images[:-1] if len(packed_images) > 1 else []
+        packed_current = packed_images[-1]
+        packed_history_by_idx = {
+            history_indices[idx]: packed_history[idx]
+            for idx in range(min(len(history_indices), len(packed_history)))
+        }
 
         for i in range(n):
-            b64 = base64.b64encode(self.observations[i]).decode("utf-8")
             step_text = (
                 STEP_TEMPLATE.format(step_num=i + 1)
                 + self._history_template.format(
@@ -461,19 +545,21 @@ class ComputerUseAdapter:
                 )
             )
             # Recent steps: keep the screenshot image
-            if i >= n - self.max_image_history:
+            if i >= history_start:
                 if text_parts:
                     messages.append({
                         "role": "assistant",
                         "content": "\n".join(text_parts),
                     })
                     text_parts = []
+                img_bytes = packed_history_by_idx.get(i, self.observations[i])
+                b64 = base64.b64encode(img_bytes).decode("utf-8")
                 messages.append({
                     "role": "user",
                     "content": [{
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{b64}",
+                            "url": f"data:image/jpeg;base64,{b64}",
                         },
                     }],
                 })
@@ -481,7 +567,7 @@ class ComputerUseAdapter:
             else:
                 # Older steps: text only (images dropped to save context)
                 text_parts.append(step_text)
-                if i == n - self.max_image_history - 1:
+                if i == history_start - 1:
                     messages.append({
                         "role": "assistant",
                         "content": "\n".join(text_parts),
@@ -495,13 +581,13 @@ class ComputerUseAdapter:
             })
 
         # Current screenshot + task prompt
-        cur_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+        cur_b64 = base64.b64encode(packed_current).decode("utf-8")
         messages.append({
             "role": "user",
             "content": [
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{cur_b64}"},
+                    "image_url": {"url": f"data:image/jpeg;base64,{cur_b64}"},
                 },
                 {"type": "text", "text": instruction_prompt},
             ],
@@ -532,6 +618,11 @@ class ComputerUseAdapter:
 
         return {"thought": thought, "action": action, "code": code}, code
 
+    def cancel_running(self) -> None:
+        """Signal the currently running task to stop at the next step boundary."""
+        self._cancelled = True
+        logger.info("[CUA] cancel_running called, task will abort at next step")
+
     def run_instruction(
         self, instruction: str, session_id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -546,6 +637,8 @@ class ComputerUseAdapter:
         if not self._llm_client:
             return {"success": False, "error": "Agent not initialized"}
 
+        self._cancelled = False
+
         if session_id is None or session_id != self._current_session_id:
             self.reset()
             self._current_session_id = session_id
@@ -556,12 +649,22 @@ class ComputerUseAdapter:
 
         try:
             for step in range(1, self.max_steps + 1):
-                # Screenshot → PNG bytes (native resolution, no resize)
-                shot = pyautogui.screenshot()
-                buf = io.BytesIO()
-                shot.save(buf, format="PNG")
+                if self._cancelled:
+                    logger.info("[CUA] Task cancelled by user at step %d", step)
+                    return {"success": False, "error": "Task cancelled by user"}
 
-                info, code = self.predict(instruction, {"screenshot": buf.getvalue()})
+                t0 = time.monotonic()
+                shot = pyautogui.screenshot()
+                jpg_bytes = compress_screenshot(shot)
+                t_capture = time.monotonic() - t0
+
+                t1 = time.monotonic()
+                info, code = self.predict(instruction, {"screenshot": jpg_bytes})
+                t_llm = time.monotonic() - t1
+                logger.info(
+                    "[CUA] Step %d timing: capture=%.1fs (%dKB), llm=%.1fs",
+                    step, t_capture, len(jpg_bytes) // 1024, t_llm,
+                )
 
                 if not code:
                     continue
@@ -620,26 +723,29 @@ class ComputerUseAdapter:
     # LLM call
     # ------------------------------------------------------------------
 
-    def _thinking_extra_body(self) -> dict:
-        """Provider-aware extra_body to enable thinking."""
-        base_url = (self._agent_model_cfg.get("base_url") or "").lower()
-        if "anthropic" in base_url:
-            return {"thinking": {"type": "enabled", "budget_tokens": 2048}}
-        if "googleapis" in base_url or "gemini" in base_url:
-            return {"google": {"thinking_config": {"thinking_level": "high"}}}
-        return {"enable_thinking": True}
-
     def _call_llm(self, messages: list) -> Dict[str, str]:
         """Call the VLM with retry, return parsed response."""
         model = self._agent_model_cfg.get("model", "")
-        extra = (
-            self._thinking_extra_body()
-            if self.thinking
-            else (get_extra_body(model) or {})
-        )
+        extra = get_agent_extra_body(model) or {}
 
         for attempt in range(3):
             try:
+                ok, info = self._config_manager.consume_agent_daily_quota(
+                    source="computer_use.call_llm",
+                    units=1,
+                )
+                if not ok:
+                    logger.warning(
+                        "[CUA] Agent quota exceeded: used=%s, limit=%s",
+                        info.get("used"),
+                        info.get("limit"),
+                    )
+                    return {
+                        "thought": "",
+                        "action": "",
+                        "code": 'computer.terminate(status="failure", answer="免费 Agent 模型今日试用次数已达上限（300次）")',
+                        "raw": "",
+                    }
                 resp = self._llm_client.chat.completions.create(
                     model=model,
                     messages=messages,

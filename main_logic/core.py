@@ -7,7 +7,6 @@ import asyncio
 import json
 import struct  # For packing audio data
 import re
-import logging
 import time
 from typing import Optional
 from datetime import datetime
@@ -21,6 +20,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code
 from threading import Thread
@@ -31,7 +31,7 @@ import soxr
 import httpx
 
 # Setup logger for this module
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -50,6 +50,7 @@ class LLMSessionManager:
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
+        self._screenshot_future: asyncio.Future | None = None
         self.current_speech_id = None
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
@@ -119,7 +120,6 @@ class LLMSessionManager:
         self.agent_flags = {
             'agent_enabled': False,
             'computer_use_enabled': False,
-            'mcp_enabled': False,
             'browser_use_enabled': False,
         }
         
@@ -179,26 +179,26 @@ class LLMSessionManager:
         except Exception:
             return 200
 
-    async def handle_new_message(self):
-        """处理新模型输出：清空TTS队列并通知前端"""
-        # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
-        self.audio_resampler.clear()
+    async def _clear_tts_pipeline(self):
+        """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
-            # 清空响应队列中待发送的音频数据
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
                 except: # noqa
                     break
-            # 发送终止信号以清空TTS请求队列并停止当前合成
             try:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS中断信号失败: {e}")
-        
-        # 清空待处理的TTS缓存
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+
+    async def handle_new_message(self):
+        """处理新模型输出：清空TTS队列并通知前端"""
+        # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
+        self.audio_resampler.clear()
+        await self._clear_tts_pipeline()
         
         await self.send_user_activity()
         
@@ -320,9 +320,11 @@ class LLMSessionManager:
 
     async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
-        处理响应被丢弃的通知：清空当前前端输出，必要时发送 turn end
+        处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
+        
+        await self._clear_tts_pipeline()
         
         if self.websocket and hasattr(self.websocket, 'client_state') and \
                 self.websocket.client_state == self.websocket.client_state.CONNECTED:
@@ -903,6 +905,7 @@ class LLMSessionManager:
             
             # 确保旧的 TTS handler task 已经停止
             if self.tts_handler_task and not self.tts_handler_task.done():
+                logger.info("🎧 Cancelling old tts_handler_task...")
                 self.tts_handler_task.cancel()
                 try:
                     await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
@@ -910,6 +913,7 @@ class LLMSessionManager:
                     pass
             
             # 启动新的 TTS handler task
+            logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
             
             # 标记TTS为就绪状态并处理可能已缓存的chunk
@@ -1147,10 +1151,11 @@ class LLMSessionManager:
                 else:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
-            await self.cleanup()
-            
             # 通知前端 session 启动失败，让前端重置状态
+            # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
             await self.send_session_failed(input_mode)
+            
+            await self.cleanup()
         
         finally:
             # 无论成功还是失败，都重置启动标志
@@ -1184,7 +1189,6 @@ class LLMSessionManager:
             gate_ok = False
         return gate_ok and self.agent_flags['agent_enabled'] and (
             self.agent_flags['computer_use_enabled']
-            or self.agent_flags['mcp_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
         )
 
@@ -1351,7 +1355,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'mcp_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
@@ -1457,6 +1461,122 @@ class LLMSessionManager:
 
         logger.info("[%s] Proactive task result delivered: %.40s…", self.lanlan_name, text)
         return True
+
+    # ------------------------------------------------------------------
+    # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
+    # ------------------------------------------------------------------
+
+    async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
+        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。返回 base64（不含前缀）。"""
+        # 策略1: 前端 WebSocket 截图
+        if self.websocket:
+            try:
+                loop = asyncio.get_running_loop()
+                self._screenshot_future = loop.create_future()
+                await self.websocket.send_json({"type": "request_screenshot"})
+                b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
+                if b64:
+                    return b64
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
+            finally:
+                self._screenshot_future = None
+
+        # 策略2: 后端 pyautogui 兜底（仅限本机连接，远程服务器截图无意义）
+        is_local = False
+        try:
+            ws = self.websocket
+            if ws and hasattr(ws, 'client') and ws.client:
+                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost', '0.0.0.0')
+        except Exception:
+            pass
+        if is_local:
+            try:
+                import pyautogui
+                from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
+                import base64 as b64mod
+                shot = pyautogui.screenshot()
+                if shot.mode in ('RGBA', 'LA', 'P'):
+                    shot = shot.convert('RGB')
+                jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+                b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
+                logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
+                return b64_str
+            except Exception as e2:
+                logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
+
+        return ''
+
+    def resolve_screenshot_request(self, b64: str):
+        """由 WebSocket router 调用，将前端回传的截图交给等待中的 future。"""
+        if self._screenshot_future and not self._screenshot_future.done():
+            self._screenshot_future.set_result(b64)
+
+    async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
+        """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        if self.last_user_activity_time is not None:
+            if time.time() - self.last_user_activity_time < min_idle_secs:
+                logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
+                return False
+        if self.is_active and isinstance(self.session, OmniRealtimeClient):
+            logger.info("[%s] prepare_proactive_delivery: voice session active", self.lanlan_name)
+            return False
+        if not self.websocket:
+            return False
+        try:
+            if (hasattr(self.websocket, 'client_state')
+                    and self.websocket.client_state != self.websocket.client_state.CONNECTED):
+                return False
+        except Exception:
+            pass
+        if not self.session or not hasattr(self.session, '_conversation_history'):
+            try:
+                await self.start_session(self.websocket, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] prepare_proactive_delivery: session start failed: %s", self.lanlan_name, e)
+                return False
+            if not self.session or not hasattr(self.session, '_conversation_history'):
+                return False
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
+        return True
+
+    async def feed_tts_chunk(self, text: str):
+        """只把文本喂给 TTS 管线，不发送到前端显示。"""
+        if not self.use_tts:
+            return
+        async with self.tts_cache_lock:
+            if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                try:
+                    self.tts_request_queue.put((self.current_speech_id, text))
+                except Exception as e:
+                    logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
+            else:
+                self.tts_pending_chunks.append((self.current_speech_id, text))
+
+    async def finish_proactive_delivery(self, full_text: str):
+        """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
+        await self.send_lanlan_response(full_text, is_first_chunk=True)
+
+        from langchain_core.messages import AIMessage as _AIMsg
+        if self.session and hasattr(self.session, '_conversation_history'):
+            self.session._conversation_history.append(_AIMsg(content=full_text))
+
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            try:
+                self.tts_request_queue.put((None, None))
+            except Exception:
+                pass
+
+        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        try:
+            if (self.websocket
+                    and hasattr(self.websocket, 'client_state')
+                    and self.websocket.client_state == self.websocket.client_state.CONNECTED):
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception:
+            pass
+        logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
 
     async def trigger_agent_callbacks(self) -> None:
         """Proactively deliver pending agent task results via LLM rephrase.
@@ -2117,7 +2237,6 @@ class LLMSessionManager:
             self.pending_input_data.clear()
 
         self.last_time = None
-        await self.send_expressions()
         if not by_server:
             await self.send_status(f"{self.lanlan_name}已离开。")
             logger.info("End Session: Resources cleaned up.")
@@ -2153,7 +2272,7 @@ class LLMSessionManager:
     def _get_translation_service(self):
         """获取翻译服务实例（延迟初始化）"""
         if self._translation_service is None:
-            from utils.translation_service import get_translation_service
+            from utils.language_utils import get_translation_service
             self._translation_service = get_translation_service(self._config_manager)
         return self._translation_service
     
@@ -2198,7 +2317,7 @@ class LLMSessionManager:
         
         try:
             translation_service = self._get_translation_service()
-            translated = await translation_service.translate_text(text, self.user_language)
+            translated = await translation_service.translate_text_robust(text, self.user_language)
             return translated
         except Exception as e:
             logger.error(f"翻译失败: {e}，返回原文")
@@ -2268,76 +2387,46 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
 
-    async def send_expressions(self, prompt=""):
-        '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''
-        try:
-            expression_map = {}
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                if prompt in expression_map:
-                    if self.current_expression:
-                        await self.websocket.send_json({
-                            "type": "expression",
-                            "message": '-',
-                        })
-                    await self.websocket.send_json({
-                        "type": "expression",
-                        "message": expression_map[prompt] + '+',
-                    })
-                    self.current_expression = expression_map[prompt]
-                else:
-                    if self.current_expression:
-                        await self.websocket.send_json({
-                            "type": "expression",
-                            "message": '-',
-                        })
-
-                if prompt in expression_map:
-                    self.sync_message_queue.put({"type": "json",
-                                                 "data": {
-                        "type": "expression",
-                        "message": expression_map[prompt] + '+',
-                    }})
-                else:
-                    if self.current_expression:
-                        self.sync_message_queue.put({"type": "json",
-                         "data": {
-                             "type": "expression",
-                             "message": '-',
-                         }})
-                        self.current_expression = None
-
-        except WebSocketDisconnect:
-            pass
-        except Exception as e:
-            logger.error(f"💥 WS Send Response Error: {e}")
-
-
     async def send_speech(self, tts_audio):
         """发送语音数据到前端，先发送 speech_id 头信息用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                # 先发送 audio_chunk 头信息，包含 speech_id
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": self.current_speech_id
                 })
-                # 然后发送二进制音频数据
                 await self.websocket.send_bytes(tts_audio)
-
-                # 同步到同步服务器
+                logger.info(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={self.current_speech_id}")
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+            else:
+                ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+                logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
         except WebSocketDisconnect:
-            pass
+            logger.warning("⚠️ send_speech: WebSocket disconnected")
         except Exception as e:
             logger.error(f"💥 WS Send Response Error: {e}")
 
     async def tts_response_handler(self):
+        import queue as _queue_mod
+        q = self.tts_response_queue
+        logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
-            while not self.tts_response_queue.empty():
-                data = self.tts_response_queue.get_nowait()
-                # 过滤掉就绪信号（格式为 ("__ready__", True/False)）
-                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__ready__":
-                    # 这是就绪信号，不是音频数据，跳过
+            try:
+                try:
+                    data = q.get_nowait()
+                except _queue_mod.Empty:
+                    await asyncio.sleep(0.01)
                     continue
+
+                if isinstance(data, tuple) and len(data) == 2 and data[0] == "__ready__":
+                    continue
+
+                size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
+                logger.info(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
-            await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                logger.info("🎧 tts_response_handler cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"💥 tts_response_handler error (will retry): {e}")
+                await asyncio.sleep(0.01)

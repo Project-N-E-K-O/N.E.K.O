@@ -16,6 +16,7 @@
 [![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1022939659-00BFFF?style=flat&logo=tencent-qq)](https://qm.qq.com/q/hN82yFONJQ)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
+[![Docs](https://img.shields.io/badge/📖_开发者文档-project--n--e--k--o.github.io-40C5F1?style=for-the-badge)](https://project-n-e-k-o.github.io/N.E.K.O/)
 
 **:older_woman: 零配置开箱即用，我奶奶都能玩转的赛博猫娘！**
 
@@ -81,9 +82,9 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 QQ群：1022939659
 
-## 快速开始（Windows用户）
+## 快速开始（Windows用户、Macbook用户）
 
-对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`即可启动。
+对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（Macbook用户需要手动解除系统隔离）
 
 ## Docker部署（Linux用户）
 
@@ -145,38 +146,6 @@ networks:
     driver: bridge
 ```
 
-#### 核心 API 配置
-
-| 环境变量 | 说明 | 默认值 | 示例 |
-|---------|------|--------|------|
-| `NEKO_CORE_API_KEY` | 核心 API Key（必填） | - | `sk-xxxxx` |
-| `NEKO_CORE_API` | 核心 API 提供商 | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
-| `NEKO_ASSIST_API` | 辅助 API 提供商 | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
-| `NEKO_ASSIST_API_KEY_QWEN` | 阿里云 API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
-| `NEKO_ASSIST_API_KEY_GLM` | 智谱 API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_STEP` | 阶跃星辰 API Key | - | `xxxxx` |
-| `NEKO_ASSIST_API_KEY_SILICON` | 硅基流动 API Key | - | `xxxxx` |
-| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
-
-#### 服务器端口配置（不要更改！！！）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_MAIN_SERVER_PORT` | 主服务器端口 | `48911` |
-| `NEKO_MEMORY_SERVER_PORT` | 记忆服务器端口 | `48912` |
-| `NEKO_MONITOR_SERVER_PORT` | 监控服务器端口 | `48913` |
-| `NEKO_TOOL_SERVER_PORT` | 工具服务器端口 | `48915` |
-
-#### 模型配置（高级）
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `NEKO_SUMMARY_MODEL` | 摘要模型 | `qwen-plus` |
-| `NEKO_CORRECTION_MODEL` | 纠错模型 | `qwen-max` |
-| `NEKO_EMOTION_MODEL` | 情感分析模型 | `qwen-turbo` |
-| `NEKO_VISION_MODEL` | 视觉模型 | `qwen3-vl-plus-2025-09-23` |
-
 **注：** 目前docker部署方案由 *倒霉蛋HINS* 提供
 
 ## 进阶使用
@@ -193,7 +162,7 @@ networks:
 
 - 网页版访问`http://localhost:48911/chara_manager`即可进入人设编辑页面。初始 ~~猫娘~~ 伙伴的预设名称为`小天`，建议直接修改名字，并一项一项添加或修改基础人设，但尽量控制数量。
 
-- 进阶人设主要包括**Live2D模型设置(live2d)**和**声音设置(voice_id)**。如果你想要更改**Live2D模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入Live2D模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段15秒左右的连贯、干净的语音录音。通过进阶设置进入语音设置页面，上传录音即可完成自定义语音。
+- 进阶人设主要包括**Live2D模型设置(live2d)**和**声音设置(voice_id)**。如果你想要更改**Live2D模型**，请先将模型目录复制到本项目中的`static`文件夹下。从进阶设置中可以进入Live2D模型管理界面，可以更换模型，并通过拖拽和鼠标滚轮调整模型的位置和大小。如果你想要更改**角色声音**，请准备一段5秒左右的连贯、干净的语音录音。通过进阶设置进入语音设置页面，上传录音即可完成自定义语音。
 
 - 进阶人设中还有一个`system_prompt`，可以对系统指令进行完全自定义，但不建议修改。
 

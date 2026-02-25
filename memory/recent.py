@@ -1,4 +1,3 @@
-from datetime import datetime
 from config import get_extra_body
 from utils.config_manager import get_config_manager
 from langchain_openai import ChatOpenAI
@@ -13,7 +12,7 @@ from config.prompts_sys import recent_history_manager_prompt, detailed_recent_hi
 
 # Setup logger
 from utils.logger_config import setup_logging
-logger, log_config = setup_logging(service_name="RecentMemory", log_level=logging.INFO)
+logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
 class CompressedRecentHistoryManager:
     def __init__(self, max_history_length=10):
@@ -78,7 +77,7 @@ class CompressedRecentHistoryManager:
                 default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
                 if lanlan_name not in self.log_file_path:
                     self.log_file_path[lanlan_name] = default_path
-                    logger.info(f"[RecentHistory] 使用默认路径: {default_path}")
+                    logger.debug(f"[RecentHistory] 使用默认路径: {default_path}")
             except Exception as e2:
                 logger.error(f"创建默认路径失败: {e2}")
                 return
@@ -100,7 +99,7 @@ class CompressedRecentHistoryManager:
 
         try:
             self.user_histories[lanlan_name].extend(new_messages)
-            logger.info(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
+            logger.debug(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
 
             # 确保文件目录存在
             file_path = self.log_file_path[lanlan_name]
@@ -131,7 +130,7 @@ class CompressedRecentHistoryManager:
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding='utf-8') as f:
                 json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
-            logger.info(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
+            logger.debug(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
         except Exception as e:
             logger.error(f"[RecentHistory] 最终保存历史记录失败: {e}", exc_info=True)
 
@@ -206,7 +205,7 @@ class CompressedRecentHistoryManager:
                 # 如果解析失败，重试
                 retries += 1
         # 如果所有重试都失败，返回None
-        return SystemMessage(content=f"先前对话的备忘录: 无。"), ""
+        return SystemMessage(content="先前对话的备忘录: 无。"), ""
 
     async def further_compress(self, initial_summary):
         retries = 0

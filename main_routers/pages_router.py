@@ -102,6 +102,13 @@ async def memory_browser(request: Request):
     return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
 
 
+@router.get('/cookies_login', response_class=HTMLResponse)
+async def cookies_login_page(request: Request):
+    """媒体凭证获取页面"""
+    templates = get_templates()
+    return templates.TemplateResponse('templates/cookies_login.html', {"request": request})
+
+
 
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
@@ -110,5 +117,3 @@ async def get_index(request: Request, lanlan_name: str):
     return templates.TemplateResponse("templates/index.html", {
         "request": request
     })
-
-

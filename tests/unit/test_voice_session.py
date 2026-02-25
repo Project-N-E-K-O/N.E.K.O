@@ -1,8 +1,7 @@
 import pytest
-import asyncio
 import json
 import base64
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 # Adjust path to import project modules
 import sys

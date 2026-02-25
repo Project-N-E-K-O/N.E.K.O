@@ -10,13 +10,14 @@ Each session tracks:
 Sessions are completely independent from the conversation agent.
 """
 
-import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__, "Agent")
 
 _DEFAULT_TTL_SECONDS = 600  # 10 minutes
 

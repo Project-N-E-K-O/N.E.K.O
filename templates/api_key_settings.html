@@ -189,6 +189,7 @@
                                         • <span data-i18n="api.siliconAssist">硅基流动：性价比高</span><br>
                                         • <span data-i18n="api.openaiAssist">OpenAI：记忆管理能力强</span><br>
                                         • <span data-i18n="api.geminiAssist">Gemini：智能和性价比极高，但国内版不支持</span><br>
+                                        • <span data-i18n="api.kimiAssist">Kimi：国内可用，支持长上下文和视觉</span><br>
                                         <strong data-i18n="api.assistApiNote">注意：只有阿里支持自定义语音功能</strong>
                                     </div>
                                 </div>
@@ -243,6 +244,14 @@
                                     Gemini</span><em data-i18n="api.assistApiKeyHint"
                                     data-i18n-params='{"providerKey":"gemini"}'>（仅当辅助API为Gemini时需要填写）</em></label>
                             <input type="text" id="assistApiKeyInputGemini"
+                                data-i18n-placeholder="api.assistApiKeyPlaceholder"
+                                placeholder="Optional, defaults to Core API Key" value="" style="max-width: 600px;">
+                        </div>
+                        <div class="field-row">
+                            <label for="assistApiKeyInputKimi"><span data-i18n="api.assistApiKeyKimi">辅助API Key -
+                                    Kimi</span><em data-i18n="api.assistApiKeyHint"
+                                    data-i18n-params='{"providerKey":"kimi"}'>（仅当辅助API为Kimi时需要填写）</em></label>
+                            <input type="text" id="assistApiKeyInputKimi"
                                 data-i18n-placeholder="api.assistApiKeyPlaceholder"
                                 placeholder="Optional, defaults to Core API Key" value="" style="max-width: 600px;">
                         </div>

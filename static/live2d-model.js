@@ -218,6 +218,9 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('渲染纹理数量已设置为3');
     }
 
+    // 根据画质设置降低纹理分辨率
+    this._applyTextureQuality(model);
+
     // 应用位置和缩放设置
     this.applyModelSettings(model, options);
     
@@ -381,6 +384,81 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 };
 
 
+
+// 根据画质设置降低模型纹理分辨率
+// 必须在模型首次渲染前调用，这样 PIXI 上传到 GPU 的就是降采样后的纹理
+Live2DManager.prototype._applyTextureQuality = function (model) {
+    const quality = window.renderQuality || 'medium';
+    if (quality === 'high') return;
+
+    const maxSize = quality === 'low' ? 1024 : 2048;
+
+    try {
+        // pixi-live2d-display 的纹理存储在 model.textures (PIXI.Texture[])
+        // _render 时通过 model.textures[i].baseTexture 上传到 GPU
+        const textures = model.textures;
+        if (!textures || !textures.length) {
+            console.warn('[Live2D] 未找到 model.textures，跳过纹理降采样');
+            return;
+        }
+
+        let downscaledCount = 0;
+        const renderer = this.pixi_app?.renderer;
+
+        textures.forEach((tex, i) => {
+            if (!tex || !tex.baseTexture) return;
+            const bt = tex.baseTexture;
+            const resource = bt.resource;
+            const source = resource?.source;
+            if (!source) return;
+
+            const w = source.width || source.naturalWidth || 0;
+            const h = source.height || source.naturalHeight || 0;
+            if (w <= maxSize && h <= maxSize) return;
+
+            const scale = maxSize / Math.max(w, h);
+            const nw = Math.round(w * scale);
+            const nh = Math.round(h * scale);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = nw;
+            canvas.height = nh;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(source, 0, 0, nw, nh);
+
+            // 替换 BaseTexture 的 source，PIXI 下次上传到 GPU 时会用降采样后的 canvas
+            resource.source = canvas;
+            if (typeof resource.resize === 'function') {
+                resource.resize(nw, nh);
+            }
+            bt.setRealSize(nw, nh);
+            bt.update();
+
+            // 如果 GL 纹理已经存在（理论上首次渲染前不会），手动重新上传
+            if (renderer) {
+                const contextUID = renderer.CONTEXT_UID;
+                const glTex = bt._glTextures?.[contextUID];
+                if (glTex && glTex.texture) {
+                    const gl = renderer.gl;
+                    gl.bindTexture(gl.TEXTURE_2D, glTex.texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+                    glTex.width = nw;
+                    glTex.height = nh;
+                    glTex.dirtyId = bt.dirtyId;
+                }
+            }
+
+            downscaledCount++;
+            console.log(`[Live2D] 纹理 #${i} 从 ${w}x${h} 降采样到 ${nw}x${nh} (画质: ${quality})`);
+        });
+
+        if (downscaledCount > 0) {
+            console.log(`[Live2D] 纹理降采样完成: ${downscaledCount} 张纹理已处理`);
+        }
+    } catch (e) {
+        console.warn('[Live2D] 纹理画质调整失败:', e);
+    }
+};
 
 // 延迟重新安装覆盖的默认超时时间（毫秒）
 const REINSTALL_OVERRIDE_DELAY_MS = 100;

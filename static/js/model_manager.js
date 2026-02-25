@@ -2205,10 +2205,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                // 传入 { autoPlay: false } 让模型保持 T-Pose 静止
+                // 传入 { autoPlay: false } 以便在此处统一播放待机动画，避免先露出 T-pose
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
                 await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
+                // 加载后立即播默认待机动画，避免 T-pose 显得生硬
+                const defaultIdleUrl = '/static/vrm/animation/wait03.vrma';
+                const idleSel = document.getElementById('idle-animation-select');
+                const idleUrl = (idleSel && idleSel.value) ? idleSel.value : defaultIdleUrl;
+                if (idleUrl && vrmManager.animation) {
+                    try {
+                        await vrmManager.playVRMAAnimation(idleUrl, { loop: true, immediate: true, isIdle: true });
+                    } catch (e) {
+                        console.warn('[VRM] 播放默认待机动画失败，使用内置默认:', e);
+                        if (idleUrl !== defaultIdleUrl) {
+                            try {
+                                await vrmManager.playVRMAAnimation(defaultIdleUrl, { loop: true, immediate: true, isIdle: true });
+                            } catch (e2) {
+                                console.warn('[VRM] 播放 wait03 待机动画失败:', e2);
+                            }
+                        }
+                    }
+                }
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
                 updateVRMAnimationPlayButtonIcon();

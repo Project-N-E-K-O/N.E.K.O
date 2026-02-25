@@ -3,19 +3,24 @@
 提供截图分析功能，包括前端浏览器发送的截图和屏幕分享数据流处理
 """
 import base64
-import logging
 from typing import Optional
+from utils.logger_config import get_module_logger
 import asyncio
 from io import BytesIO
 from PIL import Image
 from openai import AsyncOpenAI
 from config import get_extra_body
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 # 安全限制：最大图片大小 (10MB，base64编码后约13.3MB)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_BASE64_SIZE = MAX_IMAGE_SIZE_BYTES * 4 // 3 + 100
+
+# 截图压缩默认参数（供 computer_use 等模块复用）
+COMPRESS_TARGET_HEIGHT = 1080
+COMPRESS_JPEG_QUALITY = 75
+_LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
 def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
     """验证图片数据有效性"""
@@ -27,6 +32,21 @@ def _validate_image_data(image_bytes: bytes) -> Optional[Image.Image]:
     except Exception as e:
         logger.warning(f"图片验证失败: {e}")
         return None
+
+
+def compress_screenshot(
+    img: Image.Image,
+    target_h: int = COMPRESS_TARGET_HEIGHT,
+    quality: int = COMPRESS_JPEG_QUALITY,
+) -> bytes:
+    """Resize to *target_h*p (keep aspect ratio) and encode as JPEG."""
+    w, h = img.size
+    if h > target_h:
+        ratio = target_h / h
+        img = img.resize((int(w * ratio), target_h), _LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return buf.getvalue()
 
 
 async def process_screen_data(data: str) -> Optional[str]:
@@ -74,7 +94,8 @@ async def process_screen_data(data: str) -> Optional[str]:
 
 async def analyze_image_with_vision_model(
     image_b64: str,
-    max_tokens: int = 500
+    max_tokens: int = 500,
+    window_title: str = '',
 ) -> Optional[str]:
     """
     使用视觉模型分析图片
@@ -82,6 +103,7 @@ async def analyze_image_with_vision_model(
     参数:
         image_b64: 图片的base64编码（不含data:前缀）
         max_tokens: 最大输出token数，默认 500
+        window_title: 可选的窗口标题，提供时会加入提示词以丰富上下文
         
     返回: 图片描述文本，失败则返回 None
     """
@@ -110,15 +132,23 @@ async def analyze_image_with_vision_model(
 
         client = AsyncOpenAI(
             api_key=vision_api_key,
-            base_url=vision_base_url if vision_base_url else None
+            base_url=vision_base_url if vision_base_url else None,
+            max_retries=0,
         )
+        
+        if window_title:
+            system_content = "你是一个图像描述助手。请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。"
+            user_text = f"当前活跃窗口标题：{window_title}\n请描述截图内容。"
+        else:
+            system_content = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
+            user_text = "请描述这张图片的内容。"
         
         response = await client.chat.completions.create(
             model=vision_model,
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
+                    "content": system_content
                 },
                 {
                     "role": "user",
@@ -131,7 +161,7 @@ async def analyze_image_with_vision_model(
                         },
                         {
                             "type": "text",
-                            "text": "请描述这张图片的内容。"
+                            "text": user_text
                         }
                     ]
                 }
@@ -156,7 +186,7 @@ async def analyze_image_with_vision_model(
         return None
 
 
-async def analyze_screenshot_from_data_url(data_url: str) -> Optional[str]:
+async def analyze_screenshot_from_data_url(data_url: str, window_title: str = '') -> Optional[str]:
     """
     分析前端发送的截图DataURL
     只支持JPEG格式，其他格式会自动转换为JPEG
@@ -188,24 +218,20 @@ async def analyze_screenshot_from_data_url(data_url: str) -> Optional[str]:
                 logger.error("无效的图片数据")
                 return None
             
-            # 如果不是JPEG格式，转换为JPEG
-            if not data_url.startswith('data:image/jpeg'):
-                logger.info(f"将图片从其他格式转换为JPEG: {image.size[0]}x{image.size[1]}")
-                buffer = BytesIO()
-                # 确保转换为RGB模式（JPEG不支持透明通道）
-                if image.mode in ('RGBA', 'LA', 'P'):
-                    image = image.convert('RGB')
-                image.save(buffer, format='JPEG', quality=85)
-                buffer.seek(0)
-                base64_data = base64.b64encode(buffer.read()).decode('utf-8')
-            
-            logger.info(f"截图验证成功: {image.size[0]}x{image.size[1]}")
+            # 统一压缩为 JPEG（含 resize）
+            if image.mode in ('RGBA', 'LA', 'P'):
+                image = image.convert('RGB')
+            orig_w, orig_h = image.size
+            jpg_bytes = compress_screenshot(image, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
+            base64_data = base64.b64encode(jpg_bytes).decode('utf-8')
+            new_size = len(jpg_bytes)
+            logger.info(f"截图验证成功: {orig_w}x{orig_h} → 压缩后 {new_size//1024}KB")
         except Exception as e:
             logger.error(f"图片数据解码/验证失败: {e}")
             return None
         
         # 调用视觉模型分析（只使用JPEG）
-        description = await analyze_image_with_vision_model(base64_data)
+        description = await analyze_image_with_vision_model(base64_data, window_title=window_title)
         
         if description:
             logger.info(f"AI截图分析成功: {description[:100]}...")

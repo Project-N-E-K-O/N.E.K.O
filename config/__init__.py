@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Configuration constants exposed by the config package."""
+"""config 包对外暴露的配置常量。"""
 
 from copy import deepcopy
 import logging
 import os
+import uuid
 from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
 
-logger = logging.getLogger(__name__)
-
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
+logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
-# Runtime port override support:
-# - preferred key: NEKO_<PORT_NAME>
-# - compatibility key: <PORT_NAME>
+# 运行时端口覆盖支持：
+# - 首选键：NEKO_<PORT_NAME>
+# - 兼容键：<PORT_NAME>
 def _read_port_env(port_name: str, default: int) -> int:
     for key in (f"NEKO_{port_name}", port_name):
         raw = os.getenv(key)
@@ -39,8 +39,11 @@ USER_PLUGIN_SERVER_PORT = _read_port_env("USER_PLUGIN_SERVER_PORT", 48916)
 AGENT_MQ_PORT = _read_port_env("AGENT_MQ_PORT", 48917)
 MAIN_AGENT_EVENT_PORT = _read_port_env("MAIN_AGENT_EVENT_PORT", 48918)
 
-# MCP Router配置
-MCP_ROUTER_URL = 'http://localhost:3282'
+# 实例 ID：同一次启动的所有服务共享。
+# launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
+# 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
+# 始终返回有效 id。
+INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 
 # tfLink 文件上传服务配置
 TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
@@ -95,7 +98,7 @@ DEFAULT_SUMMARY_MODEL = "qwen-plus"
 DEFAULT_CORRECTION_MODEL = 'qwen-max'
 DEFAULT_EMOTION_MODEL = 'qwen-flash'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"
-DEFAULT_AGENT_MODEL = DEFAULT_VISION_MODEL
+DEFAULT_AGENT_MODEL = "qwen3.5-plus"
 
 # 用户自定义模型配置（可选，暂未使用）
 DEFAULT_REALTIME_MODEL = "Qwen3-Omni-30B-A3B-Instruct"  # 全模态模型(语音+文字+图片)
@@ -303,7 +306,7 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_MODEL': "step-audio-2",
     },
     'gemini': {
-        # Gemini uses google-genai SDK, not raw WebSocket
+        # Gemini 使用 google-genai SDK，而非原生 WebSocket
         'CORE_MODEL': "gemini-2.5-flash-native-audio-preview-12-2025",
     },
 }
@@ -316,6 +319,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-model",
         'VISION_MODEL': "free-vision-model",
+        'AGENT_MODEL': "free-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
         'IS_FREE_VERSION': True,
@@ -327,6 +331,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "qwen3-235b-a22b-instruct-2507",
         'EMOTION_MODEL': "qwen-flash",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
+        'AGENT_MODEL': "qwen3.5-plus",
     },
     'openai': {
         'OPENROUTER_URL': "https://api.openai.com/v1",
@@ -335,6 +340,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "gpt-5-chat-latest",
         'EMOTION_MODEL': "gpt-4.1-nano",
         'VISION_MODEL': "gpt-5-chat-latest",
+        'AGENT_MODEL': "gpt-5-chat-latest",
     },
     'glm': {
         'OPENROUTER_URL': "https://open.bigmodel.cn/api/paas/v4",
@@ -343,6 +349,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "glm-4.5-air",
         'EMOTION_MODEL': "glm-4.5-flash",
         'VISION_MODEL': "glm-4.6v-flash",
+        'AGENT_MODEL': "glm-4.5-air",
     },
     'step': {
         'OPENROUTER_URL': "https://api.stepfun.com/v1",
@@ -351,6 +358,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "step-2-mini",
         'EMOTION_MODEL': "step-2-mini",
         'VISION_MODEL': "step-1o-turbo-vision",
+        'AGENT_MODEL': "step-2-mini",
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
@@ -359,6 +367,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2",
         'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
         'VISION_MODEL': "zai-org/GLM-4.6V",
+        'AGENT_MODEL': "deepseek-ai/DeepSeek-V3.2",
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -367,6 +376,16 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "gemini-3-flash-preview",
         'EMOTION_MODEL': "gemini-2.5-flash",
         'VISION_MODEL': "gemini-3-flash-preview",
+        'AGENT_MODEL': "gemini-3-flash-preview",
+    },
+    'kimi': {
+        'OPENROUTER_URL': "https://api.moonshot.cn/v1",
+        'CONVERSATION_MODEL': "kimi-latest",
+        'SUMMARY_MODEL': "moonshot-v1-8k",
+        'CORRECTION_MODEL': "kimi-latest",
+        'EMOTION_MODEL': "moonshot-v1-8k",
+        'VISION_MODEL': "kimi-latest",
+        'AGENT_MODEL': "kimi-latest",
     },
 }
 
@@ -377,6 +396,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'step': 'ASSIST_API_KEY_STEP',
     'silicon': 'ASSIST_API_KEY_SILICON',
     'gemini': 'ASSIST_API_KEY_GEMINI',
+    'kimi': 'ASSIST_API_KEY_KIMI',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -396,6 +416,10 @@ EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
+
+# Agent 调用统一开关：是否加载 extra_body。
+# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
+AGENT_USE_EXTRA_BODY = True
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP = {
@@ -439,6 +463,13 @@ def get_extra_body(model: str) -> dict | None:
     return {}
 
 
+def get_agent_extra_body(model: str) -> dict | None:
+    """Return extra_body for Agent calls based on a single global switch."""
+    if not AGENT_USE_EXTRA_BODY:
+        return None
+    return get_extra_body(model)
+
+
 __all__ = [
     'APP_NAME',
     'CONFIG_FILES',
@@ -460,9 +491,11 @@ __all__ = [
     'TIME_COMPRESSED_TABLE_NAME',
     'MODELS_EXTRA_BODY_MAP',
     'get_extra_body',
+    'get_agent_extra_body',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
     'EXTRA_BODY_GEMINI',
+    'AGENT_USE_EXTRA_BODY',
     'MAIN_SERVER_PORT',
     'MEMORY_SERVER_PORT',
     'MONITOR_SERVER_PORT',
@@ -471,7 +504,7 @@ __all__ = [
     'USER_PLUGIN_SERVER_PORT',
     'AGENT_MQ_PORT',
     'MAIN_AGENT_EVENT_PORT',
-    'MCP_ROUTER_URL',
+    'INSTANCE_ID',
     'TFLINK_UPLOAD_URL',
     'TFLINK_ALLOWED_HOSTS',
     'NATIVE_IMAGE_MIN_INTERVAL',
