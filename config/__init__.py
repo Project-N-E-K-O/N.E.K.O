@@ -9,10 +9,9 @@ from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
 
-logger = logging.getLogger(__name__)
-
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
+logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>

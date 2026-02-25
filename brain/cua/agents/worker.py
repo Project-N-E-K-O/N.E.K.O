@@ -1,8 +1,8 @@
-import logging
 import textwrap
 from typing import Dict, List, Tuple
 
 from brain.cua.agents.grounding import ACI
+from utils.logger_config import get_module_logger
 from brain.cua.core.module import BaseModule
 from brain.cua.memory.procedural_memory import PROCEDURAL_MEMORY
 from brain.cua.utils.common_utils import (
@@ -13,7 +13,7 @@ from brain.cua.utils.common_utils import (
     split_thinking_response,
 )
 
-logger = logging.getLogger("desktopenv.agent")
+logger = get_module_logger(__name__, "Agent")
 
 
 class Worker(BaseModule):

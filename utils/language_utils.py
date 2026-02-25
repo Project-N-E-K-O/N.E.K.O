@@ -10,7 +10,6 @@
 """
 import re
 import locale
-import logging
 import threading
 import asyncio
 import os
@@ -20,8 +19,9 @@ from typing import Optional, Tuple, List, Any, Dict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 # ============================================================================
 # 全局语言管理部分（原 global_language.py）

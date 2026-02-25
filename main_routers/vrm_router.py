@@ -10,7 +10,6 @@ Handles VRM model-related endpoints including:
 """
 
 import json
-import logging
 import re
 from pathlib import Path
 
@@ -18,9 +17,10 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
+from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
-logger = logging.getLogger("Main")
+logger = get_module_logger(__name__, "Main")
 
 # VRM 模型路径常量
 VRM_USER_PATH = "/user_vrm"  

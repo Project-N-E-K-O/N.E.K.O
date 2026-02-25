@@ -1,13 +1,13 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 import asyncio
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager
-import logging
+from utils.logger_config import get_module_logger
 import json
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 class TaskDeduper:

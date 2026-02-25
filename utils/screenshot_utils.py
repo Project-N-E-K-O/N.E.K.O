@@ -3,15 +3,15 @@
 提供截图分析功能，包括前端浏览器发送的截图和屏幕分享数据流处理
 """
 import base64
-import logging
 from typing import Optional
+from utils.logger_config import get_module_logger
 import asyncio
 from io import BytesIO
 from PIL import Image
 from openai import AsyncOpenAI
 from config import get_extra_body
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__)
 
 # 安全限制：最大图片大小 (10MB，base64编码后约13.3MB)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024

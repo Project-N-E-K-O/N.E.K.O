@@ -5,17 +5,17 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 """
 import json
 import asyncio
-import logging
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
+from utils.logger_config import get_module_logger
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Agent")
 
 
 @dataclass

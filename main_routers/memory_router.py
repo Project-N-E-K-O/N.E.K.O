@@ -11,10 +11,10 @@ import os
 import re
 import json
 import glob
-import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
 
@@ -151,7 +151,8 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
         return resolved_path, ""
     except Exception as e:
         return None, f"路径验证失败: {str(e)}"
-logger = logging.getLogger("Main")
+
+logger = get_module_logger(__name__, "Main")
 
 
 @router.get('/recent_files')

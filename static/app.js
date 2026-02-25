@@ -304,6 +304,31 @@ function init_app() {
         return { dataUrl, width: targetWidth, height: targetHeight };
     }
 
+    /**
+     * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
+     * 安全限制：仅当页面来自 localhost / 127.0.0.1 / 0.0.0.0 时才调用（确保后端与用户在同一台机器）。
+     * @returns {Promise<string|null>} JPEG dataUrl 或 null
+     */
+    async function fetchBackendScreenshot() {
+        const h = window.location.hostname;
+        if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
+            return null;
+        }
+        try {
+            const resp = await fetch('/api/screenshot');
+            if (!resp.ok) return null;
+            const json = await resp.json();
+            if (json.success && json.data) {
+                console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
+                return json.data;
+            }
+            return null;
+        } catch (e) {
+            console.warn('[截图] 后端截图请求失败:', e);
+            return null;
+        }
+    }
+
     // Focus模式为true时，AI播放语音时会自动静音麦克风（不允许打断）
     let focusModeEnabled = false;
 
@@ -2765,56 +2790,131 @@ function init_app() {
                                 }
                             });
                         } catch (captureErr) {
-                            // getUserMedia 失败（竞态：验证时存在但捕获时已消失）
-                            console.warn('[屏幕源] 指定源捕获失败，回退到全屏:', captureErr);
-                            selectedScreenSourceId = null;
-                            try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                            console.warn('[屏幕源] 指定源捕获失败，尝试回退:', captureErr);
+                            let fallbackSucceeded = false;
 
-                            // 尝试回退到全屏源
-                            const fallbackSources = await window.electronDesktopCapturer.getSources({
-                                types: ['screen'],
-                                thumbnailSize: { width: 1, height: 1 }
-                            });
-                            if (fallbackSources.length > 0) {
-                                screenCaptureStream = await navigator.mediaDevices.getUserMedia({
-                                    audio: false,
-                                    video: {
-                                        mandatory: {
-                                            chromeMediaSource: 'desktop',
-                                            chromeMediaSourceId: fallbackSources[0].id,
-                                            maxFrameRate: 1
-                                        }
-                                    }
+                            // 回退策略1: 尝试其他全屏源（chromeMediaSource 方式）
+                            try {
+                                const fallbackSources = await window.electronDesktopCapturer.getSources({
+                                    types: ['screen'],
+                                    thumbnailSize: { width: 1, height: 1 }
                                 });
-                                selectedScreenSourceId = fallbackSources[0].id;
-                                try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
-                                showStatusToast(
-                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
-                                    3000
-                                );
-                            } else {
-                                throw captureErr; // 全屏也拿不到，重新抛出让外层 catch 处理
+                                if (fallbackSources.length > 0) {
+                                    screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                        audio: false,
+                                        video: {
+                                            mandatory: {
+                                                chromeMediaSource: 'desktop',
+                                                chromeMediaSourceId: fallbackSources[0].id,
+                                                maxFrameRate: 1
+                                            }
+                                        }
+                                    });
+                                    selectedScreenSourceId = fallbackSources[0].id;
+                                    try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
+                                    showStatusToast(
+                                        safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                        3000
+                                    );
+                                    fallbackSucceeded = true;
+                                }
+                            } catch (fallback1Err) {
+                                console.warn('[屏幕源] chromeMediaSource 全屏回退也失败:', fallback1Err);
+                            }
+
+                            // 回退策略2: chromeMediaSource 在该系统上完全不可用，降级到 getDisplayMedia
+                            if (!fallbackSucceeded) {
+                                try {
+                                    console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
+                                    screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                                        video: { cursor: 'always', frameRate: 1 },
+                                        audio: false,
+                                    });
+                                    selectedScreenSourceId = null;
+                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) { }
+                                    fallbackSucceeded = true;
+                                } catch (fallback2Err) {
+                                    console.warn('[屏幕源] getDisplayMedia 回退也失败:', fallback2Err);
+                                }
+                            }
+
+                            if (!fallbackSucceeded) {
+                                console.warn('[屏幕源] 所有前端流方式均失败，将尝试后端轮询兜底');
                             }
                         }
-                        console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
+                        if (screenCaptureStream) {
+                            console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
+                        }
                     } else {
                         // 使用标准的getDisplayMedia（显示系统选择器）
-                        screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
-                            video: {
-                                cursor: 'always',
-                                frameRate: 1,
-                            },
-                            audio: false,
-                        });
+                        try {
+                            screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                                video: {
+                                    cursor: 'always',
+                                    frameRate: 1,
+                                },
+                                audio: false,
+                            });
+                        } catch (displayErr) {
+                            // 用户主动取消则直接抛出，不兜底
+                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+                            console.warn('[屏幕源] getDisplayMedia 失败，将尝试后端轮询兜底:', displayErr);
+                        }
                     }
                 }
             }
 
-            // 更新最后使用时间并调度闲置检查
-            screenCaptureStreamLastUsed = Date.now();
-            scheduleScreenCaptureIdleCheck();
+            if (screenCaptureStream) {
+                // 正常流模式
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
 
-            startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
+                startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
+
+                // 当用户停止共享屏幕时
+                screenCaptureStream.getVideoTracks()[0].onended = () => {
+                    stopScreening();
+                    screenButton.classList.remove('active');
+                    syncFloatingScreenButtonState(false);
+
+                    if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
+                        screenCaptureStream.getTracks().forEach(track => {
+                            try { track.stop(); } catch (e) { }
+                        });
+                    }
+                    screenCaptureStream = null;
+                    screenCaptureStreamLastUsed = null;
+
+                    if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
+                        clearTimeout(screenCaptureStreamIdleTimer);
+                        screenCaptureStreamIdleTimer = null;
+                    }
+                };
+            } else {
+                // 回退策略3: 后端 pyautogui 轮询模式（所有前端流方式均失败）
+                const backendTest = await fetchBackendScreenshot();
+                if (!backendTest) {
+                    throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
+                }
+                console.log('[屏幕源] 进入后端 pyautogui 轮询模式');
+
+                // 立即发送第一帧
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: 'stream_data', data: backendTest, input_type: 'screen' }));
+                }
+
+                // 复用 videoSenderInterval，stopScreening() 可统一清理
+                videoSenderInterval = setInterval(async () => {
+                    try {
+                        const frame = await fetchBackendScreenshot();
+                        if (frame && socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({ action: 'stream_data', data: frame, input_type: 'screen' }));
+                        }
+                    } catch (e) {
+                        console.warn('[屏幕源] 后端轮询帧失败:', e);
+                    }
+                }, 1000);
+            }
 
             micButton.disabled = true;
             muteButton.disabled = false;
@@ -2822,57 +2922,35 @@ function init_app() {
             stopButton.disabled = false;
             resetSessionButton.disabled = false;
 
-            // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
             syncFloatingScreenButtonState(true);
 
-            // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
             try {
                 stopProactiveVisionDuringSpeech();
             } catch (e) {
                 console.warn(window.t('console.stopVoiceActiveVisionFailed'), e);
             }
 
-            // 当用户停止共享屏幕时
-            screenCaptureStream.getVideoTracks()[0].onended = () => {
-                stopScreening();
-                screenButton.classList.remove('active');
-                syncFloatingScreenButtonState(false);
-
-                // 停止所有 tracks 并清理引用
-                if (screenCaptureStream && typeof screenCaptureStream.getTracks === 'function') {
-                    screenCaptureStream.getTracks().forEach(track => {
-                        try {
-                            track.stop();
-                        } catch (e) { }
-                    });
-                }
-                screenCaptureStream = null;
-                screenCaptureStreamLastUsed = null;
-
-                // 清除闲置定时器
-                if (typeof screenCaptureStreamIdleTimer !== 'undefined' && screenCaptureStreamIdleTimer) {
-                    clearTimeout(screenCaptureStreamIdleTimer);
-                    screenCaptureStreamIdleTimer = null;
-                }
-            };
-
-            // 获取麦克风流
             if (!isRecording) showStatusToast(window.t ? window.t('app.micNotOpen') : '没开麦啊喂！', 3000);
         } catch (err) {
             console.error(isMobile() ? window.t('console.cameraAccessFailed') : window.t('console.screenShareFailed'), err);
             console.error(window.t('console.startupFailed'), err);
             let hint = '';
+            const isDesktop = !isMobile();
             switch (err.name) {
                 case 'NotAllowedError':
-                    hint = '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
+                    hint = isDesktop
+                        ? '用户取消了屏幕共享，或系统未授予屏幕录制权限'
+                        : '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
                     break;
                 case 'NotFoundError':
-                    hint = '未检测到摄像头设备';
+                    hint = isDesktop ? '未检测到可用的屏幕源' : '未检测到摄像头设备';
                     break;
                 case 'NotReadableError':
                 case 'AbortError':
-                    hint = '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
+                    hint = isDesktop
+                        ? '屏幕捕获启动失败，可能与显卡驱动或系统权限有关，请尝试重启应用'
+                        : '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
                     break;
             }
             showStatusToast(`${err.name}: ${err.message}${hint ? `\n${hint}` : ''}`, 5000);
@@ -3843,55 +3921,68 @@ function init_app() {
         let captureStream = null;
 
         try {
-            // 临时禁用截图按钮，防止重复点击
             screenshotButton.disabled = true;
             showStatusToast(window.t ? window.t('app.capturing') : '正在截图...', 2000);
 
-            // 获取屏幕或摄像头流
+            let dataUrl = null;
+            let width = 0, height = 0;
+
             if (isMobile()) {
-                // 移动端使用摄像头
                 captureStream = await getMobileCameraStream();
             } else {
-                // API 兼容性检测（桌面端）
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-                    throw new Error('UNSUPPORTED_API');
+                // 桌面端：尝试 getDisplayMedia
+                try {
+                    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                        captureStream = await navigator.mediaDevices.getDisplayMedia({
+                            video: { cursor: 'always' },
+                            audio: false,
+                        });
+                    } else {
+                        throw new Error('UNSUPPORTED_API');
+                    }
+                } catch (displayErr) {
+                    // 用户取消不做兜底
+                    if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                    console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
+                    const backendDataUrl = await fetchBackendScreenshot();
+                    if (backendDataUrl) {
+                        dataUrl = backendDataUrl;
+                    } else {
+                        throw displayErr;
+                    }
                 }
-                // 桌面端使用屏幕共享
-                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        cursor: 'always',
-                    },
-                    audio: false,
-                });
             }
 
-            // 创建video元素来加载流
-            const video = document.createElement('video');
-            video.srcObject = captureStream;
-            video.autoplay = true;
-            video.muted = true;
+            // 如果通过流获取（前端路径），从流中提取帧
+            if (!dataUrl && captureStream) {
+                const video = document.createElement('video');
+                video.srcObject = captureStream;
+                video.autoplay = true;
+                video.muted = true;
+                await video.play();
+                const frame = captureCanvasFrame(video);
+                dataUrl = frame.dataUrl;
+                width = frame.width;
+                height = frame.height;
+                video.srcObject = null;
+                video.remove();
+            }
 
-            // 等待视频加载完成
-            await video.play();
+            if (!dataUrl) {
+                throw new Error('所有截图方式均失败');
+            }
 
-            // 使用统一的截图辅助函数进行截取
-            const { dataUrl, width, height } = captureCanvasFrame(video);
+            if (width && height) {
+                console.log(window.t('console.screenshotSuccess'), `${width}x${height}`);
+            }
 
-            // 清理 video 元素释放资源
-            video.srcObject = null;
-            video.remove();
-
-            console.log(window.t('console.screenshotSuccess'), `${width}x${height}`);
-
-            // 添加截图到待发送列表（不立即发送）
             addScreenshotToList(dataUrl);
-
             showStatusToast(window.t ? window.t('app.screenshotAdded') : '截图已添加，点击发送一起发送', 3000);
 
         } catch (err) {
             console.error(window.t('console.screenshotFailed'), err);
 
-            // 根据错误类型显示不同提示
             let errorMsg = window.t ? window.t('app.screenshotFailed') : '截图失败';
             if (err.message === 'UNSUPPORTED_API') {
                 errorMsg = window.t ? window.t('app.screenshotUnsupported') : '当前浏览器不支持屏幕截图功能';
@@ -3907,11 +3998,9 @@ function init_app() {
 
             showStatusToast(errorMsg, 5000);
         } finally {
-            // 确保流被正确关闭，防止资源泄漏
             if (captureStream instanceof MediaStream) {
                 captureStream.getTracks().forEach(track => track.stop());
             }
-            // 重新启用截图按钮
             screenshotButton.disabled = false;
         }
     });
@@ -8488,7 +8577,7 @@ function init_app() {
         scheduleProactiveChat();
     }
 
-    // 发送单帧屏幕数据（优先使用已存在的 screenCaptureStream，否则临时调用 getDisplayMedia）
+    // 发送单帧屏幕数据（优先已存在的 screenCaptureStream → captureProactiveChatScreenshot → 后端兜底）
     async function sendOneProactiveVisionFrame() {
         try {
             if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -8497,7 +8586,6 @@ function init_app() {
             let usedCachedStream = false;
 
             if (screenCaptureStream) {
-                // 刷新最后使用时间并确保闲置检查器在运行
                 screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
                 usedCachedStream = true;
@@ -8513,11 +8601,12 @@ function init_app() {
                 }
                 const frame = captureCanvasFrame(video, 0.8);
                 dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
-                // 清理 video 元素释放资源
                 video.srcObject = null;
                 video.remove();
-            } else {
-                // 临时调用捕获函数（会弹出授权），函数内部会关闭流
+            }
+
+            // 如果缓存流提取帧失败，或无缓存流，走 captureProactiveChatScreenshot（内含后端兜底）
+            if (!dataUrl) {
                 dataUrl = await captureProactiveChatScreenshot();
             }
 
@@ -8614,53 +8703,47 @@ function init_app() {
         }
     }
 
-    // 主动搭话截图函数
+    // 主动搭话截图函数（前端 getDisplayMedia → 后端 pyautogui 兜底）
     async function captureProactiveChatScreenshot() {
-        // API 兼容性检测
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-            console.warn('主动搭话截图失败：当前浏览器不支持 getDisplayMedia API');
-            return null;
-        }
+        // 策略1: 前端 getDisplayMedia
+        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+            let captureStream = null;
+            try {
+                captureStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always' },
+                    audio: false,
+                });
 
-        let captureStream = null;
+                const video = document.createElement('video');
+                video.srcObject = captureStream;
+                video.autoplay = true;
+                video.muted = true;
+                await video.play();
 
-        try {
-            // 使用屏幕共享API进行截图
-            captureStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    cursor: 'always',
-                },
-                audio: false,
-            });
+                const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
+                video.srcObject = null;
+                video.remove();
 
-            // 创建video元素来加载流
-            const video = document.createElement('video');
-            video.srcObject = captureStream;
-            video.autoplay = true;
-            video.muted = true;
-
-            // 等待视频加载完成
-            await video.play();
-
-            // 使用统一的截图辅助函数进行截取（使用0.85质量）
-            const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
-
-            // 清理 video 元素释放资源
-            video.srcObject = null;
-            video.remove();
-
-            console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
-            return dataUrl;
-
-        } catch (err) {
-            console.error('主动搭话截图失败:', err);
-            return null;
-        } finally {
-            // 确保流被正确关闭，防止资源泄漏
-            if (captureStream) {
-                captureStream.getTracks().forEach(track => track.stop());
+                console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
+                return dataUrl;
+            } catch (err) {
+                console.warn('[主动搭话截图] getDisplayMedia 失败，尝试后端兜底:', err);
+            } finally {
+                if (captureStream) {
+                    captureStream.getTracks().forEach(track => track.stop());
+                }
             }
         }
+
+        // 策略2: 后端 pyautogui 兜底
+        const backendDataUrl = await fetchBackendScreenshot();
+        if (backendDataUrl) {
+            console.log('[主动搭话截图] 后端兜底截图成功');
+            return backendDataUrl;
+        }
+
+        console.warn('[主动搭话截图] 所有截图方式均失败');
+        return null;
     }
 
     // 暴露函数到全局作用域，供 live2d.js 调用

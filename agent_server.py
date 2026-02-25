@@ -56,6 +56,9 @@ class Modules:
     computer_use_running: bool = False
     active_computer_use_task_id: Optional[str] = None
     active_computer_use_async_task: Optional[asyncio.Task] = None
+    # Browser-use task tracking
+    active_browser_use_task_id: Optional[str] = None
+    active_browser_use_bg_task: Optional[asyncio.Task] = None
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {"computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False}
     # Notification queue for frontend (one-time messages)
@@ -706,13 +709,25 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 logger.warning("[ComputerUse] Task requires ComputerUse but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
-                # Session management for multi-turn browser tasks
                 sm = get_session_manager()
                 bu_session = sm.get_or_create(None, "browser_use")
                 bu_session.add_task(result.task_description)
 
                 bu_task_id = str(uuid.uuid4())
                 bu_start = _now_iso()
+                bu_info = {
+                    "id": bu_task_id,
+                    "type": "browser_use",
+                    "status": "running",
+                    "start_time": bu_start,
+                    "params": {"instruction": result.task_description},
+                    "lanlan_name": lanlan_name,
+                    "session_id": bu_session.session_id,
+                    "result": None,
+                    "error": None,
+                }
+                Modules.task_registry[bu_task_id] = bu_info
+                Modules.active_browser_use_task_id = bu_task_id
                 try:
                     await _emit_main_event(
                         "task_update", lanlan_name,
@@ -737,6 +752,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         else:
                             summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
                     bu_session.complete_task(result_detail or summary, success)
+                    bu_info["status"] = "completed" if success else "failed"
+                    bu_info["result"] = bres
                     await _emit_task_result(
                         lanlan_name,
                         channel="browser_use",
@@ -748,7 +765,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
-                            task={"id": bu_task_id, "status": "completed" if success else "failed",
+                            task={"id": bu_task_id, "status": bu_info["status"],
                                   "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
                                   "session_id": bu_session.session_id},
                         )
@@ -756,6 +773,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         pass
                 except Exception as e:
                     logger.warning(f"[BrowserUse] Failed: {e}")
+                    bu_info["status"] = "failed"
+                    bu_info["error"] = str(e)[:500]
                     bu_session.complete_task(str(e), success=False)
                     try:
                         await _emit_task_result(
@@ -778,6 +797,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                     except Exception:
                         pass
+                finally:
+                    Modules.active_browser_use_task_id = None
             else:
                 logger.warning("[BrowserUse] Task requires BrowserUse but it is disabled")
         
@@ -963,6 +984,45 @@ async def get_task(task_id: str):
         out = {k: v for k, v in info.items() if k != "_proc"}
         return out
     raise HTTPException(404, "task not found")
+
+
+@app.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a specific running task."""
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(404, "task not found")
+    if info.get("status") not in ("queued", "running"):
+        return {"success": False, "error": "task is not active"}
+
+    task_type = info.get("type")
+    if task_type == "computer_use":
+        if Modules.computer_use:
+            Modules.computer_use.cancel_running()
+        if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
+            Modules.active_computer_use_async_task.cancel()
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+    elif task_type == "browser_use":
+        if Modules.browser_use:
+            Modules.browser_use.cancel_running()
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+    else:
+        info["status"] = "cancelled"
+        info["error"] = "Cancelled by user"
+
+    lanlan_name = info.get("lanlan_name")
+    try:
+        await _emit_main_event(
+            "task_update", lanlan_name,
+            task={"id": task_id, "status": "cancelled", "type": task_type,
+                  "end_time": _now_iso(), "error": "Cancelled by user"},
+        )
+    except Exception:
+        pass
+    logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
+    return {"success": True, "task_id": task_id, "status": "cancelled"}
 
 
 @app.get("/capabilities")
@@ -1327,6 +1387,10 @@ async def admin_control(payload: Dict[str, Any]):
                     logger.warning(f"[Agent] Error awaiting cancelled background task: {res}")
         Modules._background_tasks.clear()
 
+        # Signal computer-use adapter to cancel at next step boundary
+        if Modules.computer_use:
+            Modules.computer_use.cancel_running()
+
         # Cancel any in-flight asyncio tasks and clear registry
         if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
             Modules.active_computer_use_async_task.cancel()
@@ -1350,9 +1414,10 @@ async def admin_control(payload: Dict[str, Any]):
                     await Modules.computer_use_queue.get()
         except Exception:
             pass
-        # Discard browser-use agents/overlay but keep the browser window for user inspection
+        # Signal browser-use adapter to cancel at next step boundary
         try:
             if Modules.browser_use:
+                Modules.browser_use.cancel_running()
                 Modules.browser_use._stop_overlay()
                 Modules.browser_use._agents.clear()
                 try:
@@ -1362,6 +1427,7 @@ async def admin_control(payload: Dict[str, Any]):
                     pass
         except Exception as e:
             logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+        Modules.active_browser_use_task_id = None
         # Reset computer-use step history so stale context is cleared
         try:
             if Modules.computer_use:

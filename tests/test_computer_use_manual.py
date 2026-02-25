@@ -12,7 +12,6 @@ Run with:
 
 import json
 import os
-import sys
 import pytest
 
 
