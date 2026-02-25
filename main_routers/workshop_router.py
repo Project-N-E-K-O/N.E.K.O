@@ -2668,7 +2668,7 @@ async def sync_workshop_character_cards() -> dict:
         items_result = await get_subscribed_workshop_items()
         
         # 兼容 JSONResponse 和普通 dict
-        if hasattr(items_result, 'body'):
+        if isinstance(items_result, JSONResponse):
             # JSONResponse — 说明出错了，直接返回
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败（返回了 JSONResponse）")
             return {"added": 0, "skipped": 0, "errors": 1}
@@ -2724,7 +2724,7 @@ async def sync_workshop_character_cards() -> dict:
                         catgirl_data = {}
                         skip_keys = ['档案名', *_RESERVED_FIELDS]
                         for k, v in chara_data.items():
-                            if k not in skip_keys and v is not None and v != '':
+                            if k not in skip_keys and v is not None:
                                 catgirl_data[k] = v
                         
                         # 如果角色卡有 live2d 字段，同时保存 live2d_item_id

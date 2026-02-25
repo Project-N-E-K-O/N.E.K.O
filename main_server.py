@@ -730,8 +730,8 @@ async def on_startup():
                 if _wr._ugc_warmup_task is not None:
                     try:
                         await _wr._ugc_warmup_task
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
                 try:
                     sync_result = await sync_workshop_character_cards()
                     if sync_result["added"] > 0:
@@ -830,8 +830,10 @@ async def shutdown_server_async():
                     task.cancel()
                     try:
                         await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    except asyncio.CancelledError:
+                        logger.debug(f"后台任务 {task_attr} 已取消")
+                    except Exception as e:
+                        logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
         except Exception as e:
             logger.debug(f"取消创意工坊后台任务时出错: {e}")
         

@@ -1671,6 +1671,7 @@ function renderSubscriptionsPage() {
             id: String(item.publishedFileId),
             name: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
             author: escapeHtml(safeAuthorName(item)),
+            rawAuthor: safeAuthorName(item),
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
@@ -1707,7 +1708,7 @@ function renderSubscriptionsPage() {
                 <div class="card-content">
                     <h3 class="card-title">${formattedItem.name}</h3>
                     <div class="author-info">
-                        <div class="author-avatar">${formattedItem.author.substring(0, 2).toUpperCase()}</div>
+                        <div class="author-avatar">${formattedItem.rawAuthor.substring(0, 2).toUpperCase()}</div>
                         <span>${window.t ? window.t('steam.author') : '作者'}: ${formattedItem.author}</span>
                     </div>
                     <div class="card-info-grid">
@@ -1960,6 +1961,7 @@ function viewItemDetails(itemId) {
                 id: item.publishedFileId.toString(),
                 name: item.title,
                 author: escapeHtml(safeAuthorName(item)),
+                rawAuthor: safeAuthorName(item),
                 subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
@@ -1984,7 +1986,7 @@ function viewItemDetails(itemId) {
             }
 
             // 获取作者头像（使用首字母作为占位符）
-            const authorInitial = formattedItem.author.substring(0, 2).toUpperCase();
+            const authorInitial = formattedItem.rawAuthor.substring(0, 2).toUpperCase();
 
             // 更新模态框内容
             document.getElementById('modalTitle').textContent = formattedItem.name;
@@ -2173,6 +2175,10 @@ async function autoScanAndAddWorkshopCharacterCards() {
 
         // 2. 音频文件扫描仍在前端执行（涉及 voice_clone API 和 localStorage 追踪）
         const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
+        if (!subscribedResponse.ok) {
+            console.error(`[工坊同步] 获取订阅物品失败: HTTP ${subscribedResponse.status} ${subscribedResponse.statusText}`);
+            return;
+        }
         const subscribedResult = await subscribedResponse.json();
 
         if (!subscribedResult.success) {
