@@ -924,6 +924,14 @@ class ConfigManager:
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+
+        # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
+        try:
+            config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 400))
+            if config['TEXT_GUARD_MAX_LENGTH'] <= 0:
+                config['TEXT_GUARD_MAX_LENGTH'] = 400
+        except (TypeError, ValueError):
+            config['TEXT_GUARD_MAX_LENGTH'] = 400
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:

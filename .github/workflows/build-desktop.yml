@@ -451,6 +451,18 @@ jobs:
         if: runner.os != 'Windows'
         run: chmod +x electron-app/bin/projectneko_server
 
+      # --- Cache Electron binary to avoid download failures ---
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/Library/Caches/electron
+            ~/.cache/electron
+          key: electron-${{ matrix.os }}-${{ matrix.platform }}-${{ hashFiles('electron-app/package-lock.json') }}
+          restore-keys: |
+            electron-${{ matrix.os }}-${{ matrix.platform }}-
+
       - name: Install npm dependencies
         working-directory: electron-app
         run: npm ci || npm install
@@ -469,37 +481,34 @@ jobs:
             console.log('Updated version to:', pkg.version);
           "
 
-      # --- Platform-specific electron-builder config patches ---
-      - name: Configure Linux build targets
-        if: matrix.platform == 'linux'
-        working-directory: electron-app
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.build = pkg.build || {};
-            pkg.build.linux = {
-              target: [
-                { target: 'AppImage', arch: ['x64'] },
-                { target: 'deb', arch: ['x64'] },
-                { target: 'tar.gz', arch: ['x64'] }
-              ],
-              category: 'Utility',
-              icon: 'build/icons'
-            };
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-            console.log('Linux build targets configured');
-          "
-
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             dpkg \
-            fakeroot \
-            rpm \
-            libarchive-tools
+            fakeroot
+
+      # Explicitly disable macOS code signing via package.json patch
+      # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
+      # which all require a valid signing identity; disable them all for CI builds
+      - name: Disable macOS code signing
+        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.build = pkg.build || {};
+            pkg.build.mac = pkg.build.mac || {};
+            pkg.build.mac.identity = null;
+            pkg.build.mac.hardenedRuntime = false;
+            delete pkg.build.mac.entitlements;
+            delete pkg.build.mac.entitlementsInherit;
+            delete pkg.build.afterSign;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('macOS code signing fully disabled');
+          "
 
       # --- Build Electron app ---
       - name: Build Electron app
@@ -507,7 +516,7 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true' && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -534,7 +543,6 @@ jobs:
             electron-app/dist/*.AppImage
             electron-app/dist/*.deb
             electron-app/dist/*.tar.gz
-            electron-app/dist/*.rpm
             electron-app/dist/*.blockmap
             electron-app/dist/latest*.yml
           if-no-files-found: warn
@@ -562,7 +570,7 @@ jobs:
           find artifacts -type f \( \
             -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
-            -o -name "*.rpm" -o -name "latest*.yml" \
+            -o -name "latest*.yml" \
           \) -exec cp {} release/ \;
           echo "=== Release files ==="
           ls -lah release/

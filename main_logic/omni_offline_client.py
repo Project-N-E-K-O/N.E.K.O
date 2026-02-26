@@ -109,7 +109,7 @@ class OmniOfflineClient:
         
         # ========== 普通对话守卫配置 ==========
         self.enable_response_guard = True     # 是否启用质量守卫
-        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 200
+        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 400
         self.max_response_rerolls = 2         # 最多允许的自动重试次数
         
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡
@@ -347,7 +347,12 @@ class OmniOfflineClient:
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
-                            failure_message = None if will_retry else "AI回复异常，已放弃输出"
+                            # 区分原因：超长用明确提示，其它守卫原因用通用提示
+                            if discard_reason and "length>" in discard_reason:
+                                final_message = "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）"
+                            else:
+                                final_message = "AI回复不符合要求，已放弃输出"
+                            failure_message = None if will_retry else final_message
                             await self._notify_response_discarded(
                                 discard_reason or "guard",
                                 guard_attempt,
@@ -362,7 +367,7 @@ class OmniOfflineClient:
                             
                             logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
                             if self.handle_connection_error:
-                                await self.handle_connection_error("AI回复异常，已放弃输出")
+                                await self.handle_connection_error(final_message)
                             assistant_message = ""
                             guard_exhausted = True
                             break
