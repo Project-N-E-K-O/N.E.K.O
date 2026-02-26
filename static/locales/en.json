@@ -735,7 +735,7 @@
         "gptsovitsVoiceIdHint": "(Voice ID set in Character Manager will override this default)",
         "gptsovitsVoiceIdEmpty": "-- Refresh to fetch voice list --",
         "gptsovitsNoVoices": "-- No configs available --",
-        "gptsovitsRefreshVoices": "🔄 Refresh List",
+        "gptsovitsRefreshVoices": "Refresh List",
         "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
         "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
         "gptsovitsEnabled": "Enable GPT-SoVITS",

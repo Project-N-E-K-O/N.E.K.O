@@ -735,7 +735,7 @@
         "gptsovitsVoiceIdHint": "(캐릭터 관리에서 설정한 Voice ID가 이 기본값을 덮어씁니다)",
         "gptsovitsVoiceIdEmpty": "-- 목록을 새로고침하여 음성을 가져오세요 --",
         "gptsovitsNoVoices": "-- 사용 가능한 설정 없음 --",
-        "gptsovitsRefreshVoices": "🔄 목록 새로고침",
+        "gptsovitsRefreshVoices": "목록 새로고침",
         "gptsovitsVoicesLoaded": "{{count}}개의 음성 설정을 로드했습니다",
         "gptsovitsVoicesLoadFailed": "음성 목록 가져오기 실패",
         "gptsovitsEnabled": "GPT-SoVITS 활성화",

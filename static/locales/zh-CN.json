@@ -735,7 +735,7 @@
         "gptsovitsVoiceIdHint": "（角色管理中设置的 Voice ID 会覆盖此默认配置）",
         "gptsovitsVoiceIdEmpty": "-- 请先刷新获取语音列表 --",
         "gptsovitsNoVoices": "-- 无可用配置 --",
-        "gptsovitsRefreshVoices": "🔄 刷新列表",
+        "gptsovitsRefreshVoices": "刷新列表",
         "gptsovitsVoicesLoaded": "已加载 {{count}} 个语音配置",
         "gptsovitsVoicesLoadFailed": "获取语音列表失败",
         "gptsovitsEnabled": "启用 GPT-SoVITS",

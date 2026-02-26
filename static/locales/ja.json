@@ -735,7 +735,7 @@
         "gptsovitsVoiceIdHint": "（キャラクター管理で設定したVoice IDがこのデフォルトを上書きします）",
         "gptsovitsVoiceIdEmpty": "-- リストを更新して音声を取得してください --",
         "gptsovitsNoVoices": "-- 利用可能な設定なし --",
-        "gptsovitsRefreshVoices": "🔄 リスト更新",
+        "gptsovitsRefreshVoices": "リスト更新",
         "gptsovitsVoicesLoaded": "{{count}}件の音声設定を読み込みました",
         "gptsovitsVoicesLoadFailed": "音声リストの取得に失敗しました",
         "gptsovitsEnabled": "GPT-SoVITS を有効化",
