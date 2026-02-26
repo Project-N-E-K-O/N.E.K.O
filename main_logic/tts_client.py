@@ -1468,7 +1468,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                             elif msg_type == 'done':
                                 logger.debug("[GPT-SoVITS v3] 会话完成")
                             elif msg_type == 'error':
-                                error_msg = msg.get('message', '')
+                                error_msg = str(msg.get('message', ''))
                                 logger.error(f"[GPT-SoVITS v3] 服务端错误: {error_msg}")
                                 response_queue.put(("__error__", error_msg))
                             elif msg_type == 'flushed':

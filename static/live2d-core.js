@@ -241,12 +241,15 @@ class Live2DManager {
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
                     const el = document.getElementById(containerId);
-                    const newW = el ? el.clientWidth : prevW;
-                    const newH = el ? el.clientHeight : prevH;
+                    const measuredW = el ? el.clientWidth : prevW;
+                    const measuredH = el ? el.clientHeight : prevH;
+                    const measuredContainerIsZero = !!el && (measuredW <= 0 || measuredH <= 0);
+                    const newW = Math.max(measuredW, 1);
+                    const newH = Math.max(measuredH, 1);
 
                     this.pixi_app.renderer.resize(newW, newH);
 
-                    if (this.currentModel && prevW > 0 && prevH > 0) {
+                    if (this.currentModel && prevW > 0 && prevH > 0 && !measuredContainerIsZero) {
                         const wRatio = newW / prevW;
                         const hRatio = newH / prevH;
                         this.currentModel.x *= wRatio;

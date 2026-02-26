@@ -949,9 +949,9 @@ class OmniRealtimeClient:
                         continue
                     
                     error_msg_lower = error_msg.lower()
-                    if ('欠费' in error_msg or 'standing' in error_msg or
-                        'policy violation' in error_msg_lower or '1008' in error_msg or
-                        '429' in error_msg or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
+                    if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
+                        'policy violation' in error_msg_lower or '1008' in error_msg_lower or
+                        '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
                         await self.close()

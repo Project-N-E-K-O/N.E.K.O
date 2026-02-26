@@ -514,7 +514,7 @@ class LLMSessionManager:
             message_lower = message.lower()
             if '欠费' in message_lower or 'standing' in message_lower:
                 await self.send_status(json.dumps({"code": "API_ARREARS"}))
-            elif 'quota' in message_lower or 'time' in message_lower:
+            elif 'quota' in message_lower or 'time limit' in message_lower:
                 await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
             elif '429' in message_lower or 'too many' in message_lower:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))

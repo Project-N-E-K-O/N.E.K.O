@@ -1570,9 +1570,14 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                         topMargin: 8,
                         gap: 8
                     });
+                    popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                     popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
                 }
-                popup.style.visibility = 'visible'; popup.style.opacity = '1'; popup.style.transform = 'translateX(0)';
+                popup.style.visibility = 'visible';
+                popup.style.opacity = '1';
+                requestAnimationFrame(() => {
+                    popup.style.transform = 'translateX(0)';
+                });
             });
         });
     }

@@ -49,6 +49,7 @@ class VRMManager {
         // CursorFollow 控制器（眼睛注视 + 头/脖子跟随）
         this._cursorFollow = null;
         this._initThreePromise = null;
+        this._isDisposed = false;
         this._activeLoadToken = 0;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
@@ -561,6 +562,7 @@ class VRMManager {
         if (this._initThreePromise) {
             return await this._initThreePromise;
         }
+        this._isDisposed = false;
 
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
@@ -577,6 +579,7 @@ class VRMManager {
                 throw new Error(errorMsg);
             }
             await this.core.init(canvasId, containerId, lightingConfig);
+            if (this._isDisposed) return false;
             if (this.interaction) this.interaction.initDragAndZoom();
             this._initMouseLookAtTracking();
             this.startAnimateLoop();
@@ -1016,6 +1019,7 @@ class VRMManager {
      */
     async dispose() {
         console.log('[VRM Manager] 开始完整清理 VRM 资源...');
+        this._isDisposed = true;
 
         // Invalidate any in-flight loadModel() async callbacks
         ++this._activeLoadToken;
@@ -1046,6 +1050,8 @@ class VRMManager {
         // 5. 清理模型资源（调用 core.disposeVRM）
         if (this.core && typeof this.core.disposeVRM === 'function') {
             await this.core.disposeVRM();
+            // 若 dispose 期间发生了重新初始化，则终止本次清理，避免清掉新实例
+            if (!this._isDisposed) return;
         }
 
         // 6. 清理动画模块（先停止动画，再清理资源）
