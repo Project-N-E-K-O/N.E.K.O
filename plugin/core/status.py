@@ -99,7 +99,18 @@ class PluginStatusManager:
 
             existing = cached.get(pid)
             if existing is None or existing.get("source") == "main_process_synthetic":
-                cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
+                if alive:
+                    state = "running"
+                else:
+                    state = "crashed"
+                    try:
+                        proc = getattr(host, "process", None)
+                        exitcode = getattr(proc, "exitcode", None) if proc is not None else None
+                        if exitcode == 0:
+                            state = "stopped"
+                    except Exception:
+                        state = "crashed"
+                cached[pid] = _build_synthetic(pid, state)
 
         if plugin_id is None:
             return cached

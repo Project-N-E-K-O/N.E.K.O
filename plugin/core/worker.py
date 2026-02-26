@@ -7,7 +7,7 @@ Worker 执行器模块
 import asyncio
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor, Future, wait as futures_wait
 from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass
 
@@ -103,8 +103,18 @@ class WorkerExecutor:
                 # 清理活跃任务
                 with self._lock:
                     self._active_tasks.pop(task_id, None)
-        
-        self._executor.submit(_worker)
+
+        try:
+            self._executor.submit(_worker)
+        except Exception as e:
+            with self._lock:
+                self._active_tasks.pop(task_id, None)
+            try:
+                if not result_future.done():
+                    result_future.set_exception(e)
+            except Exception:
+                pass
+            raise
         return result_future
     
     def wait_for_result(self, future: Future, timeout: float) -> Any:
@@ -143,4 +153,17 @@ class WorkerExecutor:
             timeout: 等待超时时间（秒）
         """
         self._shutdown = True
-        self._executor.shutdown(wait=wait, cancel_futures=not wait)
+        if not wait:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            return
+
+        # For wait=True, implement timeout by waiting on tracked task futures.
+        self._executor.shutdown(wait=False, cancel_futures=False)
+        with self._lock:
+            active_futures = [t.result_future for t in self._active_tasks.values()]
+        if not active_futures:
+            return
+        try:
+            futures_wait(active_futures, timeout=timeout)
+        except Exception:
+            pass

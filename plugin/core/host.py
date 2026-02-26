@@ -463,6 +463,26 @@ def _handle_config_update_command(
                 res_queue.put(ret_payload, timeout=10.0)
                 return
         
+        if mode == "permanent":
+            # permanent 模式需要持久化到文件/DB；当前插件进程侧未实现写盘，不能返回假成功。
+            logger.warning(
+                "[Plugin Process] CONFIG_UPDATE permanent mode requested but persistence is not implemented: plugin_id={}, profile={} req_id={}",
+                plugin_id, profile_name, req_id,
+            )
+            ret_payload["success"] = False
+            ret_payload["error"] = "permanent mode persistence is not implemented"
+            ret_payload["data"] = {
+                "mode": mode,
+                "config_applied": True,
+                "handler_called": config_change_handler is not None,
+                "permanent_not_implemented": True,
+            }
+            try:
+                res_queue.put(ret_payload, timeout=10.0)
+            except Exception:
+                logger.exception("[Plugin Process] Failed to send CONFIG_UPDATE response")
+            return
+
         ret_payload["success"] = True
         ret_payload["data"] = {
             "mode": mode,
@@ -951,41 +971,105 @@ def _plugin_process_runner(
                             # 这样命令循环可以继续处理其他命令（包括响应命令）
                             result_container = {"result": None, "exception": None, "done": False}
                             event = threading.Event()
+                            cancel_event = threading.Event()
                             
-                            def _run_async_thread(method=method, args=args, result_container=result_container, event=event, event_type=event_type, event_id=event_id):
+                            def _run_async_thread(
+                                method=method,
+                                args=args,
+                                result_container=result_container,
+                                event=event,
+                                cancel_event=cancel_event,
+                                event_type=event_type,
+                                event_id=event_id,
+                            ):
                                 try:
+                                    if cancel_event.is_set():
+                                        return
+
+                                    async def _run_with_cancel():
+                                        task = asyncio.create_task(method(**args))
+                                        try:
+                                            while True:
+                                                if cancel_event.is_set():
+                                                    task.cancel()
+                                                    try:
+                                                        await task
+                                                    except Exception:
+                                                        pass
+                                                    raise asyncio.CancelledError()
+                                                done, _pending = await asyncio.wait({task}, timeout=0.05)
+                                                if done:
+                                                    return await task
+                                        finally:
+                                            if not task.done():
+                                                task.cancel()
+
                                     with ctx._handler_scope(f"{event_type}.{event_id}"):
-                                        result_container["result"] = asyncio.run(method(**args))
+                                        result_container["result"] = asyncio.run(_run_with_cancel())
                                 except Exception as e:
                                     result_container["exception"] = e
                                 finally:
                                     result_container["done"] = True
                                     event.set()
-                            
-                            thread = threading.Thread(target=_run_async_thread, daemon=True)
-                            thread.start()
-                            
-                            # 等待异步方法完成（允许超时）
-                            start_time = time.time()
+
                             timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
-                            check_interval = 0.01  # 10ms
-                            
-                            while not result_container["done"]:
-                                if time.time() - start_time > timeout_seconds:
+
+                            def _wait_async_custom_event_result(
+                                req_id=req_id,
+                                event_type=event_type,
+                                event_id=event_id,
+                                ret_payload=ret_payload,
+                                timeout_seconds=timeout_seconds,
+                                result_container=result_container,
+                                cancel_event=cancel_event,
+                            ):
+                                thread = threading.Thread(target=_run_async_thread, daemon=True)
+                                thread.start()
+                                thread.join(timeout=timeout_seconds)
+                                if thread.is_alive():
+                                    try:
+                                        cancel_event.set()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        thread.join(timeout=0.2)
+                                    except Exception:
+                                        pass
                                     logger.error(
                                         "Custom event {}.{} execution timed out",
                                         event_type,
                                         event_id,
                                     )
-                                    raise TimeoutError(
-                                        f"Custom event execution timed out after {timeout_seconds}s"
+                                    ret_payload["error"] = f"Custom event execution timed out after {timeout_seconds}s"
+                                elif result_container["exception"]:
+                                    ret_payload["error"] = str(result_container["exception"])
+                                else:
+                                    ret_payload["success"] = True
+                                    ret_payload["data"] = result_container["result"]
+
+                                logger.debug(
+                                    "[Plugin Process] Sending response for req_id={}, success={}",
+                                    req_id,
+                                    ret_payload.get("success"),
+                                )
+                                try:
+                                    res_queue.put(ret_payload, timeout=10.0)
+                                    logger.debug(
+                                        "[Plugin Process] Response sent successfully for req_id={}",
+                                        req_id,
                                     )
-                                event.wait(timeout=check_interval)
-                            
-                            if result_container["exception"]:
-                                raise result_container["exception"]
-                            else:
-                                res = result_container["result"]
+                                except Exception:
+                                    logger.exception(
+                                        "[Plugin Process] Failed to send response for req_id={}",
+                                        req_id,
+                                    )
+
+                            threading.Thread(
+                                target=_wait_async_custom_event_result,
+                                daemon=True,
+                                name=f"AsyncCustomWaiter-{req_id[:8]}",
+                            ).start()
+                            continue
                         else:
                             logger.debug("[Plugin Process] Custom event is sync, calling directly")
                             with ctx._handler_scope(f"{event_type}.{event_id}"):
@@ -1209,29 +1293,59 @@ def _plugin_process_runner(
                         # 这样命令循环可以继续处理其他命令（包括响应命令）
                         result_container = {"result": None, "exception": None, "done": False}
                         event = threading.Event()
+                        cancel_event = threading.Event()
                         
-                        def run_async(method=method, args=args, result_container=result_container, event=event, entry_id=entry_id, run_id=run_id):
+                        def run_async(
+                            method=method,
+                            args=args,
+                            result_container=result_container,
+                            event=event,
+                            cancel_event=cancel_event,
+                            entry_id=entry_id,
+                            run_id=run_id,
+                        ):
                             try:
+                                if cancel_event.is_set():
+                                    return
+
+                                async def _run_with_cancel():
+                                    task = asyncio.create_task(method(**args))
+                                    try:
+                                        while True:
+                                            if cancel_event.is_set():
+                                                task.cancel()
+                                                try:
+                                                    await task
+                                                except Exception:
+                                                    pass
+                                                raise asyncio.CancelledError()
+                                            done, _pending = await asyncio.wait({task}, timeout=0.05)
+                                            if done:
+                                                return await task
+                                    finally:
+                                        if not task.done():
+                                            task.cancel()
+
                                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
-                                    result_container["result"] = asyncio.run(method(**args))
+                                    result_container["result"] = asyncio.run(_run_with_cancel())
+
+                                if cancel_event.is_set():
+                                    return
+
                                 # Save state after successful execution (if enabled)
                                 if _should_persist(method):
                                     try:
                                         sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
                                         if sp:
                                             sp.save(instance, freezable_keys, reason="auto")
-                                    except Exception as persist_err:
-                                        # 在线程内无法使用 logger，静默忽略
+                                    except Exception:
                                         pass
                             except Exception as e:
                                 result_container["exception"] = e
                             finally:
                                 result_container["done"] = True
                                 event.set()
-                        
-                        thread = threading.Thread(target=run_async, daemon=True)
-                        thread.start()
-                        
+
                         # 等待异步方法完成（允许超时）
                         # 从 EventMeta.extra 获取自定义超时，如果没有则使用默认值
                         entry_meta = entry_meta_map.get(entry_id)
@@ -1251,27 +1365,55 @@ def _plugin_process_runner(
                                 logger.debug("[Plugin Process] Using custom timeout {}s for entry {}", timeout_seconds, entry_id)
                         else:
                             timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
-                        
-                        start_time = time.time()
-                        check_interval = 0.01  # 10ms
-                        
-                        while not result_container["done"]:
-                            # 如果 timeout_seconds 为 None，则不检查超时
-                            if timeout_seconds is not None and time.time() - start_time > timeout_seconds:
+
+                        def _wait_async_trigger_result(
+                            req_id=req_id,
+                            entry_id=entry_id,
+                            run_id=run_id,
+                            result_container=result_container,
+                            timeout_seconds=timeout_seconds,
+                            ret_payload=ret_payload,
+                            method=method,
+                            cancel_event=cancel_event,
+                        ):
+                            thread = threading.Thread(target=run_async, daemon=True)
+                            thread.start()
+                            thread.join(timeout=timeout_seconds)
+                            if thread.is_alive():
+                                try:
+                                    cancel_event.set()
+                                except Exception:
+                                    pass
+                                try:
+                                    thread.join(timeout=0.2)
+                                except Exception:
+                                    pass
                                 logger.error(
                                     "Async method {} execution timed out after {}s",
                                     entry_id,
                                     timeout_seconds,
                                 )
-                                raise TimeoutError(
-                                    f"Async method execution timed out after {timeout_seconds}s"
+                                ret_payload["error"] = f"Async method execution timed out after {timeout_seconds}s"
+                            elif result_container["exception"]:
+                                ret_payload["error"] = str(result_container["exception"])
+                            else:
+                                ret_payload["success"] = True
+                                ret_payload["data"] = result_container["result"]
+
+                            try:
+                                res_queue.put(ret_payload)
+                            except Exception:
+                                logger.exception(
+                                    "[Plugin Process] Failed to send response for req_id={}",
+                                    req_id,
                                 )
-                            event.wait(timeout=check_interval)
-                        
-                        if result_container["exception"]:
-                            raise result_container["exception"]
-                        else:
-                            res = result_container["result"]
+
+                        threading.Thread(
+                            target=_wait_async_trigger_result,
+                            daemon=True,
+                            name=f"AsyncWaiter-{req_id[:8]}",
+                        ).start()
+                        continue
                     else:
                         logger.debug("[Plugin Process] Method is sync, calling directly")
                         try:

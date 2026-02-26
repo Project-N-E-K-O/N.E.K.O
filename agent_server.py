@@ -719,7 +719,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 logger.info(f"[TaskExecutor] ✅ UserPlugin accepted: {result.tool_name} ({getattr(result, 'result', None)})")
                 try:
                     summary = f'插件任务 "{result.tool_name}" 已接受'
-                    await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                    await _emit_main_event(
+                        "task_result",
+                        lanlan_name,
+                        task_id=str(getattr(result, "task_id", "") or ""),
+                        tool_name=str(getattr(result, "tool_name", "") or ""),
+                        result=getattr(result, "result", None),
+                        success=True,
+                        text=summary[:240],
+                    )
                 except Exception:
                     pass
             else:
@@ -1109,6 +1117,8 @@ async def get_agent_flags():
 
 @app.get("/agent/state")
 async def get_agent_state():
+    if not Modules.task_executor:
+        raise HTTPException(503, "Task executor not ready")
     snapshot = _collect_agent_status_snapshot()
     return {"success": True, "snapshot": snapshot}
 

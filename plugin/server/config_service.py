@@ -1542,10 +1542,13 @@ async def hot_update_plugin_config(
         # 检查是否有 send_config_update 方法（异步方法）
         if hasattr(host, 'send_config_update'):
             try:
+                # permanent 模式的“持久化”在主进程侧已经完成（update_plugin_config）。
+                # 子进程这里只需要刷新内存配置缓存，因此始终用 temporary 触发热更新。
+                update_mode = "temporary" if mode == "permanent" else mode
                 # 直接 await 异步方法，在同一个事件循环中执行
                 result = await host.send_config_update(
                     config=full_config,
-                    mode=mode,
+                    mode=update_mode,
                     profile=profile,
                     timeout=timeout,
                 )
