@@ -37,17 +37,30 @@ logger = get_module_logger(__name__, "Main")
 # Steam 的 k_UGCQueryHandleInvalid = 0xFFFFFFFFFFFFFFFF
 _INVALID_UGC_QUERY_HANDLE = 0xFFFFFFFFFFFFFFFF
 
-# 缓存 { publishedFileId(int): { title, description, steamIDOwner, authorName, ... } }
+# 缓存 { publishedFileId(int): { title, description, ..., _cache_ts: float } }
+# 每个条目带有独立的 _cache_ts 时间戳，用于按条目粒度判断 TTL
 _ugc_details_cache: dict[int, dict] = {}
-_ugc_cache_timestamp: float = 0.0
 _UGC_CACHE_TTL = 300  # 缓存有效期 5 分钟
 _ugc_warmup_task = None  # 后台预热任务
 _ugc_sync_task = None    # 后台角色卡同步任务
 
+# 全局互斥锁，用于序列化角色卡同步的 load_characters -> save_characters 流程
+_ugc_sync_lock = asyncio.Lock()
 
-def _is_ugc_cache_valid() -> bool:
-    """检查 UGC 缓存是否在有效期内"""
-    return bool(_ugc_details_cache) and (time.time() - _ugc_cache_timestamp < _UGC_CACHE_TTL)
+
+def _is_item_cache_valid(item_id: int) -> bool:
+    """检查单个 UGC 缓存条目是否在有效期内"""
+    entry = _ugc_details_cache.get(item_id)
+    if not entry:
+        return False
+    return (time.time() - entry.get('_cache_ts', 0)) < _UGC_CACHE_TTL
+
+
+def _all_items_cache_valid(item_ids: list[int]) -> bool:
+    """检查所有给定物品 ID 的缓存是否均在有效期内"""
+    if not _ugc_details_cache:
+        return False
+    return all(_is_item_cache_valid(iid) for iid in item_ids)
 
 
 async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
@@ -184,9 +197,9 @@ def _resolve_author_name(steamworks, owner_id: int) -> str | None:
 def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: dict) -> None:
     """
     从 UGC 查询结果(SteamUGCDetails_t)提取物品详情，填充到 item_info 字典。
-    同时更新全局缓存。
+    同时更新全局缓存（按条目粒度记录时间戳）。
     """
-    global _ugc_details_cache, _ugc_cache_timestamp
+    global _ugc_details_cache
     
     try:
         if hasattr(result, 'title') and result.title:
@@ -224,8 +237,8 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
             if key in item_info:
                 cache_entry[key] = item_info[key]
         if cache_entry:
+            cache_entry['_cache_ts'] = time.time()
             _ugc_details_cache[item_id_int] = cache_entry
-            _ugc_cache_timestamp = time.time()
         
         logger.debug(f"提取物品 {item_id_int} 详情: title={item_info.get('title', '?')}")
     except Exception as detail_error:
@@ -588,8 +601,8 @@ async def get_subscribed_workshop_items():
                     continue
             
             if all_item_ids:
-                # 优先使用缓存（如果缓存覆盖了所有 ID 且仍在有效期内）
-                if _is_ugc_cache_valid() and all(iid in _ugc_details_cache for iid in all_item_ids):
+                # 优先使用缓存（如果所有条目都存在且各自在有效期内）
+                if _all_items_cache_valid(all_item_ids):
                     logger.info(f"使用 UGC 缓存（{len(all_item_ids)} 个物品）")
                 elif _ugc_warmup_task is not None and not _ugc_warmup_task.done():
                     # 预热任务仍在运行，等待它完成而非发起重复查询
@@ -600,8 +613,8 @@ async def get_subscribed_workshop_items():
                         logger.info("等待 UGC 缓存预热超时（20s），将回退到直接查询")
                     except Exception as e:
                         logger.warning(f"UGC 缓存预热任务异常: {e}", exc_info=True)
-                    # 预热完成后检查缓存
-                    if not (_is_ugc_cache_valid() and all(iid in _ugc_details_cache for iid in all_item_ids)):
+                    # 预热完成后按条目粒度检查缓存
+                    if not _all_items_cache_valid(all_item_ids):
                         logger.info(f'预热后缓存不完整，重新批量查询 {len(all_item_ids)} 个物品')
                         ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
                 else:
@@ -754,8 +767,8 @@ async def get_subscribed_workshop_items():
                 item_id_int = int(item_id)
                 if item_id_int in ugc_results:
                     _extract_ugc_item_details(steamworks, item_id_int, ugc_results[item_id_int], item_info)
-                elif item_id_int in _ugc_details_cache:
-                    # 使用缓存数据填充
+                elif _is_item_cache_valid(item_id_int):
+                    # 使用缓存数据填充（仅在该条目 TTL 有效时）
                     cached = _ugc_details_cache[item_id_int]
                     for key in ('title', 'description', 'timeAdded', 'timeUpdated',
                                 'steamIDOwner', 'authorName', 'tags'):
@@ -974,8 +987,8 @@ async def get_workshop_item_details(item_id: str):
         ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
         result = ugc_results.get(item_id_int)
         
-        # 如果查询失败，尝试使用缓存
-        if not result and item_id_int in _ugc_details_cache:
+        # 如果查询失败，尝试使用缓存（按条目粒度检查 TTL）
+        if not result and _is_item_cache_valid(item_id_int):
             cached = _ugc_details_cache[item_id_int]
             # 使用缓存数据构建响应
             use_cache = True
@@ -1050,7 +1063,11 @@ async def get_workshop_item_details(item_id: str):
                 time_created = getattr(result, 'timeCreated', 0)
                 time_updated = getattr(result, 'timeUpdated', 0)
                 file_size = getattr(result, 'fileSize', 0)
-                # 获取预览图 URL（SteamUGCDetails_t.URL 是物品网页/预览 URL）
+                # 注意: SteamUGCDetails_t.URL (m_rgchURL) 是物品的关联网页 URL，
+                # 而非预览图 URL。真正的预览图需通过 ISteamUGC::GetQueryUGCPreviewURL()
+                # 获取，但当前 Steamworks wrapper 未暴露该接口。
+                # 前端已有 fallback（默认 Steam 图标），因此这里暂时传递该字段。
+                # TODO: 在 wrapper 中实现 GetQueryUGCPreviewURL 后替换此处逻辑。
                 raw_url = getattr(result, 'URL', b'')
                 if isinstance(raw_url, bytes):
                     raw_url = raw_url.decode('utf-8', errors='replace')
@@ -2683,81 +2700,84 @@ async def sync_workshop_character_cards() -> dict:
             return {"added": 0, "skipped": 0, "errors": 0}
         
         config_mgr = get_config_manager()
-        characters = config_mgr.load_characters()
-        if '猫娘' not in characters:
-            characters['猫娘'] = {}
         
-        need_save = False
-        
-        # 2. 遍历所有已安装的物品
-        for item in subscribed_items:
-            installed_folder = item.get('installedFolder')
-            if not installed_folder or not os.path.isdir(installed_folder):
-                continue
+        # 使用全局锁序列化 load_characters -> save_characters 流程，防止并发覆写
+        async with _ugc_sync_lock:
+            characters = config_mgr.load_characters()
+            if '猫娘' not in characters:
+                characters['猫娘'] = {}
             
-            item_id = item.get('publishedFileId', '')
+            need_save = False
             
-            # 3. 扫描 .chara.json 文件（递归遍历子目录）
-            try:
-                chara_files = []
-                for root, _dirs, filenames in os.walk(installed_folder):
-                    for filename in filenames:
-                        if filename.endswith('.chara.json'):
-                            chara_files.append(os.path.join(root, filename))
+            # 2. 遍历所有已安装的物品
+            for item in subscribed_items:
+                installed_folder = item.get('installedFolder')
+                if not installed_folder or not os.path.isdir(installed_folder):
+                    continue
                 
-                for chara_file_path in chara_files:
-                    try:
-                        with open(chara_file_path, 'r', encoding='utf-8') as f:
-                            chara_data = json.load(f)
-                        
-                        chara_name = chara_data.get('档案名') or chara_data.get('name')
-                        if not chara_name:
-                            continue
-                        
-                        # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
-                        # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
-                        if chara_name in characters['猫娘']:
-                            skipped_count += 1
-                            continue
-                        
-                        # 构建角色数据，过滤保留字段
-                        catgirl_data = {}
-                        skip_keys = ['档案名', *_RESERVED_FIELDS]
-                        for k, v in chara_data.items():
-                            if k not in skip_keys and v is not None:
-                                catgirl_data[k] = v
-                        
-                        # 如果角色卡有 live2d 字段，同时保存 live2d_item_id
-                        if catgirl_data.get('live2d') and item_id:
-                            catgirl_data['live2d_item_id'] = str(item_id)
-                        
-                        characters['猫娘'][chara_name] = catgirl_data
-                        need_save = True
-                        added_count += 1
-                        logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
-                        
-                    except Exception as e:
-                        logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
-                        error_count += 1
-                        
-            except Exception as e:
-                logger.warning(f"sync_workshop_character_cards: 扫描文件夹 {installed_folder} 失败: {e}")
-                error_count += 1
-        
-        # 4. 保存并重新加载角色配置
-        if need_save:
-            config_mgr.save_characters(characters)
-            logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
+                item_id = item.get('publishedFileId', '')
+                
+                # 3. 扫描 .chara.json 文件（递归遍历子目录）
+                try:
+                    chara_files = []
+                    for root, _dirs, filenames in os.walk(installed_folder):
+                        for filename in filenames:
+                            if filename.endswith('.chara.json'):
+                                chara_files.append(os.path.join(root, filename))
+                    
+                    for chara_file_path in chara_files:
+                        try:
+                            with open(chara_file_path, 'r', encoding='utf-8') as f:
+                                chara_data = json.load(f)
+                            
+                            chara_name = chara_data.get('档案名') or chara_data.get('name')
+                            if not chara_name:
+                                continue
+                            
+                            # 已存在则跳过（当前设计：仅填充缺失角色卡，不覆盖已有数据；
+                            # 如需支持创意工坊更新覆写本地数据，可添加 allow_workshop_overwrite 配置项）
+                            if chara_name in characters['猫娘']:
+                                skipped_count += 1
+                                continue
+                            
+                            # 构建角色数据，过滤保留字段
+                            catgirl_data = {}
+                            skip_keys = ['档案名', *_RESERVED_FIELDS]
+                            for k, v in chara_data.items():
+                                if k not in skip_keys and v is not None:
+                                    catgirl_data[k] = v
+                            
+                            # 如果角色卡有 live2d 字段，同时保存 live2d_item_id
+                            if catgirl_data.get('live2d') and item_id:
+                                catgirl_data['live2d_item_id'] = str(item_id)
+                            
+                            characters['猫娘'][chara_name] = catgirl_data
+                            need_save = True
+                            added_count += 1
+                            logger.info(f"sync_workshop_character_cards: 添加角色卡 '{chara_name}' (来自物品 {item_id})")
+                            
+                        except Exception as e:
+                            logger.warning(f"sync_workshop_character_cards: 处理文件 {chara_file_path} 失败: {e}")
+                            error_count += 1
+                            
+                except Exception as e:
+                    logger.warning(f"sync_workshop_character_cards: 扫描文件夹 {installed_folder} 失败: {e}")
+                    error_count += 1
             
-            try:
-                initialize_character_data = get_initialize_character_data()
-                if initialize_character_data:
-                    await initialize_character_data()
-                    logger.info("sync_workshop_character_cards: 已重新加载角色配置")
-            except Exception as e:
-                logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
-        else:
-            logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
+            # 4. 保存并重新加载角色配置
+            if need_save:
+                config_mgr.save_characters(characters)
+                logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡")
+                
+                try:
+                    initialize_character_data = get_initialize_character_data()
+                    if initialize_character_data:
+                        await initialize_character_data()
+                        logger.info("sync_workshop_character_cards: 已重新加载角色配置")
+                except Exception as e:
+                    logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
+            else:
+                logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
         
     except Exception as e:
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)

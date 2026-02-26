@@ -1588,10 +1588,10 @@ let currentSortOrder = 'desc'; // 默认降序
 
 // escapeHtml 已在上方定义（DOM-based，非 string 走 String(text) 转换）
 
-// 安全获取作者显示名
+// 安全获取作者显示名（始终返回字符串）
 function safeAuthorName(item) {
     const raw = item.authorName || (item.steamIDOwner != null ? String(item.steamIDOwner) : '');
-    return raw || (window.t ? window.t('steam.unknownAuthor') : '未知作者');
+    return String(raw) || (window.t ? window.t('steam.unknownAuthor') : '未知作者');
 }
 
 // 加载订阅物品
@@ -1708,7 +1708,7 @@ function renderSubscriptionsPage() {
                 <div class="card-content">
                     <h3 class="card-title">${formattedItem.name}</h3>
                     <div class="author-info">
-                        <div class="author-avatar">${formattedItem.rawAuthor.substring(0, 2).toUpperCase()}</div>
+                        <div class="author-avatar">${escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase())}</div>
                         <span>${window.t ? window.t('steam.author') : '作者'}: ${formattedItem.author}</span>
                     </div>
                     <div class="card-info-grid">
@@ -1986,7 +1986,7 @@ function viewItemDetails(itemId) {
             }
 
             // 获取作者头像（使用首字母作为占位符）
-            const authorInitial = formattedItem.rawAuthor.substring(0, 2).toUpperCase();
+            const authorInitial = escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase());
 
             // 更新模态框内容
             document.getElementById('modalTitle').textContent = formattedItem.name;
@@ -2199,6 +2199,10 @@ async function autoScanAndAddWorkshopCharacterCards() {
             // 扫描目录中所有音频文件(.mp3, .wav)
             try {
                 const audioListResponse = await fetch(`/api/steam/workshop/list-audio-files?directory=${encodeURIComponent(folderPath)}`);
+                if (!audioListResponse.ok) {
+                    const errText = await audioListResponse.text().catch(() => '');
+                    throw new Error(`HTTP ${audioListResponse.status}: ${errText || audioListResponse.statusText}`);
+                }
                 const audioListResult = await audioListResponse.json();
 
                 if (audioListResult.success && audioListResult.files.length > 0) {

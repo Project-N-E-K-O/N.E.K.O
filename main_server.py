@@ -824,12 +824,15 @@ async def shutdown_server_async():
         # 取消后台创意工坊任务，避免残留协程
         try:
             import main_routers.workshop_router as _wr
+            _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
             for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
                 task = getattr(_wr, task_attr, None)
                 if task and not task.done():
                     task.cancel()
                     try:
-                        await task
+                        await asyncio.wait_for(asyncio.shield(task), timeout=_SHUTDOWN_TASK_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"后台任务 {task_attr} 在 {_SHUTDOWN_TASK_TIMEOUT}s 内未结束，跳过等待")
                     except asyncio.CancelledError:
                         logger.debug(f"后台任务 {task_attr} 已取消")
                     except Exception as e:
