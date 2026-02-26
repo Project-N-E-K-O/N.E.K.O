@@ -313,54 +313,30 @@ if (!window._charaManagerFoldHandler) {
 // 角色数据缓存
 let characterData = null;
 
-// 自动扫描并导入工坊角色卡（静默执行，不影响页面加载）
+// 通过服务端API同步工坊角色卡（服务端统一扫描，无需前端逐个fetch）
 async function autoScanWorkshopCharacterCards() {
-    let hasNewCards = false;
     try {
-        // 1. 获取所有订阅的创意工坊物品
-        const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
-        const subscribedResult = await subscribedResponse.json();
-
-        if (!subscribedResult.success) {
-            console.log('[工坊扫描] 获取订阅物品失败或Steam未初始化，跳过扫描');
+        const response = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            console.error(`[工坊扫描] 服务端返回错误: HTTP ${response.status} ${response.statusText}`, errText);
             return false;
         }
-
-        const subscribedItems = subscribedResult.items;
-        console.log(`[工坊扫描] 找到 ${subscribedItems.length} 个订阅物品`);
-
-        // 2. 批量并发扫描所有已安装的物品（提高效率喵）
-        const scanPromises = subscribedItems.map(async (item) => {
-            if (!item.installedFolder) return false;
-
-            const itemId = item.publishedFileId;
-            const folderPath = item.installedFolder;
-
-            try {
-                const listResponse = await fetch(`/api/steam/workshop/list-chara-files?directory=${encodeURIComponent(folderPath)}`);
-                const listResult = await listResponse.json();
-
-                if (listResult.success && listResult.files.length > 0) {
-                    let itemHasNew = false;
-                    // 对于单个物品内的多个角色卡，我们也尝试并行处理
-                    const importPromises = listResult.files.map(file => importWorkshopCharaFile(file.path, itemId));
-                    const results = await Promise.all(importPromises);
-                    if (results.some(r => r === true)) itemHasNew = true;
-                    return itemHasNew;
-                }
-            } catch (e) {
-                // 静默处理单个物品的扫描错误
-            }
+        const result = await response.json();
+        if (result.success === false) {
+            console.error(`[工坊扫描] 服务端同步失败: ${result.error || result.message || '未知错误'}`, result);
             return false;
-        });
-
-        const scanResults = await Promise.all(scanPromises);
-        hasNewCards = scanResults.some(r => r === true);
-
+        }
+        if (result.added > 0) {
+            console.log(`[工坊扫描] 服务端同步完成：新增 ${result.added} 个角色卡，跳过 ${result.skipped} 个已存在`);
+            return true;
+        }
+        console.log('[工坊扫描] 服务端同步完成：无新增角色卡');
+        return false;
     } catch (error) {
-        console.log('[工坊扫描] Steam未运行或未初始化，跳过工坊角色卡扫描');
+        console.error('[工坊扫描] 服务端角色卡同步请求异常:', error);
+        return false;
     }
-    return hasNewCards;
 }
 
 // 导入单个工坊角色卡文件，返回是否成功添加

@@ -383,18 +383,43 @@ class ComputerUseAdapter:
                 base_url=base_url, api_key=api_key, timeout=65.0,
                 max_retries=0,
             )
+        except Exception as e:
+            self.last_error = str(e)
+            logger.error("ComputerUseAdapter init failed: %s", e)
 
-            # Connectivity test (via langchain for compatibility with extra_body)
+    # ------------------------------------------------------------------
+    # Non-blocking LLM connectivity probe
+    # ------------------------------------------------------------------
+
+    def check_connectivity(self) -> bool:
+        """Synchronous LLM ping.  Meant to be called from a background
+        thread so the event-loop is never blocked.  Returns *True* when
+        the configured agent endpoint answers a trivial prompt."""
+        cfg = self._config_manager.get_model_api_config("agent")
+        api_key = cfg.get("api_key") or "EMPTY"
+        base_url = cfg.get("base_url", "")
+        model = cfg.get("model", "")
+        if not base_url or not model:
+            self.init_ok = False
+            self.last_error = "Agent model not configured"
+            return False
+        try:
             from langchain_openai import ChatOpenAI
             test_llm = ChatOpenAI(
                 model=model, base_url=base_url, api_key=api_key,
                 extra_body=get_agent_extra_body(model) or None,
+                request_timeout=15,
             ).bind(max_tokens=5)
             _ = test_llm.invoke("ok").content
             self.init_ok = True
+            self.last_error = None
+            logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
+            return True
         except Exception as e:
+            self.init_ok = False
             self.last_error = str(e)
-            logger.error("ComputerUseAdapter init failed: %s", e)
+            logger.warning("[CUA] LLM connectivity FAIL: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # Public interface

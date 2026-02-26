@@ -684,7 +684,7 @@ function init_app() {
 
                                             rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                                         }
-                                    }, 10000);
+                                    }, 15000); // 15秒（略大于后端12秒，对冲网络延迟）
 
                                     // 等待session真正启动成功
                                     await sessionStartPromise;
@@ -3308,7 +3308,7 @@ function init_app() {
                     input_type: 'audio'
                 }));
 
-                // 设置超时（10秒），如果超时则拒绝
+                // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
                 window.sessionTimeoutId = setTimeout(() => {
                     if (sessionStartedRejecter) {
                         const rejecter = sessionStartedRejecter;
@@ -3330,7 +3330,7 @@ function init_app() {
                     } else {
                         window.sessionTimeoutId = null; // 即使 rejecter 不存在也清除
                     }
-                }, 10000); // 10秒超时
+                }, 15000);
             } else {
                 // WebSocket未连接，清除超时定时器和状态
                 if (window.sessionTimeoutId) {
@@ -3618,7 +3618,7 @@ function init_app() {
                     window.sessionTimeoutId = null;
                 }
 
-                // 设置超时（15秒），如果超时则拒绝
+                // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
                 window.sessionTimeoutId = setTimeout(() => {
                     if (sessionStartedRejecter) {
                         const rejecter = sessionStartedRejecter;
@@ -3636,7 +3636,7 @@ function init_app() {
 
                         rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                     }
-                }, 15000); // 15秒超时
+                }, 15000);
             });
 
             // 启动文本session
@@ -3782,7 +3782,7 @@ function init_app() {
                     sessionStartedResolver = resolve;
                     sessionStartedRejecter = reject; // 保存 reject 函数
 
-                    // 设置超时（15秒），如果超时则拒绝
+                    // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
                     setTimeout(() => {
                         if (sessionStartedRejecter) {
                             const rejecter = sessionStartedRejecter;
