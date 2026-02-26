@@ -1,7 +1,9 @@
 /**
- * N.E.K.O 凭证录入脚本 - 企业级加固版 (最终稳健版)
- * 修复：异步翻译延迟导致的白屏、HTML 标签被破坏、蓝框坍塌
+ * N.E.K.O 凭证录入脚本 - 企业级加固版
+ * 修复：DOM 节点依赖、HTML 标签转义、ID 规范化、异步竞争过滤
  */
+
+// 使用t函数前的配置数据
 const PLATFORM_CONFIG_DATA = {
     'bilibili': {
         name: 'Bilibili', icon: '📺', theme: '#4f46e5',
@@ -27,6 +29,7 @@ const PLATFORM_CONFIG_DATA = {
         name: '快手', icon: '🧡', theme: '#ff5000',
         instructionKey: 'cookiesLogin.instructions.kuaishou',
         fields: [
+            // 修复点：后端 key 包含点号，通过 mapKey 处理 DOM ID
             { key: 'kuaishou.server.web_st', mapKey: 'ks_web_st', labelKey: 'cookiesLogin.fields.ks_web_st.label', descKey: 'cookiesLogin.fields.ks_web_st.desc', required: true },
             { key: 'kuaishou.server.web_ph', mapKey: 'ks_web_ph', labelKey: 'cookiesLogin.fields.ks_web_ph.label', descKey: 'cookiesLogin.fields.ks_web_ph.desc', required: true },
             { key: 'userId', labelKey: 'cookiesLogin.fields.userId.label', descKey: 'cookiesLogin.fields.userId.desc', required: true },
@@ -59,19 +62,9 @@ const PLATFORM_CONFIG_DATA = {
     }
 };
 
-// 🌟 修复：加强防范机制。如果字典还没加载好，坚决返回传入的中文后备(Fallback)
-const safeT = (key, fallback = '') => {
-    if (typeof window.t !== 'function') return fallback;
-    const result = window.t(key);
-    // 如果返回的翻译和键名一样，或者为空，说明字典处于未就绪状态
-    return (result === key || !result) ? fallback : result;
-};
-
+// 动态生成配置对象，支持国际化
 let PLATFORM_CONFIG = {};
-let currentPlatform = 'bilibili';
-let alertTimeout = null;
 
-// 🌟 修复：当语言切换时，重新初始化平台配置
 function initPlatformConfig() {
     PLATFORM_CONFIG = {};
     for (const [key, data] of Object.entries(PLATFORM_CONFIG_DATA)) {
@@ -79,174 +72,141 @@ function initPlatformConfig() {
             name: data.name,
             icon: data.icon,
             theme: data.theme,
-            // 附带默认中文提示，防止蓝色框坍塌为空
-            instruction: data.instructionKey ? safeT(data.instructionKey, `📌 <b>目标：</b> 请前往 <b>${data.name}</b> 获取这些 Cookies。`) : '',
+            instruction: data.instructionKey ? t(data.instructionKey) : '',
             fields: data.fields.map(field => ({
                 key: field.key,
                 mapKey: field.mapKey,
-                label: field.labelKey ? safeT(field.labelKey, field.key) : field.key,
-                desc: field.descKey ? safeT(field.descKey) : '',
+                label: field.labelKey ? t(field.labelKey) : field.label,
+                desc: field.descKey ? t(field.descKey) : field.desc,
                 required: field.required
             }))
         };
     }
 }
 
-// 安全渲染带标签的教程步骤，并提供完善的中文回退
-function renderStaticHtmlI18n() {
-    const htmlSteps = {
-        'guide-step1': { key: 'cookiesLogin.guide.step1', fallback: '在浏览器打开对应平台网页并<span class="highlight-text">完成登录</span>。' },
-        'guide-step3': { key: 'cookiesLogin.guide.step3', fallback: '在顶部找到并点击 <span class="highlight-text">Application (应用程序)</span>。' },
-        'guide-step4': { key: 'cookiesLogin.guide.step4', fallback: '左侧找到 <span class="highlight-text">Cookies</span>，点击域名后在右侧复制对应的值。' }
-    };
-    // 遍历所有需要翻译的元素 ID
-    for (const [id, data] of Object.entries(htmlSteps)) {
-        const el = document.getElementById(id);
-        if (el) el.innerHTML = DOMPurify.sanitize(safeT(data.key, data.fallback));
-    }
-    // 更新步骤2的前缀和后缀文本
-    const step2Prefix = document.getElementById('guide-step2-prefix');
-    const step2Suffix = document.getElementById('guide-step2-suffix');
-    if (step2Prefix) step2Prefix.textContent = safeT('cookiesLogin.guide.step2_prefix', '按下键盘');
-    if (step2Suffix) step2Suffix.textContent = safeT('cookiesLogin.guide.step2_suffix', '打开开发者工具。');
-    // 更新关闭按钮的标题和图片 alt 文本
-    const closeBtn = document.querySelector('.close-btn');
-    if (closeBtn) {
-        const closeText = safeT('common.close', '关闭');
-        closeBtn.title = closeText;
-        const img = closeBtn.querySelector('img');
-        if (img) img.alt = closeText;
-    }
+// 确保在i18n初始化完成后更新配置
+if (typeof window.t === 'function' && i18next.isInitialized) {
+    initPlatformConfig();
+} else {
+    // 如果i18n还未初始化，等待localechange事件
+    window.addEventListener('localechange', initPlatformConfig);
+    // 或者等待DOM加载完成后尝试
+    document.addEventListener('DOMContentLoaded', () => {
+        if (typeof window.t === 'function') {
+            initPlatformConfig();
+        }
+    });
 }
 
-// 当语言切换时，动态更新 HTML 的 lang 属性
-function handleLocaleChange() {
-    // 动态更新 HTML 的 lang 属性（如果 i18next 存在的话）
-    if (window.i18next && window.i18next.language) {
-        document.documentElement.lang = window.i18next.language;
-    }
-    initPlatformConfig();
-    renderStaticHtmlI18n(); 
-    switchTab(currentPlatform, document.querySelector('.tab-btn.active'), true);
-    refreshStatusList();
-}
-// DOM 加载完成后，初始化平台配置、渲染静态 HTML 翻译并监听语言变化事件
+let currentPlatform = 'bilibili';
+let alertTimeout = null;
+
+// 初始化
 document.addEventListener('DOMContentLoaded', () => {
-    // 初次加载无论如何都渲染一次（带兜底中文），然后监听语言就绪事件
-    initPlatformConfig();
-    renderStaticHtmlI18n();
-    window.addEventListener('localechange', handleLocaleChange);
-    
     const firstTab = document.querySelector('.tab-btn');
     if (firstTab) switchTab('bilibili', firstTab);
     refreshStatusList();
 });
 
-// 切换选项卡时，更新当前平台配置
-function switchTab(platformKey, btnElement, isReRender = false) {
+/**
+ * 切换平台标签
+ */
+function switchTab(platformKey, btnElement) {
     if (!PLATFORM_CONFIG[platformKey]) return;
     currentPlatform = platformKey;
     const config = PLATFORM_CONFIG[platformKey];
-    // 更新选项卡文本
-    if (btnElement) {
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        btnElement.classList.add('active');
-    }
-    // 更新面板描述
+
+    // UI 状态切换
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    btnElement?.classList.add('active');
+
+    // 渲染说明
     const descBox = document.getElementById('panel-desc');
     if (descBox) {
-        if (config.instruction && config.instruction.trim() !== '') {
-            descBox.style.display = 'block'; 
-            descBox.style.borderColor = config.theme;
-            descBox.innerHTML = DOMPurify.sanitize(config.instruction);
-        } else {
-            descBox.style.display = 'none'; 
-        }
+        descBox.style.borderColor = config.theme;
+        descBox.innerHTML = DOMPurify.sanitize(config.instruction);
     }
-    // 更新动态 Cookies 配置字段
+
+    // 渲染动态字段
     const fieldsContainer = document.getElementById('dynamic-fields');
     if (fieldsContainer) {
-        const existingValues = {};
-        if (isReRender) {
-            document.querySelectorAll('.credential-input').forEach(input => {
-                existingValues[input.id] = input.value;
-            });
-        }
-
-        const placeholderBase = safeT('cookiesLogin.pasteHere', '在此粘贴');
-        // 渲染动态 Cookies 配置字段
-        fieldsContainer.innerHTML = config.fields.map(f => {
-            const inputId = `input-${f.mapKey || f.key}`;
-            const value = existingValues[inputId] || '';
-            return `
+        fieldsContainer.innerHTML = config.fields.map(f => `
             <div class="field-group">
-                <label for="${inputId}">
+                <label for="input-${f.mapKey || f.key}">
                     <span>${DOMPurify.sanitize(f.label)} ${f.required ? '<span class="req-star">*</span>' : ''}</span>
                     <span class="desc">${DOMPurify.sanitize(f.desc)}</span>
                 </label>
-                <input type="text" id="${inputId}" 
-                       value="${DOMPurify.sanitize(value)}"
-                       placeholder="${placeholderBase} ${DOMPurify.sanitize(f.key)}..." 
+                <input type="text" id="input-${f.mapKey || f.key}" 
+                         placeholder="在此粘贴 ${DOMPurify.sanitize(f.key)}..." 
                        autocomplete="off" 
                        class="credential-input">
             </div>
-        `}).join('');
+        `).join('');
     }
-    // 更新提交按钮文本
+
     const submitText = document.getElementById('submit-text');
     if (submitText) {
-        const translatedText = safeT('cookiesLogin.saveConfig', '保存配置');
+        const translatedText = t('cookiesLogin.saveConfig');
         submitText.textContent = `${config.name} ${translatedText}`;
-    }
-}
-// 提交当前平台的 Cookies 配置
+    }}
+
+/**
+ * 提交当前表单
+ */
 async function submitCurrentCookie() {
     const config = PLATFORM_CONFIG[currentPlatform];
     const cookiePairs = [];
-    // 遍历配置字段，收集 Cookies 配置
+    
+    // 1. 数据收集与校验
     for (const f of config.fields) {
         const fieldId = `input-${f.mapKey || f.key}`;
         const inputEl = document.getElementById(fieldId);
         const val = inputEl ? inputEl.value.trim() : '';
-        // 检查必填项
+
         if (f.required && !val) {
-            const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}').replace('{{fieldName}}', f.label);
+            const fieldName = f.label;
+            const message = t('cookiesLogin.requiredField', { fieldName: fieldName });
             showAlert(false, message);
             inputEl?.focus();
             return;
         }
-        // 过滤非法字符
+
         if (val) {
+            // 简单的防注入处理：分步骤检查并清理
             let sanitizedVal = val;
+            
             if (/[\r\n\t<>'";]/.test(sanitizedVal)) {
-                sanitizedVal = sanitizedVal.replace(/[\r\n\t]/g, '').replace(/[<>'"]/g, '').replace(/;/g, '');
-                const message = safeT('cookiesLogin.invalidChars', '{{fieldName}} 包含非法字符，已自动过滤').replace('{{fieldName}}', f.label);
+                sanitizedVal = sanitizedVal
+                    .replace(/[\r\n\t]/g, '')       // 清理控制字符
+                    .replace(/[<>'"]/g, '')         // 清理潜在 XSS 字符
+                    .replace(/;/g, '');             // 清理所有分号
+                    
+                const fieldName = f.label;
+                const message = t('cookiesLogin.invalidChars', { fieldName: fieldName });
                 showAlert(false, message);
             }
-            // 检查是否有首尾空格
+            
             const prevVal = sanitizedVal;
             sanitizedVal = sanitizedVal.trim();
             if (sanitizedVal !== prevVal) {
-                const message = safeT('cookiesLogin.whitespaceTrimmed', '{{fieldName}} 已自动去除首尾空格').replace('{{fieldName}}', f.label);
-                showAlert(false, message);
+                const fieldName = f.label;
+            const message = t('cookiesLogin.whitespaceTrimmed', { fieldName: fieldName });
+            showAlert(false, message);
             }
             
             cookiePairs.push(`${f.key}=${sanitizedVal}`);
         }
     }
-    // 检查是否有 Cookies 配置
-    if (cookiePairs.length === 0) {
-        showAlert(false, safeT('cookiesLogin.noCookies', '请先配置 Cookies'));
-        return;
-    }
+
+    // 2. 状态更新
     const submitBtn = document.getElementById('submit-btn');
     const submitText = document.getElementById('submit-text');
     const encryptToggle = document.getElementById('encrypt-toggle');
     const originalBtnText = submitText?.textContent;
-    // 禁用提交按钮，防止重复点击
+
     if (submitBtn) submitBtn.disabled = true;
-    if (submitText) submitText.textContent = safeT('cookiesLogin.submitting', '安全加密传输中...');
-    // 发送 POST 请求保存 Cookies
+    if (submitText) submitText.textContent = '安全加密传输中...';
+
     try {
         const response = await fetch('/api/auth/cookies/save', {
             method: 'POST',
@@ -257,15 +217,13 @@ async function submitCurrentCookie() {
                 encrypt: encryptToggle ? encryptToggle.checked : false
             })
         });
-        // 检查响应状态
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+
         const result = await response.json();
-        // 检查是否成功保存
+
         if (result.success) {
-            const message = safeT('cookiesLogin.credentialsSaved', '{{platformName}} 凭证已保存').replace('{{platformName}}', config.name);
+            const message = t('cookiesLogin.credentialsSaved', { platformName: config.name });
             showAlert(true, `✅ ${message}`);
+            // 重置当前输入框
             document.querySelectorAll('.credential-input').forEach(i => i.value = '');
             refreshStatusList();
         } else {
@@ -275,11 +233,11 @@ async function submitCurrentCookie() {
                     ? result.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
                     : String(result.detail);
             }
-            const message = errMsg || safeT('cookiesLogin.saveFailed', '保存失败');
+            const message = errMsg || t('cookiesLogin.saveFailed');
             showAlert(false, message);
         }
     } catch (err) {
-        const message = safeT('cookiesLogin.networkError', '网络请求失败，请检查连接');
+        const message = t('cookiesLogin.networkError');
         showAlert(false, message);
         console.error("Submit error:", err);
     } finally {
@@ -287,89 +245,125 @@ async function submitCurrentCookie() {
         if (submitText) submitText.textContent = originalBtnText;
     }
 }
-// 刷新当前平台的状态列表
+
+// 状态监控
 async function refreshStatusList() {
     const container = document.getElementById('platform-list-content');
     if (!container) return;
-    console.log("刷新平台：", currentPlatform);
+
     const platforms = Object.keys(PLATFORM_CONFIG);
+    
     try {
         const results = await Promise.all(
-            platforms.map(p => fetch(`/api/auth/cookies/${p}`).then(r => r.json()).catch(() => ({ success: false })))
+            platforms.map(p => 
+                fetch(`/api/auth/cookies/${p}`)
+                    .then(r => r.json())
+                    .catch(() => ({ success: false }))
+            )
         );
+        
         container.textContent = '';
+
         results.forEach((res, idx) => {
             const key = platforms[idx];
             const cfg = PLATFORM_CONFIG[key];
             const active = res.success && res.data?.has_cookies;
 
+            // 1. 创建卡片外层容器
             const statusCard = document.createElement('div');
             statusCard.className = 'status-card';
+            // 设置左侧边框样式（安全设置内联样式，避免字符串拼接）
             statusCard.style.borderLeft = `4px solid ${active ? '#10b981' : '#cbd5e1'}`;
 
+            // 2. 创建状态信息容器
             const statusInfo = document.createElement('div');
             statusInfo.className = 'status-info';
 
+            // 3. 创建状态名称元素
             const statusName = document.createElement('div');
             statusName.className = 'status-name';
+            // 使用textContent设置文本（核心：避免XSS，仅渲染纯文本）
             statusName.textContent = `${cfg.icon} ${cfg.name}`;
 
+            // 4. 创建状态标签元素
             const statusTag = document.createElement('div');
             statusTag.className = 'status-tag';
             statusTag.style.color = active ? '#10b981' : '#94a3b8';
-            statusTag.textContent = active ? safeT('cookiesLogin.status.active', '生效中') : safeT('cookiesLogin.status.inactive', '未配置');
+            const statusText = active ? t('cookiesLogin.status.active') : t('cookiesLogin.status.inactive');
+            statusTag.textContent = statusText;
 
+            // 5. 组装状态信息容器
             statusInfo.appendChild(statusName);
             statusInfo.appendChild(statusTag);
 
+            // 6. 创建删除按钮（仅在active为true时创建）
             if (active) {
                 const delBtn = document.createElement('button');
                 delBtn.className = 'del-btn';
-                delBtn.textContent = safeT('cookiesLogin.removeCredentials', '清除凭证');
-                delBtn.addEventListener('click', () => deleteCookie(key));
+                delBtn.textContent = t('cookiesLogin.removeCredentials');
+                // 使用addEventListener绑定事件（替代onclick属性，避免XSS）
+                delBtn.addEventListener('click', () => {
+                    deleteCookie(key);
+                });
                 statusCard.appendChild(delBtn);
             }
+
+            // 7. 组装完整卡片并添加到容器
             statusCard.appendChild(statusInfo);
             container.appendChild(statusCard);
         });
     } catch (e) {
-        container.textContent = ''; 
+        // 错误提示也使用DOM创建，避免innerHTML
+        container.textContent = ''; // 先清空
         const errorText = document.createElement('div');
         errorText.className = 'error-text';
-        errorText.textContent = safeT('cookiesLogin.statusLoadFailed', '状态加载失败');
+        errorText.textContent = '状态加载失败';
         container.appendChild(errorText);
     }
 }
 
-// 删除指定平台的 Cookies 配置
+/**
+ * 删除凭证
+ */
 async function deleteCookie(platformKey) {
-    const fallbackPlatformName = safeT('cookiesLogin.thisPlatform', '该平台');
-    const platformName = PLATFORM_CONFIG[platformKey]?.name || fallbackPlatformName;
-    const message = safeT('cookiesLogin.confirmRemove', '确定要清除 {{platformName}} 的凭证吗？').replace('{{platformName}}', platformName);
+    const platformName = PLATFORM_CONFIG[platformKey]?.name || '该平台';
+    const message = t('cookiesLogin.confirmRemove', { platformName: platformName });
     if (!confirm(message)) return;
+
     try {
         const res = await fetch(`/api/auth/cookies/${platformKey}`, { method: 'DELETE' });
         const data = await res.json();
         if (data.success) {
-            showAlert(true, safeT('cookiesLogin.credentialsRemoved', '凭证已清除'));
+            const message = t('cookiesLogin.credentialsRemoved');
+            showAlert(true, message);
             refreshStatusList();
         } else {
-            showAlert(false, data.message || safeT('cookiesLogin.credentialsRemovedFailed', '清除失败'));
+            const message = data.message || t('cookiesLogin.credentialsRemovedFailed');
+            showAlert(false, message);
         }
     } catch (e) {
-        showAlert(false, safeT('cookiesLogin.removeFailed', '操作异常失败'));
+        const message = t('cookiesLogin.removeFailed');
+        showAlert(false, message);
     }
 }
 
-// 显示操作提示
+/**
+ * 统一弹窗提醒
+ * 修复：使用 textContent 修改文本以避免XSS风险，并处理计时器竞争
+ */
 function showAlert(success, message) {
     const alertEl = document.getElementById('main-alert');
     if (!alertEl) return;
+
     clearTimeout(alertTimeout);
+    
     alertEl.style.display = 'block';
     alertEl.style.backgroundColor = success ? '#ecfdf5' : '#fef2f2';
     alertEl.style.color = success ? '#059669' : '#dc2626';
     alertEl.style.borderColor = success ? '#a7f3d0' : '#fecaca';
     alertEl.textContent = message; 
-    alertTimeout = setTimeout(() => alertEl.style.display = 'none', 4000);
+
+    alertTimeout = setTimeout(() => {
+        alertEl.style.display = 'none';
+    }, 4000);
 }

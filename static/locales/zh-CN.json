@@ -2043,5 +2043,123 @@
         "switchToLight": "切换到亮色模式",
         "themeChanged": "主题已切换"
     },
-    "characterModelNotSet": "当前角色未设置模型"
+    "characterModelNotSet": "当前角色未设置模型",
+    "cookiesLogin": {
+        "title": "N.E.K.O 凭证控制中心",
+        "header": "🔐 凭证获取中心",
+        "bilibili": "📺 Bilibili",
+        "douyin": "🎵 抖音",
+        "kuaishou": "🧡 快手",
+        "weibo": "🌏 微博",
+        "twitter": "🐦 Twitter/X",
+        "reddit": "👽 Reddit",
+        "saveConfig": "保存配置",
+        "encryptStorage": "安全加密存储至本地文件",
+        "localMonitoring": "本地状态监控",
+        "removeCredentials": "移除",
+        "confirmRemove": "确定要清空 {{platformName}} 的登录凭证吗？",
+        "credentialsRemoved": "✅ 已成功移除凭证",
+        "credentialsSaved": "✅ {{platformName}} 凭证保存成功！",
+        "credentialsRemovedFailed": "删除失败",
+        "removeFailed": "❌ 删除失败，请检查网络",
+        "requiredField": "⚠️ 请填写必填项: [{{fieldName}}]",
+        "invalidChars": "⚠️ [{{fieldName}}] 包含无效字符...",
+        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/后空白，已自动修剪，请确认后重新提交",
+        "networkError": "❌ 网络异常: 无法连接至后端服务",
+        "saveFailed": "保存失败，请检查格式是否正确",
+        "instructions": {
+            "bilibili": "📌 <b>目标：</b> 请前往 <b>bilibili.com</b> 获取这些 Cookies。",
+            "douyin": "📌 <b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
+            "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
+            "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
+            "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
+            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。"
+        },
+        "guide": {
+            "title": "新手通用获取教程",
+            "step1": "在浏览器打开目标平台网页并<span class=\"highlight-text\">完成登录</span>。",
+            "step2_prefix": "按下键盘",
+            "step2_suffix": "打开开发者工具。",
+            "step3": "在顶部找到并点击 <span class=\"highlight-text\">Application (应用程序)</span> 面板。",
+            "step4": "在左侧找到 <span class=\"highlight-text\">Cookies</span>，点击域名后在右侧复制对应的值。"
+        },
+        "fields": {
+            "SESSDATA": {
+                "label": "SESSDATA",
+                "desc": "核心身份凭证 (必填)"
+            },
+            "bili_jct": {
+                "label": "bili_jct",
+                "desc": "CSRF Token (必填)"
+            },
+            "DedeUserID": {
+                "label": "DedeUserID",
+                "desc": "账号 UID (必填)"
+            },
+            "buvid3": {
+                "label": "buvid3",
+                "desc": "设备指纹 (选填)"
+            },
+            "sessionid": {
+                "label": "sessionid",
+                "desc": "核心会话凭证 (必填)"
+            },
+            "ttwid": {
+                "label": "ttwid",
+                "desc": "设备风控码 (必填)"
+            },
+            "passport_csrf_token": {
+                "label": "csrf_token",
+                "desc": "安全验证令牌"
+            },
+            "odin_tt": {
+                "label": "odin_tt",
+                "desc": "设备特征"
+            },
+            "ks_web_st": {
+                "label": "web_st",
+                "desc": "核心票据 (必填)"
+            },
+            "ks_web_ph": {
+                "label": "web_ph",
+                "desc": "辅助票据 (必填)"
+            },
+            "userId": {
+                "label": "userId",
+                "desc": "用户ID"
+            },
+            "did": {
+                "label": "did",
+                "desc": "设备ID"
+            },
+            "SUB": {
+                "label": "SUB",
+                "desc": "核心凭证 (以 _2A 开头)"
+            },
+            "XSRF-TOKEN": {
+                "label": "XSRF-TOKEN",
+                "desc": "防伪造令牌"
+            },
+            "auth_token": {
+                "label": "auth_token",
+                "desc": "核心身份 Token"
+            },
+            "ct0": {
+                "label": "ct0",
+                "desc": "CSRF 校验码"
+            },
+            "reddit_session": {
+                "label": "reddit_session",
+                "desc": "核心会话凭证 (必填)"
+            },
+            "csrftoken": {
+                "label": "csrftoken",
+                "desc": "CSRF 令牌"
+            }
+        },
+        "status": {
+            "active": "● 已就绪",
+            "inactive": "○ 未配置"
+        }
+    }
 }

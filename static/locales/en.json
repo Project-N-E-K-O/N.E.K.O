@@ -2043,5 +2043,120 @@
         "switchToLight": "Switch to Light Mode",
         "themeChanged": "Theme changed"
     },
-    "characterModelNotSet": "Current character has no model set"
+    "characterModelNotSet": "Current character has no model set",
+   "cookiesLogin": {
+        "title": "N.E.K.O Credential Control Center",
+        "header": "🔐 Credential Acquisition Center",
+        "bilibili": "📺 Bilibili",
+        "douyin": "🎵 Douyin",
+        "kuaishou": "🧡 Kuaishou",
+        "weibo": "🌏 Weibo",
+        "twitter": "🐦 Twitter/X",
+        "reddit": "👽 Reddit",
+        "saveConfig": "Save Configuration",
+        "encryptStorage": "Securely encrypt and store to local file",
+        "localMonitoring": "Local Status Monitoring",
+        "removeCredentials": "Remove",
+        "confirmRemove": "Are you sure you want to clear the login credentials for {{platformName}}?",
+        "credentialsRemoved": "✅ Credentials removed successfully",
+        "credentialsSaved": "✅ {{platformName}} credentials saved successfully!",
+        "credentialsRemovedFailed": "Removal failed",
+        "removeFailed": "❌ Removal failed, please check your network",
+        "requiredField": "⚠️ Please fill in the required field: [{{fieldName}}]",
+        "invalidChars": "⚠️ [{{fieldName}}] contains invalid characters...",
+        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contains leading/trailing spaces, which have been automatically trimmed. Please confirm and resubmit.",
+        "networkError": "❌ Network error: Unable to connect to backend service",
+        "saveFailed": "Save failed, please check if the format is correct",
+        "instructions": {
+            "bilibili": "📌 <b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "douyin": "📌 <b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
+            "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies."
+        },
+        "guide": {
+            "title": "Universal Guide for Beginners",
+            "step1": "Open the target platform website in browser and <span class=\"highlight-text\">log in</span>.",
+            "step2_prefix": "Press",
+            "step2_suffix": "to open Developer Tools.",
+            "step3": "Find and click <span class=\"highlight-text\">Application</span> tab at the top.",
+            "step4": "Find <span class=\"highlight-text\">Cookies</span> on the left sidebar, click the domain, and copy the required values on the right."
+        },
+        "fields": {
+            "SESSDATA": {
+                "label": "SESSDATA",
+                "desc": "Core identity credential (Required)"
+            },
+            "bili_jct": {
+                "label": "bili_jct",
+                "desc": "CSRF Token (Required)"
+            },
+            "DedeUserID": {
+                "label": "DedeUserID",
+                "desc": "Account UID (Required)"
+            },
+            "buvid3": {
+                "label": "buvid3",
+                "desc": "Device fingerprint (Optional)"
+            },
+            "sessionid": {
+                "label": "sessionid",
+                "desc": "Core session credential (Required)"
+            },
+            "ttwid": {
+                "label": "ttwid",
+                "desc": "Device risk control code (Required)"
+            },
+            "passport_csrf_token": {
+                "label": "csrf_token",
+                "desc": "Security verification token"
+            },
+            "odin_tt": {
+                "label": "odin_tt",
+                "desc": "Device characteristics"
+            },
+            "ks_web_st": {
+                "label": "web_st",
+                "desc": "Core ticket (Required)"
+            },
+            "ks_web_ph": {
+                "label": "web_ph",
+                "desc": "Auxiliary ticket (Required)"
+            },
+            "userId": {
+                "label": "userId",
+                "desc": "User ID"
+            },
+            "did": {
+                "label": "did",
+                "desc": "Device ID"
+            },
+            "SUB": {
+                "label": "SUB",
+                "desc": "Core credential (Starts with _2A)"
+            },
+            "XSRF-TOKEN": {
+                "label": "XSRF-TOKEN",
+                "desc": "Anti-forgery token"
+            },
+            "auth_token": {
+                "label": "auth_token",
+                "desc": "Core identity Token"
+            },
+            "ct0": {
+                "label": "ct0",
+                "desc": "CSRF verification code"
+            },
+            "reddit_session": {
+                "label": "reddit_session",
+                "desc": "Core session credential (Required)"
+            },
+            "csrftoken": {
+                "label": "csrftoken",
+                "desc": "CSRF token"
+            }
+        },
+        "status": {
+            "active": "● Ready",
+            "inactive": "○ Not configured"
+        }
+    }   
 }
