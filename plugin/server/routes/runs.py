@@ -153,7 +153,7 @@ async def runs_cancel(run_id: str, payload: RunCancelRequest = Body(default=RunC
         raise handle_plugin_error(e, "Failed to cancel run", 500) from e
 
 
-@router.get("/runs/{run_id}/export", response_model=ExportListResponse)
+@router.get("/runs/{run_id}/export")
 async def runs_export(
     run_id: str,
     after: Optional[str] = Query(default=None),
@@ -163,7 +163,8 @@ async def runs_export(
         rec = get_run(run_id)
         if rec is None:
             raise HTTPException(status_code=404, detail="run not found")
-        return list_export_for_run(run_id=run_id, after=after, limit=int(limit))
+        resp = list_export_for_run(run_id=run_id, after=after, limit=int(limit))
+        return resp.model_dump(by_alias=True)
     except HTTPException:
         raise
     except Exception as e:

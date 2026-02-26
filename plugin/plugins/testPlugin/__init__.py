@@ -801,27 +801,7 @@ class HelloPlugin(NekoPluginBase):
         
         return ok(data=result)
 
-    @plugin_entry(
-        id="hello_run",
-        name="Hello (Run Demo)",
-        description="HelloWorld demo for new Run protocol: progress updates + export items",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Name to greet",
-                    "default": "world",
-                },
-                "sleep_seconds": {
-                    "type": "number",
-                    "description": "Simulated work time in seconds",
-                    "default": 0.6,
-                },
-            },
-            "required": [],
-        },
-    )
+    @plugin_entry(description="HelloWorld demo for new Run protocol: progress updates + export items")
     @worker(timeout=30.0)
     def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
         s = 0.1
@@ -830,11 +810,10 @@ class HelloPlugin(NekoPluginBase):
         except Exception:
             s = 0.1
 
-        # worker 线程中无法通过 contextvars 获取 run_id，需从 kwargs 显式提取
-        run_id = (kwargs.get("_ctx") or {}).get("run_id")
+        # run_id is auto-propagated via contextvars into @worker threads,
+        # so ctx.run_update / ctx.export_push can resolve it automatically.
 
         self.ctx.run_update(
-            run_id=run_id,
             progress=0.0,
             stage="start",
             message="hello_run started",
@@ -844,23 +823,22 @@ class HelloPlugin(NekoPluginBase):
         time.sleep(s)
 
         self.ctx.run_update(
-            run_id=run_id,
             progress=0.33,
             stage="working",
             message=f"preparing greeting for {name}",
             step=1,
             step_total=3,
         )
-        self.ctx.export_push_text(
-            run_id=run_id,
+        self.ctx.export_push(
+            export_type="text",
             text=f"Hello, {name}! (from testPlugin hello_run)",
+            label="greeting",
             description="hello message",
             metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
         )
         time.sleep(s)
 
         self.ctx.run_update(
-            run_id=run_id,
             progress=0.66,
             stage="working",
             message="doing some work...",
@@ -869,19 +847,19 @@ class HelloPlugin(NekoPluginBase):
         )
         time.sleep(s)
 
-        self.ctx.export_push_text(
-            run_id=run_id,
+        self.ctx.export_push(
+            export_type="text",
             text=f"Done. timestamp={int(time.time())}",
+            label="done",
             description="done marker",
             metadata={"kind": "done"},
         )
         self.ctx.run_update(
-            run_id=run_id,
             progress=1.0,
             stage="done",
             message="hello_run finished",
             step=3,
             step_total=3,
         )
-        return ok(data={"ok": True, "greeted": name})
+        return {"greeted": name}
 

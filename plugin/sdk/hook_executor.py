@@ -8,6 +8,7 @@ Hook 执行器 Mixin
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -373,9 +374,15 @@ class HookExecutorMixin(ABC):
         if is_async:
             return await handler(**params)
         else:
-            # 同步 handler 在线程池中执行，避免阻塞事件循环
+            # 同步 handler 在线程池中执行，避免阻塞事件循环。
+            # Capture contextvars (e.g. _CURRENT_RUN_ID) so that the
+            # executor thread inherits them — run_in_executor does NOT
+            # propagate contextvars by default.
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, lambda: handler(**params))
+            ctx = contextvars.copy_context()
+            return await loop.run_in_executor(
+                None, lambda: ctx.run(handler, **params)
+            )
     
     async def _execute_replace_hook(
         self,

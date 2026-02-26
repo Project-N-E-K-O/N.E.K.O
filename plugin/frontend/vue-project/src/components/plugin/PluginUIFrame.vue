@@ -30,7 +30,7 @@
       :src="uiUrl"
       :title="pluginId"
       class="plugin-iframe"
-      sandbox="allow-scripts allow-forms allow-popups"
+      sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
       @load="onIframeLoad"
       @error="onIframeError"
     />

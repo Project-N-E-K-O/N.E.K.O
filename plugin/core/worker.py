@@ -5,11 +5,14 @@ Worker 执行器模块
 """
 
 import asyncio
+import contextvars
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future, wait as futures_wait
 from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass
+
+from plugin.core.context import _IN_WORKER
 
 
 @dataclass
@@ -88,14 +91,32 @@ class WorkerExecutor:
         with self._lock:
             self._active_tasks[task_id] = task
         
+        # Capture caller's contextvars (including _CURRENT_RUN_ID) so that
+        # the worker thread inherits them transparently.
+        ctx_snapshot = contextvars.copy_context()
+
         # 提交到线程池
         def _worker():
             try:
-                # 执行任务
-                result = handler(*args, **kwargs)
-                # 检查结果是否是协程（可能是包装后的异步函数）
-                if asyncio.iscoroutine(result):
-                    result = asyncio.run(result)
+                # Run the ENTIRE handler + asyncio.run chain inside the
+                # captured context.  This is critical because when
+                # hook_executor wraps a sync handler into an async
+                # ``wrapped`` function, ctx_snapshot.run(handler) only sets
+                # contextvars during the synchronous call that *creates* the
+                # coroutine.  The coroutine itself runs later in
+                # asyncio.run() which would otherwise have a fresh context.
+                def _run_in_ctx():
+                    # Mark this thread as a @worker thread so that
+                    # _enforce_sync_call_policy skips false-positive
+                    # deadlock warnings (worker threads don't block the
+                    # command loop).
+                    _IN_WORKER.set(True)
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = asyncio.run(result)
+                    return result
+
+                result = ctx_snapshot.run(_run_in_ctx)
                 result_future.set_result(result)
             except Exception as e:
                 result_future.set_exception(e)

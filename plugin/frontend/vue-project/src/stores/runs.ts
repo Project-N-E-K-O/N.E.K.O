@@ -45,7 +45,7 @@ export interface RunRecord {
   result_refs?: string[]
 }
 
-export type ExportType = 'text' | 'url' | 'binary_url' | 'binary'
+export type ExportType = 'text' | 'url' | 'binary_url' | 'binary' | 'json'
 
 export interface ExportItem {
   export_item_id: string
@@ -53,10 +53,13 @@ export interface ExportItem {
   type: ExportType
   created_at: number
   description?: string | null
+  label?: string | null
+  category?: string | null
   text?: string | null
   url?: string | null
   binary_url?: string | null
   binary?: string | null
+  json?: any
   mime?: string | null
   metadata?: Record<string, any>
 }

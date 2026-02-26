@@ -351,7 +351,7 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
                     if limit_i > 500:
                         limit_i = 500
                     resp: ExportListResponse = list_export_for_run(run_id=run_id, after=after, limit=limit_i)
-                    await _send_resp(req_id, True, result=resp.model_dump())
+                    await _send_resp(req_id, True, result=resp.model_dump(by_alias=True))
                     continue
 
                 await _send_resp(req_id, False, error="unknown method")

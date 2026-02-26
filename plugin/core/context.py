@@ -60,6 +60,8 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
 
+_IN_WORKER: contextvars.ContextVar[bool] = contextvars.ContextVar("plugin_in_worker", default=False)
+
 
 class _BusHub:
     def __init__(self, ctx: "PluginContext"):
@@ -265,6 +267,10 @@ class PluginContext:
         handler_ctx = _IN_HANDLER.get()
         if handler_ctx is None:
             return
+        # @worker threads run in a separate thread pool — sync IPC calls
+        # are safe there (they don't block the command loop).
+        if _IN_WORKER.get():
+            return
         policy = self._get_sync_call_in_handler_policy()
         msg = (
             f"Sync call '{method_name}' invoked inside handler ({handler_ctx}). "
@@ -318,13 +324,32 @@ class PluginContext:
 
         This is a convenience wrapper (e.g. run_update_sync) and is intentionally
         strict: it refuses to run when an event loop is already running.
+
+        NOTE: ``asyncio.run()`` creates a **new** Context, which does NOT inherit
+        the calling thread's contextvars.  To preserve values like
+        ``_CURRENT_RUN_ID`` that were propagated into a @worker thread, we
+        capture a snapshot of the current context and re-apply it inside the
+        new event loop via a thin wrapper coroutine.
         """
 
         self._enforce_sync_call_policy(operation)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(coro)
+            ctx_snapshot = contextvars.copy_context()
+
+            async def _with_ctx():
+                # Re-apply every contextvar from the snapshot into the
+                # asyncio.run()-created context so that require_run_id() etc.
+                # see the correct values.
+                for var in ctx_snapshot:
+                    try:
+                        var.set(ctx_snapshot[var])
+                    except Exception:
+                        pass
+                return await coro
+
+            return asyncio.run(_with_ctx())
         raise RuntimeError(f"{operation}_sync cannot be used inside a running event loop; use 'await {operation}(...)' instead")
 
     def update_status(self, status: Dict[str, Any]) -> None:
@@ -348,250 +373,166 @@ class PluginContext:
             # 其他未知异常
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
-    async def _export_push_text_async(
+    # ==================== Unified Export Push ====================
+
+    async def _export_push_async(
         self,
         *,
+        export_type: str,
         run_id: Optional[str] = None,
-        text: str,
+        text: Optional[str] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        url: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
+        mime: Optional[str] = None,
         description: Optional[str] = None,
+        label: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
+        """Unified core implementation for all export types."""
         rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
+        request_data: Dict[str, Any] = {
+            "run_id": rid,
+            "export_type": export_type,
+            "description": description,
+            "metadata": metadata or {},
+        }
+        if label is not None:
+            request_data["label"] = label
+
+        if export_type == "text":
+            request_data["text"] = text
+        elif export_type == "json":
+            request_data["json"] = json_data
+        elif export_type == "url":
+            request_data["url"] = url
+        elif export_type == "binary_url":
+            request_data["binary_url"] = binary_url
+            request_data["mime"] = mime
+        elif export_type == "binary":
+            if not isinstance(binary_data, (bytes, bytearray)):
+                raise TypeError("binary_data must be bytes")
+            data = bytes(binary_data)
+            limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
+            if limit > 0 and len(data) > limit:
+                raise ValueError("binary_data too large")
+            request_data["binary_base64"] = base64.b64encode(data).decode("ascii")
+            request_data["mime"] = mime
+        else:
+            raise ValueError(f"unsupported export_type: {export_type}")
+
         return await self._send_request_and_wait_async(
-            method_name="export_push_text",
+            method_name=f"export_push_{export_type}",
             request_type="EXPORT_PUSH",
-            request_data={
-                "run_id": rid,
-                "export_type": "text",
-                "text": text,
-                "description": description,
-                "metadata": metadata or {},
-            },
+            request_data=request_data,
             timeout=float(timeout),
             wrap_result=True,
         )
 
-    def export_push_text(
+    def export_push(
         self,
         *,
+        export_type: str,
         run_id: Optional[str] = None,
-        text: str,
+        text: Optional[str] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        url: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
+        mime: Optional[str] = None,
         description: Optional[str] = None,
+        label: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
-        coro = self._export_push_text_async(
-            run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout
+        """Unified export push (smart sync/async proxy)."""
+        coro = self._export_push_async(
+            export_type=export_type, run_id=run_id, text=text, json_data=json_data,
+            url=url, binary_data=binary_data, binary_url=binary_url, mime=mime,
+            description=description, label=label, metadata=metadata, timeout=timeout,
         )
         if self._is_in_event_loop():
             return coro
-        return self._run_coro_sync(coro, operation="export_push_text")
+        return self._run_coro_sync(coro, operation=f"export_push_{export_type}")
 
-    async def export_push_binary_async(
+    async def export_push_async(
         self,
         *,
+        export_type: str,
         run_id: Optional[str] = None,
-        binary_data: bytes,
+        text: Optional[str] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        url: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
         mime: Optional[str] = None,
         description: Optional[str] = None,
+        label: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self._export_push_binary_async(
-            run_id=run_id,
-            binary_data=binary_data,
-            mime=mime,
-            description=description,
-            metadata=metadata,
-            timeout=timeout,
+        """Unified export push (explicit async)."""
+        return await self._export_push_async(
+            export_type=export_type, run_id=run_id, text=text, json_data=json_data,
+            url=url, binary_data=binary_data, binary_url=binary_url, mime=mime,
+            description=description, label=label, metadata=metadata, timeout=timeout,
         )
 
-    def export_push_binary_sync(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        binary_data: bytes,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        return self._run_coro_sync(
-            self._export_push_binary_async(
-                run_id=run_id,
-                binary_data=binary_data,
-                mime=mime,
-                description=description,
-                metadata=metadata,
-                timeout=timeout,
-            ),
-            operation="export_push_binary",
-        )
+    # ==================== Backward-compatible thin wrappers ====================
+
+    async def _export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_async(export_type="text", run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
+
+    def export_push_text(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
+        """Push text export (smart sync/async proxy)."""
+        return self.export_push(export_type="text", run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
 
     async def export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_text_async(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
 
     def export_push_text_sync(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return self._run_coro_sync(
-            self._export_push_text_async(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout),
-            operation="export_push_text",
-        )
+        return self._run_coro_sync(self._export_push_text_async(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout), operation="export_push_text")
 
-    async def _export_push_binary_url_async(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        binary_url: str,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
-        return await self._send_request_and_wait_async(
-            method_name="export_push_binary_url",
-            request_type="EXPORT_PUSH",
-            request_data={
-                "run_id": rid,
-                "export_type": "binary_url",
-                "binary_url": binary_url,
-                "mime": mime,
-                "description": description,
-                "metadata": metadata or {},
-            },
-            timeout=float(timeout),
-            wrap_result=True,
-        )
+    async def _export_push_binary_async(self, *, run_id: Optional[str] = None, binary_data: bytes, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_async(export_type="binary", run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
-    def export_push_binary_url(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        binary_url: str,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
-        coro = self._export_push_binary_url_async(
-            run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout
-        )
-        if self._is_in_event_loop():
-            return coro
-        return self._run_coro_sync(coro, operation="export_push_binary_url")
+    def export_push_binary(self, *, run_id: Optional[str] = None, binary_data: bytes, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
+        """Push binary export (smart sync/async proxy)."""
+        return self.export_push(export_type="binary", run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
-    async def export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return await self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
+    async def export_push_binary_async(self, *, run_id: Optional[str] = None, binary_data: bytes, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_binary_async(run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
-    def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return self._run_coro_sync(
-            self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout),
-            operation="export_push_binary_url",
-        )
+    def export_push_binary_sync(self, *, run_id: Optional[str] = None, binary_data: bytes, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_coro_sync(self._export_push_binary_async(run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout), operation="export_push_binary")
 
-    async def _export_push_url_async(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        url: str,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
-        return await self._send_request_and_wait_async(
-            method_name="export_push_url",
-            request_type="EXPORT_PUSH",
-            request_data={
-                "run_id": rid,
-                "export_type": "url",
-                "url": url,
-                "description": description,
-                "metadata": metadata or {},
-            },
-            timeout=float(timeout),
-            wrap_result=True,
-        )
+    async def _export_push_url_async(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_async(export_type="url", run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
 
-    def export_push_url(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        url: str,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
-        coro = self._export_push_url_async(
-            run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout
-        )
-        if self._is_in_event_loop():
-            return coro
-        return self._run_coro_sync(coro, operation="export_push_url")
+    def export_push_url(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
+        """Push URL export (smart sync/async proxy)."""
+        return self.export_push(export_type="url", run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
 
     async def export_push_url_async(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
 
     def export_push_url_sync(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return self._run_coro_sync(
-            self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout),
-            operation="export_push_url",
-        )
+        return self._run_coro_sync(self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout), operation="export_push_url")
 
-    async def _export_push_binary_async(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        binary_data: bytes,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        if not isinstance(binary_data, (bytes, bytearray)):
-            raise TypeError("binary_data must be bytes")
-        data = bytes(binary_data)
-        limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
-        if limit > 0 and len(data) > limit:
-            raise ValueError("binary_data too large")
-        b64 = base64.b64encode(data).decode("ascii")
-        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
-        return await self._send_request_and_wait_async(
-            method_name="export_push_binary",
-            request_type="EXPORT_PUSH",
-            request_data={
-                "run_id": rid,
-                "export_type": "binary",
-                "binary_base64": b64,
-                "mime": mime,
-                "description": description,
-                "metadata": metadata or {},
-            },
-            timeout=float(timeout),
-            wrap_result=True,
-        )
+    async def _export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_async(export_type="binary_url", run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
-    def export_push_binary(
-        self,
-        *,
-        run_id: Optional[str] = None,
-        binary_data: bytes,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
-        coro = self._export_push_binary_async(
-            run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout
-        )
-        if self._is_in_event_loop():
-            return coro
-        return self._run_coro_sync(coro, operation="export_push_binary")
+    def export_push_binary_url(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
+        """Push binary URL export (smart sync/async proxy)."""
+        return self.export_push(export_type="binary_url", run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
+
+    async def export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
+
+    def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_coro_sync(self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout), operation="export_push_binary_url")
 
     async def _run_update_async(
         self,

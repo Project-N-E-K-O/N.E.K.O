@@ -1224,14 +1224,18 @@ def _plugin_process_runner(
                         timeout = worker_config.timeout
                         
                         try:
-                            # 提交任务到 worker 线程池
-                            future = worker_executor.submit(
-                                task_id=req_id,
-                                handler=method,
-                                args=(),
-                                kwargs=args,
-                                timeout=timeout
-                            )
+                            # Set contextvars BEFORE submit() so that
+                            # WorkerExecutor.copy_context() captures run_id
+                            # and handler scope into the worker thread.
+                            with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
+                                # 提交任务到 worker 线程池
+                                future = worker_executor.submit(
+                                    task_id=req_id,
+                                    handler=method,
+                                    args=(),
+                                    kwargs=args,
+                                    timeout=timeout
+                                )
                             
                             # 等待结果（会阻塞当前线程，但这是在命令循环线程里）
                             # 为了不阻塞命令循环，我们在单独线程里等待
@@ -1245,8 +1249,7 @@ def _plugin_process_runner(
                                 method=method,
                             ):
                                 try:
-                                    with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
-                                        result = worker_executor.wait_for_result(future, timeout)
+                                    result = worker_executor.wait_for_result(future, timeout)
                                     # 检查结果是否是协程（可能是包装后的异步函数）
                                     if asyncio.iscoroutine(result):
                                         result = asyncio.run(result)

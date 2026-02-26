@@ -21,15 +21,7 @@ auto_start = true
 backend = "file"
 persist_mode = "auto"
 
-[mcp_servers.fetch]
-transport = "streamable-http"
-enabled = true
-url = "https://mcp.api-inference.modelscope.net/52f9983dbe4b41/mcp"
-
-[mcp_servers.mcp-deepwiki]
-transport = "streamable-http"
-enabled = true
-url = "https://mcp.api-inference.modelscope.net/7bf36feca6d84f/mcp"
+[mcp_servers]
 
 [adapter]
 mode = "gateway"

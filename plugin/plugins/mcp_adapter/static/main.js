@@ -167,27 +167,37 @@ async function getRunResult(runId, maxRetries = 30) {
           const exportData = await exportResponse.json();
           const items = exportData.items || [];
           
-          // 找到 text 类型的 export item
+          // Find the trigger_response export item (json or text type)
           for (const item of items) {
-            if (item.type === 'text' && item.text) {
+            let pluginResponse = null;
+
+            if (item.type === 'json' && (item.json != null || item.json_data != null)) {
+              // New format: structured JSON export (from manager.py)
+              const raw = item.json ?? item.json_data;
+              pluginResponse = raw.plugin_response || raw;
+            } else if (item.type === 'text' && item.text) {
+              // Legacy format: JSON-encoded text export
               try {
                 const parsed = JSON.parse(item.text);
-                const pluginResponse = parsed.plugin_response || parsed;
-                
-                if (data.status === 'succeeded') {
-                  return { 
-                    success: pluginResponse.success !== false, 
-                    data: pluginResponse.data || {},
-                    error: pluginResponse.error?.message || pluginResponse.error
-                  };
-                } else {
-                  return { 
-                    success: false, 
-                    error: pluginResponse.error?.message || data.error?.message || 'Unknown error' 
-                  };
-                }
+                pluginResponse = parsed.plugin_response || parsed;
               } catch (e) {
                 console.warn('Failed to parse export item:', e);
+                continue;
+              }
+            }
+
+            if (pluginResponse) {
+              if (data.status === 'succeeded') {
+                return { 
+                  success: pluginResponse.success !== false, 
+                  data: pluginResponse.data || {},
+                  error: pluginResponse.error?.message || pluginResponse.error
+                };
+              } else {
+                return { 
+                  success: false, 
+                  error: pluginResponse.error?.message || data.error?.message || 'Unknown error' 
+                };
               }
             }
           }

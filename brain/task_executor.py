@@ -31,6 +31,7 @@ class TaskResult:
     error: Optional[str] = None
     tool_name: Optional[str] = None
     tool_args: Optional[Dict] = None
+    entry_id: Optional[str] = None
     reason: str = ""
 
 
@@ -61,6 +62,8 @@ class UserPluginDecision:
     entry_id: Optional[str] = None
     plugin_args: Optional[Dict] = None
     reason: str = ""
+
+
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
@@ -591,7 +594,8 @@ Return only the JSON object, nothing else.
         conversation_id: Optional[str] = None
     ) -> Optional[TaskResult]:
         """
-        并行评估 ComputerUse / BrowserUse / UserPlugin，然后执行任务
+        并行评估 ComputerUse / BrowserUse / UserPlugin 可行性，返回 Decision（不执行）。
+        实际执行由 agent_server 统一 dispatch。
         """
         import uuid
         task_id = str(uuid.uuid4())
@@ -711,22 +715,20 @@ Return only the JSON object, nothing else.
                 reason=cu_decision.reason
             )
         
-        # 3. UserPlugin
-        if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
-            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
-            try:
-                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision, lanlan_name=lanlan_name, conversation_id=conversation_id)
-            except Exception as e:
-                logger.exception("[TaskExecutor] UserPlugin execution failed")
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=True,
-                    task_description=getattr(up_decision, "task_description", ""),
-                    execution_method='user_plugin',
-                    success=False,
-                    error=str(e),
-                    reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
-                )
+        # 3. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
+        if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.can_execute:
+            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=up_decision.task_description,
+                execution_method='user_plugin',
+                success=False,
+                tool_name=up_decision.plugin_id,
+                tool_args=up_decision.plugin_args,
+                entry_id=up_decision.entry_id,
+                reason=up_decision.reason
+            )
                 
         # 4. 没有可执行的分支，汇总原因
         reason_parts = []
@@ -734,21 +736,21 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
         if bu_decision:
             reason_parts.append(f"BrowserUse: {bu_decision.reason}")
-        if up_decision:
-            reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
+        if isinstance(up_decision, UserPluginDecision):
+            reason_parts.append(f"UserPlugin: {up_decision.reason}")
         
         has_any_task = (
             (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
-            or (up_decision and getattr(up_decision, "has_task", False))
+            or (isinstance(up_decision, UserPluginDecision) and up_decision.has_task)
         )
         if has_any_task:
             if cu_decision and cu_decision.has_task:
                 task_desc = cu_decision.task_description
             elif bu_decision and bu_decision.has_task:
                 task_desc = bu_decision.task_description
-            elif up_decision and getattr(up_decision, "has_task", False):
-                task_desc = getattr(up_decision, "task_description", "")
+            elif isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
+                task_desc = up_decision.task_description
             else:
                 task_desc = ""
             logger.info(f"[TaskExecutor] Task detected but cannot execute: {task_desc}")
@@ -765,19 +767,25 @@ Return only the JSON object, nothing else.
         logger.debug("[TaskExecutor] No task detected")
         return None
 
-    async def _execute_user_plugin(self, task_id: str, up_decision: Any, lanlan_name: Optional[str] = None, conversation_id: Optional[str] = None) -> TaskResult:
+    async def _execute_user_plugin(
+        self,
+        task_id: str,
+        *,
+        plugin_id: Optional[str],
+        plugin_args: Optional[Dict] = None,
+        entry_id: Optional[str] = None,
+        task_description: str = "",
+        reason: str = "",
+        lanlan_name: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> TaskResult:
         """
-        Execute a user plugin via HTTP endpoint or specific plugin_entry.
-        up_decision is expected to have attributes: plugin_id, plugin_args, task_description
+        Execute a user plugin via HTTP /runs endpoint.
+        This is the single implementation for all plugin execution paths.
         """
-        plugin_id = getattr(up_decision, "plugin_id", None)
-        plugin_args = getattr(up_decision, "plugin_args", {}) or {}
-        task_description = getattr(up_decision, "task_description", "")
-        # Optional: allow up_decision to specify a specific entry id
-        # Prefer explicit 'entry_id' returned by the LLM (up_decision.entry_id), then fallback to older names
+        plugin_args = dict(plugin_args) if isinstance(plugin_args, dict) else {}
         plugin_entry_id = (
-            getattr(up_decision, "entry_id", None)
-            or getattr(up_decision, "plugin_entry_id", None)
+            entry_id
             or (plugin_args.pop("_entry", None) if isinstance(plugin_args, dict) else None))
         
         if not plugin_id:
@@ -788,7 +796,7 @@ Return only the JSON object, nothing else.
                 execution_method='user_plugin',
                 success=False,
                 error="No plugin_id provided",
-                reason=getattr(up_decision, "reason", "")
+                reason=reason
             )
         
         # Ensure we have a plugins list to search (use cached self.plugin_list as fallback)
@@ -825,7 +833,7 @@ Return only the JSON object, nothing else.
                 error=f"Plugin {plugin_id} not found",
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "") or "Plugin not found"
+                reason=reason or "Plugin not found"
             )
 
         # New run protocol: default path (POST /runs, return accepted immediately)
@@ -889,7 +897,7 @@ Return only the JSON object, nothing else.
                         error="Invalid /runs response (non-JSON)",
                         tool_name=plugin_id,
                         tool_args=plugin_args,
-                        reason=getattr(up_decision, "reason", "") or "run_invalid_response",
+                        reason=reason or "run_invalid_response",
                     )
 
             run_id = data.get("run_id") if isinstance(data, dict) else None
@@ -909,7 +917,7 @@ Return only the JSON object, nothing else.
                     error="Invalid /runs response (missing run_id/run_token)",
                     tool_name=plugin_id,
                     tool_args=plugin_args,
-                    reason=getattr(up_decision, "reason", "") or "run_invalid_response",
+                    reason=reason or "run_invalid_response",
                 )
 
             result_obj: Dict[str, Any] = {
@@ -928,7 +936,7 @@ Return only the JSON object, nothing else.
                 result=result_obj,
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "") or "run_accepted",
+                reason=reason or "run_accepted",
             )
         except Exception as e:
             logger.warning(
@@ -944,7 +952,7 @@ Return only the JSON object, nothing else.
                 error=str(e),
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "") or "run_failed",
+                reason=reason or "run_failed",
             )
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
@@ -952,16 +960,14 @@ Return only the JSON object, nothing else.
         Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
         """
-        up_decision_stub = UserPluginDecision(
-            has_task=True,
-            can_execute=True,
-            task_description=f"Direct plugin call {plugin_id}",
+        return await self._execute_user_plugin(
+            task_id=task_id,
             plugin_id=plugin_id,
-            entry_id=entry_id,
             plugin_args=plugin_args,
+            entry_id=entry_id,
+            task_description=f"Direct plugin call {plugin_id}",
             reason="direct_call",
         )
-        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub, lanlan_name=None)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """保留接口兼容性，MCP 已移除，始终返回空。"""

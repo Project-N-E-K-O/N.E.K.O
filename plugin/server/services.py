@@ -32,7 +32,7 @@ from plugin.settings import (
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
 )
 from plugin.sdk.errors import ErrorCode
-from plugin.sdk.responses import fail, is_envelope
+from plugin.sdk.responses import ok, fail, is_envelope
 
 # logger 已在上方导入
 
@@ -478,16 +478,15 @@ async def trigger_plugin(
         )
 
     if not is_envelope(plugin_response):
-        plugin_response = fail(
-            ErrorCode.INVALID_RESPONSE,
-            "Plugin returned an invalid response shape (expected SDK envelope)",
-            details={
-                "plugin_id": plugin_id,
-                "entry_id": entry_id,
-                "type": type(plugin_response).__name__,
-            },
-            trace_id=trace_id,
-        )
+        # Syntax sugar: auto-wrap plain return values into ok() envelope.
+        # This allows plugins to simply `return {"greeted": name}` instead of
+        # `return ok(data={"greeted": name})`.
+        if isinstance(plugin_response, dict):
+            plugin_response = ok(data=plugin_response, trace_id=trace_id)
+        elif plugin_response is None:
+            plugin_response = ok(trace_id=trace_id)
+        else:
+            plugin_response = ok(data=plugin_response, trace_id=trace_id)
     else:
         if plugin_response.get("trace_id") is None:
             plugin_response = dict(plugin_response)

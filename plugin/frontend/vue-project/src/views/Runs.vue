@@ -109,8 +109,15 @@
                 <el-table-column :label="$t('runs.exportContent')">
                   <template #default="scope">
                     <div v-if="scope.row.type === 'text'" class="export-text">{{ scope.row.text }}</div>
-                    <div v-else-if="scope.row.type === 'url'">{{ scope.row.url }}</div>
-                    <div v-else-if="scope.row.type === 'binary_url'">{{ scope.row.binary_url }}</div>
+                    <div v-else-if="scope.row.type === 'url'"><a :href="scope.row.url" target="_blank">{{ scope.row.url }}</a></div>
+                    <div v-else-if="scope.row.type === 'binary_url'"><a :href="scope.row.binary_url" target="_blank">{{ scope.row.binary_url }}</a></div>
+                    <div v-else-if="scope.row.type === 'json'" class="export-json">
+                      <el-collapse>
+                        <el-collapse-item :title="scope.row.label || scope.row.description || 'JSON'">
+                          <pre class="json-block">{{ formatJson(scope.row.json ?? scope.row.json_data) }}</pre>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </div>
                     <div v-else class="export-text">{{ scope.row.binary }}</div>
                   </template>
                 </el-table-column>
@@ -172,6 +179,10 @@ function formatError(err: any): string {
   } catch (_) {
     return String(err)
   }
+}
+
+function formatJson(json: any): string {
+  return JSON.stringify(json, null, 2)
 }
 
 function statusTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -288,6 +299,24 @@ onUnmounted(() => {
 .export-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.export-json :deep(.el-collapse-item__header) {
+  font-size: 12px;
+  height: 28px;
+  line-height: 28px;
+}
+
+.json-block {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .error-text {

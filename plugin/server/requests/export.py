@@ -23,7 +23,9 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     run_id = request.get("run_id")
     export_type = request.get("export_type")
     description = request.get("description", None)
+    label = request.get("label", None)
     text = request.get("text", None)
+    json_data = request.get("json", None)
     url = request.get("url", None)
     binary_base64 = request.get("binary_base64", None)
     binary_url = request.get("binary_url", None)
@@ -71,11 +73,11 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
         return
 
     et = export_type.strip()
-    if et not in ("text", "url", "binary", "binary_url"):
+    if et not in ("text", "json", "url", "binary", "binary_url"):
         _send_error(
             code="INVALID_ARGUMENT",
             message="unsupported export_type",
-            details={"export_type": et, "allowed": ["text", "url", "binary", "binary_url"]},
+            details={"export_type": et, "allowed": ["text", "json", "url", "binary", "binary_url"]},
         )
         return
 
@@ -83,6 +85,10 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     if et == "text":
         if not isinstance(text, str):
             _send_error(code="INVALID_ARGUMENT", message="text is required")
+            return
+    elif et == "json":
+        if json_data is None:
+            _send_error(code="INVALID_ARGUMENT", message="json is required")
             return
     elif et == "url":
         if not isinstance(url, str) or not url.strip():
@@ -130,6 +136,7 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
         "run_id": rid,
         "type": et,
         "created_at": created_at,
+        "label": str(label) if isinstance(label, str) else None,
         "description": str(description) if isinstance(description, str) else None,
         "mime": str(mime) if isinstance(mime, str) and mime else None,
         "metadata": meta_out,
@@ -137,6 +144,8 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
 
     if et == "text":
         item_kwargs["text"] = text
+    elif et == "json":
+        item_kwargs["json"] = json_data
     elif et == "url":
         item_kwargs["url"] = url
     elif et == "binary_url":

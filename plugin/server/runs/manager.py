@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import threading
 import time
@@ -12,10 +13,12 @@ from pydantic import BaseModel, Field
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.server.services import trigger_plugin
+from plugin.server.messaging.plane_bridge import publish_record as _publish_record_impl
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
 
-ExportType = Literal["text", "url", "binary_url", "binary"]
+ExportType = Literal["text", "json", "url", "binary_url", "binary"]
+ExportCategory = Literal["system", "user"]
 
 
 class RunCancelRequest(BaseModel):
@@ -29,12 +32,17 @@ class RunError(BaseModel):
 
 
 class ExportItem(BaseModel):
+    model_config = {"populate_by_name": True}
+
     export_item_id: str
     run_id: str
     type: ExportType
+    category: ExportCategory = "user"
     created_at: float
+    label: Optional[str] = None
     description: Optional[str] = None
     text: Optional[str] = None
+    json_data: Optional[Dict[str, Any]] = Field(default=None, alias="json")
     url: Optional[str] = None
     binary_url: Optional[str] = None
     binary: Optional[str] = None
@@ -48,6 +56,7 @@ class ExportListResponse(BaseModel):
 
 
 class RunRecord(BaseModel):
+    # ── identity ──
     run_id: str
     plugin_id: str
     entry_id: str
@@ -55,12 +64,16 @@ class RunRecord(BaseModel):
     created_at: float
     updated_at: float
 
+    # ── correlation ──
     task_id: Optional[str] = None
     trace_id: Optional[str] = None
     idempotency_key: Optional[str] = None
 
+    # ── lifecycle timestamps ──
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+
+    # ── progress (meaningful only while status in {running, cancel_requested}) ──
     progress: Optional[float] = None
     stage: Optional[str] = None
     message: Optional[str] = None
@@ -69,10 +82,12 @@ class RunRecord(BaseModel):
     eta_seconds: Optional[float] = None
     metrics: Dict[str, Any] = Field(default_factory=dict)
 
+    # ── cancellation ──
     cancel_requested: bool = False
     cancel_reason: Optional[str] = None
     cancel_requested_at: Optional[float] = None
 
+    # ── result ──
     error: Optional[RunError] = None
     result_refs: List[str] = Field(default_factory=list)
 
@@ -81,7 +96,8 @@ class ExportStore(Protocol):
     def append(self, item: ExportItem) -> None: ...
 
     def list_for_run(
-        self, *, run_id: str, after: Optional[str], limit: int
+        self, *, run_id: str, after: Optional[str], limit: int,
+        category: Optional[ExportCategory] = None,
     ) -> Tuple[List[ExportItem], Optional[str]]: ...
 
 
@@ -113,7 +129,10 @@ class InMemoryExportStore:
             self._items[item.export_item_id] = item
             self._by_run.setdefault(item.run_id, []).append(item.export_item_id)
 
-    def list_for_run(self, *, run_id: str, after: Optional[str], limit: int) -> Tuple[List[ExportItem], Optional[str]]:
+    def list_for_run(
+        self, *, run_id: str, after: Optional[str], limit: int,
+        category: Optional[ExportCategory] = None,
+    ) -> Tuple[List[ExportItem], Optional[str]]:
         with self._lock:
             ids = self._by_run.get(run_id, [])
             start = 0
@@ -122,6 +141,10 @@ class InMemoryExportStore:
                     start = ids.index(after) + 1
                 except ValueError:
                     start = 0
+            # Apply category filter before pagination
+            if category is not None:
+                ids = [i for i in ids[start:] if i in self._items and self._items[i].category == category]
+                start = 0
             page_size = max(1, int(limit))
             slice_ids = ids[start : start + page_size]
             items = [self._items[i] for i in slice_ids if i in self._items]
@@ -134,10 +157,37 @@ class InMemoryExportStore:
 _TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"))
 
 
+class InvalidRunTransition(RuntimeError):
+    """Raised when an illegal Run status transition is attempted."""
+    def __init__(self, current: str, target: str) -> None:
+        self.current = current
+        self.target = target
+        super().__init__(f"invalid transition: {current} -> {target}")
+
+
+_ALLOWED_TRANSITIONS: Dict[str, frozenset] = {
+    "queued":           frozenset(("running", "canceled")),
+    "running":          frozenset(("succeeded", "failed", "timeout", "cancel_requested")),
+    "cancel_requested": frozenset(("succeeded", "failed", "canceled", "timeout")),
+    "succeeded":        frozenset(),
+    "failed":           frozenset(),
+    "canceled":         frozenset(),
+    "timeout":          frozenset(),
+}
+
+
+def validate_run_transition(current: str, target: str) -> None:
+    """Raise InvalidRunTransition if *current* → *target* is not a legal transition."""
+    allowed = _ALLOWED_TRANSITIONS.get(current)
+    if allowed is None or target not in allowed:
+        raise InvalidRunTransition(current, target)
+
+
 class InMemoryRunStore:
     def __init__(self, max_completed: int = 0) -> None:
         self._lock = threading.Lock()
         self._runs: Dict[str, RunRecord] = {}
+        self._completed_order: collections.deque[str] = collections.deque()
         self._max_completed = max_completed if max_completed > 0 else int(RUN_STORE_MAX_COMPLETED)
 
     def create(self, rec: RunRecord) -> None:
@@ -207,29 +257,30 @@ class InMemoryRunStore:
             )
             nr = RunRecord.model_validate(data)
             self._runs[run_id] = nr
+            self._completed_order.append(run_id)
             self._evict_completed_locked()
             return nr.model_copy(deep=True)
 
     def _evict_completed_locked(self) -> None:
-        """在持锁状态下淘汰最旧的已终止 Run（超出 max_completed 时）"""
+        """Evict oldest terminal Runs when exceeding max_completed.
+
+        Uses ``_completed_order`` (a deque appended in commit_terminal order)
+        so each eviction is O(1) amortized instead of O(n) full-scan + sort.
+        """
         if self._max_completed <= 0:
             return
-        completed = [
-            (rid, r) for rid, r in self._runs.items()
-            if r.status in _TERMINAL_STATUSES
-        ]
-        if len(completed) <= self._max_completed:
-            return
-        # 按 finished_at 排序，淘汰最旧的
-        completed.sort(key=lambda x: x[1].finished_at or x[1].updated_at)
-        to_remove = len(completed) - self._max_completed
-        for i in range(to_remove):
-            self._runs.pop(completed[i][0], None)
+        while len(self._completed_order) > self._max_completed:
+            rid = self._completed_order.popleft()
+            r = self._runs.get(rid)
+            if r is not None and r.status in _TERMINAL_STATUSES:
+                self._runs.pop(rid, None)
 
 
 _run_store: RunStore = InMemoryRunStore()
 _export_store: ExportStore = InMemoryExportStore()
 
+# NOTE: threading.Lock (not asyncio.Lock) because update_run_from_plugin is a
+# sync function called from both asyncio coroutines and IPC handler threads.
 _runs_emit_lock = threading.Lock()
 _runs_last_emit_at: Dict[str, float] = {}
 _runs_emit_min_interval_s: float = 0.2
@@ -237,9 +288,7 @@ _runs_emit_min_interval_s: float = 0.2
 
 def _publish_bus_record(*, store: str, record: Dict[str, Any]) -> None:
     try:
-        from plugin.server.messaging.plane_bridge import publish_record
-
-        publish_record(store=str(store), record=dict(record), topic="all")
+        _publish_record_impl(store=str(store), record=dict(record), topic="all")
     except Exception:
         pass
 
@@ -350,8 +399,13 @@ def list_runs(*, plugin_id: Optional[str] = None) -> List[RunRecord]:
     return out
 
 
-def list_export_for_run(*, run_id: str, after: Optional[str], limit: int) -> ExportListResponse:
-    items, next_after = _export_store.list_for_run(run_id=str(run_id), after=after, limit=int(limit))
+def list_export_for_run(
+    *, run_id: str, after: Optional[str], limit: int,
+    category: Optional[ExportCategory] = None,
+) -> ExportListResponse:
+    items, next_after = _export_store.list_for_run(
+        run_id=str(run_id), after=after, limit=int(limit), category=category,
+    )
     return ExportListResponse(items=items, next_after=next_after)
 
 
@@ -484,6 +538,149 @@ def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
     return rec
 
 
+async def _execute_run(
+    run_id: str,
+    *,
+    plugin_id: str,
+    entry_id: str,
+    args: Dict[str, Any],
+    task_id: Optional[str],
+    client_host: Optional[str],
+) -> None:
+    """Execute a single Run: transition to running, trigger plugin, commit result.
+
+    Extracted from ``create_run`` so it can be tested and reused independently.
+    """
+    started = _run_store.update(run_id, status="running", started_at=float(time.time()))
+    if started is None:
+        return
+    _emit_runs("change", started)
+
+    if started.cancel_requested:
+        term = _run_store.commit_terminal(
+            run_id,
+            status="canceled",
+            error=RunError(code="CANCELED", message="canceled"),
+            result_refs=[],
+        )
+        if term is not None:
+            _emit_runs("change", term)
+        return
+
+    try:
+        trigger_args = dict(args or {})
+        try:
+            ctx_obj = trigger_args.get("_ctx")
+            if not isinstance(ctx_obj, dict):
+                ctx_obj = {}
+            else:
+                ctx_obj = dict(ctx_obj)
+            if "run_id" not in ctx_obj:
+                ctx_obj["run_id"] = run_id
+            trigger_args["_ctx"] = ctx_obj
+        except Exception:
+            pass
+
+        resp = await trigger_plugin(
+            plugin_id=plugin_id,
+            entry_id=entry_id,
+            args=trigger_args,
+            task_id=task_id,
+            client_host=client_host,
+        )
+        payload = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
+        export_item_id = str(uuid.uuid4())
+        item = ExportItem.model_validate({
+            "export_item_id": export_item_id,
+            "run_id": run_id,
+            "type": "json",
+            "category": "system",
+            "created_at": float(time.time()),
+            "label": "trigger_response",
+            "description": "Structured response from trigger_plugin",
+            "json": payload,
+            "metadata": {"kind": "trigger_response"},
+        })
+        _export_store.append(item)
+        _emit_export("add", item)
+
+        ok = bool(resp.get("success")) if isinstance(resp, dict) else False
+        if ok:
+            term = _run_store.commit_terminal(run_id, status="succeeded", error=None, result_refs=[export_item_id])
+        else:
+            err_obj = None
+            try:
+                pr = resp.get("plugin_response") if isinstance(resp, dict) else None
+                if isinstance(pr, dict):
+                    err_obj = pr.get("error")
+            except Exception:
+                err_obj = None
+
+            if isinstance(err_obj, dict):
+                code = str(err_obj.get("code") or "PLUGIN_ERROR")
+                msg = str(err_obj.get("message") or "plugin returned failure")
+                details = err_obj.get("details")
+                if details is not None and not isinstance(details, dict):
+                    details = {"details": details}
+                run_err = RunError(code=code, message=msg, details=details if isinstance(details, dict) else None)
+            else:
+                run_err = RunError(code="PLUGIN_ERROR", message="plugin returned failure")
+
+            term = _run_store.commit_terminal(
+                run_id,
+                status="failed",
+                error=run_err,
+                result_refs=[export_item_id],
+            )
+        if term is not None:
+            _emit_runs("change", term)
+    except Exception as e:
+        term = _run_store.commit_terminal(
+            run_id,
+            status="failed",
+            error=RunError(code="INTERNAL", message=str(e)),
+            result_refs=[],
+        )
+        if term is not None:
+            _emit_runs("change", term)
+
+
+async def _execute_run_guarded(
+    run_id: str,
+    *,
+    plugin_id: str,
+    entry_id: str,
+    args: Dict[str, Any],
+    task_id: Optional[str],
+    client_host: Optional[str],
+) -> None:
+    """Wrap ``_execute_run`` with a timeout guard."""
+    timeout = float(RUN_EXECUTION_TIMEOUT)
+    if timeout <= 0:
+        await _execute_run(
+            run_id, plugin_id=plugin_id, entry_id=entry_id,
+            args=args, task_id=task_id, client_host=client_host,
+        )
+        return
+    try:
+        await asyncio.wait_for(
+            _execute_run(
+                run_id, plugin_id=plugin_id, entry_id=entry_id,
+                args=args, task_id=task_id, client_host=client_host,
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        term = _run_store.commit_terminal(
+            run_id,
+            status="timeout",
+            error=RunError(code="TIMEOUT", message=f"Run exceeded {timeout}s timeout"),
+            result_refs=[],
+        )
+        if term is not None:
+            _emit_runs("change", term)
+
+
 async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:
     run_id = str(uuid.uuid4())
     now = float(time.time())
@@ -503,117 +700,15 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
     _run_store.create(rec)
     _emit_runs("add", rec)
 
-    async def _runner() -> None:
-        started = _run_store.update(run_id, status="running", started_at=float(time.time()))
-        if started is None:
-            return
-        _emit_runs("change", started)
-
-        if started.cancel_requested:
-            term = _run_store.commit_terminal(
-                run_id,
-                status="canceled",
-                error=RunError(code="CANCELED", message="canceled"),
-                result_refs=[],
-            )
-            if term is not None:
-                _emit_runs("change", term)
-            return
-
-        try:
-            trigger_args = dict(req.args or {})
-            try:
-                ctx_obj = trigger_args.get("_ctx")
-                if not isinstance(ctx_obj, dict):
-                    ctx_obj = {}
-                else:
-                    ctx_obj = dict(ctx_obj)
-                if "run_id" not in ctx_obj:
-                    ctx_obj["run_id"] = run_id
-                trigger_args["_ctx"] = ctx_obj
-            except Exception:
-                pass
-
-            resp = await trigger_plugin(
-                plugin_id=req.plugin_id,
-                entry_id=req.entry_id,
-                args=trigger_args,
-                task_id=req.task_id,
-                client_host=client_host,
-            )
-            payload = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
-            text = json.dumps(payload, ensure_ascii=False)
-            export_item_id = str(uuid.uuid4())
-            item = ExportItem(
-                export_item_id=export_item_id,
-                run_id=run_id,
-                type="text",
-                created_at=float(time.time()),
-                description="trigger_plugin response",
-                text=text,
-                metadata={"kind": "trigger_response"},
-            )
-            _export_store.append(item)
-            _emit_export("add", item)
-
-            ok = bool(resp.get("success")) if isinstance(resp, dict) else False
-            if ok:
-                term = _run_store.commit_terminal(run_id, status="succeeded", error=None, result_refs=[export_item_id])
-            else:
-                err_obj = None
-                try:
-                    pr = resp.get("plugin_response") if isinstance(resp, dict) else None
-                    if isinstance(pr, dict):
-                        err_obj = pr.get("error")
-                except Exception:
-                    err_obj = None
-
-                if isinstance(err_obj, dict):
-                    code = str(err_obj.get("code") or "PLUGIN_ERROR")
-                    msg = str(err_obj.get("message") or "plugin returned failure")
-                    details = err_obj.get("details")
-                    if details is not None and not isinstance(details, dict):
-                        details = {"details": details}
-                    run_err = RunError(code=code, message=msg, details=details if isinstance(details, dict) else None)
-                else:
-                    run_err = RunError(code="PLUGIN_ERROR", message="plugin returned failure")
-
-                term = _run_store.commit_terminal(
-                    run_id,
-                    status="failed",
-                    error=run_err,
-                    result_refs=[export_item_id],
-                )
-            if term is not None:
-                _emit_runs("change", term)
-        except Exception as e:
-            term = _run_store.commit_terminal(
-                run_id,
-                status="failed",
-                error=RunError(code="INTERNAL", message=str(e)),
-                result_refs=[],
-            )
-            if term is not None:
-                _emit_runs("change", term)
-
-    async def _guarded_runner() -> None:
-        """带超时保护的 runner 包装器"""
-        timeout = float(RUN_EXECUTION_TIMEOUT)
-        if timeout <= 0:
-            # 超时禁用，直接执行
-            await _runner()
-            return
-        try:
-            await asyncio.wait_for(_runner(), timeout=timeout)
-        except asyncio.TimeoutError:
-            term = _run_store.commit_terminal(
-                run_id,
-                status="timeout",
-                error=RunError(code="TIMEOUT", message=f"Run exceeded {timeout}s timeout"),
-                result_refs=[],
-            )
-            if term is not None:
-                _emit_runs("change", term)
-
-    asyncio.create_task(_guarded_runner(), name=f"run:{run_id}")
+    asyncio.create_task(
+        _execute_run_guarded(
+            run_id,
+            plugin_id=req.plugin_id,
+            entry_id=req.entry_id,
+            args=dict(req.args or {}),
+            task_id=req.task_id,
+            client_host=client_host,
+        ),
+        name=f"run:{run_id}",
+    )
     return RunCreateResponse(run_id=run_id, status="queued")

@@ -753,24 +753,47 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 logger.warning("[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
 
         elif result.execution_method == 'user_plugin':
-            # user_plugin is executed/accepted inside DirectTaskExecutor. Keep agent_server non-blocking.
-            if result.success:
-                logger.info(f"[TaskExecutor] ✅ UserPlugin accepted: {result.tool_name} ({getattr(result, 'result', None)})")
+            # Dispatch: 与 CU/BU 一致，由 agent_server 统一调度执行
+            if Modules.agent_flags.get("user_plugin_enabled", False) and Modules.task_executor:
+                plugin_id = result.tool_name
+                plugin_args = result.tool_args or {}
+                entry_id = result.entry_id
+                logger.info(
+                    "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s",
+                    plugin_id, entry_id,
+                )
                 try:
-                    summary = f'插件任务 "{result.tool_name}" 已接受'
-                    await _emit_main_event(
-                        "task_result",
-                        lanlan_name,
-                        task_id=str(getattr(result, "task_id", "") or ""),
-                        tool_name=str(getattr(result, "tool_name", "") or ""),
-                        result=getattr(result, "result", None),
-                        success=True,
-                        text=summary[:240],
+                    up_result = await Modules.task_executor._execute_user_plugin(
+                        task_id=result.task_id,
+                        plugin_id=plugin_id,
+                        plugin_args=plugin_args if isinstance(plugin_args, dict) else None,
+                        entry_id=entry_id,
+                        task_description=result.task_description,
+                        reason=result.reason,
+                        lanlan_name=lanlan_name,
+                        conversation_id=conversation_id,
                     )
-                except Exception:
-                    pass
+                    if up_result.success:
+                        logger.info(f"[TaskExecutor] \u2705 UserPlugin accepted: {plugin_id} ({up_result.result})")
+                        try:
+                            summary = f'\u63d2\u4ef6\u4efb\u52a1 "{plugin_id}" \u5df2\u63a5\u53d7'
+                            await _emit_main_event(
+                                "task_result",
+                                lanlan_name,
+                                task_id=str(up_result.task_id or ""),
+                                tool_name=str(plugin_id or ""),
+                                result=up_result.result,
+                                success=True,
+                                text=summary[:240],
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                except Exception as e:
+                    logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
             else:
-                logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {result.error}")
+                logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 sm = get_session_manager()

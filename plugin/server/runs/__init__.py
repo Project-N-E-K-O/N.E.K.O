@@ -6,7 +6,10 @@ Run Protocol 模块
 from plugin.server.runs.manager import (
     RunCancelRequest,
     RunRecord,
+    ExportCategory,
     ExportListResponse,
+    InvalidRunTransition,
+    validate_run_transition,
     create_run,
     get_run,
     cancel_run,
@@ -19,7 +22,10 @@ from plugin.server.runs.storage import blob_store
 __all__ = [
     'RunCancelRequest',
     'RunRecord',
+    'ExportCategory',
     'ExportListResponse',
+    'InvalidRunTransition',
+    'validate_run_transition',
     'create_run',
     'get_run',
     'cancel_run',

@@ -3,8 +3,9 @@
 
 提供插件开发所需的装饰器。
 """
+import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, cast, runtime_checkable, get_type_hints
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
 from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
@@ -52,11 +53,94 @@ def neko_plugin(cls):
 # Entry kind 类型（包含所有可能的 kind 值）
 EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"]
 
+# Parameters to skip when auto-inferring schema from function signature.
+_SKIP_PARAMS = frozenset({"self", "cls", "kwargs", "_ctx", "args"})
+
+_PY_TYPE_TO_JSON: Dict[type, str] = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    dict: "object",
+    list: "array",
+}
+
+
+def _infer_schema_from_func(fn: Callable) -> Dict[str, Any]:
+    """Auto-generate a JSON Schema object from a function's signature + type hints.
+
+    Rules:
+    - ``self``, ``cls``, ``**kwargs``, ``_ctx`` are skipped.
+    - ``VAR_KEYWORD`` (``**kwargs``) params are skipped.
+    - Parameters without a default value are added to ``required``.
+    - Type hints are mapped to JSON Schema types via ``_PY_TYPE_TO_JSON``.
+    - ``Optional[X]`` is mapped to ``{"type": ["<x>", "null"]}``.
+    - ``Annotated[X, <desc_str>]`` extracts the string as ``description``.
+    """
+    sig = inspect.signature(fn)
+    try:
+        hints = get_type_hints(fn, include_extras=True)
+    except Exception:
+        hints = {}
+
+    properties: Dict[str, Any] = {}
+    required: List[str] = []
+
+    for name, param in sig.parameters.items():
+        if name in _SKIP_PARAMS:
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+
+        prop: Dict[str, Any] = {}
+        hint = hints.get(name, param.annotation)
+
+        # Unwrap Annotated[X, "desc", ...]
+        origin = getattr(hint, "__class__", None)
+        type_args = getattr(hint, "__args__", None)
+        metadata_items = getattr(hint, "__metadata__", None)
+        if metadata_items is not None and type_args:
+            # typing.Annotated
+            hint = type_args[0]
+            for m in metadata_items:
+                if isinstance(m, str):
+                    prop["description"] = m
+                    break
+
+        # Unwrap Optional[X] → Union[X, None]
+        type_origin = getattr(hint, "__origin__", None)
+        if type_origin is Union:
+            inner_args = [a for a in (getattr(hint, "__args__", ()) or ()) if a is not type(None)]
+            if len(inner_args) == 1:
+                # Optional[X]
+                actual = inner_args[0]
+                json_t = _PY_TYPE_TO_JSON.get(actual)
+                if json_t:
+                    prop["type"] = [json_t, "null"]
+            # else: complex Union, skip type
+        elif hint in _PY_TYPE_TO_JSON:
+            prop["type"] = _PY_TYPE_TO_JSON[hint]
+        elif hint is not inspect.Parameter.empty:
+            # Unknown type — try str representation
+            pass
+
+        if param.default is not inspect.Parameter.empty:
+            prop["default"] = param.default
+        else:
+            required.append(name)
+
+        properties[name] = prop
+
+    schema: Dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
 
 def on_event(
     *,
     event_type: str,
-    id: str,
+    id: str | None = None,
     name: str | None = None,
     description: str = "",
     input_schema: dict | None = None,
@@ -70,7 +154,10 @@ def on_event(
     """
     通用事件装饰器。
     - event_type: "plugin_entry" / "lifecycle" / "message" / "timer" ...
-    - id: 在"本插件内部"的事件 id（不带插件 id）
+    - id: 在"本插件内部"的事件 id（不带插件 id）。
+           None 时从被装饰函数名自动推断。
+    - input_schema: JSON Schema dict。
+           None 时从被装饰函数的签名 + type hints 自动推断。
     - persist: 执行后是否保存状态（None=遵循 __persist_mode__）
     - checkpoint: persist 的向后兼容别名
     - metadata: 额外的元数据字典
@@ -82,12 +169,14 @@ def on_event(
     effective_metadata = metadata if metadata is not None else extra
     
     def decorator(fn: Callable):
+        effective_id = id if id is not None else fn.__name__
+        effective_schema = input_schema if input_schema is not None else _infer_schema_from_func(fn)
         meta = EventMeta(
             event_type=event_type,         # type: ignore[arg-type]
-            id=id,
-            name=name or id,
+            id=effective_id,
+            name=name or effective_id,
             description=description,
-            input_schema=input_schema or {},
+            input_schema=effective_schema,
             kind=kind,                    # 对 plugin_entry: "service" / "action"
             auto_start=auto_start,
             metadata=effective_metadata or {},
@@ -145,11 +234,15 @@ class PluginDecorators:
 plugin = PluginDecorators()
 
 
+_PARAMS_MODEL_ATTR = "_neko_params_model"
+
+
 def plugin_entry(
-    id: str,
+    id: str | None = None,
     name: str | None = None,
     description: str = "",
     input_schema: dict | None = None,
+    params: type | None = None,
     kind: EntryKind = "action",
     auto_start: bool = False,
     persist: bool | None = None,
@@ -163,6 +256,14 @@ def plugin_entry(
     本质上是 on_event(event_type="plugin_entry").
     
     Args:
+        id: Entry ID. None → auto-inferred from function name.
+        name: Display name. None → same as id.
+        input_schema: Explicit JSON Schema dict. None → auto-inferred from
+            function signature (or ``params`` model if provided).
+        params: Optional Pydantic BaseModel subclass. When provided:
+            - ``input_schema`` is auto-extracted via ``model.model_json_schema()``.
+            - The model class is attached to the function for optional runtime
+              validation (accessible via ``_PARAMS_MODEL_ATTR``).
         persist: 执行后是否保存状态
             - None: 遵循类级别 __persist_mode__ 配置
             - True: 强制启用状态保存
@@ -175,23 +276,42 @@ def plugin_entry(
         metadata: 额外的元数据字典
         extra: metadata 的向后兼容别名（已弃用）
     """
+    # Pydantic model → extract JSON Schema
+    effective_schema = input_schema
+    if params is not None and effective_schema is None:
+        _model_json_schema = getattr(params, "model_json_schema", None)
+        if callable(_model_json_schema):
+            effective_schema = cast(Dict[str, Any], _model_json_schema())
+        else:
+            raise TypeError(f"params must be a Pydantic BaseModel subclass, got {params!r}")
+
     # 向后兼容：extra 参数映射到 metadata
     effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if timeout is not None:
         effective_metadata["timeout"] = timeout
-    
-    return on_event(
+
+    _inner = on_event(
         event_type="plugin_entry",
         id=id,
         name=name,
         description=description,
-        input_schema=input_schema,
+        input_schema=effective_schema,
         kind=kind,
         auto_start=auto_start,
         persist=persist,
         checkpoint=checkpoint,
         metadata=effective_metadata if effective_metadata else None,
     )
+
+    if params is None:
+        return _inner
+
+    # Wrap the on_event decorator to also attach the params model.
+    def decorator(fn: Callable) -> Callable:
+        fn = _inner(fn)
+        setattr(fn, _PARAMS_MODEL_ATTR, params)
+        return fn
+    return decorator
 
 
 def lifecycle(
