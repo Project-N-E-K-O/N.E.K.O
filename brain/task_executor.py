@@ -468,6 +468,7 @@ Return only the JSON object, nothing else.
 
         max_retries = 3
         retry_delays = [1, 2]
+        up_retry_done = False
         
         for attempt in range(max_retries):
             try:
@@ -595,9 +596,9 @@ Return only the JSON object, nothing else.
                     elif valid_entries_map[d_pid] and d_eid not in valid_entries_map[d_pid]:
                         correction_hint = f"entry_id '{d_eid}' does not exist in plugin '{d_pid}'. Available entries: {valid_entries_map[d_pid]}"
 
-                    if correction_hint and not getattr(self, '_up_retry_done', False):
+                    if correction_hint and not up_retry_done:
                         logger.info("[UserPlugin Assessment] Invalid decision, retrying with hint: %s", correction_hint)
-                        self._up_retry_done = True
+                        up_retry_done = True
                         # Append correction as assistant+user follow-up to guide the LLM
                         request_params["messages"].append({"role": "assistant", "content": text})
                         request_params["messages"].append({"role": "user", "content": f"CORRECTION: {correction_hint}. Please fix your response and return a valid JSON."})
@@ -614,10 +615,6 @@ Return only the JSON object, nothing else.
                             d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
                         except Exception as e_retry:
                             logger.warning("[UserPlugin Assessment] Retry failed: %s", e_retry)
-                        finally:
-                            self._up_retry_done = False
-                    elif correction_hint:
-                        self._up_retry_done = False
 
                 # return a simple object-like struct, include entry_id if provided by the LLM
                 return UserPluginDecision(
@@ -982,6 +979,7 @@ Return only the JSON object, nothing else.
                         error="Invalid /runs response (non-JSON)",
                         tool_name=plugin_id,
                         tool_args=plugin_args,
+                        entry_id=plugin_entry_id,
                         reason=reason or "run_invalid_response",
                     )
 
@@ -1002,6 +1000,7 @@ Return only the JSON object, nothing else.
                     error="Invalid /runs response (missing run_id/run_token)",
                     tool_name=plugin_id,
                     tool_args=plugin_args,
+                    entry_id=plugin_entry_id,
                     reason=reason or "run_invalid_response",
                 )
 
@@ -1037,6 +1036,7 @@ Return only the JSON object, nothing else.
                 error=completion.get("error") if not run_success else None,
                 tool_name=plugin_id,
                 tool_args=plugin_args,
+                entry_id=plugin_entry_id,
                 reason=reason or ("run_succeeded" if run_success else "run_failed"),
             )
         except Exception as e:
@@ -1053,6 +1053,7 @@ Return only the JSON object, nothing else.
                 error=str(e),
                 tool_name=plugin_id,
                 tool_args=plugin_args,
+                entry_id=plugin_entry_id,
                 reason=reason or "run_failed",
             )
 

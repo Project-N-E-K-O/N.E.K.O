@@ -955,7 +955,7 @@ class PluginContext:
                 # Catch all ZMQ/Batcher errors to prevent plugin crash
                 try:
                     self.logger.warning(
-                        "[PluginContext] message_plane error: plugin_id=%s error=%s",
+                        "[PluginContext] message_plane error: plugin_id={} error={}",
                         self.plugin_id, e
                     )
                 except Exception:

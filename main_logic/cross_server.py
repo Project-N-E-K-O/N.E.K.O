@@ -369,9 +369,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 
                                 # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
                                 # conversation_id 用于关联触发事件和对话上下文
+                                # publish_conversation expects {role, text} schema
                                 if config.get('message_plane', True) and recent:
                                     try:
-                                        publish_conversation(recent, lanlan_name, "turn_end", conversation_id)
+                                        plane_msgs = [{'role': m['role'], 'text': m.get('content', '')} for m in recent]
+                                        publish_conversation(plane_msgs, lanlan_name, "turn_end", conversation_id)
                                     except Exception:
                                         pass  # 静默失败
                                 
@@ -457,7 +459,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # conversation_id 用于关联触发事件和对话上下文
                                 if config.get('message_plane', True) and recent:
                                     try:
-                                        publish_conversation(recent, lanlan_name, "session_end", session_end_conversation_id)
+                                        plane_msgs = [{'role': m['role'], 'text': m.get('content', '')} for m in recent]
+                                        publish_conversation(plane_msgs, lanlan_name, "session_end", session_end_conversation_id)
                                     except Exception:
                                         pass  # 静默失败
                                 

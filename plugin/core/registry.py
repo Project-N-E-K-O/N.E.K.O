@@ -955,10 +955,13 @@ def _migrate_plugin_id(
             logger.info("Plugin host moved from '{}' to '{}' in plugin_hosts", old_pid, new_pid)
         else:
             # old_pid not in plugin_hosts; register the passed-in host under new_pid
-            state.plugin_hosts[new_pid] = host
-            if hasattr(host, 'plugin_id'):
-                host.plugin_id = new_pid
-            logger.warning("Plugin host for '{}' not found during migration; registered passed-in host under '{}'", old_pid, new_pid)
+            if host is not None:
+                state.plugin_hosts[new_pid] = host
+                if hasattr(host, 'plugin_id'):
+                    host.plugin_id = new_pid
+                logger.warning("Plugin host for '{}' not found during migration; registered passed-in host under '{}'", old_pid, new_pid)
+            else:
+                logger.warning("Plugin host for '{}' not found during migration and passed-in host is None; skipping host registration for '{}'", old_pid, new_pid)
     
     # 迁移 response queue
     with state._plugin_response_queues_lock:

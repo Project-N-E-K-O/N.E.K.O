@@ -183,8 +183,9 @@ def _bump_state_revision() -> int:
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     prev = Modules.capability_cache.get(name, {})
-    Modules.capability_cache[name] = {"ready": bool(ready), "reason": reason or ""}
-    if prev.get("ready") != bool(ready):
+    normalized_reason = reason or ""
+    Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
+    if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
 
 
@@ -876,6 +877,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 except Exception as e:
                     logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                     try:
+                        await _emit_task_result(
+                            lanlan_name,
+                            channel="user_plugin",
+                            task_id=str(result.task_id or ""),
+                            success=False,
+                            summary=f'插件任务分发失败',
+                            error_message=str(e)[:500],
+                        )
+                    except Exception:
+                        pass
+                    try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
                             task={"id": result.task_id, "status": "failed", "type": "user_plugin",
@@ -1007,12 +1019,15 @@ async def startup():
     asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     # UserPlugin probe — plugin server may start slightly later, so retry a few times
     async def _delayed_user_plugin_check():
+        prev_cap = dict(Modules.capability_cache.get("user_plugin", {}))
         for attempt in range(6):
             await asyncio.sleep(2)
             await _fire_user_plugin_capability_check()
             cap = Modules.capability_cache.get("user_plugin", {})
-            if cap.get("ready"):
+            if cap != prev_cap:
                 await _emit_agent_status_update()
+                prev_cap = dict(cap)
+            if cap.get("ready"):
                 break
     asyncio.ensure_future(_delayed_user_plugin_check())
     
@@ -1088,15 +1103,16 @@ async def shutdown():
     # 并行清理所有 router，提高关闭速度
     try:
         # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
-        await asyncio.wait_for(
-            asyncio.gather(
-                _close_router("Processor", Modules.processor, "router"),
-                _close_router("TaskPlanner", Modules.planner, "router"),
-                _close_router("DirectTaskExecutor", Modules.task_executor, "router"),
-                return_exceptions=True  # 即使某个清理失败，也继续其他清理
-            ),
-            timeout=5.0
-        )
+        _shutdown_coros = []
+        for _name, _attr_name in [("Processor", "processor"), ("TaskPlanner", "planner"), ("DirectTaskExecutor", "task_executor")]:
+            _mod = getattr(Modules, _attr_name, None)
+            if _mod is not None:
+                _shutdown_coros.append(_close_router(_name, _mod, "router"))
+        if _shutdown_coros:
+            await asyncio.wait_for(
+                asyncio.gather(*_shutdown_coros, return_exceptions=True),
+                timeout=5.0
+            )
     except asyncio.TimeoutError:
         logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
     
@@ -1431,7 +1447,9 @@ async def analyze_and_plan(payload: Dict[str, Any]):
     # Fire-and-forget background processing and scheduling
     lanlan_name = (payload or {}).get("lanlan_name")
     conversation_id = (payload or {}).get("conversation_id")
-    asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id))
+    task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id))
+    Modules._background_tasks.add(task)
+    task.add_done_callback(Modules._background_tasks.discard)
     return {"success": True, "status": "processed", "accepted_at": _now_iso()}
 
 

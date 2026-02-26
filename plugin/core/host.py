@@ -678,13 +678,17 @@ def _plugin_process_runner(
         events_by_type: Dict[str, Dict[str, Any]] = {}
 
         def _rebuild_entry_map() -> None:
-            """重建 entry_map（Extension 注入/卸载后调用）。"""
+            """重建 entry_map + events_by_type（Extension 注入/卸载后调用）。"""
             collected = instance.collect_entries(wrap_with_hooks=True)
             entry_map.clear()
             entry_meta_map.clear()
+            events_by_type.clear()
             for eid, eh in collected.items():
                 entry_map[eid] = eh.handler
                 entry_meta_map[eid] = eh.meta
+                etype = getattr(eh.meta, "event_type", "plugin_entry")
+                events_by_type.setdefault(etype, {})
+                events_by_type[etype][eid] = eh.handler
             ctx._entry_map = entry_map
 
         # 优先使用 collect_entries() 获取入口点（支持 Hook 包装）
