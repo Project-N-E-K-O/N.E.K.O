@@ -187,8 +187,16 @@
             const canUse = effectiveAnalyzerEnabled && ready;
             list.forEach(target => {
                 target.checked = optimisticValue && canUse;
-                target.disabled = !!state.globalBusy || disabledByPending || !canUse;
-                target.title = canUse ? getName(k) : (reason || (window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关'));
+                // When master is ON, keep child toggles clickable even if capability cache
+                // is stale — backend set_agent_flags does a live check and will notify on error.
+                target.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled;
+                if (canUse) {
+                    target.title = getName(k);
+                } else if (!effectiveAnalyzerEnabled) {
+                    target.title = window.t ? window.t('settings.toggles.masterRequired', { name: getName(k) }) : '请先开启Agent总开关';
+                } else {
+                    target.title = reason || (window.t ? window.t('settings.toggles.capabilityNotReady', { name: getName(k) }) : `${getName(k)}尚未就绪，点击尝试启用`);
+                }
             });
             sync(list);
         });

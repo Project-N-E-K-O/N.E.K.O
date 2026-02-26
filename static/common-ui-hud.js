@@ -562,16 +562,65 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     const queuedCount = document.getElementById('hud-queued-count');
     const cancelBtn = document.getElementById('agent-task-hud-cancel');
 
-    if (!taskList) return;
+    if (!taskList) {
+        // HUD not yet created — create it now so incoming tasks can render
+        if (typeof window.AgentHUD.createAgentTaskHUD === 'function') {
+            window.AgentHUD.createAgentTaskHUD();
+        }
+        const retryList = document.getElementById('agent-task-list');
+        if (!retryList) return;
+        // Re-call with the now-created HUD
+        return window.AgentHUD.updateAgentTaskHUD(tasksData);
+    }
 
     // 更新统计数据
     if (runningCount) runningCount.textContent = tasksData.running_count || 0;
     if (queuedCount) queuedCount.textContent = tasksData.queued_count || 0;
 
-    // 获取活动任务（running 和 queued）
-    const activeTasks = (tasksData.tasks || []).filter(t =>
-        t.status === 'running' || t.status === 'queued'
-    );
+    // Minimum display duration (ms) — keep completed/failed tasks visible briefly
+    const MIN_DISPLAY_MS = 1500;
+    if (!this._taskFirstSeen) this._taskFirstSeen = {};
+    const now = Date.now();
+
+    // Track first-seen time for every task
+    (tasksData.tasks || []).forEach(t => {
+        if (t.id && !this._taskFirstSeen[t.id]) {
+            this._taskFirstSeen[t.id] = now;
+        }
+    });
+
+    // Active = running/queued, plus recently-terminated tasks within MIN_DISPLAY_MS
+    const activeTasks = (tasksData.tasks || []).filter(t => {
+        if (t.status === 'running' || t.status === 'queued') return true;
+        // Keep completed/failed tasks visible for at least MIN_DISPLAY_MS
+        const firstSeen = this._taskFirstSeen[t.id];
+        if (firstSeen && (now - firstSeen) < MIN_DISPLAY_MS) return true;
+        return false;
+    });
+
+    // Schedule a deferred re-render to clear lingering cards after MIN_DISPLAY_MS
+    if (activeTasks.some(t => t.status === 'completed' || t.status === 'failed')) {
+        if (this._minDisplayTimer) clearTimeout(this._minDisplayTimer);
+        this._minDisplayTimer = setTimeout(() => {
+            this._minDisplayTimer = null;
+            this.updateAgentTaskHUD(tasksData);
+        }, MIN_DISPLAY_MS);
+    }
+
+    // Auto-show HUD when there are active tasks (handles race with checkAndToggleTaskHUD)
+    if (activeTasks.length > 0) {
+        const hud = document.getElementById('agent-task-hud');
+        if (hud && (hud.style.display === 'none' || hud.style.opacity === '0')) {
+            if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                window.AgentHUD.showAgentTaskHUD();
+            }
+        }
+    }
+
+    // Clean up old first-seen entries (older than 30s)
+    for (const tid in this._taskFirstSeen) {
+        if (now - this._taskFirstSeen[tid] > 30000) delete this._taskFirstSeen[tid];
+    }
 
     if (cancelBtn) {
         cancelBtn.style.display = activeTasks.length > 0 ? 'flex' : 'none';
@@ -611,17 +660,40 @@ window.AgentHUD._createTaskCard = function (task) {
     }
 
     const isRunning = task.status === 'running';
-    const statusColor = isRunning ? 'var(--neko-popup-accent, #2a7bc4)' : 'var(--neko-popup-text-sub, #666)';
-    const statusText = isRunning
-        ? (window.t ? window.t('agent.taskHud.statusRunning') : '运行中')
-        : (window.t ? window.t('agent.taskHud.statusQueued') : '队列中');
+    const isCompleted = task.status === 'completed';
+    const isFailed = task.status === 'failed';
+    const isTerminal = isCompleted || isFailed;
+
+    let statusColor, statusText, cardBg, cardBorder;
+    if (isCompleted) {
+        statusColor = '#16a34a';
+        statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
+        cardBg = 'rgba(22, 163, 74, 0.06)';
+        cardBorder = 'rgba(22, 163, 74, 0.2)';
+    } else if (isFailed) {
+        statusColor = '#dc2626';
+        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        cardBg = 'rgba(220, 38, 38, 0.06)';
+        cardBorder = 'rgba(220, 38, 38, 0.2)';
+    } else if (isRunning) {
+        statusColor = 'var(--neko-popup-accent, #2a7bc4)';
+        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
+        cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
+    } else {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))';
+    }
 
     Object.assign(card.style, {
-        background: isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))' : 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))',
+        background: cardBg,
         borderRadius: '8px',
         padding: '12px',
-        border: `1px solid ${isRunning ? 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))' : 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))'}`,
-        transition: 'all 0.2s ease'
+        border: `1px solid ${cardBorder}`,
+        transition: 'all 0.2s ease',
+        opacity: isTerminal ? '0.75' : '1'
     });
 
     // 任务类型和状态
@@ -647,7 +719,7 @@ window.AgentHUD._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '2px 8px',
-        background: isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
+        background: isCompleted ? 'rgba(22, 163, 74, 0.1)' : isFailed ? 'rgba(220, 38, 38, 0.1)' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px'
     });
 

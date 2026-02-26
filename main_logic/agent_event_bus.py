@@ -333,10 +333,18 @@ async def publish_analyze_request_reliably(
             sent = await bridge.publish_analyze_request(event)
         else:
             try:
-                cf = asyncio.run_coroutine_threadsafe(
-                    bridge.publish_analyze_request(event), bridge.owner_loop,
-                )
-                sent = await asyncio.wrap_future(cf)
+                if bridge.owner_loop.is_closed():
+                    logger.debug("[EventBus] owner_loop closed, skipping publish")
+                    sent = False
+                else:
+                    coro = bridge.publish_analyze_request(event)
+                    try:
+                        cf = asyncio.run_coroutine_threadsafe(coro, bridge.owner_loop)
+                        sent = await asyncio.wrap_future(cf)
+                    except Exception as e:
+                        coro.close()
+                        logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                        sent = False
             except Exception as e:
                 logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
                 sent = False

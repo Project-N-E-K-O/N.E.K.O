@@ -18,7 +18,7 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
@@ -121,6 +121,7 @@ class LLMSessionManager:
             'agent_enabled': False,
             'computer_use_enabled': False,
             'browser_use_enabled': False,
+            'user_plugin_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -937,11 +938,8 @@ class LLMSessionManager:
         async def start_llm_session():
             """异步创建并连接 LLM Session"""
             guard_max_length = self._get_text_guard_max_length()
-            # 获取初始 prompt
-            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
-            
-            # 注入当前活跃的Agent任务列表
-            initial_prompt += await self._fetch_active_agent_tasks_prompt()
+            # 获取初始 prompt（动态能力描述 + 插件摘要 + 活跃任务）
+            initial_prompt = await self._build_initial_prompt()
             
             # 连接 Memory Server 获取记忆上下文
             _mem_start = time.time()
@@ -1198,6 +1196,24 @@ class LLMSessionManager:
             res += f"{i['role']} | {i['text']}\n"
         return res
 
+    async def _build_initial_prompt(self) -> str:
+        """Build the system prompt with dynamic capability descriptions and plugin summary."""
+        if self._is_agent_enabled():
+            capability_parts = []
+            if self.agent_flags.get('computer_use_enabled'):
+                capability_parts.append("操纵电脑（键鼠控制、打开应用等）")
+            if self.agent_flags.get('browser_use_enabled'):
+                capability_parts.append("浏览器自动化（网页搜索、填写表单等）")
+            if self.agent_flags.get('user_plugin_enabled'):
+                capability_parts.append("调用已安装的插件来完成特定任务")
+            caps_text = "、".join(capability_parts) if capability_parts else "执行各种操作"
+            prompt = f"你是一个角色扮演大师，并且能够{caps_text}。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试执行。" + self.lanlan_prompt
+        else:
+            prompt = f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。" + self.lanlan_prompt
+        prompt += await self._fetch_plugin_summary_prompt()
+        prompt += await self._fetch_active_agent_tasks_prompt()
+        return prompt
+
     def _is_agent_enabled(self):
         try:
             gate_ok, _ = self._config_manager.is_agent_api_ready()
@@ -1206,7 +1222,42 @@ class LLMSessionManager:
         return gate_ok and self.agent_flags['agent_enabled'] and (
             self.agent_flags['computer_use_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
+            or self.agent_flags.get('user_plugin_enabled', False)
         )
+
+    async def _fetch_plugin_summary_prompt(self) -> str:
+        """Fetch installed plugin list and return a concise prompt snippet.
+
+        - ≤5 plugins: list each plugin's id and one-line description (~200 tokens)
+        - >5 plugins: just mention the count (~20 tokens)
+        """
+        if not self.agent_flags.get('user_plugin_enabled'):
+            return ""
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
+                r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+                if r.status_code != 200:
+                    return ""
+                data = r.json()
+                plugins = data.get("plugins", []) if isinstance(data, dict) else []
+                if not plugins:
+                    return ""
+                if len(plugins) <= 5:
+                    lines = []
+                    for p in plugins:
+                        if not isinstance(p, dict):
+                            continue
+                        pid = p.get("id", "")
+                        desc = p.get("description", "")
+                        if pid:
+                            lines.append(f"  - {pid}: {desc}" if desc else f"  - {pid}")
+                    if lines:
+                        return "\n【已安装的插件】\n" + "\n".join(lines) + "\n"
+                else:
+                    return f"\n【已安装的插件】共 {len(plugins)} 个插件可用。\n"
+        except Exception:
+            pass
+        return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:
         """Query agent server for active tasks and return a prompt snippet."""
@@ -1319,8 +1370,7 @@ class LLMSessionManager:
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
-            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
-            initial_prompt += await self._fetch_active_agent_tasks_prompt()
+            initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
@@ -1371,7 +1421,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
