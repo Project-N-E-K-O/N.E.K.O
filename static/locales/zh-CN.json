@@ -2078,7 +2078,7 @@
         "statusLoadFailed": "状态加载失败",
         "thisPlatform": "此平台",
         "instructions": {
-            "bilibili": "📌 目标：</b>请前往 bilibili.com<b>获取这些 Cookies。",
+            "bilibili": "📌 <b>目标：</b>请前往 <b>bilibili.com<b>获取这些 Cookies。",
             "douyin": "📌 <b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
             "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
             "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
