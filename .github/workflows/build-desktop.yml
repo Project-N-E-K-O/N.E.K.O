@@ -493,7 +493,7 @@ jobs:
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
       - name: Disable macOS code signing
-        if: runner.os == 'macOS' && github.event.inputs.skip_signing != 'false'
+        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'
         working-directory: electron-app
         run: |
           node -e "
@@ -516,7 +516,7 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event.inputs.skip_signing != 'false' && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true' && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
