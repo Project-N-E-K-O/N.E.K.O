@@ -3,6 +3,8 @@ const chatContainer = document.getElementById('chat-container');
 const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
 
+let isTransitioning = false;
+
 // 移动端检测（与 live2d.js 的 isMobileWidth 一致：基于窗口宽度）
 function uiIsMobileWidth() {
     return window.innerWidth <= 768;
@@ -251,112 +253,131 @@ if (toggleBtn) {
     toggleBtn.addEventListener('click', (event) => {
         event.stopPropagation();
 
+        // 如果正在过渡中，阻止切换
+        if (isTransitioning) {
+            return;
+        }
+
         // 如果刚刚发生了拖动，阻止切换
         if (justDragged) {
             justDragged = false;
             return;
         }
 
-        // 移动端：仅折叠内容区与标题，不最小化整个容器，保持输入区常驻
-        if (uiIsMobileWidth()) {
-            const becomingCollapsed = !chatContainer.classList.contains('mobile-collapsed');
-            if (becomingCollapsed) {
-                chatContainer.classList.add('mobile-collapsed');
-                // 隐藏内容区与标题
-                if (chatContentWrapper) chatContentWrapper.style.display = 'none';
-                const chatHeader = document.getElementById('chat-header');
-                if (chatHeader) chatHeader.style.display = 'none';
-                // 确保切换按钮始终可见
-                if (toggleBtn) {
-                    toggleBtn.style.display = 'block';
-                    toggleBtn.style.visibility = 'visible';
-                    toggleBtn.style.opacity = '1';
+        // 设置过渡标志
+        isTransitioning = true;
+
+        try {
+            // 移动端：仅折叠内容区与标题，不最小化整个容器，保持输入区常驻
+            if (uiIsMobileWidth()) {
+                const becomingCollapsed = !chatContainer.classList.contains('mobile-collapsed');
+                if (becomingCollapsed) {
+                    chatContainer.classList.add('mobile-collapsed');
+                    // 隐藏内容区与标题
+                    if (chatContentWrapper) chatContentWrapper.style.display = 'none';
+                    const chatHeader = document.getElementById('chat-header');
+                    if (chatHeader) chatHeader.style.display = 'none';
+                    // 确保切换按钮始终可见
+                    if (toggleBtn) {
+                        toggleBtn.style.display = 'block';
+                        toggleBtn.style.visibility = 'visible';
+                        toggleBtn.style.opacity = '1';
+                    }
+                } else {
+                    chatContainer.classList.remove('mobile-collapsed');
+                    // 显示内容区与标题
+                    if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
+                    const chatHeader = document.getElementById('chat-header');
+                    if (chatHeader) chatHeader.style.removeProperty('display');
+                    if (toggleBtn) {
+                        toggleBtn.style.removeProperty('display');
+                        toggleBtn.style.removeProperty('visibility');
+                        toggleBtn.style.removeProperty('opacity');
+                    }
                 }
-            } else {
-                chatContainer.classList.remove('mobile-collapsed');
-                // 显示内容区与标题
-                if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
-                const chatHeader = document.getElementById('chat-header');
-                if (chatHeader) chatHeader.style.removeProperty('display');
-                if (toggleBtn) {
-                    toggleBtn.style.removeProperty('display');
-                    toggleBtn.style.removeProperty('visibility');
-                    toggleBtn.style.removeProperty('opacity');
+                
+                // 获取或创建图标
+                let iconImg = toggleBtn.querySelector('img');
+                if (!iconImg) {
+                    iconImg = document.createElement('img');
+                    iconImg.style.width = '32px';
+                    iconImg.style.height = '32px';
+                    iconImg.style.objectFit = 'cover';
+                    iconImg.style.pointerEvents = 'none';
+                    toggleBtn.innerHTML = '';
+                    toggleBtn.appendChild(iconImg);
+                } else {
+                    iconImg.style.width = '32px';
+                    iconImg.style.height = '32px';
                 }
+                
+                if (becomingCollapsed) {
+                    iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.alt = window.t ? window.t('common.expand') : '展开';
+                    toggleBtn.title = window.t ? window.t('common.expand') : '展开';
+                } else {
+                    iconImg.src = '/static/icons/expand_icon_off.png';
+                    iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+                    toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
+                    setTimeout(scrollToBottom, 300);
+                    // 展开后执行回弹，避免位置越界
+                    triggerExpandSnap();
+                }
+                // 动画结束后清除过渡标志
+                setTimeout(() => { isTransitioning = false; }, 350);
+                return; // 移动端已处理，直接返回
+            }
+
+            const isMinimized = chatContainer.classList.toggle('minimized');
+            
+            // 如果容器没有其他类，完全移除class属性以避免显示为class=""
+            if (!isMinimized && chatContainer.classList.length === 0) {
+                chatContainer.removeAttribute('class');
             }
             
-            // 获取或创建图标
+            // 获取图标元素（HTML中应该已经有img标签）
             let iconImg = toggleBtn.querySelector('img');
             if (!iconImg) {
+                // 如果没有图标，创建一个
                 iconImg = document.createElement('img');
-                iconImg.style.width = '32px';
-                iconImg.style.height = '32px';
+                iconImg.style.width = '32px';  /* 图标尺寸 */
+                iconImg.style.height = '32px';  /* 图标尺寸 */
                 iconImg.style.objectFit = 'cover';
-                iconImg.style.pointerEvents = 'none';
+                iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
                 toggleBtn.innerHTML = '';
                 toggleBtn.appendChild(iconImg);
             } else {
-                iconImg.style.width = '32px';
-                iconImg.style.height = '32px';
+                // 如果图标已存在，也更新其大小
+                iconImg.style.width = '32px';  /* 图标尺寸 */
+                iconImg.style.height = '32px';  /* 图标尺寸 */
             }
-            
-            if (becomingCollapsed) {
+
+            if (isMinimized) {
+                // 刚刚最小化，显示展开图标（加号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
+                iconImg.style.width = '100%';
+                iconImg.style.height = '100%';
             } else {
+                // 刚刚还原展开，显示最小化图标（减号）
                 iconImg.src = '/static/icons/expand_icon_off.png';
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
-                setTimeout(scrollToBottom, 300);
+                iconImg.style.width = '32px';
+                iconImg.style.height = '32px';
+                // 还原后滚动到底部
+                setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
                 // 展开后执行回弹，避免位置越界
                 triggerExpandSnap();
             }
-            return; // 移动端已处理，直接返回
-        }
-
-        const isMinimized = chatContainer.classList.toggle('minimized');
-        
-        // 如果容器没有其他类，完全移除class属性以避免显示为class=""
-        if (!isMinimized && chatContainer.classList.length === 0) {
-            chatContainer.removeAttribute('class');
-        }
-        
-        // 获取图标元素（HTML中应该已经有img标签）
-        let iconImg = toggleBtn.querySelector('img');
-        if (!iconImg) {
-            // 如果没有图标，创建一个
-            iconImg = document.createElement('img');
-            iconImg.style.width = '32px';  /* 图标尺寸 */
-            iconImg.style.height = '32px';  /* 图标尺寸 */
-            iconImg.style.objectFit = 'cover';
-            iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
-            toggleBtn.innerHTML = '';
-            toggleBtn.appendChild(iconImg);
-        } else {
-            // 如果图标已存在，也更新其大小
-            iconImg.style.width = '32px';  /* 图标尺寸 */
-            iconImg.style.height = '32px';  /* 图标尺寸 */
-        }
-
-        if (isMinimized) {
-            // 刚刚最小化，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon_off.png';
-            iconImg.alt = window.t ? window.t('common.expand') : '展开';
-            toggleBtn.title = window.t ? window.t('common.expand') : '展开';
-            iconImg.style.width = '100%';
-            iconImg.style.height = '100%';
-        } else {
-            // 刚刚还原展开，显示最小化图标（减号）
-            iconImg.src = '/static/icons/expand_icon_off.png';
-            iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
-            toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
-            iconImg.style.width = '32px';
-            iconImg.style.height = '32px';
-            // 还原后滚动到底部
-            setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
-            // 展开后执行回弹，避免位置越界
-            triggerExpandSnap();
+            // 动画结束后清除过渡标志
+            setTimeout(() => { isTransitioning = false; }, 350);
+        } catch (e) {
+            // 发生异常时立即重置过渡标志
+            isTransitioning = false;
+            console.error('Chat toggle error:', e);
+            throw e;
         }
     });
 }
