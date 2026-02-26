@@ -1588,9 +1588,9 @@ let currentSortOrder = 'desc'; // 默认降序
 
 // escapeHtml 已在上方定义（DOM-based，非 string 走 String(text) 转换）
 
-// 安全获取作者显示名（始终返回字符串）
+// 安全获取作者显示名（始终返回字符串，兼容 item 为 null/undefined）
 function safeAuthorName(item) {
-    const raw = item.authorName || (item.steamIDOwner != null ? String(item.steamIDOwner) : '');
+    const raw = item?.authorName || (item?.steamIDOwner != null ? String(item.steamIDOwner) : '');
     return String(raw) || (window.t ? window.t('steam.unknownAuthor') : '未知作者');
 }
 

@@ -47,6 +47,10 @@ _ugc_sync_task = None    # 后台角色卡同步任务
 # 全局互斥锁，用于序列化角色卡同步的 load_characters -> save_characters 流程
 _ugc_sync_lock = asyncio.Lock()
 
+# 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
+# 避免并发调用 override_callback=True 导致回调覆盖竞态
+_ugc_query_lock = asyncio.Lock()
+
 
 def _is_item_cache_valid(item_id: int) -> bool:
     """检查单个 UGC 缓存条目是否在有效期内"""
@@ -86,47 +90,54 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
             except Exception as e:
                 logger.debug(f"run_callbacks (pre-query pump) 异常: {e}")
             
-            query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(item_ids)
-            
-            # 检查无效 handle（0 或 k_UGCQueryHandleInvalid）
-            if not query_handle or query_handle == _INVALID_UGC_QUERY_HANDLE:
-                logger.warning(f"UGC 批量查询: CreateQueryUGCDetailsRequest 返回无效 handle "
-                              f"(attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                continue
-            
-            # 回调+轮询机制（每次迭代创建独立的 Event 和 dict，通过默认参数绑定避免闭包晚绑定）
-            query_completed = threading.Event()
-            query_result_info = {"success": False, "num_results": 0}
-            
-            def _make_callback(_info=query_result_info, _event=query_completed):
-                def on_query_completed(result):
-                    try:
-                        _info["success"] = (result.result == 1)
-                        _info["num_results"] = int(result.numResultsReturned)
-                        logger.info(f"UGC 查询回调: result={result.result}, numResults={result.numResultsReturned}")
-                    except Exception as e:
-                        logger.warning(f"UGC 查询回调处理出错: {e}")
-                    finally:
-                        _event.set()
-                return on_query_completed
-            
-            steamworks.Workshop.SendQueryUGCRequest(
-                query_handle, callback=_make_callback(), override_callback=True
-            )
-            
-            # 轮询等待（10ms 间隔，最多 15 秒）
-            start_time = time.time()
-            timeout = 15
-            while time.time() - start_time < timeout:
-                if query_completed.is_set():
-                    break
+            # 序列化整个查询流程：CreateQuery → SendQuery(override_callback) → 等待回调 → 读取结果
+            # 避免并发调用时 override_callback=True 导致前一次的回调被覆盖
+            async with _ugc_query_lock:
+                query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(item_ids)
+                
+                # 检查无效 handle（0 或 k_UGCQueryHandleInvalid）
+                if not query_handle or query_handle == _INVALID_UGC_QUERY_HANDLE:
+                    logger.warning(f"UGC 批量查询: CreateQueryUGCDetailsRequest 返回无效 handle "
+                                  f"(attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                
+                # 回调+轮询机制（每次迭代创建独立的 Event 和 dict，通过默认参数绑定避免闭包晚绑定）
+                query_completed = threading.Event()
+                query_result_info = {"success": False, "num_results": 0}
+                
+                def _make_callback(_info=query_result_info, _event=query_completed):
+                    def on_query_completed(result):
+                        try:
+                            _info["success"] = (result.result == 1)
+                            _info["num_results"] = int(result.numResultsReturned)
+                            logger.info(f"UGC 查询回调: result={result.result}, numResults={result.numResultsReturned}")
+                        except Exception as e:
+                            logger.warning(f"UGC 查询回调处理出错: {e}")
+                        finally:
+                            _event.set()
+                    return on_query_completed
+                
                 try:
-                    steamworks.run_callbacks()
-                except Exception as e:
-                    logger.debug(f"run_callbacks (polling) 异常: {e}")
-                await asyncio.sleep(0.01)
+                    steamworks.Workshop.SendQueryUGCRequest(
+                        query_handle, callback=_make_callback(), override_callback=True
+                    )
+                    
+                    # 轮询等待（10ms 间隔，最多 15 秒）
+                    start_time = time.time()
+                    timeout = 15
+                    while time.time() - start_time < timeout:
+                        if query_completed.is_set():
+                            break
+                        try:
+                            steamworks.run_callbacks()
+                        except Exception as e:
+                            logger.debug(f"run_callbacks (polling) 异常: {e}")
+                        await asyncio.sleep(0.01)
+                finally:
+                    # 确保无论是否异常/超时，锁都会在 async with 退出时释放
+                    pass
             
             if not query_completed.is_set():
                 logger.warning(f"UGC 批量查询超时 (attempt {attempt + 1}/{max_retries})")
@@ -1002,7 +1013,7 @@ async def get_workshop_item_details(item_id: str):
             folder = ''
             size = 0
 
-            if isinstance(install_info, dict):
+            if install_info and isinstance(install_info, dict):
                 installed = True
                 folder = install_info.get('folder', '') or ''
                 disk_size = install_info.get('disk_size')
@@ -1047,6 +1058,7 @@ async def get_workshop_item_details(item_id: str):
                 time_updated = cached.get('timeUpdated', 0)
                 file_size = 0
                 preview_url = ''
+                associated_url = ''
                 file_url = ''
                 file_id = 0
                 preview_file_id = 0
@@ -1063,15 +1075,17 @@ async def get_workshop_item_details(item_id: str):
                 time_created = getattr(result, 'timeCreated', 0)
                 time_updated = getattr(result, 'timeUpdated', 0)
                 file_size = getattr(result, 'fileSize', 0)
-                # 注意: SteamUGCDetails_t.URL (m_rgchURL) 是物品的关联网页 URL，
-                # 而非预览图 URL。真正的预览图需通过 ISteamUGC::GetQueryUGCPreviewURL()
-                # 获取，但当前 Steamworks wrapper 未暴露该接口。
-                # 前端已有 fallback（默认 Steam 图标），因此这里暂时传递该字段。
-                # TODO: 在 wrapper 中实现 GetQueryUGCPreviewURL 后替换此处逻辑。
+                # SteamUGCDetails_t.URL (m_rgchURL) 是物品的关联网页 URL，并非预览图。
+                # 真正的预览图需通过 ISteamUGC::GetQueryUGCPreviewURL() 获取，
+                # 但当前 Steamworks wrapper 未暴露该接口，因此 previewImageUrl 置空，
+                # 前端已有 fallback（默认 Steam 图标）。
+                # TODO: 在 wrapper 中实现 GetQueryUGCPreviewURL 后填充 preview_url。
+                preview_url = ''
+                # 解码关联网页 URL 供客户端可选使用
                 raw_url = getattr(result, 'URL', b'')
                 if isinstance(raw_url, bytes):
                     raw_url = raw_url.decode('utf-8', errors='replace')
-                preview_url = raw_url.strip('\x00').strip() if raw_url else ''
+                associated_url = raw_url.strip('\x00').strip() if raw_url else ''
                 # file handle 和 preview file handle 是 UGC 文件句柄，不是下载 URL
                 file_url = ''
                 file_id = getattr(result, 'file', 0)
@@ -1101,6 +1115,7 @@ async def get_workshop_item_details(item_id: str):
                 "timeCreated": time_created,
                 "timeUpdated": time_updated,
                 "previewImageUrl": preview_url,
+                "associatedUrl": associated_url,
                 "fileUrl": file_url,
                 "fileSize": file_size,
                 "fileId": file_id,
