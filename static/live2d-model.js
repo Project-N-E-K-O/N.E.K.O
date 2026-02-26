@@ -903,8 +903,8 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
                 }
             } else {
                 console.warn('保存的位置设置无效，使用默认值');
-                model.x = rendererWidth;
-                model.y = rendererHeight;
+                model.x = rendererWidth * 0.65;
+                model.y = rendererHeight * 0.6;
             }
         } else {
             const scale = Math.min(
@@ -913,8 +913,8 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
                 (window.innerWidth * 0.6) / 7000
             );
             model.scale.set(scale);
-            model.x = this.pixi_app.renderer.width;
-            model.y = this.pixi_app.renderer.height;
+            model.x = this.pixi_app.renderer.width * 0.65;
+            model.y = this.pixi_app.renderer.height * 0.6;
         }
         model.anchor.set(0.65, 0.75);
     }

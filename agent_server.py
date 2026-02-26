@@ -98,6 +98,8 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
     """
     Best-effort refresh for computer-use adapter.
     Useful when API key/model settings were fixed after agent_server startup.
+    Does NOT block on LLM connectivity — call ``_fire_agent_llm_connectivity_check``
+    afterwards to probe the endpoint asynchronously.
     """
     current = Modules.computer_use
     if not force and current is not None and getattr(current, "init_ok", False):
@@ -106,14 +108,50 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
         refreshed = ComputerUseAdapter()
         Modules.computer_use = refreshed
         _rewire_computer_use_dependents()
-        if getattr(refreshed, "init_ok", False):
-            logger.info("[Agent] ComputerUse adapter refreshed successfully")
-            return True
-        logger.warning("[Agent] ComputerUse adapter refresh completed but still not ready")
-        return False
+        logger.info("[Agent] ComputerUse adapter rebuilt (connectivity pending)")
+        return True
     except Exception as e:
         logger.warning(f"[Agent] ComputerUse adapter refresh failed: {e}")
         return False
+
+
+async def _fire_agent_llm_connectivity_check() -> None:
+    """Probe the shared Agent-LLM endpoint in a background thread.
+
+    Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
+    so a single connectivity check covers both capabilities.  Updates
+    ``init_ok`` on the CUA adapter and refreshes the capability cache for
+    *both* computer_use and browser_use.
+    """
+    adapter = Modules.computer_use
+    if adapter is None:
+        return
+
+    def _probe():
+        return adapter.check_connectivity()
+
+    try:
+        ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
+        reason = "" if ok else (adapter.last_error or "Agent LLM unreachable")
+        _set_capability("computer_use", ok, reason)
+        # BrowserUse shares the same agent endpoint — mirror the LLM result
+        # but also respect its own import-readiness gate.
+        bu = Modules.browser_use
+        if bu is not None:
+            if not ok:
+                _set_capability("browser_use", False, reason)
+            elif not getattr(bu, "_ready_import", False):
+                _set_capability("browser_use", False, f"browser-use not installed: {bu.last_error}")
+            else:
+                _set_capability("browser_use", True, "")
+        if ok:
+            logger.info("[Agent] Agent-LLM connectivity check passed")
+        else:
+            logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
+    except Exception as e:
+        logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
+        _set_capability("computer_use", False, str(e))
+        _set_capability("browser_use", False, str(e))
 
 
 def _bump_state_revision() -> int:
@@ -820,21 +858,11 @@ async def startup():
     Modules.planner = TaskPlanner(computer_use=Modules.computer_use)
     Modules.analyzer = ConversationAnalyzer()
     _rewire_computer_use_dependents()
-    # Prime capability cache cheaply at startup
-    try:
-        if Modules.computer_use:
-            cu = Modules.computer_use.is_available()
-            reasons = cu.get("reasons", []) if isinstance(cu, dict) else []
-            _set_capability("computer_use", bool(cu.get("ready")) if isinstance(cu, dict) else False, reasons[0] if reasons else "")
-    except Exception:
-        _set_capability("computer_use", False, "Computer Use check failed")
-    try:
-        if Modules.browser_use:
-            bu = Modules.browser_use.is_available()
-            reasons = bu.get("reasons", []) if isinstance(bu, dict) else []
-            _set_capability("browser_use", bool(bu.get("ready")) if isinstance(bu, dict) else False, reasons[0] if reasons else "")
-    except Exception:
-        _set_capability("browser_use", False, "Browser Use check failed")
+    # Both CUA and BrowserUse share the agent LLM — default to "not connected"
+    # and probe in background.  The single check updates both capability caches.
+    _set_capability("computer_use", False, "connectivity check pending")
+    _set_capability("browser_use", False, "connectivity check pending")
+    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -1080,13 +1108,18 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 1. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
         if cf: # Attempting to enable
-            # If startup happened before API config was ready, try self-heal once.
-            if (not Modules.computer_use) or (not getattr(Modules.computer_use, "init_ok", False)):
+            if not Modules.computer_use:
                 _try_refresh_computer_use_adapter(force=True)
             if not Modules.computer_use:
                 Modules.agent_flags["computer_use_enabled"] = False
                 Modules.notification = "无法开启 Computer Use: 模块未加载"
                 logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
+            elif not getattr(Modules.computer_use, "init_ok", False):
+                # Connectivity not yet confirmed — kick off a check then
+                # optimistically enable; the check result will auto-disable
+                # if it fails.
+                Modules.agent_flags["computer_use_enabled"] = True
+                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
                     avail = Modules.computer_use.is_available()
@@ -1109,23 +1142,19 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            if not getattr(Modules, "browser_use", None):
+            bu = getattr(Modules, "browser_use", None)
+            if not bu:
                 Modules.agent_flags["browser_use_enabled"] = False
                 Modules.notification = "无法开启 Browser Use: 模块未加载"
+            elif not getattr(bu, "_ready_import", False):
+                Modules.agent_flags["browser_use_enabled"] = False
+                Modules.notification = f"无法开启 Browser Use: browser-use not installed: {bu.last_error}"
+            elif not getattr(Modules.computer_use, "init_ok", False):
+                Modules.agent_flags["browser_use_enabled"] = True
+                asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
-                try:
-                    avail = Modules.browser_use.is_available()
-                    reasons = avail.get('reasons', []) if isinstance(avail, dict) else []
-                    _set_capability("browser_use", bool(avail.get("ready")) if isinstance(avail, dict) else False, reasons[0] if reasons else "")
-                    if avail.get("ready"):
-                        Modules.agent_flags["browser_use_enabled"] = True
-                    else:
-                        Modules.agent_flags["browser_use_enabled"] = False
-                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else '未知原因'
-                        Modules.notification = f"无法开启 Browser Use: {reason}"
-                except Exception as e:
-                    Modules.agent_flags["browser_use_enabled"] = False
-                    Modules.notification = f"开启 Browser Use 失败: {str(e)}"
+                Modules.agent_flags["browser_use_enabled"] = True
+                _set_capability("browser_use", True, "")
         else:
             Modules.agent_flags["browser_use_enabled"] = False
             
@@ -1225,17 +1254,16 @@ async def computer_use_availability():
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
     if not Modules.computer_use:
-        # Try to recover adapter lazily when gate is already satisfied.
         _try_refresh_computer_use_adapter(force=True)
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     if not Modules.computer_use:
-        # Auto-update flag if module missing
         if Modules.agent_flags.get("computer_use_enabled"):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.notification = "Computer Use 模块未加载，已自动关闭"
         raise HTTPException(503, "ComputerUse not ready")
     if not getattr(Modules.computer_use, "init_ok", False):
-        _try_refresh_computer_use_adapter(force=True)
-    
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+
     status = Modules.computer_use.is_available()
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
     _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
@@ -1249,17 +1277,40 @@ async def computer_use_availability():
     return status
 
 
+@app.post("/notify_config_changed")
+async def notify_config_changed():
+    """Called by the main server after API-key / model config is saved.
+    Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
+    LLM connectivity check."""
+    _try_refresh_computer_use_adapter(force=True)
+    _rewire_computer_use_dependents()
+    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
+
+
 @app.get("/browser_use/availability")
 async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    if not Modules.browser_use:
+    bu = Modules.browser_use
+    if not bu:
         raise HTTPException(503, "BrowserUse not ready")
-    status = Modules.browser_use.is_available()
-    reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("browser_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
-    return status
+    if not getattr(bu, "_ready_import", False):
+        reason = f"browser-use not installed: {bu.last_error}"
+        _set_capability("browser_use", False, reason)
+        return {"enabled": True, "ready": False, "reasons": [reason], "provider": "browser-use"}
+    # LLM connectivity — reuse the shared agent-LLM check
+    cua = Modules.computer_use
+    if cua and not getattr(cua, "init_ok", False):
+        asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    llm_ok = cua is not None and getattr(cua, "init_ok", False)
+    reasons = []
+    if not llm_ok:
+        reasons.append(cua.last_error if cua and cua.last_error else "Agent LLM not connected")
+    ready = llm_ok and getattr(bu, "_ready_import", False)
+    _set_capability("browser_use", ready, reasons[0] if reasons else "")
+    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
 
 
 @app.post("/computer_use/run")

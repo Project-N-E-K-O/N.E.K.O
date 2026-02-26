@@ -557,6 +557,16 @@ async def update_core_config(request: Request):
             logger.error(f"重新加载配置失败: {reload_error}")
             return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
         
+        # 4. Notify agent_server to rebuild CUA adapter with fresh config
+        try:
+            import httpx
+            from config import TOOL_SERVER_PORT
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+            logger.info("已通知 agent_server 刷新 CUA 适配器")
+        except Exception as notify_err:
+            logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
+
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
         return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
     except Exception as e:
