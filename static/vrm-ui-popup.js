@@ -1420,17 +1420,37 @@ VRMManager.prototype._createSubmenuContainer = function (submenuItems) {
 };
 
 // 辅助方法：关闭弹窗
+function finalizePopupClosedState(popup) {
+    if (!popup) return;
+    popup.style.left = '';
+    popup.style.right = '';
+    popup.style.top = '';
+    popup.style.transform = '';
+    popup.style.opacity = '';
+    popup.style.display = 'none';
+    delete popup.dataset.opensLeft;
+    popup._hideTimeoutId = null;
+}
+
 VRMManager.prototype.closePopupById = function (buttonId) {
     if (!buttonId) return false;
     const popup = document.getElementById(`vrm-popup-${buttonId}`);
     if (!popup || popup.style.display !== 'flex') return false;
 
     if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+    popup._showToken = (popup._showToken || 0) + 1;
+
+    if (popup._hideTimeoutId) {
+        clearTimeout(popup._hideTimeoutId);
+        popup._hideTimeoutId = null;
+    }
 
     popup.style.opacity = '0';
     const closeOpensLeft = popup.dataset.opensLeft === 'true';
     popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-    setTimeout(() => { popup.style.display = 'none'; delete popup.dataset.opensLeft; }, VRM_POPUP_ANIMATION_DURATION_MS);
+    popup._hideTimeoutId = setTimeout(() => {
+        finalizePopupClosedState(popup);
+    }, VRM_POPUP_ANIMATION_DURATION_MS);
 
     // 更新按钮状态
     if (typeof this.setButtonActive === 'function') {
@@ -1466,6 +1486,7 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 VRMManager.prototype.showPopup = function (buttonId, popup) {
     const isVisible = popup.style.display === 'flex';
     const popupUi = window.AvatarPopupUI || null;
+    if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
     if (buttonId === 'settings') {
         const syncCheckbox = (checkbox, checked) => {
@@ -1514,6 +1535,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
     if (buttonId === 'agent' && !isVisible) window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
 
     if (isVisible) {
+        popup._showToken += 1;
         popup.style.opacity = '0';
         const closingOpensLeft = popup.dataset.opensLeft === 'true';
         popup.style.transform = closingOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -1528,19 +1550,12 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
 
         // 存储 timeout ID，以便在快速重新打开时能够清除
         const hideTimeoutId = setTimeout(() => {
-            popup.style.display = 'none';
-            delete popup.dataset.opensLeft;
-            if (popupUi && typeof popupUi.resetPopupPosition === 'function') {
-                popupUi.resetPopupPosition(popup, { left: '100%', top: '0' });
-            } else {
-                popup.style.left = '100%';
-                popup.style.top = '0';
-            }
-            // 清除 timeout ID 引用
-            popup._hideTimeoutId = null;
+            finalizePopupClosedState(popup);
         }, VRM_POPUP_ANIMATION_DURATION_MS);
         popup._hideTimeoutId = hideTimeoutId;
     } else {
+        const showToken = popup._showToken + 1;
+        popup._showToken = showToken;
         // 清除之前可能存在的隐藏 timeout，防止旧的 timeout 关闭新打开的 popup
         if (popup._hideTimeoutId) {
             clearTimeout(popup._hideTimeoutId);
@@ -1558,8 +1573,10 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         // 预加载图片
         const images = popup.querySelectorAll('img');
         Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
+            if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
             void popup.offsetHeight;
             requestAnimationFrame(() => {
+                if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                 if (popupUi && typeof popupUi.positionPopup === 'function') {
                     const pos = popupUi.positionPopup(popup, {
                         buttonId,
@@ -1573,9 +1590,11 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                     popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                     popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
                 }
+                if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                 popup.style.visibility = 'visible';
                 popup.style.opacity = '1';
                 requestAnimationFrame(() => {
+                    if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                     popup.style.transform = 'translateX(0)';
                 });
             });

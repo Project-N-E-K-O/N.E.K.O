@@ -170,6 +170,10 @@ class Live2DManager {
         if (this.isInitialized && (!this.pixi_app || !this.pixi_app.stage)) {
             console.warn('Live2D 管理器标记为已初始化，但 pixi_app 或 stage 不存在，重置状态');
             if (this.pixi_app && this.pixi_app.destroy) {
+                if (this._screenChangeHandler) {
+                    window.removeEventListener('resize', this._screenChangeHandler);
+                    this._screenChangeHandler = null;
+                }
                 try {
                     this.pixi_app.destroy(true);
                 } catch (e) {
@@ -203,10 +207,12 @@ class Live2DManager {
                 // 等待一帧让页面布局稳定，避免读到 CSS 未完全生效时的临时尺寸
                 await new Promise(resolve => requestAnimationFrame(resolve));
 
+                const initW = Math.max(container.clientWidth || 0, 1);
+                const initH = Math.max(container.clientHeight || 0, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
-                    width: container.clientWidth,
-                    height: container.clientHeight,
+                    width: initW,
+                    height: initH,
                     ...defaultOptions,
                     ...options
                 });

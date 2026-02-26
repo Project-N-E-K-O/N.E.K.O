@@ -2451,7 +2451,7 @@ class LLMSessionManager:
                         # 识别配额限制
                         if '欠费' in error_msg_lower or 'standing' in error_msg_lower:
                             user_msg = json.dumps({"code": "API_ARREARS"})
-                        elif 'quota' in error_msg_lower or 'time' in error_msg_lower:
+                        elif 'quota' in error_msg_lower or 'time limit' in error_msg_lower:
                             user_msg = json.dumps({"code": "API_QUOTA_TIME"})
                         elif '429' in error_msg_lower or 'too many' in error_msg_lower:
                             user_msg = json.dumps({"code": "API_RATE_LIMIT"})

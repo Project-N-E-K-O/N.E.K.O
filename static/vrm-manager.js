@@ -761,7 +761,11 @@ class VRMManager {
             const container = document.getElementById(containerId);
 
             if (canvas && container) {
-                await this.ensureThreeReady(canvasId, containerId);
+                const threeReady = await this.ensureThreeReady(canvasId, containerId);
+                if (!threeReady) {
+                    this._loadState = 'idle';
+                    return null;
+                }
             } else {
                 const errorMsg = window.t
                     ? window.t('vrm.error.sceneNotInitialized')
@@ -900,8 +904,11 @@ class VRMManager {
                     console.warn('[VRM Manager] VRMAnimation 模块未加载，跳过自动播放');
                     return;
                 }
+                const currentLoadToken = this._activeLoadToken;
+                if (loadToken !== currentLoadToken) return;
 
                 try {
+                    if (!this._isLoadTokenActive(loadToken)) return;
                     await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                         loop: true,
                         immediate: true,
@@ -924,13 +931,16 @@ class VRMManager {
         this._loadState = 'settling';
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
-            : Promise.resolve();
-        await Promise.all([stabilityPromise, animationReady]);
+            : Promise.resolve(false);
+        const [stabilityResult] = await Promise.all([stabilityPromise, animationReady]);
 
-        if (this._isLoadTokenActive(loadToken)) {
+        if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
             this._isModelReadyForInteraction = true;
             showAndFadeIn();
+        } else if (this._isLoadTokenActive(loadToken)) {
+            this._loadState = 'idle';
+            this._isModelReadyForInteraction = false;
         }
         return result;
     }
