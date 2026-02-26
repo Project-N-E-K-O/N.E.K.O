@@ -21,7 +21,7 @@ const PLATFORM_CONFIG_DATA = {
     },
     'douyin': {
         name: '抖音', 
-        nameKey: 'cookiesLogin.platforms.douyin', 
+        nameKey: 'cookiesLogin.douyin', 
         icon: '🎵', theme: '#000000',
         instructionKey: 'cookiesLogin.instructions.douyin',
         fields: [
@@ -33,7 +33,7 @@ const PLATFORM_CONFIG_DATA = {
     },
     'kuaishou': {
         name: '快手', 
-        nameKey: 'cookiesLogin.platforms.kuaishou', 
+        nameKey: 'cookiesLogin.kuaishou', 
         icon: '🧡', theme: '#ff5000',
         instructionKey: 'cookiesLogin.instructions.kuaishou',
         fields: [
@@ -45,7 +45,7 @@ const PLATFORM_CONFIG_DATA = {
     },
     'weibo': {
         name: '微博', 
-        nameKey: 'cookiesLogin.platforms.weibo', 
+        nameKey: 'cookiesLogin.weibo', 
         icon: '🌏', theme: '#f59e0b',
         instructionKey: 'cookiesLogin.instructions.weibo',
         fields: [
@@ -55,7 +55,7 @@ const PLATFORM_CONFIG_DATA = {
     },
     'twitter': {
         name: 'Twitter/X', 
-        nameKey: 'cookiesLogin.platforms.twitter', 
+        nameKey: 'cookiesLogin.twitter', 
         icon: '🐦', theme: '#0ea5e9',
         instructionKey: 'cookiesLogin.instructions.twitter',
         fields: [
@@ -65,7 +65,7 @@ const PLATFORM_CONFIG_DATA = {
     },
     'reddit': {
         name: 'Reddit', 
-        nameKey: 'cookiesLogin.platforms.reddit', 
+        nameKey: 'cookiesLogin.reddit', 
         icon: '👽', theme: '#ff4500',
         instructionKey: 'cookiesLogin.instructions.reddit',
         fields: [
@@ -205,7 +205,7 @@ function switchTab(platformKey, btnElement, isReRender = false) {
         // 渲染动态 Cookies 配置字段
         fieldsContainer.innerHTML = config.fields.map(f => {
             const inputId = `input-${f.mapKey || f.key}`;
-            const value = existingValues[inputId] || '';
+
             return `
             <div class="field-group">
                 <label for="${inputId}">
@@ -219,7 +219,15 @@ function switchTab(platformKey, btnElement, isReRender = false) {
                        class="credential-input">
             </div>
         `}).join('');
+        
+        if (isReRender) {
+            Object.entries(existingValues).forEach(([id, preservedValue]) => {
+                const input = document.getElementById(id);
+                if (input) input.value = preservedValue;
+           });
+        }
     }
+
     // 更新提交按钮文本
     const submitText = document.getElementById('submit-text');
     if (submitText) {
@@ -373,7 +381,7 @@ async function refreshStatusList() {
             
             const statusTag = document.createElement('div');
             statusTag.className = `status-tag ${active ? 'active' : 'inactive'}`;
-            statusTag.textContent = statusRawText.replace(/^[○●⚪🟢🔴]\s*/, '');
+            statusTag.textContent = statusRawText.replace(/^[○●⚪🟢🔴]\s*/u, '');
             actionsWrapper.appendChild(statusTag);
 
             // 若处于生效状态，添加红色的垃圾桶按钮
