@@ -774,8 +774,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!iconImg) {
             // 如果没有图标，创建一个
             iconImg = document.createElement('img');
-            iconImg.style.width = '24px';  /* 图标尺寸 */
-            iconImg.style.height = '24px';  /* 图标尺寸 */
+            iconImg.style.width = '32px';  /* 图标尺寸 */
+            iconImg.style.height = '32px';  /* 图标尺寸 */
             iconImg.style.objectFit = 'contain';
             iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
             toggleBtn.innerHTML = '';

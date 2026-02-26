@@ -51,7 +51,7 @@ from utils.workshop_utils import ( # noqa
     get_workshop_path
 )
 # 导入创意工坊路由中的函数
-from main_routers.workshop_router import get_subscribed_workshop_items # noqa
+from main_routers.workshop_router import get_subscribed_workshop_items, sync_workshop_character_cards, warmup_ugc_cache # noqa
 
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
@@ -712,6 +712,41 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"Agent event bridge startup failed: {e}")
         await _init_and_mount_workshop()
+        
+        # 后台预热 UGC 缓存 + 同步角色卡（分别独立任务，互不阻塞）
+        if steamworks:
+            import main_routers.workshop_router as _wr
+            
+            async def _warmup_only():
+                """仅预热 UGC 缓存"""
+                try:
+                    await warmup_ugc_cache()
+                except Exception as e:
+                    logger.warning(f"UGC 缓存预热失败: {e}")
+            
+            async def _sync_characters_only():
+                """等待预热完成后同步角色卡"""
+                # 先等预热完成，角色卡同步依赖订阅物品列表
+                if _wr._ugc_warmup_task is not None:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                    except asyncio.TimeoutError:
+                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                    except Exception as e:
+                        logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+                try:
+                    sync_result = await sync_workshop_character_cards()
+                    if sync_result["added"] > 0:
+                        logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                    else:
+                        logger.info("创意工坊角色卡同步完成：无新增角色卡")
+                except Exception as e:
+                    logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+            
+            # _ugc_warmup_task 仅引用预热任务，等待它不会被角色卡同步阻塞
+            _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+            _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+        
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
         # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
@@ -787,6 +822,25 @@ async def shutdown_server_async():
         # 短暂延时，确保 beacon 响应有机会先发送
         await asyncio.sleep(0.5)
         logger.info("正在关闭服务器...")
+
+        # 取消后台创意工坊任务，避免残留协程
+        try:
+            import main_routers.workshop_router as _wr
+            _SHUTDOWN_TASK_TIMEOUT = 5  # 等待后台任务结束的超时秒数
+            for task_attr in ('_ugc_warmup_task', '_ugc_sync_task'):
+                task = getattr(_wr, task_attr, None)
+                if task and not task.done():
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=_SHUTDOWN_TASK_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"后台任务 {task_attr} 在 {_SHUTDOWN_TASK_TIMEOUT}s 内未结束，跳过等待")
+                    except asyncio.CancelledError:
+                        logger.debug(f"后台任务 {task_attr} 已取消")
+                    except Exception as e:
+                        logger.debug(f"后台任务 {task_attr} 取消时异常: {e}")
+        except Exception as e:
+            logger.debug(f"取消创意工坊后台任务时出错: {e}")
         
         # 向memory_server发送关闭信号
         try:
