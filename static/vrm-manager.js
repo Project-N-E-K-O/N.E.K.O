@@ -48,6 +48,10 @@ class VRMManager {
 
         // CursorFollow 控制器（眼睛注视 + 头/脖子跟随）
         this._cursorFollow = null;
+        this._initThreePromise = null;
+        this._activeLoadToken = 0;
+        this._loadState = 'idle';
+        this._isModelReadyForInteraction = false;
 
         // 向后兼容：保留 _windowEventHandlers 作为 core 的别名（避免破坏现有代码）；建议新代码使用 _coreWindowHandlers
         Object.defineProperty(this, '_windowEventHandlers', {
@@ -58,6 +62,75 @@ class VRMManager {
         });
 
         this._initModules();
+    }
+
+    _isLoadTokenActive(loadToken) {
+        return this._activeLoadToken === loadToken;
+    }
+
+    _waitForSceneStability(scene, loadToken, options = {}) {
+        const requiredStableFrames = options.requiredStableFrames || 2;
+        const maxFrames = options.maxFrames || 24;
+        const deltaThreshold = options.deltaThreshold || 0.02;
+        const THREE = window.THREE;
+
+        if (!scene || !THREE) {
+            return Promise.resolve(false);
+        }
+
+        return new Promise((resolve) => {
+            let stableFrames = 0;
+            let frameCount = 0;
+            let prevSize = null;
+
+            const tick = () => {
+                if (!this._isLoadTokenActive(loadToken) || !scene || !scene.parent) {
+                    resolve(false);
+                    return;
+                }
+
+                frameCount += 1;
+                let size = null;
+                try {
+                    scene.updateMatrixWorld(true);
+                    const box = new THREE.Box3().setFromObject(scene);
+                    size = box.getSize(new THREE.Vector3());
+                } catch (_) {
+                    size = null;
+                }
+
+                const hasValidSize = size &&
+                    Number.isFinite(size.x) &&
+                    Number.isFinite(size.y) &&
+                    Number.isFinite(size.z) &&
+                    size.x > 0.001 &&
+                    size.y > 0.001;
+                const isStable = hasValidSize &&
+                    prevSize &&
+                    Math.abs(size.x - prevSize.x) <= deltaThreshold &&
+                    Math.abs(size.y - prevSize.y) <= deltaThreshold &&
+                    Math.abs(size.z - prevSize.z) <= deltaThreshold;
+
+                if (isStable) {
+                    stableFrames += 1;
+                } else {
+                    stableFrames = 0;
+                }
+
+                if (hasValidSize) {
+                    prevSize = size.clone();
+                }
+
+                if ((hasValidSize && stableFrames >= requiredStableFrames) || frameCount >= maxFrames) {
+                    resolve(!!hasValidSize);
+                    return;
+                }
+
+                requestAnimationFrame(tick);
+            };
+
+            requestAnimationFrame(tick);
+        });
     }
 
     _ensureMouseLookAtResources() {
@@ -485,25 +558,45 @@ class VRMManager {
     }
 
     async initThreeJS(canvasId, containerId, lightingConfig = null) {
+        if (this._initThreePromise) {
+            return await this._initThreePromise;
+        }
+
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
             this._initMouseLookAtTracking();
             this._isInitialized = true;
             return true;
         }
-        if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
-        this._initModules();
-        if (!this.core) {
-            const errorMsg = window.t ? window.t('vrm.error.coreNotLoaded') : 'VRMCore 尚未加载';
-            throw new Error(errorMsg);
+
+        this._initThreePromise = (async () => {
+            if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
+            this._initModules();
+            if (!this.core) {
+                const errorMsg = window.t ? window.t('vrm.error.coreNotLoaded') : 'VRMCore 尚未加载';
+                throw new Error(errorMsg);
+            }
+            await this.core.init(canvasId, containerId, lightingConfig);
+            if (this.interaction) this.interaction.initDragAndZoom();
+            this._initMouseLookAtTracking();
+            this.startAnimateLoop();
+            // 设置初始化标志
+            this._isInitialized = true;
+            return true;
+        })();
+
+        try {
+            return await this._initThreePromise;
+        } finally {
+            this._initThreePromise = null;
         }
-        await this.core.init(canvasId, containerId, lightingConfig);
-        if (this.interaction) this.interaction.initDragAndZoom();
-        this._initMouseLookAtTracking();
-        this.startAnimateLoop();
-        // 设置初始化标志
-        this._isInitialized = true;
-        return true;
+    }
+
+    async ensureThreeReady(canvasId, containerId, lightingConfig = null) {
+        if (this.scene && this.camera && this.renderer && this._isInitialized) {
+            return true;
+        }
+        return await this.initThreeJS(canvasId, containerId, lightingConfig);
     }
 
     startAnimateLoop() {
@@ -647,6 +740,9 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
+        const loadToken = ++this._activeLoadToken;
+        this._loadState = 'preparing';
+        this._isModelReadyForInteraction = false;
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
 
@@ -662,7 +758,7 @@ class VRMManager {
             const container = document.getElementById(containerId);
 
             if (canvas && container) {
-                await this.initThreeJS(canvasId, containerId);
+                await this.ensureThreeReady(canvasId, containerId);
             } else {
                 const errorMsg = window.t
                     ? window.t('vrm.error.sceneNotInitialized')
@@ -680,6 +776,10 @@ class VRMManager {
 
         // 加载模型
         const result = await this.core.loadModel(modelUrl, options);
+        if (!this._isLoadTokenActive(loadToken)) {
+            this._loadState = 'idle';
+            return result;
+        }
 
         // 模型切换后重置头部跟踪状态（滤波器/权重/累计角度）
         if (this._cursorFollow) {
@@ -711,6 +811,8 @@ class VRMManager {
 
         // 辅助函数：显示模型并淡入画布
         const showAndFadeIn = () => {
+            if (!this._isLoadTokenActive(loadToken)) return;
+            if (this._loadState !== 'ready') return;
             if (this.currentModel?.vrm?.scene) {
                 // 启用物理
                 this.enablePhysics = true;
@@ -749,6 +851,7 @@ class VRMManager {
 
                 this.currentModel.vrm.scene.visible = true;
                 requestAnimationFrame(() => {
+                    if (!this._isLoadTokenActive(loadToken)) return;
                     if (this.renderer && this.renderer.domElement) {
                         this.renderer.domElement.style.opacity = '1';
                     }
@@ -777,6 +880,7 @@ class VRMManager {
                             // 将 setTimeout 的返回值赋值给 _retryTimerId，以便 dispose() 可以清理
                             this._retryTimerId = setTimeout(() => {
                                 this._retryTimerId = null; // 回调执行时清除引用
+                                if (!this._isLoadTokenActive(loadToken)) return;
                                 tryPlayAnimation(retries - 1);
                             }, 100);
                             return;
@@ -815,6 +919,7 @@ class VRMManager {
             // 将初始 setTimeout 的返回值赋值给 _retryTimerId，以便 dispose() 可以清理
             this._retryTimerId = setTimeout(() => {
                 this._retryTimerId = null; // 回调执行时清除引用
+                if (!this._isLoadTokenActive(loadToken)) return;
                 tryPlayAnimation();
             }, 100);
         } else {
@@ -826,6 +931,15 @@ class VRMManager {
         }
         if (this.setupFloatingButtons) {
             this.setupFloatingButtons();
+        }
+        this._loadState = 'settling';
+        if (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken)) {
+            await this._waitForSceneStability(result.vrm.scene, loadToken);
+        }
+        if (this._isLoadTokenActive(loadToken)) {
+            this._loadState = 'ready';
+            this._isModelReadyForInteraction = true;
+            showAndFadeIn();
         }
         return result;
     }

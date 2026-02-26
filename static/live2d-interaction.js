@@ -250,6 +250,9 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo) {
  * @returns {Promise<boolean>} 是否执行了吸附
  */
 Live2DManager.prototype._checkAndPerformSnap = async function (model, options = {}) {
+    if (!this._isModelReadyForInteraction && !options.allowWhenNotReady) {
+        return false;
+    }
     // 如果正在执行吸附动画，跳过
     if (this._isSnapping) {
         return false;
@@ -499,6 +502,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     model.on('pointerdown', (event) => {
+        if (!this._isModelReadyForInteraction) return;
         if (this.isLocked) return;
 
         // 检测是否为触摸事件，且是多点触摸（双指缩放）
@@ -527,6 +531,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     });
 
     const onDragEnd = async () => {
+        if (!this._isModelReadyForInteraction) return;
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = '';
@@ -562,6 +567,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     const onDragMove = (event) => {
+        if (!this._isModelReadyForInteraction) return;
         if (isDragging) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
@@ -853,6 +859,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
+        if (!this._isModelReadyForInteraction) return;
         // 更新 Ctrl 键状态：综合事件中的状态和本地状态
         // 如果是真实事件，更新本地状态；如果是模拟事件，本地状态保持不变（除非事件里带了 Ctrl）
         if (event.isTrusted) {
@@ -1433,6 +1440,7 @@ Live2DManager.prototype.setupResizeSnapDetection = function () {
     let resizeTimeout = null;
 
     this._resizeSnapHandler = () => {
+        if (!this._isModelReadyForInteraction) return;
         // 如果正在拖拽或吸附，跳过
         if (this._isSnapping) return;
 

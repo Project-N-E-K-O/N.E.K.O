@@ -88,6 +88,11 @@ class Live2DManager {
         
         // 模型加载锁，防止并发加载导致重复模型叠加
         this._isLoadingModel = false;
+        this._activeLoadToken = 0;
+        this._modelLoadState = 'idle';
+        this._isModelReadyForInteraction = false;
+        this._initPIXIPromise = null;
+        this._lastPIXIContext = { canvasId: null, containerId: null };
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -152,6 +157,10 @@ class Live2DManager {
 
     // 初始化 PIXI 应用
     async initPIXI(canvasId, containerId, options = {}) {
+        if (this._initPIXIPromise) {
+            return await this._initPIXIPromise;
+        }
+
         if (this.isInitialized && this.pixi_app && this.pixi_app.stage) {
             console.warn('Live2D 管理器已经初始化');
             return this.pixi_app;
@@ -189,36 +198,68 @@ class Live2DManager {
             autoDensity: true
         };
 
+        this._initPIXIPromise = (async () => {
+            try {
+                this.pixi_app = new PIXI.Application({
+                    view: canvas,
+                    resizeTo: container,
+                    ...defaultOptions,
+                    ...options
+                });
+
+                // 验证 pixi_app 和 stage 是否创建成功
+                if (!this.pixi_app) {
+                    throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
+                }
+
+                if (!this.pixi_app.stage) {
+                    throw new Error('PIXI.Application 创建失败：stage 属性不存在');
+                }
+
+                this.isInitialized = true;
+                this._lastPIXIContext = { canvasId, containerId };
+                // 应用初始帧率设置
+                if (window.targetFrameRate && this.pixi_app.ticker) {
+                    this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+                }
+                console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
+                return this.pixi_app;
+            } catch (error) {
+                console.error('[Live2D Core] PIXI.Application 初始化失败:', error);
+                this.pixi_app = null;
+                this.isInitialized = false;
+                throw error;
+            }
+        })();
+
         try {
-            this.pixi_app = new PIXI.Application({
-                view: canvas,
-                resizeTo: container,
-                ...defaultOptions,
-                ...options
-            });
-
-            // 验证 pixi_app 和 stage 是否创建成功
-            if (!this.pixi_app) {
-                throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
-            }
-            
-            if (!this.pixi_app.stage) {
-                throw new Error('PIXI.Application 创建失败：stage 属性不存在');
-            }
-
-            this.isInitialized = true;
-            // 应用初始帧率设置
-            if (window.targetFrameRate && this.pixi_app.ticker) {
-                this.pixi_app.ticker.maxFPS = window.targetFrameRate;
-            }
-            console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
-            return this.pixi_app;
-        } catch (error) {
-            console.error('[Live2D Core] PIXI.Application 初始化失败:', error);
-            this.pixi_app = null;
-            this.isInitialized = false;
-            throw error;
+            return await this._initPIXIPromise;
+        } finally {
+            this._initPIXIPromise = null;
         }
+    }
+
+    async ensurePIXIReady(canvasId, containerId, options = {}) {
+        if (this.isInitialized && this.pixi_app && this.pixi_app.stage) {
+            return this.pixi_app;
+        }
+        return await this.initPIXI(canvasId, containerId, options);
+    }
+
+    async rebuildPIXI(canvasId, containerId, options = {}) {
+        if (this._initPIXIPromise) {
+            await this._initPIXIPromise;
+        }
+        if (this.pixi_app && this.pixi_app.destroy) {
+            try {
+                this.pixi_app.destroy(true);
+            } catch (e) {
+                console.warn('[Live2D Core] 重建时销毁旧 PIXI 失败:', e);
+            }
+        }
+        this.pixi_app = null;
+        this.isInitialized = false;
+        return await this.initPIXI(canvasId, containerId, options);
     }
 
     /**

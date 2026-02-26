@@ -275,7 +275,7 @@ async function initLive2DModel() {
             return;
         }
 
-        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+        await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
         let modelPreferences = null;
         // 如果不在模型管理界面且有模型路径，才继续加载模型
         if (!isModelManagerPage && targetModelPath) {

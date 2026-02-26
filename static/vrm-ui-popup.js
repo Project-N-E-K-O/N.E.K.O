@@ -1463,6 +1463,7 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 // 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
     const isVisible = popup.style.display === 'flex';
+    const popupUi = window.AvatarPopupUI || null;
 
     if (buttonId === 'settings') {
         const syncCheckbox = (checkbox, checked) => {
@@ -1524,8 +1525,12 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         // 存储 timeout ID，以便在快速重新打开时能够清除
         const hideTimeoutId = setTimeout(() => {
             popup.style.display = 'none';
-            popup.style.left = '100%';
-            popup.style.top = '0';
+            if (popupUi && typeof popupUi.resetPopupPosition === 'function') {
+                popupUi.resetPopupPosition(popup, { left: '100%', top: '0' });
+            } else {
+                popup.style.left = '100%';
+                popup.style.top = '0';
+            }
             // 清除 timeout ID 引用
             popup._hideTimeoutId = null;
         }, VRM_POPUP_ANIMATION_DURATION_MS);
@@ -1550,23 +1555,17 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
             void popup.offsetHeight;
             requestAnimationFrame(() => {
-                const popupRect = popup.getBoundingClientRect();
-                const screenWidth = window.innerWidth;
-                const screenHeight = window.innerHeight;
-                if (popupRect.right > screenWidth - 20) {
-                    const button = document.getElementById(`vrm-btn-${buttonId}`);
-                    const buttonWidth = button ? button.offsetWidth : 48;
-                    popup.style.left = 'auto'; popup.style.right = '0'; popup.style.marginLeft = '0'; popup.style.marginRight = `${buttonWidth + 8}px`;
-                    const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
-                    if (triggerIcon) triggerIcon.style.transform = 'rotate(180deg)';
-                } else {
-                    const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
-                    if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
-                }
-                if (buttonId === 'settings' || buttonId === 'agent') {
-                    if (popupRect.bottom > screenHeight - 60) {
-                        popup.style.top = `${parseInt(popup.style.top || 0) - (popupRect.bottom - (screenHeight - 60))}px`;
-                    }
+                if (popupUi && typeof popupUi.positionPopup === 'function') {
+                    const pos = popupUi.positionPopup(popup, {
+                        buttonId,
+                        buttonPrefix: 'vrm-btn-',
+                        triggerPrefix: 'vrm-trigger-icon-',
+                        rightMargin: 20,
+                        bottomMargin: 60,
+                        topMargin: 8,
+                        gap: 8
+                    });
+                    popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
                 }
                 popup.style.visibility = 'visible'; popup.style.opacity = '1'; popup.style.transform = 'translateX(0)';
             });
