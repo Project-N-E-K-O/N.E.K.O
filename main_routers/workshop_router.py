@@ -222,11 +222,11 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
             item_info['title'] = _safe_text(result.title)
         if hasattr(result, 'description') and result.description:
             item_info['description'] = _safe_text(result.description)
-        # timeAddedToUserList 是用户订阅时间，timeCreated 是物品创建时间
+        # timeAddedToUserList 是用户订阅时间，timeCreated 是物品创建时间，分开存储避免语义混淆
+        if hasattr(result, 'timeCreated') and result.timeCreated:
+            item_info['timeCreated'] = int(result.timeCreated)
         if hasattr(result, 'timeAddedToUserList') and result.timeAddedToUserList:
             item_info['timeAdded'] = int(result.timeAddedToUserList)
-        elif hasattr(result, 'timeCreated') and result.timeCreated:
-            item_info['timeAdded'] = int(result.timeCreated)
         if hasattr(result, 'timeUpdated') and result.timeUpdated:
             item_info['timeUpdated'] = int(result.timeUpdated)
         if hasattr(result, 'steamIDOwner') and result.steamIDOwner:
@@ -248,7 +248,7 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
         
         # 更新缓存
         cache_entry = {}
-        for key in ('title', 'description', 'timeAdded', 'timeUpdated',
+        for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
                      'steamIDOwner', 'authorName', 'tags'):
             if key in item_info:
                 cache_entry[key] = item_info[key]
@@ -786,7 +786,7 @@ async def get_subscribed_workshop_items():
                 elif _is_item_cache_valid(item_id_int):
                     # 使用缓存数据填充（仅在该条目 TTL 有效时）
                     cached = _ugc_details_cache[item_id_int]
-                    for key in ('title', 'description', 'timeAdded', 'timeUpdated',
+                    for key in ('title', 'description', 'timeCreated', 'timeAdded', 'timeUpdated',
                                 'steamIDOwner', 'authorName', 'tags'):
                         if key in cached:
                             item_info[key] = cached[key]
@@ -1059,7 +1059,7 @@ async def get_workshop_item_details(item_id: str):
                 description = cached.get('description', '')
                 owner_id_str = cached.get('steamIDOwner', '')
                 author_name = cached.get('authorName')
-                time_created = cached.get('timeAdded', 0)
+                time_created = cached.get('timeCreated', 0)
                 time_updated = cached.get('timeUpdated', 0)
                 file_size = 0
                 preview_url = ''
