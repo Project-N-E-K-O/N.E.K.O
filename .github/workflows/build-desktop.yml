@@ -417,6 +417,11 @@ jobs:
             python_artifact: python-backend-mac-arm64
             electron_args: '--mac --arm64'
             artifact_name: desktop-mac-arm64
+          - os: ubuntu-latest
+            platform: linux
+            python_artifact: python-backend-linux
+            electron_args: '--linux'
+            artifact_name: desktop-linux-x64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -476,6 +481,14 @@ jobs:
             console.log('Updated version to:', pkg.version);
           "
 
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dpkg \
+            fakeroot
+
       # Explicitly disable macOS code signing via package.json patch
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
@@ -527,6 +540,9 @@ jobs:
             electron-app/dist/*.exe
             electron-app/dist/*.dmg
             electron-app/dist/*.zip
+            electron-app/dist/*.AppImage
+            electron-app/dist/*.deb
+            electron-app/dist/*.tar.gz
             electron-app/dist/*.blockmap
             electron-app/dist/latest*.yml
           if-no-files-found: warn
@@ -553,6 +569,7 @@ jobs:
           mkdir -p release
           find artifacts -type f \( \
             -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
+            -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
             -o -name "latest*.yml" \
           \) -exec cp {} release/ \;
           echo "=== Release files ==="
@@ -572,6 +589,7 @@ jobs:
             | Windows | x64 | `N.E.K.O.exe` (Portable) |
             | macOS | Intel (x64) | `N.E.K.O-*.dmg` or `.zip` |
             | macOS | Apple Silicon (arm64) | `N.E.K.O-*-arm64.dmg` or `.zip` |
+            | Linux | x64 | `N.E.K.O-*.AppImage` / `.deb` / `.tar.gz` |
 
             ### Notes
             - First launch may take a moment as the Python backend initializes
