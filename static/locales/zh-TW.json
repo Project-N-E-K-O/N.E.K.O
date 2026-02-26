@@ -439,11 +439,16 @@
         "clearScreenshots": "清空截圖",
         "clearScreenshotsConfirm": "確定要清空所有待發送的截圖嗎？"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "情感分析逾時",
         "noAudioTrack": "沒有可用的音軌",
         "cameraStreamFailed": "無法取得攝影機串流",
-        "characterConfigFailed": "無法取得角色設定"
+        "characterConfigFailed": "無法取得角色設定",
+        "API_ARREARS": "💥 您的API已欠費。如使用第三方平台請盡快充值。",
+        "API_QUOTA_TIME": "💥 免費API限額已耗盡，請更換API或明天再試。",
+        "API_RATE_LIMIT": "💥 API達到限額或請求過於頻繁(429)，請稍後再試。",
+        "API_POLICY_VIOLATION": "💥 伺服器返回安全策略攔截或政策限制：{{msg}}",
+        "API_1008_FALLBACK": "💥 會話斷開(1008)：{{msg}}"
     },
     "camera": {
         "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",

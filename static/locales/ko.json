@@ -439,11 +439,16 @@
         "clearScreenshots": "스크린샷 지우기",
         "clearScreenshotsConfirm": "보류 중인 스크린샷을 모두 지우시겠습니까?"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "감정 분석 시간 초과",
         "noAudioTrack": "사용 가능한 오디오 트랙이 없습니다",
         "cameraStreamFailed": "카메라 스트림을 가져오지 못했습니다",
-        "characterConfigFailed": "캐릭터 설정을 가져오지 못했습니다"
+        "characterConfigFailed": "캐릭터 설정을 가져오지 못했습니다",
+        "API_ARREARS": "💥 API 잔액이 부족합니다. 충전해 주세요.",
+        "API_QUOTA_TIME": "💥 무료 API 한도가 소진되었습니다. 내일 다시 시도하거나 다른 API로 전환하세요.",
+        "API_RATE_LIMIT": "💥 요청이 너무 많습니다 (429). 잠시 후 다시 시도해 주세요.",
+        "API_POLICY_VIOLATION": "💥 정책 위반 또는 보안 차단: {{msg}}",
+        "API_1008_FALLBACK": "💥 연결이 끊어졌습니다 (1008): {{msg}}"
     },
     "camera": {
         "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",

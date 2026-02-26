@@ -439,11 +439,16 @@
         "clearScreenshots": "Clear Screenshots",
         "clearScreenshotsConfirm": "Are you sure you want to clear all pending screenshots?"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "Emotion analysis timeout",
         "noAudioTrack": "No available audio track",
         "cameraStreamFailed": "Failed to get camera stream",
-        "characterConfigFailed": "Failed to get character configuration"
+        "characterConfigFailed": "Failed to get character configuration",
+        "API_ARREARS": "💥 API account in arrears. Please top up your balance.",
+        "API_QUOTA_TIME": "💥 Free API quota exhausted. Please try again tomorrow or switch to another API.",
+        "API_RATE_LIMIT": "💥 Too many requests (429) or quota limit reached. Please try again later.",
+        "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
+        "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}"
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
