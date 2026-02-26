@@ -275,6 +275,7 @@ DEFAULT_CORE_CONFIG = {
     "agentModelUrl": "",
     "agentModelId": "",
     "agentModelApiKey": "",
+    "textGuardMaxLength": 400,
 }
 
 DEFAULT_USER_PREFERENCES = []
