@@ -1,3 +1,15 @@
+/**
+    * VRM Animation - VRM 模型动画播放功能
+    *   功能:   
+    *  - 播放 VRM 模型动画
+    *  - 切换动画
+    *  - 设置动画播放速度
+    *  - 处理动画事件（如循环播放、淡入淡出）
+    *  - 管理模型骨骼动画（如 SpringBone 恢复）
+    *  - 同步口型动画（如 LipSync）
+    *  - 处理模型碰撞（如防止模型穿透）
+    */
+   
 // 确保 THREE 可用（使用 var 避免重复声明错误）
 var THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
 
