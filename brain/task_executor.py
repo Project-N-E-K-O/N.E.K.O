@@ -778,6 +778,7 @@ Return only the JSON object, nothing else.
         reason: str = "",
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> TaskResult:
         """
         Execute a user plugin via HTTP /runs endpoint.
@@ -920,23 +921,39 @@ Return only the JSON object, nothing else.
                     reason=reason or "run_invalid_response",
                 )
 
+            # Phase 2: await run completion and fetch actual result
+            try:
+                completion = await self._await_run_completion(
+                    run_id, timeout=300.0, on_progress=on_progress,
+                )
+            except Exception as e:
+                logger.warning("[TaskExecutor] _await_run_completion error: %r", e)
+                completion = {"status": "unknown", "success": False, "data": None,
+                              "error": str(e)}
+
+            run_success = bool(completion.get("success"))
             result_obj: Dict[str, Any] = {
                 "accepted": True,
                 "run_id": run_id,
                 "run_token": run_token,
                 "expires_at": expires_at,
                 "entry_id": plugin_entry_id or "run",
+                "run_status": completion.get("status"),
+                "run_success": run_success,
+                "run_data": completion.get("data"),
+                "run_error": completion.get("error"),
             }
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
                 task_description=task_description,
                 execution_method="user_plugin",
-                success=True,
+                success=run_success,
                 result=result_obj,
+                error=completion.get("error") if not run_success else None,
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=reason or "run_accepted",
+                reason=reason or ("run_succeeded" if run_success else "run_failed"),
             )
         except Exception as e:
             logger.warning(
@@ -954,6 +971,114 @@ Return only the JSON object, nothing else.
                 tool_args=plugin_args,
                 reason=reason or "run_failed",
             )
+
+    async def _await_run_completion(
+        self,
+        run_id: str,
+        *,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+        on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> Dict[str, Any]:
+        """Poll /runs/{run_id} until it reaches a terminal state, then fetch the export result.
+
+        Args:
+            on_progress: Optional async callback ``(progress, stage, message, step, step_total) -> None``
+                called whenever the run's progress/stage/message changes between polls.
+
+        Returns a dict:
+          {"status": str, "success": bool, "data": Any, "error": str|None,
+           "progress": float|None, "stage": str|None, "message": str|None}
+        """
+        base = f"http://localhost:{USER_PLUGIN_SERVER_PORT}"
+        terminal = frozenset(("succeeded", "failed", "canceled", "timeout"))
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_status: Optional[str] = None
+        # Track last-seen progress fingerprint to avoid redundant callbacks
+        _last_progress_key: Optional[tuple] = None
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0)) as client:
+            # ── Phase 1: poll until terminal ──
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return {"status": "timeout", "success": False, "data": None,
+                            "error": f"Timed out waiting for run {run_id} ({timeout}s)"}
+                try:
+                    r = await client.get(f"{base}/runs/{run_id}")
+                    if r.status_code == 200:
+                        run_data = r.json()
+                        last_status = run_data.get("status")
+                        # Fire on_progress callback when progress/stage/message changes
+                        if on_progress and last_status not in terminal:
+                            cur_key = (
+                                run_data.get("progress"),
+                                run_data.get("stage"),
+                                run_data.get("message"),
+                                run_data.get("step"),
+                            )
+                            if cur_key != _last_progress_key:
+                                _last_progress_key = cur_key
+                                try:
+                                    await on_progress(
+                                        progress=run_data.get("progress"),
+                                        stage=run_data.get("stage"),
+                                        message=run_data.get("message"),
+                                        step=run_data.get("step"),
+                                        step_total=run_data.get("step_total"),
+                                    )
+                                except Exception:
+                                    pass
+                        if last_status in terminal:
+                            break
+                except Exception as e:
+                    logger.debug("[_await_run_completion] poll error: %s", e)
+                await asyncio.sleep(min(poll_interval, remaining))
+
+            # ── Phase 2: fetch export to get plugin_response ──
+            plugin_result: Dict[str, Any] = {
+                "status": last_status,
+                "success": last_status == "succeeded",
+                "data": None,
+                "error": None,
+                "progress": run_data.get("progress"),
+                "stage": run_data.get("stage"),
+                "message": run_data.get("message"),
+            }
+
+            if last_status in ("failed", "canceled", "timeout"):
+                err = run_data.get("error")
+                if isinstance(err, dict):
+                    plugin_result["error"] = err.get("message") or str(err.get("code") or "unknown")
+                elif isinstance(err, str):
+                    plugin_result["error"] = err
+                else:
+                    plugin_result["error"] = f"Run {last_status}"
+
+            try:
+                r = await client.get(f"{base}/runs/{run_id}/export", params={"limit": 50})
+                if r.status_code == 200:
+                    export_data = r.json()
+                    items = export_data.get("items") or []
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        # Look for the system trigger_response export
+                        if item.get("type") == "json" and (item.get("json") is not None or item.get("json_data") is not None):
+                            raw = item.get("json") or item.get("json_data")
+                            if isinstance(raw, dict):
+                                plugin_result["data"] = raw.get("data")
+                                if raw.get("error"):
+                                    err = raw["error"]
+                                    if isinstance(err, dict):
+                                        plugin_result["error"] = err.get("message") or str(err)
+                                    elif isinstance(err, str):
+                                        plugin_result["error"] = err
+                            break
+            except Exception as e:
+                logger.debug("[_await_run_completion] export fetch error: %s", e)
+
+            return plugin_result
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
         """

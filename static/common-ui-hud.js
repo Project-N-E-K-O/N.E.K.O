@@ -124,6 +124,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             labelKey: 'settings.toggles.browserUse',
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },
+        {
+            id: 'agent-user-plugin',
+            label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
+            labelKey: 'settings.toggles.userPlugin',
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
     ];
 
@@ -134,7 +141,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
 
     // 添加适配中的按钮（不可选）
     const adaptingItems = [
-        { labelKey: 'settings.toggles.userPluginAdapting', fallback: '用户插件（开发中）' },
         { labelKey: 'settings.toggles.moltbotAdapting', fallback: 'moltbot（开发中）' }
     ];
 
@@ -628,7 +634,7 @@ window.AgentHUD._createTaskCard = function (task) {
     });
 
     // 任务类型图标
-    const typeIcon = task.source === 'computer_use' ? '🖱️' : '⚙️';
+    const typeIcon = task.type === 'user_plugin' ? '🧩' : (task.source === 'computer_use' ? '🖱️' : '⚙️');
     const typeName = task.type || task.source || 'unknown';
 
     const typeLabel = document.createElement('span');
@@ -699,6 +705,8 @@ window.AgentHUD._createTaskCard = function (task) {
         description = task.original_query;
     } else if (params.tool_name) {
         description = params.tool_name;
+    } else if (params.plugin_id) {
+        description = params.entry_id ? `${params.plugin_id}.${params.entry_id}` : params.plugin_id;
     } else if (params.action) {
         description = params.action;
     } else {
@@ -736,8 +744,24 @@ window.AgentHUD._createTaskCard = function (task) {
         card.appendChild(timeDiv);
     }
 
-    // 如果是运行中的任务，添加动画指示器
+    // Stage / message text (from plugin run progress)
+    if (isRunning && (task.message || task.stage)) {
+        const msgDiv = document.createElement('div');
+        const msgText = task.message || task.stage || '';
+        msgDiv.textContent = msgText.length > 80 ? msgText.substring(0, 80) + '...' : msgText;
+        Object.assign(msgDiv.style, {
+            color: 'var(--neko-popup-accent, #2a7bc4)',
+            fontSize: '11px',
+            lineHeight: '1.3',
+            marginBottom: '4px',
+            opacity: '0.85'
+        });
+        card.appendChild(msgDiv);
+    }
+
+    // 如果是运行中的任务，添加进度指示器
     if (isRunning) {
+        const hasDeterminateProgress = typeof task.progress === 'number' && task.progress >= 0;
         const progressBar = document.createElement('div');
         Object.assign(progressBar.style, {
             height: '2px',
@@ -748,15 +772,39 @@ window.AgentHUD._createTaskCard = function (task) {
         });
 
         const progressFill = document.createElement('div');
-        Object.assign(progressFill.style, {
-            height: '100%',
-            width: '30%',
-            background: 'linear-gradient(90deg, var(--neko-popup-accent, #2a7bc4), #66b5ff)',
-            borderRadius: '1px',
-            animation: 'taskProgress 1.5s ease-in-out infinite'
-        });
+        if (hasDeterminateProgress) {
+            const pct = Math.min(100, Math.max(0, Math.round(task.progress * 100)));
+            Object.assign(progressFill.style, {
+                height: '100%',
+                width: pct + '%',
+                background: 'linear-gradient(90deg, var(--neko-popup-accent, #2a7bc4), #66b5ff)',
+                borderRadius: '1px',
+                transition: 'width 0.3s ease'
+            });
+        } else {
+            Object.assign(progressFill.style, {
+                height: '100%',
+                width: '30%',
+                background: 'linear-gradient(90deg, var(--neko-popup-accent, #2a7bc4), #66b5ff)',
+                borderRadius: '1px',
+                animation: 'taskProgress 1.5s ease-in-out infinite'
+            });
+        }
         progressBar.appendChild(progressFill);
         card.appendChild(progressBar);
+
+        // Step counter (e.g. "2/3")
+        if (typeof task.step === 'number' && typeof task.step_total === 'number' && task.step_total > 0) {
+            const stepDiv = document.createElement('div');
+            stepDiv.textContent = `${task.step}/${task.step_total}`;
+            Object.assign(stepDiv.style, {
+                color: '#999',
+                fontSize: '10px',
+                textAlign: 'right',
+                marginTop: '2px'
+            });
+            card.appendChild(stepDiv);
+        }
     }
 
     return card;
