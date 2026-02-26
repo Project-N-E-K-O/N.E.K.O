@@ -100,6 +100,8 @@ class ExportStore(Protocol):
         category: Optional[ExportCategory] = None,
     ) -> Tuple[List[ExportItem], Optional[str]]: ...
 
+    def remove_for_run(self, run_id: str) -> None: ...
+
 
 class RunStore(Protocol):
     def create(self, rec: RunRecord) -> None: ...
@@ -152,6 +154,12 @@ class InMemoryExportStore:
             if start + len(slice_ids) < len(ids) and slice_ids:
                 next_after = slice_ids[-1]
             return items, next_after
+
+    def remove_for_run(self, run_id: str) -> None:
+        with self._lock:
+            ids = self._by_run.pop(run_id, [])
+            for eid in ids:
+                self._items.pop(eid, None)
 
 
 _TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"))
@@ -274,6 +282,15 @@ class InMemoryRunStore:
             r = self._runs.get(rid)
             if r is not None and r.status in _TERMINAL_STATUSES:
                 self._runs.pop(rid, None)
+                try:
+                    _export_store.remove_for_run(rid)
+                except Exception:
+                    pass
+                try:
+                    with _runs_emit_lock:
+                        _runs_last_emit_at.pop(rid, None)
+                except Exception:
+                    pass
 
 
 _run_store: RunStore = InMemoryRunStore()
@@ -588,7 +605,20 @@ async def _execute_run(
             task_id=task_id,
             client_host=client_host,
         )
-        payload = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
+
+        # Extract the inner plugin_response from the trigger_plugin wrapper
+        # envelope.  The wrapper contains metadata (plugin_id, args, etc.)
+        # that is redundant with the RunRecord; only the plugin_response
+        # (the ok()/fail() envelope from the actual plugin) is stored as
+        # the export payload.
+        pr: Any = None
+        if isinstance(resp, dict):
+            pr = resp.get("plugin_response")
+        # If trigger_plugin returned a non-envelope or plugin_response is
+        # missing, fall back to the full response.
+        if not isinstance(pr, dict):
+            pr = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
+
         export_item_id = str(uuid.uuid4())
         item = ExportItem.model_validate({
             "export_item_id": export_item_id,
@@ -598,23 +628,17 @@ async def _execute_run(
             "created_at": float(time.time()),
             "label": "trigger_response",
             "description": "Structured response from trigger_plugin",
-            "json": payload,
+            "json": pr,
             "metadata": {"kind": "trigger_response"},
         })
         _export_store.append(item)
         _emit_export("add", item)
 
-        ok = bool(resp.get("success")) if isinstance(resp, dict) else False
-        if ok:
+        is_ok = bool(pr.get("success")) if isinstance(pr, dict) else False
+        if is_ok:
             term = _run_store.commit_terminal(run_id, status="succeeded", error=None, result_refs=[export_item_id])
         else:
-            err_obj = None
-            try:
-                pr = resp.get("plugin_response") if isinstance(resp, dict) else None
-                if isinstance(pr, dict):
-                    err_obj = pr.get("error")
-            except Exception:
-                err_obj = None
+            err_obj = pr.get("error") if isinstance(pr, dict) else None
 
             if isinstance(err_obj, dict):
                 code = str(err_obj.get("code") or "PLUGIN_ERROR")
@@ -623,6 +647,8 @@ async def _execute_run(
                 if details is not None and not isinstance(details, dict):
                     details = {"details": details}
                 run_err = RunError(code=code, message=msg, details=details if isinstance(details, dict) else None)
+            elif isinstance(err_obj, str) and err_obj:
+                run_err = RunError(code="PLUGIN_ERROR", message=err_obj)
             else:
                 run_err = RunError(code="PLUGIN_ERROR", message="plugin returned failure")
 

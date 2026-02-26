@@ -315,7 +315,7 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
                     if limit_i > 500:
                         limit_i = 500
                     resp = list_export_for_run(run_id=rid.strip(), after=after, limit=limit_i)
-                    await _send_resp(req_id, True, result=resp.model_dump())
+                    await _send_resp(req_id, True, result=resp.model_dump(by_alias=True))
                     continue
 
                 if method == "run.create":
