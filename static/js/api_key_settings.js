@@ -446,21 +446,10 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
         const apiUrlEl = document.getElementById('gptsovitsApiUrl');
         if (apiUrlEl && urlToLoad) apiUrlEl.value = urlToLoad;
 
+        // 设置隐藏 input 的值（卡片高亮会在 fetchGptSovitsVoices 完成后自动匹配）
         if (voiceIdToLoad) {
-            const el = document.getElementById('gptsovitsVoiceId');
-            if (el) {
-                // select 元素：先尝试选中已有选项，若不存在则添加一个临时选项
-                const existingOpt = el.querySelector(`option[value="${voiceIdToLoad}"]`);
-                if (existingOpt) {
-                    el.value = voiceIdToLoad;
-                } else {
-                    const opt = document.createElement('option');
-                    opt.value = voiceIdToLoad;
-                    opt.textContent = voiceIdToLoad;
-                    el.appendChild(opt);
-                    el.value = voiceIdToLoad;
-                }
-            }
+            const hiddenInput = document.getElementById('gptsovitsVoiceId');
+            if (hiddenInput) hiddenInput.value = voiceIdToLoad;
         }
 
         // 自动获取语音列表（如果有 URL）
@@ -472,16 +461,39 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
 }
 
 /**
- * 从 GPT-SoVITS v3 API 获取可用语音配置列表并填充下拉框
+ * 选中一个 GPT-SoVITS voice 卡片
+ * @param {string} voiceId - 要选中的 voice_id
+ */
+function selectGsvVoice(voiceId) {
+    const hiddenInput = document.getElementById('gptsovitsVoiceId');
+    if (hiddenInput) hiddenInput.value = voiceId;
+
+    // 更新卡片高亮
+    const grid = document.getElementById('gsv-voices-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.gsv-voice-card').forEach(card => {
+        const isSelected = card.dataset.voiceId === voiceId;
+        card.classList.toggle('selected', isSelected);
+        card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+        card.tabIndex = isSelected ? 0 : -1;
+    });
+}
+
+/**
+ * 从 GPT-SoVITS v3 API 获取可用语音配置列表并渲染为卡片网格
  * @param {boolean} silent - 静默模式，不显示错误提示
  */
 async function fetchGptSovitsVoices(silent = false) {
     const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9881';
-    const select = document.getElementById('gptsovitsVoiceId');
-    if (!select) return;
+    const grid = document.getElementById('gsv-voices-grid');
+    const hiddenInput = document.getElementById('gptsovitsVoiceId');
+    if (!grid) return;
 
     // 记住当前选中的值
-    const currentValue = select.value;
+    const currentValue = hiddenInput ? hiddenInput.value : '';
+
+    // 显示加载状态
+    grid.innerHTML = '<div class="gsv-voices-loading">⏳ ' + _escHtml(window.t ? window.t('api.loadingConfig') : '正在加载...') + '</div>';
 
     try {
         const resp = await fetch('/api/config/gptsovits/list_voices', {
@@ -492,42 +504,98 @@ async function fetchGptSovitsVoices(silent = false) {
         const result = await resp.json();
 
         if (result.success && Array.isArray(result.voices)) {
-            // 清空现有选项
-            select.innerHTML = '';
+            grid.innerHTML = '';
 
             if (result.voices.length === 0) {
-                const emptyOpt = document.createElement('option');
-                emptyOpt.value = '';
-                emptyOpt.textContent = window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --';
-                select.appendChild(emptyOpt);
+                grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --') + '</div>';
             } else {
+                let hasSelectedCard = false;
                 result.voices.forEach(v => {
-                    const opt = document.createElement('option');
-                    opt.value = v.id;
-                    opt.textContent = v.name ? `${v.name} (${v.id})` : v.id;
-                    if (v.description) opt.title = v.description;
-                    select.appendChild(opt);
-                });
-            }
+                    const card = document.createElement('div');
+                    card.className = 'gsv-voice-card';
+                    card.dataset.voiceId = v.id;
+                    const isSelected = v.id === currentValue;
+                    if (isSelected) card.classList.add('selected');
+                    if (isSelected) hasSelectedCard = true;
+                    card.setAttribute('role', 'radio');
+                    card.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+                    card.tabIndex = isSelected ? 0 : -1;
 
-            // 恢复之前选中的值
-            if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
-                select.value = currentValue;
+                    // 卡片内容
+                    let html = '';
+                    html += '<div class="gsv-card-name">' + _escHtml(v.name || v.id) + '</div>';
+                    if (v.name && v.name !== v.id) {
+                        html += '<div class="gsv-card-id">' + _escHtml(v.id) + '</div>';
+                    }
+                    if (v.version) {
+                        html += '<div class="gsv-card-version">' + _escHtml(v.version) + '</div>';
+                    }
+                    if (v.description) {
+                        html += '<div class="gsv-card-desc" title="' + _escAttr(v.description) + '">' + _escHtml(v.description) + '</div>';
+                    }
+                    card.innerHTML = html;
+
+                    card.addEventListener('click', () => selectGsvVoice(v.id));
+                    card.addEventListener('keydown', (event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectGsvVoice(v.id);
+                            return;
+                        }
+
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            const cards = Array.from(grid.querySelectorAll('.gsv-voice-card'));
+                            const currentIndex = cards.indexOf(card);
+                            if (currentIndex === -1 || cards.length === 0) return;
+
+                            const step = (event.key === 'ArrowRight' || event.key === 'ArrowDown') ? 1 : -1;
+                            const nextIndex = (currentIndex + step + cards.length) % cards.length;
+                            const nextCard = cards[nextIndex];
+                            if (nextCard) {
+                                selectGsvVoice(nextCard.dataset.voiceId || '');
+                                nextCard.focus();
+                            }
+                        }
+                    });
+                    grid.appendChild(card);
+                });
+
+                // 当没有任何已选项时，保证网格中至少一个卡片可被键盘 Tab 聚焦
+                if (!hasSelectedCard) {
+                    const firstCard = grid.querySelector('.gsv-voice-card');
+                    if (firstCard) firstCard.tabIndex = 0;
+                }
             }
 
             if (!silent) {
                 showStatus(window.t ? window.t('api.gptsovitsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个语音配置`, 'success');
             }
         } else {
+            grid.innerHTML = '<div class="gsv-voices-empty">' + _escHtml(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败')) + '</div>';
             if (!silent) {
                 showStatus(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败'), 'error');
             }
         }
     } catch (e) {
+        grid.innerHTML = '<div class="gsv-voices-empty">❌ ' + _escHtml(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败') + '</div>';
         if (!silent) {
             showStatus(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败: ' + e.message, 'error');
         }
     }
+}
+
+/** HTML escape helper */
+function _escHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = (str == null ? '' : String(str));
+    return d.innerHTML;
+}
+
+/** Attribute escape helper */
+function _escAttr(str) {
+    const s = (str == null ? '' : String(str));
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**

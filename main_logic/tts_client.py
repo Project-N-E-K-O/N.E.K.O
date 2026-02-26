@@ -13,10 +13,67 @@ import wave
 import aiohttp
 import asyncio
 from functools import partial
+from config import GSV_VOICE_PREFIX
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+
+
+class CustomTTSVoiceFetchError(Exception):
+    """Raised when custom TTS voice list cannot be fetched from provider."""
+
+
+async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
+    """Fetch available custom TTS voices via provider adapter.
+
+    Args:
+        base_url: provider API base URL
+        provider: provider key (currently supports 'gptsovits')
+
+    Returns:
+        list[dict]: normalized voices with fields: voice_id/raw_id/name/description/version
+    """
+    if provider != 'gptsovits':
+        raise CustomTTSVoiceFetchError(f"Unsupported custom TTS provider: {provider}")
+
+    base_url = (base_url or "").strip().rstrip("/")
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base_url}/api/v3/voices") as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise CustomTTSVoiceFetchError(f"HTTP {resp.status}: {text[:200]}")
+                voices_data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+        raise CustomTTSVoiceFetchError(str(e)) from e
+
+    voices = []
+    if not isinstance(voices_data, list):
+        logger.warning(f"GPT-SoVITS /api/v3/voices 返回了非列表格式: {type(voices_data).__name__}")
+        return voices
+
+    for idx, v in enumerate(voices_data):
+        if not isinstance(v, dict):
+            logger.warning(
+                "GPT-SoVITS /api/v3/voices 第 %d 项不是对象，已跳过: %s",
+                idx,
+                type(v).__name__,
+            )
+            continue
+        raw_id = v.get('id', '')
+        if not raw_id:
+            continue
+        voices.append({
+            'voice_id': f"{GSV_VOICE_PREFIX}{raw_id}",
+            'raw_id': raw_id,
+            'name': v.get('name', raw_id),
+            'description': v.get('description', ''),
+            'version': v.get('version', ''),
+        })
+
+    return voices
 
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
@@ -1302,9 +1359,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     WS_URL = f'{ws_base}/api/v3/tts/stream-input'
 
+    # 剥离 gsv: 前缀（角色系统用于标识 GPT-SoVITS voice_id 的路由前缀）
     # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
     extra_params = {}
     raw_voice = voice_id.strip() if voice_id else ""
+    if raw_voice.startswith(GSV_VOICE_PREFIX):
+        raw_voice = raw_voice[len(GSV_VOICE_PREFIX):].strip()
     if '|' in raw_voice:
         parts = raw_voice.split('|', 1)
         v3_voice_id = parts[0].strip() or "_default"

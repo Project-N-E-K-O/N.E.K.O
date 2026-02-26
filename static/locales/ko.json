@@ -731,27 +731,27 @@
         "gptsovitsDescriptionText": "로컬에 배포된 음성 복제 모델입니다. 먼저 GPT-SoVITS v3 API 서비스를 시작하세요. 음성 설정(참조 오디오, 모델 가중치 등)은 v3의 voices/*.toml 파일에서 관리됩니다. 여기에는 음성 설정 ID만 입력하면 됩니다.",
         "gptsovitsApiUrlPlaceholder": "예: http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "(선택 사항, 기본값 http://127.0.0.1:9881)",
-        "gptsovitsVoiceId": "음성 설정",
-        "gptsovitsVoiceIdHint": "(GPT-SoVITS v3에서 사용 가능한 설정 가져오기)",
-        "gptsovitsVoiceIdEmpty": "-- 먼저 음성 목록을 가져오세요 --",
+        "gptsovitsVoiceId": "기본 음성 ID",
+        "gptsovitsVoiceIdHint": "(캐릭터 관리에서 설정한 Voice ID가 이 기본값을 덮어씁니다)",
+        "gptsovitsVoiceIdEmpty": "-- 목록을 새로고침하여 음성을 가져오세요 --",
         "gptsovitsNoVoices": "-- 사용 가능한 설정 없음 --",
-        "gptsovitsRefreshVoices": "목록 가져오기",
+        "gptsovitsRefreshVoices": "목록 새로고침",
         "gptsovitsVoicesLoaded": "{{count}}개의 음성 설정을 로드했습니다",
         "gptsovitsVoicesLoadFailed": "음성 목록 가져오기 실패",
         "gptsovitsEnabled": "GPT-SoVITS 활성화",
         "gptsovitsEnabledHint": "(활성화 시 위의 TTS 설정을 덮어씁니다)",
+        "gptsovitsApiUrlRequired": "올바른 http/https API URL을 입력하세요",
         "wsWarning": {
             "title": "프로토콜 오류",
             "message": "URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
-            "messageWithType": "<strong>{{apiType}}</strong> URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
+            "messageWithType": "{{apiType}} URL은 WebSocket 프로토콜(ws:// 또는 wss://로 시작)을 사용해야 합니다.",
             "correctExamples": "올바른 예:",
             "wrongExamples": "잘못된 예:",
             "confirm": "이해해요"
         },
         "loadConfigFailed": "설정을 불러오는 데 실패했습니다. 페이지를 새로고침하여 다시 시도하십시오",
         "errorGettingCurrentApiKey": "현재 API 키를 가져오는 중 오류가 발생했습니다",
-        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다",
-        "gptsovitsApiUrlRequired": "올바른 http/https API URL을 입력해주세요"
+        "getCurrentApiKeyFailed": "현재 API 키를 가져오는 데 실패했습니다"
     },
     "live2d": {
         "manager": "Live2D 모델 관리자",
@@ -1138,6 +1138,7 @@
         "switchFailed": "전환 실패",
         "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
         "freePresetVoices": "── 무료 사전 설정 음색 ──",
+        "gptsovitsVoices": "GPT-SoVITS 음성",
         "loadFailed": "캐릭터 데이터 로드 실패",
         "renameError": "이름 변경 실패: {{error}}",
         "renameMasterTitle": "주인 이름 변경",
@@ -1250,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "기본 간격",

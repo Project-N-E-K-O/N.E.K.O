@@ -1,5 +1,16 @@
 /**
  * Live2D Core - 核心类结构和基础功能
+ * 功能包括:
+ * - PIXI 应用初始化和管理
+ * - Live2D 模型加载和管理
+ * - 表情映射和转换
+ * - 动作和表情控制
+ * - 模型偏好设置
+ * - 模型偏好验证
+ * - 口型同步参数列表
+ * - 全局状态管理（如锁定状态、按钮状态等）
+ * - 事件监听（如帧率变更、画质变更等）
+ * - 触摸事件处理（如点击、拖动等）
  */
 
 window.PIXI = PIXI;
@@ -363,15 +374,15 @@ class Live2DManager {
                 this.currentModel.x = this.pixi_app.renderer.width * 0.5;
                 this.currentModel.y = this.pixi_app.renderer.height * 0.28;
             } else {
-                // 桌面端默认设置（靠右下）
+                // 桌面端默认设置（右下角）
                 const scale = Math.min(
                     0.5,
                     (window.innerHeight * 0.75) / 7000,
                     (window.innerWidth * 0.6) / 7000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.width;
-                this.currentModel.y = this.pixi_app.renderer.height;
+                this.currentModel.x = this.pixi_app.renderer.width * 0.65;
+                this.currentModel.y = this.pixi_app.renderer.height * 0.6;
             }
 
             console.log('模型位置已复位到初始状态');
@@ -543,4 +554,3 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         });
     }
 });
-

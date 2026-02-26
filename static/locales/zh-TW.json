@@ -731,27 +731,27 @@
         "gptsovitsDescriptionText": "本地部署的語音克隆模型，需要先啟動 GPT-SoVITS v3 API 服務。聲音配置（參考音頻、模型權重等）在 v3 的 voices/*.toml 檔案中管理，此處只需填寫聲音配置 ID。",
         "gptsovitsApiUrlPlaceholder": "如：http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "（選填，默認 http://127.0.0.1:9881）",
-        "gptsovitsVoiceId": "聲音配置",
-        "gptsovitsVoiceIdHint": "（從 GPT-SoVITS v3 獲取可用配置）",
-        "gptsovitsVoiceIdEmpty": "-- 請先獲取語音列表 --",
+        "gptsovitsVoiceId": "預設聲音配置",
+        "gptsovitsVoiceIdHint": "（角色管理中設定的 Voice ID 會覆蓋此預設配置）",
+        "gptsovitsVoiceIdEmpty": "-- 請先刷新獲取語音列表 --",
         "gptsovitsNoVoices": "-- 無可用配置 --",
-        "gptsovitsRefreshVoices": "獲取列表",
+        "gptsovitsRefreshVoices": "刷新列表",
         "gptsovitsVoicesLoaded": "已載入 {{count}} 個語音配置",
         "gptsovitsVoicesLoadFailed": "獲取語音列表失敗",
         "gptsovitsEnabled": "啟用 GPT-SoVITS",
         "gptsovitsEnabledHint": "（啟用後將替代上方的 TTS 配置）",
+        "gptsovitsApiUrlRequired": "請填寫正確的 http/https API URL",
         "wsWarning": {
             "title": "協議錯誤",
             "message": "URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
-            "messageWithType": "<strong>{{apiType}}</strong> 的 URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
+            "messageWithType": "{{apiType}} 的 URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
             "correctExamples": "正確示例：",
             "wrongExamples": "錯誤示例：",
             "confirm": "我知道瞭"
         },
         "loadConfigFailed": "載入配置失敗，請重新整理頁面重試",
         "errorGettingCurrentApiKey": "獲取目前 API Key 時出錯",
-        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗",
-        "gptsovitsApiUrlRequired": "請填寫正確的 http/https API URL"
+        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -1138,6 +1138,7 @@
         "switchFailed": "切換失敗",
         "switchError": "切換貓娘時發生錯誤",
         "freePresetVoices": "── 免費預設音色 ──",
+        "gptsovitsVoices": "GPT-SoVITS 聲音",
         "loadFailed": "載入角色資料失敗",
         "renameError": "重新命名失敗: {{error}}",
         "renameMasterTitle": "重新命名主人",
@@ -1250,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "聊天間隔基準",

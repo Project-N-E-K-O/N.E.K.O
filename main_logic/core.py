@@ -172,12 +172,12 @@ class LLMSessionManager:
 
     def _get_text_guard_max_length(self) -> int:
         try:
-            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 200))
+            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 400))
             if value <= 0:
                 raise ValueError
             return value
         except Exception:
-            return 200
+            return 400
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -726,6 +726,8 @@ class LLMSessionManager:
         # 标记正在启动
         self.is_starting_session = True
         
+        _diag_start = time.time()
+        logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
         logger.info(f"启动新session: input_mode={input_mode}, new={new}")
         self.websocket = websocket
         self.input_mode = input_mode
@@ -771,6 +773,7 @@ class LLMSessionManager:
         _conversation_model = self._config_manager.get_model_api_config('conversation').get('model', '')
         _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
         logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+        logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - _diag_start:.2f}秒)")
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
@@ -859,6 +862,7 @@ class LLMSessionManager:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
+                
                 self.tts_thread = Thread(
                     target=tts_worker,
                     args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
@@ -866,14 +870,14 @@ class LLMSessionManager:
                 self.tts_thread.daemon = True
                 self.tts_thread.start()
                 
-                # 等待TTS进程发送就绪信号（最多等待8秒）
+                # 等待TTS进程发送就绪信号（最多等待12秒）
                 tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
-                
+                logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
                 tts_ready = False
                 start_time = time.time()
-                timeout = 8.0  # 最多等待8秒
-                
+                timeout = 12.0  # 最多等待12秒
+                _last_tts_log = 0.0
                 while time.time() - start_time < timeout:
                     try:
                         # 非阻塞检查队列
@@ -893,13 +897,18 @@ class LLMSessionManager:
                                 break
                     except: # noqa
                         pass
-                    
+                    # 每约2秒输出一次诊断日志，便于定位卡在哪一阶段
+                    _elapsed = time.time() - start_time
+                    if _elapsed - _last_tts_log >= 2.0:
+                        _last_tts_log = _elapsed
+                        logger.info(f"[语音会话诊断] TTS 就绪等待中... 已等待 {_elapsed:.1f}秒 / {timeout}秒")
                     # 小睡眠避免忙等
                     await asyncio.sleep(0.05)
                 
                 if not tts_ready:
                     if time.time() - start_time >= timeout:
                         logger.warning(f"⚠️ TTS进程就绪信号超时 ({timeout}秒)，继续执行...")
+                        logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
                     else:
                         logger.error("❌ TTS进程初始化失败，但继续执行...")
             
@@ -935,10 +944,13 @@ class LLMSessionManager:
             initial_prompt += await self._fetch_active_agent_tasks_prompt()
             
             # 连接 Memory Server 获取记忆上下文
+            _mem_start = time.time()
+            logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     initial_prompt += resp.text + f"========以上为前情概要。现在请{self.lanlan_name}准备，即将开始用语音与{self.master_name}继续对话。========\n"
+                logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
             except httpx.TimeoutException:
@@ -947,7 +959,8 @@ class LLMSessionManager:
                 raise ConnectionError(f"❌ 记忆服务连接失败: {e} (端口 {self.memory_server_port})")
             
             logger.info(f"🤖 开始创建 LLM Session (input_mode={input_mode})")
-            
+            logger.info("[语音会话诊断] 开始创建 LLM 连接 (realtime/text)...")
+            _llm_create_start = time.time()
             # 根据input_mode创建不同的session
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
@@ -997,6 +1010,7 @@ class LLMSessionManager:
             if self.session:
                 await self.session.connect(initial_prompt, native_audio = not self.use_tts)
                 logger.info("✅ LLM Session 已连接")
+                logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
                 print(initial_prompt)  #只在控制台显示，不输出到日志文件
                 return True
             else:
@@ -1025,7 +1039,7 @@ class LLMSessionManager:
             )
             
             logger.info(f"⚡ 并行启动完成 (总用时: {time.time() - start_parallel_time:.2f}秒)")
-            
+            logger.info(f"[语音会话诊断] 并行启动结果: TTS={'异常' if isinstance(tts_result, Exception) else 'OK'}, LLM={'异常' if isinstance(llm_result, Exception) else 'OK'}")
             # 检查是否有错误
             if isinstance(tts_result, Exception):
                 logger.error(f"TTS 启动失败: {tts_result}")
@@ -1070,13 +1084,14 @@ class LLMSessionManager:
                         
                         await self.session.create_response("", skipped=True)
                         
-                        # 等待预热完成（最多10秒）
+                        # 等待预热完成（最多12秒）
                         try:
-                            await asyncio.wait_for(warmup_done_event.wait(), timeout=10.0)
+                            await asyncio.wait_for(warmup_done_event.wait(), timeout=12.0)
                             warmup_time = time.time() - warmup_start
                             logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️ Session预热超时（10秒），继续执行...")
+                            logger.warning("⚠️ Session预热超时（12秒），继续执行...")
+                            logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
                         
                         # 恢复原始回调
                         self.session.on_response_done = original_callback
@@ -1091,6 +1106,7 @@ class LLMSessionManager:
                 self.session_start_failure_count = 0
                 self.session_start_last_failure_time = None
                 
+                logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
                 await self.send_session_started(input_mode)
                 
@@ -1111,7 +1127,7 @@ class LLMSessionManager:
             # 记录失败
             self.session_start_failure_count += 1
             self.session_start_last_failure_time = datetime.now()
-            
+            logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - _diag_start:.2f}秒): {e}")
             error_str = str(e)
             
             # 🔴 优先检查 Memory Server 错误（最常见的启动问题）
@@ -1487,7 +1503,7 @@ class LLMSessionManager:
         try:
             ws = self.websocket
             if ws and hasattr(ws, 'client') and ws.client:
-                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost', '0.0.0.0')
+                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost')
         except Exception:
             pass
         if is_local:
@@ -2396,7 +2412,7 @@ class LLMSessionManager:
                     "speech_id": self.current_speech_id
                 })
                 await self.websocket.send_bytes(tts_audio)
-                logger.info(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={self.current_speech_id}")
+                logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={self.current_speech_id}")
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
@@ -2422,7 +2438,7 @@ class LLMSessionManager:
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
-                logger.info(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
+                logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 await self.send_speech(data)
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")

@@ -313,54 +313,30 @@ if (!window._charaManagerFoldHandler) {
 // 角色数据缓存
 let characterData = null;
 
-// 自动扫描并导入工坊角色卡（静默执行，不影响页面加载）
+// 通过服务端API同步工坊角色卡（服务端统一扫描，无需前端逐个fetch）
 async function autoScanWorkshopCharacterCards() {
-    let hasNewCards = false;
     try {
-        // 1. 获取所有订阅的创意工坊物品
-        const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
-        const subscribedResult = await subscribedResponse.json();
-
-        if (!subscribedResult.success) {
-            console.log('[工坊扫描] 获取订阅物品失败或Steam未初始化，跳过扫描');
+        const response = await fetch('/api/steam/workshop/sync-characters', { method: 'POST' });
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            console.error(`[工坊扫描] 服务端返回错误: HTTP ${response.status} ${response.statusText}`, errText);
             return false;
         }
-
-        const subscribedItems = subscribedResult.items;
-        console.log(`[工坊扫描] 找到 ${subscribedItems.length} 个订阅物品`);
-
-        // 2. 批量并发扫描所有已安装的物品（提高效率喵）
-        const scanPromises = subscribedItems.map(async (item) => {
-            if (!item.installedFolder) return false;
-
-            const itemId = item.publishedFileId;
-            const folderPath = item.installedFolder;
-
-            try {
-                const listResponse = await fetch(`/api/steam/workshop/list-chara-files?directory=${encodeURIComponent(folderPath)}`);
-                const listResult = await listResponse.json();
-
-                if (listResult.success && listResult.files.length > 0) {
-                    let itemHasNew = false;
-                    // 对于单个物品内的多个角色卡，我们也尝试并行处理
-                    const importPromises = listResult.files.map(file => importWorkshopCharaFile(file.path, itemId));
-                    const results = await Promise.all(importPromises);
-                    if (results.some(r => r === true)) itemHasNew = true;
-                    return itemHasNew;
-                }
-            } catch (e) {
-                // 静默处理单个物品的扫描错误
-            }
+        const result = await response.json();
+        if (result.success === false) {
+            console.error(`[工坊扫描] 服务端同步失败: ${result.error || result.message || '未知错误'}`, result);
             return false;
-        });
-
-        const scanResults = await Promise.all(scanPromises);
-        hasNewCards = scanResults.some(r => r === true);
-
+        }
+        if (result.added > 0) {
+            console.log(`[工坊扫描] 服务端同步完成：新增 ${result.added} 个角色卡，跳过 ${result.skipped} 个已存在`);
+            return true;
+        }
+        console.log('[工坊扫描] 服务端同步完成：无新增角色卡');
+        return false;
     } catch (error) {
-        console.log('[工坊扫描] Steam未运行或未初始化，跳过工坊角色卡扫描');
+        console.error('[工坊扫描] 服务端角色卡同步请求异常:', error);
+        return false;
     }
-    return hasNewCards;
 }
 
 // 导入单个工坊角色卡文件，返回是否成功添加
@@ -1500,10 +1476,21 @@ function showCatgirlForm(key, container) {
                 defaultOption.textContent = voiceNotSetText;
                 select.appendChild(defaultOption);
                 // 添加音色选项
+                const voiceOwners = data.voice_owners || {};
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    option.textContent = voiceData.prefix || voiceId;
+                    // 显示优先级：使用该音色的角色名 > prefix > 截断的 voice_id
+                    const owners = voiceOwners[voiceId];
+                    let displayName = '';
+                    if (owners && owners.length > 0) {
+                        displayName = owners.join(', ');
+                    } else if (voiceData.prefix) {
+                        displayName = voiceData.prefix;
+                    }
+                    const shortId = voiceId.length > 20 ? voiceId.substring(0, 18) + '…' : voiceId;
+                    option.textContent = displayName ? displayName + ' (' + shortId + ')' : voiceId;
+                    option.title = voiceId;
                     if (voiceId === (cat['voice_id'] || '')) option.selected = true;
                     select.appendChild(option);
                 });
@@ -1522,8 +1509,79 @@ function showCatgirlForm(key, container) {
                     select.appendChild(freeGroup);
                 }
             }
+            // 加载 GPT-SoVITS 声音列表（等待完成以避免表单提交时丢失 gsv: 音色）
+            await loadGsvVoices(select, cat['voice_id'] || '');
         } catch (error) {
             console.error('加载音色列表失败:', error);
+        }
+    }
+
+    // 加载 GPT-SoVITS 声音列表并追加到 select
+    const GSV_PREFIX = 'gsv:';
+    async function loadGsvVoices(select, currentVoiceId) {
+        if (!select) return;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+        const ensureGsvFallback = () => {
+            if (!currentVoiceId || !currentVoiceId.startsWith(GSV_PREFIX)) return;
+            if (select.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                select.value = currentVoiceId;
+                return;
+            }
+
+            let gsvGroup = select.querySelector('optgroup[data-gsv-group="true"]');
+            if (!gsvGroup) {
+                gsvGroup = document.createElement('optgroup');
+                const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                gsvGroup.label = '── ' + gsvLabel + ' ──';
+                gsvGroup.dataset.gsvGroup = 'true';
+                select.appendChild(gsvGroup);
+            }
+
+            const fallbackOpt = document.createElement('option');
+            fallbackOpt.value = currentVoiceId;
+            fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+            gsvGroup.appendChild(fallbackOpt);
+            select.value = currentVoiceId;
+        };
+
+        try {
+            const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+            clearTimeout(timeoutId);
+            const result = await resp.json();
+            if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
+                const gsvGroup = document.createElement('optgroup');
+                const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                gsvGroup.label = '── ' + gsvLabel + ' ──';
+                gsvGroup.dataset.gsvGroup = 'true';
+                result.voices.forEach(v => {
+                    const option = document.createElement('option');
+                    option.value = v.voice_id;
+                    option.textContent = v.name + (v.version ? ' (' + v.version + ')' : '');
+                    if (v.description) option.title = v.description;
+                    if (v.voice_id === currentVoiceId) option.selected = true;
+                    gsvGroup.appendChild(option);
+                });
+                select.appendChild(gsvGroup);
+                // 如果当前 voice_id 是 gsv: 前缀但不在已有选项中，手动添加
+                if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX) && !select.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+                    const fallbackOpt = document.createElement('option');
+                    fallbackOpt.value = currentVoiceId;
+                    fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+                    gsvGroup.appendChild(fallbackOpt);
+                }
+                // 确保 select.value 与 currentVoiceId 一致（可靠地取消默认选项）
+                if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
+                    select.value = currentVoiceId;
+                }
+            }
+            ensureGsvFallback();
+        } catch (e) {
+            clearTimeout(timeoutId);
+            // GPT-SoVITS 不可用时静默忽略
+            console.debug('GPT-SoVITS voices not available:', e.message);
+            ensureGsvFallback();
         }
     }
 
@@ -2039,10 +2097,20 @@ window.addEventListener('message', function (event) {
                 defaultOption.textContent = voiceNotSetText;
                 select.appendChild(defaultOption);
 
+                const voiceOwners2 = data.voice_owners || {};
                 Object.entries(data.voices).forEach(([id, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = id;
-                    option.textContent = voiceData.prefix || id;
+                    const owners = voiceOwners2[id];
+                    let dn = '';
+                    if (owners && owners.length > 0) {
+                        dn = owners.join(', ');
+                    } else if (voiceData.prefix) {
+                        dn = voiceData.prefix;
+                    }
+                    const shortId = id.length > 20 ? id.substring(0, 18) + '…' : id;
+                    option.textContent = dn ? dn + ' (' + shortId + ')' : id;
+                    option.title = id;
                     select.appendChild(option);
                 });
 
@@ -2058,6 +2126,20 @@ window.addEventListener('message', function (event) {
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);
+                }
+
+                // 处理 GPT-SoVITS voice_id：若当前列表没有该 gsv: 选项，添加兜底项避免 select.value 失效
+                const hasVoiceOption = Array.from(select.options).some(opt => opt.value === voiceId);
+                if (voiceId.startsWith('gsv:') && !hasVoiceOption) {
+                    const gsvGroup = document.createElement('optgroup');
+                    const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
+                    gsvGroup.label = '── ' + gsvLabel + ' ──';
+
+                    const gsvOption = document.createElement('option');
+                    gsvOption.value = voiceId;
+                    gsvOption.textContent = voiceId.substring(4) + ' (?)';
+                    gsvGroup.appendChild(gsvOption);
+                    select.appendChild(gsvGroup);
                 }
 
                 select.value = voiceId;

@@ -56,7 +56,14 @@ _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
 
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
-    """从原始 web 数据中提取链接信息列表"""
+    """
+    从原始 web 数据中提取链接信息列表
+    args:
+    - mode: 数据模式，必须是 'news', 'video', 或 'home'
+    - raw_data: 原始 web 数据，包含 'news', 'video', 'bilibili', 'weibo', 'reddit', 'twitter' 等字段
+    returns:
+    - list[dict]: 包含链接信息的列表，每个元素包含 'title', 'url', 'source' 字段
+    """
     links = []
     try:
         if mode == 'news':
@@ -133,7 +140,12 @@ def _parse_web_screening_result(text: str) -> dict | None:
 
 
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
-    """根据 Phase 1 输出的标题在 all_web_links 中查找对应链接"""
+    """
+    根据 Phase 1 输出的标题在 all_web_links 中查找对应链接
+    匹配逻辑：
+    - 完全匹配（忽略大小写和前后空白）
+    - 部分匹配（标题包含或被包含，忽略大小写和前后空白）
+    """
     title_lower = title.lower().strip()
     for link in all_links:
         link_title = link.get('title', '').lower().strip()
@@ -145,7 +157,14 @@ def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
 
 
 def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
-    """将近期搭话记录格式化为可注入prompt的文本段（含相对时间和来源通道）"""
+    """
+    将近期搭话记录格式化为可注入prompt的文本段（含相对时间和来源通道）
+    逻辑：
+    - 从 _proactive_chat_history 中获取指定模型的搭话记录
+    - 过滤出最近 _RECENT_CHAT_MAX_AGE_SECONDS 秒内的记录
+    - 根据 lang 格式化时间标签（'zh'、'en'、'ja'、'ko'）
+    - 格式化来源通道标签（'vision'、'web'）
+    """
     history = _proactive_chat_history.get(lanlan_name)
     if not history:
         return ""
@@ -170,6 +189,13 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     cl = _ch_labels.get(lang, _ch_labels['zh'])
 
     def _rel(ts):
+        """
+        格式化时间标签
+        args:
+        - ts: 时间戳（秒）
+        returns:
+        - str: 格式化后的时间标签
+        """
         d = int(now - ts)
         if d < 60:
             return tl[0]
@@ -205,7 +231,17 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
 
 
 def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
-    """记录一次成功的主动搭话（附带来源通道）"""
+    """
+    记录一次成功的主动搭话（附带来源通道）
+    逻辑：
+    - 获取当前时间戳
+    - 将搭话记录（时间戳、消息内容、通道）追加到 _proactive_chat_history 中指定模型的队列中
+    - 若队列已满，自动弹出最早的记录,确保队列长度不超过 maxlen（默认 10）
+    args:
+    - lanlan_name: 模型名称
+    - message: 搭话内容
+    - channel: 来源通道（可选，默认 'vision'）
+    """
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=10)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
@@ -213,9 +249,16 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
 
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
     """
-    Securely check if candidate_path is inside base_dir using os.path.commonpath.
-    Both paths must be absolute and resolved (via os.path.realpath) before calling.
-    Returns True if candidate_path is within base_dir, False otherwise.
+    
+    安全检查 candidate_path 是否在 base_dir 内
+    需要使用 os.path.commonpath 方法,防止路径遍历攻击
+    调用该方法前，必须先将两个路径（candidate_path 和 base_dir）转换为绝对路径，
+    并通过 os.path.realpath 解析（解析符号链接、./.. 等相对路径）
+    args:
+    - base_dir: 基础目录（绝对路径）
+    - candidate_path: 候选路径（绝对路径）
+    returns:
+    - bool: True 如果 candidate_path 在 base_dir 内，False 否则
     """
     try:
         # Normalize both paths for case-insensitivity on Windows
@@ -230,6 +273,9 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
         return False
 
 def _get_app_root():
+    """
+    获取应用根目录，兼容开发环境和PyInstaller打包后的环境
+    """
     if getattr(sys, 'frozen', False):
         if hasattr(sys, '_MEIPASS'):
             return sys._MEIPASS
@@ -240,7 +286,9 @@ def _get_app_root():
 
 
 def _log_news_content(lanlan_name: str, news_content: dict):
-    """记录新闻内容获取详情"""
+    """
+    记录新闻内容获取详情
+    """
     region = news_content.get('region', 'china')
     news_data = news_content.get('news', {})
     if news_data.get('success'):
@@ -254,7 +302,9 @@ def _log_news_content(lanlan_name: str, news_content: dict):
 
 
 def _log_video_content(lanlan_name: str, video_content: dict):
-    """记录视频内容获取详情"""
+    """
+    记录视频内容获取详情
+    """
     region = video_content.get('region', 'china')
     video_data = video_content.get('video', {})
     if video_data.get('success'):
@@ -275,7 +325,9 @@ def _log_video_content(lanlan_name: str, video_content: dict):
 
 
 def _log_trending_content(lanlan_name: str, trending_content: dict):
-    """记录首页推荐内容获取详情"""
+    """
+    记录首页推荐内容获取详情
+    """
     content_details = []
     
     bilibili_data = trending_content.get('bilibili', {})
@@ -322,7 +374,9 @@ def _log_trending_content(lanlan_name: str, trending_content: dict):
         print(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
-    """记录个人动态内容获取详情"""
+    """
+    记录个人动态内容获取详情
+    """
     content_details = []
     
     bilibili_dynamic = personal_content.get('bilibili_dynamic', {})
@@ -352,6 +406,15 @@ def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
 
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
+    """
+    表情分析接口
+    func:
+    - 接收文本输入，调用配置的情绪分析模型进行分析，返回情绪类别和置信度
+    - 支持从请求参数覆盖默认配置的API密钥和模型名称，增强灵活性
+    - 对模型响应进行智能解析，兼容不同格式（纯文本、markdown代码块、JSON字符串等），提高鲁棒性
+    - 根据置信度自动调整情绪类别，当置信度较低时将情绪设置为 neutral，提升结果可靠性
+    - 将分析结果推送到监控系统（如果提供了 lanlan_name），实现与前端的实时交互和展示
+    """
     try:
         _config_manager = get_config_manager()
         data = await request.json()
@@ -473,6 +536,15 @@ async def emotion_analysis(request: Request):
 
 @router.post('/steam/set-achievement-status/{name}')
 async def set_achievement_status(name: str):
+    """
+    设置Steam成就状态接口
+    func:
+    - 接收成就名称作为路径参数，调用Steamworks API设置成就状态
+    - 先请求当前统计数据并运行回调，确保数据已加载
+    - 检查成就当前状态，若已解锁则直接返回成功
+    - 若未解锁，尝试设置成就，若成功则返回成功，否则等待1秒后重试一次
+    - 最多重试10次，若仍失败则返回错误，提示可能的配置问题
+    """
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -518,7 +590,9 @@ async def set_achievement_status(name: str):
 
 @router.post('/steam/update-playtime')
 async def update_playtime(request: Request):
-    """更新游戏时长统计（PLAY_TIME_SECONDS）"""
+    """
+    更新游戏时长统计（PLAY_TIME_SECONDS）
+    """
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -598,7 +672,9 @@ async def update_playtime(request: Request):
 
 @router.get('/steam/list-achievements')
 async def list_achievements():
-    """列出Steam后台已配置的所有成就（调试用）"""
+    """
+    列出Steam后台已配置的所有成就（调试用）
+    """
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -630,8 +706,8 @@ async def list_achievements():
 @router.get('/file-exists')
 async def check_file_exists(path: str = None):
     """
-    Check if a file exists at the given path.
-    
+    检查文件是否存在
+
     Security: Validates against path traversal attacks by:
     - URL-decoding the path
     - Normalizing the path (resolves . and ..)
@@ -789,7 +865,9 @@ async def find_first_image(folder: str = None):
 
 @router.get('/steam/proxy-image')
 async def proxy_image(image_path: str):
-    """代理访问本地图片文件，支持绝对路径和相对路径，特别是Steam创意工坊目录"""
+    """
+    代理访问本地图片文件，支持绝对路径和相对路径，特别是Steam创意工坊目录
+    """
 
     try:
         logger.info(f"代理图片请求，原始路径: {image_path}")
@@ -994,7 +1072,9 @@ async def proxy_image(image_path: str):
 
 @router.get('/get_window_title')
 async def get_window_title_api():
-    """获取当前活跃窗口标题（仅支持Windows）"""
+    """
+    获取当前活跃窗口标题（仅支持Windows）
+    """
     try:
         from utils.web_scraper import get_active_window_title
         title = get_active_window_title()
@@ -1008,10 +1088,12 @@ async def get_window_title_api():
 
 @router.get('/screenshot')
 async def backend_screenshot(request: Request):
-    """后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
-    安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。"""
+    """
+    后端截图兜底：当前端所有屏幕捕获 API 都失败时，由后端用 pyautogui 截取本机屏幕。
+    安全限制：仅允许来自 loopback 地址的请求。返回 JPEG base64 DataURL。
+    """
     client_host = request.client.host if request.client else ''
-    if client_host not in ('127.0.0.1', '::1', 'localhost', '0.0.0.0'):
+    if client_host not in ('127.0.0.1', '::1', 'localhost'):
         return JSONResponse({"success": False, "error": "only available from localhost"}, status_code=403)
 
     try:
@@ -1034,7 +1116,9 @@ async def backend_screenshot(request: Request):
 
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
-    """主动搭话：两阶段架构 — Phase 1 筛选话题（max 2 并发 LLM），Phase 2 结合人设生成搭话"""
+    """
+    主动搭话：两阶段架构 — Phase 1 筛选话题（max 2 并发 LLM），Phase 2 结合人设生成搭话
+    """
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -1085,7 +1169,9 @@ async def proactive_chat(request: Request):
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
         
         async def _fetch_source(mode: str) -> tuple:
-            """获取单个信息源，返回 (mode, content_dict) 或抛出异常"""
+            """
+            获取单个信息源，返回 (mode, content_dict) 或抛出异常
+            """
             if mode == 'vision':
                 if not has_screenshot:
                     raise ValueError("无截图数据（screenshot_data 为空或类型不正确）")
@@ -1201,6 +1287,13 @@ async def proactive_chat(request: Request):
         
         # 解析 new_dialog 响应
         def _parse_new_dialog(text: str) -> tuple[str, str]:
+            """
+            解析 new_dialog 的文本响应，尝试分离内心活动和对话历史。
+             - 如果包含分割线 "整理了近期发生的事情"，则将其前部分作为内心活动，后部分作为对话历史。
+             - 该函数的目的是为了在 Phase 1 后能够清晰地获取到内心活动和对话历史，以便在 Phase 2 中更好地生成搭话内容。
+             - 内心活动通常包含角色的当前状态、情绪、想法等信息，而对话历史则是与用户的过去交流记录。
+             - 通过这种方式，我们可以在 Phase 1 中分析内心活动来选择搭话话题，在 Phase 2 中结合对话历史生成更符合上下文的搭话内容。
+            """
             if not text:
                 return "", ""
             # 尝试找到分割线 "整理了近期发生的事情"
@@ -1262,7 +1355,9 @@ async def proactive_chat(request: Request):
         
         def _make_llm(temperature: float = 1.0, max_tokens: int = 1536,
                       use_vision: bool = False, disable_thinking: bool = True):
-            """创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body"""
+            """
+            创建 LLM 实例。use_vision=True 时使用 vision 模型；disable_thinking=False 时不注入 extra_body。
+            """
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
@@ -1283,7 +1378,9 @@ async def proactive_chat(request: Request):
             use_vision: bool = False, disable_thinking: bool = True,
             image_b64: str = '',
         ) -> str:
-            """带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。"""
+            """
+            带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
+            """
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
             # [临时调试]
             print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
@@ -1749,7 +1846,9 @@ async def translate_text_api(request: Request):
 
 @router.post('/personal_dynamics')
 async def get_personal_dynamics(request: Request):
-    """获取个性化内容数据"""
+    """
+    获取个性化内容数据
+    """
     from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
     try:
         
