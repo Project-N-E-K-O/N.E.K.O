@@ -751,8 +751,7 @@
         },
         "loadConfigFailed": "加载配置失败，请刷新页面后重试",
         "errorGettingCurrentApiKey": "获取当前API Key失败",
-        "getCurrentApiKeyFailed": "获取当前API Key失败",
-        "gptsovitsApiUrlRequired": "请填写正确的 http/https API URL"
+        "getCurrentApiKeyFailed": "获取当前API Key失败"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -1252,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "基础间隔",

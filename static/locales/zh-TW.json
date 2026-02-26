@@ -751,8 +751,7 @@
         },
         "loadConfigFailed": "載入配置失敗，請重新整理頁面重試",
         "errorGettingCurrentApiKey": "獲取目前 API Key 時出錯",
-        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗",
-        "gptsovitsApiUrlRequired": "請填寫正確的 http/https API URL"
+        "getCurrentApiKeyFailed": "獲取目前 API Key 失敗"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -1252,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "聊天間隔基準",

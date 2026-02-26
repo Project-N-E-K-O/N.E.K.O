@@ -1,0 +1,29 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+    "manifest_version":         3,
+    "name":                     "Force Background Tab",
+    "version":                  "2.2.2",
+
+    "description":              "Force New Tab Running In Background",
+    "icons": {
+        "128":                  "image/icon_128.png",
+        "48":                   "image/icon_48.png",
+        "16":                   "image/icon_16.png"
+    },
+
+    "action": {
+        "default_icon":         "image/icon_48.png",
+        "default_popup":        "popup.html"
+    },
+
+    "background": {
+        "service_worker":       "background.js",
+        "type":                 "module"
+    },
+
+    "permissions": [
+                                "tabs",
+                                "storage"
+    ]
+}

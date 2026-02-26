@@ -1,0 +1,146 @@
+{
+  "extensionName": {
+    "message": "I still don't care about cookies",
+    "description": "Name of the extension."
+  },
+  "extensionDescription": {
+    "message": "Versão comunitária da extensão `I don't care about cookies` (sem Avast)",
+    "description": "Description of the extension."
+  },
+  "reportSkippedTitle": {
+    "message": "A extensão está desativada em $HOSTNAME$.",
+    "description": "Tells the user it cannot report a whitelisted domain.",
+    "placeholders": {
+      "hostname": {
+        "content": "$1",
+        "example": "example.com"
+      }
+    }
+  },
+  "reportSkippedMessage": {
+    "message": "Desativou a extensão neste website. Por favor reative-a e verifique se recebe o aviso de cookies antes de o reportar.",
+    "description": "Tells the user it cannot report a whitelisted domain."
+  },
+  "reportConfirm": {
+    "message": "Gostaria de reportar um aviso de cookies em $HOSTNAME$?",
+    "description": "Ask for confirmation before reporting a website. Don't use quotes here.",
+    "placeholders": {
+      "hostname": {
+        "content": "$1",
+        "example": "example.com"
+      }
+    }
+  },
+  "menuEnable": {
+    "message": "Ativar extensão em $HOSTNAME$",
+    "description": "Menu option.",
+    "placeholders": {
+      "hostname": {
+        "content": "$1",
+        "example": "example.com"
+      }
+    }
+  },
+  "menuDisable": {
+    "message": "Desativar extensão em $HOSTNAME$",
+    "description": "Menu option.",
+    "placeholders": {
+      "hostname": {
+        "content": "$1",
+        "example": "example.com"
+      }
+    }
+  },
+  "menuIdle": {
+    "message": "A extensão não funciona neste website",
+    "description": "Menu option visible when enabling/disabling doesn't work."
+  },
+  "menuReport": {
+    "message": "Reportar um aviso de cookies",
+    "description": "Menu option."
+  },
+  "menuSupport": {
+    "message": "Apoiar este projeto",
+    "description": "Menu option."
+  },
+  "optionsTitle": {
+    "message": "Configurações",
+    "description": "Title for the options page."
+  },
+  "optionsWhitelist": {
+    "message": "Lista de todos os websites excluídos, um website por linha:",
+    "description": "Options text for whitelist box."
+  },
+  "optionStatusIndicators": {
+    "message": "indicadores de estado",
+    "description": "Option text for enabling the status indicator"
+  },
+  "optionsButton": {
+    "message": "Gravar configurações",
+    "description": "Options text for SAVE button."
+  },
+  "reportGithub": {
+    "message": "Denunciar usando Github",
+    "description": "Menu item to report using Github"
+  },
+  "reportAnon": {
+    "message": "Reportar anonimamente",
+    "description": "Menu item to report anonymously"
+  },
+  "reportAnonTitle": {
+    "message": "Reportar",
+    "description": "Translation of 'report' it will be shown like 'Report example.com'"
+  },
+  "reportAnonNotes": {
+    "message": "Observações: ",
+    "description": "Notes for the report"
+  },
+  "reportNotesPlaceholder": {
+    "message": "Coisas como:\nA reprodução de vídeo não funciona\nBarra de rolagem quebrada\nsobreposição cinzenta",
+    "description": "Placeholder for the notes (\n) is a new line & keep it 4 lines"
+  },
+  "reportAnonSend": {
+    "message": "Enviar relatório",
+    "description": "Button to send the report"
+  },
+  "reportAnonCancel": {
+    "message": "Cancelar",
+    "description": "Button to cCancel the report"
+  },
+  "genericErrorTitle": {
+    "message": "Algo correu mal",
+    "description": "Genereric error title"
+  },
+  "genericErrorTryAgain": {
+    "message": "Tente novamente mais tarde..",
+    "description": "Try again later message"
+  },
+  "genericErrorBack": {
+    "message": "Voltar",
+    "description": "Back button after error"
+  },
+  "menuLoadingText": {
+    "message": "A carregar...",
+    "description": "Loading messsage"
+  },
+  "generalIssueOption": {
+    "message": "Problema geral (requer observações)",
+    "description": "The option text for a general issue"
+  },
+  "scrollbarIssueOption": {
+    "message": "Relacionado à barra de rolagem",
+    "description": "The option text for a scrollbar issue"
+  },
+  "modalIssueOption": {
+    "message": "Relacionado a modal",
+    "description": "The option text for a modal issue"
+  },
+  "scrollbarIssueDescription": {
+    "message": "Selecione esta opção para indicar um problema nesta página relacionado à rolagem - como \"o site não mostra a barra de rolagem\".",
+    "description": "Explanation of what a scrollbar issue is"
+  },
+  "modalIssueDescription": {
+    "message": "Selecione esta opção para indicar um problema nesta página relacionado com um modal - exemplo \"há uma caixa pop-up bloqueando a interação\".",
+    "description": "Explanation of what a modal issue is"
+  }
+}

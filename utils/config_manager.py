@@ -16,7 +16,6 @@ from config import (
     APP_NAME,
     CONFIG_FILES,
     DEFAULT_CONFIG_DATA,
-    GSV_VOICE_PREFIX,
 )
 from config.prompts_chara import lanlan_prompt
 from utils.api_config_loader import (
@@ -636,26 +635,12 @@ class ConfigManager:
     def cleanup_invalid_voice_ids(self):
         """清理 characters.json 中无效的 voice_id"""
         character_data = self.load_characters()
-        voices = self.get_voices_for_current_api()
-        
-        # 免费预设音色也是有效的，不应被清理
-        from utils.api_config_loader import get_free_voices
-        free_voice_ids = set(get_free_voices().values())
-        
         cleaned_count = 0
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            is_valid_gsv = (
-                voice_id
-                and voice_id.startswith(GSV_VOICE_PREFIX)
-                and voice_id[len(GSV_VOICE_PREFIX):].strip()
-                and self.validate_voice_id(voice_id)
-            )
-            if is_valid_gsv:
-                continue  # 仅保留通过完整校验的 gsv: voice_id
-            if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
+            if voice_id and not self.validate_voice_id(voice_id):
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,

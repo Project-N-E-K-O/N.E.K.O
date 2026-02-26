@@ -35,8 +35,9 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
         list[dict]: normalized voices with fields: voice_id/raw_id/name/description/version
     """
     if provider != 'gptsovits':
-        raise ValueError(f"Unsupported custom TTS provider: {provider}")
+        raise CustomTTSVoiceFetchError(f"Unsupported custom TTS provider: {provider}")
 
+    base_url = (base_url or "").strip().rstrip("/")
     timeout = aiohttp.ClientTimeout(total=5)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:

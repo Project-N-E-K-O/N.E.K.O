@@ -731,7 +731,7 @@
         "gptsovitsDescriptionText": "로컬에 배포된 음성 복제 모델입니다. 먼저 GPT-SoVITS v3 API 서비스를 시작하세요. 음성 설정(참조 오디오, 모델 가중치 등)은 v3의 voices/*.toml 파일에서 관리됩니다. 여기에는 음성 설정 ID만 입력하면 됩니다.",
         "gptsovitsApiUrlPlaceholder": "예: http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "(선택 사항, 기본값 http://127.0.0.1:9881)",
-        "gptsovitsVoiceId": "기본 음성 설정",
+        "gptsovitsVoiceId": "기본 음성 ID",
         "gptsovitsVoiceIdHint": "(캐릭터 관리에서 설정한 Voice ID가 이 기본값을 덮어씁니다)",
         "gptsovitsVoiceIdEmpty": "-- 목록을 새로고침하여 음성을 가져오세요 --",
         "gptsovitsNoVoices": "-- 사용 가능한 설정 없음 --",
@@ -1251,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "기본 간격",

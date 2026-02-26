@@ -1236,10 +1236,13 @@ async def get_voices():
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
     characters = _config_manager.load_characters()
     voice_owners = {}
-    for cat_name, cat_config in characters.get('猫娘', {}).items():
-        vid = cat_config.get('voice_id', '')
+    for catgirl_name, catgirl_config in characters.get('猫娘', {}).items():
+        if not isinstance(catgirl_config, dict):
+            logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
+            continue
+        vid = catgirl_config.get('voice_id', '')
         if vid:
-            voice_owners.setdefault(vid, []).append(cat_name)
+            voice_owners.setdefault(vid, []).append(catgirl_name)
     result["voice_owners"] = voice_owners
     
     return result

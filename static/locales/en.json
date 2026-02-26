@@ -751,8 +751,7 @@
         },
         "loadConfigFailed": "Failed to load configuration, please refresh the page and try again",
         "errorGettingCurrentApiKey": "Error getting current API Key",
-        "getCurrentApiKeyFailed": "Failed to get current API Key",
-        "gptsovitsApiUrlRequired": "Please enter a valid http/https API URL"
+        "getCurrentApiKeyFailed": "Failed to get current API Key"
     },
     "live2d": {
         "manager": "Live2D Model Manager",
@@ -1252,7 +1251,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "Base Interval",
