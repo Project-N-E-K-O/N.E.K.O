@@ -832,7 +832,7 @@ async def shutdown_server_async():
                 if task and not task.done():
                     task.cancel()
                     try:
-                        await asyncio.wait_for(asyncio.shield(task), timeout=_SHUTDOWN_TASK_TIMEOUT)
+                        await asyncio.wait_for(task, timeout=_SHUTDOWN_TASK_TIMEOUT)
                     except asyncio.TimeoutError:
                         logger.warning(f"后台任务 {task_attr} 在 {_SHUTDOWN_TASK_TIMEOUT}s 内未结束，跳过等待")
                     except asyncio.CancelledError:

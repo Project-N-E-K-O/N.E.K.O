@@ -690,11 +690,11 @@ async def get_subscribed_workshop_items():
                     result = steamworks.Workshop.GetItemInstallInfo(item_id)
                     
                     # 检查返回值的结构 - 支持字典格式（根据日志显示）
-                    if isinstance(result, dict):
+                    if result and isinstance(result, dict):
                         logger.debug(f'物品 {item_id} 安装信息字典: {result}')
                         
-                        # 从字典中提取信息
-                        item_info["state"]["installed"] = True  # 如果返回字典，假设已安装
+                        # 从字典中提取信息（仅非空字典才视为已安装）
+                        item_info["state"]["installed"] = True
                         # 获取安装路径 - workshop.py中已经将folder解码为字符串
                         folder_path = result.get('folder', '')
                         item_info["installedFolder"] = str(folder_path) if folder_path else None
