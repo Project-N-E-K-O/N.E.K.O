@@ -729,7 +729,9 @@ async def on_startup():
                 # 先等预热完成，角色卡同步依赖订阅物品列表
                 if _wr._ugc_warmup_task is not None:
                     try:
-                        await _wr._ugc_warmup_task
+                        await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                    except asyncio.TimeoutError:
+                        logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
                     except Exception as e:
                         logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
                 try:

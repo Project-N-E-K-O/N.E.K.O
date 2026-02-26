@@ -119,25 +119,21 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
                             _event.set()
                     return on_query_completed
                 
-                try:
-                    steamworks.Workshop.SendQueryUGCRequest(
-                        query_handle, callback=_make_callback(), override_callback=True
-                    )
-                    
-                    # 轮询等待（10ms 间隔，最多 15 秒）
-                    start_time = time.time()
-                    timeout = 15
-                    while time.time() - start_time < timeout:
-                        if query_completed.is_set():
-                            break
-                        try:
-                            steamworks.run_callbacks()
-                        except Exception as e:
-                            logger.debug(f"run_callbacks (polling) 异常: {e}")
-                        await asyncio.sleep(0.01)
-                finally:
-                    # 确保无论是否异常/超时，锁都会在 async with 退出时释放
-                    pass
+                steamworks.Workshop.SendQueryUGCRequest(
+                    query_handle, callback=_make_callback(), override_callback=True
+                )
+                
+                # 轮询等待（10ms 间隔，最多 15 秒）
+                start_time = time.time()
+                timeout = 15
+                while time.time() - start_time < timeout:
+                    if query_completed.is_set():
+                        break
+                    try:
+                        steamworks.run_callbacks()
+                    except Exception as e:
+                        logger.debug(f"run_callbacks (polling) 异常: {e}")
+                    await asyncio.sleep(0.01)
             
             if not query_completed.is_set():
                 logger.warning(f"UGC 批量查询超时 (attempt {attempt + 1}/{max_retries})")
@@ -205,6 +201,15 @@ def _resolve_author_name(steamworks, owner_id: int) -> str | None:
     return None
 
 
+def _safe_text(value) -> str:
+    """将 bytes/str/None 统一转为安全的 UTF-8 字符串。"""
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace')
+    return str(value)
+
+
 def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: dict) -> None:
     """
     从 UGC 查询结果(SteamUGCDetails_t)提取物品详情，填充到 item_info 字典。
@@ -214,9 +219,9 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
     
     try:
         if hasattr(result, 'title') and result.title:
-            item_info['title'] = result.title.decode('utf-8', errors='replace')
+            item_info['title'] = _safe_text(result.title)
         if hasattr(result, 'description') and result.description:
-            item_info['description'] = result.description.decode('utf-8', errors='replace')
+            item_info['description'] = _safe_text(result.description)
         # timeAddedToUserList 是用户订阅时间，timeCreated 是物品创建时间
         if hasattr(result, 'timeAddedToUserList') and result.timeAddedToUserList:
             item_info['timeAdded'] = int(result.timeAddedToUserList)
@@ -235,7 +240,7 @@ def _extract_ugc_item_details(steamworks, item_id_int: int, result, item_info: d
         # 提取标签
         if hasattr(result, 'tags') and result.tags:
             try:
-                tags_str = result.tags.decode('utf-8', errors='replace')
+                tags_str = _safe_text(result.tags)
                 if tags_str:
                     item_info['tags'] = [t.strip() for t in tags_str.split(',') if t.strip()]
             except Exception as e:
