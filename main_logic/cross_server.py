@@ -317,7 +317,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 if txt == '':
                                                     continue
                                                 recent.append({'role': item.get('role'), 'content': txt})
-                                        if recent and any(m.get('role') == 'user' for m in recent):
+                                        has_user = any(m.get('role') == 'user' for m in recent)
+                                        logger.info(f"[{lanlan_name}] turn_end analyze check: history={len(chat_history)} recent={len(recent)} has_user={has_user} had_input={had_user_input_this_turn}")
+                                        if recent and has_user:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
