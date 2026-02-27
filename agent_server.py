@@ -454,8 +454,8 @@ async def _run_computer_use_task(
                 "start_time": info["start_time"], "params": info.get("params", {}),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[ComputerUse] emit task_update(running) failed: task_id=%s error=%s", task_id, e)
 
     # Execute in thread pool (run_instruction is synchronous/blocking)
     success = False
@@ -507,8 +507,8 @@ async def _run_computer_use_task(
             ))
             Modules._background_tasks.add(task_obj)
             task_obj.add_done_callback(Modules._background_tasks.discard)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[ComputerUse] emit task_update(terminal) failed: task_id=%s error=%s", task_id, e)
 
         # Emit structured task_result
         try:
@@ -534,8 +534,8 @@ async def _run_computer_use_task(
             ))
             Modules._background_tasks.add(task_obj)
             task_obj.add_done_callback(Modules._background_tasks.discard)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[ComputerUse] emit task_result failed: task_id=%s error=%s", task_id, e)
 
 async def _computer_use_scheduler_loop():
     """Ensure only one computer-use task runs at a time by scheduling queued tasks."""
@@ -697,8 +697,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "session_id": cu_session.session_id,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("[ComputerUse] emit task_update(running) failed: task_id=%s error=%s", ti.get('id'), e)
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
@@ -874,8 +874,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                               "start_time": bu_start, "params": {"instruction": result.task_description},
                               "session_id": bu_session.session_id},
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
                 try:
                     bres = await Modules.browser_use.run_instruction(
                         result.task_description,
@@ -908,8 +908,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                   "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
                                   "session_id": bu_session.session_id},
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[BrowserUse] emit task_update(terminal) failed: task_id=%s error=%s", bu_task_id, emit_err)
                 except Exception as e:
                     logger.warning(f"[BrowserUse] Failed: {e}")
                     bu_info["status"] = "failed"
@@ -924,8 +924,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             summary=f'你的任务"{result.task_description}"执行异常',
                             error_message=str(e),
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[BrowserUse] emit task_result(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
@@ -934,8 +934,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                   "error": str(e)[:500],
                                   "session_id": bu_session.session_id},
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[BrowserUse] emit task_update(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
                 finally:
                     Modules.active_browser_use_task_id = None
             else:
