@@ -1206,7 +1206,7 @@ font-size: 0.8em;
     bottom: 0;            
     left: 0;
     right: 0;
-    z-index: 1001;        
+    z-index: 999;
     display: flex;        
     justify-content: center; 
     padding: 20px 0;      
