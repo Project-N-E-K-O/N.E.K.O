@@ -4,6 +4,7 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 并行评估 ComputerUse / BrowserUse / UserPlugin 可行性
 """
 import json
+import re
 import asyncio
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ class TaskResult:
     error: Optional[str] = None
     tool_name: Optional[str] = None
     tool_args: Optional[Dict] = None
+    entry_id: Optional[str] = None
     reason: str = ""
 
 
@@ -60,6 +62,8 @@ class UserPluginDecision:
     entry_id: Optional[str] = None
     plugin_args: Optional[Dict] = None
     reason: str = ""
+
+
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
@@ -242,7 +246,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 500
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -379,38 +383,52 @@ Rules:
             for _, p in iterable:
                 pid = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
                 desc = p.get("description", "") if isinstance(p, dict) else getattr(p, "description", "")
-                schema = p.get("input_schema", {}) if isinstance(p, dict) else getattr(p, "input_schema", {})
                 entries = p.get("entries", []) if isinstance(p, dict) else getattr(p, "entries", []) or []
                 # Only include well-formed plugin entries
                 if not pid:
                     continue
-                try:
-                    schema_str = json.dumps(schema)
-                except Exception:
-                    schema_str = "{}"
-                # Build entries description: show entry ids and short description to aid LLM in selecting entry_id
+                # Build entries description: entry id + description + input_schema summary
                 entry_lines = []
                 try:
                     for e in entries:
                         try:
                             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
-                            ename = e.get("name", "") if isinstance(e, dict) else getattr(e, "name", "")
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
-                            if eid:
-                                entry_lines.append(f"{eid} ({ename}): {edesc}")
+                            if not eid:
+                                continue
+                            # Extract input_schema field names+types for LLM context
+                            schema_hint = ""
+                            try:
+                                schema = e.get("input_schema") if isinstance(e, dict) else getattr(e, "input_schema", None)
+                                if isinstance(schema, dict):
+                                    props = schema.get("properties", {})
+                                    if isinstance(props, dict) and props:
+                                        fields = []
+                                        for fname, fdef in list(props.items())[:8]:
+                                            ftype = fdef.get("type", "any") if isinstance(fdef, dict) else "any"
+                                            fields.append(f"{fname}:{ftype}")
+                                        required = schema.get("required", [])
+                                        req_str = f" required={required}" if required else ""
+                                        schema_hint = f" args({', '.join(fields)}{req_str})"
+                            except Exception:
+                                pass
+                            part = f"{eid}: {edesc}" if edesc else eid
+                            if schema_hint:
+                                part += schema_hint
+                            entry_lines.append(part)
                         except Exception:
                             continue
                 except Exception:
                     entry_lines = []
-                entry_desc = "; ".join(entry_lines) if entry_lines else "no entries"
-                lines.append(f"- {pid}: {desc} | schema: {schema_str} | entries: {entry_desc}")
+                entry_desc = "; ".join(entry_lines) if entry_lines else "(default 'run' entry)"
+                lines.append(f"- {pid}: {desc} | entries: [{entry_desc}]")
         except Exception:
             pass
         
         plugins_desc = "\n".join(lines) if lines else "No plugins available."
         # truncate to avoid overly large prompts
-        if len(plugins_desc) > 2000:
-            plugins_desc = plugins_desc[:2000] + "\n... (truncated)"
+        if len(plugins_desc) > 4000:
+            plugins_desc = plugins_desc[:4000] + "\n... (truncated)"
         logger.debug(f"[UserPlugin] passing plugin descriptions (truncated): {plugins_desc[:1000]}")
         
         # Strongly enforce JSON-only output to reduce parsing errors
@@ -446,7 +464,12 @@ OUTPUT FORMAT (strict JSON):
     "reason": "why"
 }}
 
-VERY IMPORTANT: If has_task and can_execute are true, entry_id is REQUIRED. If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
+VERY IMPORTANT:
+- If has_task and can_execute are true, entry_id is REQUIRED.
+- If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
+- STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
+- If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
+- If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 Return only the JSON object, nothing else.
 """
         user_intent = ""
@@ -466,6 +489,7 @@ Return only the JSON object, nothing else.
 
         max_retries = 3
         retry_delays = [1, 2]
+        up_retry_done = False
         
         for attempt in range(max_retries):
             try:
@@ -479,7 +503,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 500
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -520,19 +544,122 @@ Return only the JSON object, nothing else.
                     logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
                     return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
                 
+                # Try to fix common JSON issues before parsing
+                # Remove trailing commas before closing braces/brackets
+                # Fix trailing commas in objects and arrays
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
+                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
+                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
+                
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
-                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
+                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    logger.debug(
+                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
+                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                    )
+                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    logger.exception("[UserPlugin Assessment] JSON parse error")
+                    # Try to extract JSON from the text if it's embedded in other text
+                    try:
+                        # Try to find JSON object in the text (improved regex to handle nested objects)
+                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}', text)
+                        if json_match:
+                            cleaned_text = json_match.group(0)
+                            # Fix trailing commas again
+                            cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
+                            decision = json.loads(cleaned_text)
+                            logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
+                        else:
+                            # JSON extraction failed - return safe default instead of trying to reconstruct
+                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
+                            return UserPluginDecision(
+                                has_task=False, 
+                                can_execute=False, 
+                                task_description="", 
+                                plugin_id=None, 
+                                plugin_args=None, 
+                                reason=f"JSON parse error: {e}"
+                            )
+                    except Exception as e2:
+                        logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
+                        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
                 
-                # return a simple object-like struct, include entry_id if provided by the LLM
+                # Validate plugin_id and entry_id against known plugins before returning.
+                # If invalid, retry once with a corrective hint.
+                d_has = decision.get("has_task", False)
+                d_can = decision.get("can_execute", False)
+                d_pid = decision.get("plugin_id")
+                d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
+
+                # Build lookup from plugins param (always, so final validation can use it)
+                valid_entries_map: Dict[str, List[str]] = {}
+                try:
+                    p_iter = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+                    for _, p in p_iter:
+                        pid = p.get("id") if isinstance(p, dict) else None
+                        if not pid:
+                            continue
+                        eids = []
+                        for e in (p.get("entries") or []) if isinstance(p, dict) else []:
+                            eid = e.get("id") if isinstance(e, dict) else None
+                            if eid:
+                                eids.append(eid)
+                        valid_entries_map[pid] = eids
+                except Exception:
+                    valid_entries_map = {}
+
+                if d_has and d_can and d_pid and d_eid:
+                    correction_hint = None
+                    if d_pid not in valid_entries_map:
+                        correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
+                    elif valid_entries_map[d_pid] and d_eid not in valid_entries_map[d_pid]:
+                        correction_hint = f"entry_id '{d_eid}' does not exist in plugin '{d_pid}'. Available entries: {valid_entries_map[d_pid]}"
+
+                    if correction_hint and not up_retry_done:
+                        logger.info("[UserPlugin Assessment] Invalid decision, retrying with hint: %s", correction_hint)
+                        up_retry_done = True
+                        # Append correction as assistant+user follow-up to guide the LLM
+                        request_params["messages"].append({"role": "assistant", "content": text})
+                        request_params["messages"].append({"role": "user", "content": f"CORRECTION: {correction_hint}. Please fix your response and return a valid JSON."})
+                        try:
+                            response2 = await client.chat.completions.create(**request_params)
+                            raw2 = response2.choices[0].message.content
+                            t2 = raw2.strip() if isinstance(raw2, str) else ""
+                            if t2.startswith("```"):
+                                t2 = t2.replace("```json", "").replace("```", "").strip()
+                            t2 = re.sub(r',(\s*[}\]])', r'\1', t2)
+                            decision2 = json.loads(t2)
+                            logger.info("[UserPlugin Assessment] Retry response parsed: %s", {k: decision2.get(k) for k in ("has_task", "can_execute", "plugin_id", "entry_id")})
+                            decision = decision2
+                            d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
+                        except Exception as e_retry:
+                            logger.warning("[UserPlugin Assessment] Retry failed: %s", e_retry)
+
+                # Final validation: reject if plugin_id/entry_id still invalid after retry
+                final_pid = decision.get("plugin_id")
+                final_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
+                final_has = decision.get("has_task", False)
+                final_can = decision.get("can_execute", False)
+                if final_has and final_can and valid_entries_map:
+                    if final_pid not in valid_entries_map:
+                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = f"plugin_id '{final_pid}' not found"
+                    elif valid_entries_map.get(final_pid) and final_eid and final_eid not in valid_entries_map[final_pid]:
+                        logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
+
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
                     can_execute=decision.get("can_execute", False),
                     task_description=decision.get("task_description", ""),
                     plugin_id=decision.get("plugin_id"),
-                    entry_id=decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id"),
+                    entry_id=final_eid,
                     plugin_args=decision.get("plugin_args"),
                     reason=decision.get("reason", "")
                 )
@@ -550,13 +677,17 @@ Return only the JSON object, nothing else.
         self, 
         messages: List[Dict[str, str]], 
         lanlan_name: Optional[str] = None,
-        agent_flags: Optional[Dict[str, bool]] = None
+        agent_flags: Optional[Dict[str, bool]] = None,
+        conversation_id: Optional[str] = None
     ) -> Optional[TaskResult]:
         """
-        并行评估 ComputerUse / BrowserUse / UserPlugin，然后执行任务
+        并行评估 ComputerUse / BrowserUse / UserPlugin 可行性，返回 Decision（不执行）。
+        实际执行由 agent_server 统一 dispatch。
         """
         import uuid
         task_id = str(uuid.uuid4())
+        
+        # conversation_id 通过显式传参传递，避免并发时共享状态串用
         
         if agent_flags is None:
             agent_flags = {"computer_use_enabled": False, "browser_use_enabled": False}
@@ -565,13 +696,11 @@ Return only the JSON object, nothing else.
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
         
-        # testUserPlugin: log entry with flags and short message summary for debugging
-        try:
-            msgs_summary = self._format_messages(messages)[:400].replace("\n", " ")
-            print(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
-        except Exception:
-            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
-        
+        logger.debug(
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled,
+        )
+
         if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
@@ -671,22 +800,31 @@ Return only the JSON object, nothing else.
                 reason=cu_decision.reason
             )
         
-        # 3. UserPlugin
-        if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
-            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
-            try:
-                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
-            except Exception as e:
-                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=True,
-                    task_description=getattr(up_decision, "task_description", ""),
-                    execution_method='user_plugin',
-                    success=False,
-                    error=str(e),
-                    reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
+        # 3. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
+        #    Also attempt execution when LLM is uncertain (can_execute=false) but still
+        #    provided plugin_id + entry_id. The execution layer (strict entry_id validation)
+        #    will safely reject truly invalid entries, so this is safe.
+        if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
+            tentative = not up_decision.can_execute
+            if tentative:
+                logger.info(
+                    "[TaskExecutor] ⚡ UserPlugin tentative dispatch (can_execute=false but plugin_id+entry_id present): "
+                    "plugin_id=%s, entry_id=%s, reason=%s",
+                    up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
                 )
+            else:
+                logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=up_decision.task_description,
+                execution_method='user_plugin',
+                success=False,
+                tool_name=up_decision.plugin_id,
+                tool_args=up_decision.plugin_args,
+                entry_id=up_decision.entry_id,
+                reason=up_decision.reason
+            )
                 
         # 4. 没有可执行的分支，汇总原因
         reason_parts = []
@@ -694,21 +832,21 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
         if bu_decision:
             reason_parts.append(f"BrowserUse: {bu_decision.reason}")
-        if up_decision:
-            reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
+        if isinstance(up_decision, UserPluginDecision):
+            reason_parts.append(f"UserPlugin: {up_decision.reason}")
         
         has_any_task = (
             (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
-            or (up_decision and getattr(up_decision, "has_task", False))
+            or (isinstance(up_decision, UserPluginDecision) and up_decision.has_task)
         )
         if has_any_task:
             if cu_decision and cu_decision.has_task:
                 task_desc = cu_decision.task_description
             elif bu_decision and bu_decision.has_task:
                 task_desc = bu_decision.task_description
-            elif up_decision and getattr(up_decision, "has_task", False):
-                task_desc = getattr(up_decision, "task_description", "")
+            elif isinstance(up_decision, UserPluginDecision) and up_decision.has_task:
+                task_desc = up_decision.task_description
             else:
                 task_desc = ""
             logger.info(f"[TaskExecutor] Task detected but cannot execute: {task_desc}")
@@ -724,20 +862,27 @@ Return only the JSON object, nothing else.
         # 没有检测到任务
         logger.debug("[TaskExecutor] No task detected")
         return None
-    
-    async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
+
+    async def _execute_user_plugin(
+        self,
+        task_id: str,
+        *,
+        plugin_id: Optional[str],
+        plugin_args: Optional[Dict] = None,
+        entry_id: Optional[str] = None,
+        task_description: str = "",
+        reason: str = "",
+        lanlan_name: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> TaskResult:
         """
-        Execute a user plugin via HTTP endpoint or specific plugin_entry.
-        up_decision is expected to have attributes: plugin_id, plugin_args, task_description
+        Execute a user plugin via HTTP /runs endpoint.
+        This is the single implementation for all plugin execution paths.
         """
-        plugin_id = getattr(up_decision, "plugin_id", None)
-        plugin_args = getattr(up_decision, "plugin_args", {}) or {}
-        task_description = getattr(up_decision, "task_description", "")
-        # Optional: allow up_decision to specify a specific entry id
-        # Prefer explicit 'entry_id' returned by the LLM (up_decision.entry_id), then fallback to older names
+        plugin_args = dict(plugin_args) if isinstance(plugin_args, dict) else {}
         plugin_entry_id = (
-            getattr(up_decision, "entry_id", None)
-            or getattr(up_decision, "plugin_entry_id", None)
+            entry_id
             or (plugin_args.pop("_entry", None) if isinstance(plugin_args, dict) else None))
         
         if not plugin_id:
@@ -748,7 +893,7 @@ Return only the JSON object, nothing else.
                 execution_method='user_plugin',
                 success=False,
                 error="No plugin_id provided",
-                reason=getattr(up_decision, "reason", "")
+                reason=reason
             )
         
         # Ensure we have a plugins list to search (use cached self.plugin_list as fallback)
@@ -785,101 +930,313 @@ Return only the JSON object, nothing else.
                 error=f"Plugin {plugin_id} not found",
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "") or "Plugin not found"
+                reason=reason or "Plugin not found"
             )
-        # ── Run Protocol: POST /runs → poll GET /runs/{run_id} ──
-        runs_endpoint = f”http://localhost:{USER_PLUGIN_SERVER_PORT}/runs”
-        run_body = {
-            “task_id”: task_id,
-            “plugin_id”: plugin_id,
-            “entry_id”: plugin_entry_id or “run”,
-            “args”: plugin_args or {},
-        }
-        logger.info(
-            “[TaskExecutor] POST %s (plugin=%s, entry=%s, arg_keys=%s)”,
-            runs_endpoint, plugin_id, run_body[“entry_id”],
-            list(plugin_args.keys()) if isinstance(plugin_args, dict) else “N/A”,
-        )
+
+        # Strict entry_id validation: only allow case-insensitive exact match as minor tolerance.
+        if plugin_entry_id and plugin_meta:
+            known_entries = []
+            for e in (plugin_meta.get("entries") or []):
+                eid = e.get("id") if isinstance(e, dict) else None
+                if eid:
+                    known_entries.append(eid)
+            if known_entries and plugin_entry_id not in known_entries:
+                # Only tolerate case-insensitive exact match (e.g. "Run" vs "run")
+                ci_matches = [e for e in known_entries if e.lower() == plugin_entry_id.lower()]
+                if ci_matches:
+                    resolved = ci_matches[0]
+                    logger.info("[UserPlugin] Case-insensitive entry_id match: '%s' → '%s' (plugin=%s)", plugin_entry_id, resolved, plugin_id)
+                    plugin_entry_id = resolved
+                else:
+                    logger.warning("[UserPlugin] entry_id '%s' not found in plugin '%s' entries: %s — rejecting", plugin_entry_id, plugin_id, known_entries)
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method='user_plugin',
+                        success=False,
+                        error=f"entry_id '{plugin_entry_id}' not found in plugin '{plugin_id}'. Available: {known_entries}",
+                        tool_name=plugin_id,
+                        tool_args=plugin_args,
+                        entry_id=plugin_entry_id,
+                        reason=reason or "invalid_entry_id",
+                    )
+
+        # New run protocol: default path (POST /runs, return accepted immediately)
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=3.0)) as client:
+            runs_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/runs"
+
+            safe_args: Dict[str, Any]
+            if isinstance(plugin_args, dict):
+                safe_args = dict(plugin_args)
+            else:
+                safe_args = {}
+            try:
+                # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
+                ctx_obj = safe_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                if lanlan_name and "lanlan_name" not in ctx_obj:
+                    ctx_obj["lanlan_name"] = lanlan_name
+                # 添加 conversation_id，用于关联触发事件和对话上下文
+                if conversation_id:
+                    ctx_obj["conversation_id"] = conversation_id
+                if ctx_obj:
+                    safe_args["_ctx"] = ctx_obj
+            except Exception as e:
+                logger.warning(
+                    "[TaskExecutor] Failed to build _ctx: lanlan=%s conversation_id=%s error=%s",
+                    lanlan_name, conversation_id, e
+                )
+
+            run_body: Dict[str, Any] = {
+                "task_id": task_id,
+                "plugin_id": plugin_id,
+                "entry_id": plugin_entry_id or "run",
+                "args": safe_args,
+            }
+
+            timeout = httpx.Timeout(10.0, connect=2.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
-                    error_text = r.text
-                    logger.error(“[TaskExecutor] /runs returned %s: %s”, r.status_code, error_text)
-                    return TaskResult(
-                        task_id=task_id, has_task=True, task_description=task_description,
-                        execution_method='user_plugin', success=False,
-                        error=f”/runs returned {r.status_code}”, tool_name=plugin_id,
-                        tool_args=plugin_args, reason=”run_create_failed”,
+                    logger.warning(
+                        "[TaskExecutor] /runs returned non-2xx; status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
                     )
-                data = r.json()
-                run_id = data.get(“run_id”)
-                logger.info(“[TaskExecutor] ✅ Run created: run_id=%s, plugin=%s”, run_id, plugin_id)
+                    raise RuntimeError(f"/runs returned {r.status_code}")
+                try:
+                    data = r.json()
+                except Exception:
+                    logger.error(
+                        "[TaskExecutor] /runs returned non-JSON response; skip fallback to avoid duplicate execution. status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
+                    )
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method="user_plugin",
+                        success=False,
+                        error="Invalid /runs response (non-JSON)",
+                        tool_name=plugin_id,
+                        tool_args=plugin_args,
+                        entry_id=plugin_entry_id,
+                        reason=reason or "run_invalid_response",
+                    )
 
-                # Poll until terminal state
-                completion = await self._await_run_completion(client, run_id)
-                success = completion.get(“status”) == “succeeded”
-                return TaskResult(
-                    task_id=task_id, has_task=True, task_description=task_description,
-                    execution_method='user_plugin', success=success,
-                    result=completion, tool_name=plugin_id, tool_args=plugin_args,
-                    reason=completion.get(“status”, “unknown”),
+            run_id = data.get("run_id") if isinstance(data, dict) else None
+            run_token = data.get("run_token") if isinstance(data, dict) else None
+            expires_at = data.get("expires_at") if isinstance(data, dict) else None
+            if not isinstance(run_id, str) or not run_id or not isinstance(run_token, str) or not run_token:
+                logger.error(
+                    "[TaskExecutor] /runs response missing run_id/run_token; skip fallback to avoid duplicate execution. data=%r",
+                    data,
                 )
-        except Exception as e:
-            logger.exception(“[TaskExecutor] /runs call error: %s”, e)
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=task_description,
+                    execution_method="user_plugin",
+                    success=False,
+                    error="Invalid /runs response (missing run_id/run_token)",
+                    tool_name=plugin_id,
+                    tool_args=plugin_args,
+                    entry_id=plugin_entry_id,
+                    reason=reason or "run_invalid_response",
+                )
+
+            # Phase 2: await run completion and fetch actual result
+            try:
+                completion = await self._await_run_completion(
+                    run_id, timeout=300.0, on_progress=on_progress,
+                )
+            except Exception as e:
+                logger.warning("[TaskExecutor] _await_run_completion error: %r", e)
+                completion = {"status": "unknown", "success": False, "data": None,
+                              "error": str(e)}
+
+            run_success = bool(completion.get("success"))
+            result_obj: Dict[str, Any] = {
+                "accepted": True,
+                "run_id": run_id,
+                "run_token": run_token,
+                "expires_at": expires_at,
+                "entry_id": plugin_entry_id or "run",
+                "run_status": completion.get("status"),
+                "run_success": run_success,
+                "run_data": completion.get("data"),
+                "run_error": completion.get("error"),
+            }
             return TaskResult(
-                task_id=task_id, has_task=True, task_description=task_description,
-                execution_method='user_plugin', success=False, error=str(e),
-                tool_name=plugin_id, tool_args=plugin_args,
-                reason=getattr(up_decision, “reason”, “”),
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method="user_plugin",
+                success=run_success,
+                result=result_obj,
+                error=completion.get("error") if not run_success else None,
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                entry_id=plugin_entry_id,
+                reason=reason or ("run_succeeded" if run_success else "run_failed"),
+            )
+        except Exception as e:
+            logger.warning(
+                "[TaskExecutor] /runs execution failed; no legacy fallback. error=%r",
+                e,
+            )
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method="user_plugin",
+                success=False,
+                error=str(e),
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                entry_id=plugin_entry_id,
+                reason=reason or "run_failed",
             )
 
-    async def _await_run_completion(self, client, run_id: str, timeout: float = 300.0) -> dict:
-        """Poll GET /runs/{run_id} until terminal state. Returns final run record dict."""
-        import time
-        base_url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/runs/{run_id}"
-        terminal_states = {"succeeded", "failed", "canceled", "timeout"}
-        deadline = time.monotonic() + timeout
-        poll_interval = 0.5
+    async def _await_run_completion(
+        self,
+        run_id: str,
+        *,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+        on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> Dict[str, Any]:
+        """Poll /runs/{run_id} until it reaches a terminal state, then fetch the export result.
 
-        while time.monotonic() < deadline:
+        Args:
+            on_progress: Optional async callback ``(progress, stage, message, step, step_total) -> None``
+                called whenever the run's progress/stage/message changes between polls.
+
+        Returns a dict:
+          {"status": str, "success": bool, "data": Any, "error": str|None,
+           "progress": float|None, "stage": str|None, "message": str|None}
+        """
+        base = f"http://localhost:{USER_PLUGIN_SERVER_PORT}"
+        terminal = frozenset(("succeeded", "failed", "canceled", "timeout"))
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_status: Optional[str] = None
+        # Track last-seen progress fingerprint to avoid redundant callbacks
+        _last_progress_key: Optional[tuple] = None
+        _consecutive_errors = 0
+        _MAX_CONSECUTIVE_ERRORS = 3
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0)) as client:
+            # ── Phase 1: poll until terminal ──
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return {"status": "timeout", "success": False, "data": None,
+                            "error": f"Timed out waiting for run {run_id} ({timeout}s)"}
+                try:
+                    r = await client.get(f"{base}/runs/{run_id}")
+                    if r.status_code in (404, 410):
+                        return {"status": "failed", "success": False, "data": None,
+                                "error": f"Run {run_id} not found (HTTP {r.status_code})"}
+                    if r.status_code != 200:
+                        _consecutive_errors += 1
+                        logger.warning(
+                            "[_await_run_completion] unexpected HTTP %s for run %s (%d/%d): %s",
+                            r.status_code, run_id, _consecutive_errors, _MAX_CONSECUTIVE_ERRORS, r.text[:200],
+                        )
+                        if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                            return {"status": "failed", "success": False, "data": None,
+                                    "error": f"Run {run_id} polling failed ({_consecutive_errors} consecutive HTTP {r.status_code})"}
+                    if r.status_code == 200:
+                        _consecutive_errors = 0
+                        run_data = r.json()
+                        last_status = run_data.get("status")
+                        # Fire on_progress callback when progress/stage/message changes
+                        if on_progress and last_status not in terminal:
+                            cur_key = (
+                                run_data.get("progress"),
+                                run_data.get("stage"),
+                                run_data.get("message"),
+                                run_data.get("step"),
+                            )
+                            if cur_key != _last_progress_key:
+                                _last_progress_key = cur_key
+                                try:
+                                    await on_progress(
+                                        progress=run_data.get("progress"),
+                                        stage=run_data.get("stage"),
+                                        message=run_data.get("message"),
+                                        step=run_data.get("step"),
+                                        step_total=run_data.get("step_total"),
+                                    )
+                                except Exception:
+                                    pass
+                        if last_status in terminal:
+                            break
+                except Exception as e:
+                    logger.debug("[_await_run_completion] poll error: %s", e)
+                await asyncio.sleep(min(poll_interval, remaining))
+
+            # ── Phase 2: fetch export to get plugin_response ──
+            plugin_result: Dict[str, Any] = {
+                "status": last_status,
+                "success": last_status == "succeeded",
+                "data": None,
+                "error": None,
+                "progress": run_data.get("progress"),
+                "stage": run_data.get("stage"),
+                "message": run_data.get("message"),
+            }
+
+            if last_status in ("failed", "canceled", "timeout"):
+                err = run_data.get("error")
+                if isinstance(err, dict):
+                    plugin_result["error"] = err.get("message") or str(err.get("code") or "unknown")
+                elif isinstance(err, str):
+                    plugin_result["error"] = err
+                else:
+                    plugin_result["error"] = f"Run {last_status}"
+
             try:
-                r = await client.get(base_url)
+                r = await client.get(f"{base}/runs/{run_id}/export", params={"limit": 50})
                 if r.status_code == 200:
-                    data = r.json()
-                    status = data.get("status", "")
-                    if status in terminal_states:
-                        # Try to fetch export data for the result
-                        try:
-                            export_r = await client.get(f"{base_url}/export")
-                            if export_r.status_code == 200:
-                                data["export"] = export_r.json()
-                        except Exception:
-                            pass
-                        return data
+                    export_data = r.json()
+                    items = export_data.get("items") or []
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        # Look for the system trigger_response export
+                        if item.get("type") == "json" and (item.get("json") is not None or item.get("json_data") is not None):
+                            raw = item.get("json") or item.get("json_data")
+                            if isinstance(raw, dict):
+                                plugin_result["data"] = raw.get("data")
+                                if raw.get("error"):
+                                    err = raw["error"]
+                                    if isinstance(err, dict):
+                                        plugin_result["error"] = err.get("message") or str(err)
+                                    elif isinstance(err, str):
+                                        plugin_result["error"] = err
+                            break
             except Exception as e:
-                logger.debug("[TaskExecutor] Poll error for run %s: %s", run_id, e)
-            await asyncio.sleep(poll_interval)
-            poll_interval = min(poll_interval * 1.5, 3.0)  # backoff up to 3s
+                logger.debug("[_await_run_completion] export fetch error: %s", e)
 
-        return {"run_id": run_id, "status": "timeout", "error": f"Polling timed out after {timeout}s"}
+            return plugin_result
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
         """
-        Directly execute a plugin entry via /runs protocol.
-        Called by agent_server when it wants to trigger a plugin_entry immediately.
+        Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
+        This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
         """
-        up_decision_stub = UserPluginDecision(
-            has_task=True,
-            can_execute=True,
-            task_description=f"Direct plugin call {plugin_id}",
+        return await self._execute_user_plugin(
+            task_id=task_id,
             plugin_id=plugin_id,
-            entry_id=entry_id,
             plugin_args=plugin_args,
+            entry_id=entry_id,
+            task_description=f"Direct plugin call {plugin_id}",
             reason="direct_call",
         )
-        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """保留接口兼容性，MCP 已移除，始终返回空。"""

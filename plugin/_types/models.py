@@ -113,7 +113,7 @@ class HealthCheckResponse(BaseModel):
     alive: bool
     exitcode: Optional[int] = None
     pid: Optional[int] = None
-    status: Literal["running", "stopped", "crashed"]
+    status: Literal["running", "stopped", "crashed", "not_started"]
     communication: Dict[str, Any]
 
 

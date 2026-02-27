@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from plugin.utils.time_utils import now_iso
 from queue import Empty, Queue
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional
 
 from loguru import logger
 
@@ -675,7 +675,7 @@ class PluginCommunicationResourceManager:
     # 特殊消息类型路由表：type → handler method name
     # 匹配的消息由对应 handler 直接处理，不转发到主进程队列。
     # 新增消息类型只需添加一行映射。
-    _MESSAGE_ROUTING: Dict[str, str] = {
+    _MESSAGE_ROUTING: ClassVar[Dict[str, str]] = {
         "ENTRY_UPDATE": "_handle_entry_update",
         "STATIC_UI_REGISTER": "_handle_static_ui_register",
     }

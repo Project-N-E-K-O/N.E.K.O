@@ -1434,19 +1434,6 @@ async def list_tasks():
         }
 
 
-@app.post("/analyze_and_plan")
-async def analyze_and_plan(payload: Dict[str, Any]):
-    """Accept conversation messages and route through the task analysis pipeline."""
-    messages = (payload or {}).get("messages", [])
-    lanlan_name = (payload or {}).get("lanlan_name")
-    if not messages:
-        raise HTTPException(400, "messages required")
-    task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
-    Modules._background_tasks.add(task)
-    task.add_done_callback(Modules._background_tasks.discard)
-    return {"success": True, "status": "processed", "accepted_at": _now_iso()}
-
-
 @app.post("/admin/control")
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")

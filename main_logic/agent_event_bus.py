@@ -131,6 +131,25 @@ class MainServerAgentBridge:
         except Exception:
             return False
 
+    async def stop(self) -> None:
+        """Shut down ZMQ resources and background thread."""
+        self._stop.set()
+        self.ready = False
+        if self._recv_thread is not None:
+            self._recv_thread.join(timeout=2.0)
+        for sock in (self.pull, self.analyze_push, self.pub):
+            if sock is not None:
+                try:
+                    sock.close(linger=0)
+                except Exception:
+                    pass
+        if self.ctx is not None:
+            try:
+                self.ctx.term()
+            except Exception:
+                pass
+        logger.debug("[EventBus] Main bridge stopped")
+
     async def publish_session_event_threadsafe(self, event: Dict[str, Any]) -> bool:
         if self.owner_loop is None:
             return False

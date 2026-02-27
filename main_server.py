@@ -784,7 +784,7 @@ async def on_shutdown():
         logger.info("正在清理资源...")
         
         # 等待预加载任务完成（如果还在运行）
-        global _preload_task
+        global _preload_task, agent_event_bridge
         if _preload_task:
             try:
                 await asyncio.wait_for(_preload_task, timeout=1.0)
@@ -798,6 +798,13 @@ async def on_shutdown():
                 logger.debug("预加载任务清理时已取消（正常关闭流程）")
             except Exception as e:
                 logger.debug(f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True)
+        
+        # Clean up agent_event_bridge (ZMQ context/sockets/recv thread)
+        if agent_event_bridge is not None:
+            try:
+                await agent_event_bridge.stop()
+            except Exception as e:
+                logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
         
         logger.info("✅ 资源清理完成")
 
