@@ -509,10 +509,26 @@ jobs:
             console.log('macOS code signing fully disabled');
           "
 
+      # Linux .deb requires a maintainer email; N.E.K.O.-PC package.json
+      # only has author name without email, so patch it here
+      - name: Set Linux deb maintainer
+        if: runner.os == 'Linux'
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.build = pkg.build || {};
+            pkg.build.linux = pkg.build.linux || {};
+            pkg.build.linux.maintainer = 'Project N.E.K.O. <nickyoungboom@gmail.com>';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Set Linux deb maintainer');
+          "
+
       # --- Build Electron app ---
       - name: Build Electron app
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }}
+        run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
