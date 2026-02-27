@@ -594,7 +594,7 @@ class TestEndToEnd:
 
     def test_pipeline_preserves_bit_depth(self):
         """不同位深度保持一致"""
-        for sw in [1, 2, 4]:
+        for sw in [1, 2, 3, 4]:
             sine = _generate_sine(440, 0.5)
             silence = _generate_silence(0.7)
             audio = np.concatenate([sine, silence])

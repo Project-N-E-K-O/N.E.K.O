@@ -1456,7 +1456,7 @@ async def analyze_silence(file: UploadFile = File(...)):
 
     try:
         # 转换为 WAV（如果需要）
-        wav_buffer, original_format = convert_to_wav_if_needed(file_buffer, file.filename)
+        wav_buffer, _ = convert_to_wav_if_needed(file_buffer, file.filename)
 
         # 执行静音检测
         analysis = await asyncio.to_thread(detect_silence, wav_buffer)
@@ -1552,7 +1552,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
             return _trim_tasks.get(task_id, {}).get('cancelled', False)
 
         # 转换为 WAV
-        wav_buffer, original_format = convert_to_wav_if_needed(file_buffer, file.filename)
+        wav_buffer, _ = convert_to_wav_if_needed(file_buffer, file.filename)
 
         # 分析静音
         analysis = await asyncio.to_thread(
@@ -1625,8 +1625,9 @@ async def get_trim_progress(task_id: str):
     """获取裁剪任务进度"""
     task = _trim_tasks.get(task_id)
     if not task:
-        return JSONResponse({'progress': 100, 'phase': 'done'})
+        return JSONResponse({'exists': False, 'progress': 100, 'phase': 'done'})
     return JSONResponse({
+        'exists': True,
         'progress': task.get('progress', 0),
         'phase': task.get('phase', 'unknown'),
         'cancelled': task.get('cancelled', False),
