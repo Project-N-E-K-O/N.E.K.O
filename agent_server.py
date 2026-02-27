@@ -1384,27 +1384,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     return {"success": True, "agent_flags": Modules.agent_flags}
 
 
-# 3) 分析器模块：接收 cross-server 的对话片段，识别潜在任务，转发到规划器
-@app.post("/analyze_and_plan")
-async def analyze_and_plan(payload: Dict[str, Any]):
-    # 检查 analyzer 是否已启用（由 agent 总开关控制）
-    if not Modules.analyzer_enabled:
-        return {"success": False, "status": "analyzer_disabled", "message": "Analyzer is disabled"}
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
-    messages = (payload or {}).get("messages", [])
-    if not isinstance(messages, list):
-        raise HTTPException(400, "messages must be a list of {role, text}")
-
-    # Fire-and-forget background processing and scheduling
-    lanlan_name = (payload or {}).get("lanlan_name")
-    conversation_id = (payload or {}).get("conversation_id")
-    task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id))
-    Modules._background_tasks.add(task)
-    task.add_done_callback(Modules._background_tasks.discard)
-    return {"success": True, "status": "processed", "accepted_at": _now_iso()}
-
-
 @app.post("/agent/command")
 async def agent_command(payload: Dict[str, Any]):
     t0 = time.perf_counter()
