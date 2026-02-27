@@ -597,6 +597,11 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
 
     async with Modules.analyze_lock:
         await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id)
+    # Clear consumed fingerprint so the next turn (even with identical text) can be analyzed.
+    # The fingerprint's purpose is to prevent near-simultaneous duplicate analysis of the
+    # same turn, not to permanently block repeated user requests.
+    lanlan_key = _normalize_lanlan_key(lanlan_name)
+    Modules.last_user_turn_fingerprint.pop(lanlan_key, None)
 
 
 async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
