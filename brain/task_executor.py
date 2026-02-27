@@ -787,95 +787,88 @@ Return only the JSON object, nothing else.
                 tool_args=plugin_args,
                 reason=getattr(up_decision, "reason", "") or "Plugin not found"
             )
-        # Route via /plugin/trigger; use separate top-level entry_id when provided
-        trigger_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
-        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
-        if plugin_entry_id:
-            trigger_body["entry_id"] = plugin_entry_id
-            logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-        # send trigger (avoid dumping full args at INFO)
+        # ── Run Protocol: POST /runs → poll GET /runs/{run_id} ──
+        runs_endpoint = f”http://localhost:{USER_PLUGIN_SERVER_PORT}/runs”
+        run_body = {
+            “task_id”: task_id,
+            “plugin_id”: plugin_id,
+            “entry_id”: plugin_entry_id or “run”,
+            “args”: plugin_args or {},
+        }
         logger.info(
-            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
-            trigger_endpoint,
-            plugin_id,
-            plugin_entry_id,
-            list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
+            “[TaskExecutor] POST %s (plugin=%s, entry=%s, arg_keys=%s)”,
+            runs_endpoint, plugin_id, run_body[“entry_id”],
+            list(plugin_args.keys()) if isinstance(plugin_args, dict) else “N/A”,
         )
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.post(trigger_endpoint, json=trigger_body)
-                # Treat 2xx as accepted. plugin_server may synchronously execute and return executed_entry
-                if 200 <= r.status_code < 300:
-                    try:
-                        data = r.json()
-                    except Exception:
-                        logger.debug("[TaskExecutor] Failed to parse trigger response as JSON, using text fallback", exc_info=True)
-                        data = {"raw_text": r.text}
-                    logger.info(
-                        "[TaskExecutor] ✅ Trigger accepted for plugin %s (entry_id=%s)",
-                        plugin_id,
-                        plugin_entry_id or trigger_body.get("entry_id"),
-                    )
-                    logger.debug(
-                        "[TaskExecutor] Trigger payload=%r, response=%r",
-                        trigger_body,
-                        data,
-                    )
-                    plugin_name = data.get("plugin_id") or plugin_id
-                    # Determine executed entry id: prefer explicit returned executed_entry/entry_id, then trigger_body.entry_id
-                    entry_id = None
-                    if isinstance(data, dict):
-                        entry_id = data.get("executed_entry") or data.get("entry_id") or trigger_body.get("entry_id")
-                    # Log decision about entry_id for traceability
-                    logger.debug(f"[TaskExecutor] Resolved entry_id for plugin {plugin_id}: {entry_id} (from response or trigger_body)")
-                    # Return TaskResult with independent entry_id field in result
-                    result_obj = {"accepted": True, "trigger_response": data, "entry_id": entry_id}
-                    # success=True 表示“触发已被接受”，实际执行进度由 plugin_server 跟踪
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=3.0)) as client:
+                r = await client.post(runs_endpoint, json=run_body)
+                if not (200 <= r.status_code < 300):
+                    error_text = r.text
+                    logger.error(“[TaskExecutor] /runs returned %s: %s”, r.status_code, error_text)
                     return TaskResult(
-                        task_id=task_id,
-                        has_task=True,
-                        task_description=task_description,
-                        execution_method='user_plugin',
-                        success=True,
-                        result=result_obj,
-                        tool_name=plugin_name,
-                        tool_args=plugin_args,
-                        reason=getattr(up_decision, "reason", "") or "trigger_accepted"
+                        task_id=task_id, has_task=True, task_description=task_description,
+                        execution_method='user_plugin', success=False,
+                        error=f”/runs returned {r.status_code}”, tool_name=plugin_id,
+                        tool_args=plugin_args, reason=”run_create_failed”,
                     )
-                else:
-                    text = r.text
-                    logger.error(f"[TaskExecutor] ❌ Trigger endpoint returned status {r.status_code}: {text}")
-                    return TaskResult(
-                        task_id=task_id,
-                        has_task=True,
-                        task_description=task_description,
-                        execution_method='user_plugin',
-                        success=False,
-                        error=f"Trigger endpoint returned status {r.status_code}",
-                        result={"status_code": r.status_code, "text": text},
-                        tool_name=plugin_id,
-                        tool_args=plugin_args,
-                        reason=getattr(up_decision, "reason", "") or "trigger_failed"
-                    )
+                data = r.json()
+                run_id = data.get(“run_id”)
+                logger.info(“[TaskExecutor] ✅ Run created: run_id=%s, plugin=%s”, run_id, plugin_id)
+
+                # Poll until terminal state
+                completion = await self._await_run_completion(client, run_id)
+                success = completion.get(“status”) == “succeeded”
+                return TaskResult(
+                    task_id=task_id, has_task=True, task_description=task_description,
+                    execution_method='user_plugin', success=success,
+                    result=completion, tool_name=plugin_id, tool_args=plugin_args,
+                    reason=completion.get(“status”, “unknown”),
+                )
         except Exception as e:
-            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
+            logger.exception(“[TaskExecutor] /runs call error: %s”, e)
             return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=task_description,
-                execution_method='user_plugin',
-                success=False,
-                error=str(e),
-                tool_name=plugin_id,
-                tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "")
+                task_id=task_id, has_task=True, task_description=task_description,
+                execution_method='user_plugin', success=False, error=str(e),
+                tool_name=plugin_id, tool_args=plugin_args,
+                reason=getattr(up_decision, “reason”, “”),
             )
+
+    async def _await_run_completion(self, client, run_id: str, timeout: float = 300.0) -> dict:
+        """Poll GET /runs/{run_id} until terminal state. Returns final run record dict."""
+        import time
+        base_url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/runs/{run_id}"
+        terminal_states = {"succeeded", "failed", "canceled", "timeout"}
+        deadline = time.monotonic() + timeout
+        poll_interval = 0.5
+
+        while time.monotonic() < deadline:
+            try:
+                r = await client.get(base_url)
+                if r.status_code == 200:
+                    data = r.json()
+                    status = data.get("status", "")
+                    if status in terminal_states:
+                        # Try to fetch export data for the result
+                        try:
+                            export_r = await client.get(f"{base_url}/export")
+                            if export_r.status_code == 200:
+                                data["export"] = export_r.json()
+                        except Exception:
+                            pass
+                        return data
+            except Exception as e:
+                logger.debug("[TaskExecutor] Poll error for run %s: %s", run_id, e)
+            await asyncio.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.5, 3.0)  # backoff up to 3s
+
+        return {"run_id": run_id, "status": "timeout", "error": f"Polling timed out after {timeout}s"}
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
         """
-        Directly execute a plugin entry by calling /plugin/trigger with explicit plugin_id and optional entry_id.
-        This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
+        Directly execute a plugin entry via /runs protocol.
+        Called by agent_server when it wants to trigger a plugin_entry immediately.
         """
         up_decision_stub = UserPluginDecision(
             has_task=True,

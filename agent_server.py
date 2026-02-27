@@ -110,6 +110,24 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
 _llm_check_lock = asyncio.Lock()
 
 
+async def _fire_user_plugin_capability_check() -> None:
+    """Probe the user-plugin server to see if any plugins are available."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0)) as client:
+            r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
+            if r.status_code == 200:
+                plugins = r.json().get("plugins", []) if isinstance(r.json(), dict) else []
+                if plugins:
+                    _set_capability("user_plugin", True, "")
+                    logger.info("[Agent] UserPlugin ready (%d plugins)", len(plugins))
+                else:
+                    _set_capability("user_plugin", False, "no plugins found")
+            else:
+                _set_capability("user_plugin", False, f"status {r.status_code}")
+    except Exception as e:
+        _set_capability("user_plugin", False, str(e))
+
+
 async def _fire_agent_llm_connectivity_check() -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
@@ -176,7 +194,10 @@ def _bump_state_revision() -> int:
 
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
+    prev = Modules.capability_cache.get(name, {})
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": reason or ""}
+    if prev.get("ready") != bool(ready):
+        _bump_state_revision()
 
 
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
@@ -689,6 +710,74 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
                 logger.warning("[ComputerUse] Task requires ComputerUse but it's disabled")
+
+        elif result.execution_method == 'user_plugin':
+            # ── UserPlugin dispatch (mirrors CU/BU pattern) ──
+            if Modules.agent_flags.get("user_plugin_enabled", False) and Modules.task_executor:
+                plugin_id = result.tool_name
+                plugin_args = result.tool_args or {}
+                entry_id = getattr(result, "entry_id", None)
+                up_start = _now_iso()
+                logger.info("[TaskExecutor] Dispatching UserPlugin: plugin=%s entry=%s", plugin_id, entry_id)
+
+                # Register in task_registry so GET /tasks can track it
+                Modules.task_registry[result.task_id] = {
+                    "id": result.task_id, "type": "user_plugin", "status": "running",
+                    "start_time": up_start,
+                    "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                    "lanlan_name": lanlan_name, "result": None, "error": None,
+                }
+                # Emit running status to frontend HUD
+                try:
+                    await _emit_main_event(
+                        "task_update", lanlan_name,
+                        task={"id": result.task_id, "status": "running", "type": "user_plugin",
+                              "start_time": up_start,
+                              "params": {"plugin_id": plugin_id, "entry_id": entry_id}},
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    up_result = await Modules.task_executor.execute_user_plugin_direct(
+                        task_id=result.task_id, plugin_id=plugin_id,
+                        plugin_args=plugin_args if isinstance(plugin_args, dict) else {},
+                        entry_id=entry_id,
+                    )
+                    up_ok = up_result.success
+                    terminal = "completed" if up_ok else "failed"
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg:
+                        _reg["status"] = terminal
+                        _reg["result"] = up_result.result
+                        if not up_ok and up_result.error:
+                            _reg["error"] = str(up_result.error)[:500]
+                    if up_ok:
+                        logger.info("[TaskExecutor] ✅ UserPlugin completed: %s", plugin_id)
+                        await _emit_task_result(lanlan_name, channel="user_plugin",
+                                                task_id=result.task_id, success=True,
+                                                summary=f'插件 "{plugin_id}" 已完成')
+                    else:
+                        logger.warning("[TaskExecutor] ❌ UserPlugin failed: %s", up_result.error)
+                        await _emit_task_result(lanlan_name, channel="user_plugin",
+                                                task_id=result.task_id, success=False,
+                                                summary=f'插件 "{plugin_id}" 失败',
+                                                error_message=str(up_result.error or "")[:500])
+                    # Emit terminal status to frontend HUD
+                    await _emit_main_event(
+                        "task_update", lanlan_name,
+                        task={"id": result.task_id, "status": terminal, "type": "user_plugin",
+                              "start_time": up_start, "end_time": _now_iso()},
+                    )
+                except Exception as e:
+                    logger.exception("[TaskExecutor] UserPlugin dispatch error: %s", e)
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg:
+                        _reg["status"] = "failed"
+                        _reg["error"] = str(e)[:500]
+            else:
+                logger.warning("[UserPlugin] Task requires UserPlugin but it's disabled")
+
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 sm = get_session_manager()
@@ -801,7 +890,17 @@ async def startup():
     # and probe in background.  The single check updates both capability caches.
     _set_capability("computer_use", False, "connectivity check pending")
     _set_capability("browser_use", False, "connectivity check pending")
+    _set_capability("user_plugin", False, "connectivity check pending")
     asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    # UserPlugin probe — plugin server may start slightly later, retry a few times
+    async def _delayed_user_plugin_check():
+        for _ in range(6):
+            await asyncio.sleep(2)
+            await _fire_user_plugin_capability_check()
+            if Modules.capability_cache.get("user_plugin", {}).get("ready"):
+                await _emit_agent_status_update()
+                break
+    asyncio.ensure_future(_delayed_user_plugin_check())
     
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -1333,6 +1432,19 @@ async def list_tasks():
                 "total_returned": len(items)
             }
         }
+
+
+@app.post("/analyze_and_plan")
+async def analyze_and_plan(payload: Dict[str, Any]):
+    """Accept conversation messages and route through the task analysis pipeline."""
+    messages = (payload or {}).get("messages", [])
+    lanlan_name = (payload or {}).get("lanlan_name")
+    if not messages:
+        raise HTTPException(400, "messages required")
+    task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+    Modules._background_tasks.add(task)
+    task.add_done_callback(Modules._background_tasks.discard)
+    return {"success": True, "status": "processed", "accepted_at": _now_iso()}
 
 
 @app.post("/admin/control")

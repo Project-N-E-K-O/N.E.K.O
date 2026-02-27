@@ -1,235 +1,395 @@
 """
 User Plugin Server
 
-HTTP 服务器主文件，定义所有路由端点。
+HTTP 服务器主入口文件。
 """
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
-from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Query
+import asyncio
+import logging
+import os
+import sys
+from pathlib import Path
+
+from loguru import logger as logger
+from plugin.logging_config import configure_default_logger
+
+# 配置默认 logger 格式（统一所有模块的日志格式）
+configure_default_logger()
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from config import USER_PLUGIN_SERVER_PORT
 
-from plugin.core.state import state
-from plugin.api.models import (
-    PluginTriggerRequest,
-    PluginTriggerResponse,
-    PluginPushMessageRequest,
-    PluginPushMessageResponse,
-)
-from plugin.runtime.registry import get_plugins as registry_get_plugins
-from plugin.runtime.status import status_manager
-from plugin.server.exceptions import register_exception_handlers
-from plugin.server.services import (
-    build_plugin_list,
-    trigger_plugin,
-    get_messages_from_queue,
-    push_message_to_queue,
-)
+try:
+    from utils.logger_config import setup_logging
+except ModuleNotFoundError:
+    import importlib.util
+
+    _logger_config_path = _PROJECT_ROOT / "utils" / "logger_config.py"
+    _spec = importlib.util.spec_from_file_location("utils.logger_config", _logger_config_path)
+    if _spec is None or _spec.loader is None:
+        raise
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    setup_logging = getattr(_mod, "setup_logging")
+server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO", silent=True)
+
+try:
+    for _ln in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_ln)
+        try:
+            _lg.handlers.clear()
+        except Exception:
+            pass
+        _lg.propagate = True
+except Exception:
+    pass
+
+try:
+    _server_log_path = server_log_config.get_log_file_path()
+    if isinstance(_server_log_path, str) and _server_log_path:
+        logger.add(
+            _server_log_path,
+            rotation="10 MB",
+            retention="30 days",
+            enqueue=True,
+            encoding="utf-8",
+        )
+except Exception:
+    pass
+
+
+class _LoguruInterceptHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except Exception:
+            level = record.levelno
+
+        logger.opt(exception=record.exc_info).log(level, record.getMessage())
+
+
+try:
+    logging.root.handlers.clear()
+    logging.root.addHandler(_LoguruInterceptHandler())
+    logging.root.setLevel(logging.INFO)
+    for _ln in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_ln)
+        _lg.handlers.clear()
+        _lg.propagate = True
+except Exception:
+    pass
+
+from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import startup, shutdown
-from plugin.server.utils import now_iso
-from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+from plugin.server.routes import (
+    health_router,
+    plugins_router,
+    runs_router,
+    messages_router,
+    metrics_router,
+    config_router,
+    logs_router,
+    frontend_router,
+    websocket_router,
+    plugin_ui_router,
+)
+from plugin.server.routes.frontend import mount_static_files
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
+    import asyncio
+    import faulthandler
+    import signal
+    import threading
+    import time
+
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    except Exception:
+        pass
+
+    stop_event = threading.Event()
+    last_heartbeat = {"t": time.monotonic()}
+
+    async def _heartbeat():
+        while not stop_event.is_set():
+            last_heartbeat["t"] = time.monotonic()
+            await asyncio.sleep(0.5)
+
+    def _watchdog():
+        threshold = 8.0
+        while not stop_event.is_set():
+            now = time.monotonic()
+            dt = now - last_heartbeat["t"]
+            if dt > threshold:
+                try:
+                    logger.error(
+                        "Event loop appears blocked (no heartbeat for {:.1f}s); dumping all thread tracebacks",
+                        dt,
+                    )
+                except Exception:
+                    pass
+                try:
+                    faulthandler.dump_traceback(all_threads=True)
+                except Exception:
+                    pass
+                last_heartbeat["t"] = now
+            time.sleep(1.0)
+
+    watchdog_thread = threading.Thread(target=_watchdog, daemon=True, name="event-loop-watchdog")
+    watchdog_thread.start()
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
     await startup()
     yield
+    stop_event.set()
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
     await shutdown()
 
 
 app = FastAPI(title="N.E.K.O User Plugin Server", lifespan=lifespan)
-logger = logging.getLogger("user_plugin_server")
 
-# 注册异常处理中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:48911",
+        "http://127.0.0.1:48911",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 register_exception_handlers(app)
 
-
-# ========== 基础路由 ==========
-
-@app.get("/health")
-async def health():
-    """健康检查"""
-    return {"status": "ok", "time": now_iso()}
+mount_static_files(app)
 
 
-@app.get("/available")
-async def available():
-    """返回可用性和基本统计"""
-    with state.plugins_lock:
-        plugins_count = len(state.plugins)
-    return {
-        "status": "ok",
-        "available": True,
-        "plugins_count": plugins_count,
-        "time": now_iso()
-    }
+@app.middleware("http")
+async def _frontend_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.startswith("/ui/assets/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+    if path == "/ui" or path == "/ui/" or (path.startswith("/ui/") and path.endswith(".html")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+    return response
 
 
-@app.get("/plugin/status")
-async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
-    """
-    查询插件运行状态：
-    - GET /plugin/status                -> 所有插件状态
-    - GET /plugin/status?plugin_id=xxx  -> 指定插件状态
-    """
-    try:
-        if plugin_id:
-            return {
-                "plugin_id": plugin_id,
-                "status": status_manager.get_plugin_status(plugin_id),
-                "time": now_iso(),
-            }
-        else:
-            return {
-                "plugins": status_manager.get_plugin_status(),
-                "time": now_iso(),
-            }
-    except Exception as e:
-        logger.exception("Failed to get plugin status")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+app.include_router(health_router)
+app.include_router(plugins_router)
+app.include_router(runs_router)
+app.include_router(messages_router)
+app.include_router(metrics_router)
+app.include_router(config_router)
+app.include_router(logs_router)
+app.include_router(frontend_router)
+app.include_router(websocket_router)
+app.include_router(plugin_ui_router)
 
-
-# ========== 插件管理路由 ==========
-
-@app.get("/plugins")
-async def list_plugins():
-    """
-    返回已知插件列表
-    
-    统一返回结构：
-    {
-        "plugins": [ ... ],
-        "message": "..."
-    }
-    """
-    try:
-        plugins = build_plugin_list()
-        
-        if plugins:
-            return {"plugins": plugins, "message": ""}
-        else:
-            logger.info("No plugins registered.")
-            return {
-                "plugins": [],
-                "message": "no plugins registered"
-            }
-    except Exception as e:
-        logger.exception("Failed to list plugins")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
-
-
-@app.post("/plugin/trigger", response_model=PluginTriggerResponse)
-async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
-    """
-    触发指定插件的指定 entry
-    """
-    try:
-        client_host = request.client.host if request.client else None
-        
-        return await trigger_plugin(
-            plugin_id=payload.plugin_id,
-            entry_id=payload.entry_id,
-            args=payload.args,
-            task_id=payload.task_id,
-            client_host=client_host,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plugin_trigger: unexpected error")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
-
-
-# ========== 消息路由 ==========
-
-@app.get("/plugin/messages")
-async def get_plugin_messages(
-    plugin_id: Optional[str] = Query(default=None),
-    max_count: int = Query(default=MESSAGE_QUEUE_DEFAULT_MAX_COUNT, ge=1, le=1000),
-    priority_min: Optional[int] = Query(default=None, description="最低优先级（包含）"),
-):
-    """
-    获取插件推送的消息队列
-    
-    - GET /plugin/messages                    -> 获取所有插件的消息
-    - GET /plugin/messages?plugin_id=xxx       -> 获取指定插件的消息
-    - GET /plugin/messages?max_count=50        -> 限制返回数量
-    - GET /plugin/messages?priority_min=5      -> 只返回优先级>=5的消息
-    """
-    try:
-        messages = get_messages_from_queue(
-            plugin_id=plugin_id,
-            max_count=max_count,
-            priority_min=priority_min,
-        )
-        
-        return {
-            "messages": messages,
-            "count": len(messages),
-            "time": now_iso(),
-        }
-    except Exception as e:
-        logger.exception("Failed to get plugin messages")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
-
-
-@app.post("/plugin/push", response_model=PluginPushMessageResponse)
-async def plugin_push_message(payload: PluginPushMessageRequest):
-    """
-    接收插件推送的消息（HTTP端点，主要用于外部调用或测试）
-    
-    注意：插件通常通过进程间通信直接推送，此端点作为备用。
-    """
-    try:
-        # 验证插件是否存在
-        with state.plugins_lock:
-            plugin_exists = payload.plugin_id in state.plugins
-        if not plugin_exists:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Plugin '{payload.plugin_id}' is not registered"
-            )
-        
-        # 推送消息到队列
-        message_id = push_message_to_queue(
-            plugin_id=payload.plugin_id,
-            source=payload.source,
-            message_type=payload.message_type,
-            description=payload.description,
-            priority=payload.priority,
-            content=payload.content,
-            binary_data=payload.binary_data,
-            binary_url=payload.binary_url,
-            metadata=payload.metadata,
-        )
-        
-        return PluginPushMessageResponse(
-            success=True,
-            message_id=message_id,
-            received_at=now_iso(),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("plugin_push: unexpected error")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
-
-
-# ========== 工具函数（向后兼容） ==========
-
-def get_plugins():
-    """返回插件列表（同进程访问）"""
-    return registry_get_plugins()
-
-
-# ========== 主程序入口 ==========
 
 if __name__ == "__main__":
     import uvicorn
-    logging.basicConfig(level=logging.DEBUG)
-    host = "127.0.0.1"  # 默认只暴露本机
-    uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT)
+    import os
+    import signal
+    import socket
+    import threading
+    import faulthandler
+    from pathlib import Path
+    
+    host = "127.0.0.1"
+    base_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
+
+    try:
+        _dump_path = Path(__file__).resolve().parent / "log" / "server" / "faulthandler_dump.log"
+        try:
+            _dump_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        _dump_f = open(_dump_path, "a", encoding="utf-8")
+        faulthandler.enable(file=_dump_f)
+        faulthandler.register(signal.SIGUSR1, all_threads=True, file=_dump_f)
+    except Exception:
+        try:
+            faulthandler.enable()
+            faulthandler.register(signal.SIGUSR1, all_threads=True)
+        except Exception:
+            pass
+    
+    def _find_available_port(start_port: int, max_tries: int = 50) -> int:
+        for p in range(start_port, start_port + max_tries):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, p))
+                return p
+            except OSError:
+                continue
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        return start_port
+    
+    selected_port = _find_available_port(base_port)
+    os.environ["NEKO_USER_PLUGIN_SERVER_PORT"] = str(selected_port)
+    if selected_port != base_port:
+        logger.warning(
+            "User plugin server port {} is unavailable, switched to {}",
+            base_port,
+            selected_port,
+        )
+    else:
+        logger.info("User plugin server starting on {}:{}", host, selected_port)
+    
+    _sigint_count = 0
+    _sigint_lock = threading.Lock()
+    _force_exit_timer: threading.Timer | None = None
+
+    # 增加 backlog 和 limit_concurrency 以避免连接排队
+    # backlog: TCP 连接队列大小（默认 2048）
+    # limit_concurrency: 最大并发连接数（默认无限制）
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=selected_port,
+        log_config=None,
+        backlog=4096,  # 增加 TCP backlog
+        timeout_keep_alive=30,  # Keep-alive 超时
+    )
+    server = uvicorn.Server(config)
+
+    def _start_force_exit_watchdog(timeout_s: float) -> None:
+        global _force_exit_timer
+        try:
+            if _force_exit_timer is not None:
+                return
+            def _kill() -> None:
+                try:
+                    os._exit(130)
+                except Exception:
+                    raise SystemExit(130)
+            t = threading.Timer(float(timeout_s), _kill)
+            t.daemon = True
+            _force_exit_timer = t
+            t.start()
+        except Exception:
+            pass
+
+    def _sigint_handler(_signum: int, _frame: object | None) -> None:
+        global _sigint_count
+        with _sigint_lock:
+            _sigint_count += 1
+            n = _sigint_count
+        if n >= 2:
+            try:
+                os._exit(130)
+            except Exception:
+                raise SystemExit(130)
+        try:
+            server.should_exit = True
+            server.force_exit = True
+        except Exception:
+            pass
+        _start_force_exit_watchdog(timeout_s=2.0)
+
+    _old_sigint = None
+    try:
+        _old_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _sigint_handler)
+        try:
+            signal.signal(signal.SIGTERM, _sigint_handler)
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGQUIT, _sigint_handler)
+        except Exception:
+            pass
+    except Exception:
+        _old_sigint = None
+
+    try:
+        server.install_signal_handlers = lambda: None  # type: ignore[assignment]
+    except Exception:
+        pass
+
+    try:
+        server.run()
+    finally:
+        _cleanup_old_sigint = None
+        try:
+            _cleanup_old_sigint = signal.getsignal(signal.SIGINT)
+
+            def _force_quit(*_args: object) -> None:
+                try:
+                    os._exit(130)
+                except Exception:
+                    raise SystemExit(130)
+
+            signal.signal(signal.SIGINT, _force_quit)
+        except Exception:
+            _cleanup_old_sigint = None
+        try:
+            import psutil
+            parent = psutil.Process(os.getpid())
+            children = parent.children(recursive=True)
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            
+            _, alive = psutil.wait_procs(children, timeout=0.5)
+            for p in alive:
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except KeyboardInterrupt:
+            pass
+        except ImportError:
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            if _force_exit_timer is not None:
+                _force_exit_timer.cancel()
+        except Exception:
+            pass
+
+        try:
+            if _cleanup_old_sigint is not None:
+                signal.signal(signal.SIGINT, _cleanup_old_sigint)
+        except Exception:
+            pass

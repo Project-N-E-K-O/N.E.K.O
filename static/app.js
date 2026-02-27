@@ -245,7 +245,7 @@ function init_app() {
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
-    let proactiveVisionChatEnabled = true;
+    let proactiveVisionChatEnabled = false;
     let proactiveNewsChatEnabled = false;
     let proactiveVideoChatEnabled = false;
     let mergeMessagesEnabled = false;
@@ -616,9 +616,8 @@ function init_app() {
                     }
 
                     // 检测严重错误，自动隐藏准备提示（兜底机制）
-                    const criticalErrorKeywords = ['连续失败', '已停止', '自动重试', '崩溃', '欠费', 'API Key被', '限额', '耗尽', '额度', '429', '1008', 'time limit', '超时'];
-                    const responseMessageLower = String(response.message || '').toLowerCase();
-                    if (criticalErrorKeywords.some(keyword => responseMessageLower.includes(keyword.toLowerCase()))) {
+                    const criticalErrorKeywords = ['连续失败', '已停止', '自动重试', '崩溃', '欠费', 'API Key被'];
+                    if (criticalErrorKeywords.some(keyword => response.message.includes(keyword))) {
                         console.log(window.t('console.seriousErrorHidePreparing'));
                         hideVoicePreparingToast();
                     }
@@ -798,7 +797,7 @@ function init_app() {
                                 if (t && t.id) window._agentTaskMap.set(t.id, t);
                             });
                             const tasks = Array.from(window._agentTaskMap.values());
-                            if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                            if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                 window.AgentHUD.updateAgentTaskHUD({
                                     success: true,
                                     tasks,
@@ -826,7 +825,7 @@ function init_app() {
                             window._agentTaskMap.set(task.id, task);
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
-                        if (window.live2dManager && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                        if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                             window.AgentHUD.updateAgentTaskHUD({
                                 success: true,
                                 tasks,
@@ -8887,8 +8886,8 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
-                // 视觉搭话：从localStorage加载设置（默认开启，用户可手动关闭）
-                proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
+                // 视觉搭话：从localStorage加载设置
+                proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? false;
                 window.proactiveVisionChatEnabled = proactiveVisionChatEnabled; // 同步到全局
                 // 新闻搭话：从localStorage加载设置
                 proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;

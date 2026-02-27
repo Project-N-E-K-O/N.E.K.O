@@ -5,7 +5,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
+import multiprocessing
 freeze_support()
+
+# 设置 multiprocessing 启动方法（确保跨进程共享结构的一致性）
+# 在 Linux/macOS 上使用 fork，在 Windows 上使用 spawn（默认）
+if sys.platform != "win32":
+    try:
+        multiprocessing.set_start_method('fork', force=False)
+    except RuntimeError:
+        # 启动方法已经设置过，忽略
+        pass
 
 # 检查是否需要执行初始化（用于防止 Windows spawn 方式创建的子进程重复初始化）
 # 方案：首次导入时设置环境变量标记，子进程会继承这个标记从而跳过初始化
@@ -200,9 +210,18 @@ async def _handle_agent_event(event: dict):
                             pass
             return
 
-        if not lanlan or lanlan not in session_manager:
+        # Resolve target session manager; fallback to broadcast if lanlan is unknown
+        mgr = session_manager.get(lanlan) if lanlan else None
+        if not mgr and event_type == "task_update":
+            # Broadcast task_update to all connected sessions when lanlan is unresolvable
+            task_payload = {"type": "agent_task_update", "task": event.get("task", {})}
+            for _mgr in session_manager.values():
+                if _mgr and _mgr.websocket and hasattr(_mgr.websocket, "send_json"):
+                    try:
+                        await _mgr.websocket.send_json(task_payload)
+                    except Exception:
+                        pass
             return
-        mgr = session_manager.get(lanlan)
         if not mgr:
             return
         if event_type in ("task_result", "proactive_message"):
@@ -757,6 +776,31 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """服务器关闭时清理资源"""
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理资源...")
+        
+        # 等待预加载任务完成（如果还在运行）
+        global _preload_task
+        if _preload_task:
+            try:
+                await asyncio.wait_for(_preload_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                _preload_task.cancel()
+                try:
+                    await _preload_task
+                except asyncio.CancelledError:
+                    logger.debug("预加载任务清理时超时并已取消（正常关闭流程）")
+            except asyncio.CancelledError:
+                logger.debug("预加载任务清理时已取消（正常关闭流程）")
+            except Exception as e:
+                logger.debug(f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True)
+        
+        logger.info("✅ 资源清理完成")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
@@ -1048,7 +1092,14 @@ if __name__ == "__main__":
     try:
         server.run()
     except KeyboardInterrupt:
-        # 信号处理器已经处理了，这里只是捕获异常防止 traceback
+        # Ctrl+C 正常关闭，不显示 traceback
+        logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
+    except (asyncio.CancelledError, SystemExit):
+        # 正常的关闭信号
         pass
+    except Exception as e:
+        # 真正的错误，显示完整 traceback
+        logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
+        raise
     finally:
         logger.info("服务器已关闭")

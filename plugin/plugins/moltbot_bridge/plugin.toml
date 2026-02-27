@@ -1,0 +1,44 @@
+[plugin]
+name = "Moltbot Bridge"
+description = "Bridge plugin for connecting N.E.K.O with Moltbot Gateway"
+version = "0.1.0"
+id = "moltbot_bridge"
+entry = "plugins.moltbot_bridge:MoltbotBridgePlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+email = "neko@example.com"
+url = "https://github.com/N.E.K.O"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+untested = ">=0.3.0,<0.4.0"
+conflicts = [
+    "<0.1.0",
+    ">=0.4.0",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+# PluginStore 配置（默认禁用）
+[plugin.store]
+enabled = false
+
+# Moltbot 配置
+[moltbot]
+# Moltbot Gateway 地址
+gateway_url = "http://localhost:18789"
+gateway_token = "dev-test-token"
+
+# N.E.K.O Main Server 地址
+neko_main_url = "http://localhost:48911"
+neko_main_ws = "ws://localhost:48911/ws"
+
+# 插件 WebSocket 服务器端口
+ws_port = 49916
+
+# 启用调试日志
+debug = true
