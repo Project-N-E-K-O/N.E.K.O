@@ -1424,10 +1424,11 @@ async def analyze_silence(file: UploadFile = File(...)):
     分析上传音频中的静音段落。
 
     返回:
-        - original_duration: 原始音频总时长 (mm:ss)
-        - silence_duration: 可移除空白总时长 (mm:ss)
-        - estimated_duration: 处理后预计剩余时长 (mm:ss)
-        - saving_percentage: 节省百分比
+        - original_duration / original_duration_ms: 原始音频总时长
+        - silence_duration / silence_duration_ms: 检测到的静音总时长 (total_silence_ms)
+        - removable_silence / removable_silence_ms: 实际可移除的静音时长
+        - estimated_duration / estimated_duration_ms: 处理后预计剩余时长
+        - saving_percentage: 节省百分比 (基于实际可移除量)
         - silence_segments: 静音段列表 [{start_ms, end_ms, duration_ms}]
         - has_silence: 是否检测到可移除静音
     """
@@ -1455,8 +1456,8 @@ async def analyze_silence(file: UploadFile = File(...)):
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
 
     try:
-        # 转换为 WAV（如果需要）
-        wav_buffer, _ = convert_to_wav_if_needed(file_buffer, file.filename)
+        # 转换为 WAV（如果需要）— 阻塞操作，放到线程中执行
+        wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
 
         # 执行静音检测
         analysis = await asyncio.to_thread(detect_silence, wav_buffer)
@@ -1467,6 +1468,8 @@ async def analyze_silence(file: UploadFile = File(...)):
             'original_duration_ms': round(analysis.original_duration_ms, 1),
             'silence_duration': format_duration_mmss(analysis.total_silence_ms),
             'silence_duration_ms': round(analysis.total_silence_ms, 1),
+            'removable_silence': format_duration_mmss(analysis.removable_silence_ms),
+            'removable_silence_ms': round(analysis.removable_silence_ms, 1),
             'estimated_duration': format_duration_mmss(analysis.estimated_duration_ms),
             'estimated_duration_ms': round(analysis.estimated_duration_ms, 1),
             'saving_percentage': analysis.saving_percentage,
@@ -1515,6 +1518,9 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
     else:
         task_id = str(uuid.uuid4())
 
+    # 立即占位，防止 TOCTOU 竞态
+    _trim_tasks[task_id] = {'progress': 0, 'cancelled': False, 'phase': 'queued'}
+
     try:
         file_buffer = io.BytesIO()
         total_size = 0
@@ -1524,6 +1530,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
                 break
             total_size += len(chunk)
             if total_size > MAX_UPLOAD_SIZE:
+                del _trim_tasks[task_id]
                 return JSONResponse(
                     {'error': f'文件大小超过限制 ({MAX_UPLOAD_SIZE // (1024 * 1024)} MB)'},
                     status_code=413,
@@ -1531,12 +1538,13 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
             file_buffer.write(chunk)
         file_buffer.seek(0)
     except Exception as e:
+        _trim_tasks.pop(task_id, None)
         logger.error(f"读取音频文件失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
 
     try:
-        # 注册任务
-        _trim_tasks[task_id] = {'progress': 0, 'cancelled': False, 'phase': 'analyzing'}
+        # 文件读取完成，切换到分析阶段
+        _trim_tasks[task_id]['phase'] = 'analyzing'
 
         def progress_cb(pct: int):
             if task_id in _trim_tasks:
@@ -1551,8 +1559,8 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
         def cancel_check() -> bool:
             return _trim_tasks.get(task_id, {}).get('cancelled', False)
 
-        # 转换为 WAV
-        wav_buffer, _ = convert_to_wav_if_needed(file_buffer, file.filename)
+        # 转换为 WAV — 阻塞操作，放到线程中执行
+        wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
 
         # 分析静音
         analysis = await asyncio.to_thread(
