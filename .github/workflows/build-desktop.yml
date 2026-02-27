@@ -520,7 +520,7 @@ jobs:
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             pkg.build = pkg.build || {};
             pkg.build.linux = pkg.build.linux || {};
-            pkg.build.linux.maintainer = 'Project N.E.K.O. <nickyoungboom@gmail.com>';
+            pkg.build.linux.maintainer = 'Project N.E.K.O. <projectneko@yahoo.com>';
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
             console.log('Set Linux deb maintainer');
           "
