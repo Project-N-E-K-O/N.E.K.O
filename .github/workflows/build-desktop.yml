@@ -567,7 +567,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: always() && !cancelled() && needs.build-python.result != 'failure'
+    if: always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
@@ -620,7 +620,7 @@ jobs:
             --title "Nightly Build ${DATE}" \
             --target "${{ github.sha }}" \
             --prerelease \
-            --notes "$(cat <<'NOTES'
+            --notes "$(cat <<NOTES
           ## Nightly Build ${DATE} (${VERSION})
 
           > ⚠️ This is an **unsigned** nightly build for testing purposes.
