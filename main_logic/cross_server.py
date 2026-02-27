@@ -303,8 +303,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
-                                # 检查是否正在关闭
-                                if not shutdown_event.is_set():
+                                # 仅在有用户输入的 turn 才发送，主动搭话不触发分析
+                                if had_user_input_this_turn and not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要
                                         recent = []
