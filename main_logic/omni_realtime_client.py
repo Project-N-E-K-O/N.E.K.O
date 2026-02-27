@@ -948,7 +948,10 @@ class OmniRealtimeClient:
                             await self.on_status_message("⚠️ 服务器繁忙，正在自动调节发送速率...")
                         continue
                     
-                    if '欠费' in error_msg or 'standing' in error_msg:
+                    error_msg_lower = error_msg.lower()
+                    if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
+                        'policy violation' in error_msg_lower or '1008' in error_msg_lower or
+                        '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
                         await self.close()

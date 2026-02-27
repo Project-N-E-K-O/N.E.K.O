@@ -439,11 +439,16 @@
         "clearScreenshots": "スクリーンショットをクリア",
         "clearScreenshotsConfirm": "保留中のすべてのスクリーンショットをクリアしてもよろしいですか？"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "感情分析がタイムアウトしました",
         "noAudioTrack": "利用可能なオーディオトラックがありません",
         "cameraStreamFailed": "カメラストリームの取得に失敗しました",
-        "characterConfigFailed": "キャラクター設定の取得に失敗しました"
+        "characterConfigFailed": "キャラクター設定の取得に失敗しました",
+        "API_ARREARS": "💥 APIの残高が不足しています。チャージしてください。",
+        "API_QUOTA_TIME": "💥 無料APIの利用制限に達しました。明日やり直すか他のAPIに切り替えてください。",
+        "API_RATE_LIMIT": "💥 リクエストが多すぎます(429)。しばらくしてからもう一度お試しください。",
+        "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
+        "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}"
     },
     "camera": {
         "iosPermissionHint": "iOS設定 → Safari → カメラの権限が「許可」に設定されているか確認してください",

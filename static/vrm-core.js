@@ -985,6 +985,9 @@ class VRMCore {
                 console.warn('[VRM Core] 相机未初始化，跳过相机位置调整');
             }
             
+            // 添加到场景前先隐藏，避免首帧/T-pose 闪现
+            vrm.scene.visible = false;
+
             // 添加到场景 - 确保场景已初始化
             if (!this.manager.scene) {
                 const errorMsg = window.t ? window.t('vrm.error.sceneNotInitializedForAdd') : '场景未初始化。请先调用 initThreeJS() 初始化场景。';

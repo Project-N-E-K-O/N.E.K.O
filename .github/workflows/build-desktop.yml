@@ -1,9 +1,8 @@
 name: Build Desktop App (Cross-Platform)
 
 on:
-  push:
-    tags:
-      - 'v*'
+  schedule:
+    - cron: '0 0 * * *'   # Daily at 8 AM Beijing time (00:00 UTC)
   workflow_dispatch:
     inputs:
       version:
@@ -493,7 +492,7 @@ jobs:
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
       - name: Disable macOS code signing
-        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'
+        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'))
         working-directory: electron-app
         run: |
           node -e "
@@ -510,13 +509,29 @@ jobs:
             console.log('macOS code signing fully disabled');
           "
 
+      # Linux .deb requires a maintainer email; N.E.K.O.-PC package.json
+      # only has author name without email, so patch it here
+      - name: Set Linux deb maintainer
+        if: runner.os == 'Linux'
+        working-directory: electron-app
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.build = pkg.build || {};
+            pkg.build.linux = pkg.build.linux || {};
+            pkg.build.linux.maintainer = 'Project N.E.K.O. <projectneko@yahoo.com>';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Set Linux deb maintainer');
+          "
+
       # --- Build Electron app ---
       - name: Build Electron app
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }}
+        run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true' && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -549,56 +564,84 @@ jobs:
           retention-days: 14
 
   # ──────────────────────────────────────────────
-  # Step 3: Create GitHub Release (only on tag push)
+  # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, build-electron]
+  nightly:
+    if: always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all desktop artifacts
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: desktop-*
 
       - name: Organize release files
         run: |
           mkdir -p release
-          find artifacts -type f \( \
+          VERSION="${{ needs.version.outputs.version }}"
+
+          # Zip Python backend artifacts per platform
+          for dir in artifacts/python-backend-*; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            echo "Zipping $name ..."
+            (cd "$dir" && zip -qr "../../release/${name}-${VERSION}.zip" .)
+          done
+
+          # Collect Electron desktop artifacts
+          find artifacts/desktop-* -type f \( \
             -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
             -o -name "latest*.yml" \
-          \) -exec cp {} release/ \;
-          echo "=== Release files ==="
+          \) -exec cp {} release/ \; 2>/dev/null || true
+
+          echo "=== Nightly release files ==="
           ls -lah release/
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: "N.E.K.O. v${{ needs.version.outputs.version }}"
-          body: |
-            ## N.E.K.O. v${{ needs.version.outputs.version }}
-
-            ### Downloads
-            | Platform | Architecture | File |
-            |----------|-------------|------|
-            | Windows | x64 | `N.E.K.O.exe` (Portable) |
-            | macOS | Intel (x64) | `N.E.K.O-*.dmg` or `.zip` |
-            | macOS | Apple Silicon (arm64) | `N.E.K.O-*-arm64.dmg` or `.zip` |
-            | Linux | x64 | `N.E.K.O-*.AppImage` / `.deb` / `.tar.gz` |
-
-            ### Notes
-            - First launch may take a moment as the Python backend initializes
-            - Default server port: `48911`
-
-            ---
-            Built by GitHub Actions
-          files: release/*
-          draft: true
-          prerelease: ${{ contains(needs.version.outputs.version, 'beta') || contains(needs.version.outputs.version, 'alpha') || contains(needs.version.outputs.version, 'rc') }}
+      - name: Delete old nightly release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+
+          gh release create nightly release/* \
+            --title "Nightly Build ${DATE}" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --notes "$(cat <<NOTES
+          ## Nightly Build ${DATE} (${VERSION})
+
+          > ⚠️ This is an **unsigned** nightly build for testing purposes.
+
+          ### Desktop App (Electron + Python backend)
+          | Platform | File |
+          |----------|------|
+          | Windows x64 | \`N.E.K.O.exe\` (Portable) |
+          | macOS Intel | \`N.E.K.O-*.dmg\` / \`.zip\` |
+          | macOS Apple Silicon | \`N.E.K.O-*-arm64.dmg\` / \`.zip\` |
+          | Linux x64 | \`N.E.K.O-*.AppImage\` / \`.deb\` / \`.tar.gz\` |
+
+          ### Python Backend Only (standalone, no Electron)
+          | Platform | File |
+          |----------|------|
+          | Windows x64 | \`python-backend-win-*.zip\` |
+          | macOS Intel | \`python-backend-mac-x64-*.zip\` |
+          | macOS Apple Silicon | \`python-backend-mac-arm64-*.zip\` |
+          | Linux x64 | \`python-backend-linux-*.zip\` |
+
+          ---
+          Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
+          NOTES
+          )"

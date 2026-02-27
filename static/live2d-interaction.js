@@ -250,6 +250,9 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo) {
  * @returns {Promise<boolean>} 是否执行了吸附
  */
 Live2DManager.prototype._checkAndPerformSnap = async function (model, options = {}) {
+    if (!this._isModelReadyForInteraction && !options.allowWhenNotReady) {
+        return false;
+    }
     // 如果正在执行吸附动画，跳过
     if (this._isSnapping) {
         return false;
@@ -499,6 +502,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     model.on('pointerdown', (event) => {
+        if (!this._isModelReadyForInteraction) return;
         if (this.isLocked) return;
 
         // 检测是否为触摸事件，且是多点触摸（双指缩放）
@@ -530,9 +534,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = '';
-
-            // 拖拽结束后恢复按钮的 pointer-events
             restoreButtonPointerEvents();
+
+            if (!this._isModelReadyForInteraction) return;
 
             // 检测是否为点击（非拖拽）
             const clickDuration = Date.now() - clickStartTime;
@@ -562,6 +566,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     const onDragMove = (event) => {
+        if (!this._isModelReadyForInteraction) return;
         if (isDragging) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
@@ -853,6 +858,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
+        if (!this._isModelReadyForInteraction) return;
         // 更新 Ctrl 键状态：综合事件中的状态和本地状态
         // 如果是真实事件，更新本地状态；如果是模拟事件，本地状态保持不变（除非事件里带了 Ctrl）
         if (event.isTrusted) {
@@ -1262,13 +1268,14 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         }
     }
 
-    // 获取当前屏幕尺寸（用于跨分辨率位置和缩放归一化）
-    // 使用 screen.width/height 而非 renderer 尺寸，避免临时视口变化（F12、输入法等）污染保存数据
+    // 使用渲染器逻辑尺寸作为归一化基准（renderer 不再自动 resize，尺寸与稳定屏幕分辨率等价）
     let viewportInfo = null;
-    const screenW = window.screen.width;
-    const screenH = window.screen.height;
-    if (Number.isFinite(screenW) && Number.isFinite(screenH) && screenW > 0 && screenH > 0) {
-        viewportInfo = { width: screenW, height: screenH };
+    if (this.pixi_app && this.pixi_app.renderer) {
+        const rw = this.pixi_app.renderer.screen.width;
+        const rh = this.pixi_app.renderer.screen.height;
+        if (Number.isFinite(rw) && Number.isFinite(rh) && rw > 0 && rh > 0) {
+            viewportInfo = { width: rw, height: rh };
+        }
     }
 
     // 异步保存，不阻塞交互
@@ -1417,43 +1424,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
     }
 };
 
-/**
- * 设置窗口大小改变时的自动吸附检测
- * 当窗口/屏幕大小改变时，检测模型是否超出边界并执行吸附
- * 注意：不在 resize 时调整模型 scale/position，避免临时视口变化
- *（F12 DevTools、移动端输入法弹出等）导致模型不可逆地缩小
- */
-Live2DManager.prototype.setupResizeSnapDetection = function () {
-    // 防止重复绑定
-    if (this._resizeSnapHandler) {
-        window.removeEventListener('resize', this._resizeSnapHandler);
-    }
-
-    // 防抖动的 resize 处理函数
-    let resizeTimeout = null;
-
-    this._resizeSnapHandler = () => {
-        // 如果正在拖拽或吸附，跳过
-        if (this._isSnapping) return;
-
-        // 清除之前的定时器
-        if (resizeTimeout) {
-            clearTimeout(resizeTimeout);
-        }
-
-        // 延迟执行，避免频繁触发
-        resizeTimeout = setTimeout(async () => {
-            if (!this.currentModel || !this.pixi_app) return;
-
-            // 仅执行吸附检测（防止模型超出屏幕边界）
-            await this._checkAndPerformSnap(this.currentModel);
-        }, 300);
-    };
-
-    window.addEventListener('resize', this._resizeSnapHandler);
-
-    console.debug('[Live2D] 已启用窗口大小改变时的自动吸附检测');
-};
+// setupResizeSnapDetection 已移除：渲染器仅在真实屏幕分辨率变化时 resize，不再需要吸附检测
 
 /**
  * 手动触发吸附检测（供外部调用）
@@ -1543,11 +1514,7 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         this._windowBlurListener = null;
     }
 
-    // 清理 resize 监听器
-    if (this._resizeSnapHandler) {
-        window.removeEventListener('resize', this._resizeSnapHandler);
-        this._resizeSnapHandler = null;
-    }
+    // resize 吸附监听器已移除（setupResizeSnapDetection 不再存在）
 
     // 清理 canvas 上的滚轮和触摸监听器
     if (this.pixi_app && this.pixi_app.view) {

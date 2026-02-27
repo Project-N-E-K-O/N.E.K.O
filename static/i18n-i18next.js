@@ -855,13 +855,31 @@
      * @returns {string} Translated message
      */
     function translateStatusMessage(message) {
+        // Attempt to parse JSON strings into objects
+        if (typeof message === 'string') {
+            try {
+                const parsed = JSON.parse(message);
+                if (parsed && typeof parsed === 'object') {
+                    message = parsed;
+                }
+            } catch (e) {
+                // Not valid JSON, keep as string
+            }
+        }
+
         // Support structured error objects (future-proofing)
         if (message && typeof message === 'object') {
             if (message.code && typeof message.code === 'string') {
                 // Use error code for translation (preferred method)
                 const translationKey = `errors.${message.code}`;
                 const details = message.details || {};
-                return i18next.t(translationKey, details) || message.message || String(message);
+                const translated = i18next.t(translationKey, details);
+                
+                // If translation succeeds (doesn't return the key), return it
+                if (translated && translated !== translationKey) return translated;
+                
+                // Fallbacks if no translation available
+                return message.message || details.msg || String(message);
             }
             // If object has message property, use it
             if (message.message) {
