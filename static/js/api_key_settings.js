@@ -907,6 +907,164 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
+
+async function save_butten_down() {
+
+    const apiKeyInput = document.getElementById('apiKeyInput');
+
+    // 获取高级设定的值
+    // 即使选择器被禁用，也要确保能正确获取当前选择的值
+    const coreApiSelect = document.getElementById('coreApiSelect');
+    const assistApiSelect = document.getElementById('assistApiSelect');
+
+    // 获取自定义API启用状态（用于推断逻辑，优先判断非自定义模式）
+    const enableCustomApiElement = document.getElementById('enableCustomApi');
+    const enableCustomApi = enableCustomApiElement ? enableCustomApiElement.checked : false;
+
+    // 优先从选择器获取值，如果选择器被禁用或值为空，则从当前显示状态推断
+    let coreApi = coreApiSelect ? coreApiSelect.value : '';
+    let assistApi = assistApiSelect ? assistApiSelect.value : '';
+
+    // 如果核心API选择器被禁用，检查是否是因为免费版本
+    if (coreApiSelect && coreApiSelect.disabled && coreApi === '') {
+        // 仅在非自定义API模式下，根据 select 的实际值判断是否为免费版
+        if (!enableCustomApi && coreApiSelect.value === 'free') {
+            coreApi = 'free';
+        }
+    }
+
+    // 如果辅助API选择器被禁用，检查是否是因为免费版本
+    if (assistApiSelect && assistApiSelect.disabled && assistApi === '') {
+        // 仅在非自定义API模式下，如果核心 API 已确定为 free，则辅助 API 也强制为 'free'
+        if (!enableCustomApi && coreApi === 'free') {
+            assistApi = 'free';
+        }
+    }
+
+    // 处理API Key：读取用户输入并去除免费版展示文本
+    let apiKey = apiKeyInput.value ? apiKeyInput.value.trim() : '';
+    if (isFreeVersionText(apiKey)) {
+        apiKey = '';
+    }
+    const assistApiKeyQwen = document.getElementById('assistApiKeyInputQwen') ? document.getElementById('assistApiKeyInputQwen').value.trim() : '';
+    const assistApiKeyOpenai = document.getElementById('assistApiKeyInputOpenai') ? document.getElementById('assistApiKeyInputOpenai').value.trim() : '';
+    const assistApiKeyGlm = document.getElementById('assistApiKeyInputGlm') ? document.getElementById('assistApiKeyInputGlm').value.trim() : '';
+    const assistApiKeyStep = document.getElementById('assistApiKeyInputStep') ? document.getElementById('assistApiKeyInputStep').value.trim() : '';
+    const assistApiKeySilicon = document.getElementById('assistApiKeyInputSilicon') ? document.getElementById('assistApiKeyInputSilicon').value.trim() : '';
+    const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
+    const assistApiKeyKimi = document.getElementById('assistApiKeyInputKimi') ? document.getElementById('assistApiKeyInputKimi').value.trim() : '';
+
+    // 获取用户自定义API配置
+    const conversationModelUrl = document.getElementById('conversationModelUrl') ? document.getElementById('conversationModelUrl').value.trim() : '';
+    const conversationModelId = document.getElementById('conversationModelId') ? document.getElementById('conversationModelId').value.trim() : '';
+    const conversationModelApiKey = document.getElementById('conversationModelApiKey') ? document.getElementById('conversationModelApiKey').value.trim() : '';
+
+    const summaryModelUrl = document.getElementById('summaryModelUrl') ? document.getElementById('summaryModelUrl').value.trim() : '';
+    const summaryModelId = document.getElementById('summaryModelId') ? document.getElementById('summaryModelId').value.trim() : '';
+    const summaryModelApiKey = document.getElementById('summaryModelApiKey') ? document.getElementById('summaryModelApiKey').value.trim() : '';
+
+    const correctionModelUrl = document.getElementById('correctionModelUrl') ? document.getElementById('correctionModelUrl').value.trim() : '';
+    const correctionModelId = document.getElementById('correctionModelId') ? document.getElementById('correctionModelId').value.trim() : '';
+    const correctionModelApiKey = document.getElementById('correctionModelApiKey') ? document.getElementById('correctionModelApiKey').value.trim() : '';
+
+    const emotionModelUrl = document.getElementById('emotionModelUrl') ? document.getElementById('emotionModelUrl').value.trim() : '';
+    const emotionModelId = document.getElementById('emotionModelId') ? document.getElementById('emotionModelId').value.trim() : '';
+    const emotionModelApiKey = document.getElementById('emotionModelApiKey') ? document.getElementById('emotionModelApiKey').value.trim() : '';
+
+    const visionModelUrl = document.getElementById('visionModelUrl') ? document.getElementById('visionModelUrl').value.trim() : '';
+    const visionModelId = document.getElementById('visionModelId') ? document.getElementById('visionModelId').value.trim() : '';
+    const visionModelApiKey = document.getElementById('visionModelApiKey') ? document.getElementById('visionModelApiKey').value.trim() : '';
+    const agentModelUrl = document.getElementById('agentModelUrl') ? document.getElementById('agentModelUrl').value.trim() : '';
+    const agentModelId = document.getElementById('agentModelId') ? document.getElementById('agentModelId').value.trim() : '';
+    const agentModelApiKey = document.getElementById('agentModelApiKey') ? document.getElementById('agentModelApiKey').value.trim() : '';
+
+    const omniModelUrl = document.getElementById('omniModelUrl') ? document.getElementById('omniModelUrl').value.trim() : '';
+    const omniModelId = document.getElementById('omniModelId') ? document.getElementById('omniModelId').value.trim() : '';
+    const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
+
+    let ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
+    const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
+    const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
+    let ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
+
+    // 检查 GPT-SoVITS v3 配置
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    // 始终获取 GPT-SoVITS 配置用于保存（即使禁用也保存配置以便下次启用时恢复）
+    const gptsovitsConfigForSave = getGptSovitsConfigForSave();
+
+    // 启用 GPT-SoVITS 时校验 URL 协议
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+        const url = gptsovitsConfigForSave.url || '';
+        if (!/^https?:\/\//.test(url)) {
+            showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请填写正确的 http/https API URL', 'error');
+            return;
+        }
+    }
+
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+        // GPT-SoVITS 启用，使用其配置
+        ttsModelUrl = gptsovitsConfigForSave.url;
+        ttsVoiceId = gptsovitsConfigForSave.voiceId;
+    } else if (!gptsovitsEnabled) {
+        // GPT-SoVITS 禁用
+        // 如果当前 ttsModelUrl 是 HTTP URL（GPT-SoVITS 格式），需要特殊处理
+        if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
+            // 保存 GPT-SoVITS 配置到特殊标记，但清空实际使用的 URL
+            // 格式：在 voiceId 中添加 __gptsovits_disabled__ 前缀保存配置
+            if (gptsovitsConfigForSave) {
+                ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
+            }
+            ttsModelUrl = '';
+        }
+    }
+
+    const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
+
+    const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : apiKey;
+
+    // 免费版和启用自定义API时不需要API Key检查
+    if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKey) {
+        showStatus(window.t ? window.t('api.pleaseEnterApiKeyError') : '请输入API Key', 'error');
+        return;
+    }
+
+    // 检查是否已有API Key，如果有则显示警告
+    const currentApiKeyDiv = document.getElementById('current-api-key');
+    if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
+        // 已有API Key，显示警告弹窗
+        pendingApiKey = {
+            apiKey: apiKeyForSave, coreApi, assistApi,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
+            conversationModelUrl, conversationModelId, conversationModelApiKey,
+            summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelUrl, agentModelId, agentModelApiKey,
+            omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
+            mcpToken, enableCustomApi
+        };
+        showWarningModal();
+    } else {
+        // 没有现有API Key，直接保存
+        await saveApiKey({
+            apiKey: apiKeyForSave, coreApi, assistApi,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi,
+            conversationModelUrl, conversationModelId, conversationModelApiKey,
+            summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelUrl, agentModelId, agentModelApiKey,
+            omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
+            mcpToken, enableCustomApi
+        });
+    }
+}
+
+
 async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
