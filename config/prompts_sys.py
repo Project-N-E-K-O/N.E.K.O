@@ -765,7 +765,8 @@ proactive_screen_web_zh = """你是一个面向年轻人的话题筛选助手。
 重要规则：
 1. 不要选和对话历史或近期搭话记录重复/雷同的内容
 2. 如果近期搭话已多次用同类话题（如连续分享新闻/视频），优先选不同类型，或返回 [PASS]
-3. 所有内容都不够有趣就返回 [PASS]
+3. 即便换一种说法、语气或切入角度，只要核心话题相同，也视为重复，必须改选或 [PASS]
+4. 所有内容都不够有趣就返回 [PASS]
 
 回复格式（严格遵守）：
 - 有值得分享的话题：
@@ -797,7 +798,8 @@ Topic preferences (in priority order):
 Critical rules:
 1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
 2. If recent proactive chats have repeatedly used the same type of topic (e.g. multiple news stories in a row), pick a different type or return [PASS]
-3. If nothing is interesting enough, return [PASS]
+3. Rewording alone does NOT make a topic new; if the core topic is the same, treat it as duplicate and choose another one or [PASS]
+4. If nothing is interesting enough, return [PASS]
 
 Reply format (strict):
 - If there's a worthy topic:
@@ -829,7 +831,8 @@ proactive_screen_web_ja = """あなたは若者向けの話題キュレーター
 重要ルール：
 1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
 2. 最近の話しかけで同じタイプの話題が続いている場合（ニュース連続など）、別タイプを選ぶか [PASS] を返す
-3. どれも面白くなければ [PASS] を返す
+3. 言い換え・口調変更・切り口変更だけで、核となる話題が同じなら重複とみなし、別案か [PASS] を選ぶ
+4. どれも面白くなければ [PASS] を返す
 
 回答形式（厳守）：
 - 共有する価値のある話題がある場合：
@@ -861,7 +864,8 @@ proactive_screen_web_ko = """당신은 젊은 세대를 위한 주제 큐레이�
 중요 규칙:
 1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
 2. 최근 말 건넨 기록에서 같은 유형의 주제가 반복되었다면 (예: 연속 뉴스 공유), 다른 유형을 선택하거나 [PASS] 반환
-3. 흥미로운 것이 없으면 [PASS] 반환
+3. 표현/말투/접근만 바뀌고 핵심 주제가 같다면 중복으로 간주하고 다른 주제를 고르거나 [PASS] 반환
+4. 흥미로운 것이 없으면 [PASS] 반환
 
 답변 형식 (엄격 준수):
 - 공유할 가치가 있는 주제:
@@ -897,22 +901,15 @@ proactive_generate_zh = """以下是你的人设：
 请以你的角色身份，自然地向{master_name}搭话。要求：
 1. 完全符合你的角色性格和说话习惯
 2. 简短自然，像是随口分享或搭话，不超过2-3句话
-3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话
+{source_instruction}
 4. 要契合当前的对话氛围和主人的近期兴趣
-5. 绝对不要重复"近期搭话记录"中已经说过的内容，话题、句式和口吻都要有新意
-6. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
-7. 不要生成思考过程
+5. 绝对不要重复"近期搭话记录"中已经说过的内容。重复判定从严：只要核心事件/人物/视频/梗相同，即使换措辞、换语气、换切入点，也算重复，必须放弃
+6. 禁止复读自己的近期主动搭话：不能再次提到同一条新闻、同一个视频、同一个争议点、同一个笑点；若无法确认是否重复，按重复处理并放弃
+7. 只要存在重复风险，宁可回复 [PASS] 也不要硬聊
+8. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
+9. 不要生成思考过程
 
-输出格式（严格遵守）：
-- 放弃搭话 → 只输出 [PASS]
-- 否则第一行写来源标签，第二行起写你要说的话：
-  [SCREEN] = 基于屏幕内容
-  [WEB] = 基于外部话题
-  [BOTH] = 结合了两者
-
-示例：
-[SCREEN]
-你在看这个啊？看起来挺有意思的..."""
+{output_format_section}"""
 
 proactive_generate_en = """Here is your persona:
 ======Character Persona======
@@ -934,22 +931,15 @@ proactive_generate_en = """Here is your persona:
 As your character, naturally start a conversation with {master_name}. Requirements:
 1. Stay perfectly in character—match your personality and speaking style
 2. Keep it short and natural, like a casual remark or share (max 2-3 sentences)
-3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at
+{source_instruction}
 4. Match the current conversation mood and the master's recent interests
-5. Absolutely do NOT repeat anything from your "recent proactive chats"—vary your topic, phrasing, and tone
-6. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
-7. Do not include any reasoning
+5. Absolutely do NOT repeat anything from your "recent proactive chats". Use a strict duplicate rule: if the core event/person/video/meme is the same, it is a duplicate even if wording, tone, or angle changes
+6. Never re-use your own recent proactive topic: do not bring up the same news item, same video, same controversy point, or same punchline again; if unsure, treat it as duplicate
+7. If there is any duplication risk, prefer [PASS] instead of forcing a message
+8. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
+9. Do not include any reasoning
 
-Output format (strict):
-- To skip: reply only [PASS]
-- Otherwise, first line = source tag, then your message on the next line(s):
-  [SCREEN] = based on screen content
-  [WEB] = based on external topic
-  [BOTH] = combined both
-
-Example:
-[SCREEN]
-Hey, what are you looking at? That looks interesting..."""
+{output_format_section}"""
 
 proactive_generate_ja = """以下はあなたのキャラクター設定です：
 ======キャラクター設定======
@@ -971,22 +961,15 @@ proactive_generate_ja = """以下はあなたのキャラクター設定です�
 あなたのキャラクターとして、自然に{master_name}に話しかけてください。条件：
 1. キャラクターの性格と話し方に完全に合わせる
 2. 短く自然に、何気なく共有する感じで（2〜3文まで）
-3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先
+{source_instruction}
 4. 現在の会話の雰囲気とご主人の最近の関心に合わせる
-5.「最近の話しかけ記録」にある内容は絶対に繰り返さない—話題・言い回し・トーンすべて新鮮にする
-6. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
-7. 推論は含めない
+5.「最近の話しかけ記録」の内容は絶対に繰り返さない。重複判定は厳格に行う：核心となる出来事・人物・動画・ミームが同じなら、言い換えや口調変更でも重複とみなす
+6. 自分の最近の自発話題を再利用しない。同じニュース、同じ動画、同じ論点、同じオチは再提示しない。迷ったら重複扱いにする
+7. 少しでも重複リスクがあるなら、無理に話さず [PASS] を優先する
+8. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
+9. 推論は含めない
 
-出力形式（厳守）：
-- パス → [PASS] のみ
-- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：
-  [SCREEN] = 画面の内容に基づく
-  [WEB] = 外部話題に基づく
-  [BOTH] = 両方を組み合わせ
-
-例：
-[SCREEN]
-何見てるの？面白そうだね..."""
+{output_format_section}"""
 
 proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 ======캐릭터 설정======
@@ -1008,22 +991,15 @@ proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 캐릭터로서 자연스럽게 {master_name}에게 말을 걸어주세요. 요구사항:
 1. 캐릭터의 성격과 말투를 완벽히 유지
 2. 짧고 자연스럽게, 캐주얼한 한마디처럼 (2-3문장 이내)
-3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선
+{source_instruction}
 4. 현재 대화 분위기와 주인의 최근 관심사에 맞추기
-5.「최근 말 건넨 기록」의 내용을 절대 반복하지 않기—주제, 문체, 톤 모두 새롭게
-6. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
-7. 추론 과정 생략
+5.「최근 말 건넨 기록」의 내용을 절대 반복하지 말 것. 중복 판정은 엄격하게: 핵심 사건/인물/영상/밈이 같으면 표현, 톤, 접근이 달라도 중복으로 본다
+6. 자신의 최근 주도 대화 주제를 재사용하지 말 것. 같은 뉴스, 같은 영상, 같은 논쟁 포인트, 같은 펀치라인은 다시 꺼내지 않는다. 애매하면 중복으로 처리
+7. 중복 위험이 조금이라도 있으면 억지로 말하지 말고 [PASS]를 우선
+8. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
+9. 추론 과정 생략
 
-출력 형식 (엄격 준수):
-- 패스 → [PASS]만
-- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:
-  [SCREEN] = 화면 내용 기반
-  [WEB] = 외부 주제 기반
-  [BOTH] = 둘 다 결합
-
-예시:
-[SCREEN]
-뭐 보고 있어? 재밌어 보이는데..."""
+{output_format_section}"""
 
 
 # =====================================================================
@@ -1042,7 +1018,7 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'en'
     if lang_lower.startswith('ko'):
         return 'ko'
-    return 'zh'
+    return 'en'
 
 
 PROACTIVE_CHAT_PROMPTS = {
@@ -1134,4 +1110,158 @@ def get_proactive_generate_prompt(lang: str = 'zh') -> str:
     """获取 Phase 2 生成阶段 prompt"""
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
+
+
+def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = 'zh') -> tuple:
+    """根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签"""
+    lang = _normalize_prompt_language(lang)
+
+    if has_screen and has_web:
+        key = 'both'
+    elif has_screen:
+        key = 'screen'
+    elif has_web:
+        key = 'web'
+    else:
+        key = 'none'
+
+    _si = {
+        'zh': {
+            'both':   '3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
+            'screen': '3. 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'web':    '3. 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'none':   '3. 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
+        },
+        'en': {
+            'both':   '3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
+            'screen': '3. You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'web':    '3. You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'none':   '3. You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
+        },
+        'ja': {
+            'both':   '3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先',
+            'screen': '3. ご主人が見ている画面の内容について話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'web':    '3. 提供された外部話題をもとに話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'none':   '3. 会話履歴と現在の状態をもとに自然に話しかけてもいいが、最近似たような話をしたか、特に話すことがなければパスしてもいい',
+        },
+        'ko': {
+            'both':   '3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선',
+            'screen': '3. 주인이 현재 화면에서 보고 있는 내용에 대해 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'web':    '3. 제공된 외부 주제를 대화 소재로 활용해도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'none':   '3. 대화 기록과 현재 상태를 바탕으로 자연스럽게 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 딱히 할 말이 없으면 패스해도 됨',
+        },
+    }
+
+    _of = {
+        'zh': {
+            'both': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
+                '  [SCREEN] = 基于屏幕内容\n'
+                '  [WEB] = 基于外部话题\n'
+                '  [BOTH] = 结合了两者\n\n'
+                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
+            ),
+            'screen': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [SCREEN]，第二行起写你要说的话\n\n'
+                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
+            ),
+            'web': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [WEB]，第二行起写你要说的话\n\n'
+                '示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...'
+            ),
+            'none': (
+                '如果没有什么好聊的，回复 [PASS]。\n'
+                '否则直接输出你要说的话（不需要来源标签）。'
+            ),
+        },
+        'en': {
+            'both': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
+                '  [SCREEN] = based on screen content\n'
+                '  [WEB] = based on external topic\n'
+                '  [BOTH] = combined both\n\n'
+                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
+            ),
+            'screen': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [SCREEN], then your message on the next line(s)\n\n'
+                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
+            ),
+            'web': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [WEB], then your message on the next line(s)\n\n'
+                'Example:\n[WEB]\nHey, did you hear about this interesting thing...'
+            ),
+            'none': (
+                'If nothing feels right to bring up, reply [PASS].\n'
+                'Otherwise, just output your message directly (no source tag needed).'
+            ),
+        },
+        'ja': {
+            'both': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
+                '  [SCREEN] = 画面の内容に基づく\n'
+                '  [WEB] = 外部話題に基づく\n'
+                '  [BOTH] = 両方を組み合わせ\n\n'
+                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
+            ),
+            'screen': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [SCREEN]、2行目以降にメッセージ\n\n'
+                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
+            ),
+            'web': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [WEB]、2行目以降にメッセージ\n\n'
+                '例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...'
+            ),
+            'none': (
+                '話すことがなければ [PASS] と返してください。\n'
+                'それ以外は直接メッセージを出力（ソースタグ不要）。'
+            ),
+        },
+        'ko': {
+            'both': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
+                '  [SCREEN] = 화면 내용 기반\n'
+                '  [WEB] = 외부 주제 기반\n'
+                '  [BOTH] = 둘 다 결합\n\n'
+                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
+            ),
+            'screen': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [SCREEN], 다음 줄부터 메시지\n\n'
+                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
+            ),
+            'web': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [WEB], 다음 줄부터 메시지\n\n'
+                '예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...'
+            ),
+            'none': (
+                '말할 게 없으면 [PASS]로 답변.\n'
+                '아니면 메시지만 직접 출력 (소스 태그 불필요).'
+            ),
+        },
+    }
+
+    return _si[lang][key], _of[lang][key]
 

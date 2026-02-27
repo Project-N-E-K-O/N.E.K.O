@@ -336,6 +336,7 @@ function init_app() {
     // 动画设置：画质和帧率
     let renderQuality = 'medium';   // 'low' | 'medium' | 'high'
     let targetFrameRate = 60;       // 30 | 45 | 60
+    const mapRenderQualityToFollowPerf = (quality) => (quality === 'high' ? 'medium' : 'low');
 
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
@@ -350,6 +351,7 @@ function init_app() {
     window.proactiveVisionInterval = proactiveVisionInterval;
     window.renderQuality = renderQuality;
     window.targetFrameRate = targetFrameRate;
+    window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
 
     // WebSocket心跳保活
     let heartbeatInterval = null;
@@ -2190,8 +2192,16 @@ function init_app() {
         }
     }
 
-    // 保存选择的麦克风到服务器
+    // 保存选择的麦克风到服务器和 localStorage
     async function saveSelectedMicrophone(deviceId) {
+        try {
+            if (deviceId) {
+                localStorage.setItem('neko_selected_microphone', deviceId);
+            } else {
+                localStorage.removeItem('neko_selected_microphone');
+            }
+        } catch (e) { }
+
         try {
             const response = await fetch('/api/characters/set_microphone', {
                 method: 'POST',
@@ -2211,16 +2221,15 @@ function init_app() {
         }
     }
 
-    // 加载上次选择的麦克风
-    async function loadSelectedMicrophone() {
+    // 加载上次选择的麦克风（优先从 localStorage 加载，快速恢复）
+    function loadSelectedMicrophone() {
         try {
-            const response = await fetch('/api/characters/get_microphone');
-            if (response.ok) {
-                const data = await response.json();
-                selectedMicrophoneId = data.microphone_id || null;
+            const saved = localStorage.getItem('neko_selected_microphone');
+            if (saved) {
+                selectedMicrophoneId = saved;
+                console.log(`已加载麦克风设置: ${saved}`);
             }
-        } catch (err) {
-            console.error(window.t('console.loadMicrophoneSelectionFailed'), err);
+        } catch (e) {
             selectedMicrophoneId = null;
         }
     }
@@ -2926,6 +2935,12 @@ function init_app() {
 
             screenButton.classList.add('active');
             syncFloatingScreenButtonState(true);
+
+            if (window.unlockAchievement) {
+                window.unlockAchievement('ACH_SEND_IMAGE').catch(err => {
+                    console.error('解锁发送图片成就失败:', err);
+                });
+            }
 
             try {
                 stopProactiveVisionDuringSpeech();
@@ -7248,9 +7263,12 @@ function init_app() {
                 return;
             }
 
+            keyboardCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
+                userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             
@@ -8371,6 +8389,11 @@ function init_app() {
                     const screenshotDataUrl = results[screenshotIndex];
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        if (window.unlockAchievement) {
+                            window.unlockAchievement('ACH_SEND_IMAGE').catch(err => {
+                                console.error('解锁发送图片成就失败:', err);
+                            });
+                        }
                     } else {
                         // 截图失败，从 enabled_modes 中移除 vision
                         console.log('截图失败，移除 vision 模式');
@@ -8911,6 +8934,7 @@ function init_app() {
                 // 画质设置
                 renderQuality = settings.renderQuality ?? 'medium';
                 window.renderQuality = renderQuality;
+                window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
                 // 帧率设置
                 targetFrameRate = settings.targetFrameRate ?? 60;
                 window.targetFrameRate = targetFrameRate;
@@ -8947,6 +8971,7 @@ function init_app() {
                 window.proactiveChatInterval = proactiveChatInterval;
                 window.proactiveVisionInterval = proactiveVisionInterval;
                 window.renderQuality = renderQuality;
+                window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
                 window.targetFrameRate = targetFrameRate;
 
                 // 持久化首次启动设置，避免每次重新检测
@@ -8966,12 +8991,16 @@ function init_app() {
             window.proactiveChatInterval = proactiveChatInterval;
             window.proactiveVisionInterval = proactiveVisionInterval;
             window.renderQuality = renderQuality;
+            window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
             window.targetFrameRate = targetFrameRate;
         }
     }
 
     // 加载设置
     loadSettings();
+
+    // 加载麦克风设备选择
+    loadSelectedMicrophone();
 
     // 加载麦克风增益设置
     loadMicGainSetting();

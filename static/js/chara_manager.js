@@ -597,9 +597,11 @@ function setupMasterFormListeners() {
         if (cancelBtn) cancelBtn.style.display = '';
     }
 
-    // 为所有输入元素添加事件监听
+    // 为所有输入元素添加事件监听（跳过已绑定的持久元素，防止重复调用堆积）
     const inputs = masterFormEl.querySelectorAll('input, textarea');
     inputs.forEach(input => {
+        if (input.dataset.masterListenersBound) return;
+        input.dataset.masterListenersBound = '1';
         input.addEventListener('change', showMasterActionButtons);
         input.addEventListener('input', showMasterActionButtons);
     });
@@ -616,10 +618,10 @@ function setupMasterFormListeners() {
     // 为主人档案重命名按钮添加点击事件监听
     const renameBtn = masterFormEl.querySelector('#rename-master-btn');
     if (renameBtn) {
-        renameBtn.addEventListener('click', async function () {
+        renameBtn.onclick = async function () {
             const profileName = masterFormEl.querySelector('input[name="档案名"]').value;
             await window.renameMaster(profileName);
-        });
+        };
     }
 
     // 为新增设定按钮添加点击事件监听

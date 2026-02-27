@@ -25,8 +25,6 @@ from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from main_logic.agent_event_bus import AgentServerEventBridge
 try:
-    from brain.planner import TaskPlanner
-    from brain.analyzer import ConversationAnalyzer
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
     from brain.deduper import TaskDeduper
@@ -41,12 +39,10 @@ app = FastAPI(title="N.E.K.O Tool Server")
 
 
 class Modules:
-    planner: TaskPlanner | None = None
-    analyzer: ConversationAnalyzer | None = None
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
     deduper: TaskDeduper | None = None
-    task_executor: DirectTaskExecutor | None = None  # 新增：合并的任务执行器
+    task_executor: DirectTaskExecutor | None = None
     # Task tracking
     task_registry: Dict[str, Dict[str, Any]] = {}
     executor_reset_needed: bool = False
@@ -82,15 +78,10 @@ class Modules:
 
 
 def _rewire_computer_use_dependents() -> None:
-    """Keep planner/task_executor in sync after computer_use adapter refresh."""
+    """Keep task_executor in sync after computer_use adapter refresh."""
     try:
         if Modules.task_executor is not None and hasattr(Modules.task_executor, "computer_use"):
             Modules.task_executor.computer_use = Modules.computer_use
-    except Exception:
-        pass
-    try:
-        if Modules.planner is not None and hasattr(Modules.planner, "computer_use"):
-            Modules.planner.computer_use = Modules.computer_use
     except Exception:
         pass
 
@@ -116,6 +107,9 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
         return False
 
 
+_llm_check_lock = asyncio.Lock()
+
+
 async def _fire_agent_llm_connectivity_check() -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
@@ -123,36 +117,57 @@ async def _fire_agent_llm_connectivity_check() -> None:
     so a single connectivity check covers both capabilities.  Updates
     ``init_ok`` on the CUA adapter and refreshes the capability cache for
     *both* computer_use and browser_use.
+
+    Uses a lock to prevent concurrent probes from racing.
     """
-    adapter = Modules.computer_use
-    if adapter is None:
+    if _llm_check_lock.locked():
         return
 
-    def _probe():
-        return adapter.check_connectivity()
+    async with _llm_check_lock:
+        adapter = Modules.computer_use
+        if adapter is None:
+            return
 
-    try:
-        ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
-        reason = "" if ok else (adapter.last_error or "Agent LLM unreachable")
-        _set_capability("computer_use", ok, reason)
-        # BrowserUse shares the same agent endpoint — mirror the LLM result
-        # but also respect its own import-readiness gate.
-        bu = Modules.browser_use
-        if bu is not None:
-            if not ok:
-                _set_capability("browser_use", False, reason)
-            elif not getattr(bu, "_ready_import", False):
-                _set_capability("browser_use", False, f"browser-use not installed: {bu.last_error}")
+        def _probe():
+            return adapter.check_connectivity()
+
+        try:
+            ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            reason = "" if ok else (adapter.last_error or "Agent LLM unreachable")
+            _set_capability("computer_use", ok, reason)
+            bu = Modules.browser_use
+            if bu is not None:
+                if not ok:
+                    _set_capability("browser_use", False, reason)
+                elif not getattr(bu, "_ready_import", False):
+                    _set_capability("browser_use", False, f"browser-use not installed: {bu.last_error}")
+                else:
+                    _set_capability("browser_use", True, "")
+
+            if ok:
+                logger.info("[Agent] Agent-LLM connectivity check passed")
             else:
-                _set_capability("browser_use", True, "")
-        if ok:
-            logger.info("[Agent] Agent-LLM connectivity check passed")
-        else:
-            logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
-    except Exception as e:
-        logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
-        _set_capability("computer_use", False, str(e))
-        _set_capability("browser_use", False, str(e))
+                logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
+                if Modules.agent_flags.get("computer_use_enabled"):
+                    Modules.agent_flags["computer_use_enabled"] = False
+                    Modules.notification = f"已自动关闭键鼠控制: {reason}"
+                if Modules.agent_flags.get("browser_use_enabled"):
+                    Modules.agent_flags["browser_use_enabled"] = False
+                    Modules.notification = f"已自动关闭浏览器控制: {reason}"
+
+            _bump_state_revision()
+            await _emit_agent_status_update()
+        except Exception as e:
+            logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
+            _set_capability("computer_use", False, str(e))
+            _set_capability("browser_use", False, str(e))
+            if Modules.agent_flags.get("computer_use_enabled"):
+                Modules.agent_flags["computer_use_enabled"] = False
+            if Modules.agent_flags.get("browser_use_enabled"):
+                Modules.agent_flags["browser_use_enabled"] = False
+            Modules.notification = f"Agent LLM 连接检查异常: {e}"
+            _bump_state_revision()
+            await _emit_agent_status_update()
 
 
 def _bump_state_revision() -> int:
@@ -167,22 +182,6 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
     """Return list of (task_id, description) for queued/running tasks, optionally filtered by lanlan_name."""
     items: list[tuple[str, str]] = []
-    # Planner task_pool
-    if Modules.planner:
-        for tid, t in Modules.planner.task_pool.items():
-            try:
-                if t.status in ("queued", "running"):
-                    try:
-                        if lanlan_name and t.meta.get("lanlan_name") not in (None, lanlan_name):
-                            continue
-                    except Exception:
-                        pass
-                    desc = t.title or t.original_query or ""
-                    if desc:
-                        items.append((tid, desc))
-            except Exception:
-                continue
-    # Runtime tasks
     for tid, info in Modules.task_registry.items():
         try:
             if info.get("status") in ("queued", "running"):
@@ -208,57 +207,6 @@ async def _is_duplicate_task(query: str, lanlan_name: Optional[str] = None) -> t
     except Exception as e:
         logger.warning(f"[Agent] Deduper judge failed: {e}")
         return False, None
-
-
-# ============ Workers (run in subprocess) ============
-# 注意: MCP processor 任务现在使用协程直接执行，不再需要子进程
-# 仅 ComputerUse 任务仍使用子进程（因为需要独占执行）
-# def _worker_processor(task_id: str, query: str, queue: mp.Queue):
-#     try:
-#         # Lazy import to avoid heavy init in parent
-#         from brain.processor import Processor as _Proc
-#         import asyncio as _aio
-#         proc = _Proc()
-        
-#         # Log MCP processing start
-#         print(f"[MCP] Starting processor task {task_id} with query: {query[:100]}...")
-        
-#         result = _aio.run(proc.process(query))
-        
-#         # Log MCP processing result
-#         if result.get('can_execute'):
-#             server_id = result.get('server_id', 'unknown')
-#             reason = result.get('reason', 'no reason provided')
-#             tool_calls = result.get('tool_calls', [])
-#             tool_results = result.get('tool_results', [])
-            
-#             if tool_calls:
-#                 tools_info = ", ".join([f"'{tool}'" for tool in tool_calls])
-#                 print(f"[MCP] ✅ Task {task_id} executed successfully using MCP server '{server_id}' with tools: {tools_info}")
-                
-#                 # Log tool execution results
-#                 for tool_result in tool_results:
-#                     tool_name = tool_result.get('tool', 'unknown')
-#                     if tool_result.get('success'):
-#                         result_text = tool_result.get('result', 'No result')
-#                         print(f"[MCP] 🔧 Tool {tool_name} result: {result_text}")
-#                     else:
-#                         error_text = tool_result.get('error', 'Unknown error')
-#                         print(f"[MCP] ❌ Tool {tool_name} failed: {error_text}")
-#             else:
-#                 print(f"[MCP] ✅ Task {task_id} executed successfully using MCP server '{server_id}' (no specific tools called)")
-            
-#             print(f"[MCP]   Reason: {reason}")
-#         else:
-#             reason = result.get('reason', 'no reason provided')
-#             print(f"[MCP] ❌ Task {task_id} failed to execute: {reason}")
-        
-#         queue.put({"task_id": task_id, "success": True, "result": result})
-#     except Exception as e:
-#         print(f"[MCP] 💥 Task {task_id} crashed with error: {str(e)}")
-#         queue.put({"task_id": task_id, "success": False, "error": str(e)})
-
-
 
 
 def _now_iso() -> str:
@@ -341,6 +289,9 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
                 })
         except Exception:
             continue
+    note = Modules.notification
+    if Modules.notification:
+        Modules.notification = None
     return {
         "revision": Modules.state_revision,
         "server_online": True,
@@ -349,6 +300,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
         "gate": gate,
         "capabilities": capabilities,
         "active_tasks": active_tasks,
+        "notification": note,
         "updated_at": _now_iso(),
     }
 
@@ -362,6 +314,11 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     """
     Build a stable fingerprint from user-role messages only.
     Used to ensure analyzer consumes each user turn once.
+
+    Only the message *text* is hashed.  Timestamps and message IDs are
+    intentionally excluded because frontends may update these metadata
+    fields on re-render, which would produce a different fingerprint for
+    the same logical user turn and cause duplicate analysis.
     """
     if not isinstance(messages, list):
         return None
@@ -371,23 +328,9 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
             continue
         if m.get("role") != "user":
             continue
-        # Keep text as primary signal, and attach optional metadata if present.
-        if "text" in m and "content" not in m:
-            logger.warning("[AgentServer] Deprecation Warning: Received user message with 'text' but no 'content'.")
         text = str(m.get("text") or m.get("content") or "").strip()
-        mid = str(
-            m.get("id")
-            or m.get("message_id")
-            or m.get("msg_id")
-            or ""
-        ).strip()
-        ts = str(
-            m.get("timestamp")
-            or m.get("time")
-            or m.get("created_at")
-            or ""
-        ).strip()
-        user_parts.append(f"{text}|{mid}|{ts}")
+        if text:
+            user_parts.append(text)
     if not user_parts:
         return None
     payload = "\n".join(user_parts).encode("utf-8", errors="ignore")
@@ -515,6 +458,13 @@ async def _run_computer_use_task(
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
+        # The underlying thread may still be running — wait for it to finish
+        # so we don't start a new task while pyautogui is still active.
+        cu = Modules.computer_use
+        if cu is not None and hasattr(cu, "wait_for_completion"):
+            finished = await loop.run_in_executor(None, cu.wait_for_completion, 15.0)
+            if not finished:
+                logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
@@ -849,15 +799,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
 
 @app.on_event("startup")
 async def startup():
-    # 初始化新的合并执行器（推荐使用）
     Modules.computer_use = ComputerUseAdapter()
     Modules.browser_use = BrowserUseAdapter()
     Modules.task_executor = DirectTaskExecutor(computer_use=Modules.computer_use, browser_use=Modules.browser_use)
     Modules.deduper = TaskDeduper()
-    
-    # 保留 planner/analyzer 以支持能力探测与后台分析开关
-    Modules.planner = TaskPlanner(computer_use=Modules.computer_use)
-    Modules.analyzer = ConversationAnalyzer()
     _rewire_computer_use_dependents()
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -905,6 +850,36 @@ async def startup():
         logger.warning(f"[Agent] Event bridge startup failed: {e}")
     # Push initial server status so frontend can render Agent popup without waiting.
     _bump_state_revision()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Gracefully stop running tasks so threads don't outlive the process."""
+    logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    if Modules.computer_use:
+        Modules.computer_use.cancel_running()
+    if Modules.browser_use:
+        try:
+            Modules.browser_use.cancel_running()
+        except Exception:
+            pass
+
+    # Cancel asyncio wrappers
+    for t in list(Modules._persistent_tasks):
+        if not t.done():
+            t.cancel()
+    if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
+        Modules.active_computer_use_async_task.cancel()
+
+    # Wait for the CUA thread to finish so pyautogui isn't active when the
+    # process exits (avoids Win32 SendInput being interrupted mid-call).
+    cu = Modules.computer_use
+    if cu is not None and hasattr(cu, "wait_for_completion"):
+        loop = asyncio.get_running_loop()
+        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
+        if not finished:
+            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+    logger.info("[Agent] Shutdown cleanup complete")
     await _emit_agent_status_update()
     
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
@@ -1005,9 +980,6 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: str):
-    # Look up both planner task pool and runtime tasks
-    if Modules.planner and task_id in Modules.planner.task_pool:
-        return Modules.planner.task_pool[task_id].__dict__
     info = Modules.task_registry.get(task_id)
     if info:
         out = {k: v for k, v in info.items() if k != "_proc"}
@@ -1116,10 +1088,8 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 Modules.notification = "无法开启 Computer Use: 模块未加载"
                 logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
             elif not getattr(Modules.computer_use, "init_ok", False):
-                # Connectivity not yet confirmed — kick off a check then
-                # optimistically enable; the check result will auto-disable
-                # if it fails.
                 Modules.agent_flags["computer_use_enabled"] = True
+                Modules.notification = "键鼠控制已开启，Agent LLM 连接确认中..."
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
@@ -1152,6 +1122,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 Modules.notification = f"无法开启 Browser Use: browser-use not installed: {bu.last_error}"
             elif not getattr(Modules.computer_use, "init_ok", False):
                 Modules.agent_flags["browser_use_enabled"] = True
+                Modules.notification = "浏览器控制已开启，Agent LLM 连接确认中..."
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 Modules.agent_flags["browser_use_enabled"] = True
@@ -1366,7 +1337,6 @@ async def list_tasks():
     items = []
     
     try:
-        # 添加运行时任务 (task_registry) - 只复制必要字段以提高速度
         for tid, info in Modules.task_registry.items():
             try:
                 task_item = {
@@ -1384,34 +1354,14 @@ async def list_tasks():
             except Exception:
                 continue
         
-        # 添加规划器任务 (task_pool) - 只在planner存在时处理
-        if Modules.planner and hasattr(Modules.planner, 'task_pool'):
-            for tid, task in Modules.planner.task_pool.items():
-                try:
-                    if hasattr(task, '__dict__'):
-                        task_dict = task.__dict__
-                        task_item = {
-                            "id": task_dict.get("id", tid),
-                            "status": task_dict.get("status", "queued"),
-                            "original_query": task_dict.get("original_query"),
-                            "meta": task_dict.get("meta"),
-                            "source": "planner"
-                        }
-                        items.append(task_item)
-                except Exception:
-                    continue
-        
-        # 简化调试信息
         debug_info = {
             "task_registry_count": len(Modules.task_registry),
-            "task_pool_count": len(Modules.planner.task_pool) if (Modules.planner and hasattr(Modules.planner, 'task_pool')) else 0,
             "total_returned": len(items)
         }
         
         return {"tasks": items, "debug": debug_info}
     
     except Exception as e:
-        # 即使出错也返回部分结果，避免完全失败（静默处理）
         return {
             "tasks": items,
             "debug": {
@@ -1452,6 +1402,15 @@ async def admin_control(payload: Dict[str, Any]):
                 pass
             except Exception as e:
                 logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
+
+        # Wait for the underlying thread to actually finish before clearing state,
+        # so no pyautogui calls are still in-flight when we allow new tasks.
+        cu = Modules.computer_use
+        if cu is not None and hasattr(cu, "wait_for_completion"):
+            loop = asyncio.get_running_loop()
+            finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
+            if not finished:
+                logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
 
         Modules.task_registry.clear()
         Modules.last_user_turn_fingerprint.clear()

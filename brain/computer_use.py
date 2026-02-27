@@ -12,6 +12,7 @@ import base64
 import platform
 import os
 import time
+import threading
 import traceback
 from io import BytesIO
 from openai import OpenAI
@@ -92,12 +93,21 @@ pyautogui.scroll(clicks, x=None, y=None)
 ### Keyboard
 ```
 pyautogui.write("text")
-    Type text. Works with any language including CJK / Unicode.
+    Type text into an input field. Works with any language including CJK / Unicode.
+    NOTE: Only use for text input fields. For game controls or non-text contexts,
+    use press() or keyDown()/keyUp() instead.
 
 pyautogui.press("key")
     Press and release a single key.
-    Keys: enter, tab, escape, backspace, delete, space,
+    Keys: a-z, 0-9, enter, tab, escape, backspace, delete, space,
     up, down, left, right, home, end, pageup, pagedown, f1-f12, etc.
+
+pyautogui.keyDown("key")
+    Hold a key down (without releasing). Pair with keyUp().
+    Use for games or apps that require holding keys (e.g. movement with WASD).
+
+pyautogui.keyUp("key")
+    Release a previously held key.
 
 pyautogui.hotkey("modifier", "key")
     Key combination. Examples:
@@ -309,10 +319,18 @@ class _ScaledPyAutoGUI:
         time.sleep(0.05)
 
     def write(self, text, *a, **kw):
-        try:
-            self._clipboard_type(str(text))
-        except Exception:
-            self._backend.write(text, *a, **kw)
+        text_str = str(text)
+        # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
+        # that pyautogui.write() cannot handle natively.
+        # For ASCII-only text, use real key simulation so it works in games
+        # and other non-text-field contexts where Ctrl+V is ignored.
+        if any(ord(c) > 127 for c in text_str):
+            try:
+                self._clipboard_type(text_str)
+                return
+            except Exception:
+                pass
+        self._backend.write(text_str, *a, **kw)
 
     def typewrite(self, text, *a, **kw):
         self.write(text, *a, **kw)
@@ -337,6 +355,9 @@ class ComputerUseAdapter:
         self.last_error: Optional[str] = None
         self.init_ok = False
         self._cancelled: bool = False
+        self._cancel_event = threading.Event()
+        self._done_event = threading.Event()
+        self._done_event.set()  # initially "done" (no task running)
         self.max_steps = max_steps
         self.max_image_history = max_image_history
         self.max_tokens = max_tokens
@@ -392,9 +413,9 @@ class ComputerUseAdapter:
     # ------------------------------------------------------------------
 
     def check_connectivity(self) -> bool:
-        """Synchronous LLM ping.  Meant to be called from a background
-        thread so the event-loop is never blocked.  Returns *True* when
-        the configured agent endpoint answers a trivial prompt."""
+        """Synchronous LLM ping using the same OpenAI client that real
+        tasks will use, so the TCP/TLS connection pool is warmed up.
+        Meant to be called from a background thread."""
         cfg = self._config_manager.get_model_api_config("agent")
         api_key = cfg.get("api_key") or "EMPTY"
         base_url = cfg.get("base_url", "")
@@ -404,13 +425,23 @@ class ComputerUseAdapter:
             self.last_error = "Agent model not configured"
             return False
         try:
-            from langchain_openai import ChatOpenAI
-            test_llm = ChatOpenAI(
-                model=model, base_url=base_url, api_key=api_key,
-                extra_body=get_agent_extra_body(model) or None,
-                request_timeout=15,
-            ).bind(max_tokens=5)
-            _ = test_llm.invoke("ok").content
+            if (
+                self._llm_client is None
+                or getattr(self._llm_client, '_base_url', None) and str(self._llm_client._base_url).rstrip('/') != base_url.rstrip('/')
+            ):
+                self._llm_client = OpenAI(
+                    base_url=base_url, api_key=api_key, timeout=65.0,
+                    max_retries=0,
+                )
+            extra = get_agent_extra_body(model) or {}
+            resp = self._llm_client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=5,
+                timeout=15,
+                extra_body=extra or None,
+            )
+            _ = resp.choices[0].message.content
             self.init_ok = True
             self.last_error = None
             logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
@@ -646,7 +677,33 @@ class ComputerUseAdapter:
     def cancel_running(self) -> None:
         """Signal the currently running task to stop at the next step boundary."""
         self._cancelled = True
+        self._cancel_event.set()
         logger.info("[CUA] cancel_running called, task will abort at next step")
+
+    def wait_for_completion(self, timeout: float = 15.0) -> bool:
+        """Block until run_instruction finishes. Returns True if it finished within *timeout*."""
+        return self._done_event.wait(timeout=timeout)
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Sleep that returns early when cancel is signalled."""
+        self._cancel_event.wait(timeout=seconds)
+
+    def _make_cancellable_time_module(self):
+        """Return a *time*-like namespace whose ``sleep`` is interruptible."""
+        import types
+        fake = types.ModuleType("time")
+        cancel_event = self._cancel_event
+        for attr in ("monotonic", "time", "perf_counter", "strftime",
+                      "gmtime", "localtime", "mktime"):
+            if hasattr(time, attr):
+                setattr(fake, attr, getattr(time, attr))
+
+        def _cancellable_sleep(seconds):
+            cancel_event.wait(timeout=min(float(seconds), 30))
+            if cancel_event.is_set():
+                raise InterruptedError("Task cancelled")
+        fake.sleep = _cancellable_sleep
+        return fake
 
     def run_instruction(
         self, instruction: str, session_id: Optional[str] = None
@@ -663,6 +720,8 @@ class ComputerUseAdapter:
             return {"success": False, "error": "Agent not initialized"}
 
         self._cancelled = False
+        self._cancel_event.clear()
+        self._done_event.clear()
 
         if session_id is None or session_id != self._current_session_id:
             self.reset()
@@ -691,6 +750,11 @@ class ComputerUseAdapter:
                     step, t_capture, len(jpg_bytes) // 1024, t_llm,
                 )
 
+                # Re-check after the (potentially long) LLM call
+                if self._cancelled:
+                    logger.info("[CUA] Task cancelled after LLM call at step %d", step)
+                    return {"success": False, "error": "Task cancelled by user"}
+
                 if not code:
                     continue
 
@@ -710,7 +774,7 @@ class ComputerUseAdapter:
                 if "computer.wait" in code_lower:
                     m = re.search(r"seconds\s*=\s*(\d+)", code)
                     wait_s = int(m.group(1)) if m else 5
-                    time.sleep(min(wait_s, 30))
+                    self._interruptible_sleep(min(wait_s, 30))
                     continue
 
                 # ── Execute pyautogui code ───────────────────────────
@@ -719,15 +783,18 @@ class ComputerUseAdapter:
                     exec_env["pyautogui"] = _ScaledPyAutoGUI(
                         pyautogui, self.screen_width, self.screen_height
                     )
-                    exec_env["time"] = time
+                    exec_env["time"] = self._make_cancellable_time_module()
                     exec_env["os"] = os
                     exec(code, exec_env)
-                    time.sleep(0.3)
+                    self._interruptible_sleep(0.3)
+                except InterruptedError:
+                    logger.info("[CUA] Task cancelled during exec at step %d", step)
+                    return {"success": False, "error": "Task cancelled by user"}
                 except Exception as e:
                     logger.warning(
                         "[CUA] Exec error step %d: %s\nCode: %s", step, e, code
                     )
-                    time.sleep(0.3)
+                    self._interruptible_sleep(0.3)
             else:
                 answer = f"Reached {self.max_steps} steps without completion"
                 success = False
@@ -737,6 +804,8 @@ class ComputerUseAdapter:
                 "[CUA] run_instruction error: %s\n%s", e, traceback.format_exc()
             )
             return {"success": False, "error": str(e)}
+        finally:
+            self._done_event.set()
 
         return {
             "success": success,
@@ -748,12 +817,23 @@ class ComputerUseAdapter:
     # LLM call
     # ------------------------------------------------------------------
 
+    _CANCEL_TERMINATE = {
+        "thought": "", "action": "",
+        "code": 'computer.terminate(status="failure", answer="Task cancelled by user")',
+        "raw": "",
+    }
+
     def _call_llm(self, messages: list) -> Dict[str, str]:
         """Call the VLM with retry, return parsed response."""
+        if self._cancelled:
+            return dict(self._CANCEL_TERMINATE)
+
         model = self._agent_model_cfg.get("model", "")
         extra = get_agent_extra_body(model) or {}
 
         for attempt in range(3):
+            if self._cancelled:
+                return dict(self._CANCEL_TERMINATE)
             try:
                 ok, info = self._config_manager.consume_agent_daily_quota(
                     source="computer_use.call_llm",
@@ -793,6 +873,6 @@ class ComputerUseAdapter:
             except Exception as e:
                 logger.error("[CUA] LLM error (attempt %d): %s", attempt + 1, e)
                 if attempt < 2:
-                    time.sleep(2)
+                    self._interruptible_sleep(1)
 
         return {"thought": "", "action": "", "code": "", "raw": ""}

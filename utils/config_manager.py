@@ -17,7 +17,7 @@ from config import (
     CONFIG_FILES,
     DEFAULT_CONFIG_DATA,
 )
-from config.prompts_chara import lanlan_prompt
+from config.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,
@@ -702,7 +702,11 @@ class ConfigManager:
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         lanlan_prompt_map = {}
         for name in catgirl_names:
-            prompt_value = catgirl_data.get(name, {}).get('system_prompt', lanlan_prompt)
+            stored_prompt = catgirl_data.get(name, {}).get('system_prompt')
+            if stored_prompt is None or is_default_prompt(stored_prompt):
+                prompt_value = get_lanlan_prompt()
+            else:
+                prompt_value = stored_prompt
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)

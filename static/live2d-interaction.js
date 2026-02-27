@@ -47,7 +47,7 @@ const EasingFunctions = {
 Live2DManager.prototype._checkSnapRequired = async function (model, options = {}) {
     if (!model) return null;
 
-    const { afterDisplaySwitch = false } = options;
+    const { afterDisplaySwitch = false, threshold: customThreshold } = options;
 
     try {
         const bounds = model.getBounds();
@@ -87,7 +87,7 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         // 检查是否有任何边超出阈值
         // 新逻辑：只有当模型在屏幕内剩余的部分小于 threshold 时才触发吸附
         // 即模型绝大部分都超出屏幕时才吸附
-        const threshold = SNAP_CONFIG.threshold;
+        const threshold = customThreshold ?? SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
 
         // 计算模型在屏幕内剩余的像素数

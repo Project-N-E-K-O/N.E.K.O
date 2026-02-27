@@ -120,6 +120,50 @@ def _enqueue_error(response_queue, error_value):
     response_queue.put(("__error__", formatted_msg))
 
 
+def _adjust_free_tts_url(url: str) -> str:
+    """Free TTS URL 的地区替换：非大陆用户将 lanlan.tech 替换为 lanlan.app。"""
+    if 'lanlan.tech' not in url:
+        return url
+    try:
+        from utils.config_manager import ConfigManager
+        if ConfigManager._region_cache is not None:
+            if ConfigManager._region_cache:
+                return url.replace('lanlan.tech', 'lanlan.app')
+            return url
+        cm = get_config_manager()
+        if cm._check_non_mainland():
+            return url.replace('lanlan.tech', 'lanlan.app')
+    except Exception:
+        pass
+    return url
+
+
+_TTS_LANGUAGE_CODE_MAP = {
+    'zh':    'cmn-CN',
+    'zh-CN': 'cmn-CN',
+    'zh-TW': 'cmn-tw',
+    'en':    'en-US',
+    'ja':    'ja-JP',
+    'ko':    'ko-KR',
+    'es':    'es-ES',
+    'fr':    'fr-FR',
+    'de':    'de-DE',
+    'it':    'it-IT',
+    'ru':    'ru-RU',
+    'tr':    'tr-TR'
+}
+
+
+def _get_tts_language_code() -> str:
+    """获取 lanlan.app TTS 服务器所需的 language_code。"""
+    try:
+        from utils.language_utils import get_global_language
+        lang = get_global_language()
+    except Exception:
+        lang = 'zh'
+    return _TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+
+
 def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id, free_mode=False):
     """
     StepFun实时TTS worker（用于默认音色）
@@ -140,7 +184,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     async def async_worker():
         """异步TTS worker主循环"""
         if free_mode:
-            tts_url = "wss://lanlan.tech/tts"
+            tts_url = _adjust_free_tts_url("wss://lanlan.tech/tts")
         else:
             tts_url = "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
         ws = None
@@ -193,15 +237,16 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 return
             
             # 发送创建会话事件
-            create_event = {
-                "type": "tts.create",
-                "data": {
-                    "session_id": session_id,
-                    "voice_id": voice_id,
-                    "response_format": "wav",
-                    "sample_rate": 24000
-                }
+            create_data = {
+                "session_id": session_id,
+                "voice_id": voice_id,
+                "response_format": "wav",
+                "sample_rate": 24000
             }
+            if 'lanlan.app' in tts_url:
+                create_data["language_code"] = _get_tts_language_code()
+                create_data["voice_id"] = "Leda"
+            create_event = {"type": "tts.create", "data": create_data}
             await ws.send(json.dumps(create_event))
             
             # 等待会话创建成功
@@ -360,15 +405,17 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             continue
                         
                         # 创建会话
-                        await ws.send(json.dumps({
-                            "type": "tts.create",
-                            "data": {
-                                "session_id": session_id,
-                                "voice_id": voice_id,
-                                "response_format": "wav",
-                                "sample_rate": 24000
-                            }
-                        }))
+                        create_data = {
+                            "session_id": session_id,
+                            "voice_id": voice_id,
+                            "response_format": "wav",
+                            "sample_rate": 24000
+                        }
+                        if 'lanlan.app' in tts_url:
+                            create_data["language_code"] = _get_tts_language_code()
+                            create_data["voice_id"] = "Leda"
+                        create_event = {"type": "tts.create", "data": create_data}
+                        await ws.send(json.dumps(create_event))
                         
                         # 启动新的接收任务
                         async def receive_messages():
@@ -773,9 +820,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     class Callback(ResultCallback):
         def __init__(self, response_queue):
             self.response_queue = response_queue
+            self.connection_lost = False
             
         def on_open(self): 
-            # 连接已建立，发送就绪信号
+            self.connection_lost = False
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
@@ -783,17 +831,19 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
                 
         def on_error(self, message: str): 
-            if "request timeout after 23 seconds" not in message:
+            if "request timeout after 23 seconds" in message:
+                self.connection_lost = True
+                logger.debug("CosyVoice SDK 内部 WebSocket 空闲超时，标记连接已断开")
+            else:
                 _enqueue_error(self.response_queue, message)
             
         def on_close(self): 
-            pass
+            self.connection_lost = True
             
         def on_event(self, message): 
             pass
             
         def on_data(self, data: bytes) -> None:
-            # 直接转发 OGG OPUS 数据到前端解码
             self.response_queue.put(data)
             
     callback = Callback(response_queue)
@@ -801,13 +851,18 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     synthesizer = None
     char_buffer = ""
     detected_lang = None
+    last_streaming_call_time = None  # 追踪最后一次 streaming_call 的时间
+    IDLE_AUTO_COMPLETE_SECONDS = 15  # 空闲超过此秒数则主动 complete（须 < 服务端 23s 超时）
 
     def _create_synthesizer(lang_hint=None):
-        """创建新的 SpeechSynthesizer，可选语言提示"""
+        """创建新的 SpeechSynthesizer，可选语言提示。
+        仅建立 WebSocket 连接，不发送预热文本——调用方会紧接着发送真实文本。
+        """
+        nonlocal last_streaming_call_time
         kwargs = dict(
             model="cosyvoice-v3-plus",
             voice=voice_id,
-            speech_rate=1.1,
+            speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
             callback=callback,
         )
@@ -815,12 +870,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
         syn = SpeechSynthesizer(**kwargs)
-        syn.streaming_call("。")
+        last_streaming_call_time = time.time()
         return syn
 
     def _flush_buffer():
-        """检测语言、创建 synthesizer（如果需要）并刷出缓冲区，返回 (synthesizer, detected_lang, char_buffer)"""
-        nonlocal synthesizer, char_buffer, detected_lang
+        """检测语言、创建 synthesizer（如果需要）并刷出缓冲区"""
+        nonlocal synthesizer, char_buffer, detected_lang, last_streaming_call_time
         if not char_buffer.strip():
             char_buffer = ""
             return
@@ -830,11 +885,38 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
         synthesizer.streaming_call(char_buffer)
+        last_streaming_call_time = time.time()
         char_buffer = ""
+
+    def _do_streaming_complete():
+        """在连接存活时调用 streaming_complete，连接已断开则跳过"""
+        nonlocal synthesizer, last_streaming_call_time
+        if synthesizer is None:
+            return
+        if callback.connection_lost:
+            logger.info("CosyVoice WebSocket 已断开，跳过 streaming_complete")
+        else:
+            try:
+                synthesizer.streaming_complete(complete_timeout_millis=8000)
+            except Exception as e:
+                logger.warning(f"TTS streaming_complete 失败: {e}")
+        try:
+            synthesizer.close()
+        except Exception:
+            pass
+        synthesizer = None
+        last_streaming_call_time = None
 
     while True:
         # 非阻塞检查队列，优先处理打断
         if request_queue.empty():
+            # 主动完成：合成器空闲超过阈值，趁 WebSocket 还活着主动 complete
+            # 避免等到 (None,None) 到达时 WebSocket 已被服务端回收（23s 超时）
+            if (synthesizer is not None
+                    and last_streaming_call_time is not None
+                    and time.time() - last_streaming_call_time > IDLE_AUTO_COMPLETE_SECONDS):
+                logger.debug(f"CosyVoice 空闲 >{IDLE_AUTO_COMPLETE_SECONDS}s，主动 streaming_complete")
+                _do_streaming_complete()
             time.sleep(0.01)
             continue
 
@@ -846,20 +928,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 _flush_buffer()
             except Exception as e:
                 logger.warning(f"TTS flush buffer 失败: {e}")
-            if synthesizer is not None:
-                try:
-                    synthesizer.streaming_complete(complete_timeout_millis=20000)
-                except Exception as e:
-                    logger.warning(f"TTS streaming_complete 失败: {e}")
-                finally:
-                    try:
-                        synthesizer.close()
-                    except Exception:
-                        pass
-                    synthesizer = None   
+            _do_streaming_complete()
             current_speech_id = None
             char_buffer = ""
             detected_lang = None
+            callback.connection_lost = False
             continue
 
         if current_speech_id is None:
@@ -871,6 +944,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 except Exception:
                     pass
             synthesizer = None
+            last_streaming_call_time = None
             current_speech_id = sid
             char_buffer = ""
             detected_lang = None
@@ -891,6 +965,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     logger.info("CosyVoice 检测到假名，语言标记为日文")
                 synthesizer = _create_synthesizer(detected_lang)
                 synthesizer.streaming_call(char_buffer)
+                last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
                 logger.error(f"TTS Init Error: {e}")
@@ -898,11 +973,13 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 current_speech_id = None
                 char_buffer = ""
                 detected_lang = None
+                last_streaming_call_time = None
                 time.sleep(0.1)
                 continue
         else:
             try:
                 synthesizer.streaming_call(tts_text)
+                last_streaming_call_time = time.time()
             except Exception:
                 if synthesizer is not None:
                     try:
@@ -910,14 +987,17 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     except Exception:
                         pass
                     synthesizer = None
+                    last_streaming_call_time = None
 
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
                     synthesizer.streaming_call(tts_text)
+                    last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")
                     synthesizer = None
                     current_speech_id = None
+                    last_streaming_call_time = None
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):

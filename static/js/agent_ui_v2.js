@@ -114,6 +114,9 @@
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
         window._agentStatusSnapshot = snapshot;
+        if (snapshot.notification && typeof window.showStatusToast === 'function') {
+            window.showStatusToast(snapshot.notification, 4000);
+        }
         render(source);
     }
 
@@ -193,8 +196,13 @@
             sync(list);
         });
 
+        const anyPending = Object.values(snap.capabilities || {}).some(
+            c => c && typeof c.reason === 'string' && c.reason.includes('pending')
+        );
         if (state.globalBusy) {
             setStatus(window.t ? window.t('settings.toggles.checking') : '已接受操作，切换中...');
+        } else if (anyPending) {
+            setStatus(window.t ? window.t('agent.status.connectivityCheck') : 'Agent LLM 连接检查中...');
         } else if (!analyzerEnabled) {
             setStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪');
         } else {
