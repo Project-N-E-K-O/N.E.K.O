@@ -387,15 +387,35 @@ Rules:
                 # Only include well-formed plugin entries
                 if not pid:
                     continue
-                # Build entries description: show entry id + short description only (no schema to save tokens)
+                # Build entries description: entry id + description + input_schema summary
                 entry_lines = []
                 try:
                     for e in entries:
                         try:
                             eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
                             edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
-                            if eid:
-                                entry_lines.append(f"{eid}: {edesc}" if edesc else eid)
+                            if not eid:
+                                continue
+                            # Extract input_schema field names+types for LLM context
+                            schema_hint = ""
+                            try:
+                                schema = e.get("input_schema") if isinstance(e, dict) else getattr(e, "input_schema", None)
+                                if isinstance(schema, dict):
+                                    props = schema.get("properties", {})
+                                    if isinstance(props, dict) and props:
+                                        fields = []
+                                        for fname, fdef in list(props.items())[:8]:
+                                            ftype = fdef.get("type", "any") if isinstance(fdef, dict) else "any"
+                                            fields.append(f"{fname}:{ftype}")
+                                        required = schema.get("required", [])
+                                        req_str = f" required={required}" if required else ""
+                                        schema_hint = f" args({', '.join(fields)}{req_str})"
+                            except Exception:
+                                pass
+                            part = f"{eid}: {edesc}" if edesc else eid
+                            if schema_hint:
+                                part += schema_hint
+                            entry_lines.append(part)
                         except Exception:
                             continue
                 except Exception:
@@ -447,8 +467,9 @@ OUTPUT FORMAT (strict JSON):
 VERY IMPORTANT:
 - If has_task and can_execute are true, entry_id is REQUIRED.
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
-- FUZZY MATCHING: You do NOT need an exact entry name match. If the user mentions a keyword that partially matches an entry id (e.g. user says "hello" and an entry is "hello_run"), set has_task=true, can_execute=true, and use the closest matching entry_id.
-- When in doubt, prefer can_execute=true and let the execution layer handle validation.
+- STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
+- If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
+- If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 Return only the JSON object, nothing else.
 """
         user_intent = ""
@@ -572,24 +593,24 @@ Return only the JSON object, nothing else.
                 d_pid = decision.get("plugin_id")
                 d_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
 
-                if d_has and d_can and d_pid and d_eid:
-                    # Build lookup from plugins param
-                    valid_entries_map: Dict[str, List[str]] = {}
-                    try:
-                        p_iter = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
-                        for _, p in p_iter:
-                            pid = p.get("id") if isinstance(p, dict) else None
-                            if not pid:
-                                continue
-                            eids = []
-                            for e in (p.get("entries") or []) if isinstance(p, dict) else []:
-                                eid = e.get("id") if isinstance(e, dict) else None
-                                if eid:
-                                    eids.append(eid)
-                            valid_entries_map[pid] = eids
-                    except Exception:
-                        valid_entries_map = {}
+                # Build lookup from plugins param (always, so final validation can use it)
+                valid_entries_map: Dict[str, List[str]] = {}
+                try:
+                    p_iter = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+                    for _, p in p_iter:
+                        pid = p.get("id") if isinstance(p, dict) else None
+                        if not pid:
+                            continue
+                        eids = []
+                        for e in (p.get("entries") or []) if isinstance(p, dict) else []:
+                            eid = e.get("id") if isinstance(e, dict) else None
+                            if eid:
+                                eids.append(eid)
+                        valid_entries_map[pid] = eids
+                except Exception:
+                    valid_entries_map = {}
 
+                if d_has and d_can and d_pid and d_eid:
                     correction_hint = None
                     if d_pid not in valid_entries_map:
                         correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
@@ -616,13 +637,29 @@ Return only the JSON object, nothing else.
                         except Exception as e_retry:
                             logger.warning("[UserPlugin Assessment] Retry failed: %s", e_retry)
 
-                # return a simple object-like struct, include entry_id if provided by the LLM
+                # Final validation: reject if plugin_id/entry_id still invalid after retry
+                final_pid = decision.get("plugin_id")
+                final_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
+                final_has = decision.get("has_task", False)
+                final_can = decision.get("can_execute", False)
+                if final_has and final_can and valid_entries_map:
+                    if final_pid not in valid_entries_map:
+                        logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = f"plugin_id '{final_pid}' not found"
+                    elif valid_entries_map.get(final_pid) and final_eid and final_eid not in valid_entries_map[final_pid]:
+                        logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = f"entry_id '{final_eid}' not found in plugin '{final_pid}'"
+
                 return UserPluginDecision(
                     has_task=decision.get("has_task", False),
                     can_execute=decision.get("can_execute", False),
                     task_description=decision.get("task_description", ""),
                     plugin_id=decision.get("plugin_id"),
-                    entry_id=decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id"),
+                    entry_id=final_eid,
                     plugin_args=decision.get("plugin_args"),
                     reason=decision.get("reason", "")
                 )
@@ -659,13 +696,11 @@ Return only the JSON object, nothing else.
         browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
         
-        # testUserPlugin: log entry with flags and short message summary for debugging
-        try:
-            msgs_summary = self._format_messages(messages)[:400].replace("\n", " ")
-            print(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
-        except Exception:
-            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
-        
+        logger.debug(
+            "[TaskExecutor] analyze_and_execute: task_id=%s lanlan=%s flags={cu=%s, bu=%s, up=%s}",
+            task_id, lanlan_name, computer_use_enabled, browser_use_enabled, user_plugin_enabled,
+        )
+
         if not computer_use_enabled and not browser_use_enabled and not user_plugin_enabled:
             logger.debug("[TaskExecutor] All execution channels disabled, skipping")
             return None
@@ -766,8 +801,19 @@ Return only the JSON object, nothing else.
             )
         
         # 3. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
-        if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
+        #    Also attempt execution when LLM is uncertain (can_execute=false) but still
+        #    provided plugin_id + entry_id. The execution layer (strict entry_id validation)
+        #    will safely reject truly invalid entries, so this is safe.
+        if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
+            tentative = not up_decision.can_execute
+            if tentative:
+                logger.info(
+                    "[TaskExecutor] ⚡ UserPlugin tentative dispatch (can_execute=false but plugin_id+entry_id present): "
+                    "plugin_id=%s, entry_id=%s, reason=%s",
+                    up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
+                )
+            else:
+                logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
@@ -887,8 +933,7 @@ Return only the JSON object, nothing else.
                 reason=reason or "Plugin not found"
             )
 
-        # Fuzzy entry_id resolution: if LLM-provided entry_id doesn't exactly match,
-        # try prefix/substring/case-insensitive match against known entries.
+        # Strict entry_id validation: only allow case-insensitive exact match as minor tolerance.
         if plugin_entry_id and plugin_meta:
             known_entries = []
             for e in (plugin_meta.get("entries") or []):
@@ -896,27 +941,26 @@ Return only the JSON object, nothing else.
                 if eid:
                     known_entries.append(eid)
             if known_entries and plugin_entry_id not in known_entries:
-                resolved = None
-                pid_lower = plugin_entry_id.lower()
-                # 1) prefix match: 'hello' matches 'hello_run'
-                prefix_matches = [e for e in known_entries if e.lower().startswith(pid_lower)]
-                if len(prefix_matches) == 1:
-                    resolved = prefix_matches[0]
-                # 2) substring match: 'hello' in 'say_hello'
-                if not resolved:
-                    sub_matches = [e for e in known_entries if pid_lower in e.lower()]
-                    if len(sub_matches) == 1:
-                        resolved = sub_matches[0]
-                # 3) case-insensitive exact match
-                if not resolved:
-                    ci_matches = [e for e in known_entries if e.lower() == pid_lower]
-                    if ci_matches:
-                        resolved = ci_matches[0]
-                if resolved:
-                    logger.info("[UserPlugin] Fuzzy entry_id resolution: '%s' → '%s' (plugin=%s)", plugin_entry_id, resolved, plugin_id)
+                # Only tolerate case-insensitive exact match (e.g. "Run" vs "run")
+                ci_matches = [e for e in known_entries if e.lower() == plugin_entry_id.lower()]
+                if ci_matches:
+                    resolved = ci_matches[0]
+                    logger.info("[UserPlugin] Case-insensitive entry_id match: '%s' → '%s' (plugin=%s)", plugin_entry_id, resolved, plugin_id)
                     plugin_entry_id = resolved
                 else:
-                    logger.warning("[UserPlugin] entry_id '%s' not found in plugin '%s' entries: %s", plugin_entry_id, plugin_id, known_entries)
+                    logger.warning("[UserPlugin] entry_id '%s' not found in plugin '%s' entries: %s — rejecting", plugin_entry_id, plugin_id, known_entries)
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method='user_plugin',
+                        success=False,
+                        error=f"entry_id '{plugin_entry_id}' not found in plugin '{plugin_id}'. Available: {known_entries}",
+                        tool_name=plugin_id,
+                        tool_args=plugin_args,
+                        entry_id=plugin_entry_id,
+                        reason=reason or "invalid_entry_id",
+                    )
 
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:

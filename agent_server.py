@@ -342,8 +342,11 @@ async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payloa
             sent = await Modules.agent_bridge.emit_to_main(event)
             if sent:
                 return
-        except Exception:
-            pass
+            logger.debug("[Agent] _emit_main_event not sent: type=%s lanlan=%s (bridge returned False)", event_type, lanlan_name)
+        except Exception as e:
+            logger.warning("[Agent] _emit_main_event failed: type=%s lanlan=%s error=%s", event_type, lanlan_name, e)
+    else:
+        logger.debug("[Agent] _emit_main_event skipped: no agent_bridge, type=%s", event_type)
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -658,12 +661,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
-        # testUserPlugin: log before analysis when user_plugin_enabled is true
-        try:
-            if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.debug("testUserPlugin: Starting analyze_and_execute with user_plugin_enabled = True")
-        except Exception:
-            pass
 
         # 一步完成：分析 + 执行
         result = await Modules.task_executor.analyze_and_execute(
@@ -672,27 +669,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id
         )
-
-        # testUserPlugin: log after analysis decision if user_plugin_enabled is true
-        try:
-            if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.debug("testUserPlugin: analyze_and_execute completed, checking result for user plugin involvement")
-                # If result indicates user_plugin execution or decision, log succinct info
-                if result is None:
-                    logger.debug("testUserPlugin: analyze_and_execute returned None (no task detected)")
-                else:
-                    # Attempt to surface if user_plugin was chosen or considered
-                    try:
-                        logger.debug(
-                            "testUserPlugin: execution_method=%s, success=%s, tool_name=%s",
-                            getattr(result, "execution_method", None),
-                            getattr(result, "success", None),
-                            getattr(result, "tool_name", None),
-                        )
-                    except Exception:
-                        logger.debug("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
-        except Exception:
-            pass
 
         if result is None:
             return
@@ -705,7 +681,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             logger.info("[TaskExecutor] Skipping dispatch: analyzer disabled during analysis")
             return
         
-        logger.info(f"[TaskExecutor] Task: {result.task_description}, method: {result.execution_method}")
+        logger.info(
+            "[TaskExecutor] Task: desc='%s', method=%s, tool=%s, entry=%s, reason=%s",
+            (result.task_description or "")[:80],
+            result.execution_method,
+            getattr(result, "tool_name", None),
+            getattr(result, "entry_id", None),
+            (getattr(result, "reason", "") or "")[:120],
+        )
         
         # 处理 MCP 任务（已在 DirectTaskExecutor 中执行完成）
         if result.execution_method == 'mcp':
@@ -789,6 +772,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s",
                     plugin_id, entry_id,
                 )
+                # Register in task_registry (mirrors CU _spawn_task) so GET /tasks can recover on refresh
+                Modules.task_registry[result.task_id] = {
+                    "id": result.task_id,
+                    "type": "user_plugin",
+                    "status": "running",
+                    "start_time": up_start,
+                    "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                    "lanlan_name": lanlan_name,
+                    "result": None,
+                    "error": None,
+                }
                 # Emit task_update (running) so AgentHUD shows a running card
                 try:
                     await _emit_main_event(
@@ -833,6 +827,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         on_progress=_on_plugin_progress,
                     )
                     up_terminal = "completed" if up_result.success else "failed"
+                    # Update task_registry with terminal state
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg:
+                        _reg["status"] = up_terminal
+                        _reg["result"] = up_result.result
+                        if not up_result.success and up_result.error:
+                            _reg["error"] = str(up_result.error)[:500]
                     run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
                     detail = str(run_data)[:500] if run_data else ""
                     if up_result.success:
@@ -876,6 +877,10 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         pass
                 except Exception as e:
                     logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg:
+                        _reg["status"] = "failed"
+                        _reg["error"] = str(e)[:500]
                     try:
                         await _emit_task_result(
                             lanlan_name,
@@ -1431,14 +1436,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
             _set_capability("user_plugin", True, "")
         Modules.agent_flags["user_plugin_enabled"] = uf
 
-    # testUserPlugin: log when user_plugin_enabled toggles
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
         if prev_up != new_up:
-            if new_up:
-                logger.info("testUserPlugin: user_plugin_enabled toggled ON via /agent/flags")
-            else:
-                logger.info("testUserPlugin: user_plugin_enabled toggled OFF via /agent/flags")
+            logger.info("[Agent] user_plugin_enabled toggled %s via /agent/flags", "ON" if new_up else "OFF")
     except Exception:
         pass
 
@@ -1460,16 +1461,6 @@ async def analyze_and_plan(payload: Dict[str, Any]):
     messages = (payload or {}).get("messages", [])
     if not isinstance(messages, list):
         raise HTTPException(400, "messages must be a list of {role, text}")
-    # Previously forwarded messages to a user plugin endpoint (/plugin/testPlugin).
-    # This forwarding has been removed to avoid relying on that endpoint.
-    # If in future a safe user-plugin integration is needed, implement a provider
-    # that enumerates plugins and forwards to configured endpoints with retry/backoff.
-    # Preserve check and a light log when user_plugin_enabled is true for traceability.
-    try:
-        if Modules.agent_flags.get("user_plugin_enabled", False):
-            logger.info("user_plugin_enabled is true but /plugin/testPlugin forwarding is disabled.")
-    except Exception:
-        pass  # Defensive: catch edge cases in flag access
 
     # Fire-and-forget background processing and scheduling
     lanlan_name = (payload or {}).get("lanlan_name")

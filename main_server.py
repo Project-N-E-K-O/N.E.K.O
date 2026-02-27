@@ -210,9 +210,18 @@ async def _handle_agent_event(event: dict):
                             pass
             return
 
-        if not lanlan or lanlan not in session_manager:
+        # Resolve target session manager; fallback to broadcast if lanlan is unknown
+        mgr = session_manager.get(lanlan) if lanlan else None
+        if not mgr and event_type == "task_update":
+            # Broadcast task_update to all connected sessions when lanlan is unresolvable
+            task_payload = {"type": "agent_task_update", "task": event.get("task", {})}
+            for _mgr in session_manager.values():
+                if _mgr and _mgr.websocket and hasattr(_mgr.websocket, "send_json"):
+                    try:
+                        await _mgr.websocket.send_json(task_payload)
+                    except Exception:
+                        pass
             return
-        mgr = session_manager.get(lanlan)
         if not mgr:
             return
         if event_type in ("task_result", "proactive_message"):

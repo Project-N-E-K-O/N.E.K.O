@@ -244,6 +244,26 @@ class LLMSessionManager:
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
 
+    async def handle_proactive_complete(self):
+        """Lightweight completion for proactive (agent callback) replies.
+
+        Only flushes TTS and sends turn_end to the frontend so that the
+        realistic-queue buffer is flushed.  Does NOT trigger hot-swap,
+        analyze_request, or agent-callback re-delivery — those belong
+        exclusively to user-initiated conversation turns.
+        """
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            try:
+                self.tts_request_queue.put((None, None))
+            except Exception as e:
+                logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+        # Send turn_end to frontend so processRealisticQueue flushes remaining buffer
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception as e:
+            logger.debug(f"WS Send Turn End (proactive) error: {e}")
+
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
         
@@ -980,6 +1000,8 @@ class LLMSessionManager:
                     on_response_discarded=self.handle_response_discarded,
                     max_response_length=guard_max_length
                 )
+                # Lightweight callback for stream_proactive (TTS flush + turn_end only)
+                self.session.on_proactive_done = self.handle_proactive_complete
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
@@ -1349,6 +1371,7 @@ class LLMSessionManager:
                     on_response_discarded=self.handle_response_discarded,
                     max_response_length=guard_max_length
                 )
+                self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
