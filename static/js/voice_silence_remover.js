@@ -112,6 +112,12 @@ async function useTrimmedAudio() {
         return;
     }
 
+    // 如果已完成裁剪，此按钮充当"确认使用裁剪后音频"，直接关闭弹窗
+    if (_silenceState.trimmedAudioBase64) {
+        closeSilenceModal();
+        return;
+    }
+
     // 切换 UI 到处理模式
     showElement('silenceBtnTrim', false);
     showElement('silenceBtnOriginal', false);
@@ -120,16 +126,25 @@ async function useTrimmedAudio() {
 
     updateProgress(0, window.t ? window.t('voice.silenceModal.analyzing') : '分析中...');
 
+    // 生成客户端 task ID 并立即开始进度轮询
+    const taskId = crypto.randomUUID();
+    _silenceState.trimTaskId = taskId;
+
     try {
         const formData = new FormData();
         formData.append('file', _silenceState.originalFile);
+        formData.append('task_id', taskId);
 
-        // 开始轮询进度（在请求发出之前启动）
-        // 注意：trim_silence 接口会在后台设置任务 ID，我们通过响应获取
+        // 立即开始轮询进度
+        startProgressPolling(taskId);
+
         const resp = await fetch('/api/characters/audio/trim_silence', {
             method: 'POST',
             body: formData,
         });
+
+        // 请求完成，停止轮询
+        stopProgressPolling();
 
         const data = await resp.json();
 
@@ -150,7 +165,6 @@ async function useTrimmedAudio() {
             _silenceState.trimmedAudioBase64 = data.audio_base64;
             _silenceState.trimmedFilename = data.filename;
             _silenceState.trimmedMd5 = data.md5;
-            _silenceState.trimTaskId = data.task_id;
             _silenceState.useTrimmmedForUpload = true;
 
             updateProgress(100, window.t ? window.t('voice.silenceModal.done') : '完成');
@@ -160,10 +174,17 @@ async function useTrimmedAudio() {
             showElement('silenceDownloadSection', true);
             setText('silenceMd5', `MD5: ${data.md5}`);
 
-            // 更新底部按钮
+            // 更新底部按钮：裁剪按钮变为"使用裁剪后音频"确认按钮
+            const trimBtnSpan = document.querySelector('#silenceBtnTrim span');
+            if (trimBtnSpan) {
+                trimBtnSpan.setAttribute('data-i18n', 'voice.silenceModal.confirmTrimmed');
+                trimBtnSpan.textContent = window.t
+                    ? window.t('voice.silenceModal.confirmTrimmed')
+                    : '使用智能裁切后的音频';
+            }
             showElement('silenceBtnCancel', false);
             showElement('silenceBtnOriginal', true);
-            showElement('silenceBtnTrim', false);
+            showElement('silenceBtnTrim', true);
 
             // 替换注册用的文件为裁剪后的文件
             _replaceFileInputWithTrimmed(data);
@@ -178,6 +199,7 @@ async function useTrimmedAudio() {
         }
 
     } catch (e) {
+        stopProgressPolling();
         console.error('裁剪失败:', e);
         const errMsg = window.t
             ? window.t('voice.silenceModal.trimError', { error: e.message })
@@ -205,6 +227,9 @@ function useOriginalAudio() {
  * 取消裁剪任务
  */
 async function cancelTrimTask() {
+    // 停止进度轮询
+    stopProgressPolling();
+
     if (_silenceState.trimTaskId) {
         try {
             await fetch(`/api/characters/audio/trim_cancel/${_silenceState.trimTaskId}`, {
@@ -214,13 +239,44 @@ async function cancelTrimTask() {
             console.warn('取消任务请求失败:', e);
         }
     }
-    // 停止进度轮询
+
+    resetModalToAnalysis();
+}
+
+// ==================== 进度轮询 ====================
+
+/**
+ * 开始轮询裁剪任务进度
+ */
+function startProgressPolling(taskId) {
+    stopProgressPolling();
+    _silenceState.progressPollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch(`/api/characters/audio/trim_progress/${taskId}`);
+            const data = await resp.json();
+            if (data.progress !== undefined) {
+                const phaseText = data.phase === 'analyzing'
+                    ? (window.t ? window.t('voice.silenceModal.analyzing') : '分析中...')
+                    : (window.t ? window.t('voice.silenceModal.trimming') : '裁剪中...');
+                updateProgress(data.progress, phaseText);
+            }
+            if (data.progress >= 100 || data.phase === 'done') {
+                stopProgressPolling();
+            }
+        } catch (_) {
+            // 忽略轮询错误
+        }
+    }, 500);
+}
+
+/**
+ * 停止进度轮询
+ */
+function stopProgressPolling() {
     if (_silenceState.progressPollTimer) {
         clearInterval(_silenceState.progressPollTimer);
         _silenceState.progressPollTimer = null;
     }
-
-    resetModalToAnalysis();
 }
 
 /**
@@ -333,6 +389,15 @@ function resetModalToAnalysis() {
     showElement('silenceBtnTrim', true);
     showElement('silenceBtnOriginal', true);
     showElement('silenceBtnCancel', false);
+
+    // 恢复裁剪按钮的原始文字
+    const trimBtnSpan = document.querySelector('#silenceBtnTrim span');
+    if (trimBtnSpan) {
+        trimBtnSpan.setAttribute('data-i18n', 'voice.silenceModal.useTrimmed');
+        trimBtnSpan.textContent = window.t
+            ? window.t('voice.silenceModal.useTrimmed')
+            : '使用智能裁剪音频';
+    }
 }
 
 // ==================== 注册事件钩子 ====================

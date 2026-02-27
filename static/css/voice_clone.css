@@ -737,10 +737,10 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     justify-content: center;
     z-index: 10000;
     backdrop-filter: blur(4px);
-    animation: silenceModalFadeIn 0.2s ease-out;
+    animation: silence-modal-fade-in 0.2s ease-out;
 }
 
-@keyframes silenceModalFadeIn {
+@keyframes silence-modal-fade-in {
     from { opacity: 0; }
     to { opacity: 1; }
 }
@@ -752,10 +752,10 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     max-width: 92vw;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
     overflow: hidden;
-    animation: silenceModalSlideIn 0.25s ease-out;
+    animation: silence-modal-slide-in 0.25s ease-out;
 }
 
-@keyframes silenceModalSlideIn {
+@keyframes silence-modal-slide-in {
     from { transform: translateY(20px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
@@ -830,7 +830,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     font-weight: 700;
     color: #333;
     font-size: 15px;
-    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-family: 'JetBrains Mono', Consolas, monospace;
 }
 
 .silence-stat-value.silence-removable {
@@ -887,7 +887,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 }
 
 .silence-md5 {
-    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-family: 'JetBrains Mono', Consolas, monospace;
     font-size: 11px;
     color: #999;
     font-weight: 400;
@@ -932,7 +932,7 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s;
-    min-width: 140px;
+    min-width: fit-content;
     text-align: center;
 }
 

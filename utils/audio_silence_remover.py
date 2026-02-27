@@ -90,13 +90,16 @@ def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
         arr = np.frombuffer(data, dtype=np.int16).astype(np.float64)
         arr = arr / 32768.0
     elif sample_width == 3:
-        # 24-bit signed – 逐 3 字节解码
+        # 24-bit signed – numpy 向量化解码
         n_samples = len(data) // 3
-        arr = np.zeros(n_samples, dtype=np.float64)
-        for i in range(n_samples):
-            b = data[3 * i:3 * i + 3]
-            val = int.from_bytes(b, byteorder='little', signed=True)
-            arr[i] = val / 8388608.0
+        raw = np.frombuffer(data, dtype=np.uint8).reshape(n_samples, 3)
+        # 组装为 32-bit 整数 (little-endian: byte0 + byte1<<8 + byte2<<16)
+        i32 = (raw[:, 0].astype(np.int32)
+               | (raw[:, 1].astype(np.int32) << 8)
+               | (raw[:, 2].astype(np.int32) << 16))
+        # 符号扩展: 如果最高位 (bit 23) 为 1，扩展为负数
+        i32[i32 >= 0x800000] -= 0x1000000
+        arr = i32.astype(np.float64) / 8388608.0
     elif sample_width == 4:
         # 32-bit signed
         arr = np.frombuffer(data, dtype=np.int32).astype(np.float64)
@@ -167,7 +170,6 @@ def detect_silence(
         n_frames = wf.getnframes()
         raw_data = wf.readframes(n_frames)
 
-    total_samples = n_frames * channels
     duration_ms = (n_frames / sample_rate) * 1000.0
 
     # 转为 float
@@ -361,10 +363,7 @@ def trim_silence(
     final_samples = np.concatenate(result_parts, axis=0)
 
     # reshape 回一维 (多声道交错)
-    if channels > 1:
-        final_flat = final_samples.reshape(-1)
-    else:
-        final_flat = final_samples.reshape(-1)
+    final_flat = final_samples.reshape(-1)
 
     # 转回 PCM bytes
     pcm_data = _float_to_samples(final_flat, sample_width)
@@ -428,17 +427,17 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
                 pass
             audio_buffer.seek(0)
             return audio_buffer, 'wav'
-        except Exception:
-            raise ValueError("无效的 WAV 文件")
+        except Exception as err:
+            raise ValueError("无效的 WAV 文件") from err
 
     # 对于 MP3/M4A 等格式，尝试使用 pydub 转换
     try:
         from pydub import AudioSegment
-    except ImportError:
+    except ImportError as err:
         raise ValueError(
             f"不支持直接处理 .{ext} 格式的音频文件。"
             "请安装 pydub 和 ffmpeg，或上传 WAV 格式文件。"
-        )
+        ) from err
 
     audio_buffer.seek(0)
     audio_seg = AudioSegment.from_file(audio_buffer, format=ext)
@@ -469,8 +468,9 @@ def convert_wav_back(wav_buffer: io.BytesIO, original_format: str, original_para
 
     output_buf = io.BytesIO()
     export_params = {}
-    if 'bitrate' in original_params and original_params['bitrate']:
-        export_params['bitrate'] = original_params['bitrate']
+    bitrate = original_params.get('bitrate')
+    if bitrate:
+        export_params['bitrate'] = bitrate
 
     audio_seg.export(output_buf, format=original_format, **export_params)
     output_buf.seek(0)

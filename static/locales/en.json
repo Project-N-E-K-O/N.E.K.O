@@ -1034,7 +1034,8 @@
             "cancel": "Cancel",
             "noSilence": "No removable silence segments detected",
             "trimError": "Trimming failed: {{error}}",
-            "trimmedLabel": "[Trimmed]"
+            "trimmedLabel": "[Trimmed]",
+            "confirmTrimmed": "Use Smart Trimmed Audio"
         }
     },
     "memory": {

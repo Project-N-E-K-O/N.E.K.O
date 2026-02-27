@@ -1034,7 +1034,8 @@
             "cancel": "取消",
             "noSilence": "未检测到可移除的静音段",
             "trimError": "裁剪失败: {{error}}",
-            "trimmedLabel": "[已裁剪]"
+            "trimmedLabel": "[已裁剪]",
+            "confirmTrimmed": "使用智能裁切后的音频"
         }
     },
     "memory": {

@@ -88,11 +88,11 @@
     <script src="/static/js/voice_silence_remover.js"></script>
 
     <!-- 智能静音移除模态对话框 -->
-    <div id="silenceModal" class="silence-modal-overlay" style="display: none;">
+    <div id="silenceModal" class="silence-modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="silenceModalTitle">
         <div class="silence-modal">
             <div class="silence-modal-header">
-                <h3 data-i18n="voice.silenceModal.title">智能空白音频检测结果</h3>
-                <button class="silence-modal-close" onclick="closeSilenceModal()">&times;</button>
+                <h3 id="silenceModalTitle" data-i18n="voice.silenceModal.title">智能空白音频检测结果</h3>
+                <button class="silence-modal-close" onclick="closeSilenceModal()" aria-label="Close">&times;</button>
             </div>
             <div class="silence-modal-body">
                 <!-- 分析结果 -->

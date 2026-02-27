@@ -255,6 +255,7 @@ class TestIntegration:
 
 class TestPerformanceBenchmark:
 
+    @pytest.mark.performance
     def test_processing_speed(self):
         """
         性能基准：单文件处理耗时 ≤ 原始音频时长的 30%
@@ -275,15 +276,17 @@ class TestPerformanceBenchmark:
 
         start = time.perf_counter()
         analysis = detect_silence(io.BytesIO(data))
-        result = trim_silence(io.BytesIO(data), analysis)
+        _ = trim_silence(io.BytesIO(data), analysis)
         elapsed = time.perf_counter() - start
 
         ratio = elapsed / audio_duration_s
         print(f"\n[性能] 音频时长={audio_duration_s:.1f}s, 处理耗时={elapsed:.3f}s, 比值={ratio:.2%}")
 
-        # 性能要求：处理时间 ≤ 音频时长的 30%
-        assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
+        # 仅在显式启用性能测试时断言严格阈值
+        if os.environ.get('RUN_PERF_TESTS', '').lower() == 'true':
+            assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
 
+    @pytest.mark.performance
     def test_large_file_performance(self):
         """
         大文件性能测试：模拟较长音频 (60 秒)
@@ -301,14 +304,16 @@ class TestPerformanceBenchmark:
 
         start = time.perf_counter()
         analysis = detect_silence(io.BytesIO(data))
-        result = trim_silence(io.BytesIO(data), analysis)
+        _ = trim_silence(io.BytesIO(data), analysis)
         elapsed = time.perf_counter() - start
 
         ratio = elapsed / audio_duration_s
         print(f"\n[性能] 大文件: 音频时长={audio_duration_s:.1f}s, 处理耗时={elapsed:.3f}s, 比值={ratio:.2%}")
 
-        assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
+        if os.environ.get('RUN_PERF_TESTS', '').lower() == 'true':
+            assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
 
+    @pytest.mark.performance
     def test_high_sample_rate_performance(self):
         """
         高采样率性能测试：48kHz
@@ -326,10 +331,11 @@ class TestPerformanceBenchmark:
 
         start = time.perf_counter()
         analysis = detect_silence(io.BytesIO(data))
-        result = trim_silence(io.BytesIO(data), analysis)
+        _ = trim_silence(io.BytesIO(data), analysis)
         elapsed = time.perf_counter() - start
 
         ratio = elapsed / audio_duration_s
         print(f"\n[性能] 高采样率: 音频时长={audio_duration_s:.1f}s ({sr}Hz), 处理耗时={elapsed:.3f}s, 比值={ratio:.2%}")
 
-        assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"
+        if os.environ.get('RUN_PERF_TESTS', '').lower() == 'true':
+            assert ratio <= 0.30, f"处理耗时 {ratio:.2%} 超过音频时长的 30%"

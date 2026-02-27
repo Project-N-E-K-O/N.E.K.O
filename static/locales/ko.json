@@ -1034,7 +1034,8 @@
             "cancel": "취소",
             "noSilence": "제거 가능한 무음 구간이 감지되지 않았습니다",
             "trimError": "트리밍 실패: {{error}}",
-            "trimmedLabel": "[트리밍됨]"
+            "trimmedLabel": "[트리밍됨]",
+            "confirmTrimmed": "트리밍된 오디오 사용"
         }
     },
     "memory": {

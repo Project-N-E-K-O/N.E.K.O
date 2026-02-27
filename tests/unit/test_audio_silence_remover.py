@@ -435,7 +435,7 @@ class TestTrimSilence:
 
         analysis = detect_silence(io.BytesIO(wav.getvalue()))
         progress_values = []
-        result = trim_silence(
+        _ = trim_silence(
             io.BytesIO(wav.getvalue()),
             analysis,
             progress_callback=lambda p: progress_values.append(p),

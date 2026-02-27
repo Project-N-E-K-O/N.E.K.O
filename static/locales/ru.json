@@ -1034,7 +1034,8 @@
             "cancel": "Отмена",
             "noSilence": "Удаляемые участки тишины не обнаружены",
             "trimError": "Ошибка обрезки: {{error}}",
-            "trimmedLabel": "[Обрезано]"
+            "trimmedLabel": "[Обрезано]",
+            "confirmTrimmed": "Использовать обрезанное аудио"
         }
     },
     "memory": {

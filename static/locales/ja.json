@@ -1034,7 +1034,8 @@
             "cancel": "キャンセル",
             "noSilence": "除去可能な無音区間は検出されませんでした",
             "trimError": "トリミング失敗: {{error}}",
-            "trimmedLabel": "[トリミング済]"
+            "trimmedLabel": "[トリミング済]",
+            "confirmTrimmed": "トリミング済み音声を使用"
         }
     },
     "memory": {
