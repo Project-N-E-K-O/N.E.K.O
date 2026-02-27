@@ -821,9 +821,24 @@ function init_app() {
                 } else if (response.type === 'agent_task_update') {
                     try {
                         if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
                         const task = response.task || {};
                         if (task.id) {
                             window._agentTaskMap.set(task.id, task);
+                            if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+                                if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
+                                window._agentTaskRemoveTimers.set(task.id, setTimeout(() => {
+                                    window._agentTaskMap.delete(task.id);
+                                    window._agentTaskRemoveTimers.delete(task.id);
+                                    const remaining = Array.from(window._agentTaskMap.values());
+                                    if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                                        window.AgentHUD.updateAgentTaskHUD({ success: true, tasks: remaining, total_count: remaining.length, running_count: remaining.filter(t => t.status === 'running').length, queued_count: remaining.filter(t => t.status === 'queued').length, completed_count: remaining.filter(t => t.status === 'completed').length, failed_count: remaining.filter(t => t.status === 'failed').length, timestamp: new Date().toISOString() });
+                                    }
+                                }, 8000));
+                            } else if (window._agentTaskRemoveTimers.has(task.id)) {
+                                clearTimeout(window._agentTaskRemoveTimers.get(task.id));
+                                window._agentTaskRemoveTimers.delete(task.id);
+                            }
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
                         if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
