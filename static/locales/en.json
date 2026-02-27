@@ -1015,7 +1015,27 @@
         "deleteFailed": "Delete failed",
         "deleteError": "Delete failed: {{error}}",
         "freePresetLabel": "Free Preset Voices",
-        "freePresetBadge": "Preset"
+        "freePresetBadge": "Preset",
+        "silenceModal": {
+            "title": "Smart Silence Detection Results",
+            "originalDuration": "Original Audio Duration",
+            "silenceDuration": "Removable Silence Duration",
+            "estimatedDuration": "Estimated Duration After Trim",
+            "savingPercentage": "Saving Ratio",
+            "processing": "Processing...",
+            "analyzing": "Analyzing...",
+            "trimming": "Trimming...",
+            "done": "Done",
+            "cancelled": "Cancelled",
+            "trimSuccess": "✅ Trimming Complete!",
+            "downloadTrimmed": "Download Trimmed Audio",
+            "useTrimmed": "Use Smart Trimmed Audio",
+            "useOriginal": "Upload Original Audio",
+            "cancel": "Cancel",
+            "noSilence": "No removable silence segments detected",
+            "trimError": "Trimming failed: {{error}}",
+            "trimmedLabel": "[Trimmed]"
+        }
     },
     "memory": {
         "title": "Memory Browser",

@@ -1015,7 +1015,27 @@
         "deleteFailed": "刪除失敗",
         "deleteError": "刪除失敗：{{error}}",
         "freePresetLabel": "免費預設",
-        "freePresetBadge": "預設"
+        "freePresetBadge": "預設",
+        "silenceModal": {
+            "title": "智慧空白音訊檢測結果",
+            "originalDuration": "原始音訊總時長",
+            "silenceDuration": "可移除空白總時長",
+            "estimatedDuration": "處理後預計剩餘時長",
+            "savingPercentage": "節省比例",
+            "processing": "處理中...",
+            "analyzing": "分析中...",
+            "trimming": "裁剪中...",
+            "done": "完成",
+            "cancelled": "已取消",
+            "trimSuccess": "✅ 裁剪完成！",
+            "downloadTrimmed": "下載已處理音訊",
+            "useTrimmed": "使用智慧裁剪音訊",
+            "useOriginal": "上傳原音訊",
+            "cancel": "取消",
+            "noSilence": "未檢測到可移除的靜音段",
+            "trimError": "裁剪失敗: {{error}}",
+            "trimmedLabel": "[已裁剪]"
+        }
     },
     "memory": {
         "title": "記憶整理",

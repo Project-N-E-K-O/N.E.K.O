@@ -1015,7 +1015,27 @@
         "deleteFailed": "삭제 실패",
         "deleteError": "삭제 실패: {{error}}",
         "freePresetLabel": "무료 사전 설정",
-        "freePresetBadge": "사전 설정"
+        "freePresetBadge": "사전 설정",
+        "silenceModal": {
+            "title": "스마트 무음 감지 결과",
+            "originalDuration": "원본 오디오 길이",
+            "silenceDuration": "제거 가능한 무음 길이",
+            "estimatedDuration": "처리 후 예상 길이",
+            "savingPercentage": "절약 비율",
+            "processing": "처리 중...",
+            "analyzing": "분석 중...",
+            "trimming": "트리밍 중...",
+            "done": "완료",
+            "cancelled": "취소됨",
+            "trimSuccess": "✅ 트리밍 완료!",
+            "downloadTrimmed": "처리된 오디오 다운로드",
+            "useTrimmed": "스마트 트리밍 오디오 사용",
+            "useOriginal": "원본 오디오 업로드",
+            "cancel": "취소",
+            "noSilence": "제거 가능한 무음 구간이 감지되지 않았습니다",
+            "trimError": "트리밍 실패: {{error}}",
+            "trimmedLabel": "[트리밍됨]"
+        }
     },
     "memory": {
         "title": "메모리 브라우저",

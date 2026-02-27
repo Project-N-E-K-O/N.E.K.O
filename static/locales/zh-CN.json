@@ -1015,7 +1015,27 @@
         "deleteFailed": "删除失败",
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
-        "freePresetBadge": "预设"
+        "freePresetBadge": "预设",
+        "silenceModal": {
+            "title": "智能空白音频检测结果",
+            "originalDuration": "原始音频总时长",
+            "silenceDuration": "可移除空白总时长",
+            "estimatedDuration": "处理后预计剩余时长",
+            "savingPercentage": "节省比例",
+            "processing": "处理中...",
+            "analyzing": "分析中...",
+            "trimming": "裁剪中...",
+            "done": "完成",
+            "cancelled": "已取消",
+            "trimSuccess": "✅ 裁剪完成！",
+            "downloadTrimmed": "下载已处理音频",
+            "useTrimmed": "使用智能裁剪音频",
+            "useOriginal": "上传原音频",
+            "cancel": "取消",
+            "noSilence": "未检测到可移除的静音段",
+            "trimError": "裁剪失败: {{error}}",
+            "trimmedLabel": "[已裁剪]"
+        }
     },
     "memory": {
         "title": "记忆整理",

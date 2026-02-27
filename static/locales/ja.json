@@ -1015,7 +1015,27 @@
         "deleteFailed": "削除失敗",
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
-        "freePresetBadge": "プリセット"
+        "freePresetBadge": "プリセット",
+        "silenceModal": {
+            "title": "スマート無音検出結果",
+            "originalDuration": "元の音声の長さ",
+            "silenceDuration": "除去可能な無音の長さ",
+            "estimatedDuration": "処理後の予想長さ",
+            "savingPercentage": "節約率",
+            "processing": "処理中...",
+            "analyzing": "分析中...",
+            "trimming": "トリミング中...",
+            "done": "完了",
+            "cancelled": "キャンセル済み",
+            "trimSuccess": "✅ トリミング完了！",
+            "downloadTrimmed": "処理済み音声をダウンロード",
+            "useTrimmed": "スマートトリミング音声を使用",
+            "useOriginal": "元の音声をアップロード",
+            "cancel": "キャンセル",
+            "noSilence": "除去可能な無音区間は検出されませんでした",
+            "trimError": "トリミング失敗: {{error}}",
+            "trimmedLabel": "[トリミング済]"
+        }
     },
     "memory": {
         "title": "メモリブラウザ",

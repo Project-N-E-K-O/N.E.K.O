@@ -1015,7 +1015,27 @@
         "deleteFailed": "Ошибка удаления",
         "deleteError": "Ошибка удаления: {{error}}",
         "freePresetLabel": "Бесплатные предустановленные голоса",
-        "freePresetBadge": "Предустановленный"
+        "freePresetBadge": "Предустановленный",
+        "silenceModal": {
+            "title": "Результаты обнаружения тишины",
+            "originalDuration": "Исходная длительность аудио",
+            "silenceDuration": "Удаляемая длительность тишины",
+            "estimatedDuration": "Ожидаемая длительность после обработки",
+            "savingPercentage": "Процент экономии",
+            "processing": "Обработка...",
+            "analyzing": "Анализ...",
+            "trimming": "Обрезка...",
+            "done": "Готово",
+            "cancelled": "Отменено",
+            "trimSuccess": "✅ Обрезка завершена!",
+            "downloadTrimmed": "Скачать обработанное аудио",
+            "useTrimmed": "Использовать обрезанное аудио",
+            "useOriginal": "Загрузить оригинал",
+            "cancel": "Отмена",
+            "noSilence": "Удаляемые участки тишины не обнаружены",
+            "trimError": "Ошибка обрезки: {{error}}",
+            "trimmedLabel": "[Обрезано]"
+        }
     },
     "memory": {
         "title": "Браузер памяти",
