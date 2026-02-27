@@ -37,7 +37,6 @@ except Exception as e:
 
 app = FastAPI(title="N.E.K.O Tool Server")
 
-
 class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
@@ -107,25 +106,29 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
         return False
 
 
-_llm_check_lock = asyncio.Lock()
-
-
 async def _fire_user_plugin_capability_check() -> None:
-    """Probe the user-plugin server to see if any plugins are available."""
+    """Probe the user plugin server to determine if user_plugin capability is ready."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0)) as client:
             r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
             if r.status_code == 200:
-                plugins = r.json().get("plugins", []) if isinstance(r.json(), dict) else []
+                data = r.json()
+                plugins = data.get("plugins", []) if isinstance(data, dict) else []
                 if plugins:
                     _set_capability("user_plugin", True, "")
-                    logger.info("[Agent] UserPlugin ready (%d plugins)", len(plugins))
+                    logger.info("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
                 else:
-                    _set_capability("user_plugin", False, "no plugins found")
+                    _set_capability("user_plugin", False, "未发现可用插件")
+                    logger.info("[Agent] UserPlugin capability check: no plugins found")
             else:
-                _set_capability("user_plugin", False, f"status {r.status_code}")
+                _set_capability("user_plugin", False, f"plugin server returned {r.status_code}")
+                logger.warning("[Agent] UserPlugin capability check failed: status %s", r.status_code)
     except Exception as e:
         _set_capability("user_plugin", False, str(e))
+        logger.debug("[Agent] UserPlugin capability check error: %s", e)
+
+
+_llm_check_lock = asyncio.Lock()
 
 
 async def _fire_agent_llm_connectivity_check() -> None:
@@ -195,8 +198,9 @@ def _bump_state_revision() -> int:
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     prev = Modules.capability_cache.get(name, {})
-    Modules.capability_cache[name] = {"ready": bool(ready), "reason": reason or ""}
-    if prev.get("ready") != bool(ready):
+    normalized_reason = reason or ""
+    Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
+    if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
 
 
@@ -286,8 +290,11 @@ async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payloa
             sent = await Modules.agent_bridge.emit_to_main(event)
             if sent:
                 return
-        except Exception:
-            pass
+            logger.debug("[Agent] _emit_main_event not sent: type=%s lanlan=%s (bridge returned False)", event_type, lanlan_name)
+        except Exception as e:
+            logger.warning("[Agent] _emit_main_event failed: type=%s lanlan=%s error=%s", event_type, lanlan_name, e)
+    else:
+        logger.debug("[Agent] _emit_main_event skipped: no agent_bridge, type=%s", event_type)
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -560,13 +567,18 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """
     [简化版] 使用 DirectTaskExecutor 一步完成：分析对话 + 判断执行方式 + 执行任务
     
     简化链条:
     - 旧: Analyzer(LLM#1) → Planner(LLM#2) → 子进程Processor(LLM#3) → MCP调用
     - 新: DirectTaskExecutor(LLM#1) → MCP调用
+
+    Args:
+        messages: 对话消息列表
+        lanlan_name: 角色名
+        conversation_id: 对话ID，用于关联触发事件和对话上下文
 
     Uses analyze_lock to serialize concurrent calls.  Without this, two
     near-simultaneous analyze_request events can both pass the dedup
@@ -581,10 +593,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -592,40 +604,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             return
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
-        # testUserPlugin: log before analysis when user_plugin_enabled is true
-        try:
-            if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.debug("testUserPlugin: Starting analyze_and_execute with user_plugin_enabled = True")
-        except Exception:
-            pass
 
         # 一步完成：分析 + 执行
         result = await Modules.task_executor.analyze_and_execute(
             messages=messages,
             lanlan_name=lanlan_name,
-            agent_flags=Modules.agent_flags
+            agent_flags=Modules.agent_flags,
+            conversation_id=conversation_id
         )
-
-        # testUserPlugin: log after analysis decision if user_plugin_enabled is true
-        try:
-            if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.debug("testUserPlugin: analyze_and_execute completed, checking result for user plugin involvement")
-                # If result indicates user_plugin execution or decision, log succinct info
-                if result is None:
-                    logger.debug("testUserPlugin: analyze_and_execute returned None (no task detected)")
-                else:
-                    # Attempt to surface if user_plugin was chosen or considered
-                    try:
-                        logger.debug(
-                            "testUserPlugin: execution_method=%s, success=%s, tool_name=%s",
-                            getattr(result, "execution_method", None),
-                            getattr(result, "success", None),
-                            getattr(result, "tool_name", None),
-                        )
-                    except Exception:
-                        logger.debug("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
-        except Exception:
-            pass
 
         if result is None:
             return
@@ -638,7 +624,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
             logger.info("[TaskExecutor] Skipping dispatch: analyzer disabled during analysis")
             return
         
-        logger.info(f"[TaskExecutor] Task: {result.task_description}, method: {result.execution_method}")
+        logger.info(
+            "[TaskExecutor] Task: desc='%s', method=%s, tool=%s, entry=%s, reason=%s",
+            (result.task_description or "")[:80],
+            result.execution_method,
+            getattr(result, "tool_name", None),
+            getattr(result, "entry_id", None),
+            (getattr(result, "reason", "") or "")[:120],
+        )
         
         # 处理 MCP 任务（已在 DirectTaskExecutor 中执行完成）
         if result.execution_method == 'mcp':
@@ -709,25 +702,31 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning("[ComputerUse] Task requires ComputerUse but it's disabled")
+                logger.warning("[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
 
         elif result.execution_method == 'user_plugin':
-            # ── UserPlugin dispatch (mirrors CU/BU pattern) ──
+            # Dispatch: 与 CU/BU 一致，由 agent_server 统一调度执行
             if Modules.agent_flags.get("user_plugin_enabled", False) and Modules.task_executor:
                 plugin_id = result.tool_name
                 plugin_args = result.tool_args or {}
-                entry_id = getattr(result, "entry_id", None)
+                entry_id = result.entry_id
                 up_start = _now_iso()
-                logger.info("[TaskExecutor] Dispatching UserPlugin: plugin=%s entry=%s", plugin_id, entry_id)
-
-                # Register in task_registry so GET /tasks can track it
+                logger.info(
+                    "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s",
+                    plugin_id, entry_id,
+                )
+                # Register in task_registry (mirrors CU _spawn_task) so GET /tasks can recover on refresh
                 Modules.task_registry[result.task_id] = {
-                    "id": result.task_id, "type": "user_plugin", "status": "running",
+                    "id": result.task_id,
+                    "type": "user_plugin",
+                    "status": "running",
                     "start_time": up_start,
                     "params": {"plugin_id": plugin_id, "entry_id": entry_id},
-                    "lanlan_name": lanlan_name, "result": None, "error": None,
+                    "lanlan_name": lanlan_name,
+                    "result": None,
+                    "error": None,
                 }
-                # Emit running status to frontend HUD
+                # Emit task_update (running) so AgentHUD shows a running card
                 try:
                     await _emit_main_event(
                         "task_update", lanlan_name,
@@ -735,49 +734,118 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                               "start_time": up_start,
                               "params": {"plugin_id": plugin_id, "entry_id": entry_id}},
                     )
-                except Exception:
-                    pass
+                except Exception as emit_err:
+                    logger.debug("[TaskExecutor] emit task_update(running) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
+                async def _on_plugin_progress(
+                    *, progress=None, stage=None, message=None, step=None, step_total=None,
+                ):
+                    """Forward run progress updates to NEKO frontend via task_update."""
+                    task_payload: Dict[str, Any] = {
+                        "id": result.task_id, "status": "running", "type": "user_plugin",
+                        "start_time": up_start,
+                        "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                    }
+                    if progress is not None:
+                        task_payload["progress"] = progress
+                    if stage is not None:
+                        task_payload["stage"] = stage
+                    if message is not None:
+                        task_payload["message"] = message
+                    if step is not None:
+                        task_payload["step"] = step
+                    if step_total is not None:
+                        task_payload["step_total"] = step_total
+                    await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
                 try:
-                    up_result = await Modules.task_executor.execute_user_plugin_direct(
-                        task_id=result.task_id, plugin_id=plugin_id,
-                        plugin_args=plugin_args if isinstance(plugin_args, dict) else {},
+                    up_result = await Modules.task_executor._execute_user_plugin(
+                        task_id=result.task_id,
+                        plugin_id=plugin_id,
+                        plugin_args=plugin_args if isinstance(plugin_args, dict) else None,
                         entry_id=entry_id,
+                        task_description=result.task_description,
+                        reason=result.reason,
+                        lanlan_name=lanlan_name,
+                        conversation_id=conversation_id,
+                        on_progress=_on_plugin_progress,
                     )
-                    up_ok = up_result.success
-                    terminal = "completed" if up_ok else "failed"
+                    up_terminal = "completed" if up_result.success else "failed"
+                    # Update task_registry with terminal state
                     _reg = Modules.task_registry.get(result.task_id)
                     if _reg:
-                        _reg["status"] = terminal
+                        _reg["status"] = up_terminal
                         _reg["result"] = up_result.result
-                        if not up_ok and up_result.error:
+                        if not up_result.success and up_result.error:
                             _reg["error"] = str(up_result.error)[:500]
-                    if up_ok:
-                        logger.info("[TaskExecutor] ✅ UserPlugin completed: %s", plugin_id)
-                        await _emit_task_result(lanlan_name, channel="user_plugin",
-                                                task_id=result.task_id, success=True,
-                                                summary=f'插件 "{plugin_id}" 已完成')
+                    run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
+                    detail = str(run_data)[:500] if run_data else ""
+                    if up_result.success:
+                        logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
+                        summary = f'插件任务 "{plugin_id}" 已完成'
+                        if detail:
+                            summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="user_plugin",
+                                task_id=str(up_result.task_id or ""),
+                                success=True,
+                                summary=summary[:500],
+                                detail=detail,
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                     else:
-                        logger.warning("[TaskExecutor] ❌ UserPlugin failed: %s", up_result.error)
-                        await _emit_task_result(lanlan_name, channel="user_plugin",
-                                                task_id=result.task_id, success=False,
-                                                summary=f'插件 "{plugin_id}" 失败',
-                                                error_message=str(up_result.error or "")[:500])
-                    # Emit terminal status to frontend HUD
-                    await _emit_main_event(
-                        "task_update", lanlan_name,
-                        task={"id": result.task_id, "status": terminal, "type": "user_plugin",
-                              "start_time": up_start, "end_time": _now_iso()},
-                    )
+                        logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="user_plugin",
+                                task_id=str(up_result.task_id or ""),
+                                success=False,
+                                summary=f'插件任务 "{plugin_id}" 执行失败',
+                                error_message=str(up_result.error or "unknown error")[:500],
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                    # Emit task_update (terminal) so AgentHUD removes the running card
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
+                                  "start_time": up_start, "end_time": _now_iso(),
+                                  "error": str(up_result.error or "")[:500] if not up_result.success else None},
+                        )
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                 except Exception as e:
-                    logger.exception("[TaskExecutor] UserPlugin dispatch error: %s", e)
+                    logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                     _reg = Modules.task_registry.get(result.task_id)
                     if _reg:
                         _reg["status"] = "failed"
                         _reg["error"] = str(e)[:500]
+                    try:
+                        await _emit_task_result(
+                            lanlan_name,
+                            channel="user_plugin",
+                            task_id=str(result.task_id or ""),
+                            success=False,
+                            summary='插件任务分发失败',
+                            error_message=str(e)[:500],
+                        )
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": result.task_id, "status": "failed", "type": "user_plugin",
+                                  "start_time": up_start, "end_time": _now_iso(),
+                                  "error": str(e)[:500]},
+                        )
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
             else:
-                logger.warning("[UserPlugin] Task requires UserPlugin but it's disabled")
-
+                logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
                 sm = get_session_manager()
@@ -892,13 +960,17 @@ async def startup():
     _set_capability("browser_use", False, "connectivity check pending")
     _set_capability("user_plugin", False, "connectivity check pending")
     asyncio.ensure_future(_fire_agent_llm_connectivity_check())
-    # UserPlugin probe — plugin server may start slightly later, retry a few times
+    # UserPlugin probe — plugin server may start slightly later, so retry a few times
     async def _delayed_user_plugin_check():
-        for _ in range(6):
+        prev_cap = dict(Modules.capability_cache.get("user_plugin", {}))
+        for attempt in range(6):
             await asyncio.sleep(2)
             await _fire_user_plugin_capability_check()
-            if Modules.capability_cache.get("user_plugin", {}).get("ready"):
+            cap = Modules.capability_cache.get("user_plugin", {})
+            if cap != prev_cap:
                 await _emit_agent_status_update()
+                prev_cap = dict(cap)
+            if cap.get("ready"):
                 break
     asyncio.ensure_future(_delayed_user_plugin_check())
     
@@ -945,6 +1017,65 @@ async def startup():
     await _emit_agent_status_update()
     
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """服务器关闭时清理所有 AsyncClient 实例"""
+    logger.info("[Agent] 正在清理 AsyncClient 资源...")
+    
+    async def _close_router(name: str, module, attr: str):
+        """辅助函数：清理单个 router（带超时保护）"""
+        if module and hasattr(module, attr):
+            try:
+                router = getattr(module, attr)
+                # 添加超时保护，防止清理过程挂起
+                await asyncio.wait_for(router.aclose(), timeout=3.0)
+                logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
+            except asyncio.TimeoutError:
+                logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
+            except asyncio.CancelledError:
+                # 正常关闭流程中的取消
+                logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
+            except RuntimeError as e:
+                # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+                logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+            except Exception as e:
+                logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
+    
+    # 并行清理所有 router，提高关闭速度
+    try:
+        # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
+        _shutdown_coros = []
+        for _name, _attr_name in [("DirectTaskExecutor", "task_executor")]:
+            _mod = getattr(Modules, _attr_name, None)
+            if _mod is not None:
+                _shutdown_coros.append(_close_router(_name, _mod, "router"))
+        if _shutdown_coros:
+            await asyncio.wait_for(
+                asyncio.gather(*_shutdown_coros, return_exceptions=True),
+                timeout=5.0
+            )
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
+    
+    # Cancel persistent tasks (e.g. scheduler loop)
+    all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
+    tasks_to_await = [t for t in all_tasks if not t.done()]
+    for t in tasks_to_await:
+        t.cancel()
+    if tasks_to_await:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks_to_await, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
+    Modules._persistent_tasks.clear()
+    Modules._background_tasks.clear()
+    
+    logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 
 
 @app.get("/health")
@@ -1010,28 +1141,44 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 task_id=task_id, plugin_id=plugin_id, plugin_args=args, entry_id=entry_id
             )
             info["result"] = res.result
-            # _execute_user_plugin marks success=False for "accepted but not completed", so rely on accepted flag in result
-            accepted = isinstance(res.result, dict) and res.result.get("accepted")
-            info["status"] = "completed" if accepted else "failed"
-            if not accepted and res.error:
+            info["status"] = "completed" if res.success else "failed"
+            if not res.success and res.error:
                 info["error"] = res.error
-            # Only notify main server when actually accepted
-            if accepted:
-                try:
-                    plugin_summary = f'插件任务 "{plugin_id}" 已接受'
-                    await _emit_task_result(
-                        lanlan_name,
-                        channel="user_plugin",
-                        task_id=task_id,
-                        success=True,
-                        summary=plugin_summary,
-                    )
-                except Exception:
-                    pass
+            try:
+                run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
+                detail = str(run_data)[:500] if run_data else ""
+                if res.success:
+                    summary = f'插件任务 "{plugin_id}" 已完成'
+                    if detail:
+                        summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                else:
+                    summary = f'插件任务 "{plugin_id}" 执行失败'
+                await _emit_task_result(
+                    lanlan_name,
+                    channel="user_plugin",
+                    task_id=task_id,
+                    success=res.success,
+                    summary=summary[:500],
+                    detail=detail if res.success else "",
+                    error_message=str(res.error or "")[:500] if not res.success else "",
+                )
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except Exception as e:
             info["status"] = "failed"
             info["error"] = str(e)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
+            try:
+                await _emit_task_result(
+                    lanlan_name,
+                    channel="user_plugin",
+                    task_id=task_id,
+                    success=False,
+                    summary=f'插件任务 "{plugin_id}" 执行异常: {str(e)[:200]}',
+                    error_message=str(e)[:500],
+                )
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
 
     plugin_task = asyncio.create_task(_run_plugin())
     Modules._background_tasks.add(plugin_task)
@@ -1113,6 +1260,8 @@ async def get_agent_flags():
 
 @app.get("/agent/state")
 async def get_agent_state():
+    if not Modules.task_executor:
+        raise HTTPException(503, "Task executor not ready")
     snapshot = _collect_agent_status_snapshot()
     return {"success": True, "snapshot": snapshot}
 
@@ -1221,14 +1370,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
             _set_capability("user_plugin", True, "")
         Modules.agent_flags["user_plugin_enabled"] = uf
 
-    # testUserPlugin: log when user_plugin_enabled toggles
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
         if prev_up != new_up:
-            if new_up:
-                logger.info("testUserPlugin: user_plugin_enabled toggled ON via /agent/flags")
-            else:
-                logger.info("testUserPlugin: user_plugin_enabled toggled OFF via /agent/flags")
+            logger.info("[Agent] user_plugin_enabled toggled %s via /agent/flags", "ON" if new_up else "OFF")
     except Exception:
         pass
 
@@ -1515,11 +1660,12 @@ async def admin_control(payload: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
+    import logging  # 仍需要用于uvicorn的过滤器
     
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_agent_server_filter
     
-    # Add filter to uvicorn access logger
+    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
     uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)
