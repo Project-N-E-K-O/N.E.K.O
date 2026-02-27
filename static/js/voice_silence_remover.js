@@ -13,8 +13,9 @@ let _silenceState = {
     trimmedMd5: null,           // MD5 校验值
     trimTaskId: null,           // 裁剪任务 ID
     progressPollTimer: null,    // 进度轮询定时器
-    useTrimmmedForUpload: false,// 是否使用裁剪后的音频进行注册
+    useTrimmedForUpload: false, // 是否使用裁剪后的音频进行注册
     originalFile: null,         // 原始文件引用
+    opToken: null,              // 操作令牌，用于防止过期响应覆盖新状态
 };
 
 // ==================== 入口：文件选择后自动分析 ====================
@@ -34,8 +35,9 @@ async function onAudioFileSelected(file) {
         trimmedMd5: null,
         trimTaskId: null,
         progressPollTimer: null,
-        useTrimmmedForUpload: false,
+        useTrimmedForUpload: false,
         originalFile: file,
+        opToken: null,
     };
 
     // 开始静音分析
@@ -94,11 +96,18 @@ function closeSilenceModal() {
     const modal = document.getElementById('silenceModal');
     if (modal) modal.style.display = 'none';
 
-    // 如果有正在轮询的任务，停止轮询
-    if (_silenceState.progressPollTimer) {
-        clearInterval(_silenceState.progressPollTimer);
-        _silenceState.progressPollTimer = null;
+    // 如果有正在进行的裁剪任务，通知后端取消
+    if (_silenceState.trimTaskId && !_silenceState.trimmedAudioBase64) {
+        fetch(`/api/characters/audio/trim_cancel/${_silenceState.trimTaskId}`, {
+            method: 'POST',
+        }).catch(() => {});
     }
+
+    // 停止进度轮询
+    stopProgressPolling();
+
+    // 轮换 opToken 使任何迟到的回调失效
+    _silenceState.opToken = null;
 }
 
 // ==================== 操作处理 ====================
@@ -126,9 +135,11 @@ async function useTrimmedAudio() {
 
     updateProgress(0, window.t ? window.t('voice.silenceModal.analyzing') : '分析中...');
 
-    // 生成客户端 task ID 并立即开始进度轮询
+    // 生成客户端 task ID 和操作令牌
     const taskId = crypto.randomUUID();
+    const opToken = crypto.randomUUID();
     _silenceState.trimTaskId = taskId;
+    _silenceState.opToken = opToken;
 
     try {
         const formData = new FormData();
@@ -136,7 +147,7 @@ async function useTrimmedAudio() {
         formData.append('task_id', taskId);
 
         // 立即开始轮询进度
-        startProgressPolling(taskId);
+        startProgressPolling(taskId, opToken);
 
         const resp = await fetch('/api/characters/audio/trim_silence', {
             method: 'POST',
@@ -145,6 +156,9 @@ async function useTrimmedAudio() {
 
         // 请求完成，停止轮询
         stopProgressPolling();
+
+        // 检查操作令牌是否仍然有效（防止过期响应覆盖新状态）
+        if (_silenceState.opToken !== opToken) return;
 
         const data = await resp.json();
 
@@ -165,7 +179,7 @@ async function useTrimmedAudio() {
             _silenceState.trimmedAudioBase64 = data.audio_base64;
             _silenceState.trimmedFilename = data.filename;
             _silenceState.trimmedMd5 = data.md5;
-            _silenceState.useTrimmmedForUpload = true;
+            _silenceState.useTrimmedForUpload = true;
 
             updateProgress(100, window.t ? window.t('voice.silenceModal.done') : '完成');
 
@@ -217,7 +231,7 @@ async function useTrimmedAudio() {
  * 用户点击"上传原音频"
  */
 function useOriginalAudio() {
-    _silenceState.useTrimmmedForUpload = false;
+    _silenceState.useTrimmedForUpload = false;
     _silenceState.trimmedAudioBase64 = null;
     _restoreOriginalFileInput();
     closeSilenceModal();
@@ -229,6 +243,9 @@ function useOriginalAudio() {
 async function cancelTrimTask() {
     // 停止进度轮询
     stopProgressPolling();
+
+    // 使当前 opToken 失效
+    _silenceState.opToken = null;
 
     if (_silenceState.trimTaskId) {
         try {
@@ -248,9 +265,14 @@ async function cancelTrimTask() {
 /**
  * 开始轮询裁剪任务进度
  */
-function startProgressPolling(taskId) {
+function startProgressPolling(taskId, opToken) {
     stopProgressPolling();
     _silenceState.progressPollTimer = setInterval(async () => {
+        // 如果 opToken 不再匹配，停止轮询
+        if (_silenceState.opToken !== opToken) {
+            stopProgressPolling();
+            return;
+        }
         try {
             const resp = await fetch(`/api/characters/audio/trim_progress/${taskId}`);
             const data = await resp.json();

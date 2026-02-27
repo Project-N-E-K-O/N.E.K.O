@@ -535,7 +535,6 @@ class TestConvertToWav:
 
     def test_unsupported_format_no_pydub(self):
         """没有 pydub 时，非 WAV 格式应给出清晰错误"""
-        import importlib
         buf = io.BytesIO(b"fake mp3 data")
         # 如果 pydub 不存在，应该抛出 ValueError
         # 如果 pydub 存在但数据无效，也会报错

@@ -230,7 +230,7 @@ class TestIntegration:
     def test_case12_long_silence(self):
         """5 秒静音"""
         audio = np.concatenate([_sine(440, 0.5), _silence(5.0), _sine(880, 0.5)])
-        analysis, result = _run_pipeline(audio)
+        _, result = _run_pipeline(audio)
         assert result is not None
         assert result.removed_silence_ms >= 4500
         assert result.saving_percentage if hasattr(result, 'saving_percentage') else True

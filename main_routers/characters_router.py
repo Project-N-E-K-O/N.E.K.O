@@ -1436,7 +1436,7 @@ async def analyze_silence(file: UploadFile = File(...)):
     )
 
     try:
-        chunks = []
+        file_buffer = io.BytesIO()
         total_size = 0
         while True:
             chunk = await file.read(8192)
@@ -1448,8 +1448,8 @@ async def analyze_silence(file: UploadFile = File(...)):
                     {'error': f'文件大小超过限制 ({MAX_UPLOAD_SIZE // (1024 * 1024)} MB)'},
                     status_code=413,
                 )
-            chunks.append(chunk)
-        file_buffer = io.BytesIO(b''.join(chunks))
+            file_buffer.write(chunk)
+        file_buffer.seek(0)
     except Exception as e:
         logger.error(f"读取音频文件失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
@@ -1505,11 +1505,18 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
         format_duration_mmss, CancelledError
     )
 
-    if not task_id:
+    if task_id:
+        try:
+            uuid.UUID(task_id)
+        except ValueError:
+            return JSONResponse({'error': '无效的 task_id 格式'}, status_code=400)
+        if task_id in _trim_tasks:
+            return JSONResponse({'error': '该 task_id 已存在'}, status_code=409)
+    else:
         task_id = str(uuid.uuid4())
 
     try:
-        chunks = []
+        file_buffer = io.BytesIO()
         total_size = 0
         while True:
             chunk = await file.read(8192)
@@ -1521,8 +1528,8 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
                     {'error': f'文件大小超过限制 ({MAX_UPLOAD_SIZE // (1024 * 1024)} MB)'},
                     status_code=413,
                 )
-            chunks.append(chunk)
-        file_buffer = io.BytesIO(b''.join(chunks))
+            file_buffer.write(chunk)
+        file_buffer.seek(0)
     except Exception as e:
         logger.error(f"读取音频文件失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)

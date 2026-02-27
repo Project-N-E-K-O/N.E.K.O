@@ -74,9 +74,13 @@ class TrimResult:
     filename: str = ""
 
 
-class CancelledError(Exception):
+class SilenceRemovalCancelledError(Exception):
     """任务被用户取消"""
     pass
+
+
+# 兼容别名，避免破坏现有调用方
+CancelledError = SilenceRemovalCancelledError
 
 
 def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
@@ -119,12 +123,15 @@ def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
         out = (arr * 32768.0).astype(np.int16)
         return out.tobytes()
     elif sample_width == 3:
-        out_bytes = bytearray()
-        for v in arr:
-            val = int(v * 8388608.0)
-            val = max(-8388608, min(8388607, val))
-            out_bytes.extend(val.to_bytes(3, byteorder='little', signed=True))
-        return bytes(out_bytes)
+        # numpy 向量化 24-bit 编码
+        i32 = np.clip(arr * 8388608.0, -8388608, 8388607).astype(np.int32)
+        # 将有符号 32-bit 转为无符号以便位运算提取字节
+        u32 = i32.view(np.uint32)
+        raw = np.empty((len(u32), 3), dtype=np.uint8)
+        raw[:, 0] = u32 & 0xFF
+        raw[:, 1] = (u32 >> 8) & 0xFF
+        raw[:, 2] = (u32 >> 16) & 0xFF
+        return raw.tobytes()
     elif sample_width == 4:
         out = (arr * 2147483648.0).astype(np.int32)
         return out.tobytes()
@@ -193,7 +200,7 @@ def detect_silence(
 
     for i in range(total_frames):
         if cancel_check and cancel_check():
-            raise CancelledError("静音检测已被用户取消")
+            raise SilenceRemovalCancelledError("静音检测已被用户取消")
 
         start_idx = i * frame_size
         end_idx = start_idx + frame_size
@@ -325,7 +332,7 @@ def trim_silence(
 
     for idx, seg in enumerate(analysis.silence_segments):
         if cancel_check and cancel_check():
-            raise CancelledError("裁剪处理已被用户取消")
+            raise SilenceRemovalCancelledError("裁剪处理已被用户取消")
 
         seg_start = int(seg.start_ms * sample_rate / 1000.0)
         seg_end = int(seg.end_ms * sample_rate / 1000.0)
