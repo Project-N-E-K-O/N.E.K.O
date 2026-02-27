@@ -1404,6 +1404,9 @@ def load_plugins_from_toml(
         pid = resolved_pid
         if pid != original_pid:
             logger.warning("Plugin {} from {}: ID changed from '{}' to '{}' due to conflict", original_pid, toml_path, original_pid, pid)
+            # 同步 extension_map：将 original_pid 下收集的扩展迁移到新 pid
+            if original_pid in extension_map:
+                extension_map[pid] = extension_map.pop(original_pid)
 
         # 检查插件是否已注册
         if _check_plugin_already_registered(pid, toml_path, logger):

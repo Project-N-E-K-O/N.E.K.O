@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib
 import inspect
 import multiprocessing
@@ -424,10 +425,10 @@ def _handle_config_update_command(
             plugin_id, mode, req_id,
         )
         
-        # 保存旧配置用于回调
+        # 保存旧配置用于回调（深拷贝，避免嵌套结构共享引用）
         old_config = {}
         if hasattr(ctx, '_effective_config'):
-            old_config = dict(ctx._effective_config) if ctx._effective_config else {}
+            old_config = copy.deepcopy(ctx._effective_config) if ctx._effective_config else {}
         
         # 更新进程内配置缓存
         if hasattr(ctx, '_effective_config') and ctx._effective_config is not None:
@@ -459,6 +460,9 @@ def _handle_config_update_command(
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
+                # 回滚配置到变更前状态
+                ctx._effective_config = old_config
+                logger.debug("[Plugin Process] Config rolled back after handler failure")
                 ret_payload["error"] = f"config_change handler failed: {e}"
                 res_queue.put(ret_payload, timeout=10.0)
                 return
@@ -905,7 +909,7 @@ def _plugin_process_runner(
                     logger.exception("[Plugin Process] Freeze failed")
                     ret_payload["error"] = str(e)
                 
-                res_queue.put(ret_payload)
+                res_queue.put(ret_payload, timeout=10.0)
                 
                 # 冻结后停止进程
                 if ret_payload["success"]:
@@ -1275,7 +1279,7 @@ def _plugin_process_runner(
                                     ret_payload["error"] = f"Worker error: {str(e)}"
                                 finally:
                                     # 发送响应
-                                    res_queue.put(ret_payload)
+                                    res_queue.put(ret_payload, timeout=10.0)
                             
                             # 在单独线程里等待 worker 结果
                             threading.Thread(
@@ -1291,7 +1295,7 @@ def _plugin_process_runner(
                             # 提交失败，立即返回错误
                             logger.exception("Failed to submit worker task {}", entry_id)
                             ret_payload["error"] = f"Failed to submit worker task: {str(e)}"
-                            res_queue.put(ret_payload)
+                            res_queue.put(ret_payload, timeout=10.0)
                             continue
                     
                     elif asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method):
@@ -1408,7 +1412,7 @@ def _plugin_process_runner(
                                 ret_payload["data"] = result_container["result"]
 
                             try:
-                                res_queue.put(ret_payload)
+                                res_queue.put(ret_payload, timeout=10.0)
                             except Exception:
                                 logger.exception(
                                     "[Plugin Process] Failed to send response for req_id={}",
@@ -1476,7 +1480,7 @@ def _plugin_process_runner(
                     logger.exception("Unexpected error executing {}", entry_id)
                     ret_payload["error"] = f"Unexpected error: {str(e)}"
 
-                res_queue.put(ret_payload)
+                res_queue.put(ret_payload, timeout=10.0)
 
         # 触发生命周期：shutdown（尽力而为），并停止所有定时任务
         try:
@@ -1634,7 +1638,15 @@ class PluginHost:
             )
             return
 
-        await asyncio.to_thread(self.process.start)
+        try:
+            await asyncio.to_thread(self.process.start)
+        except Exception:
+            self.logger.error(
+                "Plugin {} process failed to start, shutting down comm_manager",
+                self.plugin_id,
+            )
+            await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            raise
         self.logger.info("Plugin {} process started (pid: {})", self.plugin_id, self.process.pid)
 
         # 验证进程状态

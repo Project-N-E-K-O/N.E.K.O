@@ -464,8 +464,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     except Exception:
                                         pass  # 静默失败
                                 
-                                # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
-                                merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 # 再次检查关闭状态
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")

@@ -1116,6 +1116,22 @@ async def shutdown():
     except asyncio.TimeoutError:
         logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
     
+    # Cancel persistent tasks (e.g. scheduler loop)
+    all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
+    tasks_to_await = [t for t in all_tasks if not t.done()]
+    for t in tasks_to_await:
+        t.cancel()
+    if tasks_to_await:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks_to_await, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
+    Modules._persistent_tasks.clear()
+    Modules._background_tasks.clear()
+    
     logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 
 
@@ -1209,6 +1225,17 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["status"] = "failed"
             info["error"] = str(e)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
+            try:
+                await _emit_task_result(
+                    lanlan_name,
+                    channel="user_plugin",
+                    task_id=task_id,
+                    success=False,
+                    summary=f'插件任务 "{plugin_id}" 执行异常: {str(e)[:200]}',
+                    error_message=str(e)[:500],
+                )
+            except Exception:
+                pass
 
     plugin_task = asyncio.create_task(_run_plugin())
     Modules._background_tasks.add(plugin_task)

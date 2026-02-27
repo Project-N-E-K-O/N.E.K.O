@@ -1091,6 +1091,14 @@ Return only the JSON object, nothing else.
                             "error": f"Timed out waiting for run {run_id} ({timeout}s)"}
                 try:
                     r = await client.get(f"{base}/runs/{run_id}")
+                    if r.status_code in (404, 410):
+                        return {"status": "failed", "success": False, "data": None,
+                                "error": f"Run {run_id} not found (HTTP {r.status_code})"}
+                    if r.status_code != 200:
+                        logger.warning(
+                            "[_await_run_completion] unexpected HTTP %s for run %s: %s",
+                            r.status_code, run_id, r.text[:200],
+                        )
                     if r.status_code == 200:
                         run_data = r.json()
                         last_status = run_data.get("status")

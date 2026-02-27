@@ -61,6 +61,7 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
 let currentRequestId = 0
+const expectedOrigin = window.location.origin
 
 const uiUrl = computed(() => {
   if (!props.pluginId) return ''
@@ -115,8 +116,9 @@ function reload() {
 function handleMessage(event: MessageEvent) {
   if (!iframeRef.value) return
   
-  // 验证消息来源
+  // 验证消息来源（source + origin）
   if (event.source !== iframeRef.value.contentWindow) return
+  if (event.origin !== expectedOrigin) return
   
   // 处理来自插件 UI 的消息
   const data = event.data
@@ -131,7 +133,7 @@ function sendMessage(payload: any) {
   iframeRef.value.contentWindow.postMessage({
     type: 'neko-host-message',
     payload
-  }, '*')
+  }, expectedOrigin)
 }
 
 defineExpose({
