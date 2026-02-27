@@ -115,6 +115,9 @@ class CursorFollowController {
         this._rawMouseX = 0;
         this._rawMouseY = 0;
         this._hasPointerInput = false;  // 首次 pointermove 前不驱动跟踪
+        this._ignoreMouseMoveUntil = 0;
+        this._lastCanvasRect = null;
+        this._lastCanvasRectReadAt = 0;
 
         // ── One-Euro 滤波器（NDC 层面） ──
         this._eyeFilterX = null;
@@ -231,6 +234,14 @@ class CursorFollowController {
     // ════════════════════════════════════════════════════════════════
     _bindEvents() {
         this._onPointerMove = (e) => {
+            const now = performance.now();
+            if (e.type === 'mousemove' && now < this._ignoreMouseMoveUntil) {
+                return;
+            }
+            if (e.type === 'pointermove') {
+                // macOS / Safari 等环境下，pointermove 后常跟随合成 mousemove，短窗口去重即可。
+                this._ignoreMouseMoveUntil = now + 40;
+            }
             this._rawMouseX = e.clientX;
             this._rawMouseY = e.clientY;
             this._hasPointerInput = true;
@@ -240,6 +251,15 @@ class CursorFollowController {
         // Electron 透明窗口事件转发可能只产生 mousemove；window 级别确保转发事件可达
         window.addEventListener('pointermove', this._onPointerMove, { passive: true });
         window.addEventListener('mousemove', this._onPointerMove, { passive: true });
+    }
+
+    _getCanvasRect(canvas) {
+        const now = performance.now();
+        if (!this._lastCanvasRect || (now - this._lastCanvasRectReadAt) > 120) {
+            this._lastCanvasRect = canvas.getBoundingClientRect();
+            this._lastCanvasRectReadAt = now;
+        }
+        return this._lastCanvasRect;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -330,7 +350,7 @@ class CursorFollowController {
         const headPos = this._getHeadWorldPos();
 
         // ③ 屏幕坐标 → NDC
-        const rect = canvas.getBoundingClientRect();
+        const rect = this._getCanvasRect(canvas);
         if (!rect.width || !rect.height) return;
 
         const rawNdcX = ((this._rawMouseX - rect.left) / rect.width) * 2 - 1;
@@ -573,6 +593,7 @@ class CursorFollowController {
         this._raycaster = null;
         this._ndcVec = null;
         this._desiredTargetPos = null;
+        this._lastCanvasRect = null;
         this._headWorldPos = null;
         this._plane = null;
         this._planeNormal = null;

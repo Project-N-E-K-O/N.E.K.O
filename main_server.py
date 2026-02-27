@@ -488,7 +488,7 @@ from main_routers import ( # noqa
     agent_router,
     system_router,
 )
-from main_routers.cookies_login_router import router as cookies_login_router
+from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
 # 初始化共享状态，供各路由访问

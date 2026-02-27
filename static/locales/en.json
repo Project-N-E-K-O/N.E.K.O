@@ -439,11 +439,16 @@
         "clearScreenshots": "Clear Screenshots",
         "clearScreenshotsConfirm": "Are you sure you want to clear all pending screenshots?"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "Emotion analysis timeout",
         "noAudioTrack": "No available audio track",
         "cameraStreamFailed": "Failed to get camera stream",
-        "characterConfigFailed": "Failed to get character configuration"
+        "characterConfigFailed": "Failed to get character configuration",
+        "API_ARREARS": "💥 API account in arrears. Please top up your balance.",
+        "API_QUOTA_TIME": "💥 Free API quota exhausted. Please try again tomorrow or switch to another API.",
+        "API_RATE_LIMIT": "💥 Too many requests (429) or quota limit reached. Please try again later.",
+        "API_POLICY_VIOLATION": "💥 Policy violation or security block: {{msg}}",
+        "API_1008_FALLBACK": "💥 Connection disconnected (1008): {{msg}}"
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
@@ -731,27 +736,27 @@
         "gptsovitsDescriptionText": "A locally deployed voice cloning model. Start the GPT-SoVITS v3 API service first. Voice configs (reference audio, model weights, etc.) are managed in v3's voices/*.toml files — just enter the voice config ID here.",
         "gptsovitsApiUrlPlaceholder": "e.g., http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "(Optional, default http://127.0.0.1:9881)",
-        "gptsovitsVoiceId": "Voice Config",
-        "gptsovitsVoiceIdHint": "(Fetch available configs from GPT-SoVITS v3)",
-        "gptsovitsVoiceIdEmpty": "-- Fetch voice list first --",
+        "gptsovitsVoiceId": "Default Voice Config",
+        "gptsovitsVoiceIdHint": "(Voice ID set in Character Manager will override this default)",
+        "gptsovitsVoiceIdEmpty": "-- Refresh to fetch voice list --",
         "gptsovitsNoVoices": "-- No configs available --",
-        "gptsovitsRefreshVoices": "Fetch List",
+        "gptsovitsRefreshVoices": "Refresh List",
         "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
         "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
         "gptsovitsEnabled": "Enable GPT-SoVITS",
         "gptsovitsEnabledHint": "(Will override TTS config above when enabled)",
+        "gptsovitsApiUrlRequired": "Please enter a valid http/https API URL",
         "wsWarning": {
             "title": "Protocol Error",
             "message": "URL must use WebSocket protocol (starting with ws:// or wss://)",
-            "messageWithType": "<strong>{{apiType}}</strong> URL must use WebSocket protocol (starting with ws:// or wss://)",
+            "messageWithType": "{{apiType}} URL must use WebSocket protocol (starting with ws:// or wss://)",
             "correctExamples": "Correct examples:",
             "wrongExamples": "Wrong examples:",
             "confirm": "I understand"
         },
         "loadConfigFailed": "Failed to load configuration, please refresh the page and try again",
         "errorGettingCurrentApiKey": "Error getting current API Key",
-        "getCurrentApiKeyFailed": "Failed to get current API Key",
-        "gptsovitsApiUrlRequired": "Please enter a valid http/https API URL"
+        "getCurrentApiKeyFailed": "Failed to get current API Key"
     },
     "live2d": {
         "manager": "Live2D Model Manager",
@@ -1138,6 +1143,7 @@
         "switchFailed": "Switch failed",
         "switchError": "An error occurred while switching neko",
         "freePresetVoices": "Free Preset Voices",
+        "gptsovitsVoices": "GPT-SoVITS Voices",
         "loadFailed": "Failed to load character data",
         "renameError": "Rename failed: {{error}}",
         "renameMasterTitle": "Rename Master",
@@ -1250,7 +1256,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "Base Interval",

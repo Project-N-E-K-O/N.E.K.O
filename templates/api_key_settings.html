@@ -634,22 +634,21 @@
                                                 </div>
 
                                                 <div class="field-row">
-                                                    <label for="gptsovitsVoiceId">
-                                                        <span data-i18n="api.gptsovitsVoiceId">声音配置</span>
-                                                        <em style="font-weight: normal; color: #888;"
-                                                            data-i18n="api.gptsovitsVoiceIdHint">（从 GPT-SoVITS v3
-                                                            获取可用配置）</em>
-                                                    </label>
-                                                    <div
-                                                        style="display: flex; gap: 8px; align-items: center; max-width: 600px;">
-                                                        <select id="gptsovitsVoiceId"
-                                                            style="flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                            <option value="" data-i18n="api.gptsovitsVoiceIdEmpty">--
-                                                                请先获取语音列表 --</option>
-                                                        </select>
+                                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                                                        <label for="gptsovitsVoiceId" style="margin-bottom: 0;">
+                                                            <span data-i18n="api.gptsovitsVoiceId">默认声音配置</span>
+                                                            <em style="font-weight: normal; color: #888;"
+                                                                data-i18n="api.gptsovitsVoiceIdHint">（角色管理中设置的 Voice ID 会覆盖此默认配置）</em>
+                                                        </label>
                                                         <button type="button" onclick="fetchGptSovitsVoices()"
-                                                            style="padding: 10px 16px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; white-space: nowrap;"
-                                                            data-i18n="api.gptsovitsRefreshVoices">获取列表</button>
+                                                            class="gsv-refresh-btn"
+                                                            data-i18n="api.gptsovitsRefreshVoices">刷新列表</button>
+                                                    </div>
+                                                    <!-- 隐藏 input 存储选中的 voice_id -->
+                                                    <input type="hidden" id="gptsovitsVoiceId" value="">
+                                                    <!-- 可滚动的声音卡片网格 -->
+                                                    <div id="gsv-voices-grid" class="gsv-voices-grid" role="radiogroup" aria-label="GPT-SoVITS voice list">
+                                                        <div class="gsv-voices-empty" data-i18n="api.gptsovitsVoiceIdEmpty">-- 请先刷新获取语音列表 --</div>
                                                     </div>
                                                 </div>
 

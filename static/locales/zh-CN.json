@@ -439,11 +439,16 @@
         "clearScreenshots": "清空截图",
         "clearScreenshotsConfirm": "确定要清空所有待发送的截图吗？"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "情感分析超时",
         "noAudioTrack": "没有可用的音频轨道",
         "cameraStreamFailed": "无法获取摄像头流",
-        "characterConfigFailed": "无法获取角色配置"
+        "characterConfigFailed": "无法获取角色配置",
+        "API_ARREARS": "💥 您的API已欠费。如使用第三方平台请尽快充值。",
+        "API_QUOTA_TIME": "💥 免费API限额已耗尽，请更换API或明天再试。",
+        "API_RATE_LIMIT": "💥 API达到限额或请求过于频繁(429)，请稍后再试。",
+        "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
+        "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}"
     },
     "camera": {
         "iosPermissionHint": "请检查 iOS 设置 → Safari → 摄像头 权限是否为「允许」",
@@ -731,27 +736,27 @@
         "gptsovitsDescriptionText": "本地部署的语音克隆模型，需要先启动 GPT-SoVITS v3 API 服务。声音配置（参考音频、模型权重等）在 v3 的 voices/*.toml 文件中管理，此处只需填写声音配置 ID。",
         "gptsovitsApiUrlPlaceholder": "如：http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "（选填，默认 http://127.0.0.1:9881）",
-        "gptsovitsVoiceId": "声音配置",
-        "gptsovitsVoiceIdHint": "（从 GPT-SoVITS v3 获取可用配置）",
-        "gptsovitsVoiceIdEmpty": "-- 请先获取语音列表 --",
+        "gptsovitsVoiceId": "默认声音配置",
+        "gptsovitsVoiceIdHint": "（角色管理中设置的 Voice ID 会覆盖此默认配置）",
+        "gptsovitsVoiceIdEmpty": "-- 请先刷新获取语音列表 --",
         "gptsovitsNoVoices": "-- 无可用配置 --",
-        "gptsovitsRefreshVoices": "获取列表",
+        "gptsovitsRefreshVoices": "刷新列表",
         "gptsovitsVoicesLoaded": "已加载 {{count}} 个语音配置",
         "gptsovitsVoicesLoadFailed": "获取语音列表失败",
         "gptsovitsEnabled": "启用 GPT-SoVITS",
         "gptsovitsEnabledHint": "（启用后将替代上方的 TTS 配置）",
+        "gptsovitsApiUrlRequired": "请填写正确的 http/https API URL",
         "wsWarning": {
             "title": "协议错误",
             "message": "URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
-            "messageWithType": "<strong>{{apiType}}</strong> 的 URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
+            "messageWithType": "{{apiType}} 的 URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
             "correctExamples": "正确示例：",
             "wrongExamples": "错误示例：",
             "confirm": "我知道了"
         },
         "loadConfigFailed": "加载配置失败，请刷新页面后重试",
         "errorGettingCurrentApiKey": "获取当前API Key失败",
-        "getCurrentApiKeyFailed": "获取当前API Key失败",
-        "gptsovitsApiUrlRequired": "请填写正确的 http/https API URL"
+        "getCurrentApiKeyFailed": "获取当前API Key失败"
     },
     "live2d": {
         "manager": "Live2D 模型管理",
@@ -1138,6 +1143,7 @@
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
         "freePresetVoices": "免费预设音色",
+        "gptsovitsVoices": "GPT-SoVITS 声音",
         "loadFailed": "加载角色数据失败",
         "renameError": "重命名失败: {{error}}",
         "renameMasterTitle": "重命名主人",
@@ -1250,7 +1256,8 @@
             "en": "English",
             "ja": "日本語",
             "zh-TW": "繁體中文",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "基础间隔",

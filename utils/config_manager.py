@@ -23,6 +23,7 @@ from utils.api_config_loader import (
     get_assist_api_profiles,
     get_assist_api_key_fields,
 )
+from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.logger_config import get_module_logger
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
@@ -607,13 +608,26 @@ class ConfigManager:
         return False
 
     def validate_voice_id(self, voice_id):
-        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
+        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效。
+        
+        校验覆盖四类 voice_id：
+          1. "cosyvoice-v2..." → 旧版格式，始终无效
+          2. "gsv:xxx" → 委托 check_custom_tts_voice_allowed (custom_tts_adapter)
+             判定，由适配器根据 tts_custom 配置决定有效性
+          3. 普通 ID → 在 voice_storage (CosyVoice 云端克隆音色) 中查找
+          4. 免费预设音色 → 这里只做静态白名单放行；运行时由 core.py
+             _should_block_free_preset_voice 根据线路 (lanlan.tech / lanlan.app)
+             动态决定是否实际启用（lanlan.app 海外节点不支持预设音色）
+        """
         if not voice_id:
             return True
 
-        # 自动忽略以 "cosyvoice-v2" 开头的旧版音色ID
         if voice_id.startswith("cosyvoice-v2"):
             return False
+
+        custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
+        if custom_tts_allowed is not None:
+            return custom_tts_allowed
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
@@ -628,20 +642,19 @@ class ConfigManager:
         return False
 
     def cleanup_invalid_voice_ids(self):
-        """清理 characters.json 中无效的 voice_id"""
+        """清理 characters.json 中无效的 voice_id。
+        
+        通过 validate_voice_id 统一判定有效性，不含 provider 专属逻辑。
+        注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
+        实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
+        """
         character_data = self.load_characters()
-        voices = self.get_voices_for_current_api()
-        
-        # 免费预设音色也是有效的，不应被清理
-        from utils.api_config_loader import get_free_voices
-        free_voice_ids = set(get_free_voices().values())
-        
         cleaned_count = 0
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
+            if voice_id and not self.validate_voice_id(voice_id):
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,

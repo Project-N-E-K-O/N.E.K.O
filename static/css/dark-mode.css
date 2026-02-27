@@ -879,8 +879,7 @@ html #chat-container {
 
 /* 下拉框覆盖内联 border */
 [data-theme="dark"] #coreApiSelect,
-[data-theme="dark"] #assistApiSelect,
-[data-theme="dark"] #gptsovitsVoiceId {
+[data-theme="dark"] #assistApiSelect {
   border-color: #3a5a6e !important;
   background: #333 !important;
 }
@@ -923,11 +922,65 @@ html #chat-container {
   color: #999 !important;
 }
 
-/* GPT-SoVITS 获取列表按钮 */
-[data-theme="dark"] #gptsovits-config-fields button[onclick*="fetchGptSovitsVoices"] {
-  background: #3a3a3a !important;
-  color: #e0e0e0 !important;
-  border-color: #555 !important;
+/* GPT-SoVITS 刷新列表按钮 */
+[data-theme="dark"] .gsv-refresh-btn {
+  background: #2d2d2d !important;
+  color: #3a9fd8 !important;
+  border-color: #3a9fd8 !important;
+}
+
+[data-theme="dark"] .gsv-refresh-btn:hover {
+  background: #3a9fd8 !important;
+  color: #fff !important;
+}
+
+/* GPT-SoVITS 声音卡片网格 */
+[data-theme="dark"] .gsv-voices-grid {
+  background: #1e1e1e;
+  border-color: #444;
+}
+
+[data-theme="dark"] .gsv-voice-card {
+  background: #2d2d2d;
+  border-color: #444;
+}
+
+[data-theme="dark"] .gsv-voice-card:hover {
+  background: #383838;
+  border-color: #3a9fd8;
+  box-shadow: 0 2px 8px rgba(58, 159, 216, 0.15);
+}
+
+[data-theme="dark"] .gsv-voice-card.selected {
+  background: linear-gradient(135deg, #1a3a4a 0%, #1e3040 100%);
+  border-color: #3a9fd8;
+  box-shadow: 0 2px 12px rgba(58, 159, 216, 0.25);
+}
+
+[data-theme="dark"] .gsv-voice-card.selected::after {
+  color: #3a9fd8;
+}
+
+[data-theme="dark"] .gsv-voice-card .gsv-card-name {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .gsv-voice-card .gsv-card-id {
+  color: #888;
+}
+
+[data-theme="dark"] .gsv-voice-card .gsv-card-version {
+  color: #3a9fd8;
+  background: rgba(58, 159, 216, 0.15);
+}
+
+[data-theme="dark"] .gsv-voice-card .gsv-card-desc {
+  color: #999;
+}
+
+[data-theme="dark"] .gsv-voices-empty,
+[data-theme="dark"] .gsv-voices-loading {
+  color: #888;
 }
 
 /* 自定义API配置区域分隔线 */

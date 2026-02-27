@@ -25,6 +25,7 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -1121,6 +1122,59 @@ async def clear_voice_ids():
         }, status_code=500)
 
 
+@router.get('/custom_tts_voices')
+async def list_custom_tts_voices_for_characters():
+    """获取自定义 TTS 可用声音列表（用于角色管理页面的音色选择）。
+
+    当前由适配层处理 GPT-SoVITS provider 的路径映射与 voice_id 前缀规则。
+    """
+    try:
+        _config_manager = get_config_manager()
+        
+        # 使用与 gptsovits_tts_worker 相同的配置解析路径，确保 URL 一致
+        tts_config = _config_manager.get_model_api_config('tts_custom')
+        base_url = (tts_config.get('base_url') or '').rstrip('/')
+        if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
+            return JSONResponse({
+                'success': False,
+                'error': '未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS',
+                'voices': []
+            }, status_code=400)
+        
+        # SSRF 防护：GPT-SoVITS 仅限 localhost
+        from urllib.parse import urlparse
+        import ipaddress
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ''
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
+        except ValueError:
+            if host not in ('localhost',):
+                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
+        
+        # 通过适配层获取并标准化自定义 TTS voices
+        voices = await get_custom_tts_voices(base_url, provider='gptsovits')
+        
+        return JSONResponse({
+            'success': True,
+            'voices': voices,
+            'api_url': base_url
+        })
+    except (CustomTTSVoiceFetchError, ValueError) as e:
+        return JSONResponse({
+            'success': False,
+            'error': f'连接 GPT-SoVITS API 失败: {str(e)}',
+            'voices': []
+        }, status_code=502)
+    except Exception as e:
+        return JSONResponse({
+            'success': False,
+            'error': f'获取 GPT-SoVITS 声音列表失败: {str(e)}',
+            'voices': []
+        }, status_code=500)
+
+
 @router.post('/set_microphone')
 async def set_microphone(request: Request):
     try:
@@ -1178,6 +1232,18 @@ async def get_voices():
             free_voices = get_free_voices()
             if free_voices:
                 result["free_voices"] = free_voices
+    
+    # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
+    characters = _config_manager.load_characters()
+    voice_owners = {}
+    for catgirl_name, catgirl_config in characters.get('猫娘', {}).items():
+        if not isinstance(catgirl_config, dict):
+            logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
+            continue
+        vid = catgirl_config.get('voice_id', '')
+        if vid:
+            voice_owners.setdefault(vid, []).append(catgirl_name)
+    result["voice_owners"] = voice_owners
     
     return result
 

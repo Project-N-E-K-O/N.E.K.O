@@ -439,11 +439,16 @@
         "clearScreenshots": "スクリーンショットをクリア",
         "clearScreenshotsConfirm": "保留中のすべてのスクリーンショットをクリアしてもよろしいですか？"
     },
-    "error": {
+    "errors": {
         "emotionTimeout": "感情分析がタイムアウトしました",
         "noAudioTrack": "利用可能なオーディオトラックがありません",
         "cameraStreamFailed": "カメラストリームの取得に失敗しました",
-        "characterConfigFailed": "キャラクター設定の取得に失敗しました"
+        "characterConfigFailed": "キャラクター設定の取得に失敗しました",
+        "API_ARREARS": "💥 APIの残高が不足しています。チャージしてください。",
+        "API_QUOTA_TIME": "💥 無料APIの利用制限に達しました。明日やり直すか他のAPIに切り替えてください。",
+        "API_RATE_LIMIT": "💥 リクエストが多すぎます(429)。しばらくしてからもう一度お試しください。",
+        "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
+        "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}"
     },
     "camera": {
         "iosPermissionHint": "iOS設定 → Safari → カメラの権限が「許可」に設定されているか確認してください",
@@ -731,27 +736,27 @@
         "gptsovitsDescriptionText": "ローカルにデプロイされた音声クローンモデルです。先にGPT-SoVITS v3 APIサービスを起動してください。音声設定（参照音声、モデルウェイトなど）はv3のvoices/*.tomlファイルで管理されます。ここでは音声設定IDを入力するだけです。",
         "gptsovitsApiUrlPlaceholder": "例：http://127.0.0.1:9881",
         "gptsovitsApiUrlOptional": "（オプション、デフォルト http://127.0.0.1:9881）",
-        "gptsovitsVoiceId": "音声設定",
-        "gptsovitsVoiceIdHint": "（GPT-SoVITS v3から利用可能な設定を取得）",
-        "gptsovitsVoiceIdEmpty": "-- 先に音声リストを取得してください --",
+        "gptsovitsVoiceId": "デフォルト音声設定",
+        "gptsovitsVoiceIdHint": "（キャラクター管理で設定したVoice IDがこのデフォルトを上書きします）",
+        "gptsovitsVoiceIdEmpty": "-- リストを更新して音声を取得してください --",
         "gptsovitsNoVoices": "-- 利用可能な設定なし --",
-        "gptsovitsRefreshVoices": "リスト取得",
+        "gptsovitsRefreshVoices": "リスト更新",
         "gptsovitsVoicesLoaded": "{{count}}件の音声設定を読み込みました",
         "gptsovitsVoicesLoadFailed": "音声リストの取得に失敗しました",
         "gptsovitsEnabled": "GPT-SoVITS を有効化",
         "gptsovitsEnabledHint": "（有効にすると上記のTTS設定を上書きします）",
+        "gptsovitsApiUrlRequired": "正しい http/https API URLを入力してください",
         "wsWarning": {
             "title": "プロトコルエラー",
             "message": "URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
-            "messageWithType": "<strong>{{apiType}}</strong> のURLはWebSocketプロトコル（ws:// または wss://）である必要があります",
+            "messageWithType": "{{apiType}} のURLはWebSocketプロトコル（ws:// または wss://）である必要があります",
             "correctExamples": "正しい例:",
             "wrongExamples": "誤った例:",
             "confirm": "理解しました"
         },
         "loadConfigFailed": "設定の読み込みに失敗しました。ページを更新して再試行してください",
         "errorGettingCurrentApiKey": "現在のAPIキーの取得中にエラーが発生しました",
-        "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました",
-        "gptsovitsApiUrlRequired": "正しい http/https API URLを入力してください"
+        "getCurrentApiKeyFailed": "現在のAPIキーの取得に失敗しました"
     },
     "live2d": {
         "manager": "Live2Dモデル管理",
@@ -1138,6 +1143,7 @@
         "switchFailed": "切り替えに失敗しました",
         "switchError": "neko の切り替え中にエラーが発生しました",
         "freePresetVoices": "── 無料プリセット音色 ──",
+        "gptsovitsVoices": "GPT-SoVITS 音声",
         "loadFailed": "キャラクターデータの読み込みに失敗しました",
         "renameError": "名前の変更に失敗しました: {{error}}",
         "renameMasterTitle": "マスターの名前を変更",
@@ -1250,7 +1256,8 @@
             "en": "英語",
             "ja": "日本語",
             "zh-TW": "繁体字中国語",
-            "ko": "한국어"
+            "ko": "한국어",
+            "ru": "Русский"
         },
         "interval": {
             "chatIntervalBase": "基本間隔",

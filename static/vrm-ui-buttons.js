@@ -110,6 +110,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
         const centerY = this._vrmModelCenterY;
         if (!mouse || typeof centerX !== 'number' || typeof centerY !== 'number') return false;
 
+        if (this._vrmMouseInModelRegion) return true;
+
         const dx = mouse.x - centerX;
         const dy = mouse.y - centerY;
         const dist = Math.hypot(dx, dy);
@@ -771,10 +773,18 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 screenBottom = Math.max(screenBottom, sy);
             }
 
-            // 现在 screenLeft/Right/Top/Bottom 就是模型在屏幕上 的 2D 边界（与 Live2D bounds 等价）
-            const modelScreenHeight = screenBottom - screenTop;
-            const modelCenterY = (screenTop + screenBottom) / 2;
-            const modelCenterX = (screenLeft + screenRight) / 2;
+            // 对超屏模型使用可见区域边界，避免放大后 UI 锚点被极端投影值拉远
+            const visibleLeft = Math.max(0, Math.min(canvasWidth, screenLeft - canvasRect.left));
+            const visibleRight = Math.max(0, Math.min(canvasWidth, screenRight - canvasRect.left));
+            const visibleTop = Math.max(0, Math.min(canvasHeight, screenTop - canvasRect.top));
+            const visibleBottom = Math.max(0, Math.min(canvasHeight, screenBottom - canvasRect.top));
+
+            const visibleHeight = Math.max(1, visibleBottom - visibleTop);
+
+            // 公开给其它模块时统一使用视口坐标（而非 canvas 局部坐标）
+            const modelScreenHeight = visibleHeight;
+            const modelCenterY = canvasRect.top + (visibleTop + visibleBottom) / 2;
+            const modelCenterX = canvasRect.left + (visibleLeft + visibleRight) / 2;
             this._vrmModelCenterX = modelCenterX;
             this._vrmModelCenterY = modelCenterY;
             this._vrmModelScreenHeight = modelScreenHeight;
@@ -783,11 +793,23 @@ VRMManager.prototype._startUIUpdateLoop = function () {
             const mouseStale = !this._vrmMousePosTs || (Date.now() - this._vrmMousePosTs > 1500);
             const mouseDist = (mouse && !mouseStale) ? Math.hypot(mouse.x - modelCenterX, mouse.y - modelCenterY) : Infinity;
             const baseThreshold = Math.max(90, Math.min(260, modelScreenHeight * 0.55));
+
+            // 鼠标是否在模型可见区域内（带外扩边距，覆盖按钮可能出现的位置）
+            const padX = Math.max(60, (visibleRight - visibleLeft) * 0.3);
+            const padY = Math.max(40, (visibleBottom - visibleTop) * 0.2);
+            const mouseInModelRegion = mouse && !mouseStale &&
+                mouse.x >= canvasRect.left + visibleLeft - padX &&
+                mouse.x <= canvasRect.left + visibleRight + padX &&
+                mouse.y >= canvasRect.top + visibleTop - padY &&
+                mouse.y <= canvasRect.top + visibleBottom + padY;
+
+            this._vrmMouseInModelRegion = !!mouseInModelRegion;
+
             const showThreshold = baseThreshold;
             const hideThreshold = baseThreshold * 1.2;
-            if (this._vrmUiNearModel !== true && mouseDist <= showThreshold) {
+            if (this._vrmUiNearModel !== true && (mouseDist <= showThreshold || mouseInModelRegion)) {
                 this._vrmUiNearModel = true;
-            } else if (this._vrmUiNearModel !== false && mouseDist >= hideThreshold) {
+            } else if (this._vrmUiNearModel !== false && mouseDist >= hideThreshold && !mouseInModelRegion) {
                 this._vrmUiNearModel = false;
             } else if (typeof this._vrmUiNearModel !== 'boolean') {
                 this._vrmUiNearModel = false;
@@ -825,7 +847,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                     const screenHeight = window.innerHeight;
 
                     // X轴：定位在角色右侧（与 Live2D 相同公式）
-                    const targetX = screenRight * 0.8 + screenLeft * 0.2;
+                    const targetX = canvasRect.left + visibleRight * 0.8 + visibleLeft * 0.2;
 
                     // 使用缩放后的实际工具栏高度
                     const actualToolbarHeight = baseToolbarHeight * scale;
@@ -833,7 +855,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                     // Y轴：工具栏中心偏高于模型中心（VRM 全身模型的包围盒中心在腰部，
                     // 需要上移让按钮更接近胸部位置，与 Live2D 半身模型的视觉效果一致）
-                    const offsetY = modelScreenHeight * 0.1;  // 上移 10% 模型高度
+                    const offsetY = Math.min(modelScreenHeight * 0.1, screenHeight * 0.08);  // 上移量设上限，避免放大后越飘越远
                     const targetY = modelCenterY - actualToolbarHeight / 2 - offsetY;
 
                     // 边界限制：确保不超出当前屏幕（与 Live2D 保持一致，使用 20px 边距）
@@ -855,8 +877,8 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                     // ========== 锁图标位置（与 Live2D 相同公式） ==========
                     if (lockIcon && !this._isInReturnState) {
-                        const lockTargetX = screenRight * 0.7 + screenLeft * 0.3;
-                        const lockTargetY = screenTop * 0.3 + screenBottom * 0.7;
+                        const lockTargetX = canvasRect.left + visibleRight * 0.7 + visibleLeft * 0.3;
+                        const lockTargetY = canvasRect.top + visibleTop * 0.3 + visibleBottom * 0.7;
 
                         lockIcon.style.transformOrigin = 'center center';
                         lockIcon.style.transform = `scale(${scale})`;

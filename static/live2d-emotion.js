@@ -1,6 +1,10 @@
 /**
  * Live2D Emotion - 情感/表情/动作相关功能
  * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
+ * 功能:
+ * - 情感管理（如切换表情、设置情感参数）
+ * - 动作管理（如切换动作、设置动作参数）
+ * - 常驻表情管理（如设置和清除常驻表情）
  */
 
 // 记录模型的初始参数（用于expression重置，跳过位置参数）

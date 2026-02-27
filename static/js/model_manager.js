@@ -1121,7 +1121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+    await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
     showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
 
     // 先加载模型列表
@@ -1490,11 +1490,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const vrmIdleAnimGroup = document.getElementById('vrm-idle-animation-group');
             if (vrmIdleAnimGroup) vrmIdleAnimGroup.style.display = 'none';
 
-            // 【关键修复】强制重新初始化PIXI
-            // PIXI销毁后可能会移除canvas元素，需要重新创建
+            // 确保 Live2D Canvas 存在（PIXI 被销毁时可能移除）
             const live2dCanvas = document.getElementById('live2d-canvas');
             if (!live2dCanvas) {
-                // canvas被销毁了，需要重新创建
                 const newCanvas = document.createElement('canvas');
                 newCanvas.id = 'live2d-canvas';
                 const container = document.getElementById('live2d-container');
@@ -1503,13 +1501,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            // 无论如何都重新初始化PIXI，确保干净的状态
+            // 幂等初始化：仅在未就绪时初始化，避免重复重建导致首帧抖动
             if (window.live2dManager) {
-                // 强制重置状态
-                window.live2dManager.pixi_app = null;
-                window.live2dManager.isInitialized = false;
-
-                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
                 showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
             }
         } else { // VRM

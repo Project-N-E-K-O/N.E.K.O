@@ -367,7 +367,7 @@ async def new_dialog(lanlan_name: str):
     result = f"\n========以下是{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
     result += f"现在时间是{get_timestamp()}。开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in recent_history_manager.get_recent_history(lanlan_name):
-        if type(i.content) == str:
+        if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()
             result += f"{name_mapping[i.type]} | {cleaned_content}\n"
         else:
