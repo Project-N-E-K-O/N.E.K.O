@@ -8,6 +8,7 @@
     <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
     <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/theme-manager.js"></script>
     <style>
         :root { --primary: #4f46e5; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }
         
@@ -182,6 +183,173 @@
             /* 7. 底部留白，防止被 Home Bar 遮挡 */
             #status-area { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
         }
+        /* 暗色模式样式 */
+    [data-theme="dark"] {
+        --primary: #6366f1;
+        --bg: #1a1a1a;
+        --card-bg: #2d2d2d;
+        --text: #e0e0e0;
+        --border: #404040;
+        --input-bg: #3a3a3a;
+        --input-border: #555;
+        --button-bg: #4f46e5;
+        --button-text: #ffffff;
+        --tab-bg: #2a2a2a;
+        --tab-text: #a0aec0;
+        --tab-active: #e0e0e0;
+        --status-card-bg: #333333;
+        --status-card-border: #4a4a4a;
+        --status-name: #e2e8f0;
+        --status-tag-active-bg: #166534;
+        --status-tag-active-text: #dcfce7;
+        --status-tag-inactive-bg: #4a5568;
+        --status-tag-inactive-text: #a0aec0;
+        --tutorial-bg: #2d2d2d;
+        --tutorial-border: #4a4a4a;
+        --header-bg: #2d3748;
+    }
+
+    [data-theme="dark"] body {
+        background: var(--bg);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .dashboard {
+        background: var(--card-bg);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    [data-theme="dark"] .container-header {
+        background: var(--header-bg);
+    }
+
+    [data-theme="dark"] .tabs {
+        background: var(--tab-bg);
+        border-bottom-color: var(--border);
+    }
+
+    [data-theme="dark"] .tab-btn {
+        color: var(--tab-text);
+    }
+
+    [data-theme="dark"] .tab-btn:hover {
+        background: #3a3a3a;
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .tab-btn.active {
+        background: var(--card-bg);
+        color: var(--tab-active);
+        box-shadow: inset 0 -3px 0 var(--primary);
+    }
+
+    [data-theme="dark"] .field-group input {
+        background: var(--input-bg);
+        border-color: var(--input-border);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .field-group input:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+    }
+
+    [data-theme="dark"] .submit-btn {
+        background: var(--button-bg);
+        color: var(--button-text);
+    }
+
+    [data-theme="dark"] .submit-btn:hover {
+        background: #4338ca;
+    }
+
+    [data-theme="dark"] .tutorial-banner {
+        background: var(--tutorial-bg);
+        border-color: var(--tutorial-border);
+    }
+
+    [data-theme="dark"] .tutorial-title {
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .step-item {
+        background: var(--card-bg);
+        border-color: var(--border);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .highlight-text {
+        color: #60a5fa;
+    }
+
+    [data-theme="dark"] kbd {
+        background: #4a5568;
+        border-color: #718096;
+        color: #e2e8f0;
+    }
+
+    [data-theme="dark"] #panel-desc {
+        background: #2d3748;
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .status-card {
+        background: var(--status-card-bg);
+        border-color: var(--status-card-border);
+    }
+
+    [data-theme="dark"] .status-name {
+        color: var(--status-name);
+    }
+
+    [data-theme="dark"] .status-tag.active {
+        background: var(--status-tag-active-bg);
+        color: var(--status-tag-active-text);
+    }
+
+    [data-theme="dark"] .status-tag.inactive {
+        background: var(--status-tag-inactive-bg);
+        color: var(--status-tag-inactive-text);
+    }
+
+    [data-theme="dark"] .del-btn {
+        color: #f87171;
+    }
+
+    [data-theme="dark"] .del-btn:hover {
+        background: #4a0e0e;
+    }
+
+    [data-theme="dark"] .status-icon-wrapper {
+        background: #4a5568;
+        border-color: #718096;
+    }
+
+    [data-theme="dark"] .field-group label {
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .tab-content {
+        color: var(--text);
+    }
+
+    /* 移动端暗色模式样式 */
+    @media (max-width: 640px) {
+        [data-theme="dark"] .tabs {
+            background: var(--card-bg);
+            border-bottom-color: var(--border);
+        }
+
+        [data-theme="dark"] .tab-btn {
+            background: #374151;
+            color: var(--tab-text);
+        }
+
+        [data-theme="dark"] .tab-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+    }
     </style>
 </head>
 <body>
