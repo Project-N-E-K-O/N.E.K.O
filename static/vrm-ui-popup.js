@@ -457,11 +457,19 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
         const idx = parseInt(qualitySlider.value, 10);
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
     });
+    const mapRenderQualityToFollowPerf = (quality) => (quality === 'high' ? 'medium' : 'low');
     qualitySlider.addEventListener('change', () => {
         const idx = parseInt(qualitySlider.value, 10);
-        window.renderQuality = qualityNames[idx];
+        const quality = qualityNames[idx];
+        window.renderQuality = quality;
+        const followLevel = mapRenderQualityToFollowPerf(quality);
+        window.cursorFollowPerformanceLevel = followLevel;
+        if (window.vrmManager && typeof window.vrmManager.setCursorFollowPerformance === 'function') {
+            window.vrmManager.setCursorFollowPerformance(followLevel);
+        }
+        window.dispatchEvent(new CustomEvent('neko-cursor-follow-performance-changed', { detail: { level: followLevel } }));
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: qualityNames[idx] } }));
+        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality } }));
     });
     qualitySlider.addEventListener('click', (e) => e.stopPropagation());
     qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());

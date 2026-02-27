@@ -1185,13 +1185,15 @@ class LLMSessionManager:
             # 无论成功还是失败，都重置启动标志
             self.is_starting_session = False
 
-    async def send_user_activity(self):
+    async def send_user_activity(self, interrupted_speech_id: Optional[str] = None):
         """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                if interrupted_speech_id is None:
+                    interrupted_speech_id = self.current_speech_id
                 message = {
                     "type": "user_activity",
-                    "interrupted_speech_id": self.current_speech_id  # 告诉前端应丢弃哪个 speech_id
+                    "interrupted_speech_id": interrupted_speech_id  # 告诉前端应丢弃哪个 speech_id
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -1999,11 +2001,15 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
-                    # 为每次文本输入生成新的speech_id（用于TTS和lipsync）
+                    # 先打断当前正在播放的语音（旧speech_id），避免误打断新回复
+                    async with self.lock:
+                        interrupted_speech_id = self.current_speech_id
+
+                    await self.send_user_activity(interrupted_speech_id)
+
+                    # 再为本次新回复生成新的speech_id（用于TTS和lipsync）
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
-
-                    await self.send_user_activity()
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调注入 LLM 上下文
                     if self.pending_agent_callbacks:

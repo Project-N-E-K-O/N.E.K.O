@@ -13,6 +13,7 @@ import os
 import sys
 import asyncio
 import base64
+import difflib
 import re
 import time
 from collections import deque
@@ -32,6 +33,7 @@ from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
+    get_proactive_format_sections,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -51,63 +53,97 @@ logger = get_module_logger(__name__, "Main")
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
+_proactive_topic_history: dict[str, deque] = {}
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
+_RECENT_TOPIC_MAX_AGE_SECONDS = 3600  # 1小时内避免重复外部话题
+_PROACTIVE_SIMILARITY_THRESHOLD = 0.94  # 高阈值，尽量避免误杀
+_PHASE1_FETCH_PER_SOURCE = 10  # Phase 1 每个信息源固定抓取条数
+_PHASE1_TOTAL_TOPIC_TARGET = 20  # Phase 1 输入给筛选模型的总候选目标条数
 
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     从原始 web 数据中提取链接信息列表
     args:
-    - mode: 数据模式，必须是 'news', 'video', 或 'home'
-    - raw_data: 原始 web 数据，包含 'news', 'video', 'bilibili', 'weibo', 'reddit', 'twitter' 等字段
+    - mode: 数据模式，支持 'news', 'video', 'home', 'personal'
+    - raw_data: 原始 web 数据
     returns:
     - list[dict]: 包含链接信息的列表，每个元素包含 'title', 'url', 'source' 字段
     """
     links = []
     try:
         if mode == 'news':
-            # 微博 / Twitter
             news = raw_data.get('news', {})
             items = news.get('trending', [])
-            for item in items[:5]:
+            for item in items:
                 title = item.get('word', '') or item.get('name', '')
                 url = item.get('url', '')
                 if title and url:
                     links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
         
         elif mode == 'video':
-            # B站 / Reddit
             video = raw_data.get('video', {})
             items = video.get('videos', []) or video.get('posts', [])
-            for item in items[:5]:
+            for item in items:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
                     links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
         
         elif mode == 'home':
-            # 合并首页：bilibili + weibo 或 reddit + twitter
             bilibili = raw_data.get('bilibili', {})
-            for v in (bilibili.get('videos', []) or [])[:3]:
+            for v in (bilibili.get('videos', []) or []):
                 if v.get('title') and v.get('url'):
                     links.append({'title': v['title'], 'url': v['url'], 'source': 'B站'})
             
             weibo = raw_data.get('weibo', {})
-            for w in (weibo.get('trending', []) or [])[:3]:
+            for w in (weibo.get('trending', []) or []):
                 if w.get('word') and w.get('url'):
                     links.append({'title': w['word'], 'url': w['url'], 'source': '微博'})
             
             reddit = raw_data.get('reddit', {})
-            for r in (reddit.get('posts', []) or [])[:3]:
+            for r in (reddit.get('posts', []) or []):
                 if r.get('title') and r.get('url'):
                     links.append({'title': r['title'], 'url': r['url'], 'source': 'Reddit'})
             
             twitter = raw_data.get('twitter', {})
-            for t in (twitter.get('trending', []) or [])[:3]:
+            for t in (twitter.get('trending', []) or []):
                 title = t.get('name', '') or t.get('word', '')
                 if title and t.get('url'):
                     links.append({'title': title, 'url': t['url'], 'source': 'Twitter'})
+
+        elif mode == 'personal':
+            region = raw_data.get('region', 'china')
+            if region == 'china':
+                b_dyn = raw_data.get('bilibili_dynamic', {})
+                for d in (b_dyn.get('dynamics', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': 'B站'})
+                
+                w_dyn = raw_data.get('weibo_dynamic', {})
+                for d in (w_dyn.get('statuses', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': '微博'})
+            else:
+                r_dyn = raw_data.get('reddit_dynamic', {})
+                for d in (r_dyn.get('posts', []) or []):
+                    title = d.get('title', '') or d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': 'Reddit'})
+                
+                t_dyn = raw_data.get('twitter_dynamic', {})
+                for d in (t_dyn.get('tweets', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': 'Twitter'})
+
     except Exception as e:
         logger.warning(f"提取链接失败 [{mode}]: {e}")
     return links
@@ -124,13 +160,15 @@ def _parse_web_screening_result(text: str) -> dict | None:
     返回 dict(title, source, number) 或 None
     """
     result = {}
+    # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
+    # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'(?:话题|Topic|話題|주제)\s*[：:]\s*(.+)',
-        'source': r'(?:来源|Source|出典|출처)\s*[：:]\s*(.+)',
-        'number': r'(?:序号|No|番号|번호)\.?\s*[：:]\s*(\d+)',
+        'title': r'^[ \t]*(?:话题|Topic|話題|주제)[ \t]*[：:][ \t]*(.+)',
+        'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
+        'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
     }
     for key, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
             result[key] = match.group(1).strip()
     
@@ -245,6 +283,88 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=10)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
+
+
+def _normalize_text_for_similarity(text: str) -> str:
+    """
+    文本归一化（保守策略）：
+    - 小写
+    - 合并连续空白
+    仅做轻量归一，避免因过度清洗导致误杀。
+    """
+    text = (text or "").strip().lower()
+    return re.sub(r'\s+', ' ', text)
+
+
+def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tuple[bool, float]:
+    """
+    判断 message 是否与近期主动搭话高度相似（高阈值防误杀）。
+    返回 (is_duplicate, best_score)。
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history or not message.strip():
+        return False, 0.0
+
+    now = time.time()
+    current = _normalize_text_for_similarity(message)
+    if not current:
+        return False, 0.0
+
+    best = 0.0
+    for entry in history:
+        ts, old_msg = entry[0], entry[1]
+        if now - ts >= _RECENT_CHAT_MAX_AGE_SECONDS:
+            continue
+        old_norm = _normalize_text_for_similarity(old_msg)
+        if not old_norm:
+            continue
+        score = difflib.SequenceMatcher(None, current, old_norm).ratio()
+        if score > best:
+            best = score
+        if score >= _PROACTIVE_SIMILARITY_THRESHOLD:
+            return True, score
+    return False, best
+
+
+def _build_topic_dedup_key(topic_title: str = '', topic_source: str = '', topic_url: str = '') -> str:
+    """
+    构建话题去重键，优先使用 URL（更稳定）；没有 URL 时退化到 source+title。
+    """
+    url = (topic_url or '').strip().lower()
+    if url:
+        return f"url::{url}"
+    source = re.sub(r'\s+', ' ', (topic_source or '').strip().lower())
+    title = re.sub(r'\s+', ' ', (topic_title or '').strip().lower())
+    if title:
+        return f"st::{source}::{title}"
+    return ''
+
+
+def _is_recent_topic_used(lanlan_name: str, topic_key: str) -> bool:
+    """
+    判断某个话题 key 是否在近期已被使用。
+    """
+    if not topic_key:
+        return False
+    history = _proactive_topic_history.get(lanlan_name)
+    if not history:
+        return False
+    now = time.time()
+    for ts, old_key in history:
+        if now - ts < _RECENT_TOPIC_MAX_AGE_SECONDS and old_key == topic_key:
+            return True
+    return False
+
+
+def _record_topic_usage(lanlan_name: str, topic_key: str):
+    """
+    记录一次话题 key 使用。
+    """
+    if not topic_key:
+        return
+    if lanlan_name not in _proactive_topic_history:
+        _proactive_topic_history[lanlan_name] = deque(maxlen=100)
+    _proactive_topic_history[lanlan_name].append((time.time(), topic_key))
 
 
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
@@ -1193,7 +1313,7 @@ async def proactive_chat(request: Request):
                 return (mode, {'window_title': window_title, 'screenshot_b64': compressed_b64})
             
             elif mode == 'news':
-                news_content = await fetch_news_content(limit=10)
+                news_content = await fetch_news_content(limit=_PHASE1_FETCH_PER_SOURCE)
                 if not news_content['success']:
                     raise ValueError(f"获取新闻失败: {news_content.get('error')}")
                 formatted = format_news_content(news_content)
@@ -1203,7 +1323,7 @@ async def proactive_chat(request: Request):
                 return (mode, {'formatted_content': formatted, 'raw_data': news_content, 'links': links})
             
             elif mode == 'video':
-                video_content = await fetch_video_content(limit=10)
+                video_content = await fetch_video_content(limit=_PHASE1_FETCH_PER_SOURCE)
                 if not video_content['success']:
                     raise ValueError(f"获取视频失败: {video_content.get('error')}")
                 formatted = format_video_content(video_content)
@@ -1222,7 +1342,10 @@ async def proactive_chat(request: Request):
                 return (mode, {'formatted_content': formatted, 'raw_data': window_context_content, 'links': []})
             
             elif mode == 'home':
-                trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
+                trending_content = await fetch_trending_content(
+                    bilibili_limit=_PHASE1_FETCH_PER_SOURCE,
+                    weibo_limit=_PHASE1_FETCH_PER_SOURCE
+                )
                 if not trending_content['success']:
                     raise ValueError(f"获取首页推荐失败: {trending_content.get('error')}")
                 formatted = format_trending_content(trending_content)
@@ -1231,7 +1354,7 @@ async def proactive_chat(request: Request):
                 return (mode, {'formatted_content': formatted, 'raw_data': trending_content, 'links': links})
 
             elif mode == 'personal':
-                personal_dynamics = await fetch_personal_dynamics(limit=10)
+                personal_dynamics = await fetch_personal_dynamics(limit=_PHASE1_FETCH_PER_SOURCE)
                 if not personal_dynamics['success']:
                     raise ValueError(f"获取个人动态失败: {personal_dynamics.get('error')}")
                 formatted = format_personal_dynamics(personal_dynamics)
@@ -1431,20 +1554,65 @@ async def proactive_chat(request: Request):
         all_web_links: list[dict] = []
         if web_modes:
             parts = []
+            seen_topic_keys: set[str] = set()
+            remaining_total = _PHASE1_TOTAL_TOPIC_TARGET
             for m in web_modes:
+                if remaining_total <= 0:
+                    break
                 src = sources[m]
                 label_map = {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态'}
                 label = label_map.get(m, m)
+                links = src.get('links', []) or []
+
+                selected_links: list[dict] = []
+                for link in links:
+                    title = link.get('title', '')
+                    source = link.get('source', '')
+                    url = link.get('url', '')
+                    key = _build_topic_dedup_key(topic_title=title, topic_source=source, topic_url=url)
+                    if key:
+                        if key in seen_topic_keys or _is_recent_topic_used(lanlan_name, key):
+                            continue
+                        seen_topic_keys.add(key)
+                    selected_links.append(link)
+                    if len(selected_links) >= remaining_total:
+                        break
+
+                if selected_links:
+                    all_web_links.extend(selected_links)
+                    remaining_total -= len(selected_links)
+                    lines = []
+                    for idx, item in enumerate(selected_links, start=1):
+                        title = item.get('title', '').strip()
+                        if not title:
+                            continue
+                        source = item.get('source', '').strip()
+                        url = item.get('url', '').strip()
+                        suffix = []
+                        if source:
+                            suffix.append(f"来源: {source}")
+                        if url:
+                            suffix.append(f"URL: {url}")
+                        ext = (" | " + " | ".join(suffix)) if suffix else ""
+                        lines.append(f"{idx}. {title}{ext}")
+                    if lines:
+                        parts.append(f"--- {label} ---\n" + "\n".join(lines))
+                        continue
+
                 content_text = src.get('formatted_content', '')
                 if content_text:
-                    links = src.get('links', [])
-                    all_web_links.extend(links)
-                    parts.append(f"--- {label} ---\n{content_text}")
+                    compact_lines = [ln.strip() for ln in content_text.splitlines() if ln.strip()]
+                    if compact_lines:
+                        fallback_lines = compact_lines[:remaining_total]
+                        if fallback_lines:
+                            parts.append(f"--- {label} ---\n" + "\n".join(fallback_lines))
+                            remaining_total -= len(fallback_lines)
             merged_web_content = "\n\n".join(parts)
         
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
+        selected_web_topic_key = ''
         
         # --- Web 通道: 1 次 LLM 筛选 ---
         if merged_web_content:
@@ -1461,16 +1629,27 @@ async def proactive_chat(request: Request):
                     parsed = _parse_web_screening_result(web_result_text)
                     if parsed:
                         matched = _lookup_link_by_title(parsed.get('title', ''), all_web_links)
-                        if matched:
-                            source_links.append({
-                                'title': parsed.get('title', matched.get('title', '')),
-                                'url': matched['url'],
-                                'source': parsed.get('source', matched.get('source', '')),
-                            })
-                            print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
+                        topic_key = _build_topic_dedup_key(
+                            topic_title=parsed.get('title', ''),
+                            topic_source=parsed.get('source', ''),
+                            topic_url=(matched.get('url', '') if matched else ''),
+                        )
+                        if topic_key and _is_recent_topic_used(lanlan_name, topic_key):
+                            print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {parsed.get('title','')[:60]}")
+                            web_result_text = "[PASS] duplicate topic"
                         else:
-                            print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
-                    phase1_topics.append(('web', web_result_text.strip()))
+                            selected_web_topic_key = topic_key
+                            if matched:
+                                source_links.append({
+                                    'title': parsed.get('title', matched.get('title', '')),
+                                    'url': matched['url'],
+                                    'source': parsed.get('source', matched.get('source', '')),
+                                })
+                                print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
+                            else:
+                                print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
+                    if "[PASS]" not in web_result_text:
+                        phase1_topics.append(('web', web_result_text.strip()))
                 else:
                     print(f"[{lanlan_name}] Phase 1 Web 通道返回 PASS")
             except Exception as e:
@@ -1505,10 +1684,11 @@ async def proactive_chat(request: Request):
         # 流程：tokens → TTS 即时生成 → 全文完成后一次性投递文本 → abort 时中断两端
         # ================================================================
         
-        # 获取角色完整人设
+        # 获取角色完整人设，替换模板变量
         character_prompt = lanlan_prompt_map.get(lanlan_name, '')
         if not character_prompt:
             logger.warning(f"[{lanlan_name}] 未找到角色人设，使用空字符串")
+        character_prompt = character_prompt.replace('{LANLAN_NAME}', lanlan_name).replace('{MASTER_NAME}', master_name_current)
         
         # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
         screenshot_b64_for_phase2 = ''
@@ -1572,6 +1752,11 @@ async def proactive_chat(request: Request):
             ef = _ext_footers.get(proactive_lang, _ext_footers['zh'])
             external_section = f"{el}\n{web_topic}\n{ef}"
         
+        source_instruction, output_format_section = get_proactive_format_sections(
+            has_screen=bool(screen_section),
+            has_web=bool(external_section),
+            lang=proactive_lang,
+        )
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
@@ -1579,7 +1764,9 @@ async def proactive_chat(request: Request):
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
-            master_name=master_name_current
+            master_name=master_name_current,
+            source_instruction=source_instruction,
+            output_format_section=output_format_section,
         )
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
@@ -1706,6 +1893,17 @@ async def proactive_chat(request: Request):
         response_text = full_text.strip()
         logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+
+        # 文本级去重（高阈值，尽量避免误杀）
+        duplicate_hit, duplicate_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
+        if duplicate_hit:
+            logger.info(f"[{lanlan_name}] Phase 2 命中文本去重，score={duplicate_score:.3f}，pass")
+            await mgr.handle_new_message()
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "主动搭话命中高相似度去重"
+            })
         
         # 根据来源标签调整通道/链接
         if source_tag == 'SCREEN':
@@ -1719,6 +1917,8 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        if source_tag != 'SCREEN' and selected_web_topic_key:
+            _record_topic_usage(lanlan_name, selected_web_topic_key)
 
         return JSONResponse({
             "success": True,

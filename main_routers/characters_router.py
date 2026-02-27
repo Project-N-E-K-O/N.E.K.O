@@ -1411,6 +1411,252 @@ async def delete_voice(voice_id: str):
         }, status_code=500)
 
 
+# ==================== 智能静音移除 ====================
+# 用于存储裁剪任务状态的全局字典
+_trim_tasks: dict[str, dict] = {}
+
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+class _UploadTooLargeError(Exception):
+    """上传文件大小超过限制"""
+
+
+async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
+    """读取上传文件并检查大小限制，返回 BytesIO (positioned at 0)。
+
+    Raises:
+        _UploadTooLargeError: 文件大小超过 max_size。
+    """
+    buf = io.BytesIO()
+    total = 0
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size:
+            raise _UploadTooLargeError(
+                f'文件大小超过限制 ({max_size // (1024 * 1024)} MB)'
+            )
+        buf.write(chunk)
+    buf.seek(0)
+    return buf
+
+
+@router.post('/audio/analyze_silence')
+async def analyze_silence(file: UploadFile = File(...)):
+    """
+    分析上传音频中的静音段落。
+
+    返回:
+        - original_duration / original_duration_ms: 原始音频总时长
+        - silence_duration / silence_duration_ms: 检测到的静音总时长 (total_silence_ms)
+        - removable_silence / removable_silence_ms: 实际可移除的静音时长
+        - estimated_duration / estimated_duration_ms: 处理后预计剩余时长
+        - saving_percentage: 节省百分比 (基于实际可移除量)
+        - silence_segments: 静音段列表 [{start_ms, end_ms, duration_ms}]
+        - has_silence: 是否检测到可移除静音
+    """
+    from utils.audio_silence_remover import (
+        detect_silence, convert_to_wav_if_needed, format_duration_mmss, CancelledError
+    )
+
+    try:
+        file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
+    except _UploadTooLargeError as e:
+        return JSONResponse({'error': str(e)}, status_code=413)
+    except Exception as e:
+        logger.error(f"读取音频文件失败: {e}")
+        return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
+
+    try:
+        # 转换为 WAV（如果需要）— 阻塞操作，放到线程中执行
+        wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
+
+        # 执行静音检测
+        analysis = await asyncio.to_thread(detect_silence, wav_buffer)
+
+        return JSONResponse({
+            'success': True,
+            'original_duration': format_duration_mmss(analysis.original_duration_ms),
+            'original_duration_ms': round(analysis.original_duration_ms, 1),
+            'silence_duration': format_duration_mmss(analysis.total_silence_ms),
+            'silence_duration_ms': round(analysis.total_silence_ms, 1),
+            'removable_silence': format_duration_mmss(analysis.removable_silence_ms),
+            'removable_silence_ms': round(analysis.removable_silence_ms, 1),
+            'estimated_duration': format_duration_mmss(analysis.estimated_duration_ms),
+            'estimated_duration_ms': round(analysis.estimated_duration_ms, 1),
+            'saving_percentage': analysis.saving_percentage,
+            'silence_segments': [
+                {
+                    'start_ms': round(s.start_ms, 1),
+                    'end_ms': round(s.end_ms, 1),
+                    'duration_ms': round(s.duration_ms, 1),
+                }
+                for s in analysis.silence_segments
+            ],
+            'has_silence': len(analysis.silence_segments) > 0,
+            'sample_rate': analysis.sample_rate,
+            'sample_width': analysis.sample_width,
+            'channels': analysis.channels,
+        })
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"静音分析失败: {e}")
+        return JSONResponse({'error': f'静音分析失败: {str(e)}'}, status_code=500)
+
+
+@router.post('/audio/trim_silence')
+async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | None = Form(default=None)):
+    """
+    执行静音裁剪并返回处理后的音频。
+
+    先分析静音段，然后将超长静音缩减至 200ms（从正中间裁剪）。
+    返回处理后的 WAV 文件 (base64 编码) 以及 MD5 校验值。
+    """
+    import uuid
+    import base64 as b64
+    from utils.audio_silence_remover import (
+        detect_silence, trim_silence, convert_to_wav_if_needed,
+        format_duration_mmss, CancelledError
+    )
+
+    if task_id:
+        try:
+            uuid.UUID(task_id)
+        except ValueError:
+            return JSONResponse({'error': '无效的 task_id 格式'}, status_code=400)
+        if task_id in _trim_tasks:
+            return JSONResponse({'error': '该 task_id 已存在'}, status_code=409)
+    else:
+        task_id = str(uuid.uuid4())
+
+    # 立即占位，防止 TOCTOU 竞态
+    _trim_tasks[task_id] = {'progress': 0, 'cancelled': False, 'phase': 'queued'}
+
+    try:
+        file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
+    except _UploadTooLargeError as e:
+        _trim_tasks.pop(task_id, None)
+        return JSONResponse({'error': str(e)}, status_code=413)
+    except Exception as e:
+        _trim_tasks.pop(task_id, None)
+        logger.error(f"读取音频文件失败: {e}")
+        return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
+
+    try:
+        # 文件读取完成，切换到分析阶段
+        _trim_tasks[task_id]['phase'] = 'analyzing'
+
+        def progress_cb(pct: int):
+            task = _trim_tasks.get(task_id)
+            if task is None:
+                return
+            if task.get('phase', 'analyzing') == 'analyzing':
+                # 分析阶段占 0-40%
+                task['progress'] = int(pct * 0.4)
+            else:
+                # 裁剪阶段占 40-100%
+                task['progress'] = 40 + int(pct * 0.6)
+
+        def cancel_check() -> bool:
+            return _trim_tasks.get(task_id, {}).get('cancelled', False)
+
+        # 转换为 WAV — 阻塞操作，放到线程中执行
+        wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
+
+        # 分析静音
+        analysis = await asyncio.to_thread(
+            detect_silence, wav_buffer,
+            progress_callback=progress_cb, cancel_check=cancel_check,
+        )
+
+        if not analysis.silence_segments:
+            # 没有可移除的静音
+            _trim_tasks.pop(task_id, None)
+            return JSONResponse({
+                'success': True,
+                'has_changes': False,
+                'message': '未检测到可移除的静音段',
+                'task_id': task_id,
+            })
+
+        # 切换到裁剪阶段
+        if task_id in _trim_tasks:
+            _trim_tasks[task_id]['phase'] = 'trimming'
+
+        # 执行裁剪
+        result = await asyncio.to_thread(
+            trim_silence, wav_buffer, analysis,
+            progress_callback=progress_cb, cancel_check=cancel_check,
+        )
+
+        # 编码为 base64
+        audio_b64 = b64.b64encode(result.audio_data).decode('ascii')
+
+        # 清理任务
+        _trim_tasks.pop(task_id, None)
+
+        return JSONResponse({
+            'success': True,
+            'has_changes': True,
+            'task_id': task_id,
+            'audio_base64': audio_b64,
+            'md5': result.md5,
+            'original_duration': format_duration_mmss(result.original_duration_ms),
+            'original_duration_ms': round(result.original_duration_ms, 1),
+            'trimmed_duration': format_duration_mmss(result.trimmed_duration_ms),
+            'trimmed_duration_ms': round(result.trimmed_duration_ms, 1),
+            'removed_silence_ms': round(result.removed_silence_ms, 1),
+            'sample_rate': result.sample_rate,
+            'sample_width': result.sample_width,
+            'channels': result.channels,
+            'filename': f"trimmed_{file.filename}",
+        })
+
+    except CancelledError:
+        _trim_tasks.pop(task_id, None)
+        return JSONResponse({
+            'success': False,
+            'cancelled': True,
+            'message': '任务已被用户取消',
+            'task_id': task_id,
+        })
+    except ValueError as e:
+        _trim_tasks.pop(task_id, None)
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:
+        _trim_tasks.pop(task_id, None)
+        logger.error(f"静音裁剪失败: {e}")
+        return JSONResponse({'error': f'静音裁剪失败: {str(e)}'}, status_code=500)
+
+
+@router.get('/audio/trim_progress/{task_id}')
+async def get_trim_progress(task_id: str):
+    """获取裁剪任务进度"""
+    task = _trim_tasks.get(task_id)
+    if not task:
+        return JSONResponse({'exists': False, 'progress': 100, 'phase': 'done'})
+    return JSONResponse({
+        'exists': True,
+        'progress': task.get('progress', 0),
+        'phase': task.get('phase', 'unknown'),
+        'cancelled': task.get('cancelled', False),
+    })
+
+
+@router.post('/audio/trim_cancel/{task_id}')
+async def cancel_trim_task(task_id: str):
+    """取消裁剪任务"""
+    task = _trim_tasks.get(task_id)
+    if task:
+        task['cancelled'] = True
+        return JSONResponse({'success': True, 'message': '取消请求已发送'})
+    return JSONResponse({'success': False, 'message': '任务不存在或已完成'})
+
+
 @router.post('/voice_clone')
 async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref_language: str = Form(default="ch")):
     """

@@ -7,7 +7,7 @@ import os
 import uuid
 from types import MappingProxyType
 
-from config.prompts_chara import lanlan_prompt
+from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
@@ -485,6 +485,8 @@ __all__ = [
     'get_default_vrm_lighting',
     'DEFAULT_CHARACTERS_CONFIG',
     'get_localized_default_characters',
+    'get_lanlan_prompt',
+    'is_default_prompt',
     'DEFAULT_CORE_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',

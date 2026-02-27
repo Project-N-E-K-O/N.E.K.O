@@ -2397,6 +2397,16 @@ window.addEventListener('load', function () {
     // 页面加载时自动扫描创意工坊角色卡并添加到系统
     autoScanAndAddWorkshopCharacterCards();
 
+    // 监听语言变化事件，刷新当前页面显示
+    if (window.i18n) {
+        window.i18n.on('languageChanged', () => {
+            loadSubscriptions();
+        });
+    }
+    window.addEventListener('localechange', () => {
+        loadSubscriptions();
+    });
+
 });
 
 // 角色卡相关函数
