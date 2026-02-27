@@ -1125,6 +1125,8 @@ Return only the JSON object, nothing else.
         last_status: Optional[str] = None
         # Track last-seen progress fingerprint to avoid redundant callbacks
         _last_progress_key: Optional[tuple] = None
+        _consecutive_errors = 0
+        _MAX_CONSECUTIVE_ERRORS = 3
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0)) as client:
             # ── Phase 1: poll until terminal ──
@@ -1139,11 +1141,16 @@ Return only the JSON object, nothing else.
                         return {"status": "failed", "success": False, "data": None,
                                 "error": f"Run {run_id} not found (HTTP {r.status_code})"}
                     if r.status_code != 200:
+                        _consecutive_errors += 1
                         logger.warning(
-                            "[_await_run_completion] unexpected HTTP %s for run %s: %s",
-                            r.status_code, run_id, r.text[:200],
+                            "[_await_run_completion] unexpected HTTP %s for run %s (%d/%d): %s",
+                            r.status_code, run_id, _consecutive_errors, _MAX_CONSECUTIVE_ERRORS, r.text[:200],
                         )
+                        if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                            return {"status": "failed", "success": False, "data": None,
+                                    "error": f"Run {run_id} polling failed ({_consecutive_errors} consecutive HTTP {r.status_code})"}
                     if r.status_code == 200:
+                        _consecutive_errors = 0
                         run_data = r.json()
                         last_status = run_data.get("status")
                         # Fire on_progress callback when progress/stage/message changes

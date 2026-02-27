@@ -1181,9 +1181,19 @@ def _plugin_process_runner(
                 continue
 
             if msg["type"] == "TRIGGER":
-                entry_id = msg["entry_id"]
-                args = msg["args"]
-                req_id = msg["req_id"]
+                entry_id = msg.get("entry_id")
+                args = msg.get("args", {})
+                req_id = msg.get("req_id", "unknown")
+                if not entry_id or not isinstance(args, dict):
+                    try:
+                        res_queue.put(
+                            {"req_id": req_id, "success": False, "data": None,
+                             "error": "Invalid TRIGGER payload: 'entry_id' is required and 'args' must be a dict"},
+                            timeout=10.0,
+                        )
+                    except Exception:
+                        logger.exception("[Plugin Process] Failed to send invalid TRIGGER response")
+                    continue
                 
                 # 关键日志：记录接收到的触发消息
                 logger.info(
@@ -1276,17 +1286,41 @@ def _plugin_process_runner(
                                 timeout=timeout,
                                 ret_payload=ret_payload,
                                 method=method,
+                                cancel_event=trigger_cancel_event,
                                 _rce=_run_cancel_events,
                             ):
                                 try:
-                                    result = worker_executor.wait_for_result(future, timeout)
-                                    # 检查结果是否是协程（可能是包装后的异步函数）
-                                    if asyncio.iscoroutine(result):
-                                        result = asyncio.run(result)
-                                    ret_payload["success"] = True
-                                    ret_payload["data"] = result
+                                    # Sliced wait: check cancel_event every 0.2s
+                                    start_ts = time.monotonic()
+                                    while True:
+                                        if cancel_event.is_set():
+                                            try:
+                                                future.cancel()
+                                            except Exception:
+                                                pass
+                                            ret_payload["error"] = "Execution cancelled"
+                                            break
+
+                                        slice_timeout = 0.2
+                                        if timeout is not None:
+                                            elapsed = time.monotonic() - start_ts
+                                            remain = timeout - elapsed
+                                            if remain <= 0:
+                                                raise TimeoutError(f"Worker task {entry_id} timed out")
+                                            slice_timeout = min(slice_timeout, remain)
+
+                                        try:
+                                            result = worker_executor.wait_for_result(future, slice_timeout)
+                                            if asyncio.iscoroutine(result):
+                                                result = asyncio.run(result)
+                                            ret_payload["success"] = True
+                                            ret_payload["data"] = result
+                                            break
+                                        except TimeoutError:
+                                            continue
+
                                     # Save state after successful execution (if enabled)
-                                    if _should_persist(method):
+                                    if ret_payload.get("success") and _should_persist(method):
                                         try:
                                             sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
                                             if sp:
@@ -1903,6 +1937,8 @@ class PluginHost:
         
         if alive:
             status = "running"
+        elif exitcode is None:
+            status = "not_started"
         elif exitcode == 0:
             status = "stopped"
         else:

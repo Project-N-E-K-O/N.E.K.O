@@ -832,6 +832,14 @@ def _collect_plugin_contexts(
         try:
             ctx = _parse_single_plugin_config(toml_path, processed_paths, logger)
             if ctx is not None:
+                if ctx.pid in pid_to_context:
+                    logger.error(
+                        "Duplicate plugin id '{}' found in '{}' and '{}'; skipping later config",
+                        ctx.pid,
+                        pid_to_context[ctx.pid].toml_path,
+                        toml_path,
+                    )
+                    continue
                 plugin_contexts.append(ctx)
                 pid_to_context[ctx.pid] = ctx
         except Exception:
@@ -1406,7 +1414,8 @@ def load_plugins_from_toml(
             logger.warning("Plugin {} from {}: ID changed from '{}' to '{}' due to conflict", original_pid, toml_path, original_pid, pid)
             # 同步 extension_map：将 original_pid 下收集的扩展迁移到新 pid
             if original_pid in extension_map:
-                extension_map[pid] = extension_map.pop(original_pid)
+                moved_exts = extension_map.pop(original_pid)
+                extension_map.setdefault(pid, []).extend(moved_exts)
 
         # 检查插件是否已注册
         if _check_plugin_already_registered(pid, toml_path, logger):

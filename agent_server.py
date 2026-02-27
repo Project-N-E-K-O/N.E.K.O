@@ -791,8 +791,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                               "start_time": up_start,
                               "params": {"plugin_id": plugin_id, "entry_id": entry_id}},
                     )
-                except Exception:
-                    pass
+                except Exception as emit_err:
+                    logger.debug("[TaskExecutor] emit task_update(running) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                 async def _on_plugin_progress(
                     *, progress=None, stage=None, message=None, step=None, step_total=None,
                 ):
@@ -850,8 +850,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 summary=summary[:500],
                                 detail=detail,
                             )
-                        except Exception:
-                            pass
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                     else:
                         logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
                         try:
@@ -863,8 +863,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 summary=f'插件任务 "{plugin_id}" 执行失败',
                                 error_message=str(up_result.error or "unknown error")[:500],
                             )
-                        except Exception:
-                            pass
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                     # Emit task_update (terminal) so AgentHUD removes the running card
                     try:
                         await _emit_main_event(
@@ -873,8 +873,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                   "start_time": up_start, "end_time": _now_iso(),
                                   "error": str(up_result.error or "")[:500] if not up_result.success else None},
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                 except Exception as e:
                     logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                     _reg = Modules.task_registry.get(result.task_id)
@@ -887,11 +887,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             channel="user_plugin",
                             task_id=str(result.task_id or ""),
                             success=False,
-                            summary=f'插件任务分发失败',
+                            summary='插件任务分发失败',
                             error_message=str(e)[:500],
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
@@ -899,8 +899,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                   "start_time": up_start, "end_time": _now_iso(),
                                   "error": str(e)[:500]},
                         )
-                    except Exception:
-                        pass
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
             else:
                 logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
         elif result.execution_method == 'browser_use':
@@ -1224,8 +1224,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     detail=detail if res.success else "",
                     error_message=str(res.error or "")[:500] if not res.success else "",
                 )
-            except Exception:
-                pass
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except Exception as e:
             info["status"] = "failed"
             info["error"] = str(e)
@@ -1239,8 +1239,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     summary=f'插件任务 "{plugin_id}" 执行异常: {str(e)[:200]}',
                     error_message=str(e)[:500],
                 )
-            except Exception:
-                pass
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
 
     plugin_task = asyncio.create_task(_run_plugin())
     Modules._background_tasks.add(plugin_task)
