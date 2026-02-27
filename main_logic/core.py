@@ -1740,10 +1740,7 @@ class LLMSessionManager:
                 # 清空 pending_extra_replies 以免热切换被多余触发
                 self.pending_agent_callbacks.clear()
                 self.pending_extra_replies.clear()
-                ws_ok = bool(self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED)
-                logger.info("[%s] trigger_agent_callbacks: calling stream_proactive, ws_connected=%s, instruction_len=%d", self.lanlan_name, ws_ok, len(instruction))
                 delivered = await self.session.stream_proactive(instruction)
-                logger.info("[%s] trigger_agent_callbacks: stream_proactive returned delivered=%s", self.lanlan_name, delivered)
                 if not delivered:
                     # 被打断/空响应 → 恢复 callbacks，下一轮 handle_response_complete 重试
                     self.pending_agent_callbacks.extend(callbacks_snapshot)

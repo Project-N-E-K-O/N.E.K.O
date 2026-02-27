@@ -394,9 +394,6 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             lanlan_key = _normalize_lanlan_key(lanlan_name)
             fp = _build_user_turn_fingerprint(messages)
-            # Diagnostic: log user messages used for fingerprint
-            _user_texts = [str(m.get("text") or m.get("content") or "").strip()[:60] for m in messages if isinstance(m, dict) and m.get("role") == "user"]
-            logger.debug("[AgentAnalyze] fingerprint=%s user_texts=%s prev=%s", fp[:12] if fp else None, _user_texts, (Modules.last_user_turn_fingerprint.get(lanlan_key) or "")[:12])
             if fp is None:
                 logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
