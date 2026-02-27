@@ -1418,6 +1418,32 @@ _trim_tasks: dict[str, dict] = {}
 MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
 
 
+class _UploadTooLargeError(Exception):
+    """上传文件大小超过限制"""
+
+
+async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
+    """读取上传文件并检查大小限制，返回 BytesIO (positioned at 0)。
+
+    Raises:
+        _UploadTooLargeError: 文件大小超过 max_size。
+    """
+    buf = io.BytesIO()
+    total = 0
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size:
+            raise _UploadTooLargeError(
+                f'文件大小超过限制 ({max_size // (1024 * 1024)} MB)'
+            )
+        buf.write(chunk)
+    buf.seek(0)
+    return buf
+
+
 @router.post('/audio/analyze_silence')
 async def analyze_silence(file: UploadFile = File(...)):
     """
@@ -1437,20 +1463,9 @@ async def analyze_silence(file: UploadFile = File(...)):
     )
 
     try:
-        file_buffer = io.BytesIO()
-        total_size = 0
-        while True:
-            chunk = await file.read(8192)
-            if not chunk:
-                break
-            total_size += len(chunk)
-            if total_size > MAX_UPLOAD_SIZE:
-                return JSONResponse(
-                    {'error': f'文件大小超过限制 ({MAX_UPLOAD_SIZE // (1024 * 1024)} MB)'},
-                    status_code=413,
-                )
-            file_buffer.write(chunk)
-        file_buffer.seek(0)
+        file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
+    except _UploadTooLargeError as e:
+        return JSONResponse({'error': str(e)}, status_code=413)
     except Exception as e:
         logger.error(f"读取音频文件失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
@@ -1522,21 +1537,10 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
     _trim_tasks[task_id] = {'progress': 0, 'cancelled': False, 'phase': 'queued'}
 
     try:
-        file_buffer = io.BytesIO()
-        total_size = 0
-        while True:
-            chunk = await file.read(8192)
-            if not chunk:
-                break
-            total_size += len(chunk)
-            if total_size > MAX_UPLOAD_SIZE:
-                del _trim_tasks[task_id]
-                return JSONResponse(
-                    {'error': f'文件大小超过限制 ({MAX_UPLOAD_SIZE // (1024 * 1024)} MB)'},
-                    status_code=413,
-                )
-            file_buffer.write(chunk)
-        file_buffer.seek(0)
+        file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
+    except _UploadTooLargeError as e:
+        _trim_tasks.pop(task_id, None)
+        return JSONResponse({'error': str(e)}, status_code=413)
     except Exception as e:
         _trim_tasks.pop(task_id, None)
         logger.error(f"读取音频文件失败: {e}")
@@ -1547,14 +1551,15 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
         _trim_tasks[task_id]['phase'] = 'analyzing'
 
         def progress_cb(pct: int):
-            if task_id in _trim_tasks:
-                phase = _trim_tasks[task_id].get('phase', 'analyzing')
-                if phase == 'analyzing':
-                    # 分析阶段占 0-40%
-                    _trim_tasks[task_id]['progress'] = int(pct * 0.4)
-                else:
-                    # 裁剪阶段占 40-100%
-                    _trim_tasks[task_id]['progress'] = 40 + int(pct * 0.6)
+            task = _trim_tasks.get(task_id)
+            if task is None:
+                return
+            if task.get('phase', 'analyzing') == 'analyzing':
+                # 分析阶段占 0-40%
+                task['progress'] = int(pct * 0.4)
+            else:
+                # 裁剪阶段占 40-100%
+                task['progress'] = 40 + int(pct * 0.6)
 
         def cancel_check() -> bool:
             return _trim_tasks.get(task_id, {}).get('cancelled', False)
