@@ -937,6 +937,21 @@ class VRMManager {
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
             this._isModelReadyForInteraction = true;
+
+            // 首次加载围栏：检查模型是否在屏幕外，如果是则立即校正（不动画）
+            if (this.interaction && this.currentModel?.vrm?.scene) {
+                try {
+                    const currentPos = this.currentModel.vrm.scene.position.clone();
+                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 200 });
+                    if (!currentPos.equals(correctedPos)) {
+                        this.currentModel.vrm.scene.position.copy(correctedPos);
+                        console.log('[VRM Manager] 首次加载围栏已校正模型位置');
+                    }
+                } catch (e) {
+                    console.warn('[VRM Manager] 首次加载围栏检查失败:', e);
+                }
+            }
+
             showAndFadeIn();
         } else if (this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';

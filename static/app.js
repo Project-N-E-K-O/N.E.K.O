@@ -7248,9 +7248,12 @@ function init_app() {
                 return;
             }
 
+            keyboardCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
+                userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             

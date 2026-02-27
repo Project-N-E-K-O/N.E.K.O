@@ -1319,7 +1319,8 @@
             "disconnected": "Server connection lost",
             "agentDisconnected": "Agent server connection lost",
             "freeModelWarning": "Due to quota limitations, free models are prone to blocking in Agent mode. It is recommended to switch to a paid model.\n\nIf you have already configured a paid API, please try restarting NEKO.",
-            "freeModelWarningTitle": "Free Model Notice"
+            "freeModelWarningTitle": "Free Model Notice",
+            "connectivityCheck": "Agent LLM connectivity check in progress..."
         },
         "quotaExceeded": "The free Agent model daily trial limit has been reached ({{limit}} uses). Please try again tomorrow.",
         "taskHud": {

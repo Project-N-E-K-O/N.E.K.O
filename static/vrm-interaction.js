@@ -607,7 +607,7 @@ class VRMInteraction {
      * 计算模型包围盒在屏幕上的可见区域，只在可见像素小于阈值时才进行校正。
      * 这样无论模型放多大，只要屏幕上还能看到足够的部分，就不会强制限制位置。
      **/
-    clampModelPosition(position) {
+    clampModelPosition(position, { minVisiblePixels = 50 } = {}) {
         if (!this.manager.camera || !this.manager.renderer || !this.manager.currentModel?.vrm) {
             return position;
         }
@@ -621,8 +621,7 @@ class VRMInteraction {
         const renderer = this.manager.renderer;
         const vrm = this.manager.currentModel.vrm;
 
-        // 最小可见像素阈值（低于此值才会校正），与 Live2D 保持一致
-        const MIN_VISIBLE_PIXELS = 50;
+        const MIN_VISIBLE_PIXELS = minVisiblePixels;
 
         try {
             // 1. 临时将模型移动到目标位置，计算包围盒
@@ -675,10 +674,14 @@ class VRMInteraction {
 
             const visibleWidth = Math.max(0, visibleMaxX - visibleMinX);
             const visibleHeight = Math.max(0, visibleMaxY - visibleMinY);
-            const visiblePixels = visibleWidth * visibleHeight;
 
-            // 5. 如果可见区域足够大，不做任何限制
-            if (visiblePixels >= MIN_VISIBLE_PIXELS) {
+            // 5. 按线性维度判定：水平和垂直方向各自需要至少 MIN_VISIBLE_PIXELS 可见
+            const modelOverflowsH = modelMinX < 0 || modelMaxX > screenWidth;
+            const modelOverflowsV = modelMinY < 0 || modelMaxY > screenHeight;
+            const needsClampH = modelOverflowsH && visibleWidth < MIN_VISIBLE_PIXELS;
+            const needsClampV = modelOverflowsV && visibleHeight < MIN_VISIBLE_PIXELS;
+
+            if (!needsClampH && !needsClampV) {
                 return position;
             }
 
@@ -689,25 +692,23 @@ class VRMInteraction {
             const screenCenterX = screenWidth / 2;
             const screenCenterY = screenHeight / 2;
 
-            // 计算需要移动的屏幕像素
+            // 仅校正需要拉回的维度
             let moveX = 0, moveY = 0;
 
-            // 如果模型完全在屏幕左侧外
-            if (modelMaxX < MIN_VISIBLE_PIXELS) {
-                moveX = MIN_VISIBLE_PIXELS - modelMaxX;
-            }
-            // 如果模型完全在屏幕右侧外
-            else if (modelMinX > screenWidth - MIN_VISIBLE_PIXELS) {
-                moveX = (screenWidth - MIN_VISIBLE_PIXELS) - modelMinX;
+            if (needsClampH) {
+                if (modelMaxX < MIN_VISIBLE_PIXELS) {
+                    moveX = MIN_VISIBLE_PIXELS - modelMaxX;
+                } else if (modelMinX > screenWidth - MIN_VISIBLE_PIXELS) {
+                    moveX = (screenWidth - MIN_VISIBLE_PIXELS) - modelMinX;
+                }
             }
 
-            // 如果模型完全在屏幕上方外
-            if (modelMaxY < MIN_VISIBLE_PIXELS) {
-                moveY = MIN_VISIBLE_PIXELS - modelMaxY;
-            }
-            // 如果模型完全在屏幕下方外
-            else if (modelMinY > screenHeight - MIN_VISIBLE_PIXELS) {
-                moveY = (screenHeight - MIN_VISIBLE_PIXELS) - modelMinY;
+            if (needsClampV) {
+                if (modelMaxY < MIN_VISIBLE_PIXELS) {
+                    moveY = MIN_VISIBLE_PIXELS - modelMaxY;
+                } else if (modelMinY > screenHeight - MIN_VISIBLE_PIXELS) {
+                    moveY = (screenHeight - MIN_VISIBLE_PIXELS) - modelMinY;
+                }
             }
 
             // 7. 将屏幕像素移动距离转换为世界空间距离

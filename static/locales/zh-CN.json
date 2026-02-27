@@ -1319,7 +1319,8 @@
             "disconnected": "服务器连接已断开",
             "agentDisconnected": "Agent 服务器连接已断开",
             "freeModelWarning": "由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
-            "freeModelWarningTitle": "免费模型提示"
+            "freeModelWarningTitle": "免费模型提示",
+            "connectivityCheck": "Agent LLM 连接检查中..."
         },
         "quotaExceeded": "免费 Agent 模型今日试用次数已达上限（{{limit}}次），请明日再试。",
         "taskHud": {

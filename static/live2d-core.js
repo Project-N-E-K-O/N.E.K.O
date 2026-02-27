@@ -204,11 +204,11 @@ class Live2DManager {
 
         this._initPIXIPromise = (async () => {
             try {
-                // 等待一帧让页面布局稳定，避免读到 CSS 未完全生效时的临时尺寸
-                await new Promise(resolve => requestAnimationFrame(resolve));
-
-                const initW = Math.max(container.clientWidth || 0, 1);
-                const initH = Math.max(container.clientHeight || 0, 1);
+                // 使用 window.screen 全屏尺寸初始化渲染器，画布始终覆盖整个屏幕区域
+                // 任务栏/DevTools/键盘等造成的视口缩小只会裁切画布边缘（overflow:hidden），
+                // 不会导致缝隙或模型位移
+                const initW = Math.max(window.screen.width || 1, 1);
+                const initH = Math.max(window.screen.height || 1, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
                     width: initW,
@@ -217,7 +217,6 @@ class Live2DManager {
                     ...options
                 });
 
-                // 验证 pixi_app 和 stage 是否创建成功
                 if (!this.pixi_app) {
                     throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
                 }
@@ -228,13 +227,12 @@ class Live2DManager {
 
                 this.isInitialized = true;
                 this._lastPIXIContext = { canvasId, containerId };
-                // 应用初始帧率设置
                 if (window.targetFrameRate && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
 
-                // 仅在屏幕分辨率真正变化（换显示器/跨屏移动）时 resize 渲染器
-                // DevTools、输入法、窗口拖拽等临时视口变化一律忽略，节省 GPU 开销
+                // 仅在屏幕分辨率真正变化（换显示器/屏幕旋转）时 resize 渲染器并调整模型坐标
+                // 任务栏、DevTools、输入法等视口变化不触发任何操作
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
                 this._screenChangeHandler = () => {
@@ -246,16 +244,12 @@ class Live2DManager {
 
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    const el = document.getElementById(containerId);
-                    const measuredW = el ? el.clientWidth : prevW;
-                    const measuredH = el ? el.clientHeight : prevH;
-                    const measuredContainerIsZero = !!el && (measuredW <= 0 || measuredH <= 0);
-                    const newW = Math.max(measuredW, 1);
-                    const newH = Math.max(measuredH, 1);
+                    const newW = Math.max(sw, 1);
+                    const newH = Math.max(sh, 1);
 
                     this.pixi_app.renderer.resize(newW, newH);
 
-                    if (this.currentModel && prevW > 0 && prevH > 0 && !measuredContainerIsZero) {
+                    if (this.currentModel && prevW > 0 && prevH > 0) {
                         const wRatio = newW / prevW;
                         const hRatio = newH / prevH;
                         this.currentModel.x *= wRatio;

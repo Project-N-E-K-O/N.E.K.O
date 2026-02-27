@@ -1319,7 +1319,8 @@
             "disconnected": "サーバー接続が失われました",
             "agentDisconnected": "エージェントサーバー接続が失われました",
             "freeModelWarning": "クォータの制限により、無料モデルではAgentモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
-            "freeModelWarningTitle": "無料モデルのお知らせ"
+            "freeModelWarningTitle": "無料モデルのお知らせ",
+            "connectivityCheck": "Agent LLM 接続チェック中..."
         },
         "quotaExceeded": "無料 Agent モデルの本日の試用上限（{{limit}}回）に達しました。明日もう一度お試しください。",
         "taskHud": {

@@ -463,7 +463,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”
     if (typeof this._checkSnapRequired === 'function') {
         try {
-            const snapInfo = await this._checkSnapRequired(model);
+            const snapInfo = await this._checkSnapRequired(model, { threshold: 200 });
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
                 model.x = snapInfo.targetX;
                 model.y = snapInfo.targetY;
