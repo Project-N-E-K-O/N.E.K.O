@@ -862,6 +862,10 @@ def _plugin_process_runner(
         worker_executor = WorkerExecutor(max_workers=4, queue_size=100)
         logger.debug("[Plugin Process] Worker executor initialized")
 
+        # run_id → threading.Event 映射，用于外部取消传播
+        # TRIGGER 开始时注册，完成/超时时清理
+        _run_cancel_events: Dict[str, threading.Event] = {}
+
         # 命令循环
         while True:
             try:
@@ -877,6 +881,17 @@ def _plugin_process_runner(
 
             if msg["type"] == "STOP":
                 break
+
+            if msg["type"] == "CANCEL_RUN":
+                cancel_run_id = msg.get("run_id")
+                if cancel_run_id:
+                    ev = _run_cancel_events.get(cancel_run_id)
+                    if ev is not None:
+                        ev.set()
+                        logger.info("[Plugin Process] Cancel signal sent for run_id={}", cancel_run_id)
+                    else:
+                        logger.debug("[Plugin Process] No active cancel_event for run_id={}", cancel_run_id)
+                continue
 
             if msg["type"] == "FREEZE":
                 # 冻结插件：保存状态到文件，然后停止进程
@@ -1202,6 +1217,12 @@ def _plugin_process_runner(
                             run_id = ctx_obj.get("run_id")
                     except Exception:
                         run_id = None
+
+                    # 为当前 TRIGGER 创建 cancel_event 并注册到 _run_cancel_events
+                    # 这使 CANCEL_RUN 命令可以传播取消信号到正在执行的 entry
+                    trigger_cancel_event = threading.Event()
+                    if run_id:
+                        _run_cancel_events[run_id] = trigger_cancel_event
                     
                     method_name = getattr(method, "__name__", entry_id)
                     # 关键日志：记录开始执行
@@ -1255,6 +1276,7 @@ def _plugin_process_runner(
                                 timeout=timeout,
                                 ret_payload=ret_payload,
                                 method=method,
+                                _rce=_run_cancel_events,
                             ):
                                 try:
                                     result = worker_executor.wait_for_result(future, timeout)
@@ -1278,6 +1300,8 @@ def _plugin_process_runner(
                                     logger.exception("Worker task {} failed", entry_id)
                                     ret_payload["error"] = f"Worker error: {str(e)}"
                                 finally:
+                                    if run_id:
+                                        _rce.pop(run_id, None)
                                     # 发送响应
                                     res_queue.put(ret_payload, timeout=10.0)
                             
@@ -1304,7 +1328,7 @@ def _plugin_process_runner(
                         # 这样命令循环可以继续处理其他命令（包括响应命令）
                         result_container = {"result": None, "exception": None, "done": False}
                         event = threading.Event()
-                        cancel_event = threading.Event()
+                        cancel_event = trigger_cancel_event
                         
                         def run_async(
                             method=method,
@@ -1386,30 +1410,35 @@ def _plugin_process_runner(
                             ret_payload=ret_payload,
                             method=method,
                             cancel_event=cancel_event,
+                            _rce=_run_cancel_events,
                         ):
-                            thread = threading.Thread(target=run_async, daemon=True)
-                            thread.start()
-                            thread.join(timeout=timeout_seconds)
-                            if thread.is_alive():
-                                try:
-                                    cancel_event.set()
-                                except Exception:
-                                    pass
-                                try:
-                                    thread.join(timeout=0.2)
-                                except Exception:
-                                    pass
-                                logger.error(
-                                    "Async method {} execution timed out after {}s",
-                                    entry_id,
-                                    timeout_seconds,
-                                )
-                                ret_payload["error"] = f"Async method execution timed out after {timeout_seconds}s"
-                            elif result_container["exception"]:
-                                ret_payload["error"] = str(result_container["exception"])
-                            else:
-                                ret_payload["success"] = True
-                                ret_payload["data"] = result_container["result"]
+                            try:
+                                thread = threading.Thread(target=run_async, daemon=True)
+                                thread.start()
+                                thread.join(timeout=timeout_seconds)
+                                if thread.is_alive():
+                                    try:
+                                        cancel_event.set()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        thread.join(timeout=0.2)
+                                    except Exception:
+                                        pass
+                                    logger.error(
+                                        "Async method {} execution timed out after {}s",
+                                        entry_id,
+                                        timeout_seconds,
+                                    )
+                                    ret_payload["error"] = f"Async method execution timed out after {timeout_seconds}s"
+                                elif result_container["exception"]:
+                                    ret_payload["error"] = str(result_container["exception"])
+                                else:
+                                    ret_payload["success"] = True
+                                    ret_payload["data"] = result_container["result"]
+                            finally:
+                                if run_id:
+                                    _rce.pop(run_id, None)
 
                             try:
                                 res_queue.put(ret_payload, timeout=10.0)
@@ -1480,6 +1509,8 @@ def _plugin_process_runner(
                     logger.exception("Unexpected error executing {}", entry_id)
                     ret_payload["error"] = f"Unexpected error: {str(e)}"
 
+                if run_id:
+                    _run_cancel_events.pop(run_id, None)
                 res_queue.put(ret_payload, timeout=10.0)
 
         # 触发生命周期：shutdown（尽力而为），并停止所有定时任务
@@ -1763,8 +1794,7 @@ class PluginHost:
         Returns:
             插件返回的结果
         """
-        # 关键日志：记录触发请求
-        self.logger.info(
+        self.logger.debug(
             "[PluginHost] Trigger called: plugin_id={}, entry_id={}",
             self.plugin_id,
             entry_id,
@@ -1779,6 +1809,15 @@ class PluginHost:
         # 发送 TRIGGER 命令到子进程并等待结果
         # 委托给通信资源管理器处理
         return await self.comm_manager.trigger(entry_id, args, timeout)
+
+    async def cancel_run(self, run_id: str) -> None:
+        """Propagate a run cancellation to the child process.
+
+        Fire-and-forget: the child process will set the cancel_event for
+        the given *run_id*, causing the running entry to be cancelled if it
+        supports cancellation (async / worker entries).
+        """
+        await self.comm_manager.send_cancel_run(run_id)
     
     async def trigger_custom_event(
         self, 

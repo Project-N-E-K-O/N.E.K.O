@@ -16,6 +16,7 @@ import threading
 
 from fastapi import HTTPException
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from plugin.core.state import state
 from plugin._types.exceptions import (
@@ -35,6 +36,19 @@ from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import ok, fail, is_envelope
 
 # logger 已在上方导入
+
+
+class TriggerResult(BaseModel):
+    """trigger_plugin() 的标准返回类型。
+
+    替代之前的裸 dict，提供类型安全和单一构造点。
+    """
+    success: bool
+    plugin_id: str
+    entry_id: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+    plugin_response: Any = None
+    received_at: str = ""
 
 
 def _parse_iso_ts(value: Any) -> Optional[float]:
@@ -256,13 +270,174 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     return result
 
 
+def _resolve_and_check_host(
+    plugin_id: str,
+    trace_id: str,
+) -> tuple[Any, Optional[Dict[str, Any]]]:
+    """Resolve the plugin host and verify it is healthy.
+
+    Returns:
+        ``(host, None)`` on success, or ``(None, fail_response)`` on error.
+        The caller should construct a ``TriggerResult`` from *fail_response*
+        when it is not ``None``.
+    """
+    # 锁顺序: plugins_lock -> plugin_hosts_lock
+    try:
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+    except Exception as e:
+        logger.warning(
+            "Failed to get state snapshots for plugin {}: {}, using fallback",
+            plugin_id,
+            e
+        )
+        return None, fail(
+            ErrorCode.NOT_READY,
+            "System is busy, please retry",
+            details={"hint": "State snapshots unavailable"},
+            retriable=True,
+            trace_id=trace_id,
+        )
+
+    host = hosts_snapshot.get(plugin_id)
+
+    if not host:
+        plugin_registered = plugin_id in plugins_snapshot
+        all_running_plugin_ids = list(hosts_snapshot.keys())
+        logger.debug(
+            "Plugin {} not found in plugin_hosts. Registered plugins: {}, Running plugins: {}",
+            plugin_id,
+            list(plugins_snapshot.keys()),
+            all_running_plugin_ids
+        )
+        if plugin_registered:
+            err = fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' is registered but not running",
+                details={
+                    "hint": f"Start the plugin via POST /plugin/{plugin_id}/start",
+                    "running_plugins": all_running_plugin_ids,
+                },
+                retriable=True,
+                trace_id=trace_id,
+            )
+        else:
+            err = fail(
+                ErrorCode.NOT_FOUND,
+                f"Plugin '{plugin_id}' is not found/registered",
+                details={"known_plugins": list(plugins_snapshot.keys())},
+                trace_id=trace_id,
+            )
+        return None, err
+
+    # 健康检查
+    try:
+        health = host.health_check()
+        if not health.alive:
+            return None, fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' process is not alive (status: {health.status})",
+                details={"status": health.status, "pid": health.pid, "exitcode": health.exitcode},
+                retriable=True,
+                trace_id=trace_id,
+            )
+    except (AttributeError, RuntimeError) as e:
+        logger.opt(exception=True).error(f"Failed to check health for plugin {plugin_id}: {e}")
+        return None, fail(
+            ErrorCode.NOT_READY,
+            f"Plugin '{plugin_id}' health check failed",
+            details={"error": str(e)},
+            retriable=True,
+            trace_id=trace_id,
+        )
+
+    return host, None
+
+
+# ---------------------------------------------------------------------------
+# Pipeline helpers for trigger_plugin
+# ---------------------------------------------------------------------------
+
+# Declarative exception → (ErrorCode, message, log_level, retriable) mapping.
+# Order matters: first match wins (most specific first).
+_TRIGGER_ERROR_MAP: list[tuple[type | tuple[type, ...], ErrorCode, str, bool]] = [
+    ((TimeoutError, asyncio.TimeoutError), ErrorCode.TIMEOUT, "error", True),
+    (PluginError,                          ErrorCode.INTERNAL, "warning", False),
+    ((ConnectionError, OSError),           ErrorCode.NOT_READY, "error", True),
+    ((ValueError, TypeError, AttributeError), ErrorCode.VALIDATION_ERROR, "error", False),
+]
+
+_TRIGGER_ERROR_MESSAGES: dict[ErrorCode, str] = {
+    ErrorCode.TIMEOUT: "Plugin execution timed out",
+    ErrorCode.NOT_READY: "Communication error with plugin",
+    ErrorCode.VALIDATION_ERROR: "Invalid request parameters",
+}
+
+
+async def _execute_trigger(
+    host: Any,
+    plugin_id: str,
+    entry_id: str,
+    args: Dict[str, Any],
+    trace_id: str,
+) -> Any:
+    """Execute host.trigger() and convert any exception to a fail() envelope.
+
+    Returns the raw plugin response on success, or a fail() dict on error.
+    """
+    try:
+        resp = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
+        logger.debug(
+            "[plugin_trigger] Plugin response: {}",
+            str(resp)[:500] if resp else None,
+        )
+        return resp
+    except Exception as exc:
+        ctx = {"plugin_id": plugin_id, "entry_id": entry_id}
+        for exc_types, code, level, retriable in _TRIGGER_ERROR_MAP:
+            if isinstance(exc, exc_types):
+                msg = _TRIGGER_ERROR_MESSAGES.get(code, str(exc))
+                ctx["type"] = type(exc).__name__
+                getattr(logger.opt(exception=True), level)(
+                    "plugin_trigger: {} invoking plugin {} entry {}",
+                    type(exc).__name__, plugin_id, entry_id,
+                )
+                return fail(code, msg, details=ctx, retriable=retriable, trace_id=trace_id)
+        # Fallback: unexpected exception type
+        logger.exception("plugin_trigger: Unexpected error invoking plugin {} via IPC", plugin_id)
+        ctx["type"] = type(exc).__name__
+        return fail(
+            ErrorCode.INTERNAL, "An internal error occurred",
+            details=ctx, trace_id=trace_id,
+        )
+
+
+def _normalize_plugin_response(plugin_response: Any, trace_id: str) -> dict:
+    """Ensure the plugin response is a standard ok()/fail() envelope.
+
+    Auto-wraps plain return values so plugins can simply ``return {"key": val}``.
+    """
+    if not is_envelope(plugin_response):
+        if isinstance(plugin_response, dict):
+            return ok(data=plugin_response, trace_id=trace_id)
+        elif plugin_response is None:
+            return ok(trace_id=trace_id)
+        else:
+            return ok(data=plugin_response, trace_id=trace_id)
+    # Already an envelope — ensure trace_id is present
+    if plugin_response.get("trace_id") is None:
+        plugin_response = dict(plugin_response)
+        plugin_response["trace_id"] = trace_id
+    return plugin_response
+
+
 async def trigger_plugin(
     plugin_id: str,
     entry_id: str,
     args: Dict[str, Any],
     task_id: Optional[str] = None,
     client_host: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> TriggerResult:
     """
     触发插件执行
     
@@ -274,233 +449,58 @@ async def trigger_plugin(
         client_host: 客户端主机（可选）
     
     Returns:
-        Dict[str, Any]
+        TriggerResult
     
     Raises:
         HTTPException: 如果插件不存在或执行失败
     """
-    # 关键日志：记录触发请求
+    # --- Stage 1: Log ---
     logger.info(
         "[plugin_trigger] Processing trigger: plugin_id={}, entry_id={}, task_id={}",
-        plugin_id,
-        entry_id,
-        task_id,
+        plugin_id, entry_id, task_id,
     )
-    
-    # 详细参数信息使用 DEBUG
     logger.debug(
-        "[plugin_trigger] Args: type={}, keys={}, content={}",
-        type(args),
-        list(args.keys()) if isinstance(args, dict) else "N/A",
-        args,
+        "[plugin_trigger] Args: type={}, keys={}",
+        type(args), list(args.keys()) if isinstance(args, dict) else "N/A",
     )
-    
-    # 记录事件到队列
+
+    # --- Stage 2: Trace ---
     trace_id = str(uuid.uuid4())
-    event = {
+    received_at = now_iso()
+    _enqueue_event({
         "type": "plugin_triggered",
-        "plugin_id": plugin_id,
-        "entry_id": entry_id,
-        "args": args,
-        "task_id": task_id,
-        "client": client_host,
-        "received_at": now_iso(),
+        "plugin_id": plugin_id, "entry_id": entry_id,
+        "args": args, "task_id": task_id,
+        "client": client_host, "received_at": received_at,
         "trace_id": trace_id,
-    }
-    _enqueue_event(event)
-    
-    # 一次性获取快照，减少锁持有时间
-    # 使用带缓存的快照方法（500ms TTL），在高并发场景下几乎不需要等待锁
-    # 锁顺序: plugins_lock -> plugin_hosts_lock
-    try:
-        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
-        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
-    except Exception as e:
-        logger.warning(
-            "Failed to get state snapshots for plugin {}: {}, using fallback",
-            plugin_id,
-            e
-        )
-        # 快速失败：如果无法获取快照，直接返回错误
-        plugin_response = fail(
-            ErrorCode.NOT_READY,
-            "System is busy, please retry",
-            details={"hint": "State snapshots unavailable"},
-            retriable=True,
-            trace_id=trace_id,
-        )
-        return {
-            "success": False,
-            "plugin_id": plugin_id,
-            "executed_entry": entry_id,
-            "args": args,
-            "plugin_response": plugin_response,
-            "received_at": event["received_at"],
-            "plugin_forward_error": None,
-        }
-    
-    plugin_registered = plugin_id in plugins_snapshot
-    host = hosts_snapshot.get(plugin_id)
-    all_running_plugin_ids = list(hosts_snapshot.keys())
-    
-    if not host:
-        logger.debug(
-            "Plugin {} not found in plugin_hosts. Registered plugins: {}, Running plugins: {}",
-            plugin_id,
-            list(plugins_snapshot.keys()),
-            all_running_plugin_ids
-        )
-        # 插件未运行，检查是否已注册
-        if plugin_registered:
-            plugin_response = fail(
-                ErrorCode.NOT_READY,
-                f"Plugin '{plugin_id}' is registered but not running",
-                details={
-                    "hint": f"Start the plugin via POST /plugin/{plugin_id}/start",
-                    "running_plugins": all_running_plugin_ids,
-                },
-                retriable=True,
-                trace_id=trace_id,
-            )
-        else:
-            plugin_response = fail(
-                ErrorCode.NOT_FOUND,
-                f"Plugin '{plugin_id}' is not found/registered",
-                details={"known_plugins": list(plugins_snapshot.keys())},
-                trace_id=trace_id,
-            )
+    })
 
-        return {
-            "success": False,
-            "plugin_id": plugin_id,
-            "executed_entry": entry_id,
-            "args": args,
-            "plugin_response": plugin_response,
-            "received_at": event["received_at"],
-            "plugin_forward_error": None,
-        }
-    
-    # 检查进程健康状态
-    try:
-        health = host.health_check()
-        if not health.alive:
-            plugin_response = fail(
-                ErrorCode.NOT_READY,
-                f"Plugin '{plugin_id}' process is not alive (status: {health.status})",
-                details={"status": health.status, "pid": health.pid, "exitcode": health.exitcode},
-                retriable=True,
-                trace_id=trace_id,
-            )
-            return {
-                "success": False,
-                "plugin_id": plugin_id,
-                "executed_entry": entry_id,
-                "args": args,
-                "plugin_response": plugin_response,
-                "received_at": event["received_at"],
-                "plugin_forward_error": None,
-            }
-    except (AttributeError, RuntimeError) as e:
-        logger.opt(exception=True).error(f"Failed to check health for plugin {plugin_id}: {e}")
-        plugin_response = fail(
-            ErrorCode.NOT_READY,
-            f"Plugin '{plugin_id}' health check failed",
-            details={"error": str(e)},
-            retriable=True,
-            trace_id=trace_id,
+    def _fail_result(response: Any) -> TriggerResult:
+        return TriggerResult(
+            success=False, plugin_id=plugin_id, entry_id=entry_id,
+            args=args, plugin_response=response, received_at=received_at,
         )
-        return {
-            "success": False,
-            "plugin_id": plugin_id,
-            "executed_entry": entry_id,
-            "args": args,
-            "plugin_response": plugin_response,
-            "received_at": event["received_at"],
-            "plugin_forward_error": None,
-        }
-    
-    # 执行插件
-    plugin_response: Any = None
-    
-    logger.debug(
-        "[plugin_trigger] Calling host.trigger: entry_id={}, args={}",
-        entry_id,
-        args,
+
+    # --- Stage 3: Resolve ---
+    host, resolve_error = _resolve_and_check_host(plugin_id, trace_id)
+    if resolve_error is not None:
+        return _fail_result(resolve_error)
+
+    # --- Stage 4: Execute ---
+    plugin_response = await _execute_trigger(host, plugin_id, entry_id, args, trace_id)
+
+    # --- Stage 5: Normalize ---
+    plugin_response = _normalize_plugin_response(plugin_response, trace_id)
+
+    # --- Stage 6: Return ---
+    return TriggerResult(
+        success=bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
+        plugin_id=plugin_id,
+        entry_id=entry_id,
+        args=args,
+        plugin_response=plugin_response,
+        received_at=received_at,
     )
-    
-    try:
-        plugin_response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
-        logger.debug(
-            "[plugin_trigger] Plugin response: {}",
-            str(plugin_response)[:500] if plugin_response else None,
-        )
-    except (TimeoutError, asyncio.TimeoutError) as e:
-        logger.opt(exception=True).error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
-        plugin_response = fail(
-            ErrorCode.TIMEOUT,
-            "Plugin execution timed out",
-            details={"plugin_id": plugin_id, "entry_id": entry_id},
-            retriable=True,
-            trace_id=trace_id,
-        )
-    except PluginError as e:
-        logger.warning(f"Plugin {plugin_id} entry {entry_id} error: {e}")
-        plugin_response = fail(
-            ErrorCode.INTERNAL,
-            str(e),
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
-            trace_id=trace_id,
-        )
-    except (ConnectionError, OSError) as e:
-        logger.error(f"Communication error with plugin {plugin_id}: {e}")
-        plugin_response = fail(
-            ErrorCode.NOT_READY,
-            "Communication error with plugin",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
-            retriable=True,
-            trace_id=trace_id,
-        )
-    except (ValueError, TypeError, AttributeError) as e:
-        logger.error(f"Invalid parameters for plugin {plugin_id} entry {entry_id}: {e}")
-        plugin_response = fail(
-            ErrorCode.VALIDATION_ERROR,
-            "Invalid request parameters",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
-            trace_id=trace_id,
-        )
-    except Exception as e:
-        logger.exception(f"plugin_trigger: Unexpected error type invoking plugin {plugin_id} via IPC")
-        plugin_response = fail(
-            ErrorCode.INTERNAL,
-            "An internal error occurred",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
-            trace_id=trace_id,
-        )
-
-    if not is_envelope(plugin_response):
-        # Syntax sugar: auto-wrap plain return values into ok() envelope.
-        # This allows plugins to simply `return {"greeted": name}` instead of
-        # `return ok(data={"greeted": name})`.
-        if isinstance(plugin_response, dict):
-            plugin_response = ok(data=plugin_response, trace_id=trace_id)
-        elif plugin_response is None:
-            plugin_response = ok(trace_id=trace_id)
-        else:
-            plugin_response = ok(data=plugin_response, trace_id=trace_id)
-    else:
-        if plugin_response.get("trace_id") is None:
-            plugin_response = dict(plugin_response)
-            plugin_response["trace_id"] = trace_id
-    
-    return {
-        "success": bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
-        "plugin_id": plugin_id,
-        "executed_entry": entry_id,
-        "args": args,
-        "plugin_response": plugin_response,
-        "received_at": event["received_at"],
-        "plugin_forward_error": None,
-    }
 
 
 def get_messages_from_queue(

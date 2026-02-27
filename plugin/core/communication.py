@@ -268,8 +268,7 @@ class PluginCommunicationResourceManager:
         """
         req_id = str(uuid.uuid4())
         
-        # 关键日志：记录发送触发命令
-        self.logger.info(
+        self.logger.debug(
             "[CommManager] Sending TRIGGER command: plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id,
             entry_id,
@@ -390,6 +389,23 @@ class PluginCommunicationResourceManager:
             return {"success": False, "data": result.get("data"), "error": result.get("error")}
         
         return {"success": True, "data": result, "error": None}
+
+    async def send_cancel_run(self, run_id: str) -> None:
+        """Send a CANCEL_RUN command to the plugin process (fire-and-forget).
+
+        The child process will set the cancel_event for the given run_id,
+        causing the running entry to be cancelled if it supports cancellation.
+        """
+        msg = {"type": "CANCEL_RUN", "run_id": str(run_id)}
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put(msg, timeout=QUEUE_GET_TIMEOUT),
+            )
+            self.logger.debug("Sent CANCEL_RUN for run_id={} to plugin {}", run_id, self.plugin_id)
+        except Exception as e:
+            self.logger.warning("Failed to send CANCEL_RUN to plugin {}: {}", self.plugin_id, e)
 
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         """Push a bus change notification to plugin process.
@@ -656,6 +672,91 @@ class PluginCommunicationResourceManager:
                 break
         return messages
     
+    # 特殊消息类型路由表：type → handler method name
+    # 匹配的消息由对应 handler 直接处理，不转发到主进程队列。
+    # 新增消息类型只需添加一行映射。
+    _MESSAGE_ROUTING: Dict[str, str] = {
+        "ENTRY_UPDATE": "_handle_entry_update",
+        "STATIC_UI_REGISTER": "_handle_static_ui_register",
+    }
+
+    async def _forward_message(self, msg: Dict[str, Any]) -> None:
+        """Store message to bus, forward to main queue, and log with dedup."""
+        if not self._message_target_queue:
+            return
+
+        if isinstance(msg, dict) and not msg.get("_bus_stored"):
+            try:
+                from plugin.core.state import state
+
+                msg = dict(msg)
+                if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+                    msg["message_id"] = str(uuid.uuid4())
+                if not isinstance(msg.get("time"), str) or not msg.get("time"):
+                    msg["time"] = now_iso()
+                msg["_bus_stored"] = True
+                state.append_message_record(msg)
+            except Exception:
+                self.logger.debug(
+                    "Failed to store message to bus for plugin {}",
+                    self.plugin_id,
+                    exc_info=True,
+                )
+
+        try:
+            # 尽量快速转发；如果主进程已进入 shutdown 或队列不再消费，避免无限阻塞。
+            await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
+        except asyncio.TimeoutError:
+            # 主队列可能被阻塞/不再消费，直接丢弃以保证 shutdown 及时。
+            return
+
+        if PLUGIN_LOG_MESSAGE_FORWARD:
+            log_content = _format_log_text(msg.get("content", ""))
+            window = PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS
+            if window and window > 0:
+                now_ts = time.monotonic()
+                key = (
+                    self.plugin_id,
+                    msg.get("source", "unknown"),
+                    msg.get("priority", 0),
+                    msg.get("description", ""),
+                    log_content,
+                )
+                last_key = self._last_forward_log_key
+                last_ts = self._last_forward_log_time
+                if (
+                    last_key == key
+                    and last_ts > 0.0
+                    and (now_ts - last_ts) <= window
+                ):
+                    # 在去重时间窗口内的重复日志，累加计数并跳过，避免刷屏和性能损耗
+                    self._last_forward_log_repeat_count += 1
+                    return
+
+                # 输出上一条日志的重复统计（如果有）
+                if last_key is not None and self._last_forward_log_repeat_count > 0:
+                    self.logger.info(
+                        "[MESSAGE FORWARD] (suppressed {} duplicate messages for Plugin: {} | Source: {} | Priority: {} | Description: {})",
+                        self._last_forward_log_repeat_count,
+                        last_key[0],
+                        last_key[1],
+                        last_key[2],
+                        last_key[3],
+                    )
+
+                # 切换到当前日志 key，重置计数
+                self._last_forward_log_key = key
+                self._last_forward_log_time = now_ts
+                self._last_forward_log_repeat_count = 0
+
+            self.logger.info(
+                f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
+                f"Source: {msg.get('source', 'unknown')} | "
+                f"Priority: {msg.get('priority', 0)} | "
+                f"Description: {msg.get('description', '')} | "
+                f"Content: {log_content}"
+            )
+
     async def _consume_messages(self) -> None:
         """
         后台任务：持续消费消息队列
@@ -683,93 +784,20 @@ class PluginCommunicationResourceManager:
                 if isinstance(msg, dict) and msg.get("_type") == "__shutdown__":
                     break
                 
-                # 处理特殊消息类型
-                if isinstance(msg, dict) and msg.get("type") == "ENTRY_UPDATE":
-                    # 动态 entry 更新消息，直接处理不转发到消息队列
-                    await self._handle_entry_update(msg)
-                    continue
+                # 路由特殊消息类型
+                if isinstance(msg, dict):
+                    handler_name = self._MESSAGE_ROUTING.get(msg.get("type", ""))
+                    if handler_name:
+                        await getattr(self, handler_name)(msg)
+                        continue
                 
-                if isinstance(msg, dict) and msg.get("type") == "STATIC_UI_REGISTER":
-                    # 静态 UI 注册消息
-                    await self._handle_static_ui_register(msg)
+                # shutdown 期间不要在主进程队列上阻塞等待
+                if shutdown_event.is_set():
                     continue
-                
-                # 转发消息到主进程的消息队列
+
+                # 转发普通消息到主进程
                 try:
-                    if self._message_target_queue:
-                        # shutdown 期间不要在主进程队列上阻塞等待，否则可能导致插件 shutdown 卡住。
-                        if shutdown_event.is_set():
-                            continue
-                        if isinstance(msg, dict) and not msg.get("_bus_stored"):
-                            try:
-                                from plugin.core.state import state
-
-                                msg = dict(msg)
-                                if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
-                                    msg["message_id"] = str(uuid.uuid4())
-                                if not isinstance(msg.get("time"), str) or not msg.get("time"):
-                                    msg["time"] = now_iso()
-                                msg["_bus_stored"] = True
-                                state.append_message_record(msg)
-                            except Exception:
-                                self.logger.debug(
-                                    "Failed to store message to bus for plugin {}",
-                                    self.plugin_id,
-                                    exc_info=True,
-                                )
-
-                        try:
-                            # 尽量快速转发；如果主进程已进入 shutdown 或队列不再消费，避免无限阻塞。
-                            await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
-                        except asyncio.TimeoutError:
-                            # 主队列可能被阻塞/不再消费，直接丢弃以保证 shutdown 及时。
-                            continue
-                        if PLUGIN_LOG_MESSAGE_FORWARD:
-                            log_content = _format_log_text(msg.get("content", ""))
-                            window = PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS
-                            if window and window > 0:
-                                now_ts = time.monotonic()
-                                key = (
-                                    self.plugin_id,
-                                    msg.get("source", "unknown"),
-                                    msg.get("priority", 0),
-                                    msg.get("description", ""),
-                                    log_content,
-                                )
-                                last_key = self._last_forward_log_key
-                                last_ts = self._last_forward_log_time
-                                if (
-                                    last_key == key
-                                    and last_ts > 0.0
-                                    and (now_ts - last_ts) <= window
-                                ):
-                                    # 在去重时间窗口内的重复日志，累加计数并跳过，避免刷屏和性能损耗
-                                    self._last_forward_log_repeat_count += 1
-                                    continue
-
-                                # 输出上一条日志的重复统计（如果有）
-                                if last_key is not None and self._last_forward_log_repeat_count > 0:
-                                    self.logger.info(
-                                        "[MESSAGE FORWARD] (suppressed {} duplicate messages for Plugin: {} | Source: {} | Priority: {} | Description: {})",
-                                        self._last_forward_log_repeat_count,
-                                        last_key[0],
-                                        last_key[1],
-                                        last_key[2],
-                                        last_key[3],
-                                    )
-
-                                # 切换到当前日志 key，重置计数
-                                self._last_forward_log_key = key
-                                self._last_forward_log_time = now_ts
-                                self._last_forward_log_repeat_count = 0
-
-                            self.logger.info(
-                                f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
-                                f"Source: {msg.get('source', 'unknown')} | "
-                                f"Priority: {msg.get('priority', 0)} | "
-                                f"Description: {msg.get('description', '')} | "
-                                f"Content: {log_content}"
-                            )
+                    await self._forward_message(msg)
                 except asyncio.QueueFull:
                     self.logger.warning(
                         f"Main message queue is full, dropping message from plugin {self.plugin_id}"

@@ -13,6 +13,7 @@ from plugin.server.runs.manager import (
     create_run,
     get_run,
     cancel_run,
+    shutdown_runs,
     list_export_for_run,
     list_runs,
 )
@@ -29,6 +30,7 @@ __all__ = [
     'create_run',
     'get_run',
     'cancel_run',
+    'shutdown_runs',
     'list_export_for_run',
     'list_runs',
     'ws_run_endpoint',

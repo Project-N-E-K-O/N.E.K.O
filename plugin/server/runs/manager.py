@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, Field
 
+from loguru import logger
+
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.server.services import trigger_plugin
@@ -296,6 +298,8 @@ class InMemoryRunStore:
 _run_store: RunStore = InMemoryRunStore()
 _export_store: ExportStore = InMemoryExportStore()
 
+_active_run_tasks: Dict[str, asyncio.Task] = {}
+
 # NOTE: threading.Lock (not asyncio.Lock) because update_run_from_plugin is a
 # sync function called from both asyncio coroutines and IPC handler threads.
 _runs_emit_lock = threading.Lock()
@@ -537,6 +541,11 @@ def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
     if rec is None:
         return None
     if rec.status == "queued":
+        # Queued runs haven't started yet — cancel the pending task and
+        # commit terminal state immediately.
+        task = _active_run_tasks.get(rid)
+        if task and not task.done():
+            task.cancel()
         updated = _run_store.commit_terminal(rid, status="canceled", error=RunError(code="CANCELED", message="canceled"), result_refs=[])
         if updated is not None:
             _emit_runs("change", updated)
@@ -551,8 +560,39 @@ def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
         )
         if updated is not None:
             _emit_runs("change", updated)
+        # Propagate cancellation to the child process so the running entry
+        # can be interrupted (async / worker entries).
+        _propagate_cancel_to_plugin(rec.plugin_id, rid)
         return updated
     return rec
+
+
+def _propagate_cancel_to_plugin(plugin_id: str, run_id: str) -> None:
+    """Best-effort: send CANCEL_RUN IPC to the plugin's child process."""
+    try:
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=0.5)
+        host = hosts_snapshot.get(plugin_id)
+        if host is None:
+            return
+        loop = asyncio.get_running_loop()
+        loop.create_task(host.cancel_run(run_id), name=f"cancel_run:{run_id}")
+    except Exception:
+        logger.debug("Failed to propagate cancel for run {} to plugin {}", run_id, plugin_id, exc_info=True)
+
+
+async def shutdown_runs(*, timeout: float = 5.0) -> None:
+    """Cancel and await all active run tasks.
+
+    Should be called during server shutdown to prevent dangling coroutines.
+    """
+    tasks = dict(_active_run_tasks)
+    if not tasks:
+        return
+    logger.info("Shutting down {} active run task(s)", len(tasks))
+    for t in tasks.values():
+        t.cancel()
+    await asyncio.gather(*tasks.values(), return_exceptions=True)
+    _active_run_tasks.clear()
 
 
 async def _execute_run(
@@ -596,7 +636,7 @@ async def _execute_run(
                 ctx_obj["run_id"] = run_id
             trigger_args["_ctx"] = ctx_obj
         except Exception:
-            pass
+            logger.debug("Failed to inject run_id into _ctx for run {}", run_id, exc_info=True)
 
         resp = await trigger_plugin(
             plugin_id=plugin_id,
@@ -606,18 +646,14 @@ async def _execute_run(
             client_host=client_host,
         )
 
-        # Extract the inner plugin_response from the trigger_plugin wrapper
-        # envelope.  The wrapper contains metadata (plugin_id, args, etc.)
-        # that is redundant with the RunRecord; only the plugin_response
+        # Extract the inner plugin_response from the TriggerResult.
+        # The wrapper contains metadata (plugin_id, args, etc.) that is
+        # redundant with the RunRecord; only the plugin_response
         # (the ok()/fail() envelope from the actual plugin) is stored as
         # the export payload.
-        pr: Any = None
-        if isinstance(resp, dict):
-            pr = resp.get("plugin_response")
-        # If trigger_plugin returned a non-envelope or plugin_response is
-        # missing, fall back to the full response.
+        pr: Any = resp.plugin_response
         if not isinstance(pr, dict):
-            pr = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
+            pr = resp.model_dump()
 
         export_item_id = str(uuid.uuid4())
         item = ExportItem.model_validate({
@@ -726,7 +762,7 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
     _run_store.create(rec)
     _emit_runs("add", rec)
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _execute_run_guarded(
             run_id,
             plugin_id=req.plugin_id,
@@ -737,4 +773,6 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
         ),
         name=f"run:{run_id}",
     )
+    _active_run_tasks[run_id] = task
+    task.add_done_callback(lambda t, rid=run_id: _active_run_tasks.pop(rid, None))
     return RunCreateResponse(run_id=run_id, status="queued")
