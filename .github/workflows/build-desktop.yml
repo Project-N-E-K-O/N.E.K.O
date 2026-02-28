@@ -35,6 +35,7 @@ jobs:
   # Step 0: Calculate version
   # ──────────────────────────────────────────────
   version:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calc.outputs.VERSION }}
@@ -62,6 +63,7 @@ jobs:
   # Step 1: Build Python backend with Nuitka
   # ──────────────────────────────────────────────
   build-python:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     needs: version
     strategy:
       fail-fast: false
@@ -396,6 +398,7 @@ jobs:
   # Step 2: Build Electron desktop app
   # ──────────────────────────────────────────────
   build-electron:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     needs: [version, build-python]
     strategy:
       fail-fast: false
@@ -567,7 +570,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
