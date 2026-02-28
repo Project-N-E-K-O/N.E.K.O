@@ -20,7 +20,8 @@ logger = get_module_logger(__name__)
 from utils.config_manager import (
     load_workshop_config,
     save_workshop_path,
-    get_workshop_path
+    get_workshop_path,
+    get_steam_workshop_path
 )
 
 def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:

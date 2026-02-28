@@ -355,6 +355,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
 
+    // 切换模型后清空失效 expression 缓存，避免污染其他模型
+    if (typeof this.clearMissingExpressionFiles === 'function') {
+        this.clearMissingExpressionFiles();
+    }
+
     // 记录模型的初始参数（用于expression重置）
     // 必须在应用常驻表情之前记录，否则记录的是已应用常驻表情后的状态
     this.recordInitialParameters();

@@ -22,6 +22,7 @@ from pathlib import Path
 import httpx
 
 from utils.workshop_utils import load_workshop_config
+from utils.config_manager import get_steam_workshop_path
 
 
 
@@ -359,9 +360,10 @@ def find_model_directory(model_name: str):
         logging.warning(f"模型名称包含非法路径字符: {model_name_safe}")
         return (None, None)
     
-    # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
-    workshop_config_data = load_workshop_config()
-    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
+    WORKSHOP_SEARCH_DIR = get_steam_workshop_path()
+    if not WORKSHOP_SEARCH_DIR:
+        workshop_config_data = load_workshop_config()
+        WORKSHOP_SEARCH_DIR = workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder"))
     
     # 定义允许的基础目录列表
     allowed_base_dirs = []
@@ -471,9 +473,10 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         (物品路径, URL前缀) 元组，即使找不到也会返回默认值
     """
     try:
-        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path或默认路径
-        workshop_config = load_workshop_config()
-        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("steam_workshop_path", workshop_config.get("default_workshop_folder", "static")))
+        workshop_dir = get_steam_workshop_path()
+        if not workshop_dir:
+            workshop_config = load_workshop_config()
+            workshop_dir = workshop_config.get("steam_workshop_path", workshop_config.get("default_workshop_folder", "static"))
         
         # 如果路径不存在或为空，使用默认的static目录
         if not workshop_dir or not os.path.exists(workshop_dir):
