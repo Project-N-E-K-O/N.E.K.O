@@ -17,7 +17,6 @@ import base64
 from datetime import datetime
 import pathlib
 import wave
-from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
@@ -30,6 +29,7 @@ from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchErro
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
+from utils.url_utils import encode_url_path
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
@@ -59,25 +59,17 @@ def _validate_profile_name(name: str) -> str | None:
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
     """过滤掉角色通用编辑接口不允许写入的保留字段。"""
     if not isinstance(data, dict):
+        logger.warning(
+            "_filter_mutable_catgirl_fields expected dict, got %s: %r",
+            type(data).__name__,
+            data,
+        )
         return {}
     return {
         key: value
         for key, value in data.items()
         if key not in CHARACTER_RESERVED_FIELD_SET
     }
-
-
-def _encode_url_path(path: str) -> str:
-    """
-    对 URL 路径段做安全编码，避免空格/特殊字符导致静态资源加载失败。
-    仅编码路径段本身，保留 '/' 分隔结构。
-    """
-    if not path:
-        return path
-
-    parts = str(path).split('/')
-    encoded_parts = [quote(unquote(part), safe='') for part in parts]
-    return '/'.join(encoded_parts)
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -263,7 +255,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                             if model_name not in [m['name'] for m in all_models]:
                                                 all_models.append({
                                                     'name': model_name,
-                                                    'path': _encode_url_path(f'/workshop/{workshop_item_id}/{model_name}/{model_file}'),
+                                                    'path': encode_url_path(f'/workshop/{workshop_item_id}/{model_name}/{model_file}'),
                                                     'source': 'steam_workshop',
                                                     'item_id': workshop_item_id
                                                 })
@@ -293,13 +285,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             if saved_item_id:
                                 if url_prefix == '/workshop':
                                     model_subdir = os.path.basename(model_dir.rstrip('/\\'))
-                                    model_path = _encode_url_path(f'{url_prefix}/{saved_item_id}/{model_subdir}/{model_file}')
+                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_subdir}/{model_file}')
                                 else:
-                                    model_path = _encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
+                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
                                 logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
                             else:
                                 # 原始路径构建逻辑
-                                model_path = _encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
+                                model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
                                 logger.debug(f"使用模型名称构建路径: {model_path}")
                             
                             model_info = {
@@ -339,7 +331,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 logger.error(f"获取默认模型mao_pro失败: {e}")
         
         if model_info and isinstance(model_info.get('path'), str):
-            model_info['path'] = _encode_url_path(model_info['path'])
+            model_info['path'] = encode_url_path(model_info['path'])
 
         return JSONResponse(content={
             'success': True,

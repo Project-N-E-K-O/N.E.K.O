@@ -13,7 +13,6 @@ Handles Live2D model-related endpoints including:
 import os
 import json
 import pathlib
-from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request, File, UploadFile
 from fastapi.responses import JSONResponse
@@ -22,18 +21,10 @@ from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
+from utils.url_utils import encode_url_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
-
-
-def _encode_url_path(path: str) -> str:
-    """对 URL 路径段做编码，避免空格等字符导致资源请求失败。"""
-    if not path:
-        return path
-    parts = str(path).split('/')
-    encoded_parts = [quote(unquote(part), safe='') for part in parts]
-    return '/'.join(encoded_parts)
 
 
 @router.get("/models")
@@ -71,7 +62,7 @@ async def get_live2d_models(simple: bool = False):
                                 # 避免重复添加
                                 if model_name not in [m['name'] for m in models]:
                                     # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
-                                    path_value = _encode_url_path(f'/workshop/{item_id}/{filename}')
+                                    path_value = encode_url_path(f'/workshop/{item_id}/{filename}')
                                     logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
                                     path_value = path_value.strip('"')
                                     models.append({
@@ -91,7 +82,7 @@ async def get_live2d_models(simple: bool = False):
                                     # 避免重复添加
                                     if model_name not in [m['name'] for m in models]:
                                         # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
-                                        path_value = _encode_url_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
+                                        path_value = encode_url_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                         logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
                                         path_value = path_value.strip('"')
                                         models.append({
@@ -111,7 +102,7 @@ async def get_live2d_models(simple: bool = False):
             # 返回完整的模型信息（保持向后兼容）
             for model in models:
                 if isinstance(model, dict) and isinstance(model.get('path'), str):
-                    model['path'] = _encode_url_path(model['path'])
+                    model['path'] = encode_url_path(model['path'])
             return models
     except Exception as e:
         logger.error(f"获取Live2D模型列表失败: {e}")
@@ -453,7 +444,7 @@ def get_model_files(model_name: str):
                             relative_path = os.path.relpath(item_path, model_dir)
                             # 转换为正斜杠格式（跨平台兼容）
                             relative_path = relative_path.replace('\\', '/')
-                            result_list.append(_encode_url_path(relative_path))
+                            result_list.append(encode_url_path(relative_path))
                     elif os.path.isdir(item_path):
                         # 递归搜索子目录
                         search_files_recursive(item_path, target_ext, result_list)
@@ -779,6 +770,7 @@ def get_model_files_by_id(model_id: str):
         # 定位模型配置文件（支持 item 根目录或一级子目录）
         model_config_file = None
         model_name_subdir = None
+        actual_model_dir = model_dir
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
                 model_config_file = file
@@ -792,6 +784,7 @@ def get_model_files_by_id(model_id: str):
                     if file.endswith('.model3.json'):
                         model_config_file = file
                         model_name_subdir = subdir
+                        actual_model_dir = subdir_path
                         break
                 if model_config_file:
                     break
@@ -817,7 +810,7 @@ def get_model_files_by_id(model_id: str):
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
                             # 计算相对于模型根目录的路径
-                            relative_path = os.path.relpath(item_path, model_dir)
+                            relative_path = os.path.relpath(item_path, actual_model_dir)
                             # 转换为正斜杠格式（跨平台兼容）
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
@@ -828,10 +821,10 @@ def get_model_files_by_id(model_id: str):
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
         # 搜索动作文件
-        search_files_recursive(model_dir, '.motion3.json', motion_files)
+        search_files_recursive(actual_model_dir, '.motion3.json', motion_files)
 
         # 搜索表情文件
-        search_files_recursive(model_dir, '.exp3.json', expression_files)
+        search_files_recursive(actual_model_dir, '.exp3.json', expression_files)
         
         # 构建模型配置文件的URL
         model_config_url = None
@@ -840,12 +833,12 @@ def get_model_files_by_id(model_id: str):
             if url_prefix == '/workshop':
                 if model_name_subdir:
                     # 模型在子目录中：workshop/{item_id}/{model_name}/{model_name}.model3.json
-                    model_config_url = _encode_url_path(f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}")
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}")
                 else:
                     # 模型直接在item目录中：workshop/{item_id}/{model_name}.model3.json
-                    model_config_url = _encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
             else:
-                model_config_url = _encode_url_path(f"{url_prefix}/{model_config_file}")
+                model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.info(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")

@@ -330,9 +330,20 @@ function getAllReservedFields() {
 }
 
 async function loadCharacterReservedFieldsConfig() {
+    const safeDefaults = {
+        system_reserved_fields: [],
+        workshop_reserved_fields: [],
+        all_reserved_fields: []
+    };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
     try {
-        const resp = await fetch('/api/config/character_reserved_fields');
-        if (!resp.ok) return;
+        const resp = await fetch('/api/config/character_reserved_fields', { signal: controller.signal });
+        if (!resp.ok) {
+            characterReservedFieldsConfig = safeDefaults;
+            console.error(`加载角色保留字段配置失败: HTTP ${resp.status}`);
+            return;
+        }
         const data = await resp.json();
         if (data && data.success) {
             characterReservedFieldsConfig = {
@@ -342,7 +353,10 @@ async function loadCharacterReservedFieldsConfig() {
             };
         }
     } catch (e) {
-        console.debug('加载角色保留字段配置失败，使用前端兜底列表:', e);
+        characterReservedFieldsConfig = safeDefaults;
+        console.error('加载角色保留字段配置失败，使用安全默认值:', e);
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
