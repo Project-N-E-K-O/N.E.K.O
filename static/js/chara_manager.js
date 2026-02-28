@@ -1877,9 +1877,6 @@ window.renameMaster = async function (oldName) {
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
                 if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
-                if (trimmed.includes('/') || trimmed.includes('\\')) {
-                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符');
-                }
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
@@ -1954,9 +1951,6 @@ window.renameCatgirl = async function (oldName) {
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
                 if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
-                if (trimmed.includes('/') || trimmed.includes('\\')) {
-                    return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符');
-                }
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
                 }
