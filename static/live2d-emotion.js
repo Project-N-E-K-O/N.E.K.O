@@ -178,21 +178,13 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         // 方法1: 尝试使用原生expression API
         if (this.currentModel.expression) {
             try {
-                // 在 FileReferences 中查找匹配的表情名称
-                let expressionName = null;
-                if (this.fileReferences && this.fileReferences.Expressions) {
-                    for (const expr of this.fileReferences.Expressions) {
-                        if (expr.File === choiceFile) {
-                            expressionName = expr.Name;
-                            break;
-                        }
-                    }
-                }
-                
-                // 如果找不到，回退到使用文件名
+                const expressionName = (typeof this.resolveExpressionNameByFile === 'function')
+                    ? this.resolveExpressionNameByFile(choiceFile)
+                    : null;
+
                 if (!expressionName) {
-                    const base = String(choiceFile).split('/').pop() || '';
-                    expressionName = base.replace('.exp3.json', '');
+                    console.warn(`未找到表情名映射，将跳过原生API并回退到手动参数设置: ${choiceFile}`);
+                    throw new Error('Expression name mapping not found');
                 }
                 
                 console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${choiceFile})`);
