@@ -9919,10 +9919,25 @@ const ready = async () => {
     if (ready._called) return;
     ready._called = true;
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        const PAGE_CONFIG_READY_TIMEOUT = Symbol('page-config-ready-timeout');
+        const PAGE_CONFIG_READY_TIMEOUT_MS = 3000;
+        let timeoutId = null;
         try {
-            await window.pageConfigReady;
+            const waitResult = await Promise.race([
+                window.pageConfigReady,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => resolve(PAGE_CONFIG_READY_TIMEOUT), PAGE_CONFIG_READY_TIMEOUT_MS);
+                })
+            ]);
+            if (waitResult === PAGE_CONFIG_READY_TIMEOUT) {
+                console.warn(`[Init] pageConfigReady pending over ${PAGE_CONFIG_READY_TIMEOUT_MS}ms, continue with fallback config`);
+            }
         } catch (error) {
             console.warn('[Init] pageConfigReady rejected, continue with fallback config', error);
+        } finally {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
         }
     }
     init_app();

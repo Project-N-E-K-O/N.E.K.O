@@ -1357,7 +1357,7 @@ class LLMSessionManager:
             initial_prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
             initial_prompt += await self._fetch_active_agent_tasks_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=2.0) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
