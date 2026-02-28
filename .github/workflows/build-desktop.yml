@@ -112,7 +112,7 @@ jobs:
           echo "检查wheel文件..."
           if [ -f "bilibili_api_pathchange-0.1.0-py3-none-any.whl" ]; then
             echo "找到wheel文件，开始安装..."
-            uv pip install --python .venv bilibili-api-pathchange-0.1.0-py3-none-any.whl
+            uv pip install --python .venv bilibili_api_pathchange-0.1.0-py3-none-any.whl
           else
             echo "警告：未找到wheel文件，尝试从源码安装..."
           # 如果wheel文件不存在，尝试从源码安装
