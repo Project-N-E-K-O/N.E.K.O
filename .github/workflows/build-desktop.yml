@@ -288,8 +288,8 @@ jobs:
           fi
 
           if $PYTHON_EXEC -c "import bilibili_api_pathchange" 2>/dev/null; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili-api-pathchange"
-            echo "包含bilibili-api-pathchange包数据"
+            NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api_pathchange"
+            echo "包含bilibili_api_pathchange包数据"
           else
             echo "警告：bilibili_api_pathchange包未安装，跳过包含"
           fi
@@ -404,7 +404,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
           .venv/Scripts/python.exe -c "import bilibili_api_pathchange" 2>nul
           if %errorlevel% equ 0 (
-            set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili-api-pathchange
+            set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api_pathchange
             echo 包含bilibili-api-pathchange包数据
           ) else (
             echo 警告：bilibili-api-pathchange包未安装，跳过包含
