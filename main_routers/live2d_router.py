@@ -813,7 +813,7 @@ def get_model_files_by_id(model_id: str):
                             relative_path = os.path.relpath(item_path, actual_model_dir)
                             # 转换为正斜杠格式（跨平台兼容）
                             relative_path = relative_path.replace('\\', '/')
-                            result_list.append(relative_path)
+                            result_list.append(encode_url_path(relative_path))
                     elif os.path.isdir(item_path):
                         # 递归搜索子目录
                         search_files_recursive(item_path, target_ext, result_list)

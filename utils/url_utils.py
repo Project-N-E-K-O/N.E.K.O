@@ -9,6 +9,6 @@ def encode_url_path(path: str) -> str:
     if not path:
         return path
 
-    parts = str(path).split('/')
+    parts = path.split('/')
     encoded_parts = [quote(unquote(part), safe='') for part in parts]
     return '/'.join(encoded_parts)

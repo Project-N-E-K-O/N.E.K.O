@@ -319,8 +319,20 @@ let characterReservedFieldsConfig = {
 };
 
 function getAllReservedFields() {
-    if (characterReservedFieldsConfig && Array.isArray(characterReservedFieldsConfig.all_reserved_fields) && characterReservedFieldsConfig.all_reserved_fields.length > 0) {
-        return characterReservedFieldsConfig.all_reserved_fields;
+    if (characterReservedFieldsConfig) {
+        const allFields = Array.isArray(characterReservedFieldsConfig.all_reserved_fields)
+            ? characterReservedFieldsConfig.all_reserved_fields
+            : [];
+        const systemFields = Array.isArray(characterReservedFieldsConfig.system_reserved_fields)
+            ? characterReservedFieldsConfig.system_reserved_fields
+            : [];
+        const workshopFields = Array.isArray(characterReservedFieldsConfig.workshop_reserved_fields)
+            ? characterReservedFieldsConfig.workshop_reserved_fields
+            : [];
+        const merged = [...new Set([...allFields, ...systemFields, ...workshopFields])];
+        if (merged.length > 0) {
+            return merged;
+        }
     }
     // 后端不可用时的兜底，避免前端行为回退到“无保留字段过滤”
     return [
@@ -1575,8 +1587,8 @@ function showCatgirlForm(key, container) {
         }
     }
 
-    // 立即调用加载音色
-    loadVoices();
+    // 立即调用加载音色，并在提交前等待初始化完成
+    const voicesLoadPromise = loadVoices();
 
 
 
@@ -1592,6 +1604,7 @@ function showCatgirlForm(key, container) {
         form.dataset.submitting = 'true';
 
         try {
+            await voicesLoadPromise;
             const fd = new FormData(form);
             const data = {};
             const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();

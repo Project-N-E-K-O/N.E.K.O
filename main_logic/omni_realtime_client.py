@@ -55,7 +55,7 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
                 if Path(sentinel_diag_path).exists():
                     recent_diag_path = sentinel_diag_path
     except Exception as sentinel_err:
-        logger.debug(f"Gemini diagnostic sentinel read failed: {sentinel_err}")
+        logger.error(f"Gemini diagnostic sentinel read failed: {sentinel_err}")
 
     if recent_diag_path is None:
         try:
@@ -73,10 +73,15 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
                                 or file_mtime > Path(recent_diag_path).stat().st_mtime
                             ):
                                 recent_diag_path = str(diag_file)
-                    except Exception:
+                    except Exception as diag_file_err:
+                        logger.debug(
+                            "Skipping diagnostic file scan due to parse/read error: %s (%s)",
+                            diag_file,
+                            diag_file_err,
+                        )
                         continue
         except Exception as scan_err:
-            logger.debug(f"Gemini diagnostic scan failed: {scan_err}")
+            logger.error(f"Gemini diagnostic scan failed: {scan_err}")
 
     if recent_diag_path:
         logger.warning(f"Gemini SDK import failed, recent diagnostic exists: {recent_diag_path}")
@@ -103,9 +108,9 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
                             indent=2,
                         )
                 except Exception as sentinel_write_err:
-                    logger.debug(f"Gemini diagnostic sentinel write failed: {sentinel_write_err}")
+                    logger.error(f"Gemini diagnostic sentinel write failed: {sentinel_write_err}")
         except Exception as diag_err:
-            logger.debug(f"Gemini SDK diagnostic write failed: {diag_err}")
+            logger.error(f"Gemini SDK diagnostic write failed: {diag_err}")
 
 
 class OmniRealtimeClient:
