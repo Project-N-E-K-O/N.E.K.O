@@ -253,18 +253,13 @@ function attachProfileNameLimiter(inputEl) {
     const enforce = () => {
         if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
-        const before = inputEl.value;
+        let before = inputEl.value;
         
-        // 检查是否包含路径分隔符
+        // 检查是否包含路径分隔符，移除并显示警告
         if (before.includes('/') || before.includes('\\')) {
-            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
             inputEl.value = before.replace(/[/\\]/g, '');
-            if (caret !== null) {
-                const newPos = Math.min(caret, inputEl.value.length);
-                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
-            }
             flashProfileNameContainsSlash(inputEl);
-            return;
+            before = inputEl.value;
         }
         
         const beforeUnits = profileNameCountUnits(before);
@@ -1910,7 +1905,8 @@ window.renameMaster = async function (oldName) {
         await loadCharacterData();
         await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
     } else {
-        await showAlert(window.t ? window.t('character.renameError', { error: translateBackendError(result.message) }) : '重命名失败: ' + translateBackendError(result.message || '未知错误'));
+        const errorText = translateBackendError(result.error || result.message || '未知错误');
+        await showAlert(window.t ? window.t('character.renameError', { error: errorText }) : '重命名失败: ' + errorText);
     }
 }
 
