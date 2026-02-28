@@ -21,10 +21,6 @@ from datetime import datetime
 from pathlib import Path
 import httpx
 
-from utils.workshop_utils import load_workshop_config
-from utils.config_manager import get_steam_workshop_path
-
-
 
 chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]+')
 bracket_patterns = [re.compile(r'\(.*?\)'),
@@ -180,7 +176,8 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
 
 def find_models():
     """
-    递归扫描 'static' 文件夹、用户文档下的 'live2d' 文件夹和用户mod路径，查找所有包含 '.model3.json' 文件的子目录。
+    递归扫描 'static' 文件夹、用户文档下的 'live2d' 文件夹、Steam创意工坊目录和用户mod路径，
+    查找所有包含 '.model3.json' 文件的子目录。
     """
     from utils.config_manager import get_config_manager
     
@@ -204,6 +201,10 @@ def find_models():
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
+    # 添加Steam创意工坊目录
+    workshop_search_dir = _resolve_workshop_search_dir()
+    if workshop_search_dir and os.path.exists(workshop_search_dir):
+        search_dirs.append(('workshop', workshop_search_dir, '/workshop'))
     
     # 遍历所有搜索目录
     for source, search_root_dir, url_prefix in search_dirs:
@@ -344,19 +345,15 @@ def is_user_imported_model(model_path: str, config_manager=None) -> bool:
 
 def _resolve_workshop_search_dir() -> str:
     """
-    获取创意工坊搜索目录，优先使用运行时路径，并兼容旧配置键。
+    获取创意工坊搜索目录
+    
+    优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > 默认workshop目录
     """
-    runtime_workshop_path = get_steam_workshop_path()
-    if runtime_workshop_path:
-        return runtime_workshop_path
-
-    workshop_config_data = load_workshop_config()
-    # 兼容历史配置: steam_workshop_path 仅作为旧版本兜底读取。
-    legacy_workshop_path = workshop_config_data.get("steam_workshop_path")
-    if legacy_workshop_path:
-        return legacy_workshop_path
-
-    return workshop_config_data.get("default_workshop_folder", "static")
+    from utils.config_manager import get_workshop_path
+    workshop_path = get_workshop_path()
+    if workshop_path and os.path.exists(workshop_path):
+        return workshop_path
+    return None
 
 
 def find_model_directory(model_name: str):
