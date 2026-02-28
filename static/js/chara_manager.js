@@ -312,11 +312,8 @@ if (!window._charaManagerFoldHandler) {
 
 // 角色数据缓存
 let characterData = null;
-let characterReservedFieldsConfig = {
-    system_reserved_fields: [],
-    workshop_reserved_fields: [],
-    all_reserved_fields: []
-};
+// 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
+let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 
 function getAllReservedFields() {
     if (characterReservedFieldsConfig) {
@@ -335,47 +332,11 @@ function getAllReservedFields() {
         }
     }
     // 后端不可用时的兜底，避免前端行为回退到“无保留字段过滤”
-    return [
-        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'vrm_rotation', 'live2d_item_id',
-        '原始数据', '文件路径', '创意工坊物品ID', 'description', 'tags', 'name', '描述', '标签', '关键词'
-    ];
+    return [...ReservedFieldsUtils.ALL_RESERVED_FIELDS_FALLBACK];
 }
 
 async function loadCharacterReservedFieldsConfig() {
-    const safeDefaults = {
-        system_reserved_fields: [],
-        workshop_reserved_fields: [],
-        all_reserved_fields: []
-    };
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    try {
-        const resp = await fetch('/api/config/character_reserved_fields', { signal: controller.signal });
-        if (!resp.ok) {
-            characterReservedFieldsConfig = safeDefaults;
-            console.error(`加载角色保留字段配置失败: HTTP ${resp.status}`);
-            return;
-        }
-        const data = await resp.json();
-        if (data && data.success) {
-            characterReservedFieldsConfig = {
-                system_reserved_fields: Array.isArray(data.system_reserved_fields) ? data.system_reserved_fields : [],
-                workshop_reserved_fields: Array.isArray(data.workshop_reserved_fields) ? data.workshop_reserved_fields : [],
-                all_reserved_fields: Array.isArray(data.all_reserved_fields) ? data.all_reserved_fields : []
-            };
-        } else {
-            characterReservedFieldsConfig = safeDefaults;
-            console.error(
-                '加载角色保留字段配置失败: success 标志无效',
-                (data && (data.error || data.message || data.status)) || data
-            );
-        }
-    } catch (e) {
-        characterReservedFieldsConfig = safeDefaults;
-        console.error('加载角色保留字段配置失败，使用安全默认值:', e);
-    } finally {
-        clearTimeout(timeoutId);
-    }
+    characterReservedFieldsConfig = await ReservedFieldsUtils.load();
 }
 
 // 通过服务端API同步工坊角色卡（服务端统一扫描，无需前端逐个fetch）

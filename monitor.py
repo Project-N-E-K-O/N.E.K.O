@@ -8,7 +8,7 @@ import json
 import os
 import logging
 from config import MONITOR_SERVER_PORT
-from utils.config_manager import get_config_manager
+from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -72,8 +72,22 @@ async def get_page_config(lanlan_name: str = ""):
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
         
-        # 获取 live2d 字段
-        live2d = lanlan_basic_config.get(target_name, {}).get('live2d', 'mao_pro')
+        # 获取 live2d 字段（兼容 _reserved 新结构）
+        live2d_model_path = get_reserved(
+            lanlan_basic_config.get(target_name, {}),
+            'avatar',
+            'live2d',
+            'model_path',
+            default='mao_pro',
+            legacy_keys=('live2d',),
+        )
+        if not isinstance(live2d_model_path, str):
+            live2d_model_path = str(live2d_model_path) if live2d_model_path is not None else 'mao_pro'
+        if live2d_model_path.endswith('.model3.json'):
+            parts = live2d_model_path.replace('\\', '/').split('/')
+            live2d = parts[-2] if len(parts) >= 2 else parts[-1].removesuffix('.model3.json')
+        else:
+            live2d = live2d_model_path
         
         # 查找所有模型
         models = find_models()

@@ -26,6 +26,7 @@ from utils.workshop_utils import (
     get_workshop_path,
 )
 from utils.logger_config import get_module_logger
+from utils.config_manager import set_reserved
 from config import CHARACTER_RESERVED_FIELDS
 import hashlib
 
@@ -2759,9 +2760,18 @@ async def sync_workshop_character_cards() -> dict:
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
                             
-                            # 如果角色卡有 live2d 字段，同时保存 live2d_item_id
-                            if catgirl_data.get('live2d') and item_id:
-                                catgirl_data['live2d_item_id'] = str(item_id)
+                            # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
+                            # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
+                            legacy_live2d_name = str(chara_data.get('live2d', '') or '').strip()
+                            if legacy_live2d_name and item_id:
+                                set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
+                                set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
+                                set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
+                                if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
+                                    live2d_model_path = legacy_live2d_name
+                                else:
+                                    live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'
+                                set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', live2d_model_path)
                             
                             characters['猫娘'][chara_name] = catgirl_data
                             need_save = True

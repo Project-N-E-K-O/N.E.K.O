@@ -37,7 +37,7 @@ import logging # noqa
 import atexit # noqa
 import httpx # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
-from utils.config_manager import get_config_manager # noqa
+from utils.config_manager import get_config_manager, get_reserved # noqa
 # 将日志初始化提前，确保导入阶段异常也能落盘
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
@@ -333,7 +333,12 @@ async def initialize_character_data():
                         _
                     ) = _config_manager.get_character_data()
                     # 更新voice_id（这是切换音色时需要的）
-                    old_mgr.voice_id = lanlan_basic_config_updated[k].get('voice_id', '')
+                    old_mgr.voice_id = get_reserved(
+                        lanlan_basic_config_updated[k],
+                        'voice_id',
+                        default='',
+                        legacy_keys=('voice_id',),
+                    )
                     logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
                 except Exception as e:
                     logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
