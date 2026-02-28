@@ -1319,7 +1319,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     (currentModelInfo && currentModelInfo.path) ? currentModelInfo.path : modelName
                 );
                 modelData.live2d = decodeMaybeUrlComponent(inferredFolderName || modelName);
-                if (itemId) {
+                if (itemId != null && itemId !== '') {
                     modelData.item_id = itemId;
                     modelData.live2d_item_id = itemId;
                 }
