@@ -2353,8 +2353,8 @@ async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
 
 // 扫描单个角色卡文件
 async function scanCharaFile(filePath, itemId, itemTitle) {
-    await ensureReservedFieldsLoaded();
     try {
+        await ensureReservedFieldsLoaded();
         // 使用新的read-file API读取文件内容
         const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
         const readResult = await readResponse.json();
@@ -2963,8 +2963,8 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
 }
 
 async function handleUploadToWorkshop() {
-    await ensureReservedFieldsLoaded();
     try {
+        await ensureReservedFieldsLoaded();
         // 检查是否为默认模型
         if (isDefaultModel()) {
             showMessage(window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊', 'error');
