@@ -1095,6 +1095,7 @@
         "profileName": "档案名",
         "profileNameMaxHint": "最多20个字符",
         "profileNameTooLong": "档案名过长",
+        "profileNameContainsSlash": "档案名不能包含\"/\"符号",
         "newProfileNameRequired": "新档案名不能为空",
         "newProfileNameTooLong": "档案名过长",
         "required": "*",

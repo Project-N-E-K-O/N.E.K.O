@@ -1095,6 +1095,7 @@
         "profileName": "프로필 이름",
         "profileNameMaxHint": "최대 20자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
+        "profileNameContainsSlash": "프로필 이름에 \"/\" 기호를 포함할 수 없습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",

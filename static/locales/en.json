@@ -1095,6 +1095,7 @@
         "profileName": "Profile Name",
         "profileNameMaxHint": "Max 20 characters",
         "profileNameTooLong": "Profile name is too long",
+        "profileNameContainsSlash": "Profile name cannot contain \"/\" character",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",
