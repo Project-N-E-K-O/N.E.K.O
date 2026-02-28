@@ -422,6 +422,15 @@ def get_model_files(model_name: str):
             except Exception as e:
                 logger.warning(f"检查子目录时出错: {e}")
 
+        if not model_config_file:
+            logger.error(
+                "模型 %s 未找到 .model3.json 文件，model_dir=%s, actual_model_dir=%s",
+                model_name,
+                model_dir,
+                actual_model_dir,
+            )
+            return {"success": False, "error": "模型配置文件(.model3.json)不存在"}
+
         model_dir = actual_model_dir
         motion_files = []
         expression_files = []

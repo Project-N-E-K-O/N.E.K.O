@@ -513,7 +513,7 @@ class OmniRealtimeClient:
             detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
             raise RuntimeError(
                 "google-genai SDK unavailable. "
-                "If this is an SSL/证书问题, repair Windows certificate store or switch to non-Gemini API"
+                "If this is an SSL/证书问题, repair your system certificate chain or switch to non-Gemini API"
                 f"{detail}"
             )
         

@@ -363,6 +363,12 @@ async function loadCharacterReservedFieldsConfig() {
                 workshop_reserved_fields: Array.isArray(data.workshop_reserved_fields) ? data.workshop_reserved_fields : [],
                 all_reserved_fields: Array.isArray(data.all_reserved_fields) ? data.all_reserved_fields : []
             };
+        } else {
+            characterReservedFieldsConfig = safeDefaults;
+            console.error(
+                '加载角色保留字段配置失败: success 标志无效',
+                (data && (data.error || data.message || data.status)) || data
+            );
         }
     } catch (e) {
         characterReservedFieldsConfig = safeDefaults;
@@ -1706,24 +1712,48 @@ function showCatgirlForm(key, container) {
             // voice_id 通过专用接口更新，避免走通用角色编辑接口
             if (selectedVoiceId !== previousVoiceId) {
                 if (selectedVoiceId) {
-                    const voiceResp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(data['档案名'])}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ voice_id: selectedVoiceId })
-                    });
-                    const voiceResult = await voiceResp.json().catch(() => ({}));
-                    if (!voiceResp.ok || voiceResult.success === false) {
-                        await showAlert((voiceResult && voiceResult.error) || (window.t ? window.t('character.saveFailed') : '保存失败'));
-                        return;
+                    try {
+                        const voiceResp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(data['档案名'])}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ voice_id: selectedVoiceId })
+                        });
+                        const voiceResult = await voiceResp.json().catch(() => ({}));
+                        if (!voiceResp.ok || voiceResult.success === false) {
+                            const detail = (voiceResult && voiceResult.error) || `${voiceResp.status} ${voiceResp.statusText}`;
+                            await showAlert(
+                                window.t
+                                    ? window.t('character.partialSaveVoiceFailed', { error: detail })
+                                    : `角色已保存，但音色更新失败: ${detail}`
+                            );
+                        }
+                    } catch (voiceErr) {
+                        await showAlert(
+                            window.t
+                                ? window.t('character.partialSaveVoiceFailed', { error: voiceErr.message || String(voiceErr) })
+                                : `角色已保存，但音色更新失败: ${voiceErr.message || String(voiceErr)}`
+                        );
                     }
                 } else if (previousVoiceId) {
-                    const clearResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(data['档案名'])}/unregister_voice`, {
-                        method: 'POST'
-                    });
-                    const clearResult = await clearResp.json().catch(() => ({}));
-                    if (!clearResp.ok || clearResult.success === false) {
-                        await showAlert((clearResult && clearResult.error) || (window.t ? window.t('character.saveFailed') : '保存失败'));
-                        return;
+                    try {
+                        const clearResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(data['档案名'])}/unregister_voice`, {
+                            method: 'POST'
+                        });
+                        const clearResult = await clearResp.json().catch(() => ({}));
+                        if (!clearResp.ok || clearResult.success === false) {
+                            const detail = (clearResult && clearResult.error) || `${clearResp.status} ${clearResp.statusText}`;
+                            await showAlert(
+                                window.t
+                                    ? window.t('character.partialSaveVoiceFailed', { error: detail })
+                                    : `角色已保存，但音色更新失败: ${detail}`
+                            );
+                        }
+                    } catch (clearErr) {
+                        await showAlert(
+                            window.t
+                                ? window.t('character.partialSaveVoiceFailed', { error: clearErr.message || String(clearErr) })
+                                : `角色已保存，但音色更新失败: ${clearErr.message || String(clearErr)}`
+                        );
                     }
                 }
             }
