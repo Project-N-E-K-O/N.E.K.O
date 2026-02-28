@@ -1095,6 +1095,7 @@
         "profileName": "プロフィール名",
         "profileNameMaxHint": "最大20文字",
         "profileNameTooLong": "プロフィール名が長すぎます",
+        "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
