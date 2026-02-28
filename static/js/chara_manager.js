@@ -312,6 +312,39 @@ if (!window._charaManagerFoldHandler) {
 
 // 角色数据缓存
 let characterData = null;
+let characterReservedFieldsConfig = {
+    system_reserved_fields: [],
+    workshop_reserved_fields: [],
+    all_reserved_fields: []
+};
+
+function getAllReservedFields() {
+    if (characterReservedFieldsConfig && Array.isArray(characterReservedFieldsConfig.all_reserved_fields) && characterReservedFieldsConfig.all_reserved_fields.length > 0) {
+        return characterReservedFieldsConfig.all_reserved_fields;
+    }
+    // 后端不可用时的兜底，避免前端行为回退到“无保留字段过滤”
+    return [
+        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'vrm_rotation', 'live2d_item_id',
+        '原始数据', '文件路径', '创意工坊物品ID', 'description', 'tags', 'name', '描述', '标签', '关键词'
+    ];
+}
+
+async function loadCharacterReservedFieldsConfig() {
+    try {
+        const resp = await fetch('/api/config/character_reserved_fields');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.success) {
+            characterReservedFieldsConfig = {
+                system_reserved_fields: Array.isArray(data.system_reserved_fields) ? data.system_reserved_fields : [],
+                workshop_reserved_fields: Array.isArray(data.workshop_reserved_fields) ? data.workshop_reserved_fields : [],
+                all_reserved_fields: Array.isArray(data.all_reserved_fields) ? data.all_reserved_fields : []
+            };
+        }
+    } catch (e) {
+        console.debug('加载角色保留字段配置失败，使用前端兜底列表:', e);
+    }
+}
 
 // 通过服务端API同步工坊角色卡（服务端统一扫描，无需前端逐个fetch）
 async function autoScanWorkshopCharacterCards() {
@@ -341,6 +374,7 @@ async function autoScanWorkshopCharacterCards() {
 
 // 导入单个工坊角色卡文件，返回是否成功添加
 async function importWorkshopCharaFile(filePath, itemId) {
+    void itemId;
     try {
         const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
         const readResult = await readResponse.json();
@@ -354,15 +388,7 @@ async function importWorkshopCharaFile(filePath, itemId) {
                 return false;
             }
 
-            // 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
-            // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
-            // live2d_item_id 是系统自动管理的，不应该从外部数据读取
-            const RESERVED_FIELDS = [
-                '原始数据', '文件路径', '创意工坊物品ID',
-                'description', 'tags', 'name',
-                '描述', '标签', '关键词',
-                'live2d_item_id'
-            ];
+            const RESERVED_FIELDS = getAllReservedFields();
 
             // 转换为符合catgirl API格式的数据（不包含保留字段）
             const catgirlFormat = {
@@ -387,9 +413,7 @@ async function importWorkshopCharaFile(filePath, itemId) {
 
             // 重要：如果角色卡有 live2d 字段，需要同时保存 live2d_item_id
             // 这样首页加载时才能正确构建工坊模型的路径
-            if (catgirlFormat['live2d'] && itemId) {
-                catgirlFormat['live2d_item_id'] = String(itemId);
-            }
+            // live2d_item_id 由后端指定功能管理，这里不再由通用导入流程直写
 
             // 静默添加到系统
             const addResponse = await fetch('/api/characters/catgirl', {
@@ -1013,17 +1037,8 @@ function showCatgirlForm(key, container) {
         baseWrapper.appendChild(renameBtn);
     }
     form.appendChild(baseWrapper);
-    // 渲染自定义项
-    // 系统保留字段（不显示、不可编辑）
-    const SYSTEM_RESERVED_FIELDS = ["live2d", "voice_id", "system_prompt", "档案名", "vrm", "model_type", "lighting", "vrm_rotation"];
-    // 工坊保留字段（不显示、不可编辑）- 这些字段由工坊系统管理
-    const WORKSHOP_RESERVED_FIELDS = [
-        '原始数据', '文件路径', '创意工坊物品ID',
-        'description', 'tags', 'name',
-        '描述', '标签', '关键词',
-        'live2d_item_id'
-    ];
-    const ALL_RESERVED_FIELDS = [...SYSTEM_RESERVED_FIELDS, ...WORKSHOP_RESERVED_FIELDS];
+    // 渲染自定义项：保留字段统一由后端下发并在前端隐藏
+    const ALL_RESERVED_FIELDS = ['档案名', ...getAllReservedFields()];
 
     Object.keys(cat).forEach(k => {
         if (!ALL_RESERVED_FIELDS.includes(k)) {
@@ -1121,7 +1136,7 @@ function showCatgirlForm(key, container) {
     const voiceWrapper = document.createElement('div');
     voiceWrapper.className = 'field-row-wrapper';
     const voiceLabel = document.createElement('label');
-    voiceLabel.textContent = 'voice_id';
+    voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
     voiceWrapper.appendChild(voiceLabel);
 
@@ -1179,41 +1194,6 @@ function showCatgirlForm(key, container) {
     });
     voiceWrapper.appendChild(registerVoiceBtn);
     foldContent.appendChild(voiceWrapper);
-
-    // system_prompt fold - 故意设计得不起眼，防止用户随意修改
-    const innerFold = document.createElement('div');
-    innerFold.className = 'fold system-prompt-fold';
-    // 包装容器，用于将按钮放到右侧
-    const sysToggleWrapper = document.createElement('div');
-    sysToggleWrapper.style.display = 'flex';
-    sysToggleWrapper.style.justifyContent = 'flex-end';
-    sysToggleWrapper.style.width = '100%';
-    const sysToggle = document.createElement('div');
-    sysToggle.className = 'fold-toggle';
-    sysToggle.style.color = '#aaa';
-    sysToggle.style.fontStyle = 'italic';
-    sysToggle.style.fontSize = '0.75rem';
-    sysToggle.style.opacity = '0.7';
-    sysToggle.style.width = 'auto';
-    sysToggle.style.display = 'inline-block';
-    sysToggle.style.padding = '4px 8px';
-    sysToggle.appendChild(document.createTextNode('system_prompt'));
-    sysToggleWrapper.appendChild(sysToggle);
-    innerFold.appendChild(sysToggleWrapper);
-    const sysContent = document.createElement('div');
-    sysContent.className = 'fold-content';
-    const sysTextarea = document.createElement('textarea');
-    sysTextarea.name = 'system_prompt';
-    sysTextarea.rows = 5;
-    sysTextarea.style.width = '100%';
-    sysTextarea.style.fontSize = '0.85rem';
-    sysTextarea.style.color = '#666';
-    sysTextarea.placeholder = window.t ? window.t('character.systemPromptWarning') : '系统指令 - 修改可能导致角色行为异常，后果自负';
-    sysTextarea.value = cat['system_prompt'] || '';
-    sysContent.appendChild(sysTextarea);
-    attachTextareaAutoResize(sysTextarea);
-    innerFold.appendChild(sysContent);
-    foldContent.appendChild(innerFold);
 
     fold.appendChild(foldContent);
 
@@ -1399,14 +1379,8 @@ function showCatgirlForm(key, container) {
             '',
             window.t ? window.t('character.addCatgirlFieldTitle') : '新增猫娘设定'
         );
-        // 系统保留字段 + 工坊保留字段都不允许用户手动添加
-        const FORBIDDEN_FIELD_NAMES = [
-            "档案名", "live2d", "voice_id", "system_prompt",
-            '原始数据', '文件路径', '创意工坊物品ID',
-            'description', 'tags', 'name',
-            '描述', '标签', '关键词',
-            'live2d_item_id'
-        ];
+        // 保留字段（由后端统一管理）不允许用户手动添加
+        const FORBIDDEN_FIELD_NAMES = ["档案名", ...getAllReservedFields()];
         if (!key || FORBIDDEN_FIELD_NAMES.includes(key)) return;
         if (form.querySelector(`[name='${CSS.escape(key)}']`)) {
             await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
@@ -1606,11 +1580,14 @@ function showCatgirlForm(key, container) {
         try {
             const fd = new FormData(form);
             const data = {};
+            const selectedVoiceId = form.querySelector('select[name="voice_id"]')?.value ?? '';
+            const previousVoiceId = cat['voice_id'] || '';
             for (const [k, v] of fd.entries()) {
-                // 特殊处理voice_id字段，即使为空也要包含
+                // 保留字段统一由专用接口维护，通用角色保存接口不再透传
                 if (k === 'voice_id') {
-                    data[k] = v;
-                } else if (k && v) {
+                    continue;
+                }
+                if (k && v) {
                     data[k] = v;
                 }
             }
@@ -1696,6 +1673,31 @@ function showCatgirlForm(key, container) {
             if (result.success === false) {
                 await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
                 return;
+            }
+
+            // voice_id 通过专用接口更新，避免走通用角色编辑接口
+            if (selectedVoiceId !== previousVoiceId) {
+                if (selectedVoiceId) {
+                    const voiceResp = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(data['档案名'])}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ voice_id: selectedVoiceId })
+                    });
+                    const voiceResult = await voiceResp.json().catch(() => ({}));
+                    if (!voiceResp.ok || voiceResult.success === false) {
+                        await showAlert((voiceResult && voiceResult.error) || (window.t ? window.t('character.saveFailed') : '保存失败'));
+                        return;
+                    }
+                } else if (previousVoiceId) {
+                    const clearResp = await fetch(`/api/characters/catgirl/${encodeURIComponent(data['档案名'])}/unregister_voice`, {
+                        method: 'POST'
+                    });
+                    const clearResult = await clearResp.json().catch(() => ({}));
+                    if (!clearResp.ok || clearResult.success === false) {
+                        await showAlert((clearResult && clearResult.error) || (window.t ? window.t('character.saveFailed') : '保存失败'));
+                        return;
+                    }
+                }
             }
 
             // 保存当前展开的猫娘名称，以便重新加载后自动展开
@@ -2237,6 +2239,8 @@ function setupPageEventListeners() {
 
 // 页面加载时拉取数据，并在后台异步扫描工坊角色卡
 async function initPage() {
+    await loadCharacterReservedFieldsConfig();
+
     // 1. 先快速加载已有的本地角色数据
     // 我们不等待工坊扫描，先让页面呈现出来
     await loadCharacterData();

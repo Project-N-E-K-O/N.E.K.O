@@ -16,6 +16,42 @@ logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
 GSV_VOICE_PREFIX = "gsv:"
 
+# 角色档案保留字段（统一管理）
+# - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
+# - workshop: 创意工坊导入/发布流程专用，不应从外部角色卡直接透传
+CHARACTER_SYSTEM_RESERVED_FIELDS = (
+    "live2d",
+    "voice_id",
+    "system_prompt",
+    "model_type",
+    "vrm",
+    "vrm_animation",
+    "lighting",
+    "vrm_rotation",
+    "live2d_item_id",
+)
+
+CHARACTER_WORKSHOP_RESERVED_FIELDS = (
+    "原始数据",
+    "文件路径",
+    "创意工坊物品ID",
+    "description",
+    "tags",
+    "name",
+    "描述",
+    "标签",
+    "关键词",
+)
+
+CHARACTER_RESERVED_FIELDS = tuple(
+    dict.fromkeys((*CHARACTER_SYSTEM_RESERVED_FIELDS, *CHARACTER_WORKSHOP_RESERVED_FIELDS))
+)
+
+
+def get_character_reserved_fields() -> tuple[str, ...]:
+    """返回角色档案保留字段（去重后、有序）。"""
+    return CHARACTER_RESERVED_FIELDS
+
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>
 # - 兼容键：<PORT_NAME>
@@ -477,6 +513,10 @@ def get_agent_extra_body(model: str) -> dict | None:
 __all__ = [
     'APP_NAME',
     'GSV_VOICE_PREFIX',
+    'CHARACTER_SYSTEM_RESERVED_FIELDS',
+    'CHARACTER_WORKSHOP_RESERVED_FIELDS',
+    'CHARACTER_RESERVED_FIELDS',
+    'get_character_reserved_fields',
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',

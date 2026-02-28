@@ -14,15 +14,19 @@ from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.frontend_utils import calculate_text_similarity
 from utils.logger_config import get_module_logger
+from utils.ssl_env_diagnostics import write_ssl_diagnostic
 
-# Gemini Live API SDK
+# Gemini Live API SDK (startup-time import)
 try:
     from google import genai
     from google.genai import types
     GEMINI_AVAILABLE = True
-except ImportError:
+    _GEMINI_IMPORT_ERROR = None
+except Exception as e:
     GEMINI_AVAILABLE = False
+    _GEMINI_IMPORT_ERROR = e
     genai = None
+    types = None
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -32,6 +36,19 @@ class TurnDetectionMode(Enum):
     MANUAL = "manual"
 
 _config_manager = get_config_manager()
+
+if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
+    try:
+        diag_path = write_ssl_diagnostic(
+            event="gemini_sdk_import_failed",
+            output_dir=str(_config_manager.app_docs_dir / "logs" / "diagnostics"),
+            error=_GEMINI_IMPORT_ERROR,
+            extra={"stage": "module_import"},
+        )
+        if diag_path:
+            logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
+    except Exception:
+        pass
 
 
 class OmniRealtimeClient:
@@ -430,8 +447,13 @@ class OmniRealtimeClient:
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
-        if not GEMINI_AVAILABLE or genai is None:
-            raise RuntimeError("google-genai SDK not installed. Please install it with: pip install google-genai")
+        if not GEMINI_AVAILABLE or genai is None or types is None:
+            detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
+            raise RuntimeError(
+                "google-genai SDK unavailable. "
+                "If this is an SSL/证书问题, repair Windows certificate store or switch to non-Gemini API"
+                f"{detail}"
+            )
         
         try:
             # 创建 Gemini 客户端

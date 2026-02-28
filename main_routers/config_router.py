@@ -18,6 +18,11 @@ from .shared_state import get_config_manager, get_steamworks, get_session_manage
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
 from utils.logger_config import get_module_logger
+from config import (
+    CHARACTER_SYSTEM_RESERVED_FIELDS,
+    CHARACTER_WORKSHOP_RESERVED_FIELDS,
+    CHARACTER_RESERVED_FIELDS,
+)
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -26,6 +31,17 @@ logger = get_module_logger(__name__, "Main")
 # VRM 模型路径常量
 VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
 VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
+
+
+@router.get("/character_reserved_fields")
+async def get_character_reserved_fields():
+    """返回角色档案保留字段配置（供前端与路由统一使用）。"""
+    return {
+        "success": True,
+        "system_reserved_fields": list(CHARACTER_SYSTEM_RESERVED_FIELDS),
+        "workshop_reserved_fields": list(CHARACTER_WORKSHOP_RESERVED_FIELDS),
+        "all_reserved_fields": list(CHARACTER_RESERVED_FIELDS),
+    }
 
 
 @router.get("/page_config")

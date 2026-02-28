@@ -34,17 +34,43 @@ import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
 import asyncio # noqa
 import logging # noqa
-from fastapi import FastAPI # noqa
-from fastapi.staticfiles import StaticFiles # noqa
-from main_logic import core as core, cross_server as cross_server # noqa
-from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
-from fastapi.templating import Jinja2Templates # noqa
-from threading import Thread, Event as ThreadEvent # noqa
-from queue import Queue # noqa
 import atexit # noqa
 import httpx # noqa
 from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
 from utils.config_manager import get_config_manager # noqa
+# 将日志初始化提前，确保导入阶段异常也能落盘
+from utils.logger_config import setup_logging # noqa: E402
+from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
+
+logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
+
+if _IS_MAIN_PROCESS:
+    _ssl_precheck = probe_ssl_environment()
+    if not _ssl_precheck.get("ok", True):
+        diag_dir = os.path.join(log_config.get_log_directory_path(), "diagnostics")
+        diag_path = write_ssl_diagnostic(
+            event="main_server_ssl_precheck_failed",
+            output_dir=diag_dir,
+            extra=_ssl_precheck,
+        )
+        logger.warning(
+            "SSL environment precheck failed: %s%s",
+            _ssl_precheck.get("error_message"),
+            f" | diagnostic: {diag_path}" if diag_path else "",
+        )
+
+try:
+    from fastapi import FastAPI # noqa
+    from fastapi.staticfiles import StaticFiles # noqa
+    from main_logic import core as core, cross_server as cross_server # noqa
+    from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
+    from fastapi.templating import Jinja2Templates # noqa
+    from threading import Thread, Event as ThreadEvent # noqa
+    from queue import Queue # noqa
+except Exception as e:
+    logger.exception(f"[Main] Module import failed during startup: {e}")
+    raise
+
 # 导入创意工坊工具模块
 from utils.workshop_utils import ( # noqa
     get_workshop_root,
@@ -120,11 +146,6 @@ def get_default_steam_info():
 # Steamworks 初始化将在 @app.on_event("startup") 中延迟执行
 # 这样可以避免在模块导入时就执行 DLL 加载等操作
 steamworks = None
-
-# 配置日志（子进程静默初始化，避免重复打印初始化消息）
-from utils.logger_config import setup_logging # noqa: E402
-
-logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
 
 _config_manager = get_config_manager()
 

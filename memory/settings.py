@@ -3,6 +3,7 @@ import asyncio
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
+from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
 
@@ -12,6 +13,7 @@ class ImportantSettingsManager:
         self.settings = {}
         self.settings_file = None
         self._config_manager = get_config_manager()
+        self._excluded_profile_fields = set(CHARACTER_RESERVED_FIELDS)
     
     def _get_proposer(self):
         """动态获取Proposer LLM实例以支持配置热重载"""
@@ -33,20 +35,9 @@ class ImportantSettingsManager:
 
         for i in self.settings_file:
             try:
-                # 系统保留字段 - 不应该被记忆系统读取
-                self.lanlan_basic_config[i].pop('system_prompt', None)
-                self.lanlan_basic_config[i].pop('live2d', None)
-                self.lanlan_basic_config[i].pop('voice_id', None)
-                # 前端渲染字段 - 仅用于模型显示，不应该出现在 prompt 中
-                self.lanlan_basic_config[i].pop('model_type', None)
-                self.lanlan_basic_config[i].pop('vrm', None)
-                self.lanlan_basic_config[i].pop('vrm_animation', None)
-                self.lanlan_basic_config[i].pop('lighting', None)
-                # 工坊保留字段 - 由工坊系统管理，不应该被记忆系统读取
-                for workshop_field in ['原始数据', '文件路径', '创意工坊物品ID', 
-                                       'description', 'tags', 'name',
-                                       '描述', '标签', '关键词', 'live2d_item_id']:
-                    self.lanlan_basic_config[i].pop(workshop_field, None)
+                # 角色档案保留字段不参与记忆提取
+                for reserved_field in self._excluded_profile_fields:
+                    self.lanlan_basic_config[i].pop(reserved_field, None)
                 with open(self.settings_file[i], 'r', encoding='utf-8') as f:
                     self.settings[i] = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):

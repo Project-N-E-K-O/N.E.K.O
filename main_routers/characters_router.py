@@ -17,6 +17,7 @@ import base64
 from datetime import datetime
 import pathlib
 import wave
+from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
@@ -29,13 +30,14 @@ from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchErro
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
-from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, CHARACTER_RESERVED_FIELDS
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = get_module_logger(__name__, "Main")
 
 
 PROFILE_NAME_MAX_UNITS = 20
+CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 
 
 def _profile_name_units(name: str) -> int:
@@ -52,6 +54,30 @@ def _validate_profile_name(name: str) -> str | None:
     if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None
+
+
+def _filter_mutable_catgirl_fields(data: dict) -> dict:
+    """过滤掉角色通用编辑接口不允许写入的保留字段。"""
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in CHARACTER_RESERVED_FIELD_SET
+    }
+
+
+def _encode_url_path(path: str) -> str:
+    """
+    对 URL 路径段做安全编码，避免空格/特殊字符导致静态资源加载失败。
+    仅编码路径段本身，保留 '/' 分隔结构。
+    """
+    if not path:
+        return path
+
+    parts = str(path).split('/')
+    encoded_parts = [quote(unquote(part), safe='') for part in parts]
+    return '/'.join(encoded_parts)
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -231,12 +257,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                     subdir_path = os.path.join(installed_folder, subdir)
                                     if os.path.isdir(subdir_path):
                                         model_name = subdir
-                                        json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
-                                        if os.path.exists(json_file):
+                                        model3_files = [f for f in os.listdir(subdir_path) if f.endswith('.model3.json')]
+                                        if model3_files:
+                                            model_file = model3_files[0]
                                             if model_name not in [m['name'] for m in all_models]:
                                                 all_models.append({
                                                     'name': model_name,
-                                                    'path': f'/workshop/{workshop_item_id}/{model_name}/{model_name}.model3.json',
+                                                    'path': _encode_url_path(f'/workshop/{workshop_item_id}/{model_name}/{model_file}'),
                                                     'source': 'steam_workshop',
                                                     'item_id': workshop_item_id
                                                 })
@@ -264,11 +291,15 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             
                             # 如果有保存的item_id，使用它构建路径
                             if saved_item_id:
-                                model_path = f'{url_prefix}/{saved_item_id}/{model_file}'
+                                if url_prefix == '/workshop':
+                                    model_subdir = os.path.basename(model_dir.rstrip('/\\'))
+                                    model_path = _encode_url_path(f'{url_prefix}/{saved_item_id}/{model_subdir}/{model_file}')
+                                else:
+                                    model_path = _encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
                                 logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
                             else:
                                 # 原始路径构建逻辑
-                                model_path = f'{url_prefix}/{live2d_model_name}/{model_file}'
+                                model_path = _encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
                                 logger.debug(f"使用模型名称构建路径: {model_path}")
                             
                             model_info = {
@@ -307,6 +338,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             except Exception as e:
                 logger.error(f"获取默认模型mao_pro失败: {e}")
         
+        if model_info and isinstance(model_info.get('path'), str):
+            model_info['path'] = _encode_url_path(model_info['path'])
+
         return JSONResponse(content={
             'success': True,
             'catgirl_name': catgirl_name,
@@ -908,14 +942,15 @@ async def update_master(request: Request):
 
 @router.post('/catgirl')
 async def add_catgirl(request: Request):
-    data = await request.json()
-    if not data:
+    raw_data = await request.json()
+    if not raw_data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
 
-    profile_name = data.get('档案名')
+    profile_name = raw_data.get('档案名')
     err = _validate_profile_name(profile_name)
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
+    data = _filter_mutable_catgirl_fields(raw_data)
     data['档案名'] = str(profile_name).strip()
     
     _config_manager = get_config_manager()
@@ -931,10 +966,7 @@ async def add_catgirl(request: Request):
     catgirl_data = {}
     for k, v in data.items():
         if k != '档案名':
-            # voice_id 特殊处理：空字符串表示删除该字段
-            if k == 'voice_id' and v == '':
-                continue  # 不添加该字段，相当于删除
-            elif v:  # 只保存非空字段
+            if v:  # 只保存非空字段
                 catgirl_data[k] = v
     
     characters['猫娘'][key] = catgirl_data
@@ -963,86 +995,31 @@ async def add_catgirl(request: Request):
 
 @router.put('/catgirl/{name}')
 async def update_catgirl(name: str, request: Request):
-    data = await request.json()
-    if not data:
+    raw_data = await request.json()
+    if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
+
+    data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    
-    # 记录更新前的voice_id，用于检测是否变更
-    old_voice_id = characters['猫娘'][name].get('voice_id', '')
-    
-    # 如果包含voice_id，验证其有效性
-    if 'voice_id' in data:
-        voice_id = data['voice_id']
-        # 空字符串表示删除voice_id，跳过验证
-        if voice_id != '' and not _config_manager.validate_voice_id(voice_id):
-            voices = _config_manager.get_voices_for_current_api()
-            available_voices = list(voices.keys())
-            return JSONResponse({
-                'success': False, 
-                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
-                'available_voices': available_voices
-            }, status_code=400)
-    
-    # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
+
+    # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
     removed_fields = []
-    for k, v in characters['猫娘'][name].items():
-        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'live2d_item_id'):
+    for k in characters['猫娘'][name]:
+        if k not in data and k not in CHARACTER_RESERVED_FIELD_SET:
             removed_fields.append(k)
     for k in removed_fields:
         characters['猫娘'][name].pop(k)
-    
-    # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
-    if 'voice_id' in data and data['voice_id'] == '':
-        characters['猫娘'][name].pop('voice_id', None)
-    
-    # 更新其他字段
+
+    # 更新普通字段
     for k, v in data.items():
-        if k not in ('档案名', 'voice_id') and v:
+        if k != '档案名' and v:
             characters['猫娘'][name][k] = v
-        elif k == 'voice_id' and v:  # voice_id非空时才更新
-            characters['猫娘'][name][k] = v
+
     _config_manager.save_characters(characters)
-    
-    # 获取更新后的voice_id
-    new_voice_id = characters['猫娘'][name].get('voice_id', '')
-    voice_id_changed = (old_voice_id != new_voice_id)
-    
-    # 如果是当前活跃的猫娘且voice_id发生了变更，需要先通知前端，再关闭session
-    is_current_catgirl = (name == characters.get('当前猫娘', ''))
-    session_ended = False
-    
-    session_manager = get_session_manager()
-    if voice_id_changed and is_current_catgirl and name in session_manager:
-        # 检查是否有活跃的session
-        if session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
-            
-            # 1. 先发送刷新消息（WebSocket还连着）
-            await send_reload_page_notice(session_manager[name])
-            
-            # 2. 立刻关闭session（这会断开WebSocket）
-            try:
-                await session_manager[name].end_session(by_server=True)
-                session_ended = True
-                logger.info(f"{name} 的session已结束")
-            except Exception as e:
-                logger.error(f"结束session时出错: {e}")
-    
-    # 方案3：条件性重新加载 - 只有当前猫娘或voice_id变更时才重新加载配置
-    if voice_id_changed and is_current_catgirl:
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
-        logger.info("配置已重新加载，新的voice_id已生效")
-    elif voice_id_changed and not is_current_catgirl:
-        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
-        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
-    
-    return {"success": True, "voice_id_changed": voice_id_changed, "session_restarted": session_ended}
+    return {"success": True}
 
 
 @router.delete('/catgirl/{name}')
@@ -2174,15 +2151,13 @@ async def save_character_card(request: Request):
         # 获取角色卡名称（档案名）
         # 兼容中英文字段名
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
+        filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
         
         # 创建猫娘数据，只保存非空字段
         catgirl_data = {}
-        for k, v in chara_data.items():
+        for k, v in filtered_chara_data.items():
             if k != '档案名' and k != 'name':
-                # voice_id 特殊处理：空字符串表示删除该字段
-                if k == 'voice_id' and v == '':
-                    continue  # 不添加该字段，相当于删除
-                elif v:  # 只保存非空字段
+                if v:  # 只保存非空字段
                     catgirl_data[k] = v
         
         # 更新或创建猫娘数据

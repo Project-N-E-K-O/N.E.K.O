@@ -399,6 +399,17 @@ def run_main_server(ready_event: Event):
         # 运行服务器
         server.run()
     except Exception as e:
+        # 兜底崩溃日志：即使主日志系统未初始化，也能保留首个异常原因
+        try:
+            import traceback
+            crash_file = os.path.join(os.getcwd(), "main_server_bootstrap_crash.log")
+            with open(crash_file, "a", encoding="utf-8") as f:
+                f.write("\n" + "=" * 80 + "\n")
+                f.write(f"[{datetime.now().isoformat()}] Main Server bootstrap error: {e}\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
+        except Exception:
+            pass
         print(f"Main Server error: {e}")
         import traceback
         traceback.print_exc()
@@ -751,6 +762,17 @@ def wait_for_servers(timeout: int = 60) -> bool:
     
     # 第一步：等待所有端口就绪
     while time.time() - start_time < timeout:
+        # 若某个子进程提前退出，立即报错而不是等到超时
+        for server in SERVERS:
+            proc = server.get('process')
+            if proc is not None and not proc.is_alive() and not check_port(server['port']):
+                report_startup_failure(
+                    f"Startup failed: {server['name']} exited early (exitcode={proc.exitcode})"
+                )
+                stop_spinner.set()
+                spinner_thread.join()
+                return False
+
         ready_count = 0
         for server in SERVERS:
             if check_port(server['port']):

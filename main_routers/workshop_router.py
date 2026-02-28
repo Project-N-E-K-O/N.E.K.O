@@ -26,6 +26,7 @@ from utils.workshop_utils import (
     get_workshop_path,
 )
 from utils.logger_config import get_module_logger
+from config import CHARACTER_RESERVED_FIELDS
 import hashlib
 
 router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
@@ -2676,15 +2677,6 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
-# 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
-_RESERVED_FIELDS = [
-    '原始数据', '文件路径', '创意工坊物品ID',
-    'description', 'tags', 'name',
-    '描述', '标签', '关键词',
-    'live2d_item_id'
-]
-
-
 async def sync_workshop_character_cards() -> dict:
     """
     服务端自动扫描所有已订阅且已安装的创意工坊物品，
@@ -2762,7 +2754,7 @@ async def sync_workshop_character_cards() -> dict:
                             
                             # 构建角色数据，过滤保留字段
                             catgirl_data = {}
-                            skip_keys = ['档案名', *_RESERVED_FIELDS]
+                            skip_keys = ['档案名', *CHARACTER_RESERVED_FIELDS]
                             for k, v in chara_data.items():
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
