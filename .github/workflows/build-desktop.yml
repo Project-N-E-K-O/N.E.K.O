@@ -112,14 +112,14 @@ jobs:
           echo "检查wheel文件..."
           if [ -f "bilibili_api_pathchange-0.1.0-py3-none-any.whl" ]; then
             echo "找到wheel文件，开始安装..."
-            uv pip install --python .venv bilibili_api_pathchange-0.1.0-py3-none-any.whl
+            uv pip install --python .venv bilibili-api-pathchange-0.1.0-py3-none-any.whl
           else
             echo "警告：未找到wheel文件，尝试从源码安装..."
           # 如果wheel文件不存在，尝试从源码安装
             if [ -d "bilibili_api_pathchange" ]; then
-              uv pip install --python .venv -e bilibili_api_pathchange/
+              uv pip install --python .venv -e bilibili-api-pathchange/
             else
-              echo "错误：未找到bilibili_api_pathchange源码目录"
+              echo "错误：未找到bilibili-api-pathchange源码目录"
               exit 1
             fi
           fi
@@ -128,9 +128,9 @@ jobs:
           echo "验证包安装..."
           echo "验证包安装..."
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            .venv/Scripts/python.exe -c "import bilibili_api_pathchange; print(f'包已安装: {bilibili_api_pathchange.__file__}')" || echo "包安装失败"
+            .venv/Scripts/python.exe -c "import bilibili-api-pathchange; print(f'包已安装: {bilibili_api_pathchange.__file__}')" || echo "包安装失败"
           else
-            .venv/bin/python -c "import bilibili_api_pathchange; print(f'包已安装: {bilibili_api_pathchange.__file__}')" || echo "包安装失败"
+            .venv/bin/python -c "import bilibili-api-pathchange; print(f'包已安装: {bilibili_api_pathchange.__file__}')" || echo "包安装失败"
           fi
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
@@ -287,9 +287,9 @@ jobs:
             PYTHON_EXEC=".venv/bin/python"
           fi
 
-          if $PYTHON_EXEC -c "import bilibili_api_pathchange" 2>/dev/null; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api_pathchange"
-            echo "包含bilibili_api_pathchange包数据"
+          if $PYTHON_EXEC -c "import bilibili-api-pathchange" 2>/dev/null; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili-api-pathchange"
+            echo "包含bilibili-api-pathchange包数据"
           else
             echo "警告：bilibili_api_pathchange包未安装，跳过包含"
           fi
@@ -402,12 +402,12 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
           set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
-          .venv/Scripts/python.exe -c "import bilibili_api_pathchange" 2>nul
+          .venv/Scripts/python.exe -c "import bilibili-api-pathchange" 2>nul
           if %errorlevel% equ 0 (
-            set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api_pathchange
-            echo 包含bilibili_api_pathchange包数据
+            set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili-api-pathchange
+            echo 包含bilibili-api-pathchange包数据
           ) else (
-            echo 警告：bilibili_api_pathchange包未安装，跳过包含
+            echo 警告：bilibili-api-pathchange包未安装，跳过包含
           )
 
           .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
