@@ -257,7 +257,15 @@ function attachProfileNameLimiter(inputEl) {
         
         // 检查是否包含路径分隔符，移除并显示警告
         if (before.includes('/') || before.includes('\\')) {
+            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
             inputEl.value = before.replace(/[/\\]/g, '');
+            if (caret !== null) {
+                // 计算光标之前被移除的路径分隔符数量
+                const beforeCaret = before.substring(0, caret);
+                const removedCount = (beforeCaret.match(/[/\\]/g) || []).length;
+                const newPos = Math.max(0, caret - removedCount);
+                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            }
             flashProfileNameContainsSlash(inputEl);
             before = inputEl.value;
         }
