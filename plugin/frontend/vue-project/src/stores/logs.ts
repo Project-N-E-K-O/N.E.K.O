@@ -6,6 +6,8 @@ import { ref } from 'vue'
 import { getPluginLogs, getPluginLogFiles } from '@/api/logs'
 import type { LogEntry, LogFile } from '@/types/api'
 
+const MAX_LOGS_PER_PLUGIN = 5000
+
 export const useLogsStore = defineStore('logs', () => {
   // 状态
   const logs = ref<Record<string, LogEntry[]>>({})
@@ -111,7 +113,10 @@ export const useLogsStore = defineStore('logs', () => {
    */
   function appendLogs(pluginId: string, newLogs: LogEntry[]) {
     const currentLogs = logs.value[pluginId] || []
-    logs.value[pluginId] = [...currentLogs, ...newLogs]
+    const combined = [...currentLogs, ...newLogs]
+    logs.value[pluginId] = combined.length > MAX_LOGS_PER_PLUGIN
+      ? combined.slice(-MAX_LOGS_PER_PLUGIN)
+      : combined
   }
 
   return {

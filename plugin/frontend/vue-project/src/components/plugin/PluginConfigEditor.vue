@@ -135,6 +135,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Check, Plus, Delete } from '@element-plus/icons-vue'
@@ -157,6 +158,7 @@ interface Props {
 
 const props = defineProps<Props>()
 const { t } = useI18n()
+const router = useRouter()
 const pluginStore = usePluginStore()
 
 const loading = ref(false)
@@ -659,6 +661,7 @@ watch(
           { type: 'warning' }
         )
       } catch {
+        router.replace(`/plugins/${encodeURIComponent(oldId)}`)
         return
       }
     }

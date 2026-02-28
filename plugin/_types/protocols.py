@@ -393,7 +393,7 @@ class PluginContextProtocol(Protocol):
         self,
         *,
         run_id: Optional[str] = None,
-        progress: float,
+        progress: float = 0.0,
         stage: Optional[str] = None,
         message: Optional[str] = None,
         timeout: float = 5.0,

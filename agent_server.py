@@ -110,7 +110,7 @@ async def _fire_user_plugin_capability_check() -> None:
     """Probe the user plugin server to determine if user_plugin capability is ready."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0)) as client:
-            r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
+            r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if r.status_code == 200:
                 data = r.json()
                 plugins = data.get("plugins", []) if isinstance(data, dict) else []
@@ -602,11 +602,6 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
 
     async with Modules.analyze_lock:
         await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id)
-    # Clear consumed fingerprint so the next turn (even with identical text) can be analyzed.
-    # The fingerprint's purpose is to prevent near-simultaneous duplicate analysis of the
-    # same turn, not to permanently block repeated user requests.
-    lanlan_key = _normalize_lanlan_key(lanlan_name)
-    Modules.last_user_turn_fingerprint.pop(lanlan_key, None)
 
 
 async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
@@ -1204,7 +1199,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
             if not res.success and res.error:
-                info["error"] = res.error
+                info["error"] = str(res.error)[:500]
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
                 detail = str(run_data)[:500] if run_data else ""
@@ -1227,7 +1222,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except Exception as e:
             info["status"] = "failed"
-            info["error"] = str(e)
+            info["error"] = str(e)[:500]
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
             try:
                 await _emit_task_result(
@@ -1406,7 +1401,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if uf:  # Attempting to enable UserPlugin
             try:
                 async with httpx.AsyncClient(timeout=1.0) as client:
-                    r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
+                    r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                     if r.status_code != 200:
                         _set_capability("user_plugin", False, f"user_plugin server responded {r.status_code}")
                         Modules.agent_flags["user_plugin_enabled"] = False

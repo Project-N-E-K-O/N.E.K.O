@@ -136,7 +136,7 @@ class MainServerAgentBridge:
         self._stop.set()
         self.ready = False
         if self._recv_thread is not None:
-            self._recv_thread.join(timeout=2.0)
+            await asyncio.to_thread(self._recv_thread.join, 2.0)
         for sock in (self.pull, self.analyze_push, self.pub):
             if sock is not None:
                 try:

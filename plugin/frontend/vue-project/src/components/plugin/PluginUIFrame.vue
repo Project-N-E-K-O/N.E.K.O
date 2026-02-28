@@ -26,6 +26,7 @@
     
     <iframe
       v-show="!loading && !error && hasUI"
+      :key="iframeKey"
       ref="iframeRef"
       :src="uiUrl"
       :title="pluginId"
@@ -57,6 +58,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
+const iframeKey = ref(0)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const hasUI = ref(false)
@@ -109,8 +111,18 @@ function onIframeError() {
   emit('error', error.value)
 }
 
-function reload() {
-  return checkUIAvailability()
+async function reload() {
+  if (hasUI.value) {
+    // UI availability already confirmed (iframe load failed); skip network call
+    error.value = null
+    loading.value = true
+    iframeKey.value++
+  } else {
+    await checkUIAvailability()
+    if (hasUI.value && !error.value) {
+      iframeKey.value++
+    }
+  }
 }
 
 function handleMessage(event: MessageEvent) {

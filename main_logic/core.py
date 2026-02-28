@@ -1309,8 +1309,8 @@ class LLMSessionManager:
                         return "\n【已安装的插件】\n" + "\n".join(lines) + "\n"
                 else:
                     return f"\n【已安装的插件】共 {len(plugins)} 个插件可用。\n"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取插件摘要失败，已忽略: {e}")
         return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:

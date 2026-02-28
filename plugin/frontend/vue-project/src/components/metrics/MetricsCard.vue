@@ -8,32 +8,33 @@
 
     <div v-if="metrics" class="metrics-content">
       <el-descriptions :column="2" border size="small">
-        <el-descriptions-item label="CPU使用率">
+        <el-descriptions-item :label="t('metrics.cpu')">
           {{ metrics.cpu_percent }}%
         </el-descriptions-item>
-        <el-descriptions-item label="内存使用">
+        <el-descriptions-item :label="t('metrics.memoryMb')">
           {{ metrics.memory_mb.toFixed(2) }} MB
         </el-descriptions-item>
-        <el-descriptions-item label="内存占比">
+        <el-descriptions-item :label="t('metrics.memoryPercent')">
           {{ metrics.memory_percent.toFixed(2) }}%
         </el-descriptions-item>
-        <el-descriptions-item label="线程数">
+        <el-descriptions-item :label="t('metrics.threads')">
           {{ metrics.num_threads }}
         </el-descriptions-item>
-        <el-descriptions-item label="待处理请求">
+        <el-descriptions-item :label="t('metrics.pendingRequests')">
           {{ metrics.pending_requests || 0 }}
         </el-descriptions-item>
-        <el-descriptions-item label="更新时间">
+        <el-descriptions-item :label="t('metrics.updatedAt')">
           {{ formatTime(metrics.timestamp) }}
         </el-descriptions-item>
       </el-descriptions>
     </div>
-    <EmptyState v-else description="暂无数据" />
+    <EmptyState v-else :description="t('metrics.noData')" />
   </el-card>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import { useMetricsStore } from '@/stores/metrics'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -43,6 +44,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const { t } = useI18n()
 const metricsStore = useMetricsStore()
 
 const metrics = computed(() => {

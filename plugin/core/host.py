@@ -879,10 +879,18 @@ def _plugin_process_runner(
             except Empty:
                 continue
 
-            if msg["type"] == "STOP":
+            if not isinstance(msg, dict):
+                logger.warning("[Plugin Process] Invalid command payload type: {}", type(msg))
+                continue
+            msg_type = msg.get("type")
+            if not isinstance(msg_type, str) or not msg_type:
+                logger.warning("[Plugin Process] Invalid command payload: {}", msg)
+                continue
+
+            if msg_type == "STOP":
                 break
 
-            if msg["type"] == "CANCEL_RUN":
+            if msg_type == "CANCEL_RUN":
                 cancel_run_id = msg.get("run_id")
                 if cancel_run_id:
                     ev = _run_cancel_events.get(cancel_run_id)
@@ -893,7 +901,7 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] No active cancel_event for run_id={}", cancel_run_id)
                 continue
 
-            if msg["type"] == "FREEZE":
+            if msg_type == "FREEZE":
                 # 冻结插件：保存状态到文件，然后停止进程
                 req_id = msg.get("req_id", "unknown")
                 logger.info("[Plugin Process] Received FREEZE command, req_id={}", req_id)
@@ -1352,6 +1360,8 @@ def _plugin_process_runner(
                         except Exception as e:
                             # 提交失败，立即返回错误
                             logger.exception("Failed to submit worker task {}", entry_id)
+                            if run_id:
+                                _run_cancel_events.pop(run_id, None)
                             ret_payload["error"] = f"Failed to submit worker task: {str(e)}"
                             res_queue.put(ret_payload, timeout=10.0)
                             continue
@@ -1570,7 +1580,12 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.exception("Error in lifecycle.shutdown: {}", e)
 
-        for q in (cmd_queue, res_queue, status_queue, message_queue):
+        try:
+            ctx.close()
+        except Exception as e:
+            logger.debug("[Plugin Process] Context close failed during shutdown: {}", e)
+
+        for q in (cmd_queue, res_queue, status_queue, message_queue, response_queue):
             try:
                 q.cancel_join_thread()
             except Exception:
@@ -1716,10 +1731,15 @@ class PluginHost:
 
         # 验证进程状态
         if not self.process.is_alive():
+            exitcode = self.process.exitcode
             self.logger.error(
                 "Plugin {} process is not alive after startup (exitcode: {})",
                 self.plugin_id,
-                self.process.exitcode,
+                exitcode,
+            )
+            await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            raise PluginLifecycleError(
+                f"Plugin {self.plugin_id} failed to stay alive after startup (exitcode={exitcode})"
             )
         else:
             self.logger.info(
@@ -1976,6 +1996,17 @@ class PluginHost:
         if result.get("success"):
             # 等待进程结束
             await asyncio.to_thread(self._shutdown_process, timeout)
+            # 回收通信资源
+            await self.comm_manager.shutdown(timeout=timeout)
+            for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue, self.response_queue]:
+                try:
+                    q.cancel_join_thread()
+                except Exception as e:
+                    self.logger.debug("Failed to cancel queue join thread during freeze: {}", e)
+            try:
+                state.remove_plugin_response_queue(self.plugin_id)
+            except Exception:
+                pass
             self.logger.info(f"[PluginHost] Plugin {self.plugin_id} frozen successfully")
         else:
             self.logger.error(f"[PluginHost] Plugin {self.plugin_id} freeze failed: {result.get('error')}")

@@ -101,7 +101,7 @@ const openReadmeInEditor = async () => {
     <br />
 
     {{ t('welcome.documentation.readme') }}
-    <a href="javascript:void(0)" @click="openReadmeInEditor"><code>README.md</code></a>
+    <button type="button" class="readme-link" @click="openReadmeInEditor"><code>README.md</code></button>
   </WelcomeItem>
 
   <WelcomeItem>
@@ -124,3 +124,14 @@ const openReadmeInEditor = async () => {
     </template>。
   </WelcomeItem>
 </template>
+
+<style scoped>
+.readme-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+</style>

@@ -91,9 +91,9 @@ export const usePluginStore = defineStore('plugin', () => {
   }
 
   // 操作
-  async function fetchPlugins() {
+  async function fetchPlugins(force = false) {
     // 防止请求堆积
-    if (pendingFetchPlugins) {
+    if (!force && pendingFetchPlugins) {
       return pendingFetchPlugins
     }
     
@@ -186,9 +186,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function start(pluginId: string) {
     try {
       await startPlugin(pluginId)
-      // 刷新状态
       await fetchPluginStatus(pluginId)
-      await fetchPlugins()
+      await fetchPlugins(true)
     } catch (err: any) {
       throw err
     }
@@ -197,9 +196,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function stop(pluginId: string) {
     try {
       await stopPlugin(pluginId)
-      // 刷新状态
       await fetchPluginStatus(pluginId)
-      await fetchPlugins()
+      await fetchPlugins(true)
     } catch (err: any) {
       throw err
     }
@@ -208,9 +206,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function reload(pluginId: string) {
     try {
       await reloadPlugin(pluginId)
-      // 刷新状态
       await fetchPluginStatus(pluginId)
-      await fetchPlugins()
+      await fetchPlugins(true)
     } catch (err: any) {
       throw err
     }

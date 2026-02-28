@@ -801,19 +801,20 @@ Return only the JSON object, nothing else.
             )
         
         # 3. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
-        #    Also attempt execution when LLM is uncertain (can_execute=false) but still
-        #    provided plugin_id + entry_id. The execution layer (strict entry_id validation)
-        #    will safely reject truly invalid entries, so this is safe.
+        #    can_execute is a hard requirement; if false, refuse and return has_task=False.
         if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
-            tentative = not up_decision.can_execute
-            if tentative:
+            if not up_decision.can_execute:
                 logger.info(
-                    "[TaskExecutor] ⚡ UserPlugin tentative dispatch (can_execute=false but plugin_id+entry_id present): "
+                    "[TaskExecutor] ⛔ UserPlugin refused (can_execute=False): "
                     "plugin_id=%s, entry_id=%s, reason=%s",
                     up_decision.plugin_id, up_decision.entry_id, up_decision.reason,
                 )
-            else:
-                logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=False,
+                    reason=up_decision.reason
+                )
+            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={up_decision.plugin_id}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
@@ -943,10 +944,15 @@ Return only the JSON object, nothing else.
             if known_entries and plugin_entry_id not in known_entries:
                 # Only tolerate case-insensitive exact match (e.g. "Run" vs "run")
                 ci_matches = [e for e in known_entries if e.lower() == plugin_entry_id.lower()]
-                if ci_matches:
+                if len(ci_matches) == 1:
                     resolved = ci_matches[0]
                     logger.info("[UserPlugin] Case-insensitive entry_id match: '%s' → '%s' (plugin=%s)", plugin_entry_id, resolved, plugin_id)
                     plugin_entry_id = resolved
+                elif len(ci_matches) > 1:
+                    logger.warning(
+                        "[UserPlugin] Ambiguous case-insensitive entry_id '%s' in plugin '%s': multiple matches %s — not resolving",
+                        plugin_entry_id, plugin_id, ci_matches,
+                    )
                 else:
                     logger.warning("[UserPlugin] entry_id '%s' not found in plugin '%s' entries: %s — rejecting", plugin_entry_id, plugin_id, known_entries)
                     return TaskResult(
@@ -964,7 +970,7 @@ Return only the JSON object, nothing else.
 
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:
-            runs_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/runs"
+            runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
 
             safe_args: Dict[str, Any]
             if isinstance(plugin_args, dict):
@@ -1119,7 +1125,7 @@ Return only the JSON object, nothing else.
           {"status": str, "success": bool, "data": Any, "error": str|None,
            "progress": float|None, "stage": str|None, "message": str|None}
         """
-        base = f"http://localhost:{USER_PLUGIN_SERVER_PORT}"
+        base = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}"
         terminal = frozenset(("succeeded", "failed", "canceled", "timeout"))
         deadline = asyncio.get_event_loop().time() + timeout
         last_status: Optional[str] = None

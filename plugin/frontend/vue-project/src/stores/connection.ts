@@ -49,19 +49,23 @@ export const useConnectionStore = defineStore('connection', () => {
     }
     
     const checkHealth = async () => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
       try {
         // 使用短超时的健康检查请求
         const baseUrl = getApiBaseUrl()
         const response = await fetch(`${baseUrl}/health`, {
           method: 'GET',
-          signal: AbortSignal.timeout(5000) // 5秒超时
+          signal: controller.signal
         })
+        clearTimeout(timeoutId)
         if (response.ok) {
           markConnected()
         } else {
           markDisconnected()
         }
       } catch {
+        clearTimeout(timeoutId)
         markDisconnected()
       }
     }

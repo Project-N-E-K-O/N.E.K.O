@@ -47,18 +47,23 @@ const metrics = computed<PluginMetrics | null>(() => {
 })
 
 // 如果当前没有该插件的指标数据，尝试单独获取
-onMounted(async () => {
-  console.log(`[PluginMetricsInline] Component mounted for plugin: ${props.pluginId}, has metrics: ${!!metrics.value}`)
-  if (props.pluginId && !metrics.value) {
-    await metricsStore.fetchPluginMetrics(props.pluginId)
+async function loadMetrics(id: string) {
+  if (!id || metricsStore.getCurrentMetrics(id)) return
+  try {
+    await metricsStore.fetchPluginMetrics(id)
+  } catch (e) {
+    console.warn(`[PluginMetricsInline] failed to fetch metrics for ${id}`, e)
   }
+}
+
+onMounted(() => {
+  console.log(`[PluginMetricsInline] Component mounted for plugin: ${props.pluginId}, has metrics: ${!!metrics.value}`)
+  void loadMetrics(props.pluginId)
 })
 
 // 监听 pluginId 变化，重新获取数据
-watch(() => props.pluginId, async (newId) => {
-  if (newId && !metricsStore.getCurrentMetrics(newId)) {
-    await metricsStore.fetchPluginMetrics(newId)
-  }
+watch(() => props.pluginId, (newId) => {
+  void loadMetrics(newId)
 })
 </script>
 

@@ -441,7 +441,15 @@ class PluginCommunicationResourceManager:
             
             action = msg.get("action")
             entry_id = msg.get("entry_id")
-            plugin_id = msg.get("plugin_id", self.plugin_id)
+            plugin_id = self.plugin_id
+            incoming_plugin_id = msg.get("plugin_id")
+            if incoming_plugin_id and incoming_plugin_id != self.plugin_id:
+                self.logger.warning(
+                    "ENTRY_UPDATE plugin_id mismatch ignored: expected=%s, got=%s",
+                    self.plugin_id,
+                    incoming_plugin_id,
+                )
+                return
             meta_dict = msg.get("meta")
             
             if not entry_id:
@@ -526,7 +534,15 @@ class PluginCommunicationResourceManager:
         try:
             from plugin.core.state import state
             
-            plugin_id = msg.get("plugin_id", self.plugin_id)
+            plugin_id = self.plugin_id
+            incoming_plugin_id = msg.get("plugin_id")
+            if incoming_plugin_id and incoming_plugin_id != self.plugin_id:
+                self.logger.warning(
+                    "STATIC_UI_REGISTER plugin_id mismatch ignored: expected=%s, got=%s",
+                    self.plugin_id,
+                    incoming_plugin_id,
+                )
+                return
             config = msg.get("config")
             
             if not config:

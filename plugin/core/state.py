@@ -1503,7 +1503,7 @@ class GlobalState:
                         ev = per_req_ev  # 捕获变量避免 None 类型问题
                         await loop.run_in_executor(
                             None,
-                            lambda: ev.wait(timeout=0.01)
+                            lambda ev=ev: ev.wait(timeout=0.01)
                         )
                     else:
                         # 后备:短暂休眠

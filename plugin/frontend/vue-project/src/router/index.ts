@@ -92,7 +92,8 @@ router.beforeEach((to, from, next) => {
   // 设置页面标题
   if (to.meta.titleKey) {
     const title = i18n.global.t(to.meta.titleKey as string)
-    document.title = `${title} - N.E.K.O 插件管理`
+    const suffix = i18n.global.t('app.titleSuffix')
+    document.title = `${title} - ${suffix}`
   }
 
   // 认证检查

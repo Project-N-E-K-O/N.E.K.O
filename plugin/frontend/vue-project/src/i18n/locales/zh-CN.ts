@@ -340,6 +340,18 @@ export default {
       linkSeparator: '、',
       linkLastSeparator: ''
     }
+  },
+  metrics: {
+    cpu: 'CPU使用率',
+    memoryMb: '内存使用',
+    memoryPercent: '内存占比',
+    threads: '线程数',
+    pendingRequests: '待处理请求',
+    updatedAt: '更新时间',
+    noData: '暂无数据'
+  },
+  app: {
+    titleSuffix: 'N.E.K.O 插件管理'
   }
 }
 

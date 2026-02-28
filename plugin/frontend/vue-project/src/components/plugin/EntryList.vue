@@ -9,7 +9,7 @@
           <el-button
             type="primary"
             size="small"
-            :class="{ 'entry-trigger-disabled': !isRunning }"
+            :disabled="!isRunning"
             @click="openExecuteDialog(row)"
           >
             {{ $t('plugins.trigger') }}
@@ -197,10 +197,6 @@ async function handleExecute() {
 <style scoped>
 .entry-list {
   padding: 20px 0;
-}
-
-.entry-trigger-disabled {
-  opacity: 0.5;
 }
 </style>
 

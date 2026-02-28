@@ -155,10 +155,10 @@ class WorkerExecutor:
         """
         try:
             return future.result(timeout=timeout)
-        except TimeoutError:
-            raise TimeoutError(f"Worker task timed out after {timeout}s")
-        except Exception as e:
-            raise e
+        except TimeoutError as err:
+            raise TimeoutError(f"Worker task timed out after {timeout}s") from err
+        except Exception:
+            raise
     
     def get_active_tasks_count(self) -> int:
         """获取活跃任务数量"""

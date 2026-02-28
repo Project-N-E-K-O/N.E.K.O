@@ -61,15 +61,15 @@ class ErrorCode(IntEnum):
     FORBIDDEN = 403
     NOT_FOUND = 404
     CONFLICT = 409
+    INVALID_RESPONSE = 422
     RATE_LIMITED = 429
-    
+
     # 服务端错误 (5xx)
     INTERNAL = 500
     NOT_IMPLEMENTED = 501
     DEPENDENCY_MISSING = 502
     NOT_READY = 503
     TIMEOUT = 504
-    INVALID_RESPONSE = 422
     
     # 插件特定错误 (1xxx)
     PLUGIN_NOT_RUNNING = 1001

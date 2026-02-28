@@ -53,4 +53,5 @@ console.log('✅ App mounted successfully!')
 import { useConnectionStore } from './stores/connection'
 const connectionStore = useConnectionStore()
 connectionStore.startHealthCheck()
+window.addEventListener('beforeunload', () => connectionStore.stopHealthCheck())
 console.log('✅ Health check started!')

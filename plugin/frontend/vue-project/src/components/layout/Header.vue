@@ -51,7 +51,7 @@ const currentTitle = computed(() => {
   if (route.meta.titleKey) {
     return t(route.meta.titleKey as string)
   }
-  return 'N.E.K.O 插件管理'
+  return t('app.titleSuffix')
 })
 
 async function handleRefresh() {

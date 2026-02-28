@@ -340,6 +340,18 @@ export default {
       linkSeparator: ', ',
       linkLastSeparator: ', and '
     }
+  },
+  metrics: {
+    cpu: 'CPU Usage',
+    memoryMb: 'Memory Usage',
+    memoryPercent: 'Memory %',
+    threads: 'Threads',
+    pendingRequests: 'Pending Requests',
+    updatedAt: 'Updated At',
+    noData: 'No data'
+  },
+  app: {
+    titleSuffix: 'N.E.K.O Plugin Manager'
   }
 }
 

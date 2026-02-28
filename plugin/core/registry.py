@@ -310,7 +310,7 @@ def _resolve_plugin_id_conflict(
         return desired
 
     if not bool(enable_rename):
-        return desired
+        return None
 
     counter = 1
     new_id = f"{desired}_{counter}"

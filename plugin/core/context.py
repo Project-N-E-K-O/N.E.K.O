@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
-from typing import TYPE_CHECKING, Any, Dict, Optional, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Dict, Optional, Union, cast
 
 try:
     import ormsgpack
@@ -217,7 +217,7 @@ class PluginContext:
         except Exception:
             pass
 
-    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
+    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Union[Dict[str, Any], Awaitable[Dict[str, Any]]]:
         """[DEPRECATED] Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."""
         try:
             self.logger.warning(
