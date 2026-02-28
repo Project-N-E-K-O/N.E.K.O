@@ -1327,16 +1327,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                         lightingData.lighting.toneMapping = parseInt(tonemapping.value);
                     }
 
-                    lightingResult = await RequestHelper.fetchJson(
-                        `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/lighting`,
-                        {
-                            method: 'PUT',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify(lightingData)
-                        }
-                    );
+                    try {
+                        lightingResult = await RequestHelper.fetchJson(
+                            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/lighting`,
+                            {
+                                method: 'PUT',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify(lightingData)
+                            }
+                        );
+                    } catch (e) {
+                        console.warn('保存光照设置失败:', e);
+                        lightingResult = { success: false, error: e.message };
+                    }
                 }
 
                 const idleAnimSel = document.getElementById('idle-animation-select');
@@ -1369,8 +1374,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
             } else if (currentModelType === 'vrm' && idleAnimationSaved === false && document.getElementById('idle-animation-select')?.value) {
                 saveMessage = t('live2d.modelSavedIdleFailed', `已保存模型设置，待机动作保存失败`, { name: modelDisplayName });
-            } else if (currentModelType === 'vrm') {
+            } else if (currentModelType === 'vrm' && ambient && main) {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型和光照设置`, { name: modelDisplayName });
+            } else if (currentModelType === 'vrm') {
+                saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             } else {
                 saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
             }
