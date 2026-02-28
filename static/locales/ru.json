@@ -1111,6 +1111,7 @@
         "lightingNotSet": "По умолчанию",
         "live2dNotSet": "Не задано",
         "voiceNotSet": "Голос не указан",
+        "voiceSetting": "Настройки голоса",
         "manageModel": "Нажмите для управления моделью",
         "fillProfileNameFirst": "Сначала заполните имя профиля, затем задайте модель",
         "registerNewVoice": "Зарегистрировать новый голос",

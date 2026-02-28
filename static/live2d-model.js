@@ -686,6 +686,46 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 然后在动作更新后立即覆盖参数
             try {
+                // === 点击效果平滑过渡处理 ===
+                // 当 _clickFadeState 存在时，说明点击效果正在平滑恢复中
+                // 此时跳过 savedModelParameters 和 persistentExpression 的强制写入
+                // 改为执行插值过渡
+                const fadeState = this._clickFadeState;
+                if (fadeState) {
+                    const now = performance.now();
+                    const elapsed = now - fadeState.startTime;
+                    const linearProgress = Math.min(elapsed / fadeState.duration, 1);
+                    // cubic ease-out: 快进慢出
+                    const t = 1 - Math.pow(1 - linearProgress, 3);
+
+                    for (const [paramId, target] of Object.entries(fadeState.targetValues)) {
+                        const start = fadeState.startValues[paramId];
+                        if (start === undefined) continue;
+                        try {
+                            const interpolated = start + (target - start) * t;
+                            coreModel.setParameterValueById(paramId, interpolated);
+                        } catch (_) {}
+                    }
+
+                    // 口型参数不受过渡影响，照常写入
+                    for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        try {
+                            coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                        } catch (_) {}
+                    }
+
+                    // 过渡完成：清除 fade 状态，恢复正常覆写逻辑
+                    if (linearProgress >= 1) {
+                        this._clickFadeState = null;
+                        console.log('[ClickEffect] 平滑过渡完成');
+                        // 确保常驻表情最终精确应用
+                        if (typeof this.applyPersistentExpressionsNative === 'function') {
+                            try { this.applyPersistentExpressionsNative(true); } catch (_) {}
+                        }
+                    }
+                    // 跳过下方的正常覆写逻辑
+                } else {
+                // === 正常帧：应用保存参数 + 常驻表情 ===
                 // 1. 应用保存的模型参数（智能叠加模式）
                 if (this.savedModelParameters && this._shouldApplySavedParams) {
                     const persistentParamIds = this.getPersistentExpressionParamIds();
@@ -745,6 +785,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     }
                 }
+                } // 结束 else（正常帧覆写逻辑）
             } catch (_) {}
         };
         } // 结束 else 块（确保 motionManager 和 coreModel 都已准备好）

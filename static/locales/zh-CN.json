@@ -1111,6 +1111,7 @@
         "lightingNotSet": "默认",
         "live2dNotSet": "未设置",
         "voiceNotSet": "未指定音色",
+        "voiceSetting": "音色设定",
         "manageModel": "点击管理模型",
         "fillProfileNameFirst": "请先填写猫娘档案名，然后再设置模型",
         "registerNewVoice": "注册新声音",

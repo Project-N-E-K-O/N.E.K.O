@@ -1111,6 +1111,7 @@
         "lightingNotSet": "기본값",
         "live2dNotSet": "설정되지 않음",
         "voiceNotSet": "지정된 음성 없음",
+        "voiceSetting": "음성 설정",
         "manageModel": "모델을 관리하려면 클릭하세요.",
         "fillProfileNameFirst": "먼저 neko 프로필 이름을 입력한 다음 모델을 설정하세요.",
         "registerNewVoice": "새 음성 등록",
