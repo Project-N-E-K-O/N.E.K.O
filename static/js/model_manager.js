@@ -1345,13 +1345,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (idleAnimSel && idleAnimSel.value) {
                     try {
                         await RequestHelper.fetchJson(
-                            `/api/characters/catgirl/${encodeURIComponent(lanlanName)}`,
+                            `/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`,
                             {
                                 method: 'PUT',
                                 headers: {
                                     'Content-Type': 'application/json',
                                 },
-                                body: JSON.stringify({ idleAnimation: idleAnimSel.value })
+                                body: JSON.stringify({
+                                    model_type: 'vrm',
+                                    vrm_animation: idleAnimSel.value
+                                })
                             }
                         );
                     } catch (e) {
@@ -1361,7 +1364,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const modelDisplayName = currentModelType === 'vrm' ? `VRM: ${modelName}` : modelName;
-            showStatus(t('live2d.modelSettingsSaved', `已保存模型和光照设置`, { name: lanlanName }), 2000);
+            showStatus(t('live2d.modelSettingsSaved', `已保存模型和光照设置`, { name: modelDisplayName }), 2000);
             return true;
 
         } catch (error) {
