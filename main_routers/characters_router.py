@@ -26,6 +26,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
+from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -110,6 +111,11 @@ async def get_characters(request: Request):
     _config_manager = get_config_manager()
     # 创建深拷贝，避免修改原始配置数据
     characters_data = copy.deepcopy(_config_manager.load_characters())
+    if isinstance(characters_data.get('猫娘'), dict):
+        # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
+        for cat_name, cat_data in list(characters_data['猫娘'].items()):
+            if isinstance(cat_data, dict):
+                characters_data['猫娘'][cat_name] = flatten_reserved(cat_data)
     
     # 尝试从请求参数或请求头获取用户语言
     user_language = request.query_params.get('language')
@@ -201,10 +207,31 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             # 在猫娘列表中查找
             if '猫娘' in characters and catgirl_name in characters['猫娘']:
                 catgirl_data = characters['猫娘'][catgirl_name]
-                live2d_model_name = catgirl_data.get('live2d')
+                live2d_model_name = get_reserved(
+                    catgirl_data,
+                    'avatar',
+                    'live2d',
+                    'model_path',
+                    default='',
+                    legacy_keys=('live2d',),
+                )
+                if live2d_model_name and str(live2d_model_name).endswith('.model3.json'):
+                    # COMPAT(v1->v2): 新 schema 存 model_path，旧逻辑需要模型目录名。
+                    path_parts = str(live2d_model_name).replace('\\', '/').split('/')
+                    if len(path_parts) >= 2:
+                        live2d_model_name = path_parts[-2]
+                    else:
+                        filename = path_parts[-1]
+                        live2d_model_name = filename[:-len('.model3.json')]
                 
                 # 检查是否有保存的item_id
-                saved_item_id = catgirl_data.get('live2d_item_id')
+                saved_item_id = get_reserved(
+                    catgirl_data,
+                    'avatar',
+                    'asset_source_id',
+                    default='',
+                    legacy_keys=('live2d_item_id', 'item_id'),
+                )
                 if saved_item_id:
                     logger.debug(f"发现角色 {catgirl_name} 保存的item_id: {saved_item_id}")
                     try:
@@ -279,7 +306,15 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             model_file = model_files[0]
                             
                             # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
-                            saved_item_id = catgirl_data.get('live2d_item_id', '') if 'catgirl_data' in locals() else ''
+                            saved_item_id = (
+                                get_reserved(
+                                    catgirl_data,
+                                    'avatar',
+                                    'asset_source_id',
+                                    default='',
+                                    legacy_keys=('live2d_item_id', 'item_id'),
+                                ) if 'catgirl_data' in locals() else ''
+                            )
                             
                             # 如果有保存的item_id，使用它构建路径
                             if saved_item_id:
@@ -444,17 +479,17 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 切换模型类型时清理"另一套模型字段"，避免配置残留
         if model_type_str == 'vrm':
-            characters['猫娘'][name].pop('live2d', None)
-            characters['猫娘'][name].pop('live2d_item_id', None)
+            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
             
             # 更新VRM模型设置
-            characters['猫娘'][name]['vrm'] = vrm_model
-            characters['猫娘'][name]['model_type'] = 'vrm'
+            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'vrm')
             
             # 处理 vrm_animation：支持显式清空（传 null 或空字符串）
             if 'vrm_animation' in data:
                 if vrm_animation is None or vrm_animation == '':
-                    characters['猫娘'][name].pop('vrm_animation', None)
+                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
                     logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，已清空动作")
                 else:
                     # 验证 VRM 动画路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
@@ -492,22 +527,37 @@ async def update_catgirl_l2d(name: str, request: Request):
                         )
                     
                     # 使用验证后的值
-                    characters['猫娘'][name]['vrm_animation'] = vrm_animation_str
+                    set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
                     logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation_str}")
             else:
                 logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，动作字段未变更")
         else:
-            characters['猫娘'][name].pop('vrm', None)
-            characters['猫娘'][name].pop('vrm_animation', None)
-            characters['猫娘'][name].pop('lighting', None)  # 清理 VRM 打光配置
+            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
+            set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
-            characters['猫娘'][name]['live2d'] = live2d_model
-            characters['猫娘'][name]['model_type'] = 'live2d'
+            normalized_live2d = str(live2d_model).strip().replace('\\', '/')
+            if normalized_live2d.endswith('.model3.json'):
+                live2d_model_path = normalized_live2d
+            else:
+                live2d_name = normalized_live2d.rsplit('/', 1)[-1]
+                live2d_model_path = f"{live2d_name}/{live2d_name}.model3.json"
+            set_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'live2d',
+                'model_path',
+                live2d_model_path,
+            )
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
             if item_id:
-                characters['猫娘'][name]['live2d_item_id'] = item_id
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', str(item_id))
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'steam_workshop')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
             else:
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
+                set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
         # 保存配置
@@ -562,14 +612,27 @@ async def update_catgirl_lighting(name: str, request: Request):
                 'error': '角色不存在'
             }, status_code=404)
 
-        model_type = characters['猫娘'][name].get('model_type', 'live2d')
+        model_type = get_reserved(
+            characters['猫娘'][name],
+            'avatar',
+            'model_type',
+            default='live2d',
+            legacy_keys=('model_type',),
+        )
         # 统一做 .lower() 处理，避免大小写/空值导致误判
         model_type_normalized = str(model_type).lower() if model_type else 'live2d'
         if model_type_normalized != 'vrm':
             logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
         
         from config import get_default_vrm_lighting
-        existing_lighting = characters['猫娘'][name].get('lighting')
+        existing_lighting = get_reserved(
+            characters['猫娘'][name],
+            'avatar',
+            'vrm',
+            'lighting',
+            default=None,
+            legacy_keys=('lighting',),
+        )
         if isinstance(existing_lighting, dict):
             base_lighting = existing_lighting
         else:
@@ -601,13 +664,21 @@ async def update_catgirl_lighting(name: str, request: Request):
                 }, status_code=400)
 
         
-        characters['猫娘'][name]['lighting'] = {
-            key: float(lighting[key]) for key in lighting_ranges.keys()
-        }
+        set_reserved(
+            characters['猫娘'][name],
+            'avatar',
+            'vrm',
+            'lighting',
+            {key: float(lighting[key]) for key in lighting_ranges.keys()},
+        )
 
 
 
-        logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
+        logger.info(
+            "已保存角色 %s 的打光配置: %s",
+            name,
+            get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
+        )
 
         _config_manager.save_characters(characters)
         
@@ -661,7 +732,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
                 'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
                 'available_voices': available_voices
             }, status_code=400)
-        characters['猫娘'][name]['voice_id'] = voice_id
+        set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
     _config_manager.save_characters(characters)
     
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
@@ -799,12 +870,11 @@ async def unregister_voice(name: str):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
         # 检查是否已有voice_id
-        if not characters['猫娘'][name].get('voice_id'):
+        if not get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
             return JSONResponse({'success': False, 'error': '该猫娘未注册声音'}, status_code=400)
         
-        # 删除voice_id字段
-        if 'voice_id' in characters['猫娘'][name]:
-            characters['猫娘'][name].pop('voice_id')
+        # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
+        set_reserved(characters['猫娘'][name], 'voice_id', '')
         _config_manager.save_characters(characters)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
@@ -991,11 +1061,31 @@ async def update_catgirl(name: str, request: Request):
     if not raw_data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
 
+    # COMPAT(v1->v2): 兼容旧客户端仍通过通用接口提交 voice_id。
+    # 通用字段仍按保留字段规则过滤，voice_id 走独立检测与应用逻辑。
+    voice_id_in_payload = 'voice_id' in raw_data
+    requested_voice_id = ''
+    if voice_id_in_payload:
+        requested_voice_id = str(raw_data.get('voice_id') or '').strip()
+
     data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+
+    old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+
+    if voice_id_in_payload and requested_voice_id:
+        # 验证 voice_id 是否在 voice_storage 中
+        if not _config_manager.validate_voice_id(requested_voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False,
+                'error': f'voice_id "{requested_voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
 
     # 只更新前端传来的普通字段，未传字段删除；保留字段始终交由专用接口管理
     removed_fields = []
@@ -1010,10 +1100,58 @@ async def update_catgirl(name: str, request: Request):
         if k != '档案名' and v:
             characters['猫娘'][name][k] = v
 
+    # 兼容旧接口：若请求中带有 voice_id，则同步写入保留字段。
+    if voice_id_in_payload:
+        set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
+
     _config_manager.save_characters(characters)
-    initialize_character_data = get_initialize_character_data()
-    await initialize_character_data()
-    return {"success": True}
+
+    new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+    voice_id_changed = voice_id_in_payload and old_voice_id != new_voice_id
+
+    # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
+    ignored_reserved_fields = sorted(
+        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id'}
+    )
+    if ignored_reserved_fields:
+        logger.info(
+            "update_catgirl ignored reserved fields for %s: %s",
+            name,
+            ", ".join(ignored_reserved_fields),
+        )
+
+    session_ended = False
+    if voice_id_changed:
+        session_manager = get_session_manager()
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+
+        # 如果是当前活跃的猫娘，需要先通知前端，再关闭 session
+        if is_current_catgirl and name in session_manager and session_manager[name].is_active:
+            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
+            await send_reload_page_notice(session_manager[name])
+            try:
+                await session_manager[name].end_session(by_server=True)
+                session_ended = True
+                logger.info(f"{name} 的session已结束")
+            except Exception as e:
+                logger.error(f"结束session时出错: {e}")
+
+        if is_current_catgirl:
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
+            logger.info("配置已重新加载，新的voice_id已生效")
+        else:
+            logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+    else:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+
+    return {
+        "success": True,
+        "voice_id_changed": voice_id_changed,
+        "session_restarted": session_ended,
+        "ignored_reserved_fields": ignored_reserved_fields
+    }
 
 
 @router.delete('/catgirl/{name}')
@@ -1072,8 +1210,8 @@ async def clear_voice_ids():
         # 清除所有猫娘的voice_id
         if '猫娘' in characters:
             for name in characters['猫娘']:
-                if 'voice_id' in characters['猫娘'][name] and characters['猫娘'][name]['voice_id']:
-                    characters['猫娘'][name]['voice_id'] = ''
+                if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+                    set_reserved(characters['猫娘'][name], 'voice_id', '')
                     cleared_count += 1
         
         _config_manager.save_characters(characters)
@@ -1211,7 +1349,7 @@ async def get_voices():
         if not isinstance(catgirl_config, dict):
             logger.warning(f"角色配置格式异常，已跳过 voice_owners 统计: {catgirl_name}")
             continue
-        vid = catgirl_config.get('voice_id', '')
+        vid = get_reserved(catgirl_config, 'voice_id', default='', legacy_keys=('voice_id',))
         if vid:
             voice_owners.setdefault(vid, []).append(catgirl_name)
     result["voice_owners"] = voice_owners
@@ -1337,8 +1475,8 @@ async def delete_voice(voice_id: str):
             
             if '猫娘' in characters:
                 for name in characters['猫娘']:
-                    if characters['猫娘'][name].get('voice_id') == voice_id:
-                        characters['猫娘'][name]['voice_id'] = ''
+                    if get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)) == voice_id:
+                        set_reserved(characters['猫娘'][name], 'voice_id', '')
                         cleaned_count += 1
                         
                         # 检查该角色是否是当前活跃的 session

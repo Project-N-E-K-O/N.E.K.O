@@ -4,8 +4,106 @@ function getIsDarkTheme() {
         document.documentElement.getAttribute('data-theme') === 'dark';
 }
 
+// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
+let characterReservedFieldsConfig = {
+    system_reserved_fields: [],
+    workshop_reserved_fields: [],
+    all_reserved_fields: []
+};
+
+const SYSTEM_RESERVED_FIELDS_FALLBACK = [
+    'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'vrm_rotation', 'live2d_item_id'
+];
+const WORKSHOP_RESERVED_FIELDS_FALLBACK = [
+    '原始数据', '文件路径', '创意工坊物品ID',
+    'description', 'tags', 'name',
+    '描述', '标签', '关键词'
+];
+
+function _safeArray(value) {
+    return Array.isArray(value) ? value : [];
+}
+
+function _uniqueFields(fields) {
+    return [...new Set(fields)];
+}
+
+function _getReservedConfigOrFallback() {
+    const systemReserved = _safeArray(characterReservedFieldsConfig.system_reserved_fields);
+    const workshopReserved = _safeArray(characterReservedFieldsConfig.workshop_reserved_fields);
+    const allReserved = _safeArray(characterReservedFieldsConfig.all_reserved_fields);
+    if (systemReserved.length || workshopReserved.length || allReserved.length) {
+        return {
+            system_reserved_fields: systemReserved,
+            workshop_reserved_fields: workshopReserved,
+            all_reserved_fields: allReserved.length > 0 ? allReserved : _uniqueFields([...systemReserved, ...workshopReserved])
+        };
+    }
+    return {
+        system_reserved_fields: SYSTEM_RESERVED_FIELDS_FALLBACK,
+        workshop_reserved_fields: WORKSHOP_RESERVED_FIELDS_FALLBACK,
+        all_reserved_fields: _uniqueFields([...SYSTEM_RESERVED_FIELDS_FALLBACK, ...WORKSHOP_RESERVED_FIELDS_FALLBACK])
+    };
+}
+
+function getWorkshopReservedFields() {
+    const cfg = _getReservedConfigOrFallback();
+    const live2dItemIdField = cfg.all_reserved_fields.includes('live2d_item_id')
+        ? ['live2d_item_id']
+        : [];
+    return _uniqueFields([...cfg.workshop_reserved_fields, ...live2dItemIdField]);
+}
+
+function getWorkshopHiddenFields() {
+    const cfg = _getReservedConfigOrFallback();
+    // 保持既有行为：隐藏关键系统字段 + 工坊保留字段。
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id'];
+    const presentSystemFields = cfg.all_reserved_fields.length > 0
+        ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
+        : keySystemFields;
+    return _uniqueFields([...presentSystemFields, ...cfg.workshop_reserved_fields]);
+}
+
+async function loadCharacterReservedFieldsConfig() {
+    const safeDefaults = {
+        system_reserved_fields: [],
+        workshop_reserved_fields: [],
+        all_reserved_fields: []
+    };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    try {
+        const resp = await fetch('/api/config/character_reserved_fields', { signal: controller.signal });
+        if (!resp.ok) {
+            characterReservedFieldsConfig = safeDefaults;
+            console.error(`加载角色保留字段配置失败: HTTP ${resp.status}`);
+            return;
+        }
+        const data = await resp.json();
+        if (data && data.success) {
+            characterReservedFieldsConfig = {
+                system_reserved_fields: _safeArray(data.system_reserved_fields),
+                workshop_reserved_fields: _safeArray(data.workshop_reserved_fields),
+                all_reserved_fields: _safeArray(data.all_reserved_fields)
+            };
+        } else {
+            characterReservedFieldsConfig = safeDefaults;
+            console.error(
+                '加载角色保留字段配置失败: success 标志无效',
+                (data && (data.error || data.message || data.status)) || data
+            );
+        }
+    } catch (e) {
+        characterReservedFieldsConfig = safeDefaults;
+        console.error('加载角色保留字段配置失败，使用安全默认值:', e);
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 // JavaScript控制的tooltip实现
 document.addEventListener('DOMContentLoaded', function () {
+    void loadCharacterReservedFieldsConfig();
     const tabButtons = document.querySelectorAll('.tabs button');
 
     // 创建tooltip元素
@@ -2302,12 +2400,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             // 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
             // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
             // live2d_item_id 是系统自动管理的，不应该从外部数据读取
-            const RESERVED_FIELDS = [
-                '原始数据', '文件路径', '创意工坊物品ID',
-                'description', 'tags', 'name',
-                '描述', '标签', '关键词',
-                'live2d_item_id'
-            ];
+            const RESERVED_FIELDS = getWorkshopReservedFields();
 
             // 转换为符合catgirl API格式的数据（不包含保留字段）
             const catgirlFormat = {
@@ -2964,12 +3057,7 @@ async function handleUploadToWorkshop() {
         // 这些字段是下载时由系统添加的元数据，不应该出现在工坊角色卡中
         // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
         // live2d_item_id 是系统自动管理的，不应该上传
-        const SYSTEM_RESERVED_FIELDS = [
-            '原始数据', '文件路径', '创意工坊物品ID',
-            'description', 'tags', 'name',
-            '描述', '标签', '关键词',
-            'live2d_item_id'
-        ];
+        const SYSTEM_RESERVED_FIELDS = getWorkshopReservedFields();
         for (const field of SYSTEM_RESERVED_FIELDS) {
             delete fullCharaData[field];
         }
@@ -3689,13 +3777,7 @@ function updateCardPreview() {
 
     // 保留字段（不显示）
     // 系统保留字段 + 工坊保留字段
-    const hiddenFields = [
-        'live2d', 'system_prompt', 'voice_id',
-        '原始数据', '文件路径', '创意工坊物品ID',
-        'description', 'tags', 'name',
-        '描述', '标签', '关键词',
-        'live2d_item_id'
-    ];
+    const hiddenFields = getWorkshopHiddenFields();
 
     // 清空容器
     container.innerHTML = '';

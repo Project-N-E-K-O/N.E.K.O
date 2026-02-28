@@ -985,7 +985,7 @@ class VRMManager {
             if (this.interaction && this.currentModel?.vrm?.scene) {
                 try {
                     const currentPos = this.currentModel.vrm.scene.position.clone();
-                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 200 });
+                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 300 });
                     if (!currentPos.equals(correctedPos)) {
                         this.currentModel.vrm.scene.position.copy(correctedPos);
                         console.log('[VRM Manager] 首次加载围栏已校正模型位置');

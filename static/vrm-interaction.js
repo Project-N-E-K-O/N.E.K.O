@@ -607,7 +607,7 @@ class VRMInteraction {
      * 计算模型包围盒在屏幕上的可见区域，只在可见像素小于阈值时才进行校正。
      * 这样无论模型放多大，只要屏幕上还能看到足够的部分，就不会强制限制位置。
      **/
-    clampModelPosition(position, { minVisiblePixels = 50 } = {}) {
+    clampModelPosition(position, { minVisiblePixels = 200 } = {}) {
         if (!this.manager.camera || !this.manager.renderer || !this.manager.currentModel?.vrm) {
             return position;
         }

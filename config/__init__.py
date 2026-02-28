@@ -20,6 +20,7 @@ GSV_VOICE_PREFIX = "gsv:"
 # - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
 # - workshop: 创意工坊导入/发布流程专用，不应从外部角色卡直接透传
 CHARACTER_SYSTEM_RESERVED_FIELDS = (
+    "_reserved",
     "live2d",
     "voice_id",
     "system_prompt",
@@ -29,6 +30,8 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "lighting",
     "vrm_rotation",
     "live2d_item_id",
+    "item_id",
+    "idleAnimation",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -51,6 +54,44 @@ CHARACTER_RESERVED_FIELDS = tuple(
 def get_character_reserved_fields() -> tuple[str, ...]:
     """返回角色档案保留字段（去重后、有序）。"""
     return CHARACTER_RESERVED_FIELDS
+
+
+# 角色保留字段 schema（v2）
+# 所有系统保留字段统一收口到 `_reserved`，并按 avatar/live2d/vrm 分层。
+RESERVED_FIELD_SCHEMA = {
+    "voice_id": str,
+    "system_prompt": str,
+    "avatar": {
+        "model_type": str,
+        "asset_source": str,
+        "asset_source_id": str,
+        "live2d": {
+            "model_path": str,
+        },
+        "vrm": {
+            "model_path": str,
+            "animation": (str, dict, list, type(None)),
+            "idle_animation": str,
+            "lighting": (dict, type(None)),
+        },
+    },
+}
+
+# 兼容迁移映射：旧平铺字段 -> _reserved 路径
+# 注意：rotation / camera_position / position / scale / viewport / display 保持本地偏好存储，
+# 不迁移到 characters.json。
+LEGACY_FLAT_TO_RESERVED = {
+    "voice_id": ("voice_id",),
+    "system_prompt": ("system_prompt",),
+    "model_type": ("avatar", "model_type"),
+    "live2d_item_id": ("avatar", "asset_source_id"),
+    "item_id": ("avatar", "asset_source_id"),
+    "live2d": ("avatar", "live2d", "model_path"),
+    "vrm": ("avatar", "vrm", "model_path"),
+    "vrm_animation": ("avatar", "vrm", "animation"),
+    "idleAnimation": ("avatar", "vrm", "idle_animation"),
+    "lighting": ("avatar", "vrm", "lighting"),
+}
 
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>
@@ -163,9 +204,24 @@ DEFAULT_LANLAN_TEMPLATE = {
         "性别": "女",
         "年龄": 15,
         "昵称": "T酱, 小T",
-        "live2d": "mao_pro",
-        "voice_id": "",
-        "system_prompt": lanlan_prompt,
+        "_reserved": {
+            "voice_id": "",
+            "system_prompt": lanlan_prompt,
+            "avatar": {
+                "model_type": "live2d",
+                "asset_source": "local",
+                "asset_source_id": "",
+                "live2d": {
+                    "model_path": "mao_pro/mao_pro.model3.json",
+                },
+                "vrm": {
+                    "model_path": "",
+                    "animation": None,
+                    "idle_animation": "",
+                    "lighting": None,
+                },
+            },
+        },
     }
 }
 
@@ -516,6 +572,8 @@ __all__ = [
     'CHARACTER_SYSTEM_RESERVED_FIELDS',
     'CHARACTER_WORKSHOP_RESERVED_FIELDS',
     'CHARACTER_RESERVED_FIELDS',
+    'RESERVED_FIELD_SCHEMA',
+    'LEGACY_FLAT_TO_RESERVED',
     'get_character_reserved_fields',
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
