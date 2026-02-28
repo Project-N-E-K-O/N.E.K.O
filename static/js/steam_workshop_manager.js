@@ -7,6 +7,7 @@ function getIsDarkTheme() {
 // 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
+let _reservedFieldsReady = null;
 
 const SYSTEM_RESERVED_FIELDS_FALLBACK = [
     'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
@@ -61,8 +62,15 @@ function getWorkshopHiddenFields() {
     return _uniqueFields([...presentSystemFields, ...getWorkshopReservedFields()]);
 }
 
-async function loadCharacterReservedFieldsConfig() {
-    characterReservedFieldsConfig = await ReservedFieldsUtils.load();
+function loadCharacterReservedFieldsConfig() {
+    _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
+        characterReservedFieldsConfig = cfg;
+    });
+    return _reservedFieldsReady;
+}
+
+function ensureReservedFieldsLoaded() {
+    return _reservedFieldsReady || Promise.resolve();
 }
 
 // JavaScript控制的tooltip实现
@@ -2345,6 +2353,7 @@ async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
 
 // 扫描单个角色卡文件
 async function scanCharaFile(filePath, itemId, itemTitle) {
+    await ensureReservedFieldsLoaded();
     try {
         // 使用新的read-file API读取文件内容
         const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
@@ -2954,7 +2963,7 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
 }
 
 async function handleUploadToWorkshop() {
-
+    await ensureReservedFieldsLoaded();
     try {
         // 检查是否为默认模型
         if (isDefaultModel()) {
