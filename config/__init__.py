@@ -231,7 +231,9 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "fill": 0.5,     # 补光强度
     "rim": 0.8,      # 轮廓光强度
     "top": 0.3,      # 顶光强度
-    "bottom": 0.15   # 底光强度
+    "bottom": 0.15,  # 底光强度
+    "exposure": 0.0, # 曝光值
+    "toneMapping": 0 # 色调映射类型
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -242,7 +244,9 @@ VRM_LIGHTING_RANGES = {
     'fill': (0, 1.0),
     'rim': (0, 1.5),
     'top': (0, 1.0),
-    'bottom': (0, 0.5)
+    'bottom': (0, 0.5),
+    'exposure': (-10.0, 10.0),
+    'toneMapping': (0, 5),
 }
 
 
