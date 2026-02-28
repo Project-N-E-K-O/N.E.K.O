@@ -1,0 +1,95 @@
+{
+  "search": {
+    "web_search": {
+      "url": "https://api.bilibili.com/x/web-interface/wbi/search/all/v2",
+      "method": "GET",
+      "verify": false,
+      "params": {
+        "keyword": "str: 搜索用的关键字",
+        "page": "int: 页码"
+      },
+      "comment": "在首页以关键字搜索，只指定关键字，其他参数不指定"
+    },
+    "web_search_by_type": {
+      "url": "https://api.bilibili.com/x/web-interface/wbi/search/type",
+      "method": "GET",
+      "verify": false,
+      "params": {
+        "keyword": "str: 搜索用的关键字",
+        "search_type": "str: 搜索时限定类型：视频(video)、番剧(media_bangumi)、影视(media_ft)、直播(live)、专栏(article)、话题(topic)、用户(bili_user)",
+        "page": "int: 页码"
+      },
+      "comment": "搜索关键字时限定类型,可以指定排序号"
+    },
+    "default_search_keyword": {
+      "url": "https://api.bilibili.com/x/web-interface/wbi/search/default",
+      "method": "GET",
+      "verify": false,
+      "comment": "获取默认的搜索内容"
+    },
+    "hot_search_keywords": {
+      "url": "https://s.search.bilibili.com/main/hotword",
+      "method": "GET",
+      "verify": false,
+      "comment": "获取热搜"
+    },
+    "app_hot_search_keywords": {
+      "url": "https://app.bilibili.com/x/v2/search/trending/ranking?limit=30",
+      "method": "GET",
+      "verify": false,
+      "params": {
+        "limit": "int: 热搜数量"
+      },
+      "comment": "获取APP接口热搜"
+    },
+    "suggest": {
+      "url": "https://s.search.bilibili.com/main/suggest",
+      "method": "GET",
+      "verify": false,
+      "comment": "获取搜索建议"
+    },
+    "game": {
+      "url": "https://line1-h5-pc-api.biligame.com/game/wiki/search",
+      "method": "GET",
+      "params": {
+        "keyword": "str: 搜索用的关键字"
+      },
+      "verify": false,
+      "comment": "搜索游戏"
+    },
+    "manga": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/Search?device=pc&platform=web",
+      "method": "POST",
+      "verify": true,
+      "data": {
+        "key_word": "str: 搜索用的关键词",
+        "page_num": "int: 页码",
+        "page_size": "int: 每一页的数据大小"
+      },
+      "comment": "搜索漫画"
+    },
+    "cheese": {
+      "url": "https://api.bilibili.com/pugv/app/web/seasonSeek?classification_id=-1",
+      "method": "GET",
+      "verify": false,
+      "params": {
+        "page": "int: 页码",
+        "page_size": "int: 每一页的数据大小",
+        "word": "str: 搜索关键词",
+        "sort_type": "int: 排序方式. 综合 -1；销量最高 1；最新上架 2；售价最低 3"
+      },
+      "comment": "搜索课程"
+    },
+    "channel": {
+      "url": "https://api.bilibili.com/x/web-interface/web/channel/search",
+      "method": "GET",
+      "verify": false,
+      "params": {
+        "page": "int: 页码",
+        "page_size": "int: 每一页的数据大小",
+        "keyword": "str: 搜索关键词"
+      },
+      "comment": "搜索频道"
+    }
+  }
+}

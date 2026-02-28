@@ -1,0 +1,170 @@
+{
+  "info": {
+    "detail": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/ComicDetail",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "comic_id": "int: 漫画 id"
+      },
+      "comment": "获取漫画详情信息"
+    },
+    "episode_info": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/GetEpisode",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "id": "int: 章节 id"
+      },
+      "comment": "获取漫画某一章节/某一话的信息。"
+    },
+    "episode_images": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/GetImageIndex",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "ep_id": "int: 章节 id"
+      },
+      "comment": "获取漫画某一章节/某一话的图片的链接。"
+    },
+    "image_token": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/ImageToken",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "urls": "str: 内容如下：[\"图片链接\"]",
+        "m1": "str: 由 ECDH P-256 生成的公钥的 base64"
+      },
+      "comment": "获取漫画单张图片的 token"
+    },
+    "index": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/ClassPage",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "area_id": "int: 地区 id",
+        "style_id": "int: 风格 id",
+        "is_finish": "int: 是否完结",
+        "order": "int: 排序方式",
+        "page_num": "int: 页码",
+        "page_size": "int: 每页数量",
+        "is_free": "int: 是否免费"
+      },
+      "comment": "获取漫画索引"
+    },
+    "index_params": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/AllLabel",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "comment": "获取漫画索引的参数"
+    },
+    "update": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/GetDailyPush",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "date": "str: 日期，格式为 YYYY-MM-DD",
+        "page_num": "int: 页码",
+        "page_size": "int: 每页数量"
+      },
+      "comment": "获取漫画更新推荐"
+    },
+    "home_recommend": {
+      "url": "https://manga.bilibili.com/twirp/comic.v1.Comic/HomeRecommend",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "seed": "str: unknown param",
+        "page_num": "int: 页码"
+      },
+      "comment": "获取漫画首页推荐"
+    },
+    "followed_manga": {
+      "url": "https://manga.bilibili.com/twirp/bookshelf.v1.Bookshelf/ListFavorite",
+      "method": "POST",
+      "verify": true,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "page_num": "int: 页码",
+        "page_size": "int: 每页数量",
+        "order": "int: 1 追漫顺序 2 更新时间 3 最近阅读",
+        "wait_free": "int: 是否为等免"
+      },
+      "comment": "获取追漫列表"
+    }
+  },
+  "operate": {
+    "add_favorite": {
+      "url": "https://manga.bilibili.com/twirp/bookshelf.v1.Bookshelf/AddFavorite",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "comic_ids": "int: 漫画 id"
+      },
+      "comment": "追漫"
+    },
+    "del_favorite": {
+      "url": "https://manga.bilibili.com/twirp/bookshelf.v1.Bookshelf/DeleteFavorite",
+      "method": "POST",
+      "verify": false,
+      "params": {
+        "device": "str: 设备",
+        "platform": "str: 平台",
+        "nov": "int: 25"
+      },
+      "data": {
+        "comic_ids": "int: 漫画 id"
+      },
+      "comment": "取消追漫"
+    }
+  }
+}

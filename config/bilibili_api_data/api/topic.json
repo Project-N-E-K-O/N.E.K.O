@@ -1,0 +1,80 @@
+{
+    "info": {
+        "info": {
+            "url": "https://app.bilibili.com/x/topic/web/details/top",
+            "method": "GET",
+            "params": {
+                "topic_id": "int: 话题 id"
+            },
+            "verify": false,
+            "comment": "获取话题简介"
+        },
+        "cards": {
+            "url": "https://app.bilibili.com/x/topic/web/details/cards",
+            "method": "GET",
+            "params": {
+                "topic_id": "int: 话题 id",
+                "page_size": "int: 数据数量",
+                "sort_by": "int: 排序方式 1推荐 2热门 3最新",
+                "source": "Web",
+                "offset": "str"
+            },
+            "verify": false,
+            "comment": "获取话题详情"
+        },
+        "dynamic_page_topics": {
+          "url": "https://app.bilibili.com/x/topic/web/dynamic/rcmd",
+          "method": "GET",
+          "verify": false,
+          "params": {
+            "page_size": "int: 数据数量"
+          },
+          "comment": "获取动态页话题"
+        },
+        "search": {
+          "url": "https://app.bilibili.com/x/topic/pub/search",
+          "method": "GET",
+          "params": {
+            "keyword": "str: 搜索关键词",
+            "page_num": "int: 页码",
+            "page_size": "int: 数据数量",
+            "content": "Unknown",
+            "upload_id": "Unknown"
+          },
+          "verify": false,
+          "comment": "搜索话题"
+        }
+    },
+    "operate": {
+      "like": {
+        "url": "https://app.bilibili.com/x/topic/like",
+        "method": "POST",
+        "verify": true,
+        "data": {
+          "topic_id": "int: 话题 id",
+          "action": "str: like / cancel_like",
+          "business": "str: topic",
+          "up_mid": "int: 自己的 uid"
+        },
+        "comment": "设置点赞话题"
+      },
+      "add_favorite": {
+        "url": "https://app.bilibili.com/x/topic/fav/sub/add",
+        "method": "POST",
+        "verify": true,
+        "data": {
+          "topic_id": "int: 话题 id"
+        },
+        "comment": "收藏话题"
+      },
+      "cancel_favorite": {
+        "url": "https://app.bilibili.com/x/topic/fav/sub/cancel",
+        "method": "POST",
+        "verify": true,
+        "params": {
+          "topic_id": "int: 话题 id"
+        },
+        "comment": "取消收藏话题"
+      }
+    }
+}
