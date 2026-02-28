@@ -13,6 +13,7 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   NODE_VERSION: '20'
+  PYTHONUTF8: '1'  # 强制 Python 在所有平台（尤其是 Windows）使用 UTF-8 编码
 
 jobs:
   # ──────────────────────────────────────────────
@@ -83,22 +84,20 @@ jobs:
           uv pip install --python .venv nuitka ordered-set zstandard
           
           # --- 核心：安装修正文件名后的自定义包 ---
-          # 注意：包名 bilibili-api-pathchange 在文件名中必须写成 bilibili_api_pathchange
           WHL_FILE="bilibili_api_pathchange-0.1.0-py3-none-any.whl"
           
           if [ -f "$WHL_FILE" ]; then
-            echo "检测到本地修改版 Wheel: $WHL_FILE"
-            # 使用 --force-reinstall 确保覆盖原有依赖
+            echo "✅ Found local wheel: $WHL_FILE"
             uv pip install --python .venv --force-reinstall "$WHL_FILE"
           else
-            echo "错误：未在根目录找到 $WHL_FILE"
+            echo "❌ Error: $WHL_FILE not found in root directory"
             ls -la
             exit 1
           fi
 
-          # 验证导入逻辑（代码中依然使用 import bilibili_api）
+          # 验证导入逻辑（移除中文字符防止编码错误）
           VENV_PY=$([[ "${{ matrix.os }}" == "windows-latest" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
-          $VENV_PY -c "import bilibili_api; print(f'验证成功: {bilibili_api.__file__}')" || exit 1
+          $VENV_PY -c "import bilibili_api; print(f'Import success: {bilibili_api.__file__}')" || exit 1
 
       - name: Generate config and prompts
         shell: bash
@@ -127,7 +126,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
           if [[ "$RUNNER_OS" != "macOS" ]]; then NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"; fi
           
-          # 包含所有必要的包和数据
+          # 包含所有必要的包
           for pkg in uvicorn fastapi starlette jinja2 websockets langchain_community langchain_core langchain_openai main_server memory_server agent_server config brain main_logic main_routers memory utils steamworks browser_use browser_use_sdk playwright; do
             NUITKA_OPTS="$NUITKA_OPTS --include-package=$pkg"
           done
@@ -214,7 +213,6 @@ jobs:
         working-directory: electron-app
         run: |
           npm ci
-          # 针对 macOS 跳过签名
           if [[ "${{ matrix.os }}" == "macos"* ]]; then
             node -e "const p=JSON.parse(fs.readFileSync('package.json')); p.build.mac.identity=null; fs.writeFileSync('package.json', JSON.stringify(p,null,2))"
           fi
@@ -229,40 +227,24 @@ jobs:
           path: electron-app/dist/
 
   # ──────────────────────────────────────────────
-  # Step 3: 发布 Nightly 版本 (修正了 246 行附近的语法)
+  # Step 3: 发布 Nightly 版本
   # ──────────────────────────────────────────────
   nightly:
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
       - name: Organize release files
         run: |
           mkdir -p release
-          # 查找所有的可执行文件并汇总
           find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.zip" \) -exec cp {} release/ \;
-          
       - name: Create nightly release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 检查是否有文件需要发布
-          if [ -z "$(ls -A release/)" ]; then
-            echo "没有发现构建产物，跳过发布。"
-            exit 0
-          fi
-          # 删除旧的 nightly 标签并重新创建
+          if [ -z "$(ls -A release/)" ]; then echo "No files to release"; exit 0; fi
           gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly release/* \
-            --title "Nightly Build $(date +%Y%m%d)" \
-            --target "${{ github.sha }}" \
-            --prerelease \
-            --notes "自动构建版本: ${{ needs.version.outputs.version }}"
+          gh release create nightly release/* --title "Nightly Build $(date +%Y%m%d)" --prerelease --notes "Automatic build from ${{ needs.version.outputs.version }}"
