@@ -5,11 +5,8 @@ function getIsDarkTheme() {
 }
 
 // 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
-let characterReservedFieldsConfig = {
-    system_reserved_fields: [],
-    workshop_reserved_fields: [],
-    all_reserved_fields: []
-};
+// 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
+let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 
 const SYSTEM_RESERVED_FIELDS_FALLBACK = [
     'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
@@ -23,7 +20,7 @@ const WORKSHOP_RESERVED_FIELDS_FALLBACK = [
 ];
 
 function _safeArray(value) {
-    return Array.isArray(value) ? value : [];
+    return ReservedFieldsUtils._safeArray(value);
 }
 
 function _uniqueFields(fields) {
@@ -65,40 +62,7 @@ function getWorkshopHiddenFields() {
 }
 
 async function loadCharacterReservedFieldsConfig() {
-    const safeDefaults = {
-        system_reserved_fields: [],
-        workshop_reserved_fields: [],
-        all_reserved_fields: []
-    };
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    try {
-        const resp = await fetch('/api/config/character_reserved_fields', { signal: controller.signal });
-        if (!resp.ok) {
-            characterReservedFieldsConfig = safeDefaults;
-            console.error(`加载角色保留字段配置失败: HTTP ${resp.status}`);
-            return;
-        }
-        const data = await resp.json();
-        if (data && data.success) {
-            characterReservedFieldsConfig = {
-                system_reserved_fields: _safeArray(data.system_reserved_fields),
-                workshop_reserved_fields: _safeArray(data.workshop_reserved_fields),
-                all_reserved_fields: _safeArray(data.all_reserved_fields)
-            };
-        } else {
-            characterReservedFieldsConfig = safeDefaults;
-            console.error(
-                '加载角色保留字段配置失败: success 标志无效',
-                (data && (data.error || data.message || data.status)) || data
-            );
-        }
-    } catch (e) {
-        characterReservedFieldsConfig = safeDefaults;
-        console.error('加载角色保留字段配置失败，使用安全默认值:', e);
-    } finally {
-        clearTimeout(timeoutId);
-    }
+    characterReservedFieldsConfig = await ReservedFieldsUtils.load();
 }
 
 // JavaScript控制的tooltip实现

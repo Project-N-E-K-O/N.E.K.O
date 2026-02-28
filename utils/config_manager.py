@@ -174,7 +174,8 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
     if model_type not in {"live2d", "vrm"}:
-        model_type = "vrm" if catgirl_data.get("vrm") else "live2d"
+        has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
+        model_type = "vrm" if has_vrm else "live2d"
     changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
 
     asset_source_id = get_reserved(
@@ -818,9 +819,15 @@ class ConfigManager:
             character_data = self.get_default_characters()
 
         migrated = False
+        if not isinstance(character_data, dict):
+            logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
+            character_data = self.get_default_characters()
         catgirl_map = character_data.get("猫娘")
         if isinstance(catgirl_map, dict):
-            for _, catgirl_data in catgirl_map.items():
+            for name, catgirl_data in catgirl_map.items():
+                if not isinstance(catgirl_data, dict):
+                    logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
+                    continue
                 if migrate_catgirl_reserved(catgirl_data):
                     migrated = True
                 reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
