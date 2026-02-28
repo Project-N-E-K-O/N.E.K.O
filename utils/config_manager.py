@@ -62,13 +62,17 @@ def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] |
     return default
 
 
-def set_reserved(data: dict, *path_and_value) -> None:
-    """统一写入 `_reserved` 下的嵌套字段，自动创建中间层。"""
+def set_reserved(data: dict, *path_and_value) -> bool:
+    """统一写入 `_reserved` 下的嵌套字段，自动创建中间层。
+
+    Returns ``True`` if the stored value was actually changed, ``False``
+    otherwise (including invalid input).
+    """
     if not isinstance(data, dict) or len(path_and_value) < 2:
-        return
+        return False
     *path, value = path_and_value
     if not path:
-        return
+        return False
 
     reserved = data.get("_reserved")
     if not isinstance(reserved, dict):
@@ -82,7 +86,12 @@ def set_reserved(data: dict, *path_and_value) -> None:
             next_node = {}
             current[key] = next_node
         current = next_node
-    current[path[-1]] = value
+
+    last_key = path[-1]
+    if last_key in current and current[last_key] == value:
+        return False
+    current[last_key] = value
+    return True
 
 
 def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
@@ -155,18 +164,18 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
 
     voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
     if voice_id is not None:
-        set_reserved(catgirl_data, "voice_id", str(voice_id))
+        changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
 
     system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
     if system_prompt is not None:
-        set_reserved(catgirl_data, "system_prompt", str(system_prompt))
+        changed |= set_reserved(catgirl_data, "system_prompt", str(system_prompt))
 
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
     if model_type not in {"live2d", "vrm"}:
         model_type = "vrm" if catgirl_data.get("vrm") else "live2d"
-    set_reserved(catgirl_data, "avatar", "model_type", model_type)
+    changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
 
     asset_source_id = get_reserved(
         catgirl_data,
@@ -176,12 +185,12 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("live2d_item_id", "item_id"),
     )
     asset_source_id = str(asset_source_id).strip() if asset_source_id is not None else ""
-    set_reserved(catgirl_data, "avatar", "asset_source_id", asset_source_id)
+    changed |= set_reserved(catgirl_data, "avatar", "asset_source_id", asset_source_id)
 
     asset_source = get_reserved(catgirl_data, "avatar", "asset_source", default="")
     if not asset_source:
         asset_source = "steam_workshop" if asset_source_id else "local"
-    set_reserved(catgirl_data, "avatar", "asset_source", str(asset_source))
+    changed |= set_reserved(catgirl_data, "avatar", "asset_source", str(asset_source))
 
     live2d_model_path = get_reserved(
         catgirl_data,
@@ -192,7 +201,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("live2d",),
     )
     if live2d_model_path:
-        set_reserved(
+        changed |= set_reserved(
             catgirl_data,
             "avatar",
             "live2d",
@@ -209,7 +218,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("vrm",),
     )
     if vrm_model_path:
-        set_reserved(catgirl_data, "avatar", "vrm", "model_path", str(vrm_model_path).strip())
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "model_path", str(vrm_model_path).strip())
 
     vrm_animation = get_reserved(
         catgirl_data,
@@ -220,7 +229,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("vrm_animation",),
     )
     if vrm_animation is not None:
-        set_reserved(catgirl_data, "avatar", "vrm", "animation", vrm_animation)
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "animation", vrm_animation)
 
     idle_animation = get_reserved(
         catgirl_data,
@@ -231,7 +240,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("idleAnimation",),
     )
     if idle_animation:
-        set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
 
     lighting = get_reserved(
         catgirl_data,
@@ -242,7 +251,7 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         legacy_keys=("lighting",),
     )
     if isinstance(lighting, dict):
-        set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
 
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (

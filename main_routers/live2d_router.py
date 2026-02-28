@@ -40,10 +40,12 @@ def _locate_model_config(model_dir: str):
     Returns ``(actual_model_dir, model_config_file, subdir_name)`` on
     success, or ``(None, None, None)`` when nothing is found.
     """
-    if os.path.exists(model_dir):
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                return model_dir, file, None
+    if not os.path.isdir(model_dir):
+        return None, None, None
+
+    for file in os.listdir(model_dir):
+        if file.endswith('.model3.json'):
+            return model_dir, file, None
 
     try:
         for subdir in os.listdir(model_dir):

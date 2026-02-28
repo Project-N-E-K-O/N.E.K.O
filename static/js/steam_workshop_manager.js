@@ -57,12 +57,11 @@ function getWorkshopReservedFields() {
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    // 保持既有行为：隐藏关键系统字段 + 工坊保留字段。
-    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id'];
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'];
     const presentSystemFields = cfg.all_reserved_fields.length > 0
         ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
         : keySystemFields;
-    return _uniqueFields([...presentSystemFields, ...cfg.workshop_reserved_fields]);
+    return _uniqueFields([...presentSystemFields, ...getWorkshopReservedFields()]);
 }
 
 async function loadCharacterReservedFieldsConfig() {

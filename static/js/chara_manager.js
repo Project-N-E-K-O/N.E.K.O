@@ -336,7 +336,8 @@ function getAllReservedFields() {
     }
     // 后端不可用时的兜底，避免前端行为回退到“无保留字段过滤”
     return [
-        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'vrm_rotation', 'live2d_item_id',
+        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
+        'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation',
         '原始数据', '文件路径', '创意工坊物品ID', 'description', 'tags', 'name', '描述', '标签', '关键词'
     ];
 }
