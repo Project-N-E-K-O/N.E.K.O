@@ -1015,7 +1015,28 @@
         "deleteFailed": "刪除失敗",
         "deleteError": "刪除失敗：{{error}}",
         "freePresetLabel": "免費預設",
-        "freePresetBadge": "預設"
+        "freePresetBadge": "預設",
+        "silenceModal": {
+            "title": "智慧空白音訊檢測結果",
+            "originalDuration": "原始音訊總時長",
+            "silenceDuration": "可移除空白總時長",
+            "estimatedDuration": "處理後預計剩餘時長",
+            "savingPercentage": "節省比例",
+            "processing": "處理中...",
+            "analyzing": "分析中...",
+            "trimming": "裁剪中...",
+            "done": "完成",
+            "cancelled": "已取消",
+            "trimSuccess": "✅ 裁剪完成！",
+            "downloadTrimmed": "下載已處理音訊",
+            "useTrimmed": "使用智慧裁剪音訊",
+            "useOriginal": "上傳原音訊",
+            "cancel": "取消",
+            "noSilence": "未檢測到可移除的靜音段",
+            "trimError": "裁剪失敗: {{error}}",
+            "trimmedLabel": "[已裁剪]",
+            "confirmTrimmed": "使用智慧裁切後的音訊"
+        }
     },
     "memory": {
         "title": "記憶整理",
@@ -1090,6 +1111,7 @@
         "lightingNotSet": "默認",
         "live2dNotSet": "未設置",
         "voiceNotSet": "未指定音色",
+        "voiceSetting": "音色設定",
         "manageModel": "點擊管理模型",
         "fillProfileNameFirst": "請先填寫貓娘檔案名，然後再設置模型",
         "registerNewVoice": "注冊新聲音",
@@ -1298,7 +1320,8 @@
             "frameRate": "幀率",
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
-            "frameRateHigh": "60fps"
+            "frameRateHigh": "60fps",
+            "mouseTracking": "跟蹤滑鼠"
         }
     },
     "subtitle": {
@@ -2049,5 +2072,128 @@
         "switchToLight": "切換到亮色模式",
         "themeChanged": "主題已切換"
     },
-    "characterModelNotSet": "當前角色未設定模型"
+    "characterModelNotSet": "當前角色未設定模型",
+    "cookiesLogin": {
+        "title": "N.E.K.O 憑證控制中心",
+        "header": "🔐 憑證取得中心",
+        "bilibili": "📺 嗶哩嗶哩",
+        "douyin": "🎵 抖音",
+        "kuaishou": "🧡 快手",
+        "weibo": "🌏 微博",
+        "twitter": "🐦 Twitter/X",
+        "reddit": "👽 Reddit",
+        "saveConfig": "儲存設定",
+        "encryptStorage": "安全加密儲存至本地檔案",
+        "localMonitoring": "本地狀態監控",
+        "removeCredentials": "移除",
+        "confirmRemove": "確定要清空 {{platformName}} 的登入憑證嗎？",
+        "credentialsRemoved": "✅ 已成功移除憑證",
+        "credentialsSaved": "✅ {{platformName}} 憑證儲存成功！",
+        "credentialsRemovedFailed": "刪除失敗",
+        "removeFailed": "❌ 刪除失敗，請檢查網路",
+        "requiredField": "⚠️ 請填寫必填項: [{{fieldName}}]",
+        "invalidChars": "⚠️ [{{fieldName}}] 包含無效字元...",
+        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/後空白，已自動修剪，請確認後重新提交",
+        "networkError": "❌ 網路異常: 無法連接至後端服務",
+        "saveFailed": "儲存失敗，請檢查格式是否正確",
+        "pasteHere": "在此貼上",
+        "submitting": "安全加密傳輸中...",
+        "noCookies": "請先配置 Cookies",
+        "statusLoadFailed": "狀態載入失敗",
+        "thisPlatform": "該平台",
+        "instructions": {
+            "bilibili": "📌 <b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
+            "douyin": "📌 <b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
+            "kuaishou": "📌 <b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
+            "weibo": "📌 <b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
+            "twitter": "📌 <b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
+            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。"
+        },
+        "guide": {
+            "title": "新手通用獲取教學",
+            "step1": "在瀏覽器開啟目標平台網頁並<span class=\"highlight-text\">完成登入</span>。",
+            "step2_prefix": "按下鍵盤",
+            "step2_suffix": "開啟開發者工具。",
+            "step3": "在頂部找到並點擊 <span class=\"highlight-text\">Application (應用程式)</span> 面板。",
+            "step4": "在左側找到 <span class=\"highlight-text\">Cookies</span>，點擊網域後在右側複製對應的值。"
+        },
+        "fields": {
+            "SESSDATA": {
+                "label": "SESSDATA",
+                "desc": "核心身份憑證 (必填)"
+            },
+            "bili_jct": {
+                "label": "bili_jct",
+                "desc": "CSRF Token (必填)"
+            },
+            "DedeUserID": {
+                "label": "DedeUserID",
+                "desc": "帳號 UID (必填)"
+            },
+            "buvid3": {
+                "label": "buvid3",
+                "desc": "設備指紋 (選填)"
+            },
+            "sessionid": {
+                "label": "sessionid",
+                "desc": "核心會話憑證 (必填)"
+            },
+            "ttwid": {
+                "label": "ttwid",
+                "desc": "設備風控碼 (必填)"
+            },
+            "passport_csrf_token": {
+                "label": "csrf_token",
+                "desc": "安全驗證令牌"
+            },
+            "odin_tt": {
+                "label": "odin_tt",
+                "desc": "設備特徵"
+            },
+            "ks_web_st": {
+                "label": "web_st",
+                "desc": "核心票據 (必填)"
+            },
+            "ks_web_ph": {
+                "label": "web_ph",
+                "desc": "輔助票據 (必填)"
+            },
+            "userId": {
+                "label": "userId",
+                "desc": "使用者ID"
+            },
+            "did": {
+                "label": "did",
+                "desc": "設備ID"
+            },
+            "SUB": {
+                "label": "SUB",
+                "desc": "核心憑證 (以 _2A 開頭)"
+            },
+            "XSRF-TOKEN": {
+                "label": "XSRF-TOKEN",
+                "desc": "防偽造令牌"
+            },
+            "auth_token": {
+                "label": "auth_token",
+                "desc": "核心身份 Token"
+            },
+            "ct0": {
+                "label": "ct0",
+                "desc": "CSRF 校驗碼"
+            },
+            "reddit_session": {
+                "label": "reddit_session",
+                "desc": "核心會話憑證 (必填)"
+            },
+            "csrftoken": {
+                "label": "csrftoken",
+                "desc": "CSRF 令牌"
+            }
+        },
+        "status": {
+            "active": "● 已就緒",
+            "inactive": "○ 未配置"
+        }
+    }
 }

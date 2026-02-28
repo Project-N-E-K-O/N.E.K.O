@@ -29,7 +29,8 @@ logger = get_module_logger(__name__)
 
 # 全局语言变量（线程安全）
 _global_language: Optional[str] = None
-_global_language_lock = threading.Lock()
+_global_language_full: Optional[str] = None  # 保留完整语言代码（如 'zh-TW'），用于区分简繁体
+_global_language_lock = threading.RLock()
 _global_language_initialized = False
 
 # 全局区域标识（中文区/非中文区）
@@ -155,7 +156,7 @@ def initialize_global_language() -> str:
     Returns:
         初始化后的语言代码 ('zh', 'en', 'ja', 'ko')
     """
-    global _global_language, _global_region, _global_language_initialized
+    global _global_language, _global_language_full, _global_region, _global_language_initialized
     
     with _global_language_lock:
         if _global_language_initialized:
@@ -170,13 +171,15 @@ def initialize_global_language() -> str:
         if steam_lang:
             # 归一化 Steam 语言代码为短格式
             _global_language = normalize_language_code(steam_lang, format='short')
-            logger.info(f"全局语言已初始化（来自Steam）: {_global_language}")
+            _global_language_full = normalize_language_code(steam_lang, format='full')
+            logger.info(f"全局语言已初始化（来自Steam）: {_global_language} (full: {_global_language_full})")
             _global_language_initialized = True
             return _global_language
         
         # 优先级2：从系统设置获取
         system_lang = _get_system_language()
         _global_language = system_lang
+        _global_language_full = system_lang
         logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
         _global_language_initialized = True
         return _global_language
@@ -198,6 +201,23 @@ def get_global_language() -> str:
         return _global_language or 'zh'
 
 
+def get_global_language_full() -> str:
+    """
+    获取全局语言变量（完整格式，保留 zh-TW 等区分）
+    
+    与 get_global_language() 的区别：后者返回短格式 ('zh')，
+    本函数保留完整代码 ('zh-TW')，用于需要区分简繁体的场景。
+    
+    Returns:
+        语言代码 ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru')，默认返回 'zh'
+    """
+    with _global_language_lock:
+        if not _global_language_initialized:
+            initialize_global_language()
+        
+        return _global_language_full or _global_language or 'zh'
+
+
 def set_global_language(language: str) -> None:
     """
     设置全局语言变量（手动设置，会覆盖自动检测）
@@ -205,7 +225,7 @@ def set_global_language(language: str) -> None:
     Args:
         language: 语言代码 ('zh', 'en', 'ja', 'ko')
     """
-    global _global_language, _global_language_initialized
+    global _global_language, _global_language_full, _global_language_initialized
     
     # 归一化语言代码
     lang_lower = language.lower()
@@ -223,10 +243,13 @@ def set_global_language(language: str) -> None:
         logger.warning(f"不支持的语言代码: {language}，保持当前语言")
         return
     
+    full_lang = normalize_language_code(language, format='full')
+    
     with _global_language_lock:
         _global_language = normalized_lang
+        _global_language_full = full_lang
         _global_language_initialized = True
-        logger.info(f"全局语言已手动设置为: {_global_language}")
+        logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
 
 
 def get_global_region() -> str:
@@ -260,10 +283,11 @@ def reset_global_language() -> None:
     """
     重置全局语言变量（重新初始化）
     """
-    global _global_language, _global_region, _global_language_initialized
+    global _global_language, _global_language_full, _global_region, _global_language_initialized
     
     with _global_language_lock:
         _global_language = None
+        _global_language_full = None
         _global_region = None
         _global_language_initialized = False
         logger.info("全局语言变量已重置")

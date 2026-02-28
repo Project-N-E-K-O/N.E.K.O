@@ -487,6 +487,13 @@ async def _run_computer_use_task(
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
+        # The underlying thread may still be running — wait for it to finish
+        # so we don't start a new task while pyautogui is still active.
+        cu = Modules.computer_use
+        if cu is not None and hasattr(cu, "wait_for_completion"):
+            finished = await loop.run_in_executor(None, cu.wait_for_completion, 15.0)
+            if not finished:
+                logger.warning("[ComputerUse] Thread did not stop within 15s after cancel")
     except Exception as e:
         info["error"] = str(e)
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
@@ -1024,6 +1031,36 @@ async def startup():
         logger.warning(f"[Agent] Event bridge startup failed: {e}")
     # Push initial server status so frontend can render Agent popup without waiting.
     _bump_state_revision()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Gracefully stop running tasks so threads don't outlive the process."""
+    logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    if Modules.computer_use:
+        Modules.computer_use.cancel_running()
+    if Modules.browser_use:
+        try:
+            Modules.browser_use.cancel_running()
+        except Exception:
+            pass
+
+    # Cancel asyncio wrappers
+    for t in list(Modules._persistent_tasks):
+        if not t.done():
+            t.cancel()
+    if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
+        Modules.active_computer_use_async_task.cancel()
+
+    # Wait for the CUA thread to finish so pyautogui isn't active when the
+    # process exits (avoids Win32 SendInput being interrupted mid-call).
+    cu = Modules.computer_use
+    if cu is not None and hasattr(cu, "wait_for_completion"):
+        loop = asyncio.get_running_loop()
+        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
+        if not finished:
+            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+    logger.info("[Agent] Shutdown cleanup complete")
     await _emit_agent_status_update()
     
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
@@ -1648,6 +1685,15 @@ async def admin_control(payload: Dict[str, Any]):
                 pass
             except Exception as e:
                 logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
+
+        # Wait for the underlying thread to actually finish before clearing state,
+        # so no pyautogui calls are still in-flight when we allow new tasks.
+        cu = Modules.computer_use
+        if cu is not None and hasattr(cu, "wait_for_completion"):
+            loop = asyncio.get_running_loop()
+            finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
+            if not finished:
+                logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
 
         Modules.task_registry.clear()
         Modules.last_user_turn_fingerprint.clear()

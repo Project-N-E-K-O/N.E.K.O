@@ -457,11 +457,19 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
         const idx = parseInt(qualitySlider.value, 10);
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
     });
+    const mapRenderQualityToFollowPerf = (quality) => (quality === 'high' ? 'medium' : 'low');
     qualitySlider.addEventListener('change', () => {
         const idx = parseInt(qualitySlider.value, 10);
-        window.renderQuality = qualityNames[idx];
+        const quality = qualityNames[idx];
+        window.renderQuality = quality;
+        const followLevel = mapRenderQualityToFollowPerf(quality);
+        window.cursorFollowPerformanceLevel = followLevel;
+        if (window.vrmManager && typeof window.vrmManager.setCursorFollowPerformance === 'function') {
+            window.vrmManager.setCursorFollowPerformance(followLevel);
+        }
+        window.dispatchEvent(new CustomEvent('neko-cursor-follow-performance-changed', { detail: { level: followLevel } }));
         if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
-        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality: qualityNames[idx] } }));
+        window.dispatchEvent(new CustomEvent('neko-render-quality-changed', { detail: { quality } }));
     });
     qualitySlider.addEventListener('click', (e) => e.stopPropagation());
     qualitySlider.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -515,6 +523,92 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
     fpsRow.appendChild(fpsValue);
     container.appendChild(fpsRow);
 
+    // --- 跟踪鼠标开关 ---
+    const mouseTrackingRow = document.createElement('div');
+    Object.assign(mouseTrackingRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
+    mouseTrackingRow.setAttribute('role', 'switch');
+    mouseTrackingRow.tabIndex = 0;
+
+    const mouseTrackingLabel = document.createElement('span');
+    mouseTrackingLabel.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
+    mouseTrackingLabel.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
+    Object.assign(mouseTrackingLabel.style, { fontSize: '12px', color: 'var(--neko-popup-text, #333)', flex: '1' });
+
+    const mouseTrackingCheckbox = document.createElement('input');
+    mouseTrackingCheckbox.type = 'checkbox';
+    mouseTrackingCheckbox.id = 'vrm-mouse-tracking-toggle';
+    mouseTrackingCheckbox.checked = window.mouseTrackingEnabled !== false;
+    Object.assign(mouseTrackingCheckbox.style, { display: 'none' });
+
+    const { indicator: mouseTrackingIndicator, updateStyle: updateMouseTrackingStyle } = this._createCheckIndicator();
+    mouseTrackingIndicator.setAttribute('role', 'switch');
+    mouseTrackingIndicator.tabIndex = 0;
+    updateMouseTrackingStyle(mouseTrackingCheckbox.checked);
+
+    const updateMouseTrackingRowStyle = () => {
+        updateMouseTrackingStyle(mouseTrackingCheckbox.checked);
+        const ariaChecked = mouseTrackingCheckbox.checked ? 'true' : 'false';
+        mouseTrackingRow.setAttribute('aria-checked', ariaChecked);
+        mouseTrackingIndicator.setAttribute('aria-checked', ariaChecked);
+        mouseTrackingRow.style.background = mouseTrackingCheckbox.checked
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : 'transparent';
+    };
+    // 与弹窗显示时的通用 syncCheckbox 机制兼容
+    mouseTrackingCheckbox.updateStyle = updateMouseTrackingRowStyle;
+    updateMouseTrackingRowStyle();
+
+    const handleMouseTrackingToggle = () => {
+        mouseTrackingCheckbox.checked = !mouseTrackingCheckbox.checked;
+        window.mouseTrackingEnabled = mouseTrackingCheckbox.checked;
+        updateMouseTrackingRowStyle();
+
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+
+        if (window.vrmManager && typeof window.vrmManager.setMouseTrackingEnabled === 'function') {
+            window.vrmManager.setMouseTrackingEnabled(mouseTrackingCheckbox.checked);
+        }
+        console.log(`[VRM] 跟踪鼠标已${mouseTrackingCheckbox.checked ? '开启' : '关闭'}`);
+    };
+
+    mouseTrackingRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+    mouseTrackingIndicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+    const handleMouseTrackingKeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleMouseTrackingToggle();
+        }
+    };
+    mouseTrackingRow.addEventListener('keydown', handleMouseTrackingKeydown);
+    mouseTrackingIndicator.addEventListener('keydown', handleMouseTrackingKeydown);
+    mouseTrackingLabel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+
+    mouseTrackingRow.addEventListener('mouseenter', () => {
+        if (mouseTrackingCheckbox.checked) {
+            mouseTrackingRow.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+        } else {
+            mouseTrackingRow.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+        }
+    });
+    mouseTrackingRow.addEventListener('mouseleave', () => {
+        updateMouseTrackingRowStyle();
+    });
+
+    mouseTrackingRow.appendChild(mouseTrackingCheckbox);
+    mouseTrackingRow.appendChild(mouseTrackingIndicator);
+    mouseTrackingRow.appendChild(mouseTrackingLabel);
+    container.appendChild(mouseTrackingRow);
+
     document.body.appendChild(container);
     return container;
 };
@@ -536,7 +630,7 @@ VRMManager.prototype._createSidePanelContainer = function () {
         backdropFilter: 'saturate(180%) blur(20px)',
         border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
         borderRadius: '8px',
-        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
@@ -697,7 +791,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         backdropFilter: 'saturate(180%) blur(20px)',
         border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',
         borderRadius: '8px',
-        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
         transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)',
         transform: 'translateX(-6px)',
         pointerEvents: 'auto',
@@ -984,6 +1078,53 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     }));
 
     return toggleItem;
+};
+
+// 创建圆形指示器和对勾的辅助方法
+VRMManager.prototype._createCheckIndicator = function () {
+    const indicator = document.createElement('div');
+    Object.assign(indicator.style, {
+        width: '20px',
+        height: '20px',
+        borderRadius: '50%',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
+        backgroundColor: 'transparent',
+        cursor: 'pointer',
+        flexShrink: '0',
+        transition: 'all 0.2s ease',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+    });
+
+    const checkmark = document.createElement('div');
+    checkmark.textContent = '✓';
+    Object.assign(checkmark.style, {
+        color: '#fff',
+        fontSize: '13px',
+        fontWeight: 'bold',
+        lineHeight: '1',
+        opacity: '0',
+        transition: 'opacity 0.2s ease',
+        pointerEvents: 'none',
+        userSelect: 'none'
+    });
+    indicator.appendChild(checkmark);
+
+    const updateStyle = (checked) => {
+        if (checked) {
+            indicator.style.backgroundColor = 'var(--neko-popup-active, #2a7bc4)';
+            indicator.style.borderColor = 'var(--neko-popup-active, #2a7bc4)';
+            checkmark.style.opacity = '1';
+        } else {
+            indicator.style.backgroundColor = 'transparent';
+            indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '0';
+        }
+    };
+
+    return { indicator, updateStyle };
 };
 
 // 创建设置开关项
@@ -1515,6 +1656,11 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
             syncCheckbox(proactiveVisionCheckbox, window.proactiveVisionEnabled);
+        }
+
+        const mouseTrackingCheckbox = popup.querySelector('#vrm-mouse-tracking-toggle');
+        if (mouseTrackingCheckbox && typeof window.mouseTrackingEnabled !== 'undefined') {
+            syncCheckbox(mouseTrackingCheckbox, window.mouseTrackingEnabled);
         }
 
         if (window.CHAT_MODE_CONFIG) {

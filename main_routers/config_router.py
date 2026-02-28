@@ -18,6 +18,12 @@ from .shared_state import get_config_manager, get_steamworks, get_session_manage
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
 from utils.logger_config import get_module_logger
+from utils.config_manager import get_reserved
+from config import (
+    CHARACTER_SYSTEM_RESERVED_FIELDS,
+    CHARACTER_WORKSHOP_RESERVED_FIELDS,
+    CHARACTER_RESERVED_FIELDS,
+)
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -26,6 +32,17 @@ logger = get_module_logger(__name__, "Main")
 # VRM 模型路径常量
 VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
 VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
+
+
+@router.get("/character_reserved_fields")
+async def get_character_reserved_fields():
+    """返回角色档案保留字段配置（供前端与路由统一使用）。"""
+    return {
+        "success": True,
+        "system_reserved_fields": list(CHARACTER_SYSTEM_RESERVED_FIELDS),
+        "workshop_reserved_fields": list(CHARACTER_WORKSHOP_RESERVED_FIELDS),
+        "all_reserved_fields": list(CHARACTER_RESERVED_FIELDS),
+    }
 
 
 @router.get("/page_config")
@@ -41,14 +58,14 @@ async def get_page_config(lanlan_name: str = ""):
         
         # 获取角色配置
         catgirl_config = lanlan_basic_config.get(target_name, {})
-        model_type = catgirl_config.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
+        model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
         
         model_path = ""
         
         # 根据模型类型获取模型路径
         if model_type == 'vrm':
             # VRM模型：处理路径转换
-            vrm_path = catgirl_config.get('vrm', '')
+            vrm_path = get_reserved(catgirl_config, 'avatar', 'vrm', 'model_path', default='', legacy_keys=('vrm',))
             if vrm_path:
                 if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
                     model_path = vrm_path
@@ -77,8 +94,14 @@ async def get_page_config(lanlan_name: str = ""):
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
         else:
             # Live2D模型：使用原有逻辑
-            live2d = catgirl_config.get('live2d', 'mao_pro')
-            live2d_item_id = catgirl_config.get('live2d_item_id', '')
+            live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='mao_pro', legacy_keys=('live2d',))
+            live2d_item_id = get_reserved(
+                catgirl_config,
+                'avatar',
+                'asset_source_id',
+                default='',
+                legacy_keys=('live2d_item_id', 'item_id'),
+            )
             
             logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
         

@@ -19,18 +19,19 @@ const CURSOR_FOLLOW_DEFAULTS = Object.freeze({
 
     // ── 眼睛通道 ──────────────────────────────────────────
     eyeMaxYawDeg: 30,
-    eyeMaxPitchUpDeg: 18,
-    eyeMaxPitchDownDeg: 14,
+    eyeMaxPitchUpDeg: 30,
+    eyeMaxPitchDownDeg: 26,
+    eyeCenterDeadzoneDeg: 1.2,       // 头部中线附近强制回零，防止左右判定抖动
     eyeSmoothSpeed: 12.0,            // 指数阻尼速度（越大越跟手）
     eyeOneEuroMinCutoff: 1.5,        // One-Euro: 最小截止频率（越大越跟手、越不平滑）
     eyeOneEuroBeta: 0.5,             // One-Euro: 速度系数（越大快速运动越跟手）
     eyeOneEuroDCutoff: 1.0,
 
     // ── 头部通道 ──────────────────────────────────────────
-    headMaxYawDeg: 20,
-    headMaxPitchUpDeg: 12,
-    headMaxPitchDownDeg: 10,
-    headSmoothSpeed: 5.0,            // 比眼睛慢 → 实现"眼快头慢"
+    headMaxYawDeg: 45,
+    headMaxPitchUpDeg: 30,
+    headMaxPitchDownDeg: 25,
+    headSmoothSpeed: 3.0,            // 比眼睛慢 → 实现"眼快头慢"
     headOneEuroMinCutoff: 0.8,
     headOneEuroBeta: 0.3,
     headOneEuroDCutoff: 1.0,
@@ -38,6 +39,7 @@ const CURSOR_FOLLOW_DEFAULTS = Object.freeze({
     // ── 头/颈分配 ─────────────────────────────────────────
     neckContribution: 0.6,           // 脖子承担 60%
     headContribution: 0.4,           // 头部承担 40%
+    headBoneMode: 'neckAndHead',     // headOnly: 仅驱动 head；neckAndHead: 同时驱动（更自然）
 
     // ── 动作权重 ──────────────────────────────────────────
     headWeightIdle: 1.0,             // 无动画时（纯静止）
@@ -48,8 +50,51 @@ const CURSOR_FOLLOW_DEFAULTS = Object.freeze({
     // ── 拖拽降权 ─────────────────────────────────────────
     reduceWhileDragging: true,       // 拖拽/右键 orbit 时降低 headWeight
 
-    // ── 目标平面距离 ─────────────────────────────────────
-    lookAtDistance: 2.4,             // 稳定平面到头部的距离（米）
+    // ── 眼睛目标球面半径 ──────────────────────────────────
+    lookAtDistance: 1.6,             // 半径更小可提升眼睛可动范围
+
+    // ── 性能优化：鼠标静止时降频 ─────────────────────────
+    pointerIdleMs: 100,              // 超过该时长无鼠标输入视为 idle
+    activeTargetSolveIntervalMs: 50, // active 时眼睛目标求解频率（约 20Hz）
+    idleTargetSolveIntervalMs: 100,  // idle 时眼睛目标求解频率（约 10Hz）
+    activeHeadSolveIntervalMs: 66,   // active 时头部角度求解频率（约 15Hz）
+    idleHeadSolveIntervalMs: 100,    // idle 时头部角度求解频率（约 10Hz）
+});
+
+// ─── 四档性能预设 ─────────────────────────────────────────────────────
+const CURSOR_FOLLOW_PERF_PRESETS = Object.freeze({
+    none: Object.freeze({
+        enabled: false,              // 无：关闭追踪
+    }),
+    low: Object.freeze({
+        enabled: true,
+        // 低档：比当前 medium 更省电
+        pointerIdleMs: 160,
+        activeTargetSolveIntervalMs: 140,  // ~7Hz
+        idleTargetSolveIntervalMs: 260,    // ~4Hz
+        activeHeadSolveIntervalMs: 180,    // ~5.5Hz
+        idleHeadSolveIntervalMs: 300,      // ~3Hz
+        solveTargetOnMoveOnly: false,      // 静止时仍持续求解，避免状态漂移
+        solveHeadOnMoveOnly: false,        // 静止时仍持续求解，避免偶发跳变
+    }),
+    medium: Object.freeze({
+        enabled: true,
+        // 中档：比 high 更省一点（保持较好观感）
+        pointerIdleMs: 140,
+        activeTargetSolveIntervalMs: 90,   // ~11Hz
+        idleTargetSolveIntervalMs: 180,    // ~5.5Hz
+        activeHeadSolveIntervalMs: 120,    // ~8Hz
+        idleHeadSolveIntervalMs: 220,      // ~4.5Hz
+    }),
+    high: Object.freeze({
+        enabled: true,
+        // 高档：保持当前效果
+        pointerIdleMs: CURSOR_FOLLOW_DEFAULTS.pointerIdleMs,
+        activeTargetSolveIntervalMs: CURSOR_FOLLOW_DEFAULTS.activeTargetSolveIntervalMs,
+        idleTargetSolveIntervalMs: CURSOR_FOLLOW_DEFAULTS.idleTargetSolveIntervalMs,
+        activeHeadSolveIntervalMs: CURSOR_FOLLOW_DEFAULTS.activeHeadSolveIntervalMs,
+        idleHeadSolveIntervalMs: CURSOR_FOLLOW_DEFAULTS.idleHeadSolveIntervalMs,
+    }),
 });
 
 // ─── One-Euro 滤波器 ────────────────────────────────────────────────
@@ -111,6 +156,10 @@ class CursorFollowController {
         // ── 眼睛目标 Object3D ──
         this.eyesTarget = null;
 
+        // ── 鼠标跟踪启用状态 ──
+        this._enabled = true;
+        this._userDisabled = false;  // 记录用户显式禁用，避免性能档切换覆盖
+
         // ── 鼠标状态 ──
         this._rawMouseX = 0;
         this._rawMouseY = 0;
@@ -118,14 +167,23 @@ class CursorFollowController {
         this._ignoreMouseMoveUntil = 0;
         this._lastCanvasRect = null;
         this._lastCanvasRectReadAt = 0;
+        this._lastPointerMoveAt = 0;
+        this._lastTargetSolveAt = 0;
+        this._lastHeadSolveAt = 0;
 
         // ── One-Euro 滤波器（NDC 层面） ──
         this._eyeFilterX = null;
         this._eyeFilterY = null;
+        this._eyeYaw = 0;
+        this._eyePitch = 0;
+        this._targetEyeYaw = 0;
+        this._targetEyePitch = 0;
 
         // ── 头部追踪状态 ──
         this._headYaw = 0;
         this._headPitch = 0;
+        this._targetHeadYaw = 0;
+        this._targetHeadPitch = 0;
         this._headFilterYaw = null;
         this._headFilterPitch = null;
 
@@ -141,8 +199,7 @@ class CursorFollowController {
         this._ndcVec = null;
         this._desiredTargetPos = null;
         this._headWorldPos = null;
-        this._plane = null;
-        this._planeNormal = null;
+        this._eyeSphere = null;
         this._tempVec3A = null;
         this._tempVec3B = null;
         this._tempVec3C = null;
@@ -152,6 +209,7 @@ class CursorFollowController {
         this._tempQuatC = null;
         this._tempQuatD = null;
         this._tempQuatE = null;
+        this._tempQuatF = null;
         this._tempEuler = null;
 
         // ── 模型前方向符号（由 _detectModelForward() 动态检测） ──
@@ -163,6 +221,11 @@ class CursorFollowController {
 
         // ── 初始化标志 ──
         this._initialized = false;
+
+        // ── 性能档位 ──
+        this._performanceLevel = 'high';
+        this._perfRuntime = { ...CURSOR_FOLLOW_PERF_PRESETS.high };
+        this._onPerfLevelChanged = null;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -199,8 +262,7 @@ class CursorFollowController {
         this._ndcVec = new THREE.Vector2();
         this._desiredTargetPos = this.eyesTarget.position.clone();
         this._headWorldPos = new THREE.Vector3();
-        this._plane = new THREE.Plane();
-        this._planeNormal = new THREE.Vector3();
+        this._eyeSphere = new THREE.Sphere();
         this._tempVec3A = new THREE.Vector3();
         this._tempVec3B = new THREE.Vector3();
         this._tempVec3C = new THREE.Vector3();
@@ -210,11 +272,18 @@ class CursorFollowController {
         this._tempQuatC = new THREE.Quaternion();
         this._tempQuatD = new THREE.Quaternion();
         this._tempQuatE = new THREE.Quaternion();
+        this._tempQuatF = new THREE.Quaternion();
         this._tempEuler = new THREE.Euler();
 
         // 骨骼基准姿态快照（防止 premultiply 累加漂移）
         this._neckBaseQuat = new THREE.Quaternion();
         this._headBaseQuat = new THREE.Quaternion();
+
+        // 骨骼默认姿态（用于禁用跟踪时恢复）
+        this._neckDefaultQuat = new THREE.Quaternion();
+        this._headDefaultQuat = new THREE.Quaternion();
+        this._hasNeckDefault = false;
+        this._hasHeadDefault = false;
 
         // 初始化滤波器
         const D = CURSOR_FOLLOW_DEFAULTS;
@@ -225,6 +294,12 @@ class CursorFollowController {
 
         this._bindEvents();
         this._detectModelForward();
+
+        // 支持外部通过 window 变量或事件切换追踪性能档
+        const initialLevel = window.cursorFollowPerformanceLevel || 'high';
+        this.setPerformanceLevel(initialLevel);
+        this._bindPerformanceEvents();
+
         this._initialized = true;
         console.log('[CursorFollow] 初始化完成');
     }
@@ -245,12 +320,42 @@ class CursorFollowController {
             this._rawMouseX = e.clientX;
             this._rawMouseY = e.clientY;
             this._hasPointerInput = true;
+            this._lastPointerMoveAt = now;
         };
 
         // 同时监听 pointermove + mousemove，绑定到 window（非 document）
         // Electron 透明窗口事件转发可能只产生 mousemove；window 级别确保转发事件可达
         window.addEventListener('pointermove', this._onPointerMove, { passive: true });
         window.addEventListener('mousemove', this._onPointerMove, { passive: true });
+    }
+
+    _bindPerformanceEvents() {
+        this._onPerfLevelChanged = (event) => {
+            const level = event?.detail?.level;
+            if (level) this.setPerformanceLevel(level);
+        };
+        window.addEventListener('neko-cursor-follow-performance-changed', this._onPerfLevelChanged);
+    }
+
+    setPerformanceLevel(level) {
+        const normalized = (typeof level === 'string' ? level.toLowerCase() : 'high');
+        const preset = CURSOR_FOLLOW_PERF_PRESETS[normalized] || CURSOR_FOLLOW_PERF_PRESETS.high;
+
+        this._performanceLevel = CURSOR_FOLLOW_PERF_PRESETS[normalized] ? normalized : 'high';
+        this._perfRuntime = { ...preset };
+        this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
+
+        if (!this._enabled) {
+            // 关闭追踪时清空目标旋转，避免恢复时残留历史偏移
+            this._targetHeadYaw = 0;
+            this._targetHeadPitch = 0;
+            this._headYaw = 0;
+            this._headPitch = 0;
+        }
+    }
+
+    getPerformanceLevel() {
+        return this._performanceLevel;
     }
 
     _getCanvasRect(canvas) {
@@ -335,7 +440,7 @@ class CursorFollowController {
     //  调用时机：在 mixer.update 之前
     // ════════════════════════════════════════════════════════════════
     updateTarget(delta) {
-        if (!this._initialized || !this.eyesTarget || !this.manager) return;
+        if (!this._initialized || !this.eyesTarget || !this.manager || !this._enabled) return;
         // 首次 pointermove 前跳过，避免未知鼠标坐标导致首帧朝向异常
         if (!this._hasPointerInput) return;
 
@@ -346,8 +451,12 @@ class CursorFollowController {
         const canvas = this.manager.renderer?.domElement;
         if (!camera || !canvas) return;
 
-        // ② 获取头部世界坐标
-        const headPos = this._getHeadWorldPos();
+        const now = performance.now();
+        const perf = this._perfRuntime;
+        const pointerIdle = (now - this._lastPointerMoveAt) >= perf.pointerIdleMs;
+        const targetSolveIntervalMs = pointerIdle ? perf.idleTargetSolveIntervalMs : perf.activeTargetSolveIntervalMs;
+        const shouldSolveByMovement = !perf.solveTargetOnMoveOnly || !pointerIdle;
+        const shouldSolveTarget = shouldSolveByMovement && (now - this._lastTargetSolveAt) >= targetSolveIntervalMs;
 
         // ③ 屏幕坐标 → NDC
         const rect = this._getCanvasRect(canvas);
@@ -360,22 +469,91 @@ class CursorFollowController {
         const filteredX = this._eyeFilterX.filter(rawNdcX, this._elapsedTime);
         const filteredY = this._eyeFilterY.filter(rawNdcY, this._elapsedTime);
 
-        // ⑤ 射线与通过头部的平面求交
-        this._ndcVec.set(filteredX, filteredY);
-        this._raycaster.setFromCamera(this._ndcVec, camera);
+        if (shouldSolveTarget) {
+            // ② 获取头部世界坐标（仅在需要求解时执行）
+            const headPos = this._getHeadWorldPos();
 
-        camera.getWorldDirection(this._planeNormal);
-        this._planeNormal.negate(); // 平面法线朝向相机
-        this._plane.setFromNormalAndCoplanarPoint(this._planeNormal, headPos);
+            // ⑤ 先假定鼠标在“头部球面”上：优先用射线-球面求交得到鼠标点
+            this._ndcVec.set(filteredX, filteredY);
+            this._raycaster.setFromCamera(this._ndcVec, camera);
 
-        const hit = this._raycaster.ray.intersectPlane(this._plane, this._tempVec3A);
-        if (hit) {
-            this._desiredTargetPos.copy(hit);
+            this._eyeSphere.center.copy(headPos);
+            this._eyeSphere.radius = D.lookAtDistance;
+            const ray = this._raycaster.ray;
+            const oc = this._tempVec3C.subVectors(ray.origin, headPos);
+            const b = oc.dot(ray.direction);
+            const c = oc.lengthSq() - (D.lookAtDistance * D.lookAtDistance);
+            const h = b * b - c;
+            if (h >= 0) {
+                const s = Math.sqrt(h);
+                const tNear = -b - s;
+                const tFar = -b + s;
+                // 选远交点（背侧）避免视线角度被“近侧交点”压缩
+                let t = tFar;
+                if (t < 0 && tNear >= 0) t = tNear;
+                if (t >= 0) {
+                    this._tempVec3A.copy(ray.origin).addScaledVector(ray.direction, t);
+                } else {
+                    ray.closestPointToPoint(headPos, this._tempVec3A);
+                }
+            } else {
+                // 回退：若射线未命中球面，再退化到最近点策略，避免边缘失效
+                ray.closestPointToPoint(headPos, this._tempVec3A);
+            }
+
+            const dirWorld = this._tempVec3B.subVectors(this._tempVec3A, headPos);
+            if (dirWorld.lengthSq() < 1e-8) {
+                dirWorld.subVectors(camera.position, headPos);
+            }
+            if (dirWorld.lengthSq() >= 1e-8) {
+                dirWorld.normalize();
+                // 使用相机坐标轴作为基准，保证左右/上下与屏幕方向一致
+                const baseRight = this._tempVec3A.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+                const baseUp = this._tempVec3D.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+                // camera forward 指向屏幕内；眼睛基准前方向应朝向相机，所以取反
+                const baseForward = this._tempVec3C.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize().negate();
+
+                const dx = dirWorld.dot(baseRight);
+                const dy = dirWorld.dot(baseUp);
+                const dz = dirWorld.dot(baseForward);
+
+                const rawYaw = Math.atan2(dx, dz);
+                const horizLen = Math.sqrt(dx * dx + dz * dz);
+                // 屏幕坐标与当前基准存在上下方向差异，这里取反以匹配鼠标直觉
+                const rawPitch = Math.atan2(-dy, Math.max(horizLen, 1e-8));
+
+                const maxYaw = D.eyeMaxYawDeg * (Math.PI / 180);
+                const maxPitchUp = D.eyeMaxPitchUpDeg * (Math.PI / 180);
+                const maxPitchDown = D.eyeMaxPitchDownDeg * (Math.PI / 180);
+                const clampedYaw = THREE.MathUtils.clamp(rawYaw, -maxYaw, maxYaw);
+                const clampedPitch = THREE.MathUtils.clamp(rawPitch, -maxPitchDown, maxPitchUp);
+                const eyeCenterDeadzoneRad = D.eyeCenterDeadzoneDeg * (Math.PI / 180);
+                const stableYaw = Math.abs(clampedYaw) < eyeCenterDeadzoneRad ? 0 : clampedYaw;
+
+                // 低频只更新眼睛“目标角度”，每帧用阻尼插值到当前角度，避免瞬移
+                this._targetEyeYaw = stableYaw;
+                this._targetEyePitch = clampedPitch;
+            }
+            this._lastTargetSolveAt = now;
         }
 
-        // ⑦ 指数阻尼平滑
+        // ⑦ 每帧角度平滑，再重建目标点（连续过渡，不会阶梯跳变）
         const eyeAlpha = 1 - Math.exp(-delta * D.eyeSmoothSpeed);
-        this.eyesTarget.position.lerp(this._desiredTargetPos, eyeAlpha);
+        this._eyeYaw += (this._targetEyeYaw - this._eyeYaw) * eyeAlpha;
+        this._eyePitch += (this._targetEyePitch - this._eyePitch) * eyeAlpha;
+
+        const headPosForEye = this._getHeadWorldPos();
+        const baseRightForEye = this._tempVec3A.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+        const baseUpForEye = this._tempVec3D.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+        const baseForwardForEye = this._tempVec3C.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize().negate();
+        const cosPitch = Math.cos(this._eyePitch);
+
+        this._desiredTargetPos
+            .copy(headPosForEye)
+            .addScaledVector(baseRightForEye, Math.sin(this._eyeYaw) * cosPitch * D.lookAtDistance)
+            .addScaledVector(baseUpForEye, Math.sin(this._eyePitch) * D.lookAtDistance)
+            .addScaledVector(baseForwardForEye, Math.cos(this._eyeYaw) * cosPitch * D.lookAtDistance);
+        this.eyesTarget.position.copy(this._desiredTargetPos);
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -383,7 +561,7 @@ class CursorFollowController {
     //  调用时机：在 vrm.update(delta) 之后
     // ════════════════════════════════════════════════════════════════
     applyHead(delta) {
-        if (!this._initialized || !this.manager) return;
+        if (!this._initialized || !this.manager || !this._enabled) return;
 
         const vrm = this.manager?.currentModel?.vrm;
         if (!vrm?.humanoid) return;
@@ -394,8 +572,19 @@ class CursorFollowController {
         this._updateHeadWeight(delta);
         if (this._headWeight < 0.001) return;
 
+        const now = performance.now();
+        const perf = this._perfRuntime;
+        const pointerIdle = (now - this._lastPointerMoveAt) >= perf.pointerIdleMs;
+        const headSolveIntervalMs = pointerIdle ? perf.idleHeadSolveIntervalMs : perf.activeHeadSolveIntervalMs;
+        const shouldSolveByMovement = !perf.solveHeadOnMoveOnly || !pointerIdle;
+        const shouldSolveHead = shouldSolveByMovement && (now - this._lastHeadSolveAt) >= headSolveIntervalMs;
+
+        // 即使低档静止，也不能提前 return，否则会出现“偶发复位感”。
+        // 这里只控制是否重算目标角，阻尼和骨骼加成仍每帧应用。
+
         // ── 获取骨骼 ──
-        const neckBone = vrm.humanoid.getRawBoneNode('neck');
+        const useNeckBone = D.headBoneMode === 'neckAndHead';
+        const neckBone = useNeckBone ? vrm.humanoid.getRawBoneNode('neck') : null;
         const headBone = vrm.humanoid.getRawBoneNode('head');
         if (!neckBone && !headBone) return; // 降级：仅眼睛
 
@@ -404,72 +593,93 @@ class CursorFollowController {
         if (neckBone) this._neckBaseQuat.copy(neckBone.quaternion);
         if (headBone) this._headBaseQuat.copy(headBone.quaternion);
 
-        // ── 参考位置 ──
-        const refBone = headBone || neckBone;
-        refBone.getWorldPosition(this._headWorldPos);
+        // sceneQuat 每帧都需要用于应用旋转
+        vrm.scene.getWorldQuaternion(this._tempQuat);
 
-        // ── 目标方向（世界空间） ──
-        const targetPos = this.eyesTarget.position;
-        const dirWorld = this._tempVec3A.subVectors(targetPos, this._headWorldPos);
+        // 低频求解目标角度，高频插值应用，避免阶梯感抽动
+        if (shouldSolveHead) {
+            // ── 参考位置 ──
+            const refBone = headBone || neckBone;
+            refBone.getWorldPosition(this._headWorldPos);
 
-        // 方向向量足够大时才更新 yaw/pitch，否则保持上帧值
-        // 注意：不能 return，否则骨骼旋转不应用会导致卡顿
-        if (dirWorld.lengthSq() >= 0.001) {
-            dirWorld.normalize();
+            // ── 目标方向（世界空间） ──
+            const targetPos = this.eyesTarget.position;
+            const dirWorld = this._tempVec3A.subVectors(targetPos, this._headWorldPos);
 
-            // ── 获取模型坐标系 ──
-            const scene = vrm.scene;
-            scene.getWorldQuaternion(this._tempQuat); // sceneWorldQuat
+            if (dirWorld.lengthSq() >= 0.001) {
+                dirWorld.normalize();
 
-            // modelForward / modelUp / modelRight
-            // 使用 _modelForwardZ 适配 VRM 0.x(-Z) 和 1.0(+Z) 的前方向差异
-            const modelForward = this._tempVec3B.set(0, 0, this._modelForwardZ).applyQuaternion(this._tempQuat);
-            const modelUp = this._tempVec3C.set(0, 1, 0).applyQuaternion(this._tempQuat);
-            const modelRight = this._tempVec3D.crossVectors(modelUp, modelForward).normalize();
+                // modelForward / modelUp / modelRight
+                // 使用 _modelForwardZ 适配 VRM 0.x(-Z) 和 1.0(+Z) 的前方向差异
+                const modelForward = this._tempVec3B.set(0, 0, this._modelForwardZ).applyQuaternion(this._tempQuat);
+                const modelUp = this._tempVec3C.set(0, 1, 0).applyQuaternion(this._tempQuat);
+                const modelRight = this._tempVec3D.crossVectors(modelUp, modelForward).normalize();
 
-            // ── 分解方向到模型坐标系 ──
-            const dx = dirWorld.dot(modelRight);
-            const dy = dirWorld.dot(modelUp);
-            const dz = dirWorld.dot(modelForward);
+                // ── 分解方向到模型坐标系 ──
+                const dx = dirWorld.dot(modelRight);
+                const dy = dirWorld.dot(modelUp);
+                const dz = dirWorld.dot(modelForward);
 
-            // ── 原始 yaw / pitch ──
-            let rawYaw = Math.atan2(-dx, Math.max(dz, 0.001));
-            const horizLen = Math.sqrt(dx * dx + dz * dz);
-            let rawPitch = Math.atan2(dy, Math.max(horizLen, 0.001));
+                // ── 原始 yaw / pitch ──
+                const rawYaw = Math.atan2(-dx, Math.max(dz, 0.001));
+                const horizLen = Math.sqrt(dx * dx + dz * dz);
+                const rawPitch = Math.atan2(dy, Math.max(horizLen, 0.001));
 
-            // ── One-Euro 滤波 ──
-            const filteredYaw = this._headFilterYaw.filter(rawYaw, this._elapsedTime);
-            const filteredPitch = this._headFilterPitch.filter(rawPitch, this._elapsedTime);
+                // ── One-Euro 滤波 ──
+                const filteredYaw = this._headFilterYaw.filter(rawYaw, this._elapsedTime);
+                const filteredPitch = this._headFilterPitch.filter(rawPitch, this._elapsedTime);
 
-            // ── Clamp ──
-            const maxYaw = D.headMaxYawDeg * (Math.PI / 180);
-            const maxPitchUp = D.headMaxPitchUpDeg * (Math.PI / 180);
-            const maxPitchDown = D.headMaxPitchDownDeg * (Math.PI / 180);
+                // ── Clamp ──
+                const maxYaw = D.headMaxYawDeg * (Math.PI / 180);
+                const maxPitchUp = D.headMaxPitchUpDeg * (Math.PI / 180);
+                const maxPitchDown = D.headMaxPitchDownDeg * (Math.PI / 180);
 
-            const clampedYaw = THREE.MathUtils.clamp(filteredYaw, -maxYaw, maxYaw);
-            const clampedPitch = THREE.MathUtils.clamp(filteredPitch, -maxPitchDown, maxPitchUp);
+                const clampedYaw = THREE.MathUtils.clamp(filteredYaw, -maxYaw, maxYaw);
+                const clampedPitch = THREE.MathUtils.clamp(filteredPitch, -maxPitchDown, maxPitchUp);
 
-            // ── 指数阻尼平滑 ──
-            const headAlpha = 1 - Math.exp(-delta * D.headSmoothSpeed);
-            this._headYaw += (clampedYaw - this._headYaw) * headAlpha;
-            this._headPitch += (clampedPitch - this._headPitch) * headAlpha;
-        } else {
-            // 方向向量过小时仍需获取 sceneQuat 供骨骼旋转使用
-            vrm.scene.getWorldQuaternion(this._tempQuat);
+                // 死区：抑制小幅抖动
+                const deadzoneRad = D.deadzoneDeg * (Math.PI / 180);
+                if (Math.abs(clampedYaw - this._targetHeadYaw) >= deadzoneRad) {
+                    this._targetHeadYaw = clampedYaw;
+                }
+                if (Math.abs(clampedPitch - this._targetHeadPitch) >= deadzoneRad) {
+                    this._targetHeadPitch = clampedPitch;
+                }
+            }
+            this._lastHeadSolveAt = now;
         }
+
+        // ── 指数阻尼平滑（每帧） ──
+        const headAlpha = 1 - Math.exp(-delta * D.headSmoothSpeed);
+        this._headYaw += (this._targetHeadYaw - this._headYaw) * headAlpha;
+        this._headPitch += (this._targetHeadPitch - this._headPitch) * headAlpha;
 
         // sceneQuat 始终指向 this._tempQuat（无论是否进入 if 分支都已赋值）
         const sceneQuat = this._tempQuat;
+        const sceneQuatInv = this._tempQuatF.copy(sceneQuat).invert();
 
         const w = this._headWeight;
+        const neckYaw = this._headYaw * D.neckContribution * w;
+        const neckPitch = this._headPitch * D.neckContribution * w;
+        const headYaw = this._headYaw * D.headContribution * w;
+        const headPitch = this._headPitch * D.headContribution * w;
+
+        // 旋转量极小则跳过本帧加成计算（保持当前视觉，减少四元数运算）
+        if (
+            Math.abs(neckYaw) < 1e-6 &&
+            Math.abs(neckPitch) < 1e-6 &&
+            Math.abs(headYaw) < 1e-6 &&
+            Math.abs(headPitch) < 1e-6
+        ) {
+            return;
+        }
 
         // ── 对 neck 应用加成旋转 ──
         if (neckBone) {
             neckBone.quaternion.copy(this._neckBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
-                neckBone, sceneQuat,
-                this._headYaw * D.neckContribution * w,
-                this._headPitch * D.neckContribution * w
+                neckBone, sceneQuat, sceneQuatInv,
+                neckYaw, neckPitch
             );
         }
 
@@ -477,9 +687,8 @@ class CursorFollowController {
         if (headBone) {
             headBone.quaternion.copy(this._headBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
-                headBone, sceneQuat,
-                this._headYaw * D.headContribution * w,
-                this._headPitch * D.headContribution * w
+                headBone, sceneQuat, sceneQuatInv,
+                headYaw, headPitch
             );
         }
     }
@@ -487,7 +696,7 @@ class CursorFollowController {
     // ════════════════════════════════════════════════════════════════
     //  核心：将 yaw/pitch 转换为骨骼本地空间偏移并 premultiply
     // ════════════════════════════════════════════════════════════════
-    _applyAdditiveRotation(bone, sceneWorldQuat, yaw, pitch) {
+    _applyAdditiveRotation(bone, sceneWorldQuat, sceneWorldQuatInv, yaw, pitch) {
         if (Math.abs(yaw) < 1e-6 && Math.abs(pitch) < 1e-6) return;
 
         // 构造模型空间偏移四元数（先 yaw 后 pitch → YXZ 顺序）
@@ -496,11 +705,10 @@ class CursorFollowController {
 
         // 模型空间 → 世界空间
         //   worldOffset = sceneQuat * modelOffset * sceneQuat^-1
-        const sceneQuatInv = this._tempQuatC.copy(sceneWorldQuat).invert();
         const worldOffset = this._tempQuatD
             .copy(sceneWorldQuat)
             .multiply(modelOffset)
-            .multiply(sceneQuatInv);
+            .multiply(sceneWorldQuatInv);
 
         // 世界空间 → 骨骼父级本地空间
         //   localOffset = parentWorldQuat^-1 * worldOffset * parentWorldQuat
@@ -548,9 +756,18 @@ class CursorFollowController {
     reset() {
         this._headYaw = 0;
         this._headPitch = 0;
+        this._eyeYaw = 0;
+        this._eyePitch = 0;
+        this._targetEyeYaw = 0;
+        this._targetEyePitch = 0;
+        this._targetHeadYaw = 0;
+        this._targetHeadPitch = 0;
         this._headWeight = 1.0;
         this._targetHeadWeight = 1.0;
         this._elapsedTime = 0;
+        this._lastPointerMoveAt = 0;
+        this._lastTargetSolveAt = 0;
+        this._lastHeadSolveAt = 0;
 
         if (this._eyeFilterX) this._eyeFilterX.reset();
         if (this._eyeFilterY) this._eyeFilterY.reset();
@@ -573,6 +790,63 @@ class CursorFollowController {
     }
 
     // ════════════════════════════════════════════════════════════════
+    //  启用/禁用鼠标跟踪
+    // ════════════════════════════════════════════════════════════════
+    setEnabled(enabled) {
+        this._userDisabled = !enabled;
+        this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
+        if (!enabled) {
+            this.reset();
+            // 恢复骨骼到默认姿态
+            this._restoreBonesToDefault();
+        }
+        console.log(`[CursorFollow] 鼠标跟踪已${enabled ? '启用' : '禁用'}`);
+    }
+
+    isEnabled() {
+        return this._enabled;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  恢复骨骼到默认姿态
+    // ════════════════════════════════════════════════════════════════
+    _restoreBonesToDefault() {
+        const vrm = this.manager?.currentModel?.vrm;
+        if (!vrm?.humanoid) return;
+
+        const neckBone = vrm.humanoid.getRawBoneNode('neck');
+        const headBone = vrm.humanoid.getRawBoneNode('head');
+
+        // 恢复到保存的默认姿态（仅在有效快照存在时）
+        if (neckBone && this._neckDefaultQuat && this._hasNeckDefault) {
+            neckBone.quaternion.copy(this._neckDefaultQuat);
+        }
+        if (headBone && this._headDefaultQuat && this._hasHeadDefault) {
+            headBone.quaternion.copy(this._headDefaultQuat);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  保存骨骼默认姿态（在动画更新后调用）
+    // ════════════════════════════════════════════════════════════════
+    _saveBonesDefaultQuat() {
+        const vrm = this.manager?.currentModel?.vrm;
+        if (!vrm?.humanoid) return;
+
+        const neckBone = vrm.humanoid.getRawBoneNode('neck');
+        const headBone = vrm.humanoid.getRawBoneNode('head');
+
+        if (neckBone && this._neckDefaultQuat) {
+            this._neckDefaultQuat.copy(neckBone.quaternion);
+            this._hasNeckDefault = true;
+        }
+        if (headBone && this._headDefaultQuat) {
+            this._headDefaultQuat.copy(headBone.quaternion);
+            this._hasHeadDefault = true;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
     //  销毁
     // ════════════════════════════════════════════════════════════════
     destroy() {
@@ -581,6 +855,10 @@ class CursorFollowController {
             window.removeEventListener('pointermove', this._onPointerMove);
             window.removeEventListener('mousemove', this._onPointerMove);
             this._onPointerMove = null;
+        }
+        if (this._onPerfLevelChanged) {
+            window.removeEventListener('neko-cursor-follow-performance-changed', this._onPerfLevelChanged);
+            this._onPerfLevelChanged = null;
         }
 
         // 从场景移除目标对象
@@ -595,8 +873,7 @@ class CursorFollowController {
         this._desiredTargetPos = null;
         this._lastCanvasRect = null;
         this._headWorldPos = null;
-        this._plane = null;
-        this._planeNormal = null;
+        this._eyeSphere = null;
         this._tempVec3A = null;
         this._tempVec3B = null;
         this._tempVec3C = null;
@@ -606,6 +883,7 @@ class CursorFollowController {
         this._tempQuatC = null;
         this._tempQuatD = null;
         this._tempQuatE = null;
+        this._tempQuatF = null;
         this._tempEuler = null;
         this._neckBaseQuat = null;
         this._headBaseQuat = null;

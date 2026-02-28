@@ -607,7 +607,7 @@ class VRMInteraction {
      * 计算模型包围盒在屏幕上的可见区域，只在可见像素小于阈值时才进行校正。
      * 这样无论模型放多大，只要屏幕上还能看到足够的部分，就不会强制限制位置。
      **/
-    clampModelPosition(position, { minVisiblePixels = 50 } = {}) {
+    clampModelPosition(position, { minVisiblePixels = 200 } = {}) {
         if (!this.manager.camera || !this.manager.renderer || !this.manager.currentModel?.vrm) {
             return position;
         }
@@ -652,6 +652,10 @@ class VRMInteraction {
             const screenWidth = canvasRect.width;
             const screenHeight = canvasRect.height;
 
+            // Never demand more visible pixels than the viewport can supply
+            const effectiveMinX = Math.min(MIN_VISIBLE_PIXELS, screenWidth);
+            const effectiveMinY = Math.min(MIN_VISIBLE_PIXELS, screenHeight);
+
             // 计算模型在屏幕上的边界框
             let modelMinX = Infinity, modelMaxX = -Infinity;
             let modelMinY = Infinity, modelMaxY = -Infinity;
@@ -675,18 +679,17 @@ class VRMInteraction {
             const visibleWidth = Math.max(0, visibleMaxX - visibleMinX);
             const visibleHeight = Math.max(0, visibleMaxY - visibleMinY);
 
-            // 5. 按线性维度判定：水平和垂直方向各自需要至少 MIN_VISIBLE_PIXELS 可见
+            // 5. 按线性维度判定：水平和垂直方向各自需要至少 effective minimum 可见
             const modelOverflowsH = modelMinX < 0 || modelMaxX > screenWidth;
             const modelOverflowsV = modelMinY < 0 || modelMaxY > screenHeight;
-            const needsClampH = modelOverflowsH && visibleWidth < MIN_VISIBLE_PIXELS;
-            const needsClampV = modelOverflowsV && visibleHeight < MIN_VISIBLE_PIXELS;
+            const needsClampH = modelOverflowsH && visibleWidth < effectiveMinX;
+            const needsClampV = modelOverflowsV && visibleHeight < effectiveMinY;
 
             if (!needsClampH && !needsClampV) {
                 return position;
             }
 
             // 6. 可见区域太小，需要将模型拉回
-            // 计算需要移动的方向和距离，使模型至少有 MIN_VISIBLE_PIXELS 可见
             const modelCenterX = (modelMinX + modelMaxX) / 2;
             const modelCenterY = (modelMinY + modelMaxY) / 2;
             const screenCenterX = screenWidth / 2;
@@ -696,18 +699,18 @@ class VRMInteraction {
             let moveX = 0, moveY = 0;
 
             if (needsClampH) {
-                if (modelMaxX < MIN_VISIBLE_PIXELS) {
-                    moveX = MIN_VISIBLE_PIXELS - modelMaxX;
-                } else if (modelMinX > screenWidth - MIN_VISIBLE_PIXELS) {
-                    moveX = (screenWidth - MIN_VISIBLE_PIXELS) - modelMinX;
+                if (modelMaxX < effectiveMinX) {
+                    moveX = effectiveMinX - modelMaxX;
+                } else if (modelMinX > screenWidth - effectiveMinX) {
+                    moveX = (screenWidth - effectiveMinX) - modelMinX;
                 }
             }
 
             if (needsClampV) {
-                if (modelMaxY < MIN_VISIBLE_PIXELS) {
-                    moveY = MIN_VISIBLE_PIXELS - modelMaxY;
-                } else if (modelMinY > screenHeight - MIN_VISIBLE_PIXELS) {
-                    moveY = (screenHeight - MIN_VISIBLE_PIXELS) - modelMinY;
+                if (modelMaxY < effectiveMinY) {
+                    moveY = effectiveMinY - modelMaxY;
+                } else if (modelMinY > screenHeight - effectiveMinY) {
+                    moveY = (screenHeight - effectiveMinY) - modelMinY;
                 }
             }
 

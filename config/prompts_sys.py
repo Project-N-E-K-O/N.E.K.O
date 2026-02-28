@@ -903,9 +903,11 @@ proactive_generate_zh = """以下是你的人设：
 2. 简短自然，像是随口分享或搭话，不超过2-3句话
 {source_instruction}
 4. 要契合当前的对话氛围和主人的近期兴趣
-5. 绝对不要重复"近期搭话记录"中已经说过的内容，话题、句式和口吻都要有新意
-6. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
-7. 不要生成思考过程
+5. 绝对不要重复"近期搭话记录"中已经说过的内容。重复判定从严：只要核心事件/人物/视频/梗相同，即使换措辞、换语气、换切入点，也算重复，必须放弃
+6. 禁止复读自己的近期主动搭话：不能再次提到同一条新闻、同一个视频、同一个争议点、同一个笑点；若无法确认是否重复，按重复处理并放弃
+7. 只要存在重复风险，宁可回复 [PASS] 也不要硬聊
+8. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
+9. 不要生成思考过程
 
 {output_format_section}"""
 
@@ -931,9 +933,11 @@ As your character, naturally start a conversation with {master_name}. Requiremen
 2. Keep it short and natural, like a casual remark or share (max 2-3 sentences)
 {source_instruction}
 4. Match the current conversation mood and the master's recent interests
-5. Absolutely do NOT repeat anything from your "recent proactive chats"—vary your topic, phrasing, and tone
-6. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
-7. Do not include any reasoning
+5. Absolutely do NOT repeat anything from your "recent proactive chats". Use a strict duplicate rule: if the core event/person/video/meme is the same, it is a duplicate even if wording, tone, or angle changes
+6. Never re-use your own recent proactive topic: do not bring up the same news item, same video, same controversy point, or same punchline again; if unsure, treat it as duplicate
+7. If there is any duplication risk, prefer [PASS] instead of forcing a message
+8. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
+9. Do not include any reasoning
 
 {output_format_section}"""
 
@@ -959,9 +963,11 @@ proactive_generate_ja = """以下はあなたのキャラクター設定です�
 2. 短く自然に、何気なく共有する感じで（2〜3文まで）
 {source_instruction}
 4. 現在の会話の雰囲気とご主人の最近の関心に合わせる
-5.「最近の話しかけ記録」にある内容は絶対に繰り返さない—話題・言い回し・トーンすべて新鮮にする
-6. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
-7. 推論は含めない
+5.「最近の話しかけ記録」の内容は絶対に繰り返さない。重複判定は厳格に行う：核心となる出来事・人物・動画・ミームが同じなら、言い換えや口調変更でも重複とみなす
+6. 自分の最近の自発話題を再利用しない。同じニュース、同じ動画、同じ論点、同じオチは再提示しない。迷ったら重複扱いにする
+7. 少しでも重複リスクがあるなら、無理に話さず [PASS] を優先する
+8. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
+9. 推論は含めない
 
 {output_format_section}"""
 
@@ -987,9 +993,11 @@ proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 2. 짧고 자연스럽게, 캐주얼한 한마디처럼 (2-3문장 이내)
 {source_instruction}
 4. 현재 대화 분위기와 주인의 최근 관심사에 맞추기
-5.「최근 말 건넨 기록」의 내용을 절대 반복하지 않기—주제, 문체, 톤 모두 새롭게
-6. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
-7. 추론 과정 생략
+5.「최근 말 건넨 기록」의 내용을 절대 반복하지 말 것. 중복 판정은 엄격하게: 핵심 사건/인물/영상/밈이 같으면 표현, 톤, 접근이 달라도 중복으로 본다
+6. 자신의 최근 주도 대화 주제를 재사용하지 말 것. 같은 뉴스, 같은 영상, 같은 논쟁 포인트, 같은 펀치라인은 다시 꺼내지 않는다. 애매하면 중복으로 처리
+7. 중복 위험이 조금이라도 있으면 억지로 말하지 말고 [PASS]를 우선
+8. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
+9. 추론 과정 생략
 
 {output_format_section}"""
 

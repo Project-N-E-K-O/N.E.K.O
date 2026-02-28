@@ -323,10 +323,12 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.setupTouchZoom(model);
     }
 
-    // 启用鼠标跟踪
-    if (options.mouseTracking !== false) {
-        this.enableMouseTracking(model);
-    }
+    // 启用鼠标跟踪（始终启用监听器，内部根据设置决定是否执行眼睛跟踪）
+    // enableMouseTracking 包含悬浮菜单显示/隐藏逻辑，必须始终启用
+    this.enableMouseTracking(model);
+    // 同步内部状态（眼睛跟踪是否启用）
+    this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+    console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
 
     // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
     this.setupFloatingButtons(model);
@@ -463,7 +465,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”
     if (typeof this._checkSnapRequired === 'function') {
         try {
-            const snapInfo = await this._checkSnapRequired(model, { threshold: 200 });
+            const snapInfo = await this._checkSnapRequired(model, { threshold: 300 });
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
                 model.x = snapInfo.targetX;
                 model.y = snapInfo.targetY;
@@ -684,6 +686,48 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 然后在动作更新后立即覆盖参数
             try {
+                // === 点击效果平滑过渡处理 ===
+                // 当 _clickFadeState 存在时，说明点击效果正在平滑恢复中
+                // 此时跳过 savedModelParameters 和 persistentExpression 的强制写入
+                // 改为执行插值过渡
+                const fadeState = this._clickFadeState;
+                if (fadeState) {
+                    const now = performance.now();
+                    const elapsed = now - fadeState.startTime;
+                    // 防御性校验：确保 duration 为有限正数，否则视为立即完成
+                    const safeDuration = (Number.isFinite(fadeState.duration) && fadeState.duration > 0) ? fadeState.duration : 1;
+                    const linearProgress = Math.min(Math.max(elapsed / safeDuration, 0), 1);
+                    // cubic ease-out: 快进慢出
+                    const t = 1 - Math.pow(1 - linearProgress, 3);
+
+                    for (const [paramId, target] of Object.entries(fadeState.targetValues)) {
+                        const start = fadeState.startValues[paramId];
+                        if (start === undefined) continue;
+                        try {
+                            const interpolated = start + (target - start) * t;
+                            coreModel.setParameterValueById(paramId, interpolated);
+                        } catch (_) {}
+                    }
+
+                    // 口型参数不受过渡影响，照常写入
+                    for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        try {
+                            coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                        } catch (_) {}
+                    }
+
+                    // 过渡完成：清除 fade 状态，恢复正常覆写逻辑
+                    if (linearProgress >= 1) {
+                        this._clickFadeState = null;
+                        console.log('[ClickEffect] 平滑过渡完成');
+                        // 确保常驻表情最终精确应用
+                        if (typeof this.applyPersistentExpressionsNative === 'function') {
+                            try { this.applyPersistentExpressionsNative(true); } catch (_) {}
+                        }
+                    }
+                    // 跳过下方的正常覆写逻辑
+                } else {
+                // === 正常帧：应用保存参数 + 常驻表情 ===
                 // 1. 应用保存的模型参数（智能叠加模式）
                 if (this.savedModelParameters && this._shouldApplySavedParams) {
                     const persistentParamIds = this.getPersistentExpressionParamIds();
@@ -743,6 +787,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     }
                 }
+                } // 结束 else（正常帧覆写逻辑）
             } catch (_) {}
         };
         } // 结束 else 块（确保 motionManager 和 coreModel 都已准备好）
@@ -797,7 +842,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
-            if (this.persistentExpressionParamsByName) {
+            // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
+            if (this.persistentExpressionParamsByName && !this._clickFadeState) {
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {

@@ -26,6 +26,8 @@ from utils.workshop_utils import (
     get_workshop_path,
 )
 from utils.logger_config import get_module_logger
+from utils.config_manager import set_reserved
+from config import CHARACTER_RESERVED_FIELDS
 import hashlib
 
 router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
@@ -2676,15 +2678,6 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
-# 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
-_RESERVED_FIELDS = [
-    '原始数据', '文件路径', '创意工坊物品ID',
-    'description', 'tags', 'name',
-    '描述', '标签', '关键词',
-    'live2d_item_id'
-]
-
-
 async def sync_workshop_character_cards() -> dict:
     """
     服务端自动扫描所有已订阅且已安装的创意工坊物品，
@@ -2762,14 +2755,23 @@ async def sync_workshop_character_cards() -> dict:
                             
                             # 构建角色数据，过滤保留字段
                             catgirl_data = {}
-                            skip_keys = ['档案名', *_RESERVED_FIELDS]
+                            skip_keys = ['档案名', *CHARACTER_RESERVED_FIELDS]
                             for k, v in chara_data.items():
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
                             
-                            # 如果角色卡有 live2d 字段，同时保存 live2d_item_id
-                            if catgirl_data.get('live2d') and item_id:
-                                catgirl_data['live2d_item_id'] = str(item_id)
+                            # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
+                            # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。
+                            legacy_live2d_name = str(chara_data.get('live2d', '') or '').strip()
+                            if legacy_live2d_name and item_id:
+                                set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
+                                set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
+                                set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
+                                if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
+                                    live2d_model_path = legacy_live2d_name
+                                else:
+                                    live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'
+                                set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', live2d_model_path)
                             
                             characters['猫娘'][chara_name] = catgirl_data
                             need_save = True

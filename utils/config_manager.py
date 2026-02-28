@@ -16,8 +16,9 @@ from config import (
     APP_NAME,
     CONFIG_FILES,
     DEFAULT_CONFIG_DATA,
+    RESERVED_FIELD_SCHEMA,
 )
-from config.prompts_chara import lanlan_prompt
+from config.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.api_config_loader import (
     get_core_api_profiles,
     get_assist_api_profiles,
@@ -30,6 +31,293 @@ from utils.logger_config import get_module_logger
 
 
 logger = get_module_logger(__name__)
+
+
+def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
+    """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
+
+    如果 _reserved 中的嵌套路径存在（即使值为 None），直接返回该值；
+    仅当路径不存在或 _reserved 本身缺失时，才回退到旧平铺字段。
+    """
+    if not isinstance(data, dict):
+        return default
+
+    reserved = data.get("_reserved")
+    if isinstance(reserved, dict):
+        current = reserved
+        found = True
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                found = False
+                break
+            current = current[key]
+        if found:
+            return current
+
+    # COMPAT(v1->v2): 旧平铺字段回退读取，避免历史配置在迁移前读不到值。
+    if legacy_keys:
+        for legacy_key in legacy_keys:
+            if legacy_key in data and data[legacy_key] is not None:
+                return data[legacy_key]
+    return default
+
+
+def set_reserved(data: dict, *path_and_value) -> bool:
+    """统一写入 `_reserved` 下的嵌套字段，自动创建中间层。
+
+    Returns ``True`` if the stored value was actually changed, ``False``
+    otherwise (including invalid input).
+    """
+    if not isinstance(data, dict) or len(path_and_value) < 2:
+        return False
+    *path, value = path_and_value
+    if not path:
+        return False
+
+    reserved = data.get("_reserved")
+    if not isinstance(reserved, dict):
+        reserved = {}
+        data["_reserved"] = reserved
+
+    current = reserved
+    for key in path[:-1]:
+        next_node = current.get(key)
+        if not isinstance(next_node, dict):
+            next_node = {}
+            current[key] = next_node
+        current = next_node
+
+    last_key = path[-1]
+    if last_key in current and current[last_key] == value:
+        return False
+    current[last_key] = value
+    return True
+
+
+def _legacy_live2d_to_model_path(legacy_live2d: str) -> str:
+    """将旧 live2d 目录名转为 model3 文件路径。"""
+    if not legacy_live2d:
+        return ""
+    raw = str(legacy_live2d).strip().replace("\\", "/")
+    if not raw:
+        return ""
+    if raw.endswith(".model3.json"):
+        return raw
+    # COMPAT(v1->v2): 历史配置只有目录名（如 mao_pro），迁移时自动补全默认 model3 文件名。
+    return f"{raw}/{raw}.model3.json"
+
+
+def _legacy_live2d_name_from_model_path(model_path: str) -> str:
+    """将新 model_path 反向还原为旧 live2d 模型名（兼容旧前端字段）。"""
+    if not model_path:
+        return ""
+    raw = str(model_path).strip().replace("\\", "/")
+    if not raw:
+        return ""
+    if raw.endswith(".model3.json"):
+        parent = raw.rsplit("/", 1)[0] if "/" in raw else ""
+        if parent:
+            return parent.rsplit("/", 1)[-1]
+        filename = raw.rsplit("/", 1)[-1]
+        name = filename[:-len(".model3.json")]
+        return name
+    return raw.rsplit("/", 1)[-1]
+
+
+def validate_reserved_schema(reserved: dict) -> list[str]:
+    """校验 `_reserved` 结构，返回错误列表（空列表表示通过）。"""
+    errors: list[str] = []
+
+    def _walk(value, schema, path: str):
+        if isinstance(schema, dict):
+            if not isinstance(value, dict):
+                errors.append(f"{path} 需要 dict，实际 {type(value).__name__}")
+                return
+            for key, sub_schema in schema.items():
+                if key in value and value[key] is not None:
+                    _walk(value[key], sub_schema, f"{path}.{key}")
+            return
+        if isinstance(schema, tuple):
+            if not isinstance(value, schema):
+                expected = ",".join(t.__name__ for t in schema)
+                errors.append(f"{path} 需要类型({expected})，实际 {type(value).__name__}")
+            return
+        if not isinstance(value, schema):
+            errors.append(f"{path} 需要 {schema.__name__}，实际 {type(value).__name__}")
+
+    if reserved is None:
+        return errors
+    _walk(reserved, RESERVED_FIELD_SCHEMA, "_reserved")
+    return errors
+
+
+def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
+    """迁移单个角色配置到 `_reserved` 结构，返回是否发生变更。"""
+    if not isinstance(catgirl_data, dict):
+        return False
+
+    changed = False
+
+    if not isinstance(catgirl_data.get("_reserved"), dict):
+        catgirl_data["_reserved"] = {}
+        changed = True
+
+    voice_id = get_reserved(catgirl_data, "voice_id", default="", legacy_keys=("voice_id",))
+    if voice_id is not None:
+        changed |= set_reserved(catgirl_data, "voice_id", str(voice_id))
+
+    system_prompt = get_reserved(catgirl_data, "system_prompt", default=None, legacy_keys=("system_prompt",))
+    if system_prompt is not None:
+        changed |= set_reserved(catgirl_data, "system_prompt", str(system_prompt))
+
+    model_type = str(
+        get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
+    ).strip().lower()
+    if model_type not in {"live2d", "vrm"}:
+        has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
+        model_type = "vrm" if has_vrm else "live2d"
+    changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
+
+    asset_source_id = get_reserved(
+        catgirl_data,
+        "avatar",
+        "asset_source_id",
+        default="",
+        legacy_keys=("live2d_item_id", "item_id"),
+    )
+    asset_source_id = str(asset_source_id).strip() if asset_source_id is not None else ""
+    changed |= set_reserved(catgirl_data, "avatar", "asset_source_id", asset_source_id)
+
+    asset_source = get_reserved(catgirl_data, "avatar", "asset_source", default="")
+    if not asset_source:
+        asset_source = "steam_workshop" if asset_source_id else "local"
+    changed |= set_reserved(catgirl_data, "avatar", "asset_source", str(asset_source))
+
+    live2d_model_path = get_reserved(
+        catgirl_data,
+        "avatar",
+        "live2d",
+        "model_path",
+        default="",
+        legacy_keys=("live2d",),
+    )
+    if live2d_model_path:
+        changed |= set_reserved(
+            catgirl_data,
+            "avatar",
+            "live2d",
+            "model_path",
+            _legacy_live2d_to_model_path(str(live2d_model_path)),
+        )
+
+    vrm_model_path = get_reserved(
+        catgirl_data,
+        "avatar",
+        "vrm",
+        "model_path",
+        default="",
+        legacy_keys=("vrm",),
+    )
+    if vrm_model_path:
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "model_path", str(vrm_model_path).strip())
+
+    vrm_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "vrm",
+        "animation",
+        default=None,
+        legacy_keys=("vrm_animation",),
+    )
+    if vrm_animation is not None:
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "animation", vrm_animation)
+
+    idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "vrm",
+        "idle_animation",
+        default="",
+        legacy_keys=("idleAnimation",),
+    )
+    if idle_animation:
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "idle_animation", str(idle_animation))
+
+    lighting = get_reserved(
+        catgirl_data,
+        "avatar",
+        "vrm",
+        "lighting",
+        default=None,
+        legacy_keys=("lighting",),
+    )
+    if isinstance(lighting, dict):
+        changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
+
+    # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
+    for legacy_key in (
+        "voice_id",
+        "system_prompt",
+        "model_type",
+        "live2d_item_id",
+        "item_id",
+        "live2d",
+        "vrm",
+        "vrm_animation",
+        "idleAnimation",
+        "lighting",
+        "vrm_rotation",
+    ):
+        if legacy_key in catgirl_data:
+            catgirl_data.pop(legacy_key, None)
+            changed = True
+
+    return changed
+
+
+def flatten_reserved(catgirl_data: dict) -> dict:
+    """将 `_reserved` 展开成旧平铺字段（仅用于兼容旧调用方/前端）。"""
+    if not isinstance(catgirl_data, dict):
+        return catgirl_data
+    result = dict(catgirl_data)
+
+    voice_id = get_reserved(result, "voice_id", default="")
+    if voice_id:
+        result["voice_id"] = voice_id
+    system_prompt = get_reserved(result, "system_prompt", default=None)
+    if system_prompt is not None:
+        result["system_prompt"] = system_prompt
+
+    model_type = get_reserved(result, "avatar", "model_type", default="live2d")
+    if model_type:
+        result["model_type"] = model_type
+
+    live2d_model_path = get_reserved(result, "avatar", "live2d", "model_path", default="")
+    if live2d_model_path:
+        # COMPAT(v1->v2): 旧前端/接口读取 live2d 模型名，继续按历史语义回放目录名。
+        result["live2d"] = _legacy_live2d_name_from_model_path(str(live2d_model_path))
+
+    vrm_model_path = get_reserved(result, "avatar", "vrm", "model_path", default="")
+    if vrm_model_path:
+        result["vrm"] = vrm_model_path
+
+    asset_source_id = get_reserved(result, "avatar", "asset_source_id", default="")
+    if asset_source_id:
+        result["live2d_item_id"] = asset_source_id
+
+    vrm_animation = get_reserved(result, "avatar", "vrm", "animation", default=None)
+    if vrm_animation is not None:
+        result["vrm_animation"] = vrm_animation
+
+    idle_animation = get_reserved(result, "avatar", "vrm", "idle_animation", default="")
+    if idle_animation:
+        result["idleAnimation"] = idle_animation
+
+    lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
+    if isinstance(lighting, dict):
+        result["lighting"] = lighting
+
+    return result
 
 
 class ConfigManager:
@@ -529,6 +817,28 @@ class ConfigManager:
         except Exception as e:
             logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
             character_data = self.get_default_characters()
+
+        migrated = False
+        if not isinstance(character_data, dict):
+            logger.warning("角色配置文件结构异常（非 dict），使用默认配置。")
+            character_data = self.get_default_characters()
+        catgirl_map = character_data.get("猫娘")
+        if isinstance(catgirl_map, dict):
+            for name, catgirl_data in catgirl_map.items():
+                if not isinstance(catgirl_data, dict):
+                    logger.warning("角色 '%s' 配置非 dict，跳过迁移。", name)
+                    continue
+                if migrate_catgirl_reserved(catgirl_data):
+                    migrated = True
+                reserved_errors = validate_reserved_schema(catgirl_data.get("_reserved"))
+                if reserved_errors:
+                    logger.warning("检测到角色 _reserved 字段结构异常: %s", "; ".join(reserved_errors))
+        if migrated:
+            try:
+                self.save_characters(character_data, character_json_path=character_json_path)
+                logger.info("检测到旧版角色保留字段，已自动迁移到 _reserved 结构。")
+            except Exception as migrate_err:
+                logger.warning("自动迁移角色保留字段后写回失败: %s", migrate_err)
         return character_data
 
     def save_characters(self, data, character_json_path=None):
@@ -653,14 +963,14 @@ class ConfigManager:
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
-            voice_id = config.get('voice_id', '')
+            voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
             if voice_id and not self.validate_voice_id(voice_id):
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
                     voice_id,
                 )
-                config['voice_id'] = ''
+                set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
 
         if cleaned_count > 0:
@@ -702,7 +1012,16 @@ class ConfigManager:
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         lanlan_prompt_map = {}
         for name in catgirl_names:
-            prompt_value = catgirl_data.get(name, {}).get('system_prompt', lanlan_prompt)
+            stored_prompt = get_reserved(
+                catgirl_data.get(name, {}),
+                'system_prompt',
+                default=None,
+                legacy_keys=('system_prompt',),
+            )
+            if stored_prompt is None or is_default_prompt(stored_prompt):
+                prompt_value = get_lanlan_prompt()
+            else:
+                prompt_value = stored_prompt
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)

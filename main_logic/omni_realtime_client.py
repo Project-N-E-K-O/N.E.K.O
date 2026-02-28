@@ -6,6 +6,7 @@ import json
 import base64
 import time
 import numpy as np
+from pathlib import Path
 
 from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
@@ -14,15 +15,19 @@ from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.frontend_utils import calculate_text_similarity
 from utils.logger_config import get_module_logger
+from utils.ssl_env_diagnostics import write_ssl_diagnostic
 
-# Gemini Live API SDK
+# Gemini Live API SDK (startup-time import)
 try:
     from google import genai
     from google.genai import types
     GEMINI_AVAILABLE = True
-except ImportError:
+    _GEMINI_IMPORT_ERROR = None
+except Exception as e:
     GEMINI_AVAILABLE = False
+    _GEMINI_IMPORT_ERROR = e
     genai = None
+    types = None
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -32,6 +37,80 @@ class TurnDetectionMode(Enum):
     MANUAL = "manual"
 
 _config_manager = get_config_manager()
+
+if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
+    diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
+    sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
+    throttle_window_seconds = 24 * 60 * 60
+    now_ts = time.time()
+
+    recent_diag_path = None
+    try:
+        if sentinel_path.exists():
+            with open(sentinel_path, "r", encoding="utf-8") as f:
+                sentinel_data = json.load(f)
+            sentinel_diag_path = sentinel_data.get("path")
+            sentinel_ts = float(sentinel_data.get("timestamp", 0))
+            if sentinel_diag_path and (now_ts - sentinel_ts) < throttle_window_seconds:
+                if Path(sentinel_diag_path).exists():
+                    recent_diag_path = sentinel_diag_path
+    except Exception as sentinel_err:
+        logger.error(f"Gemini diagnostic sentinel read failed: {sentinel_err}")
+
+    if recent_diag_path is None:
+        try:
+            if diagnostics_dir.exists():
+                for diag_file in diagnostics_dir.glob("ssl_diagnostic_*.json"):
+                    try:
+                        with open(diag_file, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                        if payload.get("event") != "gemini_sdk_import_failed":
+                            continue
+                        file_mtime = diag_file.stat().st_mtime
+                        if (now_ts - file_mtime) < throttle_window_seconds:
+                            if (
+                                recent_diag_path is None
+                                or file_mtime > Path(recent_diag_path).stat().st_mtime
+                            ):
+                                recent_diag_path = str(diag_file)
+                    except Exception as diag_file_err:
+                        logger.debug(
+                            "Skipping diagnostic file scan due to parse/read error: %s (%s)",
+                            diag_file,
+                            diag_file_err,
+                        )
+                        continue
+        except Exception as scan_err:
+            logger.error(f"Gemini diagnostic scan failed: {scan_err}")
+
+    if recent_diag_path:
+        logger.warning(f"Gemini SDK import failed, recent diagnostic exists: {recent_diag_path}")
+    else:
+        try:
+            diag_path = write_ssl_diagnostic(
+                event="gemini_sdk_import_failed",
+                output_dir=str(diagnostics_dir),
+                error=_GEMINI_IMPORT_ERROR,
+                extra={"stage": "module_import"},
+            )
+            if diag_path:
+                logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
+                try:
+                    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+                    with open(sentinel_path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "path": diag_path,
+                                "timestamp": now_ts,
+                            },
+                            f,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                except Exception as sentinel_write_err:
+                    logger.error(f"Gemini diagnostic sentinel write failed: {sentinel_write_err}")
+        except Exception as diag_err:
+            logger.error(f"Gemini SDK diagnostic write failed: {diag_err}")
 
 
 class OmniRealtimeClient:
@@ -430,8 +509,13 @@ class OmniRealtimeClient:
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
-        if not GEMINI_AVAILABLE or genai is None:
-            raise RuntimeError("google-genai SDK not installed. Please install it with: pip install google-genai")
+        if not GEMINI_AVAILABLE or genai is None or types is None:
+            detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
+            raise RuntimeError(
+                "google-genai SDK unavailable. "
+                "If this is an SSL/证书问题, repair your system certificate chain or switch to non-Gemini API"
+                f"{detail}"
+            )
         
         try:
             # 创建 Gemini 客户端

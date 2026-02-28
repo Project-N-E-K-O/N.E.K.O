@@ -750,7 +750,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
-document.getElementById('api-key-form').addEventListener('submit', async function (e) {
+
+
+async function save_button_down(e) {
+
     e.preventDefault();
 
     const apiKeyInput = document.getElementById('apiKeyInput');
@@ -905,7 +908,9 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
             mcpToken, enableCustomApi
         });
     }
-});
+}
+document.getElementById('api-key-form').addEventListener('submit', save_button_down);
+
 
 async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, assistApiKeyKimi, conversationModelUrl, conversationModelId, conversationModelApiKey, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelUrl, visionModelId, visionModelApiKey, agentModelUrl, agentModelId, agentModelApiKey, omniModelUrl, omniModelId, omniModelApiKey, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'

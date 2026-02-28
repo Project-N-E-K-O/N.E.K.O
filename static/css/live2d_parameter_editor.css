@@ -438,7 +438,9 @@ min-width: 0;
 .parameter-slider-wrapper {
 width: 100%;
 margin: 0;
-padding: 0;
+padding: 4px 0;
+position: relative;
+z-index: 1;
 }
 
 .parameter-controls-bottom {
@@ -458,6 +460,26 @@ outline: none;
 appearance: none;
 margin: 0;
 padding: 0;
+cursor: pointer;
+touch-action: none;
+position: relative;
+z-index: 2;
+}
+
+.parameter-slider::-webkit-slider-runnable-track {
+width: 100%;
+height: 6px;
+border-radius: 3px;
+background: #ddd;
+cursor: pointer;
+}
+
+.parameter-slider::-moz-range-track {
+width: 100%;
+height: 6px;
+border-radius: 3px;
+background: #ddd;
+cursor: pointer;
 }
 
 .parameter-slider::-webkit-slider-thumb {
@@ -468,6 +490,9 @@ height: 16px;
 border-radius: 50%;
 background: #44b7fe;
 cursor: pointer;
+margin-top: -5px;
+position: relative;
+z-index: 3;
 }
 
 .parameter-slider::-moz-range-thumb {

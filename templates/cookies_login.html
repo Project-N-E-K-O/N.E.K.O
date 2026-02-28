@@ -2,48 +2,359 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>N.E.K.O 凭证控制中心</title>
+    <!-- 视口设置：根据喵师傅指示，允许用户缩放以提升可访问性 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title data-i18n="cookiesLogin.title">N.E.K.O 凭证控制中心</title>
     <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/theme-manager.js"></script>
     <style>
         :root { --primary: #4f46e5; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; box-sizing: border-box; }
-        .container-header { background: #40C5F1; padding: 18px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; -webkit-app-region: drag; }
-        .container-header h2 { margin: 0; font-size: 1.5rem; font-weight: 600; color: white; font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif; letter-spacing: 1px; }
-        .container-header .close-btn { -webkit-app-region: no-drag; background: transparent; border: none; cursor: pointer; padding: 4px; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease; }
-        .container-header .close-btn:hover { opacity: 0.8; }
-        .container-header .close-btn img { width: 32px; height: 32px; }
-        .dashboard-wrapper { display: flex; justify-content: center; padding: 20px; box-sizing: border-box; }
-        .dashboard { background: var(--card-bg); width: 100%; max-width: 600px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); overflow: hidden; animation: slideDown 0.4s ease-out; }
         
-        .tabs { display: flex; background: #eef0f4; border-bottom: 1px solid #ddd; }
-        .tab-btn { flex: 1; padding: 15px 0; border: none; background: none; font-size: 15px; font-weight: bold; color: #666; cursor: pointer; transition: all 0.3s; }
-        .tab-btn:hover { background: #e2e5eb; }
-        .tab-btn.active { background: var(--card-bg); color: var(--primary); box-shadow: inset 0 3px 0 var(--primary); }
+        /* 基础重置 */
+        * { -webkit-tap-highlight-color: transparent; /* 去除手机点击高亮色块 */ box-sizing: border-box; }
+
+        /* 全局布局：固定视口，禁止弹性滚动，模拟 App 容器 */
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background: var(--bg); 
+            color: var(--text); 
+            margin: 0; padding: 0; 
+            /* 使用 dvh 适配移动端地址栏动态高度 */
+            height: 100vh; height: 100dvh; 
+            width: 100vw;
+            overflow: hidden; 
+            display: flex; flex-direction: column;
+        }
+
+        /* 顶部导航栏 */
+        .container-header { 
+            background: #40C5F1; 
+            padding: 14px 20px; 
+            display: flex; justify-content: space-between; align-items: center; 
+            flex-shrink: 0; z-index: 100; 
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            -webkit-app-region: drag; /* 桌面端拖拽 */
+            padding-top: env(safe-area-inset-top); /* 适配刘海屏 */
+        }
+        .container-header h2 { margin: 0; font-size: 1.2rem; font-weight: 700; color: white; letter-spacing: 0.5px; }
+        .container-header .close-btn { -webkit-app-region: no-drag; background: transparent; border: none; cursor: pointer; padding: 8px; margin-right: -8px; /* 增大点击热区 */ }
+        .container-header .close-btn img { width: 24px; height: 24px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.1)); }
+
+        /* 内容滚动容器 */
+        .dashboard-wrapper { 
+            flex: 1; 
+            overflow-y: auto; overflow-x: hidden; 
+            -webkit-overflow-scrolling: touch; /* iOS 惯性滚动 */
+            padding: 20px; 
+            display: flex; justify-content: center; align-items: flex-start;
+        }
+
+        /* 主卡片：桌面端有圆角阴影，移动端全屏 */
+        .dashboard { 
+            background: var(--card-bg); 
+            width: 100%; max-width: 800px; 
+            border-radius: 16px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08); 
+            overflow: hidden; 
+            animation: slideDown 0.4s ease-out;
+            margin-bottom: 20px;
+        }
         
-        .tab-content { padding: 30px; }
+        /* === 桌面端 Tabs 样式 (默认) === */
+        .tabs { 
+            display: flex; background: #f1f5f9; 
+            border-bottom: 1px solid #e2e8f0; 
+            overflow-x: auto; 
+            scrollbar-width: none; 
+        }
+        .tabs::-webkit-scrollbar { display: none; }
+        .tab-btn { 
+            flex: 1; min-width: 100px; padding: 16px 0; 
+            border: none; background: none; 
+            font-size: 14px; font-weight: 600; color: #64748b; 
+            cursor: pointer; transition: all 0.2s; white-space: nowrap; 
+        }
+        .tab-btn:hover { background: #e2e8f0; color: #334155; }
+        .tab-btn.active { background: var(--card-bg); color: var(--primary); box-shadow: inset 0 -3px 0 var(--primary); font-weight: 700; }
         
-        /* 填空题样式 */
-        .field-group { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px;}
-        .field-group label { font-weight: bold; font-size: 14px; color: #334155; display: flex; justify-content: space-between; align-items: center;}
-        .field-group .req-star { color: #ef4444; margin-left: 4px; }
-        .field-group .desc { font-size: 12px; color: #94a3b8; font-weight: normal; }
-        .field-group input { width: 100%; padding: 12px 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 14px; transition: all 0.2s; box-sizing: border-box; }
-        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1); }
+        .tab-content { padding: 25px 30px; }
         
-        .submit-btn { width: 100%; padding: 14px; margin-top: 10px; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; background: var(--primary); color: white; cursor: pointer; transition: 0.2s; display: flex; justify-content: center; align-items: center; gap: 8px; }
-        .submit-btn:hover { background: #4338ca; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(67, 56, 202, 0.2); }
-        .submit-btn:disabled { background: #9ca3af; cursor: not-allowed; transform: none; box-shadow: none; }
-        .alert { display: none; padding: 12px; margin-top: 15px; border-radius: 8px; font-size: 14px; font-weight: 500; text-align: center;}
+        /* 教程与表单区域 */
+        .tutorial-banner { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+        .tutorial-title { font-size: 14px; font-weight: bold; color: #1e293b; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+        .tutorial-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .step-item { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; font-size: 13px; color: #475569; display: flex; gap: 8px; line-height: 1.5; }
+        .step-num { flex-shrink: 0; width: 20px; height: 20px; background: #3b82f6; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; margin-top: 1px; }
+
+        kbd { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 4px; padding: 2px 6px; font-family: monospace; font-size: 11px; font-weight: bold; box-shadow: 0 2px 0 #cbd5e1; }
+        .highlight-text { color: #2563eb; font-weight: 600; }
+
+        #panel-desc { display: none; background: #eff6ff; padding: 12px 16px; border-radius: 8px; border-left: 4px solid var(--primary); line-height: 1.6; color: #1e3a8a; margin-bottom: 20px; font-size: 13.5px; }
+
+        .field-group { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;}
+        .field-group label { font-weight: 600; font-size: 14px; color: #334155; display: flex; justify-content: space-between; }
+        .field-group input { 
+            width: 100%; padding: 12px 14px; 
+            border: 2px solid #e2e8f0; border-radius: 10px; 
+            font-family: monospace; font-size: 14px; 
+            transition: all 0.2s; -webkit-appearance: none; appearance: none; /* 去除 iOS 默认圆角 */
+        }
+        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15); }
         
-        .status-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 15px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+        .submit-btn { 
+            width: 100%; padding: 14px; margin-top: 10px; 
+            font-size: 16px; font-weight: 600; border-radius: 10px; border: none; 
+            background: var(--primary); color: white; cursor: pointer; 
+            display: flex; justify-content: center; align-items: center; gap: 8px;
+            box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);
+        }
+        .submit-btn:active { transform: scale(0.98); }
+
+        /* 状态列表 (桌面双列) */
+        #platform-list-content { display: grid !important; grid-template-columns: repeat(2, 1fr) !important; gap: 12px; width: 100%; }
+        .status-card { 
+            background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; 
+            display: flex; justify-content: space-between; align-items: center; 
+        }
+        .status-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
+        .status-icon-wrapper { width: 36px; height: 36px; border-radius: 10px; background: #f8fafc; display: flex; justify-content: center; align-items: center; font-size: 18px; flex-shrink: 0; border: 1px solid #f1f5f9;}
+        .status-name { font-weight: 600; color: #334155; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .status-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        .status-tag { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
+        .status-tag.active { background: #dcfce7; color: #166534; }
+        .status-tag.active::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #22c55e; }
+        .status-tag.inactive { background: #f1f5f9; color: #64748b; }
+        .status-tag.inactive::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #cbd5e1; }
+        .del-btn { background: none; border: none; color: #ef4444; padding: 8px; border-radius: 8px; display: flex; justify-content: center; }
+
+        @keyframes slideDown { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* ========================================= */
+        /* 📱 移动端深度适配 (Media Queries) */
+        /* ========================================= */
+        @media (max-width: 640px) {
+            /* 1. 全屏沉浸式布局 */
+            .dashboard-wrapper { padding: 0; display: block; }
+            .dashboard { border-radius: 0; box-shadow: none; margin-bottom: 0; max-width: none; min-height: 100%; }
+
+            /* 2. 标签栏变身：胶囊滚动条 (Chips) */
+            .tabs { 
+                padding: 12px 16px; 
+                gap: 10px; 
+                border-bottom: 1px solid #f1f5f9;
+                background: #fff;
+                position: sticky; top: 0; z-index: 10; /* 吸顶效果 */
+            }
+            .tab-btn {
+                flex: none; /* 取消弹性宽度 */
+                min-width: auto;
+                padding: 6px 14px;
+                background: #f1f5f9;
+                border-radius: 20px; /* 胶囊圆角 */
+                color: #64748b;
+                font-size: 13px;
+                border: 1px solid transparent;
+                box-shadow: none !important; /* 覆盖旧样式 */
+            }
+            .tab-btn.active {
+                background: var(--primary);
+                color: white;
+                font-weight: 500;
+                border-color: var(--primary);
+            }
+
+            /* 3. 内容区域适配 */
+            .tab-content { padding: 20px; }
+            
+            /* 4. 教程单列化 */
+            .tutorial-steps { grid-template-columns: 1fr; gap: 8px; }
+
+            /* 5. 输入框体验优化 */
+            .field-group input { 
+                font-size: 16px; /* 关键：防止 iOS 缩放 */ 
+                padding: 14px; /* 更大的点击区域 */
+            }
+
+            /* 6. 状态列表单列化 */
+            #platform-list-content { grid-template-columns: 1fr !important; }
+            
+            /* 7. 底部留白，防止被 Home Bar 遮挡 */
+            #status-area { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+        }
+        /* 暗色模式样式 */
+    [data-theme="dark"] {
+        --primary: #6366f1;
+        --bg: #1a1a1a;
+        --card-bg: #2d2d2d;
+        --text: #e0e0e0;
+        --border: #404040;
+        --input-bg: #3a3a3a;
+        --input-border: #555;
+        --button-bg: #4f46e5;
+        --button-text: #ffffff;
+        --tab-bg: #2a2a2a;
+        --tab-text: #a0aec0;
+        --tab-active: #e0e0e0;
+        --status-card-bg: #333333;
+        --status-card-border: #4a4a4a;
+        --status-name: #e2e8f0;
+        --status-tag-active-bg: #166534;
+        --status-tag-active-text: #dcfce7;
+        --status-tag-inactive-bg: #4a5568;
+        --status-tag-inactive-text: #a0aec0;
+        --tutorial-bg: #2d2d2d;
+        --tutorial-border: #4a4a4a;
+        --header-bg: #2d3748;
+    }
+
+    [data-theme="dark"] body {
+        background: var(--bg);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .dashboard {
+        background: var(--card-bg);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    [data-theme="dark"] .container-header {
+        background: var(--header-bg);
+    }
+
+    [data-theme="dark"] .tabs {
+        background: var(--tab-bg);
+        border-bottom-color: var(--border);
+    }
+
+    [data-theme="dark"] .tab-btn {
+        color: var(--tab-text);
+    }
+
+    [data-theme="dark"] .tab-btn:hover {
+        background: #3a3a3a;
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .tab-btn.active {
+        background: var(--card-bg);
+        color: var(--tab-active);
+        box-shadow: inset 0 -3px 0 var(--primary);
+    }
+
+    [data-theme="dark"] .field-group input {
+        background: var(--input-bg);
+        border-color: var(--input-border);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .field-group input:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+    }
+
+    [data-theme="dark"] .submit-btn {
+        background: var(--button-bg);
+        color: var(--button-text);
+    }
+
+    [data-theme="dark"] .submit-btn:hover {
+        background: #4338ca;
+    }
+
+    [data-theme="dark"] .tutorial-banner {
+        background: var(--tutorial-bg);
+        border-color: var(--tutorial-border);
+    }
+
+    [data-theme="dark"] .tutorial-title {
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .step-item {
+        background: var(--card-bg);
+        border-color: var(--border);
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .highlight-text {
+        color: #60a5fa;
+    }
+
+    [data-theme="dark"] kbd {
+        background: #4a5568;
+        border-color: #718096;
+        color: #e2e8f0;
+    }
+
+    [data-theme="dark"] #panel-desc {
+        background: #2d3748;
+        color: #cbd5e0;
+    }
+
+    [data-theme="dark"] .status-card {
+        background: var(--status-card-bg);
+        border-color: var(--status-card-border);
+    }
+
+    [data-theme="dark"] .status-name {
+        color: var(--status-name);
+    }
+
+    [data-theme="dark"] .status-tag.active {
+        background: var(--status-tag-active-bg);
+        color: var(--status-tag-active-text);
+    }
+
+    [data-theme="dark"] .status-tag.inactive {
+        background: var(--status-tag-inactive-bg);
+        color: var(--status-tag-inactive-text);
+    }
+
+    [data-theme="dark"] .del-btn {
+        color: #f87171;
+    }
+
+    [data-theme="dark"] .del-btn:hover {
+        background: #4a0e0e;
+    }
+
+    [data-theme="dark"] .status-icon-wrapper {
+        background: #4a5568;
+        border-color: #718096;
+    }
+
+    [data-theme="dark"] .field-group label {
+        color: var(--text);
+    }
+
+    [data-theme="dark"] .tab-content {
+        color: var(--text);
+    }
+
+    /* 移动端暗色模式样式 */
+    @media (max-width: 640px) {
+        [data-theme="dark"] .tabs {
+            background: var(--card-bg);
+            border-bottom-color: var(--border);
+        }
+
+        [data-theme="dark"] .tab-btn {
+            background: #374151;
+            color: var(--tab-text);
+        }
+
+        [data-theme="dark"] .tab-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+    }
     </style>
 </head>
 <body>
     <div class="container-header">
-        <h2>🔐 凭证获取中心</h2>
+        <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
         <button class="close-btn" onclick="window.close()" title="关闭">
             <img src="/static/icons/close_button.png" alt="关闭">
         </button>
@@ -51,23 +362,48 @@
     <div class="dashboard-wrapper">
     <div class="dashboard">
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('bilibili', this)">📺 B站</button>
-            <button class="tab-btn" onclick="switchTab('douyin', this)">🎵 抖音</button>
-            <button class="tab-btn" onclick="switchTab('kuaishou', this)">🧡 快手</button>
-            <button class="tab-btn" onclick="switchTab('weibo', this)">🌏 微博</button>
-            <button class="tab-btn" onclick="switchTab('twitter', this)">🐦 Twitter/X</button>
-            <button class="tab-btn" onclick="switchTab('reddit', this)">👽 Reddit</button>
+            <button class="tab-btn active" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
+            <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">🎵 抖音</button>
+            <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">🧡 快手</button>
+            <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">🌏 微博</button>
+            <button class="tab-btn" onclick="switchTab('twitter', this)" data-i18n="cookiesLogin.twitter">🐦 Twitter/X</button>
+            <button class="tab-btn" onclick="switchTab('reddit', this)" data-i18n="cookiesLogin.reddit">👽 Reddit</button>
         </div>
 
         <div class="tab-content" id="main-panel">
-            <div id="panel-desc" style="background: #f8fafc; padding: 12px 16px; border-radius: 8px; border-left: 4px solid var(--primary); line-height: 1.6; color: #334155; margin-bottom: 20px; font-size: 14px;">
+            
+            <div class="tutorial-banner">
+                <div class="tutorial-title">
+                    🎓 <span data-i18n="cookiesLogin.guide.title">新手通用获取教程</span>
                 </div>
+                <div class="tutorial-steps">
+                    <!-- 修复：补全初始的 HTML 默认内容，防止网络缓慢或 i18n 失效时变成空白 -->
+                    <div class="step-item">
+                        <div class="step-num">1</div>
+                        <div id="guide-step1">在浏览器打开对应平台网页并<span class="highlight-text">完成登录</span>。</div>
+                    </div>
+                    <div class="step-item">
+                        <div class="step-num">2</div>
+                        <div><span id="guide-step2-prefix">按下键盘</span> <kbd>F12</kbd> <span id="guide-step2-suffix">打开开发者工具。</span></div>
+                    </div>
+                    <div class="step-item">
+                        <div class="step-num">3</div>
+                        <div id="guide-step3">在顶部找到并点击 <span class="highlight-text">Application (应用程序)</span>。</div>
+                    </div>
+                    <div class="step-item">
+                        <div class="step-num">4</div>
+                        <div id="guide-step4">左侧找到 <span class="highlight-text">Cookies</span>，点击域名后在右侧复制对应的值。</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-desc"></div>
             
             <div id="dynamic-fields"></div>
             
             <div style="margin: 20px 0 15px 0; display: flex; align-items: center; gap: 8px;">
                 <input type="checkbox" id="encrypt-toggle" checked style="width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer;">
-                <label for="encrypt-toggle" style="font-weight: 500; font-size: 14px; color: #475569; cursor: pointer;">安全加密存储至本地文件</label>
+                <label for="encrypt-toggle" style="font-weight: 500; font-size: 14px; color: #475569; cursor: pointer;" data-i18n="cookiesLogin.encryptStorage">安全加密存储至本地文件</label>
             </div>
             
             <button class="submit-btn" id="submit-btn" onclick="submitCurrentCookie()">
@@ -78,7 +414,7 @@
         </div>
 
         <div id="status-area" style="padding: 0 30px 30px 30px;">
-            <h3 style="font-size: 15px; color: #334155; margin-bottom: 12px; border-top: 1px dashed #cbd5e1; padding-top: 20px;">本地状态监控</h3>
+            <h3 style="font-size: 15px; color: #334155; margin-bottom: 12px; border-top: 1px dashed #cbd5e1; padding-top: 20px;" data-i18n="cookiesLogin.localMonitoring">本地状态监控</h3>
             <div id="platform-list-content"></div>
         </div>
     </div>

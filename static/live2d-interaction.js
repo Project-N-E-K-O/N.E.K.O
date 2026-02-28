@@ -5,7 +5,7 @@
 // ===== 自动吸附功能配置 =====
 const SNAP_CONFIG = {
     // 吸附阈值：模型在屏幕内剩余的像素小于此值时触发吸附（即模型绝大部分超出屏幕）
-    threshold: 50,
+    threshold: 200,
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
     // 动画持续时间（毫秒）
@@ -740,6 +740,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             return;
         }
 
+        // isFocusing 用于控制眼睛跟踪，悬浮菜单显示不受影响
         this.isFocusing = true;
         if (lockIcon) lockIcon.style.display = 'block';
         // 锁定状态下不显示浮动菜单
@@ -996,7 +997,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     canvasEl.style.cursor = 'grab';
                 }
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
-                if (this.isFocusing) {
+                // 同时检查鼠标跟踪是否启用
+                const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
+                if (this.isFocusing && isMouseTrackingEnabled) {
                     model.focus(pointer.x, pointer.y);
                 }
             } else {
@@ -1119,24 +1122,18 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         if (expressionFiles.length > 0) {
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile) {
-                // 在 FileReferences 中查找匹配的表情名称
-                let expressionName = null;
-                if (this.fileReferences && this.fileReferences.Expressions) {
-                    for (const expr of this.fileReferences.Expressions) {
-                        if (expr.File === choiceFile) {
-                            expressionName = expr.Name;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!expressionName) {
-                    const base = String(choiceFile).split('/').pop() || '';
-                    expressionName = base.replace('.exp3.json', '');
-                }
+                const expressionName = (typeof this.resolveExpressionNameByFile === 'function')
+                    ? this.resolveExpressionNameByFile(choiceFile)
+                    : null;
 
-                console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
-                await this.currentModel.expression(expressionName);
+                if (expressionName) {
+                    console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
+                    await this.currentModel.expression(expressionName);
+                } else if (typeof this.playExpression === 'function') {
+                    // 某些配置只给 basename（如 expression15.exp3.json），这里回退到文件级播放逻辑
+                    console.warn(`[ClickEffect] 无法按文件解析表情名，回退为文件播放: ${choiceFile}`);
+                    await this.playExpression(emotion, choiceFile);
+                }
             }
         }
 

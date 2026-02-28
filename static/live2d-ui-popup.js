@@ -23,7 +23,7 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         border: 'var(--neko-popup-border, 1px solid rgba(255,255,255,0.18))',  // 微妙高光边框（支持暗色模式）
         borderRadius: '8px',  // Fluent 标准圆角
         padding: '8px',
-        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08))',  // Fluent 多层阴影（支持暗色模式）
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',  // Fluent 多层阴影（支持暗色模式）
         display: 'none',
         flexDirection: 'column',
         gap: '6px',
@@ -344,6 +344,74 @@ Live2DManager.prototype._createAnimationSettingsSidePanel = function () {
     fpsRow.appendChild(fpsSlider);
     fpsRow.appendChild(fpsValue);
     container.appendChild(fpsRow);
+
+    // --- 跟踪鼠标开关 ---
+    const mouseTrackingRow = document.createElement('div');
+    Object.assign(mouseTrackingRow.style, { display: 'flex', alignItems: 'center', gap: '8px', width: '100%', marginTop: '4px' });
+
+    const mouseTrackingLabel = document.createElement('span');
+    mouseTrackingLabel.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
+    mouseTrackingLabel.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
+    Object.assign(mouseTrackingLabel.style, { fontSize: '12px', color: 'var(--neko-popup-text, #333)', flex: '1' });
+
+    const mouseTrackingCheckbox = document.createElement('input');
+    mouseTrackingCheckbox.type = 'checkbox';
+    mouseTrackingCheckbox.id = 'live2d-mouse-tracking-toggle';
+    mouseTrackingCheckbox.checked = window.mouseTrackingEnabled !== false;
+    Object.assign(mouseTrackingCheckbox.style, { display: 'none' });
+
+    const { indicator: mouseTrackingIndicator, updateStyle: updateMouseTrackingStyle } = this._createCheckIndicator();
+    updateMouseTrackingStyle(mouseTrackingCheckbox.checked);
+
+    const updateMouseTrackingRowStyle = () => {
+        updateMouseTrackingStyle(mouseTrackingCheckbox.checked);
+        mouseTrackingRow.style.background = mouseTrackingCheckbox.checked
+            ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+            : 'transparent';
+    };
+    updateMouseTrackingRowStyle();
+
+    const handleMouseTrackingToggle = () => {
+        mouseTrackingCheckbox.checked = !mouseTrackingCheckbox.checked;
+        window.mouseTrackingEnabled = mouseTrackingCheckbox.checked;
+        updateMouseTrackingRowStyle();
+
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+
+        if (window.live2dManager && typeof window.live2dManager.setMouseTrackingEnabled === 'function') {
+            window.live2dManager.setMouseTrackingEnabled(mouseTrackingCheckbox.checked);
+        }
+        console.log(`[Live2D] 跟踪鼠标切换: enabled=${mouseTrackingCheckbox.checked}, window.mouseTrackingEnabled=${window.mouseTrackingEnabled}`);
+    };
+
+    mouseTrackingRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+    mouseTrackingIndicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+    mouseTrackingLabel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleMouseTrackingToggle();
+    });
+
+    mouseTrackingRow.addEventListener('mouseenter', () => {
+        if (mouseTrackingCheckbox.checked) {
+            mouseTrackingRow.style.background = 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))';
+        } else {
+            mouseTrackingRow.style.background = 'var(--neko-popup-hover-subtle, rgba(68,183,254,0.08))';
+        }
+    });
+    mouseTrackingRow.addEventListener('mouseleave', () => {
+        updateMouseTrackingRowStyle();
+    });
+
+    mouseTrackingRow.appendChild(mouseTrackingCheckbox);
+    mouseTrackingRow.appendChild(mouseTrackingIndicator);
+    mouseTrackingRow.appendChild(mouseTrackingLabel);
+    container.appendChild(mouseTrackingRow);
 
     document.body.appendChild(container);
     return container;

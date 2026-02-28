@@ -4,8 +4,70 @@ function getIsDarkTheme() {
         document.documentElement.getAttribute('data-theme') === 'dark';
 }
 
+// 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
+// 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
+let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
+let _reservedFieldsReady = null;
+
+const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
+const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
+
+function _safeArray(value) {
+    return ReservedFieldsUtils._safeArray(value);
+}
+
+function _uniqueFields(fields) {
+    return [...new Set(fields)];
+}
+
+function _getReservedConfigOrFallback() {
+    const systemReserved = _safeArray(characterReservedFieldsConfig.system_reserved_fields);
+    const workshopReserved = _safeArray(characterReservedFieldsConfig.workshop_reserved_fields);
+    const allReserved = _safeArray(characterReservedFieldsConfig.all_reserved_fields);
+    if (systemReserved.length || workshopReserved.length || allReserved.length) {
+        return {
+            system_reserved_fields: systemReserved,
+            workshop_reserved_fields: workshopReserved,
+            all_reserved_fields: allReserved.length > 0 ? allReserved : _uniqueFields([...systemReserved, ...workshopReserved])
+        };
+    }
+    return {
+        system_reserved_fields: SYSTEM_RESERVED_FIELDS_FALLBACK,
+        workshop_reserved_fields: WORKSHOP_RESERVED_FIELDS_FALLBACK,
+        all_reserved_fields: _uniqueFields([...SYSTEM_RESERVED_FIELDS_FALLBACK, ...WORKSHOP_RESERVED_FIELDS_FALLBACK])
+    };
+}
+
+function getWorkshopReservedFields() {
+    const cfg = _getReservedConfigOrFallback();
+    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation']
+        .filter(f => cfg.all_reserved_fields.includes(f));
+    return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
+}
+
+function getWorkshopHiddenFields() {
+    const cfg = _getReservedConfigOrFallback();
+    const keySystemFields = ['live2d', 'system_prompt', 'voice_id', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'];
+    const presentSystemFields = cfg.all_reserved_fields.length > 0
+        ? keySystemFields.filter(field => cfg.all_reserved_fields.includes(field))
+        : keySystemFields;
+    return _uniqueFields([...presentSystemFields, ...getWorkshopReservedFields()]);
+}
+
+function loadCharacterReservedFieldsConfig() {
+    _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
+        characterReservedFieldsConfig = cfg;
+    });
+    return _reservedFieldsReady;
+}
+
+function ensureReservedFieldsLoaded() {
+    return _reservedFieldsReady || Promise.resolve();
+}
+
 // JavaScript控制的tooltip实现
 document.addEventListener('DOMContentLoaded', function () {
+    void loadCharacterReservedFieldsConfig();
     const tabButtons = document.querySelectorAll('.tabs button');
 
     // 创建tooltip元素
@@ -2284,6 +2346,7 @@ async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
 // 扫描单个角色卡文件
 async function scanCharaFile(filePath, itemId, itemTitle) {
     try {
+        await ensureReservedFieldsLoaded();
         // 使用新的read-file API读取文件内容
         const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
         const readResult = await readResponse.json();
@@ -2302,12 +2365,7 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             // 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
             // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
             // live2d_item_id 是系统自动管理的，不应该从外部数据读取
-            const RESERVED_FIELDS = [
-                '原始数据', '文件路径', '创意工坊物品ID',
-                'description', 'tags', 'name',
-                '描述', '标签', '关键词',
-                'live2d_item_id'
-            ];
+            const RESERVED_FIELDS = getWorkshopReservedFields();
 
             // 转换为符合catgirl API格式的数据（不包含保留字段）
             const catgirlFormat = {
@@ -2396,6 +2454,16 @@ window.addEventListener('load', function () {
 
     // 页面加载时自动扫描创意工坊角色卡并添加到系统
     autoScanAndAddWorkshopCharacterCards();
+
+    // 监听语言变化事件，刷新当前页面显示
+    if (window.i18n) {
+        window.i18n.on('languageChanged', () => {
+            loadSubscriptions();
+        });
+    }
+    window.addEventListener('localechange', () => {
+        loadSubscriptions();
+    });
 
 });
 
@@ -2887,8 +2955,8 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
 }
 
 async function handleUploadToWorkshop() {
-
     try {
+        await ensureReservedFieldsLoaded();
         // 检查是否为默认模型
         if (isDefaultModel()) {
             showMessage(window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊', 'error');
@@ -2954,12 +3022,7 @@ async function handleUploadToWorkshop() {
         // 这些字段是下载时由系统添加的元数据，不应该出现在工坊角色卡中
         // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
         // live2d_item_id 是系统自动管理的，不应该上传
-        const SYSTEM_RESERVED_FIELDS = [
-            '原始数据', '文件路径', '创意工坊物品ID',
-            'description', 'tags', 'name',
-            '描述', '标签', '关键词',
-            'live2d_item_id'
-        ];
+        const SYSTEM_RESERVED_FIELDS = getWorkshopReservedFields();
         for (const field of SYSTEM_RESERVED_FIELDS) {
             delete fullCharaData[field];
         }
@@ -3679,13 +3742,7 @@ function updateCardPreview() {
 
     // 保留字段（不显示）
     // 系统保留字段 + 工坊保留字段
-    const hiddenFields = [
-        'live2d', 'system_prompt', 'voice_id',
-        '原始数据', '文件路径', '创意工坊物品ID',
-        'description', 'tags', 'name',
-        '描述', '标签', '关键词',
-        'live2d_item_id'
-    ];
+    const hiddenFields = getWorkshopHiddenFields();
 
     // 清空容器
     container.innerHTML = '';

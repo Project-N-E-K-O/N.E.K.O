@@ -41,6 +41,7 @@ background: #fff;
 border-radius: 0;
 box-shadow: none;
 padding: 0;
+padding-bottom: 100px; /* 归还被保存按钮占用的空间 */
 position: relative;
 min-height: 100vh;
 }
@@ -1197,4 +1198,21 @@ font-size: 0.8em;
     flex: 0 1 130px;
     min-width: 110px;
 }
+}
+
+
+.save-button-box{
+    position: fixed;      
+    bottom: 0;            
+    left: 0;
+    right: 0;
+    z-index: 999;
+    display: flex;        
+    justify-content: center; 
+    padding: 20px 0;      
+    pointer-events: none; 
+}
+.save-button-box > div {
+    pointer-events: auto; 
+    padding: 0 24px;      
 }

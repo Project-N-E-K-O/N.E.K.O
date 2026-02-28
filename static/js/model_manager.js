@@ -1202,6 +1202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     })();
 
     //
+    // 注意：必须使用专用接口保存模型和光照设置，因为通用接口会过滤掉保留字段
     // 保存模型设置到角色的函数（全面升级版）
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
         try {
@@ -1210,7 +1211,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!lanlanName || lanlanName.trim() === '') {
                 const errorMsg = t('live2d.cannotSaveNoCharacter', '无法保存：未指定角色名称');
                 showStatus(errorMsg, 3000);
-                // 显示错误提示（如果存在 toast 功能）
                 if (typeof showToast === 'function') {
                     showToast(errorMsg, 'error');
                 }
@@ -1219,7 +1219,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 在发送 PUT 请求保存数据前，添加校验
             if (currentModelType === 'vrm') {
-                // 如果 modelName (即路径) 是 "undefined"，抛出错误或尝试自动修复
                 if (!modelName ||
                     modelName === 'undefined' ||
                     modelName === 'null' ||
@@ -1230,7 +1229,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ))) {
                     console.error('[模型管理] 检测到无效的 VRM 模型路径，尝试自动修复:', modelName);
 
-                    // 尝试从 currentModelInfo 获取有效路径
                     if (currentModelInfo && currentModelInfo.path &&
                         currentModelInfo.path !== 'undefined' &&
                         currentModelInfo.path !== 'null' &&
@@ -1240,13 +1238,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         currentModelInfo.name !== 'undefined' &&
                         currentModelInfo.name !== 'null' &&
                         !currentModelInfo.name.toLowerCase().includes('undefined')) {
-                        // 使用 ModelPathHelper 标准化路径
                         const filename = currentModelInfo.name.endsWith('.vrm')
                             ? currentModelInfo.name
                             : `${currentModelInfo.name}.vrm`;
                         modelName = ModelPathHelper.normalizeModelPath(filename, 'model');
                     } else {
-                        // 如果无法修复，抛出错误
                         const errorMsg = t('live2d.vrmModelPathInvalid', 'VRM 模型路径无效，无法保存。请重新选择模型。');
                         showStatus(errorMsg, 5000);
                         throw new Error('VRM 模型路径无效: ' + modelName);
@@ -1256,86 +1252,120 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             showStatus(t('live2d.savingSettings', '正在保存设置...'));
 
-            // 2. 🔥 先从服务器拉取当前角色的完整档案（防止覆盖掉其他不需要修改的属性）
-            // 使用 RequestHelper 确保统一的错误处理和超时
-            const allData = await RequestHelper.fetchJson('/api/characters');
-            // 拿到该角色的旧数据，如果没有就初始化为空对象
-            const charData = allData['猫娘']?.[lanlanName] || {};
+            // 2. 构建模型数据，使用专用接口保存
+            const modelData = {
+                model_type: currentModelType,
+            };
 
-            // 3. 更新模型相关字段
             if (currentModelType === 'vrm') {
-                charData.model_type = 'vrm';
-                // 绝对不要把 "undefined" 字符串保存到后端数据库
-                charData.vrm = modelName;
-                // 清空 Live2D 字段，避免混淆
-                charData.live2d = "";
-                if (vrmAnimation) charData.vrm_animation = vrmAnimation;
-
-                // 🔥 获取并写入光照数据
-                const ambient = document.getElementById('ambient-light-slider');
-                const main = document.getElementById('main-light-slider');
-                const fill = document.getElementById('fill-light-slider');
-                const rim = document.getElementById('rim-light-slider');
-                const top = document.getElementById('top-light-slider');
-                const bottom = document.getElementById('bottom-light-slider');
-
-                if (ambient && main) {
-                    charData.lighting = {
-                        ambient: parseFloat(ambient.value),
-                        main: parseFloat(main.value),
-                        // 简化模式下，辅助光强制保存为 0.0
-                        fill: 0.0,
-                        rim: 0.0,
-                        top: 0.0,
-                        bottom: 0.0
-                    };
-                    // 保存曝光值
-                    const exposure = document.getElementById('exposure-slider');
-                    if (exposure) {
-                        charData.lighting.exposure = parseFloat(exposure.value);
+                // 转换 VRM 路径：从完整 HTTP 路径转换为后端要求的相对路径
+                let vrmPath = modelName;
+                if (vrmPath && typeof vrmPath === 'string') {
+                    const urlMatch = vrmPath.match(/^(?:http|https):\/\/[^/]+(\/user_vrm\/.*|\/static\/vrm\/.*)/);
+                    if (urlMatch) {
+                        vrmPath = urlMatch[1];
                     }
-                    // 保存色调映射
-                    const tonemapping = document.getElementById('tonemapping-select');
-                    if (tonemapping) {
-                        charData.lighting.toneMapping = parseInt(tonemapping.value);
+                    if (!vrmPath.startsWith('/user_vrm/') && !vrmPath.startsWith('/static/vrm/')) {
+                        if (currentModelInfo && currentModelInfo.path) {
+                            const infoPathMatch = currentModelInfo.path.match(/^(?:http|https):\/\/[^/]+(\/user_vrm\/.*|\/static\/vrm\/.*)/);
+                            if (infoPathMatch) {
+                                vrmPath = infoPathMatch[1];
+                            } else if (currentModelInfo.path.startsWith('/user_vrm/') || currentModelInfo.path.startsWith('/static/vrm/')) {
+                                vrmPath = currentModelInfo.path;
+                            }
+                        }
                     }
                 }
-                // 保存待机动作
+                modelData.vrm = vrmPath;
                 const idleAnimSel = document.getElementById('idle-animation-select');
-                if (idleAnimSel && idleAnimSel.value) {
-                    charData.idleAnimation = idleAnimSel.value;
+                if (vrmAnimation) {
+                    modelData.vrm_animation = vrmAnimation;
+                } else if (idleAnimSel && idleAnimSel.value) {
+                    modelData.vrm_animation = idleAnimSel.value;
                 }
-                // 移除旧的预设字段
-                delete charData.lightingPreset;
+
+                if (idleAnimSel && idleAnimSel.value) {
+                    modelData.idle_animation = idleAnimSel.value;
+                }
             } else {
-                // Live2D 逻辑
-                charData.model_type = 'live2d';
-                charData.live2d = modelName;
-                charData.vrm = null;
-                if (itemId) charData.item_id = itemId;
+                modelData.live2d = modelName;
+                if (itemId) modelData.item_id = itemId;
             }
 
-
-            // 4. 🔥 使用【通用更新接口】发送数据（这个接口支持保存任意字段）
-            // 后端 API: PUT /api/characters/catgirl/{name}
-            // 使用 RequestHelper 确保统一的错误处理和超时
-            const result = await RequestHelper.fetchJson(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}`,
+            // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
+            const modelResult = await RequestHelper.fetchJson(
+                `/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`,
                 {
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify(charData)
+                    body: JSON.stringify(modelData)
                 }
             );
-            if (result.success) {
-                const modelDisplayName = currentModelType === 'vrm' ? `VRM: ${modelName}` : modelName;
-                showStatus(t('live2d.modelSettingsSaved', `已保存模型和光照设置`, { name: lanlanName }), 2000);
-                return true;
-            } else {
-                throw new Error(result.error || '保存失败');
+
+            if (!modelResult.success) {
+                throw new Error(modelResult.error || '保存模型设置失败');
             }
+
+            let lightingResult = null;
+            const ambient = document.getElementById('ambient-light-slider');
+            const main = document.getElementById('main-light-slider');
+
+            // 4. 如果是 VRM 模式，单独保存光照设置（仅光照部分独立保存）
+            if (currentModelType === 'vrm' && ambient && main) {
+                const lightingData = {
+                    lighting: {
+                        ambient: parseFloat(ambient.value),
+                        main: parseFloat(main.value),
+                        fill: 0.0,
+                        rim: 0.0,
+                        top: 0.0,
+                        bottom: 0.0
+                    }
+                };
+
+                const exposure = document.getElementById('exposure-slider');
+                if (exposure) {
+                    lightingData.lighting.exposure = parseFloat(exposure.value);
+                }
+                const tonemapping = document.getElementById('tonemapping-select');
+                if (tonemapping) {
+                    lightingData.lighting.toneMapping = parseInt(tonemapping.value);
+                }
+
+                try {
+                    lightingResult = await RequestHelper.fetchJson(
+                        `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/lighting`,
+                        {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(lightingData)
+                        }
+                    );
+                } catch (e) {
+                    console.warn('保存光照设置失败:', e);
+                    lightingResult = { success: false, error: e.message };
+                }
+            }
+
+            const modelDisplayName = currentModelType === 'vrm' ? `VRM: ${modelName}` : modelName;
+            let saveMessage;
+            const lightingFailed = currentModelType === 'vrm' && ambient && main && (!lightingResult || !lightingResult.success);
+
+            if (lightingFailed) {
+                saveMessage = t('live2d.modelSavedLightingFailed', `已保存模型设置，光照设置保存失败`, { name: modelDisplayName });
+            } else if (currentModelType === 'vrm' && ambient && main) {
+                saveMessage = t('live2d.modelSettingsSavedWithLighting', `已保存模型和光照设置`, { name: modelDisplayName });
+            } else if (currentModelType === 'vrm') {
+                saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
+            } else {
+                saveMessage = t('live2d.modelSettingsSaved', `已保存模型设置`, { name: modelDisplayName });
+            }
+            showStatus(saveMessage, 2000);
+            return true;
 
         } catch (error) {
             console.error('保存模型设置失败:', error);

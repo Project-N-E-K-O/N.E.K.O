@@ -722,3 +722,354 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     padding: 0;
     object-fit: contain;
 }
+
+/* ==================== 智能静音移除模态对话框 ==================== */
+
+.silence-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(4px);
+    animation: silence-modal-fade-in 0.2s ease-out;
+}
+
+@keyframes silence-modal-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.silence-modal {
+    background: #fff;
+    border-radius: 16px;
+    width: 420px;
+    max-width: 92vw;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    overflow: hidden;
+    animation: silence-modal-slide-in 0.25s ease-out;
+}
+
+@keyframes silence-modal-slide-in {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.silence-modal-header {
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.silence-modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.silence-modal-close {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background 0.2s;
+}
+
+.silence-modal-close:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
+
+.silence-modal-body {
+    padding: 20px;
+}
+
+/* 分析结果统计 */
+.silence-analysis-result {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.silence-stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #f5f9ff;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.silence-stat-row.saving-highlight {
+    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+    border: 1px solid #81c784;
+}
+
+.silence-stat-label {
+    color: #555;
+    font-weight: 500;
+}
+
+.silence-stat-value {
+    font-weight: 700;
+    color: #333;
+    font-size: 15px;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.silence-stat-value.silence-removable {
+    color: #f44336;
+}
+
+.silence-stat-value.silence-remaining {
+    color: #4CAF50;
+}
+
+/* 进度条 */
+.silence-progress-section {
+    margin-top: 16px;
+}
+
+.silence-progress-bar-bg {
+    width: 100%;
+    height: 10px;
+    background: #e0e0e0;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.silence-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #40C5F1 0%, #4CAF50 100%);
+    border-radius: 5px;
+    transition: width 0.3s ease;
+}
+
+.silence-progress-text {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #888;
+}
+
+/* 下载区域 */
+.silence-download-section {
+    margin-top: 16px;
+    text-align: center;
+}
+
+.silence-success-msg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: #4CAF50;
+    font-weight: 600;
+}
+
+.silence-md5 {
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 11px;
+    color: #999;
+    font-weight: 400;
+    word-break: break-all;
+}
+
+.silence-download-btn {
+    background: linear-gradient(135deg, #66bb6a 0%, #43a047 100%);
+    color: #fff;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.silence-download-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(76, 175, 80, 0.3);
+}
+
+/* 底部按钮区域 */
+.silence-modal-footer {
+    display: flex;
+    gap: 10px;
+    padding: 16px 20px;
+    background: #fafafa;
+    border-top: 1px solid #eee;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.silence-btn-trim,
+.silence-btn-original,
+.silence-btn-cancel {
+    padding: 10px 22px;
+    border: none;
+    border-radius: 24px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: fit-content;
+    text-align: center;
+}
+
+.silence-btn-trim {
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    color: #fff;
+}
+
+.silence-btn-trim:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 12px rgba(64, 197, 241, 0.35);
+}
+
+.silence-btn-original {
+    background: #fff;
+    color: #555;
+    border: 2px solid #ddd;
+}
+
+.silence-btn-original:hover {
+    border-color: #aaa;
+    background: #f5f5f5;
+}
+
+.silence-btn-cancel {
+    background: #f44336;
+    color: #fff;
+}
+
+.silence-btn-cancel:hover {
+    background: #d32f2f;
+}
+
+/* 暗色模式适配 */
+[data-theme="dark"] .silence-modal-overlay {
+    background: rgba(0, 0, 0, 0.75);
+}
+
+[data-theme="dark"] .silence-modal {
+    background: #1e2a3a;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .silence-modal-header {
+    background: linear-gradient(135deg, #2a7bc4 0%, #1a5fa0 100%);
+}
+
+[data-theme="dark"] .silence-modal-close {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .silence-modal-close:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+[data-theme="dark"] .silence-modal-body {
+    color: #e0e0e0;
+}
+
+[data-theme="dark"] .silence-stat-row {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .silence-stat-row.saving-highlight {
+    background: rgba(76, 175, 80, 0.15);
+    border-color: rgba(76, 175, 80, 0.4);
+}
+
+[data-theme="dark"] .silence-stat-label {
+    color: #b0b0b0;
+}
+
+[data-theme="dark"] .silence-stat-value {
+    color: #f0f0f0;
+}
+
+[data-theme="dark"] .silence-stat-value.silence-removable {
+    color: #ff6b6b;
+}
+
+[data-theme="dark"] .silence-stat-value.silence-remaining {
+    color: #66bb6a;
+}
+
+[data-theme="dark"] .silence-progress-bar-bg {
+    background: #2a3a4a;
+}
+
+[data-theme="dark"] .silence-progress-text {
+    color: #888;
+}
+
+[data-theme="dark"] .silence-success-msg {
+    color: #66bb6a;
+}
+
+[data-theme="dark"] .silence-md5 {
+    color: #777;
+}
+
+[data-theme="dark"] .silence-download-btn {
+    background: linear-gradient(135deg, #4a9e4f 0%, #357a38 100%);
+}
+
+[data-theme="dark"] .silence-download-btn:hover {
+    box-shadow: 0 3px 10px rgba(76, 175, 80, 0.25);
+}
+
+[data-theme="dark"] .silence-modal-footer {
+    background: #162030;
+    border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .silence-btn-trim {
+    background: linear-gradient(135deg, #2a7bc4 0%, #1a5fa0 100%);
+}
+
+[data-theme="dark"] .silence-btn-trim:hover {
+    box-shadow: 0 3px 12px rgba(42, 123, 196, 0.35);
+}
+
+[data-theme="dark"] .silence-btn-original {
+    background: #2a3a4a;
+    color: #ccc;
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .silence-btn-original:hover {
+    border-color: rgba(255, 255, 255, 0.3);
+    background: #354555;
+}
+
+[data-theme="dark"] .silence-btn-cancel {
+    background: #c62828;
+}
+
+[data-theme="dark"] .silence-btn-cancel:hover {
+    background: #b71c1c;
+}
+

@@ -621,6 +621,10 @@ html #chat-container {
   background: #1e1e1e;
   color: #e0e0e0;
 }
+[data-theme="dark"] .save-button-box {
+  background: #0f0f0f;
+  color: #e0e0e0;
+}
 
 /* ===== 子页面：关闭按钮 ===== */
 [data-theme="dark"] .close-btn {
