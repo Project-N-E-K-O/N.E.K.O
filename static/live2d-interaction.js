@@ -1126,27 +1126,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             }
 
             const choiceFile = this.getRandomElement(expressionFiles);
-            if (choiceFile) {
-                const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
-                    ? this.resolveExpressionReferenceByFile(choiceFile)
-                    : null;
-                const canonicalChoiceFile = resolvedRef && resolvedRef.file ? resolvedRef.file : choiceFile;
-                const expressionName = resolvedRef && resolvedRef.name
-                    ? resolvedRef.name
-                    : ((typeof this.resolveExpressionNameByFile === 'function')
-                        ? this.resolveExpressionNameByFile(canonicalChoiceFile)
-                        : null);
-                const expressionNameLooksLikeFile = !!expressionName &&
-                    (/\.exp3\.json$/i.test(expressionName) || expressionName.includes('/'));
-
-                if (expressionName && !expressionNameLooksLikeFile) {
-                    console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
-                    await this.currentModel.expression(expressionName);
-                } else if (typeof this.playExpression === 'function') {
-                    // 某些配置只给 basename（如 expression15.exp3.json）或 name 本身像文件路径，回退到文件级播放逻辑
-                    console.warn(`[ClickEffect] 表情名不可安全使用，回退为文件播放: ${canonicalChoiceFile}`);
-                    await this.playExpression(emotion, canonicalChoiceFile);
-                }
+            if (choiceFile && typeof this.playExpression === 'function') {
+                console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
+                await this.playExpression(emotion, choiceFile);
             }
         }
 

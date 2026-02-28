@@ -5924,7 +5924,7 @@ function init_app() {
     window.agentStateMachine = agentStateMachine;
     window._agentStatusSnapshot = window._agentStatusSnapshot || null;
 
-    // Agent 定时检查器（暴露到 window 供 live2d-ui-hud.js 调用）
+    // Agent 定时检查器
     let agentCheckInterval = null;
     let lastFlagsSyncTime = 0;
     const FLAGS_SYNC_INTERVAL = 3000; // 3秒同步一次后端flags状态

@@ -71,8 +71,22 @@ async def get_page_config(lanlan_name: str = ""):
                     model_path = vrm_path
                     logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {model_path}")
                 elif vrm_path.startswith('/'):
-                    model_path = vrm_path
-                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                    # 对已知前缀的路径验证文件是否实际存在，防止返回指向已删除文件的路径
+                    _vrm_file_verified = False
+                    if vrm_path.startswith(VRM_USER_PATH + '/'):
+                        _fname = vrm_path[len(VRM_USER_PATH) + 1:]
+                        _vrm_file_verified = (_config_manager.vrm_dir / _fname).exists()
+                    elif vrm_path.startswith(VRM_STATIC_PATH + '/'):
+                        _fname = vrm_path[len(VRM_STATIC_PATH) + 1:]
+                        _vrm_file_verified = (_config_manager.project_root / 'static' / 'vrm' / _fname).exists()
+                    else:
+                        _vrm_file_verified = True  # 未知前缀，不做判断
+                    if _vrm_file_verified:
+                        model_path = vrm_path
+                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                    else:
+                        model_path = ""
+                        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
                 else:
                     filename = os.path.basename(vrm_path)
                     project_root = _config_manager.project_root
