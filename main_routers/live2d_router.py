@@ -426,7 +426,7 @@ def get_model_files(model_name: str):
                 "模型 %s 未找到 .model3.json 文件，model_dir=%s, actual_model_dir=%s",
                 model_name,
                 model_dir,
-                model_dir,
+                actual_model_dir,
             )
             return {"success": False, "error": "模型配置文件(.model3.json)不存在"}
 

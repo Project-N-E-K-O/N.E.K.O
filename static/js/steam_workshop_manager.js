@@ -12,12 +12,14 @@ let characterReservedFieldsConfig = {
 };
 
 const SYSTEM_RESERVED_FIELDS_FALLBACK = [
-    'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'vrm_rotation', 'live2d_item_id'
+    'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
+    'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'
 ];
 const WORKSHOP_RESERVED_FIELDS_FALLBACK = [
     '原始数据', '文件路径', '创意工坊物品ID',
     'description', 'tags', 'name',
-    '描述', '标签', '关键词'
+    '描述', '标签', '关键词',
+    '_reserved', 'item_id', 'idleAnimation'
 ];
 
 function _safeArray(value) {
@@ -48,10 +50,9 @@ function _getReservedConfigOrFallback() {
 
 function getWorkshopReservedFields() {
     const cfg = _getReservedConfigOrFallback();
-    const live2dItemIdField = cfg.all_reserved_fields.includes('live2d_item_id')
-        ? ['live2d_item_id']
-        : [];
-    return _uniqueFields([...cfg.workshop_reserved_fields, ...live2dItemIdField]);
+    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation']
+        .filter(f => cfg.all_reserved_fields.includes(f));
+    return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
 }
 
 function getWorkshopHiddenFields() {

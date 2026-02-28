@@ -84,12 +84,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        raw_voice_id = get_reserved(
-            self.lanlan_basic_config[self.lanlan_name],
-            'voice_id',
-            default='',
-            legacy_keys=('voice_id',),
-        )
+        raw_voice_id = self._get_voice_id()
         if self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', '')):
             self.voice_id = ''
             self._is_free_preset_voice = False
@@ -709,6 +704,14 @@ class LLMSessionManager:
             and self._is_preset_voice_id(voice_id)
         )
 
+    def _get_voice_id(self) -> str:
+        return get_reserved(
+            self.lanlan_basic_config[self.lanlan_name],
+            'voice_id',
+            default='',
+            legacy_keys=('voice_id',),
+        )
+
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()
         text = text.replace("\n", "")
@@ -757,12 +760,7 @@ class LLMSessionManager:
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
-        raw_voice_id = get_reserved(
-            self.lanlan_basic_config[self.lanlan_name],
-            'voice_id',
-            default='',
-            legacy_keys=('voice_id',),
-        )
+        raw_voice_id = self._get_voice_id()
         block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
         if block_free_preset:
             self.voice_id = ''
@@ -1274,12 +1272,7 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
-            raw_voice_id = get_reserved(
-                self.lanlan_basic_config[self.lanlan_name],
-                'voice_id',
-                default='',
-                legacy_keys=('voice_id',),
-            )
+            raw_voice_id = self._get_voice_id()
             block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
             if block_free_preset:
                 self.voice_id = ''

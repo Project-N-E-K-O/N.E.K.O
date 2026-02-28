@@ -2767,13 +2767,11 @@ async def sync_workshop_character_cards() -> dict:
                                 set_reserved(catgirl_data, 'avatar', 'asset_source_id', str(item_id))
                                 set_reserved(catgirl_data, 'avatar', 'asset_source', 'steam_workshop')
                                 set_reserved(catgirl_data, 'avatar', 'model_type', 'live2d')
-                                set_reserved(
-                                    catgirl_data,
-                                    'avatar',
-                                    'live2d',
-                                    'model_path',
-                                    f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json',
-                                )
+                                if '/' in legacy_live2d_name or legacy_live2d_name.endswith('.model3.json'):
+                                    live2d_model_path = legacy_live2d_name
+                                else:
+                                    live2d_model_path = f'{legacy_live2d_name}/{legacy_live2d_name}.model3.json'
+                                set_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', live2d_model_path)
                             
                             characters['猫娘'][chara_name] = catgirl_data
                             need_save = True

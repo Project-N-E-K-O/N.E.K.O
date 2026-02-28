@@ -34,25 +34,31 @@ logger = get_module_logger(__name__)
 
 
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
-    """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。"""
+    """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
+
+    如果 _reserved 中的嵌套路径存在（即使值为 None），直接返回该值；
+    仅当路径不存在或 _reserved 本身缺失时，才回退到旧平铺字段。
+    """
     if not isinstance(data, dict):
         return default
 
-    current = data.get("_reserved")
-    if isinstance(current, dict):
+    reserved = data.get("_reserved")
+    if isinstance(reserved, dict):
+        current = reserved
+        found = True
         for key in path:
             if not isinstance(current, dict) or key not in current:
-                current = None
+                found = False
                 break
             current = current[key]
-        if current is not None:
+        if found:
             return current
 
     # COMPAT(v1->v2): 旧平铺字段回退读取，避免历史配置在迁移前读不到值。
     if legacy_keys:
         for legacy_key in legacy_keys:
-            if legacy_key in data and data.get(legacy_key) is not None:
-                return data.get(legacy_key)
+            if legacy_key in data and data[legacy_key] is not None:
+                return data[legacy_key]
     return default
 
 
