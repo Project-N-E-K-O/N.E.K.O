@@ -1275,6 +1275,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = '
 
 def _loc(d: dict, lang: str) -> str:
     """从多语言 dict 按 lang 取值，缺失则回退 'zh'。"""
+    if lang not in d:
+        print(f"WARNING: Unexpected lang code {lang}")
     return d.get(lang, d['zh'])
 
 
@@ -1285,6 +1287,32 @@ INNER_THOUGHTS_HEADER = {
     'ja': '\n======{name}の心の声======\n',
     'ko': '\n======{name}의 내면 활동======\n',
     'ru': '\n======Внутренние мысли {name}======\n',
+}
+
+INNER_THOUGHTS_BODY = {
+    'zh': '{name}的脑海里经常想着自己和{master}的事情，她记得{settings}\n\n现在时间是{time}。开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
+    'en': "{name} often thinks about herself and {master}. She remembers: {settings}\n\nThe current time is {time}. Before the conversation begins, {name} is mentally reviewing recent events.\n",
+    'ja': '{name}はいつも自分と{master}のことを考えています。彼女が覚えていること：{settings}\n\n現在の時刻は{time}です。会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n',
+    'ko': '{name}은 항상 자신과 {master}에 대해 생각합니다. 그녀가 기억하는 것: {settings}\n\n현재 시간은 {time}입니다. 대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n',
+    'ru': '{name} часто думает о себе и {master}. Она помнит: {settings}\n\nТекущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
+}
+
+# ---------- 屏幕活跃窗口前缀 ----------
+SCREEN_WINDOW_TITLE = {
+    'zh': '当前活跃窗口：{window}\n',
+    'en': 'Active window: {window}\n',
+    'ja': 'アクティブウィンドウ：{window}\n',
+    'ko': '현재 활성 창: {window}\n',
+    'ru': 'Активное окно: {window}\n',
+}
+
+# ---------- 截图提示 ----------
+SCREEN_IMG_HINT = {
+    'zh': '（上方附有主人当前的屏幕截图，请直接观察截图内容来搭话）',
+    'en': "(The master's current screenshot is attached above — observe it directly)",
+    'ja': '（上にご主人のスクリーンショットがあります。直接観察してください）',
+    'ko': '(위에 주인의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
+    'ru': '(Выше прикреплён текущий скриншот экрана хозяина — наблюдайте его напрямую)',
 }
 
 # ---------- 触发 LLM 开始生成 ----------

@@ -38,6 +38,7 @@ from config.prompts_sys import (
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
     BEGIN_GENERATE,
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
+    SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
 )
 from utils.workshop_utils import get_workshop_path
@@ -1701,14 +1702,8 @@ async def proactive_chat(request: Request):
             sl = _loc(SCREEN_SECTION_HEADER, proactive_lang)
             sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
-            window_line = f"当前活跃窗口：{vision_window}\n" if vision_window else ""
-            _img_hints = {
-                'zh': '（上方附有主人当前的屏幕截图，请直接观察截图内容来搭话）',
-                'en': "(The master's current screenshot is attached above — observe it directly)",
-                'ja': '（上にご主人のスクリーンショットがあります。直接観察してください）',
-                'ko': '(위에 주인의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
-            }
-            hint = _img_hints.get(proactive_lang, _img_hints['zh'])
+            window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
+            hint = _loc(SCREEN_IMG_HINT, proactive_lang)
             screen_section = f"{sl}\n{window_line}{hint}\n{sf}"
             print(f"[{lanlan_name}] Phase 2 将使用 vision 模型直接看截图")
         else:
