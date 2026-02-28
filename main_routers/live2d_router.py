@@ -403,7 +403,7 @@ def get_model_files(model_name: str):
         # 先定位真正包含 .model3.json 的目录，再基于该目录收集动作/表情相对路径
         # 否则当 workshop 目录多一层模型子目录时，会多拼一层路径导致 404。
         model_config_file = None
-        model_name_subdir = None  # 存储模型名称子目录（如果有）
+        _model_name_subdir = None  # unused: kept for clarity of path probing flow
         actual_model_dir = model_dir  # 实际包含模型文件的目录
 
         # 首先检查 model_dir 本身是否包含模型文件
@@ -423,7 +423,7 @@ def get_model_files(model_name: str):
                         for file in os.listdir(subdir_path):
                             if file.endswith('.model3.json'):
                                 model_config_file = file
-                                model_name_subdir = subdir
+                                _model_name_subdir = subdir
                                 actual_model_dir = subdir_path
                                 break
                         if model_config_file:
@@ -775,6 +775,29 @@ def get_model_files_by_id(model_id: str):
         if not os.path.exists(model_dir):
             logger.warning(f"模型目录不存在: {model_dir}")
             return {"success": False, "error": "模型不存在"}
+
+        # 定位模型配置文件（支持 item 根目录或一级子目录）
+        model_config_file = None
+        model_name_subdir = None
+        for file in os.listdir(model_dir):
+            if file.endswith('.model3.json'):
+                model_config_file = file
+                break
+        if not model_config_file:
+            for subdir in os.listdir(model_dir):
+                subdir_path = os.path.join(model_dir, subdir)
+                if not os.path.isdir(subdir_path):
+                    continue
+                for file in os.listdir(subdir_path):
+                    if file.endswith('.model3.json'):
+                        model_config_file = file
+                        model_name_subdir = subdir
+                        break
+                if model_config_file:
+                    break
+        if not model_config_file:
+            logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
+            return {"success": False, "error": "未找到模型配置文件(.model3.json)"}
         
         motion_files = []
         expression_files = []
@@ -812,7 +835,7 @@ def get_model_files_by_id(model_id: str):
         
         # 构建模型配置文件的URL
         model_config_url = None
-        if model_config_file and url_prefix:
+        if url_prefix:
             # 对于workshop模型，需要根据实际路径结构构建URL
             if url_prefix == '/workshop':
                 if model_name_subdir:

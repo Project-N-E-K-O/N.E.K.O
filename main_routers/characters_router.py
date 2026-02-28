@@ -1019,6 +1019,8 @@ async def update_catgirl(name: str, request: Request):
             characters['猫娘'][name][k] = v
 
     _config_manager.save_characters(characters)
+    initialize_character_data = get_initialize_character_data()
+    await initialize_character_data()
     return {"success": True}
 
 

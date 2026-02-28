@@ -63,7 +63,9 @@ def write_ssl_diagnostic(
             payload["error"] = {
                 "type": type(error).__name__,
                 "message": str(error),
-                "traceback": traceback.format_exc(),
+                "traceback": "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                ),
             }
         filename = f"ssl_diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         path = os.path.join(output_dir, filename)

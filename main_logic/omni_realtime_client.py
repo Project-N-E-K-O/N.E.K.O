@@ -47,8 +47,8 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
         )
         if diag_path:
             logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
-    except Exception:
-        pass
+    except Exception as diag_err:
+        logger.debug(f"Gemini SDK diagnostic write failed: {diag_err}")
 
 
 class OmniRealtimeClient:

@@ -1467,7 +1467,7 @@ function showCatgirlForm(key, container) {
                     const shortId = voiceId.length > 20 ? voiceId.substring(0, 18) + '…' : voiceId;
                     option.textContent = displayName ? displayName + ' (' + shortId + ')' : voiceId;
                     option.title = voiceId;
-                    if (voiceId === (cat['voice_id'] || '')) option.selected = true;
+                    if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                     select.appendChild(option);
                 });
                 // 添加免费预设音色（不可移除，放在最后）
@@ -1479,14 +1479,14 @@ function showCatgirlForm(key, container) {
                         const option = document.createElement('option');
                         option.value = voiceId;
                         option.textContent = displayName;
-                        if (voiceId === (cat['voice_id'] || '')) option.selected = true;
+                        if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                         freeGroup.appendChild(option);
                     });
                     select.appendChild(freeGroup);
                 }
             }
             // 加载 GPT-SoVITS 声音列表（等待完成以避免表单提交时丢失 gsv: 音色）
-            await loadGsvVoices(select, cat['voice_id'] || '');
+            await loadGsvVoices(select, String(cat['voice_id'] || '').trim());
         } catch (error) {
             console.error('加载音色列表失败:', error);
         }
@@ -1580,15 +1580,16 @@ function showCatgirlForm(key, container) {
         try {
             const fd = new FormData(form);
             const data = {};
-            const selectedVoiceId = form.querySelector('select[name="voice_id"]')?.value ?? '';
-            const previousVoiceId = cat['voice_id'] || '';
+            const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
+            const previousVoiceId = String(cat['voice_id'] || '').trim();
             for (const [k, v] of fd.entries()) {
                 // 保留字段统一由专用接口维护，通用角色保存接口不再透传
                 if (k === 'voice_id') {
                     continue;
                 }
-                if (k && v) {
-                    data[k] = v;
+                const normalizedValue = typeof v === 'string' ? v.trim() : v;
+                if (k && normalizedValue) {
+                    data[k] = normalizedValue;
                 }
             }
             if (!data['档案名']) {
