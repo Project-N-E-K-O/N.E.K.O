@@ -34,6 +34,12 @@ from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_format_sections,
+    _loc,
+    RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
+    BEGIN_GENERATE,
+    SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
+    SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
+    EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -242,21 +248,8 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
             return tl['m'].format(m)
         return tl['h'].format(m // 60)
 
-    headers = {
-        'zh': '======近期搭话记录（你应该避免雷同！）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）：',
-        'en': '======Recent Proactive Chats (You MUST avoid repetition!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone):',
-        'ja': '======最近の自発的発言記録（類似を避けること！）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）：',
-        'ko': '======최근 주도적 대화 기록 (중복을 피해야 합니다!) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두):',
-    }
-    footers = {
-        'zh': '======搭话记录结束（以上内容不可重复！）======',
-        'en': '======End Recent Chats (Do NOT repeat the above!) ======',
-        'ja': '======発言記録ここまで（上記の内容を繰り返さないこと！）======',
-        'ko': '======대화 기록 끝 (위 내용을 반복하지 마세요!) ======',
-    }
-
-    header = headers.get(lang, headers['zh'])
-    footer = footers.get(lang, footers['zh'])
+    header = _loc(RECENT_PROACTIVE_CHATS_HEADER, lang)
+    footer = _loc(RECENT_PROACTIVE_CHATS_FOOTER, lang)
     lines = []
     for entry in recent:
         ts, msg = entry[0], entry[1]
@@ -1510,15 +1503,16 @@ async def proactive_chat(request: Request):
             llm = _make_llm(temperature=temperature, max_tokens=max_tokens,
                             use_vision=use_vision, disable_thinking=disable_thinking)
             
+            begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             if image_b64:
                 human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": "========请开始========"},
+                    {"type": "text", "text": begin_text},
                 ]
             else:
-                human_content = "========请开始========"
+                human_content = begin_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
-            
+
             max_retries = 3
             retry_delays = [1, 2]
             for attempt in range(max_retries):
@@ -1703,53 +1697,23 @@ async def proactive_chat(request: Request):
                     print(f"[{lanlan_name}] Phase 2 刷新截图失败，退回使用 Phase 1 旧截图")
         
         # 构建屏幕内容段（vision 通道）
-        _screen_labels = {
-            'zh': '======主人的屏幕======',
-            'en': "======Master's Screen======",
-            'ja': '======ご主人の画面======',
-            'ko': '======주인의 화면======',
-        }
-        _screen_footers = {
-            'zh': '======屏幕内容结束======',
-            'en': '======Screen Content End======',
-            'ja': '======画面内容ここまで======',
-            'ko': '======화면 내용 끝======',
-        }
         screen_section = ""
         if screenshot_b64_for_phase2:
-            sl = _screen_labels.get(proactive_lang, _screen_labels['zh'])
-            sf = _screen_footers.get(proactive_lang, _screen_footers['zh'])
+            sl = _loc(SCREEN_SECTION_HEADER, proactive_lang)
+            sf = _loc(SCREEN_SECTION_FOOTER, proactive_lang)
             vision_window = vision_content.get('window_title', '') if vision_content else ''
-            window_line = f"当前活跃窗口：{vision_window}\n" if vision_window else ""
-            _img_hints = {
-                'zh': '（上方附有主人当前的屏幕截图，请直接观察截图内容来搭话）',
-                'en': "(The master's current screenshot is attached above — observe it directly)",
-                'ja': '（上にご主人のスクリーンショットがあります。直接観察してください）',
-                'ko': '(위에 주인의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
-            }
-            hint = _img_hints.get(proactive_lang, _img_hints['zh'])
+            window_line = _loc(SCREEN_WINDOW_TITLE, proactive_lang).format(window=vision_window) if vision_window else ""
+            hint = _loc(SCREEN_IMG_HINT, proactive_lang)
             screen_section = f"{sl}\n{window_line}{hint}\n{sf}"
             print(f"[{lanlan_name}] Phase 2 将使用 vision 模型直接看截图")
         else:
             print(f"[{lanlan_name}] Phase 2 无截图或无 vision 模型，跳过屏幕分析")
         
         # 构建外部话题段（web 通道）
-        _ext_labels = {
-            'zh': '======外部话题======\n你注意到一个有趣的话题：',
-            'en': '======External Topic======\nYou noticed an interesting topic:',
-            'ja': '======外部の話題======\n面白い話題を見つけました：',
-            'ko': '======외부 주제======\n흥미로운 주제를 발견했습니다:',
-        }
-        _ext_footers = {
-            'zh': '======外部话题结束======',
-            'en': '======External Topic End======',
-            'ja': '======外部話題ここまで======',
-            'ko': '======외부 주제 끝======',
-        }
         external_section = ""
         if web_topic:
-            el = _ext_labels.get(proactive_lang, _ext_labels['zh'])
-            ef = _ext_footers.get(proactive_lang, _ext_footers['zh'])
+            el = _loc(EXTERNAL_TOPIC_HEADER, proactive_lang)
+            ef = _loc(EXTERNAL_TOPIC_FOOTER, proactive_lang)
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         source_instruction, output_format_section = get_proactive_format_sections(
@@ -1782,13 +1746,14 @@ async def proactive_chat(request: Request):
         llm = _make_llm(temperature=1.0, max_tokens=1536,
                         use_vision=phase2_use_vision, disable_thinking=True)
         
+        begin_text = _loc(BEGIN_GENERATE, proactive_lang)
         if phase2_use_vision:
             human_content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                {"type": "text", "text": "========请开始========"},
+                {"type": "text", "text": begin_text},
             ]
         else:
-            human_content = "========请开始========"
+            human_content = begin_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
         
         actual_model = (vision_model_name if phase2_use_vision else correction_model)

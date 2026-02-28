@@ -368,9 +368,21 @@ function init_app() {
 
     // 建立WebSocket连接
     function connectWebSocket() {
+        const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
+            ? window.lanlan_config.lanlan_name
+            : '';
+        if (!currentLanlanName) {
+            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
+            if (autoReconnectTimeoutId) {
+                clearTimeout(autoReconnectTimeoutId);
+            }
+            autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            return;
+        }
+
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const wsUrl = `${protocol}://${window.location.host}/ws/${lanlan_config.lanlan_name}`;
-        console.log(window.t('console.websocketConnecting'), lanlan_config.lanlan_name, window.t('console.websocketUrl'), wsUrl);
+        const wsUrl = `${protocol}://${window.location.host}/ws/${currentLanlanName}`;
+        console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
@@ -9921,9 +9933,16 @@ function init_app() {
     });
 } // 兼容老按钮
 
-const ready = () => {
+const ready = async () => {
     if (ready._called) return;
     ready._called = true;
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        try {
+            await window.pageConfigReady;
+        } catch (error) {
+            console.warn('[Init] pageConfigReady rejected, continue with fallback config', error);
+        }
+    }
     init_app();
 };
 

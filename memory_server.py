@@ -10,6 +10,8 @@ import uvicorn
 from langchain_core.messages import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
+from config.prompts_sys import _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY
+from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
@@ -364,8 +366,16 @@ async def new_dialog(lanlan_name: str):
     brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
     master_name, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
-    result = f"\n========以下是{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
-    result += f"现在时间是{get_timestamp()}。开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
+    _lang = get_global_language()
+    result = (
+        _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)
+        + _loc(INNER_THOUGHTS_BODY, _lang).format(
+            name=lanlan_name,
+            master=master_name,
+            settings=json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False),
+            time=get_timestamp(),
+        )
+    )
     for i in recent_history_manager.get_recent_history(lanlan_name):
         if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()
