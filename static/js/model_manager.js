@@ -1205,6 +1205,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 注意：必须使用专用接口保存模型和光照设置，因为通用接口会过滤掉保留字段
     // 保存模型设置到角色的函数（全面升级版）
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
+        function decodeMaybeUrlComponent(value) {
+            if (typeof value !== 'string') return value;
+            try {
+                return decodeURIComponent(value);
+            } catch {
+                return value;
+            }
+        }
+
+        function extractLive2DFolderNameFromPath(modelPath) {
+            if (!modelPath || typeof modelPath !== 'string') return null;
+            const normalized = modelPath.split('?')[0].split('#')[0].replace(/\\/g, '/');
+            const segments = normalized.split('/').filter(Boolean);
+            if (segments.length < 2) return null;
+            const filename = segments[segments.length - 1];
+            const folder = segments[segments.length - 2];
+            if (!/\.model3\.json$/i.test(filename)) return null;
+
+            if (segments[0] === 'workshop') {
+                if (segments.length >= 4) return decodeMaybeUrlComponent(folder);
+                const base = filename.replace(/\.model3\.json$/i, '');
+                return decodeMaybeUrlComponent(base) || null;
+            }
+
+            return decodeMaybeUrlComponent(folder) || null;
+        }
+
         try {
             // 1. 获取角色名并验证
             const lanlanName = await getLanlanName();
@@ -1288,8 +1315,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     modelData.idle_animation = idleAnimSel.value;
                 }
             } else {
-                modelData.live2d = modelName;
-                if (itemId) modelData.item_id = itemId;
+                const inferredFolderName = extractLive2DFolderNameFromPath(
+                    (currentModelInfo && currentModelInfo.path) ? currentModelInfo.path : modelName
+                );
+                modelData.live2d = decodeMaybeUrlComponent(inferredFolderName || modelName);
+                if (itemId) {
+                    modelData.item_id = itemId;
+                    modelData.live2d_item_id = itemId;
+                }
             }
 
             // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
@@ -3399,7 +3432,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         } else {
             // Live2D模式下需要currentModelInfo
-            if (!currentModelInfo) return;
+            if (!currentModelInfo) {
+                showStatus(t('live2d.pleaseSelectModel', '请先选择模型'), 2000);
+                return;
+            }
         }
 
         showStatus(t('live2d.savingSettings', '正在保存设置...'));
