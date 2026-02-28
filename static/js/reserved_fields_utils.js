@@ -17,6 +17,22 @@ const ReservedFieldsUtils = (() => {
         return Array.isArray(value) ? value : [];
     }
 
+    const SYSTEM_RESERVED_FIELDS_FALLBACK = Object.freeze([
+        'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
+        'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'
+    ]);
+
+    const WORKSHOP_RESERVED_FIELDS_FALLBACK = Object.freeze([
+        '原始数据', '文件路径', '创意工坊物品ID',
+        'description', 'tags', 'name',
+        '描述', '标签', '关键词',
+        '_reserved', 'item_id', 'idleAnimation'
+    ]);
+
+    const ALL_RESERVED_FIELDS_FALLBACK = Object.freeze(
+        [...new Set([...SYSTEM_RESERVED_FIELDS_FALLBACK, ...WORKSHOP_RESERVED_FIELDS_FALLBACK])]
+    );
+
     function emptyConfig() {
         return {
             system_reserved_fields: [],
@@ -71,5 +87,10 @@ const ReservedFieldsUtils = (() => {
         }
     }
 
-    return { emptyConfig, load, _safeArray };
+    return {
+        emptyConfig, load, _safeArray,
+        SYSTEM_RESERVED_FIELDS_FALLBACK,
+        WORKSHOP_RESERVED_FIELDS_FALLBACK,
+        ALL_RESERVED_FIELDS_FALLBACK,
+    };
 })();

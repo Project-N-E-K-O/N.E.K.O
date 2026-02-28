@@ -9,16 +9,8 @@ function getIsDarkTheme() {
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 let _reservedFieldsReady = null;
 
-const SYSTEM_RESERVED_FIELDS_FALLBACK = [
-    'live2d', 'voice_id', 'system_prompt', 'model_type', 'vrm', 'vrm_animation',
-    'lighting', 'vrm_rotation', 'live2d_item_id', '_reserved', 'item_id', 'idleAnimation'
-];
-const WORKSHOP_RESERVED_FIELDS_FALLBACK = [
-    '原始数据', '文件路径', '创意工坊物品ID',
-    'description', 'tags', 'name',
-    '描述', '标签', '关键词',
-    '_reserved', 'item_id', 'idleAnimation'
-];
+const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
+const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
 
 function _safeArray(value) {
     return ReservedFieldsUtils._safeArray(value);

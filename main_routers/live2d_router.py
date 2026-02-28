@@ -28,8 +28,8 @@ logger = get_module_logger(__name__, "Main")
 
 
 def _normalize_model_path(path: str) -> str:
-    """Encode a model URL path and strip any surrounding quotes."""
-    return encode_url_path(path).strip('"')
+    """Strip any surrounding quotes, then encode a model URL path."""
+    return encode_url_path(path.strip('"'))
 
 
 def _locate_model_config(model_dir: str):
