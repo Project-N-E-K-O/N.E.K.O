@@ -401,7 +401,8 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
                 logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
                 return
             Modules.last_user_turn_fingerprint[lanlan_key] = fp
-            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
+            conversation_id = event.get("conversation_id")
+            task = asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id))
             Modules._background_tasks.add(task)
             task.add_done_callback(Modules._background_tasks.discard)
 
@@ -964,7 +965,9 @@ async def startup():
     _set_capability("computer_use", False, "connectivity check pending")
     _set_capability("browser_use", False, "connectivity check pending")
     _set_capability("user_plugin", False, "connectivity check pending")
-    asyncio.ensure_future(_fire_agent_llm_connectivity_check())
+    _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
+    Modules._persistent_tasks.add(_llm_probe_task)
+    _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
     # UserPlugin probe — plugin server may start slightly later, so retry a few times
     async def _delayed_user_plugin_check():
         prev_cap = dict(Modules.capability_cache.get("user_plugin", {}))
@@ -977,7 +980,9 @@ async def startup():
                 prev_cap = dict(cap)
             if cap.get("ready"):
                 break
-    asyncio.ensure_future(_delayed_user_plugin_check())
+    _plugin_probe_task = asyncio.create_task(_delayed_user_plugin_check())
+    Modules._persistent_tasks.add(_plugin_probe_task)
+    _plugin_probe_task.add_done_callback(Modules._persistent_tasks.discard)
     
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -1064,6 +1069,35 @@ async def shutdown():
     except asyncio.TimeoutError:
         logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
     
+    # Clean up ZMQ event bridge sockets
+    bridge = Modules.agent_bridge
+    if bridge is not None:
+        try:
+            bridge._stop.set()
+            try:
+                import zmq as _zmq
+                _LINGER = _zmq.LINGER
+            except Exception:
+                _LINGER = 17  # zmq.LINGER constant fallback
+            for sock_name in ("sub", "analyze_pull", "push"):
+                sock = getattr(bridge, sock_name, None)
+                if sock is not None:
+                    try:
+                        sock.setsockopt(_LINGER, 0)
+                        sock.close()
+                    except Exception as e:
+                        logger.debug("[Agent] ZMQ socket %s close error: %s", sock_name, e)
+            if bridge.ctx is not None:
+                try:
+                    bridge.ctx.term()
+                except Exception as e:
+                    logger.debug("[Agent] ZMQ context term error: %s", e)
+            bridge.ready = False
+            Modules.agent_bridge = None
+            logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
+        except Exception as e:
+            logger.warning("[Agent] ⚠️ ZMQ event bridge cleanup error: %s", e)
+
     # Cancel persistent tasks (e.g. scheduler loop)
     all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
     tasks_to_await = [t for t in all_tasks if not t.done()]

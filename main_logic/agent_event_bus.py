@@ -319,6 +319,7 @@ async def publish_analyze_request_reliably(
     *,
     ack_timeout_s: float = 0.5,
     retries: int = 1,
+    conversation_id: Optional[str] = None,
 ) -> bool:
     """可靠发布 analyze_request：携带 event_id + ack，并支持短重试。"""
     event_id = uuid.uuid4().hex
@@ -332,6 +333,8 @@ async def publish_analyze_request_reliably(
             "lanlan_name": lanlan_name,
             "messages": messages,
         }
+        if conversation_id:
+            event["conversation_id"] = conversation_id
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()

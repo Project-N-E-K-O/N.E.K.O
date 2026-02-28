@@ -828,7 +828,10 @@ function init_app() {
                             if (['completed', 'failed', 'cancelled'].includes(task.status)) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.set(task.id, setTimeout(() => {
-                                    window._agentTaskMap.delete(task.id);
+                                    const current = window._agentTaskMap.get(task.id);
+                                    if (current && ['completed', 'failed', 'cancelled'].includes(current.status)) {
+                                        window._agentTaskMap.delete(task.id);
+                                    }
                                     window._agentTaskRemoveTimers.delete(task.id);
                                     const remaining = Array.from(window._agentTaskMap.values());
                                     if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
