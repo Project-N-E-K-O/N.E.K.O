@@ -1035,8 +1035,9 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    """Gracefully stop running tasks so threads don't outlive the process."""
+    """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+
     if Modules.computer_use:
         Modules.computer_use.cancel_running()
     if Modules.browser_use:
@@ -1045,54 +1046,30 @@ async def shutdown():
         except Exception:
             pass
 
-    # Cancel asyncio wrappers
     for t in list(Modules._persistent_tasks):
         if not t.done():
             t.cancel()
     if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
         Modules.active_computer_use_async_task.cancel()
 
-    # Wait for the CUA thread to finish so pyautogui isn't active when the
-    # process exits (avoids Win32 SendInput being interrupted mid-call).
-    cu = Modules.computer_use
-    if cu is not None and hasattr(cu, "wait_for_completion"):
-        loop = asyncio.get_running_loop()
-        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
-        if not finished:
-            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
-    logger.info("[Agent] Shutdown cleanup complete")
-    await _emit_agent_status_update()
-    
-    logger.info("[Agent] ✅ Agent server started with simplified task executor")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """服务器关闭时清理所有 AsyncClient 实例"""
     logger.info("[Agent] 正在清理 AsyncClient 资源...")
-    
+
     async def _close_router(name: str, module, attr: str):
-        """辅助函数：清理单个 router（带超时保护）"""
         if module and hasattr(module, attr):
             try:
                 router = getattr(module, attr)
-                # 添加超时保护，防止清理过程挂起
                 await asyncio.wait_for(router.aclose(), timeout=3.0)
                 logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
             except asyncio.TimeoutError:
                 logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
             except asyncio.CancelledError:
-                # 正常关闭流程中的取消
                 logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
             except RuntimeError as e:
-                # RuntimeError 可能包含事件循环已关闭等正常关闭情况
                 logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
             except Exception as e:
                 logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
-    
-    # 并行清理所有 router，提高关闭速度
+
     try:
-        # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
         _shutdown_coros = []
         for _name, _attr_name in [("DirectTaskExecutor", "task_executor")]:
             _mod = getattr(Modules, _attr_name, None)
@@ -1101,21 +1078,21 @@ async def shutdown():
         if _shutdown_coros:
             await asyncio.wait_for(
                 asyncio.gather(*_shutdown_coros, return_exceptions=True),
-                timeout=5.0
+                timeout=5.0,
             )
     except asyncio.TimeoutError:
         logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
-    
-    # Clean up ZMQ event bridge sockets
+
     bridge = Modules.agent_bridge
     if bridge is not None:
         try:
             bridge._stop.set()
             try:
                 import zmq as _zmq
+
                 _LINGER = _zmq.LINGER
             except Exception:
-                _LINGER = 17  # zmq.LINGER constant fallback
+                _LINGER = 17
             for sock_name in ("sub", "analyze_pull", "push"):
                 sock = getattr(bridge, sock_name, None)
                 if sock is not None:
@@ -1135,7 +1112,6 @@ async def shutdown():
         except Exception as e:
             logger.warning("[Agent] ⚠️ ZMQ event bridge cleanup error: %s", e)
 
-    # Cancel persistent tasks (e.g. scheduler loop)
     all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
     tasks_to_await = [t for t in all_tasks if not t.done()]
     for t in tasks_to_await:
@@ -1150,8 +1126,17 @@ async def shutdown():
             logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
-    
+
+    cu = Modules.computer_use
+    if cu is not None and hasattr(cu, "wait_for_completion"):
+        loop = asyncio.get_running_loop()
+        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
+        if not finished:
+            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+
     logger.info("[Agent] ✅ AsyncClient 资源清理完成")
+    logger.info("[Agent] Shutdown cleanup complete")
+    await _emit_agent_status_update()
 
 
 @app.get("/health")

@@ -9,13 +9,19 @@ import EcosystemIcon from './icons/IconEcosystem.vue'
 import CommunityIcon from './icons/IconCommunity.vue'
 import SupportIcon from './icons/IconSupport.vue'
 
-const { t } = useI18n()
+const { t, tm } = useI18n()
 
-const docLinks = computed(() => t('welcome.documentation.links') as Array<{ text: string; url: string }>)
+const docLinks = computed<Array<{ text: string; url: string }>>(() => {
+  const links = tm('welcome.documentation.links') as unknown
+  return Array.isArray(links) ? (links as Array<{ text: string; url: string }>) : []
+})
 const docSeparator = computed(() => t('welcome.documentation.linkSeparator') as string)
 const docLastSeparator = computed(() => t('welcome.documentation.linkLastSeparator') as string | undefined)
 
-const communityLinks = computed(() => t('welcome.community.links') as Array<{ text: string; url: string }>)
+const communityLinks = computed<Array<{ text: string; url: string }>>(() => {
+  const links = tm('welcome.community.links') as unknown
+  return Array.isArray(links) ? (links as Array<{ text: string; url: string }>) : []
+})
 const communitySeparator = computed(() => t('welcome.community.linkSeparator') as string)
 const communityLastSeparator = computed(() => t('welcome.community.linkLastSeparator') as string | undefined)
 
