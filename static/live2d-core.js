@@ -453,6 +453,46 @@ class Live2DManager {
         return `${this.modelRootPath}/${rel}`;
     }
 
+    // 规范化资源路径，用于宽松比较（忽略斜杠差异与大小写）
+    normalizeAssetPathForCompare(assetPath) {
+        if (!assetPath) return '';
+        const decoded = String(assetPath).trim();
+        const unified = decoded.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+        return unified.toLowerCase();
+    }
+
+    // 通过表达文件路径解析 expression name（兼容 "expressions/a.exp3.json" 与 "a.exp3.json"）
+    resolveExpressionNameByFile(expressionFile) {
+        if (!expressionFile || !this.fileReferences || !Array.isArray(this.fileReferences.Expressions)) {
+            return null;
+        }
+
+        const targetNorm = this.normalizeAssetPathForCompare(expressionFile);
+        const targetBase = targetNorm.split('/').pop() || '';
+
+        // 1) 优先精确匹配规范化后的 File 路径
+        for (const expr of this.fileReferences.Expressions) {
+            if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
+            const fileNorm = this.normalizeAssetPathForCompare(expr.File);
+            if (fileNorm === targetNorm) {
+                return expr.Name;
+            }
+        }
+
+        // 2) 兜底按文件名匹配（处理映射只给 basename 的情况）
+        if (targetBase) {
+            for (const expr of this.fileReferences.Expressions) {
+                if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
+                const fileBase = this.normalizeAssetPathForCompare(expr.File).split('/').pop() || '';
+                if (fileBase === targetBase) {
+                    return expr.Name;
+                }
+            }
+        }
+
+        return null;
+    }
+
     // 获取当前模型
     getCurrentModel() {
         return this.currentModel;

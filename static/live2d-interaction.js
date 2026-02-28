@@ -1122,24 +1122,18 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         if (expressionFiles.length > 0) {
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile) {
-                // 在 FileReferences 中查找匹配的表情名称
-                let expressionName = null;
-                if (this.fileReferences && this.fileReferences.Expressions) {
-                    for (const expr of this.fileReferences.Expressions) {
-                        if (expr.File === choiceFile) {
-                            expressionName = expr.Name;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!expressionName) {
-                    const base = String(choiceFile).split('/').pop() || '';
-                    expressionName = base.replace('.exp3.json', '');
-                }
+                const expressionName = (typeof this.resolveExpressionNameByFile === 'function')
+                    ? this.resolveExpressionNameByFile(choiceFile)
+                    : null;
 
-                console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
-                await this.currentModel.expression(expressionName);
+                if (expressionName) {
+                    console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
+                    await this.currentModel.expression(expressionName);
+                } else if (typeof this.playExpression === 'function') {
+                    // 某些配置只给 basename（如 expression15.exp3.json），这里回退到文件级播放逻辑
+                    console.warn(`[ClickEffect] 无法按文件解析表情名，回退为文件播放: ${choiceFile}`);
+                    await this.playExpression(emotion, choiceFile);
+                }
             }
         }
 
