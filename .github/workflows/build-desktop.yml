@@ -2,29 +2,13 @@ name: Build Desktop App (Cross-Platform)
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # Daily at 8 AM Beijing time (00:00 UTC)
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g. 1.0.0-beta.1)'
-        required: false
-        default: ''
-      electron_repo:
-        description: 'Electron frontend repo (owner/repo)'
-        required: false
-        default: 'Project-N-E-K-O/N.E.K.O.-PC'
-      electron_ref:
-        description: 'Electron repo branch/tag/commit'
-        required: false
-        default: 'main'
-      skip_signing:
-        description: 'Skip code signing'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+      version: { description: 'Release version', required: false, default: '' }
+      electron_repo: { description: 'Frontend repo', required: false, default: 'Project-N-E-K-O/N.E.K.O.-PC' }
+      electron_ref: { description: 'Frontend branch', required: false, default: 'main' }
+      skip_signing: { description: 'Skip signing', required: false, default: 'true', type: choice, options: ['true', 'false'] }
 
 env:
   PYTHON_VERSION: '3.11'
@@ -32,7 +16,7 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────
-  # Step 0: Calculate version
+  # Step 0: 计算版本号
   # ──────────────────────────────────────────────
   version:
     runs-on: ubuntu-latest
@@ -42,7 +26,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Calculate version
         id: calc
         run: |
@@ -51,15 +34,12 @@ jobs:
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            COMMIT_SHORT=$(git rev-parse --short HEAD)
-            DATE=$(date +%Y%m%d)
-            VERSION="${DATE}-${COMMIT_SHORT}"
+            VERSION="$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "Resolved version: $VERSION"
 
   # ──────────────────────────────────────────────
-  # Step 1: Build Python backend with Nuitka
+  # Step 1: 构建 Python 后端 (Nuitka)
   # ──────────────────────────────────────────────
   build-python:
     needs: version
@@ -68,30 +48,25 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            platform: win
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
           - os: macos-15
-            platform: mac-x64
             python_arch: x64
             artifact_name: python-backend-mac-x64
             output_binary: projectneko_server
           - os: macos-latest
-            platform: mac-arm64
             artifact_name: python-backend-mac-arm64
             output_binary: projectneko_server
           - os: ubuntu-latest
-            platform: linux
             artifact_name: python-backend-linux
             output_binary: projectneko_server
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 300
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -107,154 +82,67 @@ jobs:
           uv sync
           uv pip install --python .venv nuitka ordered-set zstandard
           
-          # 检查并安装本地修改的 bilibili-api-pathchange 包
-          echo "正在处理 bilibili-api 依赖..."
-          WHL_FILE="bilibili-api-pathchange-0.1.0-py3-none-any.whl"
+          # --- 核心：安装修正文件名后的自定义包 ---
+          # 注意：包名 bilibili-api-pathchange 在文件名中必须写成 bilibili_api_pathchange
+          WHL_FILE="bilibili_api_pathchange-0.1.0-py3-none-any.whl"
           
           if [ -f "$WHL_FILE" ]; then
-            echo "找到本地轮子文件: $WHL_FILE，正在安装..."
-            uv pip install --python .venv "$WHL_FILE"
-          elif [ -d "bilibili_api_pathchange" ]; then
-            echo "找到源码目录 bilibili_api_pathchange，从源码安装..."
-            uv pip install --python .venv -e bilibili_api_pathchange/
-          elif [ -d "bilibili_api" ]; then
-            echo "找到源码目录 bilibili_api，从源码安装..."
-            uv pip install --python .venv -e bilibili_api/
+            echo "检测到本地修改版 Wheel: $WHL_FILE"
+            # 使用 --force-reinstall 确保覆盖原有依赖
+            uv pip install --python .venv --force-reinstall "$WHL_FILE"
           else
-            echo "警告：未找到本地修改包，尝试从 PyPI 安装原始包..."
-            uv pip install --python .venv bilibili-api
+            echo "错误：未在根目录找到 $WHL_FILE"
+            ls -la
+            exit 1
           fi
 
-          # 验证包安装（导入名保持为 bilibili_api）
-          echo "验证模块导入..."
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            .venv/Scripts/python.exe -c "import bilibili_api; print(f'成功导入模块: {bilibili_api.__file__}')" || exit 1
-          else
-            .venv/bin/python -c "import bilibili_api; print(f'成功导入模块: {bilibili_api.__file__}')" || exit 1
-          fi
+          # 验证导入逻辑（代码中依然使用 import bilibili_api）
+          VENV_PY=$([[ "${{ matrix.os }}" == "windows-latest" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
+          $VENV_PY -c "import bilibili_api; print(f'验证成功: {bilibili_api.__file__}')" || exit 1
 
-      - name: Generate default config files
+      - name: Generate config and prompts
         shell: bash
         run: |
-          python -c "
-          import json, os
-          configs = {
-            'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.en.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ja.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.ko.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-CN.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/characters.zh-TW.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/core_config.json': {},
-            'config/user_preferences.json': [],
-          }
-          for path, data in configs.items():
-            if not os.path.exists(path):
-              if not os.path.exists(os.path.dirname(path)): os.makedirs(os.path.dirname(path))
-              with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-              print(f'Created {path}')
-          "
+          python -c "import json, os; configs={'config/characters.json':{'主人':{'档案名':'','性别':'','昵称':''},'猫娘':{},'当前猫娘':''},'config/core_config.json':{},'config/user_preferences.json':[]}; [ (os.makedirs(os.path.dirname(p), exist_ok=True), open(p,'w',encoding='utf-8').write(json.dumps(d, indent=2))) for p,d in configs.items() if not os.path.exists(p) ]"
           mkdir -p data/browser_use_prompts
-          VENV_PYTHON=".venv/bin/python"
-          if [ -f ".venv/Scripts/python.exe" ]; then VENV_PYTHON=".venv/Scripts/python.exe"; fi
-          $VENV_PYTHON -c "
-          import shutil
-          from pathlib import Path
-          try:
-              import browser_use.agent.system_prompts as sp
-              src = Path(sp.__file__).parent
-              dst = Path('data/browser_use_prompts')
-              dst.mkdir(parents=True, exist_ok=True)
-              for md in src.glob('*.md'):
-                  shutil.copy2(md, dst / md.name)
-                  print(f'Copied {md.name}')
-          except Exception as e:
-              print(f'Warning: Failed to copy prompts: {e}')
-          "
-          echo "=== browser_use_prompts ==="
-          ls -la data/browser_use_prompts/ || echo "Dir not found"
+          VENV_PY=$([[ -f ".venv/Scripts/python.exe" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
+          $VENV_PY -c "import shutil, browser_use.agent.system_prompts as sp; from pathlib import Path; [shutil.copy2(md, Path('data/browser_use_prompts')/md.name) for md in Path(sp.__file__).parent.glob('*.md')]" || echo "Skipping prompts copy"
 
-      - name: Install Linux system dependencies
+      - name: Install System Deps (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config portaudio19-dev patchelf ccache
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config portaudio19-dev patchelf ccache
 
-      - name: Install macOS build tools
-        if: runner.os == 'macOS'
-        run: brew install ccache portaudio || true
-
-      - name: Install Playwright Chromium (Unix)
-        if: runner.os != 'Windows'
+      - name: Install Playwright
         shell: bash
         run: |
-          mkdir -p playwright_browsers
-          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" \
-            .venv/bin/python -m playwright install chromium || echo "Playwright fail"
-
-      - name: Install Playwright Chromium (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "playwright_browsers")) { New-Item -ItemType Directory -Path "playwright_browsers" }
-          $env:PLAYWRIGHT_BROWSERS_PATH = "${{ github.workspace }}\playwright_browsers"
-          .venv\Scripts\python.exe -m playwright install chromium
+          VENV_PY=$([[ -f ".venv/Scripts/python.exe" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
+          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" $VENV_PY -m playwright install chromium
 
       - name: Build with Nuitka (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          NUITKA_OPTS="--standalone --output-dir=dist --output-filename=projectneko_server"
-          # Config & Data
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/__init__.py=config/__init__.py"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/*.json=config/"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-files=config/*.py=config/"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config/bilibili_api_data=config/bilibili_api_data"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets --include-data-dir=templates=templates --include-data-dir=static=static"
+          NUITKA_OPTS="--standalone --output-dir=dist --output-filename=projectneko_server --enable-plugin=dill-compat --assume-yes-for-downloads"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config=config --include-data-dir=assets=assets --include-data-dir=templates=templates --include-data-dir=static=static"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
           if [[ "$RUNNER_OS" != "macOS" ]]; then NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"; fi
-          # Packages
+          
+          # 包含所有必要的包和数据
           for pkg in uvicorn fastapi starlette jinja2 websockets langchain_community langchain_core langchain_openai main_server memory_server agent_server config brain main_logic main_routers memory utils steamworks browser_use browser_use_sdk playwright; do
             NUITKA_OPTS="$NUITKA_OPTS --include-package=$pkg"
           done
-          # Package Data
-          for pdata in audiolab pyrnnoise browser_use jinja2 certifi; do NUITKA_OPTS="$NUITKA_OPTS --include-package-data=$pdata"; done
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api --include-package-data=browser_use --include-package-data=jinja2 --include-package-data=certifi"
           
-          PYTHON_EXEC=".venv/bin/python"
-          if $PYTHON_EXEC -c "import bilibili_api" 2>/dev/null; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
-            echo "包含 bilibili_api 包数据"
-          fi
-          
-          # Exclusions & Plugins
-          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins --nofollow-import-to=matplotlib --nofollow-import-to=pytest --enable-plugin=dill-compat --assume-yes-for-downloads"
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            for obs in Foundation AppKit objc PyObjCTools CoreFoundation Quartz; do NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=$obs"; done
-          fi
-          # Steam
-          for f in steam_appid.txt libsteam_api.dylib SteamworksPy.dylib libsteam_api.so SteamworksPy.so; do
-            if [ -f "$f" ]; then NUITKA_OPTS="$NUITKA_OPTS --include-data-files=$f=$f"; fi
-          done
-
           .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
 
       - name: Build with Nuitka (Windows)
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          set NUITKA_OPTS=--standalone --output-dir="dist" --output-filename="projectneko_server.exe" --windows-icon-from-ico=assets/icon.ico --windows-console-mode=force --assume-yes-for-downloads
+          set NUITKA_OPTS=--standalone --output-dir="dist" --output-filename="projectneko_server.exe" --windows-icon-from-ico=assets/icon.ico --windows-console-mode=force --assume-yes-for-downloads --enable-plugin=dill-compat
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config=config --include-data-dir=assets=assets --include-data-dir=templates=templates --include-data-dir=static=static --include-data-dir=playwright_browsers=playwright_browsers --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn --include-package=fastapi --include-package=starlette --include-package=jinja2 --include-package=websockets --include-package=langchain_community --include-package=langchain_core --include-package=langchain_openai --include-package=main_server --include-package=memory_server --include-package=agent_server --include-package=config --include-package=brain --include-package=main_logic --include-package=main_routers --include-package=memory --include-package=utils --include-package=steamworks --include-package=browser_use --include-package=browser_use_sdk --include-package=playwright
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=audiolab --include-package-data=pyrnnoise --include-package-data=browser_use --include-package-data=playwright --include-package-data=jinja2 --include-package-data=certifi --enable-plugin=dill-compat
-          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins --nofollow-import-to=matplotlib --nofollow-import-to=pytest
-          
-          .venv\Scripts\python.exe -c "import bilibili_api" 2>nul
-          if %errorlevel% equ 0 (
-            set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
-            echo 包含 bilibili_api 包数据
-          )
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api --include-package-data=browser_use --include-package-data=playwright --include-package-data=jinja2 --include-package-data=certifi
           
           .venv\Scripts\python.exe -m nuitka %NUITKA_OPTS% launcher.py
 
@@ -262,17 +150,16 @@ jobs:
         shell: bash
         run: |
           if [ -d "dist/launcher.dist" ]; then mv dist/launcher.dist dist/Xiao8; fi
-          if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then cp -R playwright_browsers dist/Xiao8/playwright_browsers; fi
+          if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then cp -R playwright_browsers dist/Xiao8/; fi
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/Xiao8/
-          retention-days: 7
 
   # ──────────────────────────────────────────────
-  # Step 2: Build Electron desktop app
+  # Step 2: 构建 Electron 桌面端
   # ──────────────────────────────────────────────
   build-electron:
     needs: [version, build-python]
@@ -306,109 +193,58 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
-          ref: ${{ github.event.inputs.electron_ref || 'main' }}
-          token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          repository: ${{ github.event.inputs.electron_repo }}
+          ref: ${{ github.event.inputs.electron_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           path: electron-app
 
-      - name: Set up Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: electron-app/package-lock.json
 
-      - name: Download Python backend artifact
+      - name: Download Python backend
         uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.python_artifact }}
           path: electron-app/bin
 
-      - name: Make server binary executable (Unix)
-        if: runner.os != 'Windows'
-        run: chmod +x electron-app/bin/projectneko_server
-
-      - name: Install npm dependencies
-        working-directory: electron-app
-        run: npm ci || npm install
-
-      - name: Update version in package.json
-        working-directory: electron-app
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
-            if (!/^\d+\.\d+\.\d+/.test(pkg.version)) { pkg.version = '0.0.0-' + pkg.version; }
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-
-      - name: Disable macOS code signing (if requested)
-        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'))
-        working-directory: electron-app
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.build = pkg.build || {};
-            pkg.build.mac = pkg.build.mac || {};
-            pkg.build.mac.identity = null;
-            pkg.build.mac.hardenedRuntime = false;
-            delete pkg.build.mac.entitlements;
-            delete pkg.build.afterSign;
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-
       - name: Build Electron app
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }} --publish never
+        run: |
+          npm ci
+          # 针对 macOS 跳过签名
+          if [[ "${{ matrix.os }}" == "macos"* ]]; then
+            node -e "const p=JSON.parse(fs.readFileSync('package.json')); p.build.mac.identity=null; fs.writeFileSync('package.json', JSON.stringify(p,null,2))"
+          fi
+          npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: electron-app/dist/
-          retention-days: 14
 
   # ──────────────────────────────────────────────
-  # Step 3: Publish Nightly Release
+  # Step 3: 发布 Nightly 版本
   # ──────────────────────────────────────────────
   nightly:
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
       - name: Organize release files
         run: |
-          mkdir -p release
-          VERSION="${{ needs.version.outputs.version }}"
-          for dir in artifacts/python-backend-*; do
-            [ -d "$dir" ] || continue
-            name=$(basename "$dir")
-            (cd "$dir" && zip -qr "../../release/${name}-${VERSION}.zip" .)
-          done
-          find artifacts/desktop-* -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.zip" -o -name "*.AppImage" -o -name "*.deb" -o -name "latest*.yml" \) -exec cp {} release/ \; 2>/dev/null || true
-
-      - name: Delete old nightly release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
-
+          mkdir release
+          find artifacts/desktop-* -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) -exec cp {} release/ \;
       - name: Create nightly release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
         run: |
-          gh release create nightly release/* \
-            --title "Nightly Build $(date +%Y-%m-%d)" \
-            --target "${{ github.sha }}" \
-            --prerelease \
-            --notes "Nightly build from ${{ needs.version.outputs.version }}"
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly release/* --title "Nightly Build $(date +%Y%m%d)" --prerelease --notes "Automatic build from ${{ needs.version.outputs.version }}"
