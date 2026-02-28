@@ -1019,7 +1019,7 @@ function displayParameters() {
                 });
                 slider.addEventListener('touchstart', (e) => {
                     e.stopPropagation();
-                }, { passive: true });
+                }, { passive: false });
 
                 slider.addEventListener('input', (e) => {
                     updateParameter(e.target.value, 'slider');

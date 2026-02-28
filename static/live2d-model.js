@@ -694,7 +694,9 @@ Live2DManager.prototype.installMouthOverride = function() {
                 if (fadeState) {
                     const now = performance.now();
                     const elapsed = now - fadeState.startTime;
-                    const linearProgress = Math.min(elapsed / fadeState.duration, 1);
+                    // 防御性校验：确保 duration 为有限正数，否则视为立即完成
+                    const safeDuration = (Number.isFinite(fadeState.duration) && fadeState.duration > 0) ? fadeState.duration : 1;
+                    const linearProgress = Math.min(Math.max(elapsed / safeDuration, 0), 1);
                     // cubic ease-out: 快进慢出
                     const t = 1 - Math.pow(1 - linearProgress, 3);
 
@@ -840,7 +842,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
-            if (this.persistentExpressionParamsByName) {
+            // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
+            if (this.persistentExpressionParamsByName && !this._clickFadeState) {
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
