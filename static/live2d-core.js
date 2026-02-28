@@ -120,6 +120,9 @@ class Live2DManager {
         // 口型覆盖重新安装标志（防止重复安装）
         this._reinstallScheduled = false;
 
+        // 记录已确认不存在的 expression 文件，避免重复 404 请求
+        this._missingExpressionFiles = new Set();
+        
         
     }
 
@@ -463,6 +466,38 @@ class Live2DManager {
 
     // 通过表达文件路径解析 expression name（兼容 "expressions/a.exp3.json" 与 "a.exp3.json"）
     resolveExpressionNameByFile(expressionFile) {
+        const ref = this.resolveExpressionReferenceByFile(expressionFile);
+        return ref ? ref.name : null;
+    }
+
+    normalizeExpressionFileKey(expressionFile) {
+        if (!expressionFile || typeof expressionFile !== 'string') return '';
+        return expressionFile.replace(/\\/g, '/').trim().toLowerCase();
+    }
+
+    markExpressionFileMissing(expressionFile) {
+        const key = this.normalizeExpressionFileKey(expressionFile);
+        if (!key) return;
+        if (!this._missingExpressionFiles) this._missingExpressionFiles = new Set();
+        this._missingExpressionFiles.add(key);
+        const base = key.split('/').pop();
+        if (base) this._missingExpressionFiles.add(base);
+    }
+
+    isExpressionFileMissing(expressionFile) {
+        const key = this.normalizeExpressionFileKey(expressionFile);
+        if (!key || !this._missingExpressionFiles) return false;
+        if (this._missingExpressionFiles.has(key)) return true;
+        const base = key.split('/').pop();
+        return !!base && this._missingExpressionFiles.has(base);
+    }
+
+    clearMissingExpressionFiles() {
+        if (this._missingExpressionFiles) this._missingExpressionFiles.clear();
+    }
+
+    // 通过 expression 文件路径解析出标准引用（Name + File）
+    resolveExpressionReferenceByFile(expressionFile) {
         if (!expressionFile || !this.fileReferences || !Array.isArray(this.fileReferences.Expressions)) {
             return null;
         }
@@ -475,7 +510,7 @@ class Live2DManager {
             if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
             const fileNorm = this.normalizeAssetPathForCompare(expr.File);
             if (fileNorm === targetNorm) {
-                return expr.Name;
+                return { name: expr.Name, file: expr.File };
             }
         }
 
@@ -485,7 +520,7 @@ class Live2DManager {
                 if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
                 const fileBase = this.normalizeAssetPathForCompare(expr.File).split('/').pop() || '';
                 if (fileBase === targetBase) {
-                    return expr.Name;
+                    return { name: expr.Name, file: expr.File };
                 }
             }
         }

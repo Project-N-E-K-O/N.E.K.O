@@ -1095,6 +1095,7 @@
         "profileName": "Имя профиля",
         "profileNameMaxHint": "Макс. 20 символов",
         "profileNameTooLong": "Имя профиля слишком длинное",
+        "profileNameContainsSlash": "Имя профиля не может содержать разделители пути (/ или \\)",
         "newProfileNameRequired": "Новое имя профиля не может быть пустым",
         "newProfileNameTooLong": "Имя профиля слишком длинное",
         "required": "*",

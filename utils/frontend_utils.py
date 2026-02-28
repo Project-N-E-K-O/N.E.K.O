@@ -22,6 +22,7 @@ from pathlib import Path
 import httpx
 
 from utils.workshop_utils import load_workshop_config
+from utils.config_manager import get_steam_workshop_path
 
 
 
@@ -341,6 +342,23 @@ def is_user_imported_model(model_path: str, config_manager=None) -> bool:
         return False
 
 
+def _resolve_workshop_search_dir() -> str:
+    """
+    获取创意工坊搜索目录，优先使用运行时路径，并兼容旧配置键。
+    """
+    runtime_workshop_path = get_steam_workshop_path()
+    if runtime_workshop_path:
+        return runtime_workshop_path
+
+    workshop_config_data = load_workshop_config()
+    # 兼容历史配置: steam_workshop_path 仅作为旧版本兜底读取。
+    legacy_workshop_path = workshop_config_data.get("steam_workshop_path")
+    if legacy_workshop_path:
+        return legacy_workshop_path
+
+    return workshop_config_data.get("default_workshop_folder", "static")
+
+
 def find_model_directory(model_name: str):
     """
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
@@ -359,9 +377,7 @@ def find_model_directory(model_name: str):
         logging.warning(f"模型名称包含非法路径字符: {model_name_safe}")
         return (None, None)
     
-    # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
-    workshop_config_data = load_workshop_config()
-    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
+    WORKSHOP_SEARCH_DIR = _resolve_workshop_search_dir()
     
     # 定义允许的基础目录列表
     allowed_base_dirs = []
@@ -471,9 +487,7 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         (物品路径, URL前缀) 元组，即使找不到也会返回默认值
     """
     try:
-        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path或默认路径
-        workshop_config = load_workshop_config()
-        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("steam_workshop_path", workshop_config.get("default_workshop_folder", "static")))
+        workshop_dir = _resolve_workshop_search_dir()
         
         # 如果路径不存在或为空，使用默认的static目录
         if not workshop_dir or not os.path.exists(workshop_dir):
