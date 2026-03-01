@@ -347,7 +347,7 @@ def _resolve_workshop_search_dir() -> str:
     """
     获取创意工坊搜索目录
     
-    优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > 默认workshop目录
+    优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > 默认workshop目录
     """
     from utils.config_manager import get_workshop_path
     workshop_path = get_workshop_path()
