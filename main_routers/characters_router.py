@@ -1878,7 +1878,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                         'created_at': datetime.now().isoformat()
                     }
                     try:
-                        _config_manager.save_voice_for_current_api(voice_id, voice_data)
+                        local_tts_key = '__LOCAL_TTS__'
+                        _config_manager.save_voice_for_api_key(local_tts_key, voice_id, voice_data)
                         logger.info(f"本地 TTS voice_id 已保存: {voice_id}")
                     except Exception as save_error:
                         logger.warning(f"保存 voice_id 到音色库失败（本地 TTS 仍可用）: {save_error}")
@@ -2121,7 +2122,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                     'created_at': datetime.now().isoformat()
                 }
                 try:
-                    _config_manager.save_voice_for_current_api(voice_id, voice_data)
+                    _config_manager.save_voice_for_api_key(audio_api_key, voice_id, voice_data)
                     logger.info(f"voice_id已保存到音色库: {voice_id}")
                     
                     # 验证voice_id是否能够被正确读取（添加短暂延迟，避免文件系统延迟）
@@ -2130,7 +2131,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                     # 最多验证3次，每次间隔100ms
                     validation_success = False
                     for validation_attempt in range(3):
-                        if _config_manager.validate_voice_id(voice_id):
+                        if _config_manager.validate_voice_id_for_api_key(audio_api_key, voice_id):
                             validation_success = True
                             logger.info(f"voice_id保存验证成功: {voice_id} (尝试 {validation_attempt + 1})")
                             break
