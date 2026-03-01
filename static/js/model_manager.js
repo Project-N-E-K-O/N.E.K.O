@@ -3297,6 +3297,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 确保图标仍然是播放图标
                 updateMotionPlayButtonIcon();
                 showStatus(t('live2d.motionStopped', '动作已停止'), 1000);
+
+                // 清除动作预览恢复定时器
+                if (window._motionPreviewRestoreTimer) {
+                    clearTimeout(window._motionPreviewRestoreTimer);
+                    window._motionPreviewRestoreTimer = null;
+                }
+
+                // 停止动作后平滑恢复到初始状态（smoothReset 内部会在快照后停止 motion/expression）
+                if (window.live2dManager && typeof window.live2dManager.smoothResetToInitialState === 'function') {
+                    window.live2dManager.smoothResetToInitialState().catch(e => {
+                        console.warn('[ModelManager] 停止动作后平滑恢复失败:', e);
+                    });
+                }
             } catch (error) {
                 console.error('停止动作失败:', error);
             }
@@ -3305,11 +3318,51 @@ document.addEventListener('DOMContentLoaded', async () => {
             const motionIndex = currentModelFiles.motion_files.indexOf(motionSelect.value);
             if (motionIndex > -1) {
                 try {
+                    // 清除之前的恢复定时器
+                    if (window._motionPreviewRestoreTimer) {
+                        clearTimeout(window._motionPreviewRestoreTimer);
+                        window._motionPreviewRestoreTimer = null;
+                    }
+                    if (window._expressionPreviewRestoreTimer) {
+                        clearTimeout(window._expressionPreviewRestoreTimer);
+                        window._expressionPreviewRestoreTimer = null;
+                    }
+
                     live2dModel.motion('PreviewAll', motionIndex, 3);
                     isMotionPlaying = true;
                     // 确保图标仍然是播放图标
                     updateMotionPlayButtonIcon();
                     showStatus(t('live2d.playingMotion', `播放动作: ${motionSelect.value}`, { motion: motionSelect.value }), 1000);
+
+                    // 尝试获取动作持续时间，设置自动恢复定时器
+                    const _motionRestoreCallback = () => {
+                        window._motionPreviewRestoreTimer = null;
+                        isMotionPlaying = false;
+                        updateMotionPlayButtonIcon();
+                        console.log('[ModelManager] 动作预览结束，自动恢复到初始状态');
+                        if (window.live2dManager && typeof window.live2dManager.smoothResetToInitialState === 'function') {
+                            window.live2dManager.smoothResetToInitialState().catch(() => {});
+                        }
+                    };
+                    try {
+                        const motionFile = motionSelect.value;
+                        const motionUrl = window.live2dManager ? window.live2dManager.resolveAssetPath(motionFile) : motionFile;
+                        fetch(motionUrl).then(r => r.ok ? r.json() : null).then(data => {
+                            if (data && data.Meta && data.Meta.Duration) {
+                                const dur = data.Meta.Duration * 1000 + 500; // 动作时长 + 500ms缓冲
+                                window._motionPreviewRestoreTimer = setTimeout(_motionRestoreCallback, dur);
+                            } else {
+                                // 无法获取时长，使用10秒后备定时器
+                                window._motionPreviewRestoreTimer = setTimeout(_motionRestoreCallback, 10000);
+                            }
+                        }).catch(() => {
+                            // fetch失败，使用10秒后备定时器
+                            window._motionPreviewRestoreTimer = setTimeout(_motionRestoreCallback, 10000);
+                        });
+                    } catch (e) {
+                        // 设置后备定时器
+                        window._motionPreviewRestoreTimer = setTimeout(_motionRestoreCallback, 10000);
+                    }
                 } catch (error) {
                     console.error('播放动作失败:', error);
                     showStatus(t('live2d.playMotionFailed', `播放动作失败: ${motionSelect.value}`, { motion: motionSelect.value }), 2000);
@@ -3402,12 +3455,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         const expressionName = expressionSelect.value.split('/').pop().replace('.exp3.json', '');
 
         try {
+            // 清除之前的表情预览恢复定时器
+            if (window._expressionPreviewRestoreTimer) {
+                clearTimeout(window._expressionPreviewRestoreTimer);
+                window._expressionPreviewRestoreTimer = null;
+            }
+
             // expression 方法是异步的，需要使用 await
             // 注意：Live2D SDK 的 expression 方法可能返回 null/undefined 但仍然成功播放
             const result = await currentModel.expression(expressionName);
             // Live2D SDK 的 expression 方法成功时可能返回 falsy 值，这里改为检查是否抛出异常
             // 如果没有抛出异常，就认为播放成功
             showStatus(t('live2d.playingExpression', `播放表情: ${expressionName}`, { expression: expressionName }), 1000);
+
+            // 设置自动恢复定时器：5秒后平滑恢复到初始状态
+            window._expressionPreviewRestoreTimer = setTimeout(() => {
+                window._expressionPreviewRestoreTimer = null;
+                console.log('[ModelManager] 表情预览结束，自动恢复到初始状态');
+                if (window.live2dManager && typeof window.live2dManager.smoothResetToInitialState === 'function') {
+                    window.live2dManager.smoothResetToInitialState().catch(e => {
+                        console.warn('[ModelManager] 平滑恢复失败:', e);
+                        if (window.live2dManager && typeof window.live2dManager.clearExpression === 'function') {
+                            window.live2dManager.clearExpression();
+                        }
+                    });
+                } else if (window.live2dManager && typeof window.live2dManager.clearExpression === 'function') {
+                    window.live2dManager.clearExpression();
+                }
+            }, 5000);
         } catch (error) {
             console.error('播放表情失败:', error);
             showStatus(t('live2d.playExpressionFailed', `播放表情失败: ${expressionName}`, { expression: expressionName }), 2000);
