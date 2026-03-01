@@ -345,7 +345,10 @@ class ConfigManager:
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
+        self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self._workshop_config_lock = threading.Lock()
+        self._workshop_config_cleanup_done = False
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -1777,24 +1780,36 @@ class ConfigManager:
         Returns:
             dict: workshop配置数据
         """
-        # 兼容历史错误配置：无论配置位于文档目录还是软件目录，先做一次自愈清理
-        self._cleanup_invalid_workshop_configs()
+        # 兼容历史错误配置：仅在进程内首次读取时自愈一次，避免高频读取重复触发清理逻辑
+        if not self._workshop_config_cleanup_done:
+            with self._workshop_config_lock:
+                if not self._workshop_config_cleanup_done:
+                    self._cleanup_invalid_workshop_configs()
+                    self._workshop_config_cleanup_done = True
 
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    logger.info(f"成功加载workshop配置: {config}")
+                    logger.debug(f"成功加载workshop配置: {config}")
                     return config
             else:
-                # 如果配置文件不存在，返回默认配置
-                default_config = {
-                    "default_workshop_folder": str(self.workshop_dir),
-                    "auto_create_folder": True
-                }
-                logger.info(f"创建默认workshop配置: {default_config}")
-                return default_config
+                # 配置不存在时进行一次带锁初始化，避免并发/密集调用下重复创建默认配置
+                with self._workshop_config_lock:
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            logger.debug(f"成功加载workshop配置: {config}")
+                            return config
+
+                    default_config = {
+                        "default_workshop_folder": str(self.workshop_dir),
+                        "auto_create_folder": True
+                    }
+                    self.save_workshop_config(default_config)
+                    logger.info(f"创建默认workshop配置: {default_config}")
+                    return default_config
         except Exception as e:
             error_msg = f"加载workshop配置失败: {e}"
             logger.error(error_msg)
@@ -1838,6 +1853,25 @@ class ConfigManager:
         self._steam_workshop_path = workshop_path
         logger.info(f"已设置Steam创意工坊路径（运行时）: {workshop_path}")
 
+    def persist_user_workshop_folder(self, workshop_path):
+        """
+        将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）。
+
+        仅在动态获取Steam工坊位置成功时调用，后续读取可在Steam未运行时作为回退。
+        """
+        if self._user_workshop_folder_persisted:
+            return
+        if not workshop_path or not os.path.isdir(workshop_path):
+            return
+        self._user_workshop_folder_persisted = True
+        try:
+            config = self.load_workshop_config()
+            config["user_workshop_folder"] = workshop_path
+            self.save_workshop_config(config)
+            logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
+        except Exception as e:
+            logger.error(f"持久化user_workshop_folder失败: {e}")
+
     def get_steam_workshop_path(self):
         """
         获取Steam创意工坊根目录路径（仅运行时，由启动流程设置）
@@ -1851,7 +1885,7 @@ class ConfigManager:
         """
         获取workshop根目录路径
         
-        优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > self.workshop_dir
+        优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > self.workshop_dir
         
         Returns:
             str: workshop根目录路径
@@ -1861,6 +1895,9 @@ class ConfigManager:
             return config["user_mod_folder"]
         if self._steam_workshop_path:
             return self._steam_workshop_path
+        cached = config.get("user_workshop_folder")
+        if cached and os.path.isdir(cached):
+            return cached
         return config.get("default_workshop_folder", str(self.workshop_dir))
 
 
@@ -1906,6 +1943,10 @@ def save_workshop_config(config_data):
 def save_workshop_path(workshop_path):
     """设置Steam创意工坊根目录路径（运行时）"""
     return get_config_manager().save_workshop_path(workshop_path)
+
+def persist_user_workshop_folder(workshop_path):
+    """将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）"""
+    return get_config_manager().persist_user_workshop_folder(workshop_path)
 
 def get_steam_workshop_path():
     """获取Steam创意工坊根目录路径（运行时）"""

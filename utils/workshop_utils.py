@@ -20,6 +20,7 @@ logger = get_module_logger(__name__)
 from utils.config_manager import (
     load_workshop_config,
     save_workshop_path,
+    persist_user_workshop_folder,
     get_workshop_path
 )
 
@@ -123,23 +124,45 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
         str: 创意工坊根目录路径
     """
     workshop_path = None
+    from_steam = False
     
     # 如果提供了物品列表，尝试从中提取根目录
     if subscribed_items:
         workshop_path = extract_workshop_root_from_items(subscribed_items)
+        if workshop_path:
+            from_steam = True
     
     # 如果未能从物品列表获取路径，使用配置中的路径
     if not workshop_path:
         workshop_path = get_workshop_path()
         logger.info(f"使用配置中的创意工坊路径: {workshop_path}")
     
-    # 将获取到的路径保存到配置文件中（使用config_manager的函数）
+    # 将获取到的路径保存到运行时变量
     try:
         save_workshop_path(workshop_path)
     except Exception as e:
-        error_msg = f"保存创意工坊路径到配置文件失败: {e}"
-        logger.error(error_msg)
+        logger.error(f"保存创意工坊路径到运行时变量失败: {e}")
+    
+    # 首次从Steam成功获取时，持久化到配置文件作为后续回退
+    if from_steam:
+        try:
+            persist_user_workshop_folder(workshop_path)
+        except Exception as e:
+            logger.error(f"持久化Steam创意工坊路径失败: {e}")
     
     # 确保路径存在
     ensure_workshop_folder_exists(workshop_path)
     return workshop_path
+
+
+def get_default_workshop_folder() -> Optional[str]:
+    """
+    获取创意工坊目录路径（用于 monitor 等独立进程的静态文件挂载）。
+
+    与 get_workshop_path() 使用同一优先级链，在 Steam 未运行时
+    会自动回退到上次缓存的 user_workshop_folder 或本地 default_workshop_folder。
+    """
+    path = get_workshop_path()
+    if path and os.path.isdir(path):
+        return path
+    return None
