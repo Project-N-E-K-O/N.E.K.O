@@ -734,12 +734,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     success = bres.get("success", False) if isinstance(bres, dict) else False
                     summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
                     result_detail = ""
+                    error_detail = ""
                     if isinstance(bres, dict):
                         result_detail = str(bres.get("result") or bres.get("message") or "")
+                        error_detail = str(bres.get("error") or "") if not success else ""
+                        display_detail = result_detail or error_detail
                         if success:
                             summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
                         else:
-                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
+                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
                     bu_session.complete_task(result_detail or summary, success)
                     bu_info["status"] = "completed" if success else "failed"
                     bu_info["result"] = bres
@@ -750,12 +753,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         success=success,
                         summary=summary,
                         detail=result_detail,
+                        error_message=error_detail,
                     )
                     try:
                         await _emit_main_event(
                             "task_update", lanlan_name,
                             task={"id": bu_task_id, "status": bu_info["status"],
                                   "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
+                                  "error": error_detail[:500] if error_detail else "",
                                   "session_id": bu_session.session_id},
                         )
                     except Exception:

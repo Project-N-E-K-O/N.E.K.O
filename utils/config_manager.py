@@ -344,6 +344,7 @@ class ConfigManager:
         self.vrm_dir = self.app_docs_dir / "vrm"
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
+        self._steam_workshop_path = None
         self.chara_dir = self.app_docs_dir / "character_cards"
 
         self.project_config_dir = self._get_project_config_directory()
@@ -1740,7 +1741,7 @@ class ConfigManager:
                 logger.error(f"删除非法workshop配置文件失败: {config_path}, error={delete_error}")
                 return False
 
-        path_keys = ("user_mod_folder", "WORKSHOP_PATH", "steam_workshop_path", "default_workshop_folder")
+        path_keys = ("user_mod_folder", "steam_workshop_path", "default_workshop_folder")
         for key in path_keys:
             if key not in config_data:
                 continue
@@ -1829,26 +1830,38 @@ class ConfigManager:
     
     def save_workshop_path(self, workshop_path):
         """
-        保存workshop根目录路径到配置文件
+        设置Steam创意工坊根目录路径（运行时变量，不写入配置文件）
         
         Args:
-            workshop_path: workshop根目录路径
+            workshop_path: Steam创意工坊根目录路径
         """
-        config = self.load_workshop_config()
-        config["WORKSHOP_PATH"] = workshop_path
-        self.save_workshop_config(config)
-        logger.info(f"已将workshop路径保存到配置文件: {workshop_path}")
+        self._steam_workshop_path = workshop_path
+        logger.info(f"已设置Steam创意工坊路径（运行时）: {workshop_path}")
+
+    def get_steam_workshop_path(self):
+        """
+        获取Steam创意工坊根目录路径（仅运行时，由启动流程设置）
+        
+        Returns:
+            str | None: Steam创意工坊根目录路径
+        """
+        return self._steam_workshop_path
     
     def get_workshop_path(self):
         """
-        获取保存的workshop根目录路径
+        获取workshop根目录路径
+        
+        优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > self.workshop_dir
         
         Returns:
             str: workshop根目录路径
         """
         config = self.load_workshop_config()
-        # 优先使用user_mod_folder，然后是WORKSHOP_PATH，然后是default_workshop_folder，最后使用self.workshop_dir
-        return config.get("user_mod_folder", config.get("WORKSHOP_PATH", config.get("default_workshop_folder", str(self.workshop_dir))))
+        if config.get("user_mod_folder"):
+            return config["user_mod_folder"]
+        if self._steam_workshop_path:
+            return self._steam_workshop_path
+        return config.get("default_workshop_folder", str(self.workshop_dir))
 
 
 # 全局配置管理器实例
@@ -1891,8 +1904,12 @@ def save_workshop_config(config_data):
     return get_config_manager().save_workshop_config(config_data)
 
 def save_workshop_path(workshop_path):
-    """保存workshop根目录路径"""
+    """设置Steam创意工坊根目录路径（运行时）"""
     return get_config_manager().save_workshop_path(workshop_path)
+
+def get_steam_workshop_path():
+    """获取Steam创意工坊根目录路径（运行时）"""
+    return get_config_manager().get_steam_workshop_path()
 
 def get_workshop_path():
     """获取workshop根目录路径"""

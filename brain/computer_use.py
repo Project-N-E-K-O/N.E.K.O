@@ -437,7 +437,7 @@ class ComputerUseAdapter:
             resp = self._llm_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "ok"}],
-                max_tokens=5,
+                max_completion_tokens=5,
                 timeout=15,
                 extra_body=extra or None,
             )

@@ -39,6 +39,7 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 .idea/
+.cursor/
 .pytest_cache/
 .DS_Store
 .venv

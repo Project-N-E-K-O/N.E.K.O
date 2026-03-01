@@ -129,6 +129,28 @@ function tOrFallback(key, fallback, params) {
     return fallback;
 }
 
+const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
+
+function translateBackendError(errorMessage) {
+    if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
+    if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
+        return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
+    }
+    if (errorMessage.includes('档案名为必填项')) {
+        return tOrFallback('character.profileNameRequired', errorMessage);
+    }
+    if (errorMessage.includes('档案名长度不能超过') || errorMessage.includes('档案名过长')) {
+        return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, errorMessage);
+    }
+    if (errorMessage.includes('新档案名不能为空')) {
+        return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, errorMessage);
+    }
+    if (errorMessage.includes('新档案名已存在') || errorMessage.includes('档案名已存在')) {
+        return tOrFallback('character.profileNameExists', errorMessage);
+    }
+    return errorMessage;
+}
+
 function profileNameCountUnits(str) {
     if (!str) return 0;
     let units = 0;
@@ -155,6 +177,20 @@ function flashProfileNameTooLong(inputEl) {
     if (!inputEl) return;
 
     const msg = tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameContainsSlash(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符');
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameError(inputEl, msg) {
+    if (!inputEl) return;
 
     // 红框：优先给胶囊容器加 class（chara_manager 页面），同时也给 input 自己加 class（兼容弹窗）
     const fieldRow = inputEl.closest ? inputEl.closest('.field-row') : null;
@@ -217,7 +253,23 @@ function attachProfileNameLimiter(inputEl) {
     const enforce = () => {
         if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
-        const before = inputEl.value;
+        let before = inputEl.value;
+        
+        // 检查是否包含路径分隔符，移除并显示警告
+        if (before.includes('/') || before.includes('\\')) {
+            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+            inputEl.value = before.replace(/[/\\]/g, '');
+            if (caret !== null) {
+                // 计算光标之前被移除的路径分隔符数量
+                const beforeCaret = before.substring(0, caret);
+                const removedCount = (beforeCaret.match(/[/\\]/g) || []).length;
+                const newPos = Math.max(0, caret - removedCount);
+                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            }
+            flashProfileNameContainsSlash(inputEl);
+            before = inputEl.value;
+        }
+        
         const beforeUnits = profileNameCountUnits(before);
         const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
         if (before !== after) {
@@ -1658,7 +1710,7 @@ function showCatgirlForm(key, container) {
                     // 如果不是JSON格式，保持原错误文本
                 }
 
-                await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage);
+                await showAlert(window.t ? window.t('character.saveFailedWithError', { error: translateBackendError(errorMessage) }) : '保存失败: ' + translateBackendError(errorMessage));
                 return;
             }
 
@@ -1666,7 +1718,7 @@ function showCatgirlForm(key, container) {
             console.log('保存结果:', result);
 
             if (result.success === false) {
-                await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
+                await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.saveFailed') : '保存失败'));
                 return;
             }
 
@@ -1806,6 +1858,7 @@ function showCatgirlForm(key, container) {
 // 主人档案名重命名
 window.renameMaster = async function (oldName) {
     let _renameMasterDidOverLimit = false;
+    let _renameMasterContainsSlash = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
@@ -1818,7 +1871,8 @@ window.renameMaster = async function (oldName) {
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
                 _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+                _renameMasterContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
+                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\]/g, ''), PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -1832,6 +1886,10 @@ window.renameMaster = async function (oldName) {
                 if (_renameMasterDidOverLimit) {
                     _renameMasterDidOverLimit = false;
                     flashProfileNameTooLong(inputEl);
+                }
+                if (_renameMasterContainsSlash) {
+                    _renameMasterContainsSlash = false;
+                    flashProfileNameContainsSlash(inputEl);
                 }
             }
         }
@@ -1852,7 +1910,8 @@ window.renameMaster = async function (oldName) {
         await loadCharacterData();
         await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
     } else {
-        await showAlert(window.t ? window.t('character.renameError', { error: result.message }) : '重命名失败: ' + (result.message || '未知错误'));
+        const errorText = translateBackendError(result.error || result.message || '未知错误');
+        await showAlert(window.t ? window.t('character.renameError', { error: errorText }) : '重命名失败: ' + errorText);
     }
 }
 
@@ -1873,6 +1932,7 @@ window.renameCatgirl = async function (oldName) {
     }
 
     let _renameCatgirlDidOverLimit = false;
+    let _renameCatgirlContainsSlash = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
@@ -1885,7 +1945,8 @@ window.renameCatgirl = async function (oldName) {
             normalize: (v) => {
                 const trimmed = String(v ?? '').trim();
                 _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
-                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+                _renameCatgirlContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
+                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\]/g, ''), PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
@@ -1899,6 +1960,10 @@ window.renameCatgirl = async function (oldName) {
                 if (_renameCatgirlDidOverLimit) {
                     _renameCatgirlDidOverLimit = false;
                     flashProfileNameTooLong(inputEl);
+                }
+                if (_renameCatgirlContainsSlash) {
+                    _renameCatgirlContainsSlash = false;
+                    flashProfileNameContainsSlash(inputEl);
                 }
             }
         }
@@ -1943,7 +2008,7 @@ window.renameCatgirl = async function (oldName) {
 
         await loadCharacterData();
     } else {
-        await showAlert(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'));
+        await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.renameFailed') : '重命名失败'));
     }
 }
 
@@ -2045,7 +2110,7 @@ window.unregisterVoice = async function (catgirlName) {
             await showAlert(window.t ? window.t('character.voiceUnregistered') : '声音注册已解除');
             await loadCharacterData(); // 刷新数据
         } else {
-            await showAlert(result.error || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
+            await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
         }
     } catch (error) {
         console.error('解除注册出错:', error);
@@ -2223,7 +2288,7 @@ async function switchCatgirl(catgirlName) {
         if (result.success) {
             await loadCharacterData(); // 重新加载数据以更新按钮状态
         } else {
-            await showAlert(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'));
+            await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.switchFailed') : '切换失败'));
         }
     } catch (error) {
         console.error('切换猫娘失败:', error);

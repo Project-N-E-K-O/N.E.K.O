@@ -272,7 +272,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
         this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
-        this.modelName = parts.length > 0 ? parts[parts.length - 1] : null;
+        const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
+        try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }
         console.log('模型根路径解析:', { modelUrl: urlString, modelName: this.modelName, modelRootPath: this.modelRootPath });
     } catch (e) {
         console.warn('解析模型根路径失败，将使用默认值', e);
@@ -343,16 +344,71 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             // 保存原始 FileReferences
             this.fileReferences = settings.FileReferences || null;
 
+            // 从服务器 API 获取经过验证的表情/动作文件路径
+            // model_manager 页面在加载前已手动注入；此处为 index 等其他页面补齐相同逻辑
+            let verifiedExpressionBasenames = null;
+            try {
+                const rootParts = this.modelRootPath.split('/').filter(Boolean);
+                let filesApiUrl = null;
+                if (rootParts[0] === 'workshop' && rootParts.length >= 2 && /^\d+$/.test(rootParts[1])) {
+                    filesApiUrl = `/api/live2d/model_files_by_id/${rootParts[1]}`;
+                } else if (this.modelName) {
+                    filesApiUrl = `/api/live2d/model_files/${encodeURIComponent(this.modelName)}`;
+                }
+                if (filesApiUrl) {
+                    const filesResp = await fetch(filesApiUrl);
+                    if (filesResp.ok) {
+                        const filesData = await filesResp.json();
+                        if (filesData.success !== false && Array.isArray(filesData.expression_files)) {
+                            if (!this.fileReferences) this.fileReferences = {};
+                            this.fileReferences.Expressions = filesData.expression_files.map(file => ({
+                                Name: file.split('/').pop().replace('.exp3.json', ''),
+                                File: file
+                            }));
+                            verifiedExpressionBasenames = new Set(
+                                filesData.expression_files.map(f => f.split('/').pop().toLowerCase())
+                            );
+                            console.log('已从服务器更新表情文件引用:', this.fileReferences.Expressions.length, '个表情');
+                        }
+                        if (filesData.success !== false && Array.isArray(filesData.motion_files)) {
+                            if (!this.fileReferences) this.fileReferences = {};
+                            if (!this.fileReferences.Motions) this.fileReferences.Motions = {};
+                            this.fileReferences.Motions.PreviewAll = filesData.motion_files.map(file => ({ File: file }));
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('获取服务器端表情文件列表失败，将使用模型配置中的路径:', e);
+            }
+
             // 优先使用顶层 EmotionMapping，否则从 FileReferences 推导
             if (settings.EmotionMapping && (settings.EmotionMapping.expressions || settings.EmotionMapping.motions)) {
                 this.emotionMapping = settings.EmotionMapping;
             } else {
                 this.emotionMapping = this.deriveEmotionMappingFromFileRefs(this.fileReferences || {});
             }
+
+            // 用服务器验证过的表情文件集过滤 emotionMapping，剔除磁盘上不存在的条目
+            if (verifiedExpressionBasenames && this.emotionMapping && this.emotionMapping.expressions) {
+                for (const emotion of Object.keys(this.emotionMapping.expressions)) {
+                    const before = this.emotionMapping.expressions[emotion];
+                    if (!Array.isArray(before)) continue;
+                    this.emotionMapping.expressions[emotion] = before.filter(f => {
+                        const base = String(f).split('/').pop().toLowerCase();
+                        return verifiedExpressionBasenames.has(base);
+                    });
+                }
+                console.log('已根据服务器验证结果过滤 emotionMapping');
+            }
             console.log('已加载情绪映射:', this.emotionMapping);
         } else {
             console.warn('模型配置中未找到 settings.json，无法加载情绪映射');
         }
+    }
+
+    // 切换模型后清空失效 expression 缓存，避免污染其他模型
+    if (typeof this.clearMissingExpressionFiles === 'function') {
+        this.clearMissingExpressionFiles();
     }
 
     // 记录模型的初始参数（用于expression重置）

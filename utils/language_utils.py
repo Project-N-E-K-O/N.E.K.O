@@ -160,7 +160,7 @@ def initialize_global_language() -> str:
     
     with _global_language_lock:
         if _global_language_initialized:
-            return _global_language or 'zh'
+            return _global_language or 'en'
         
         # 判断区域
         _global_region = 'china' if _is_china_region() else 'non-china'
@@ -178,8 +178,8 @@ def initialize_global_language() -> str:
         
         # 优先级2：从系统设置获取
         system_lang = _get_system_language()
-        _global_language = system_lang
-        _global_language_full = system_lang
+        _global_language = normalize_language_code(system_lang, format='short')
+        _global_language_full = normalize_language_code(system_lang, format='full')
         logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
         _global_language_initialized = True
         return _global_language
@@ -905,7 +905,7 @@ class TranslationService:
                 base_url=config['base_url'],
                 api_key=config['api_key'],
                 temperature=0.3,
-                max_tokens=2000,
+                max_completion_tokens=2000,
                 timeout=30.0,
             )
             

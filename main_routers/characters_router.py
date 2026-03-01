@@ -52,6 +52,8 @@ def _validate_profile_name(name: str) -> str | None:
     name = str(name).strip()
     if not name:
         return '档案名为必填项'
+    if '/' in name or '\\' in name:
+        return '档案名不能包含路径分隔符(/或\\)'
     if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
         return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None

@@ -247,12 +247,16 @@ async def _handle_agent_event(event: dict):
                 mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:
-                        await mgr.websocket.send_json({
+                        notif = {
                             "type": "agent_notification",
                             "text": text,
                             "source": "brain",
                             "status": cb_status,
-                        })
+                        }
+                        err_msg = event.get("error_message") or ""
+                        if err_msg:
+                            notif["error_message"] = err_msg[:500]
+                        await mgr.websocket.send_json(notif)
                     except Exception:
                         pass
         elif event_type == "task_update":

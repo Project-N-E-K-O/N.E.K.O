@@ -368,9 +368,21 @@ function init_app() {
 
     // 建立WebSocket连接
     function connectWebSocket() {
+        const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
+            ? window.lanlan_config.lanlan_name
+            : '';
+        if (!currentLanlanName) {
+            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
+            if (autoReconnectTimeoutId) {
+                clearTimeout(autoReconnectTimeoutId);
+            }
+            autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            return;
+        }
+
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const wsUrl = `${protocol}://${window.location.host}/ws/${lanlan_config.lanlan_name}`;
-        console.log(window.t('console.websocketConnecting'), lanlan_config.lanlan_name, window.t('console.websocketUrl'), wsUrl);
+        const wsUrl = `${protocol}://${window.location.host}/ws/${currentLanlanName}`;
+        console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
@@ -819,6 +831,8 @@ function init_app() {
                     if (msg) {
                         setFloatingAgentStatus(msg, response.status || 'completed');
                         maybeShowAgentQuotaExceededModal(msg);
+                        maybeShowContentFilterModal(msg);
+                        if (response.error_message) maybeShowContentFilterModal(response.error_message);
                     }
                 } else if (response.type === 'agent_task_update') {
                     try {
@@ -844,6 +858,7 @@ function init_app() {
                             const errMsg = task.error || task.reason || '';
                             if (errMsg) {
                                 maybeShowAgentQuotaExceededModal(errMsg);
+                                maybeShowContentFilterModal(errMsg);
                             }
                         }
                     } catch (e) {
@@ -5912,7 +5927,7 @@ function init_app() {
     window.agentStateMachine = agentStateMachine;
     window._agentStatusSnapshot = window._agentStatusSnapshot || null;
 
-    // Agent 定时检查器（暴露到 window 供 live2d-ui-hud.js 调用）
+    // Agent 定时检查器
     let agentCheckInterval = null;
     let lastFlagsSyncTime = 0;
     const FLAGS_SYNC_INTERVAL = 3000; // 3秒同步一次后端flags状态
@@ -6086,7 +6101,7 @@ function init_app() {
                         if (notification) {
                             console.log('[App] 收到后端通知:', notification);
                             setFloatingAgentStatus(notification);
-                            // 如果是错误通知，也可以考虑弹窗
+                            maybeShowContentFilterModal(notification);
                             if (notification.includes('失败') || notification.includes('断开') || notification.includes('错误')) {
                                 showStatusToast(notification, 3000);
                             }
@@ -6301,6 +6316,45 @@ function init_app() {
             .catch(() => { /* ignore */ })
             .finally(() => {
                 _agentQuotaModalOpen = false;
+            });
+    }
+
+    let _contentFilterModalOpen = false;
+    let _contentFilterModalCooldownUntil = 0;
+
+    function _isContentFilterError(text) {
+        if (!text) return false;
+        const s = String(text).toLowerCase();
+        return (
+            s.includes('content_filter') ||
+            s.includes('data_inspection_failed') ||
+            s.includes('datainspectionfailed') ||
+            s.includes('inappropriate content') ||
+            s.includes('content filter') ||
+            s.includes('responsible ai policy') ||
+            s.includes('content management policy')
+        );
+    }
+
+    function maybeShowContentFilterModal(rawMessage) {
+        if (!_isContentFilterError(rawMessage)) return;
+        if (typeof window.showAlert !== 'function') return;
+
+        const now = Date.now();
+        if (_contentFilterModalOpen || now < _contentFilterModalCooldownUntil) return;
+
+        _contentFilterModalOpen = true;
+        _contentFilterModalCooldownUntil = now + 5000;
+
+        const title = window.t ? window.t('common.alert') : '提示';
+        const msg = window.t
+            ? window.t('agent.contentFilterError')
+            : 'Agent 浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。';
+
+        Promise.resolve(window.showAlert(msg, title))
+            .catch(() => { /* ignore */ })
+            .finally(() => {
+                _contentFilterModalOpen = false;
             });
     }
 
@@ -9903,9 +9957,31 @@ function init_app() {
     });
 } // 兼容老按钮
 
-const ready = () => {
+const ready = async () => {
     if (ready._called) return;
     ready._called = true;
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        const PAGE_CONFIG_READY_TIMEOUT = Symbol('page-config-ready-timeout');
+        const PAGE_CONFIG_READY_TIMEOUT_MS = 3000;
+        let timeoutId = null;
+        try {
+            const waitResult = await Promise.race([
+                window.pageConfigReady,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => resolve(PAGE_CONFIG_READY_TIMEOUT), PAGE_CONFIG_READY_TIMEOUT_MS);
+                })
+            ]);
+            if (waitResult === PAGE_CONFIG_READY_TIMEOUT) {
+                console.warn(`[Init] pageConfigReady pending over ${PAGE_CONFIG_READY_TIMEOUT_MS}ms, continue with fallback config`);
+            }
+        } catch (error) {
+            console.warn('[Init] pageConfigReady rejected, continue with fallback config', error);
+        } finally {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
+        }
+    }
     init_app();
 };
 
