@@ -2123,7 +2123,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 }
                 try:
                     _config_manager.save_voice_for_api_key(audio_api_key, voice_id, voice_data)
-                    logger.info(f"voice_id已保存到音色库（API Key: {audio_api_key[:8]}...）: {voice_id}")
+                    logger.info(f"voice_id已保存到音色库: {voice_id}")
                     
                     # 验证voice_id是否能够被正确读取（添加短暂延迟，避免文件系统延迟）
                     await asyncio.sleep(0.1)  # 等待100ms，确保文件写入完成

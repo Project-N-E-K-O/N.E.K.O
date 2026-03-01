@@ -951,7 +951,7 @@ class ConfigManager:
                 api_key = core_config.get('AUDIO_API_KEY', '')
 
         if not api_key:
-            raise ValueError("未配置有效的 API Key")
+            return False
 
         if api_key not in voice_storage:
             return False

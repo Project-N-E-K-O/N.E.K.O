@@ -1482,6 +1482,17 @@ function showCatgirlForm(key, container) {
         }
     };
 
+    function getVoiceDisplayName(voiceId, voiceData, voiceOwners) {
+        const owners = voiceOwners && voiceOwners[voiceId];
+        if (voiceData && voiceData.prefix) {
+            return voiceData.prefix;
+        } else if (owners && owners.length > 0) {
+            return owners.join(', ');
+        } else {
+            return voiceId;
+        }
+    }
+
     // 在 form.onsubmit 之前添加
     async function loadVoices() {
         try {
@@ -1501,17 +1512,7 @@ function showCatgirlForm(key, container) {
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    // 显示优先级：prefix > 使用该音色的角色名 > voice_id
-                    const owners = voiceOwners[voiceId];
-                    let displayName = '';
-                    if (voiceData.prefix) {
-                        displayName = voiceData.prefix;
-                    } else if (owners && owners.length > 0) {
-                        displayName = owners.join(', ');
-                    } else {
-                        displayName = voiceId;
-                    }
-                    option.textContent = displayName;
+                    option.textContent = getVoiceDisplayName(voiceId, voiceData, voiceOwners);
                     option.title = voiceId;
                     if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                     select.appendChild(option);
@@ -2190,15 +2191,7 @@ window.addEventListener('message', function (event) {
                 Object.entries(data.voices).forEach(([id, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = id;
-                    const owners = voiceOwners2[id];
-                    let dn = '';
-                    if (owners && owners.length > 0) {
-                        dn = owners.join(', ');
-                    } else if (voiceData.prefix) {
-                        dn = voiceData.prefix;
-                    }
-                    const shortId = id.length > 20 ? id.substring(0, 18) + '…' : id;
-                    option.textContent = dn ? dn + ' (' + shortId + ')' : id;
+                    option.textContent = getVoiceDisplayName(id, voiceData, voiceOwners2);
                     option.title = id;
                     select.appendChild(option);
                 });
