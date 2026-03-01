@@ -239,12 +239,19 @@ def find_models():
                             # 同时更新display_name以区分
                             display_name = f"{display_name} ({source})"
                         
-                        found_models.append({
+                        model_entry = {
                             "name": final_name,
                             "display_name": display_name,
                             "path": f"{url_prefix}/{model_path}",
                             "source": source
-                        })
+                        }
+                        
+                        if source == 'workshop':
+                            path_parts = model_path.split('/')
+                            if path_parts and path_parts[0].isdigit():
+                                model_entry["item_id"] = path_parts[0]
+                        
+                        found_models.append(model_entry)
                         
                         # 优化：一旦在某个目录找到模型json，就无需再继续深入该目录的子目录
                         dirs[:] = []

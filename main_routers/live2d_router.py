@@ -92,8 +92,12 @@ async def get_live2d_models(simple: bool = False):
                             if filename.endswith('.model3.json'):
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
                                 
-                                # 避免重复添加
-                                if model_name not in [m['name'] for m in models]:
+                                existing_model = next((m for m in models if m['name'] == model_name), None)
+                                if existing_model:
+                                    if not existing_model.get('item_id'):
+                                        existing_model['item_id'] = item_id
+                                        existing_model['source'] = 'steam_workshop'
+                                else:
                                     path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
                                     logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
                                     models.append({
@@ -110,8 +114,12 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = subdir
                                 json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
                                 if os.path.exists(json_file):
-                                    # 避免重复添加
-                                    if model_name not in [m['name'] for m in models]:
+                                    existing_model = next((m for m in models if m['name'] == model_name), None)
+                                    if existing_model:
+                                        if not existing_model.get('item_id'):
+                                            existing_model['item_id'] = item_id
+                                            existing_model['source'] = 'steam_workshop'
+                                    else:
                                         path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                         logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
                                         models.append({
