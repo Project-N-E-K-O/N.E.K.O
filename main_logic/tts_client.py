@@ -817,10 +817,21 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
     response_queue.put(("__ready__", True))
     
+    current_speech_id = None
+
     class Callback(ResultCallback):
         def __init__(self, response_queue):
             self.response_queue = response_queue
             self.connection_lost = False
+            # 当前允许投递的 speech_id（由 worker 在回合边界显式设置）
+            # 不能在 on_data 时动态读取 current_speech_id，否则旧流尾包可能被错标到新流。
+            self.accepted_speech_id = None
+            # CosyVoice 常先回很小的 OGG 头页（~200B），前端会因“数据不足”暂不解码，
+            # 造成首词听感被吞。这里为每个 speech_id 做一次首包聚合后再下发。
+            self._active_sid = None
+            self._bootstrap_buffer = bytearray()
+            self._bootstrap_sent = False
+            self._bootstrap_min_bytes = 1024
             
         def on_open(self): 
             self.connection_lost = False
@@ -828,7 +839,13 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self): 
-            pass
+            # 短句可能在首包聚合阈值前就结束，完成时强制冲刷缓冲，避免整句静音。
+            try:
+                if self._bootstrap_buffer and self._active_sid:
+                    self.response_queue.put(("__audio__", self._active_sid, bytes(self._bootstrap_buffer)))
+            finally:
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = False
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" in message:
@@ -844,10 +861,29 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
             
         def on_data(self, data: bytes) -> None:
-            self.response_queue.put(data)
+            sid = self.accepted_speech_id
+            if not sid:
+                # 回合切换窗口或未就绪时直接丢弃，避免错序串包
+                return
+
+            # speech_id 切换时重置首包聚合状态
+            if sid != self._active_sid:
+                self._active_sid = sid
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = False
+
+            if not self._bootstrap_sent:
+                self._bootstrap_buffer.extend(data)
+                if len(self._bootstrap_buffer) < self._bootstrap_min_bytes:
+                    return
+                self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = True
+                return
+
+            self.response_queue.put(("__audio__", sid, data))
             
     callback = Callback(response_queue)
-    current_speech_id = None
     synthesizer = None
     char_buffer = ""
     detected_lang = None
@@ -884,6 +920,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             logger.info("CosyVoice 检测到假名，语言标记为日文")
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
+            callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
         last_streaming_call_time = time.time()
         char_buffer = ""
@@ -892,6 +929,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """在连接存活时调用 streaming_complete，连接已断开则跳过"""
         nonlocal synthesizer, last_streaming_call_time
         if synthesizer is None:
+            callback.accepted_speech_id = None
             return
         if callback.connection_lost:
             logger.info("CosyVoice WebSocket 已断开，跳过 streaming_complete")
@@ -906,6 +944,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
         synthesizer = None
         last_streaming_call_time = None
+        callback.accepted_speech_id = None
 
     while True:
         # 非阻塞检查队列，优先处理打断
@@ -933,11 +972,15 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             char_buffer = ""
             detected_lang = None
             callback.connection_lost = False
+            callback.accepted_speech_id = None
             continue
 
         if current_speech_id is None:
             current_speech_id = sid
+            callback.accepted_speech_id = sid
         elif current_speech_id != sid:
+            # 先屏蔽回调，避免旧流尾包误标到新回合
+            callback.accepted_speech_id = None
             if synthesizer is not None:
                 try:
                     synthesizer.close()
@@ -948,6 +991,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             current_speech_id = sid
             char_buffer = ""
             detected_lang = None
+            callback.accepted_speech_id = sid
             
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
@@ -964,6 +1008,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 if detected_lang == "ja":
                     logger.info("CosyVoice 检测到假名，语言标记为日文")
                 synthesizer = _create_synthesizer(detected_lang)
+                callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
                 last_streaming_call_time = time.time()
                 char_buffer = ""
@@ -991,6 +1036,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
+                    callback.accepted_speech_id = current_speech_id
                     synthesizer.streaming_call(tts_text)
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
@@ -998,6 +1044,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     synthesizer = None
                     current_speech_id = None
                     last_streaming_call_time = None
+                    callback.accepted_speech_id = None
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):

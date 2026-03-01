@@ -405,9 +405,9 @@ class LLMSessionManager:
                 self.message_cache_for_new_session.append({"role": self.master_name, "text": transcript.strip()})
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
                 self.message_cache_for_new_session[-1]['text'] += transcript.strip()
-        # 可选：推送用户活动
-        async with self.lock:
-            self.current_speech_id = str(uuid4())
+        # 注意：这里不能修改 current_speech_id。
+        # speech_id 仅应在“模型新回复开始”时更新（handle_new_message / 文本模式stream入口），
+        # 否则会导致前端把同一轮AI语音误判为新轮次，出现首包被重置/吞掉的问题。
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""        
@@ -2444,16 +2444,17 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
 
-    async def send_speech(self, tts_audio):
+    async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
         """发送语音数据到前端，先发送 speech_id 头信息用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
                 await self.websocket.send_json({
                     "type": "audio_chunk",
-                    "speech_id": self.current_speech_id
+                    "speech_id": effective_speech_id
                 })
                 await self.websocket.send_bytes(tts_audio)
-                logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={self.current_speech_id}")
+                logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
                 self.sync_message_queue.put({"type": "binary", "data": tts_audio})
             else:
                 ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
@@ -2498,6 +2499,10 @@ class LLMSessionManager:
                             user_msg = f"TTS服务连接失败: {error_msg_text}"
                         asyncio.create_task(self.send_status(user_msg))
                         continue
+                elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
+                    _, speech_id, audio_payload = data
+                    await self.send_speech(audio_payload, speech_id=speech_id)
+                    continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
