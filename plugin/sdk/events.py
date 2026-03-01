@@ -1,39 +1,14 @@
 """
-插件事件系统模块
+插件事件系统模块（重导出）
 
-提供事件元数据和事件处理器定义。
+此模块从 plugin.types.events 重导出，保持向后兼容。
+推荐直接使用 plugin.types.events。
 """
-from dataclasses import dataclass
-from typing import Dict, Any, Callable, Literal, Optional
-
-from plugin.settings import EVENT_META_ATTR
-
-EventType = Literal[
-    "plugin_entry",  # 对外可调用入口(plugin_entry) 目前已经实现
-    "lifecycle",     # 生命周期相关事件（on_startup / on_shutdown）
-    "message",       # 将来的消息事件（比如 on_message）
-    "timer",         # 将来的定时事件
-]
-
-@dataclass
-class EventMeta:
-    """事件元数据"""
-    event_type: EventType
-    id: str                     # 事件在"本插件内部"的 id，比如 "open" / "close" / "startup"
-    name: str                   # 展示名
-    description: str = ""
-    input_schema: Dict[str, Any] | None = None
-
-    # 以下字段主要给 plugin_entry / lifecycle 用
-    kind: Literal["service", "action", "hook"] = "action"
-    auto_start: bool = False    # event_type == "lifecycle" 或 "plugin_entry" 时可用
-    # 预留更多字段（后续扩展用）
-    extra: Dict[str, Any] | None = None
-
-
-@dataclass
-class EventHandler:
-    """事件处理器"""
-    meta: EventMeta
-    handler: Callable  # 具体要调用的函数/方法
+from plugin._types.events import (
+    EVENT_META_ATTR,
+    StandardEventType,
+    EventType,
+    EventMeta,
+    EventHandler,
+)
 

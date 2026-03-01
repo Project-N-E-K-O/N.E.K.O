@@ -1,0 +1,23 @@
+[plugin]
+id = "testPlugin_ext"
+name = "Test Plugin Extension"
+description = "示例 Extension，注入到 testPlugin 宿主进程中，演示 Hook 和扩展 entry"
+version = "0.1.0"
+type = "extension"
+entry = "plugins.testPlugin_ext:TestExtensionRouter"
+
+[plugin.host]
+plugin_id = "testPlugin"
+prefix = "ext_"
+
+[plugin.author]
+name = "NEKO Dev"
+email = "dev@neko.example.com"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
