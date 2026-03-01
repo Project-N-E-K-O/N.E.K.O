@@ -313,7 +313,7 @@ class TutorialAutoVoice {
             return ' ';
         });
 
-        const nekoMap = { 'zh': '恩艾科', 'ja': 'ネコ', 'en': 'NEKO', 'ko': '네코', 'ru': 'НЕКО' };
+        const nekoMap = { 'zh': 'neko', 'ja': 'neko', 'en': 'neko', 'ko': 'neko', 'ru': 'neko' };
         const langKey = this._lang.startsWith('zh') ? 'zh' :
                         this._lang.startsWith('ja') ? 'ja' :
                         this._lang.startsWith('ko') ? 'ko' :

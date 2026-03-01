@@ -1796,6 +1796,22 @@ class UniversalTutorialManager {
             this.tutorialVoice.prefetchSteps(voiceSteps, currentLang);
         }
 
+        // ★ 第一步语音：自动启动时 Audio.play() 可能被浏览器阻止
+        // 监听用户首次交互（点击遮罩/弹窗），此时补播第一步语音
+        if (this.tutorialVoice) {
+            const self = this;
+            const playFirstStepOnGesture = (e) => {
+                document.removeEventListener('pointerdown', playFirstStepOnGesture, true);
+                // 如果点击的是导航按钮，由 driver.on('next') 处理，不重复播放
+                if (e.target.closest && e.target.closest('.driver-next, .driver-prev, .driver-finish')) return;
+                // 仅在仍处于第一步时播放
+                if (window.isInTutorial && self.driver && self.driver.currentStep === 0) {
+                    self._speakCurrentStep();
+                }
+            };
+            document.addEventListener('pointerdown', playFirstStepOnGesture, true);
+        }
+
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
