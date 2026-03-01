@@ -1501,16 +1501,17 @@ function showCatgirlForm(key, container) {
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    // 显示优先级：使用该音色的角色名 > prefix > 截断的 voice_id
+                    // 显示优先级：prefix > 使用该音色的角色名 > voice_id
                     const owners = voiceOwners[voiceId];
                     let displayName = '';
-                    if (owners && owners.length > 0) {
-                        displayName = owners.join(', ');
-                    } else if (voiceData.prefix) {
+                    if (voiceData.prefix) {
                         displayName = voiceData.prefix;
+                    } else if (owners && owners.length > 0) {
+                        displayName = owners.join(', ');
+                    } else {
+                        displayName = voiceId;
                     }
-                    const shortId = voiceId.length > 20 ? voiceId.substring(0, 18) + '…' : voiceId;
-                    option.textContent = displayName ? displayName + ' (' + shortId + ')' : voiceId;
+                    option.textContent = displayName;
                     option.title = voiceId;
                     if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                     select.appendChild(option);
