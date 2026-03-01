@@ -1781,20 +1781,17 @@ class UniversalTutorialManager {
             });
         });
 
-        // 启动引导
-        this.driver.start();
-
-        // 后台预加载所有步骤的 Edge TTS 音频
+        // ★ 预加载所有步骤的 Edge TTS 音频（在 driver.start 之前，让第一步尽早缓存）
         if (this.tutorialVoice && this.tutorialVoice.prefetchSteps) {
             const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
-            const separator = currentLang.startsWith('zh') ? '。' : '. ';
             const voiceSteps = validSteps.map(step => {
-                const title = (step.popover && step.popover.title) || '';
-                const desc = (step.popover && step.popover.description) || '';
-                return { text: title + separator + desc };
+                return { text: this._buildStepVoiceText(step) };
             }).filter(s => s.text.trim());
             this.tutorialVoice.prefetchSteps(voiceSteps, currentLang);
         }
+
+        // 启动引导
+        this.driver.start();
 
         // ★ 第一步语音：自动启动时 Audio.play() 可能被浏览器阻止
         // 监听用户首次交互（点击遮罩/弹窗），此时补播第一步语音
@@ -2236,6 +2233,27 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 构建步骤语音文本
+     */
+    _buildStepVoiceText(step) {
+        if (!step || !step.popover) return '';
+        const stepTitle = step.popover.title || '';
+        const stepDesc = step.popover.description || '';
+        const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+        const separator = currentLang.startsWith('zh') ? '。' : '. ';
+        let voiceText = stepTitle + separator + stepDesc;
+        // 猫娘语气词
+        if (currentLang.startsWith('zh')) {
+            voiceText += '，喵~';
+        } else if (currentLang.startsWith('ja')) {
+            voiceText += '、にゃ～';
+        } else {
+            voiceText += ', meow~';
+        }
+        return voiceText;
+    }
+
+    /**
      * 播放当前步骤的语音
      * 在 driver 事件回调中同步调用，以保持用户手势链
      */
@@ -2246,18 +2264,11 @@ class UniversalTutorialManager {
         const steps = this.cachedValidSteps || [];
         if (stepIndex >= steps.length) return;
 
-        const step = steps[stepIndex];
-        if (!step || !step.popover) return;
-
-        const stepTitle = step.popover.title || '';
-        const stepDesc = step.popover.description || '';
+        const voiceText = this._buildStepVoiceText(steps[stepIndex]);
         const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
-        const separator = currentLang.startsWith('zh') ? '。' : '. ';
-        const voiceText = stepTitle + separator + stepDesc;
 
         if (voiceText.trim()) {
             console.log('[Tutorial] 播放步骤语音:', voiceText.substring(0, 50) + '...');
-            // 不调用 stop()，speak() 内部会处理停止逻辑，避免 speechSynthesis 的双重 cancel 问题
             this.tutorialVoice.speak(voiceText, { lang: currentLang });
         }
     }
