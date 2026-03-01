@@ -948,9 +948,9 @@ class LLMSessionManager:
                     else:
                         logger.error("❌ TTS进程初始化失败，但继续执行...")
             else:
-                # TTS线程已存活，复用现有线程
-                tts_ready = True
-                logger.info("🎤 TTS线程已在运行，复用现有线程")
+                # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
+                tts_ready = self.tts_ready
+                logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
             
             # 确保旧的 TTS handler task 已经停止
             if self.tts_handler_task and not self.tts_handler_task.done():
