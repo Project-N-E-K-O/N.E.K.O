@@ -962,8 +962,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         except Exception as e:
             logger.warning(f"发送TTS完成信号失败: {e}")
         last_streaming_call_time = None
-        callback.accepted_speech_id = None
-        callback.reset_bootstrap_state()
+        # 这里不能立刻清 accepted_speech_id/bootstrap。
+        # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
 
     while True:
         # 非阻塞检查队列，优先处理打断

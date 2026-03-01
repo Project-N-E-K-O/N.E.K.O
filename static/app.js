@@ -582,7 +582,8 @@ function init_app() {
                     // 记录该 header 对应的 blob 处理策略，后续二进制包按顺序消费
                     pendingAudioChunkMetaQueue.push({
                         speechId: speechId || currentPlayingSpeechId || null,
-                        shouldSkip: shouldSkip
+                        shouldSkip: shouldSkip,
+                        epoch: incomingAudioEpoch
                     });
                     skipNextAudioBlob = false;  // 兼容旧逻辑：重置标志
                 } else if (response.type === 'cozy_audio') {
@@ -4647,17 +4648,24 @@ function init_app() {
     }
 
     function enqueueIncomingAudioBlob(blob) {
-        const meta = pendingAudioChunkMetaQueue.length > 0
-            ? pendingAudioChunkMetaQueue.shift()
-            : {
-                speechId: currentPlayingSpeechId || null,
-                shouldSkip: !!skipNextAudioBlob
-            };
+        const meta = pendingAudioChunkMetaQueue.shift();
+        if (!meta) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到无匹配 header 的音频 blob，已丢弃');
+            }
+            return;
+        }
+        if (!meta.speechId) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到 speechId 为空的音频 blob，已丢弃');
+            }
+            return;
+        }
         incomingAudioBlobQueue.push({
             blob,
             shouldSkip: !!meta.shouldSkip,
             speechId: meta.speechId,
-            epoch: incomingAudioEpoch
+            epoch: meta.epoch
         });
         if (!isProcessingIncomingAudioBlob) {
             void processIncomingAudioBlobQueue();
