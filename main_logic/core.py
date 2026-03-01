@@ -405,9 +405,9 @@ class LLMSessionManager:
                 self.message_cache_for_new_session.append({"role": self.master_name, "text": transcript.strip()})
             elif self.message_cache_for_new_session[-1]['role'] == self.master_name:
                 self.message_cache_for_new_session[-1]['text'] += transcript.strip()
-        # 注意：这里不能修改 current_speech_id。
-        # speech_id 仅应在“模型新回复开始”时更新（handle_new_message / 文本模式stream入口），
-        # 否则会导致前端把同一轮AI语音误判为新轮次，出现首包被重置/吞掉的问题。
+        # 注意: 这里不能修改 current_speech_id.
+        # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
+        # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """输出转录回调：处理文本显示和TTS（用于语音模式）"""        

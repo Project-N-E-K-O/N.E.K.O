@@ -832,6 +832,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self._bootstrap_buffer = bytearray()
             self._bootstrap_sent = False
             self._bootstrap_min_bytes = 1024
+
+        def reset_bootstrap_state(self):
+            self._active_sid = None
+            self._bootstrap_buffer.clear()
+            self._bootstrap_sent = False
             
         def on_open(self): 
             self.connection_lost = False
@@ -844,8 +849,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 if self._bootstrap_buffer and self._active_sid:
                     self.response_queue.put(("__audio__", self._active_sid, bytes(self._bootstrap_buffer)))
             finally:
-                self._bootstrap_buffer.clear()
-                self._bootstrap_sent = False
+                self.reset_bootstrap_state()
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" in message:
@@ -930,6 +934,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         nonlocal synthesizer, last_streaming_call_time
         if synthesizer is None:
             callback.accepted_speech_id = None
+            callback.reset_bootstrap_state()
             return
         if callback.connection_lost:
             logger.info("CosyVoice WebSocket 已断开，跳过 streaming_complete")
@@ -945,6 +950,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         synthesizer = None
         last_streaming_call_time = None
         callback.accepted_speech_id = None
+        callback.reset_bootstrap_state()
 
     while True:
         # 非阻塞检查队列，优先处理打断
@@ -973,6 +979,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             detected_lang = None
             callback.connection_lost = False
             callback.accepted_speech_id = None
+            callback.reset_bootstrap_state()
             continue
 
         if current_speech_id is None:
@@ -1019,6 +1026,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 char_buffer = ""
                 detected_lang = None
                 last_streaming_call_time = None
+                callback.accepted_speech_id = None
+                callback.reset_bootstrap_state()
                 time.sleep(0.1)
                 continue
         else:
@@ -1045,6 +1054,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     current_speech_id = None
                     last_streaming_call_time = None
                     callback.accepted_speech_id = None
+                    callback.reset_bootstrap_state()
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
