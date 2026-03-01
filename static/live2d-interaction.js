@@ -1264,15 +1264,11 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         }
     }
 
-    // 使用渲染器逻辑尺寸作为归一化基准（renderer 不再自动 resize，尺寸与稳定屏幕分辨率等价）
-    let viewportInfo = null;
-    if (this.pixi_app && this.pixi_app.renderer) {
-        const rw = this.pixi_app.renderer.screen.width;
-        const rh = this.pixi_app.renderer.screen.height;
-        if (Number.isFinite(rw) && Number.isFinite(rh) && rw > 0 && rh > 0) {
-            viewportInfo = { width: rw, height: rh };
-        }
-    }
+    // 使用视口尺寸作为归一化基准
+    const viewportInfo = {
+        width: window.innerWidth,
+        height: window.innerHeight
+    };
 
     // 异步保存，不阻塞交互
     this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo, viewportInfo)

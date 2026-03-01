@@ -208,11 +208,10 @@ class Live2DManager {
 
         this._initPIXIPromise = (async () => {
             try {
-                // 使用 window.screen 全屏尺寸初始化渲染器，画布始终覆盖整个屏幕区域
-                // 任务栏/DevTools/键盘等造成的视口缩小只会裁切画布边缘（overflow:hidden），
-                // 不会导致缝隙或模型位移
-                const initW = Math.max(window.screen.width || 1, 1);
-                const initH = Math.max(window.screen.height || 1, 1);
+                // 使用视口尺寸初始化渲染器，确保画布与实际显示区域一致
+                // 这样模型位置计算与画布显示范围匹配，不会被遮挡
+                const initW = Math.max(window.innerWidth || 1, 1);
+                const initH = Math.max(window.innerHeight || 1, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
                     width: initW,
@@ -235,21 +234,20 @@ class Live2DManager {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
 
-                // 仅在屏幕分辨率真正变化（换显示器/屏幕旋转）时 resize 渲染器并调整模型坐标
-                // 任务栏、DevTools、输入法等视口变化不触发任何操作
-                let lastScreenW = window.screen.width;
-                let lastScreenH = window.screen.height;
+                // 仅在视口尺寸真正变化（窗口大小改变）时 resize 渲染器并调整模型坐标
+                let lastViewportW = window.innerWidth;
+                let lastViewportH = window.innerHeight;
                 this._screenChangeHandler = () => {
-                    const sw = window.screen.width;
-                    const sh = window.screen.height;
-                    if (sw === lastScreenW && sh === lastScreenH) return;
-                    lastScreenW = sw;
-                    lastScreenH = sh;
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
+                    if (vw === lastViewportW && vh === lastViewportH) return;
+                    lastViewportW = vw;
+                    lastViewportH = vh;
 
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    const newW = Math.max(sw, 1);
-                    const newH = Math.max(sh, 1);
+                    const newW = Math.max(vw, 1);
+                    const newH = Math.max(vh, 1);
 
                     this.pixi_app.renderer.resize(newW, newH);
 
@@ -559,8 +557,8 @@ class Live2DManager {
                     window.innerWidth * 1.2 / 2000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.screen.width * 0.5;
-                this.currentModel.y = this.pixi_app.renderer.screen.height * 0.28;
+                this.currentModel.x = window.innerWidth * 0.5;
+                this.currentModel.y = window.innerHeight * 0.28;
             } else {
                 this.currentModel.anchor.set(0.65, 0.75);
                 const scale = Math.min(
@@ -569,17 +567,17 @@ class Live2DManager {
                     (window.innerWidth * 0.6) / 7000
                 );
                 this.currentModel.scale.set(scale);
-                this.currentModel.x = this.pixi_app.renderer.screen.width;
-                this.currentModel.y = this.pixi_app.renderer.screen.height;
+                this.currentModel.x = window.innerWidth;
+                this.currentModel.y = window.innerHeight;
             }
 
             console.log('模型位置已复位到初始状态');
 
-            // 复位后自动保存位置（viewport 基准与 applyModelSettings / _savePositionAfterInteraction 一致，使用 renderer.screen）
+            // 复位后自动保存位置（viewport 基准改为使用视口尺寸）
             if (this._lastLoadedModelPath) {
                 const viewport = {
-                    width: this.pixi_app.renderer.screen.width,
-                    height: this.pixi_app.renderer.screen.height
+                    width: window.innerWidth,
+                    height: window.innerHeight
                 };
                 const saveSuccess = await this.saveUserPreferences(
                     this._lastLoadedModelPath,
