@@ -250,6 +250,13 @@ class DropdownManager {
             textSpan.setAttribute('data-text', text);
             item.appendChild(textSpan);
 
+            if (option.dataset.itemId) {
+                const steamBadge = document.createElement('span');
+                steamBadge.className = 'steam-badge';
+                steamBadge.textContent = 'Steam';
+                item.appendChild(steamBadge);
+            }
+
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.selectItem(option.value);
@@ -1172,7 +1179,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const option = document.createElement('option');
                 option.value = model.name;
                 option.textContent = model.display_name || model.name;
-                option.dataset.itemId = model.item_id;
+                if (model.item_id) {
+                    option.dataset.itemId = model.item_id;
+                }
                 modelSelect.appendChild(option);
             });
             // 如果没有选择，自动选择第一个模型
@@ -3988,6 +3997,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                             option.value = model.name;
                             // 使用display_name（如果存在）显示更友好的名称
                             option.textContent = model.display_name || model.name;
+                            if (model.item_id) {
+                                option.dataset.itemId = model.item_id;
+                            }
                             modelSelect.appendChild(option);
                         });
 
