@@ -875,7 +875,28 @@ class ConfigManager:
             raise
 
     def get_voices_for_current_api(self):
-        """获取当前 AUDIO_API_KEY 对应的所有音色"""
+        """获取当前 TTS 配置对应的所有音色
+        
+        根据实际使用的 TTS 配置返回音色：
+        1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
+        2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
+        3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
+        """
+        voice_storage = self.load_voice_storage()
+        
+        tts_config = self.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url', '')
+        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        
+        if is_local_tts:
+            all_voices = voice_storage.get('__LOCAL_TTS__', {})
+            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+        
+        tts_api_key = tts_config.get('api_key', '')
+        if tts_api_key:
+            all_voices = voice_storage.get(tts_api_key, {})
+            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+        
         core_config = self.get_core_config()
         audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
@@ -883,9 +904,7 @@ class ConfigManager:
             logger.warning("未配置 AUDIO_API_KEY")
             return {}
 
-        voice_storage = self.load_voice_storage()
         all_voices = voice_storage.get(audio_api_key, {})
-        # 过滤掉以 "cosyvoice-v2" 开头的旧版音色ID
         return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
 
     def save_voice_for_current_api(self, voice_id, voice_data):
@@ -903,20 +922,42 @@ class ConfigManager:
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
-    def delete_voice_for_current_api(self, voice_id):
-        """删除当前 AUDIO_API_KEY 下的指定音色"""
-        core_config = self.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
-
-        if not audio_api_key:
-            raise ValueError("未配置 AUDIO_API_KEY")
+    def save_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
+        """为指定的 API Key 保存音色（用于复刻时使用实际 API Key 而非 AUDIO_API_KEY）"""
+        if not api_key:
+            raise ValueError("API Key 不能为空")
 
         voice_storage = self.load_voice_storage()
-        if audio_api_key not in voice_storage:
+        if api_key not in voice_storage:
+            voice_storage[api_key] = {}
+
+        voice_storage[api_key][voice_id] = voice_data
+        self.save_voice_storage(voice_storage)
+
+    def delete_voice_for_current_api(self, voice_id):
+        """删除当前 TTS 配置下的指定音色"""
+        voice_storage = self.load_voice_storage()
+        
+        tts_config = self.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url', '')
+        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        
+        if is_local_tts:
+            api_key = '__LOCAL_TTS__'
+        else:
+            api_key = tts_config.get('api_key', '')
+            if not api_key:
+                core_config = self.get_core_config()
+                api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not api_key:
             return False
 
-        if voice_id in voice_storage[audio_api_key]:
-            del voice_storage[audio_api_key][voice_id]
+        if api_key not in voice_storage:
+            return False
+
+        if voice_id in voice_storage[api_key]:
+            del voice_storage[api_key][voice_id]
             self.save_voice_storage(voice_storage)
             return True
         return False
@@ -948,6 +989,30 @@ class ConfigManager:
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if voice_id in free_voices.values():
+            return True
+
+        return False
+
+    def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
+        """校验 voice_id 是否在指定 API Key 下有效"""
+        if not voice_id:
+            return True
+
+        if voice_id.startswith("cosyvoice-v2"):
+            return False
+
+        custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
+        if custom_tts_allowed is not None:
+            return custom_tts_allowed
+
+        voice_storage = self.load_voice_storage()
+        voices = voice_storage.get(api_key, {})
+        if voice_id in voices:
+            return True
+
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
