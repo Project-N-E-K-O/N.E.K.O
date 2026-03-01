@@ -2244,11 +2244,11 @@ class UniversalTutorialManager {
         let voiceText = stepTitle + separator + stepDesc;
         // 猫娘语气词
         if (currentLang.startsWith('zh')) {
-            voiceText += '，喵~';
+            voiceText += '喵~';
         } else if (currentLang.startsWith('ja')) {
-            voiceText += '、にゃ～';
+            voiceText += 'にゃ～';
         } else {
-            voiceText += ', meow~';
+            voiceText += ' meow~';
         }
         return voiceText;
     }
