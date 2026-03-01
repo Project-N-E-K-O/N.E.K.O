@@ -27,6 +27,8 @@
     /* 描边颜色 */
     --button-text-stroke-width: 2px;
     /* 描边宽度（视觉上的） */
+    --dropdown-text-max-width: 200px;
+    /* 下拉菜单项文字最大宽度，超出显示省略号 */
 }
 
 /* 可访问性改进：保留键盘导航的焦点指示
@@ -2408,7 +2410,7 @@ body {
     letter-spacing: 1px;
     color: transparent;
     flex: 0 1 auto;
-    max-width: 200px;
+    max-width: var(--dropdown-text-max-width, 200px);
     min-width: 50px;
     overflow: hidden;
     text-overflow: ellipsis;
