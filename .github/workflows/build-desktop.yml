@@ -48,14 +48,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 完全保留你的 4 个版本配置
           - os: windows-latest
             artifact_name: python-backend-win
             output_binary: projectneko_server.exe
-          - os: macos-13  # 【修正】macos-13 才是原生的 x64 (Intel) 环境
+          - os: macos-15
             python_arch: x64
             artifact_name: python-backend-mac-x64
             output_binary: projectneko_server
-          - os: macos-15  # 【修正】macos-14/15 默认是 arm64 (Apple Silicon)
+          - os: macos-latest
             artifact_name: python-backend-mac-arm64
             output_binary: projectneko_server
           - os: ubuntu-latest
@@ -84,6 +85,7 @@ jobs:
           uv pip install --python .venv nuitka ordered-set zstandard
           
           WHL_FILE="bilibili_api_pathchange-0.1.0-py3-none-any.whl"
+          
           if [ -f "$WHL_FILE" ]; then
             echo "✅ Found local wheel: $WHL_FILE"
             uv pip install --python .venv --force-reinstall "$WHL_FILE"
@@ -92,10 +94,9 @@ jobs:
             ls -la
             exit 1
           fi
-          
           VENV_PY=$([[ "${{ matrix.os }}" == "windows-latest" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
           $VENV_PY -c "import bilibili_api; print(f'Import success: {bilibili_api.__file__}')" || exit 1
-
+          
       - name: Generate config and prompts
         shell: bash
         run: |
@@ -103,7 +104,7 @@ jobs:
           mkdir -p data/browser_use_prompts
           VENV_PY=$([[ -f ".venv/Scripts/python.exe" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
           $VENV_PY -c "import shutil, browser_use.agent.system_prompts as sp; from pathlib import Path; [shutil.copy2(md, Path('data/browser_use_prompts')/md.name) for md in Path(sp.__file__).parent.glob('*.md')]" || echo "Skipping prompts copy"
-
+          
       - name: Install System Deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config portaudio19-dev patchelf ccache
@@ -113,24 +114,21 @@ jobs:
         run: |
           VENV_PY=$([[ -f ".venv/Scripts/python.exe" ]] && echo ".venv/Scripts/python.exe" || echo ".venv/bin/python")
           PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" $VENV_PY -m playwright install chromium
-
+          
       - name: Build with Nuitka (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           NUITKA_OPTS="--standalone --output-dir=dist --output-filename=projectneko_server --enable-plugin=dill-compat --assume-yes-for-downloads"
           
-          # 【核心修复】：绕过 macOS 下的 Foundation/Cocoa 报错，允许使用 --standalone
+          # 【核心修复】：解决 macos-15 和 macos-latest 的 Foundation 报错！
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation,Cocoa,AppKit"
           fi
           
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config=config --include-data-dir=assets=assets --include-data-dir=templates=templates --include-data-dir=static=static"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
-          
-          if [[ "$RUNNER_OS" != "macOS" ]]; then 
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
-          fi
+          if [[ "$RUNNER_OS" != "macOS" ]]; then NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"; fi
           
           for pkg in uvicorn fastapi starlette jinja2 websockets langchain_community langchain_core langchain_openai main_server memory_server agent_server config brain main_logic main_routers memory utils steamworks browser_use browser_use_sdk playwright; do
             NUITKA_OPTS="$NUITKA_OPTS --include-package=$pkg"
@@ -138,10 +136,10 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api --include-package-data=browser_use --include-package-data=jinja2 --include-package-data=certifi"
           
           .venv/bin/python -m nuitka $NUITKA_OPTS launcher.py
-
+          
       - name: Build with Nuitka (Windows)
         if: runner.os == 'Windows'
-        shell: bash # 【优化】：使用 bash 替代 cmd，防止环境变量拼接空格截断错误
+        shell: bash
         run: |
           NUITKA_OPTS="--standalone --output-dir=dist --output-filename=projectneko_server.exe --windows-icon-from-ico=assets/icon.ico --windows-console-mode=force --assume-yes-for-downloads --enable-plugin=dill-compat"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=config=config --include-data-dir=assets=assets --include-data-dir=templates=templates --include-data-dir=static=static --include-data-dir=playwright_browsers=playwright_browsers --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
@@ -152,13 +150,13 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api --include-package-data=browser_use --include-package-data=playwright --include-package-data=jinja2 --include-package-data=certifi"
           
           .venv/Scripts/python.exe -m nuitka $NUITKA_OPTS launcher.py
-
+          
       - name: Rename build output
         shell: bash
         run: |
           if [ -d "dist/launcher.dist" ]; then mv dist/launcher.dist dist/Xiao8; fi
           if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then cp -R playwright_browsers dist/Xiao8/; fi
-
+          
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
@@ -175,18 +173,22 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            platform: win
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
-          - os: macos-13
+          - os: macos-15
+            platform: mac-x64
             python_artifact: python-backend-mac-x64
             electron_args: '--mac --x64'
             artifact_name: desktop-mac-x64
-          - os: macos-15
+          - os: macos-latest
+            platform: mac-arm64
             python_artifact: python-backend-mac-arm64
             electron_args: '--mac --arm64'
             artifact_name: desktop-mac-arm64
           - os: ubuntu-latest
+            platform: linux
             python_artifact: python-backend-linux
             electron_args: '--linux'
             artifact_name: desktop-linux-x64
@@ -196,8 +198,8 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
-          ref: ${{ github.event.inputs.electron_ref || 'main' }}
+          repository: ${{ github.event.inputs.electron_repo }}
+          ref: ${{ github.event.inputs.electron_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
           path: electron-app
 
@@ -217,14 +219,10 @@ jobs:
         working-directory: electron-app
         run: |
           npm ci
-          
-          # 【优化】：应用了传入的 skip_signing 参数，防止 Mac 因为没配置证书而构建失败
-          if [[ "${{ github.event.inputs.skip_signing }}" != "false" && "${{ matrix.os }}" == "macos"* ]]; then
-            echo "Skipping code signing for macOS..."
+          if [[ "${{ matrix.os }}" == "macos"* ]]; then
             node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json')); if(!p.build) p.build={}; if(!p.build.mac) p.build.mac={}; p.build.mac.identity=null; fs.writeFileSync('package.json', JSON.stringify(p,null,2))"
             export CSC_IDENTITY_AUTO_DISCOVERY=false
           fi
-          
           npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -233,7 +231,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          # 【优化】：只上传最终的安装包和压缩包，过滤掉碎文件，极大加快上传速度
           path: |
             electron-app/dist/*.exe
             electron-app/dist/*.dmg
@@ -248,13 +245,11 @@ jobs:
   nightly:
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+        with: { path: artifacts }
       - name: Organize release files
         run: |
           mkdir -p release
@@ -265,4 +260,4 @@ jobs:
         run: |
           if [ -z "$(ls -A release/)" ]; then echo "No files to release"; exit 0; fi
           gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly release/* --title "Nightly Build $(date +%Y%m%d)" --prerelease --notes "Automatic build from version: ${{ needs.version.outputs.version }}"
+          gh release create nightly release/* --title "Nightly Build $(date +%Y%m%d)" --prerelease --notes "Automatic build from ${{ needs.version.outputs.version }}"
