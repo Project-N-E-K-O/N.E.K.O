@@ -2757,6 +2757,10 @@ async def sync_workshop_character_cards() -> dict:
                             for k, v in chara_data.items():
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
+
+                            # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
+                            # 仅影响新增角色；已存在角色会在上面的分支直接跳过。
+                            set_reserved(catgirl_data, 'voice_id', '')
                             
                             # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
                             # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。

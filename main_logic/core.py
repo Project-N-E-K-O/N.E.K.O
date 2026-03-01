@@ -198,9 +198,17 @@ class LLMSessionManager:
                 except: # noqa
                     break
             try:
-                self.tts_request_queue.put((None, None))
+                self.tts_request_queue.put(("__interrupt__", None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS中断信号失败: {e}")
+            # 等待 TTS worker 处理 __interrupt__ 并 mute 回调（worker 轮询间隔 ~10ms）
+            # 然后再次清空响应队列，确保旧 synthesizer 泄漏的音频全部丢弃
+            await asyncio.sleep(0.02)
+            while not self.tts_response_queue.empty():
+                try:
+                    self.tts_response_queue.get_nowait()
+                except: # noqa
+                    break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
 
@@ -868,6 +876,7 @@ class LLMSessionManager:
                 return True
             
             # 启动TTS线程
+            tts_ready = False
             if self.tts_thread is None or not self.tts_thread.is_alive():
                 # 判断是否使用自定义 TTS：有 voice_id（但不是免费预设）或 配置了自定义 TTS URL
                 core_config = self._config_manager.get_core_config()
@@ -902,7 +911,6 @@ class LLMSessionManager:
                 tts_type = "free-preset-TTS" if self._is_free_preset_voice else ("custom-TTS" if has_custom_tts else f"{self.core_api_type}-default-TTS")
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
                 logger.info("[语音会话诊断] 开始等待 TTS 就绪信号 (超时: 12秒)")
-                tts_ready = False
                 start_time = time.time()
                 timeout = 12.0  # 最多等待12秒
                 _last_tts_log = 0.0
@@ -939,6 +947,10 @@ class LLMSessionManager:
                         logger.warning(f"[语音会话诊断] TTS 在 {timeout} 秒内未就绪，可能为 TTS 服务慢或网络问题")
                     else:
                         logger.error("❌ TTS进程初始化失败，但继续执行...")
+            else:
+                # TTS线程已存活，复用现有线程；保留上次的就绪状态（避免失败的 worker 被误标为就绪）
+                tts_ready = self.tts_ready
+                logger.info(f"🎤 TTS线程已在运行，复用现有线程 (ready={tts_ready})")
             
             # 确保旧的 TTS handler task 已经停止
             if self.tts_handler_task and not self.tts_handler_task.done():
@@ -953,12 +965,15 @@ class LLMSessionManager:
             logger.info(f"🎧 Creating tts_handler_task (response_queue id={id(self.tts_response_queue):#x})")
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
             
-            # 标记TTS为就绪状态并处理可能已缓存的chunk
+            # 仅在确认为就绪时才标记可发送，避免“假就绪”导致静默
             async with self.tts_cache_lock:
-                self.tts_ready = True
-            
+                self.tts_ready = bool(tts_ready)
+
             # 处理在TTS启动期间可能已经缓存的文本chunk
-            await self._flush_tts_pending_chunks()
+            if tts_ready:
+                await self._flush_tts_pending_chunks()
+            else:
+                logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
             return True
 
         # 定义 LLM Session 启动协程
@@ -2032,6 +2047,8 @@ class LLMSessionManager:
                     async with self.lock:
                         interrupted_speech_id = self.current_speech_id
 
+                    self.audio_resampler.clear()
+                    await self._clear_tts_pipeline()
                     await self.send_user_activity(interrupted_speech_id)
 
                     # 再为本次新回复生成新的speech_id（用于TTS和lipsync）
@@ -2478,6 +2495,14 @@ class LLMSessionManager:
 
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
+                        ready_flag = bool(data[1])
+                        async with self.tts_cache_lock:
+                            self.tts_ready = ready_flag
+                        if ready_flag:
+                            logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
+                            await self._flush_tts_pending_chunks()
+                        else:
+                            logger.warning("⚠️ 收到TTS未就绪信号，继续缓存文本等待恢复")
                         continue
                     elif data[0] == "__error__":
                         error_msg = data[1]

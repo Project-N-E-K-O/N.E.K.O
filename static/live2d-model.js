@@ -21,6 +21,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     this._modelLoadState = 'preparing';
     this._isModelReadyForInteraction = false;
 
+    // 清除上一次加载遗留的画布揭示定时器
+    if (this._canvasRevealTimer) {
+        clearTimeout(this._canvasRevealTimer);
+        this._canvasRevealTimer = null;
+    }
+
     try {
         // 移除当前模型
         if (this.currentModel) {
@@ -175,6 +181,13 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             this._modelLoadState = 'idle';
             this._isModelReadyForInteraction = false;
         }
+        // 安全网：如果加载失败导致画布仍处于 CSS 隐藏状态，强制恢复可见性
+        try {
+            if (this.pixi_app && this.pixi_app.view && this.pixi_app.view.style.opacity === '0') {
+                this.pixi_app.view.style.transition = '';
+                this.pixi_app.view.style.opacity = '';
+            }
+        } catch (_) {}
     }
 };
 
@@ -183,11 +196,11 @@ Live2DManager.prototype._isLoadTokenActive = function(loadToken) {
 };
 
 Live2DManager.prototype._waitForModelVisualStability = function(model, loadToken, options = {}) {
-    const requiredStableFrames = options.requiredStableFrames || 4;
-    const maxFrames = options.maxFrames || 40;
+    const requiredStableFrames = options.requiredStableFrames || 6;
+    const maxFrames = options.maxFrames || 60;
     const minDimension = options.minDimension || 2;
     const deltaThreshold = options.deltaThreshold || 2;
-    const minElapsedMs = options.minElapsedMs || 260;
+    const minElapsedMs = options.minElapsedMs || 350;
 
     return new Promise((resolve) => {
         let frameCount = 0;
@@ -243,6 +256,130 @@ Live2DManager.prototype._waitForModelVisualStability = function(model, loadToken
 
         requestAnimationFrame(tick);
     });
+};
+
+/**
+ * 平滑淡入模型（替代瞬间 alpha=1 切换，避免首帧渲染变形）
+ * 
+ * 原理：即使经过稳定性检查，模型在首帧完全可见时仍可能存在
+ * 微小的渲染抖动（裁剪蒙版纹理刷新、变形器输出延迟等）。
+ * 通过 ~200ms 的 ease-out 淡入，前几帧 alpha 极低（肉眼不可见），
+ * 为渲染流水线提供额外的缓冲帧，确保模型在视觉上可辨识时
+ * 已经完全稳定。
+ * 
+ * @param {Object} model - Live2D 模型对象
+ * @param {number} loadToken - 加载令牌（用于取消检查）
+ * @param {number} duration - 淡入持续时间（毫秒），默认 200ms
+ * @returns {Promise<boolean>} - 是否成功完成淡入
+ */
+Live2DManager.prototype._fadeInModel = function(model, loadToken, duration = 200) {
+    return new Promise((resolve) => {
+        if (!model || model.destroyed || !this._isLoadTokenActive(loadToken)) {
+            resolve(false);
+            return;
+        }
+
+        const startAlpha = model.alpha; // 通常为 0.001
+        const startTime = performance.now();
+
+        const animate = () => {
+            if (!model || model.destroyed || !this._isLoadTokenActive(loadToken)) {
+                resolve(false);
+                return;
+            }
+
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            // ease-out (cubic): 快速上升，尾部平缓 —— 模型快速出现，最后阶段柔和过渡
+            const eased = 1 - Math.pow(1 - progress, 2.5);
+            model.alpha = startAlpha + (1 - startAlpha) * eased;
+
+            if (progress >= 1) {
+                model.alpha = 1;
+                resolve(true);
+            } else {
+                requestAnimationFrame(animate);
+            }
+        };
+
+        requestAnimationFrame(animate);
+    });
+};
+
+/**
+ * 预跑物理模拟，让弹簧/钟摆系统在虚拟时间中提前收敛到平衡态。
+ * 
+ * Live2D 模型的物理系统（头发、衣物等）在首次加载时从默认状态开始，
+ * 需要数百毫秒的模拟才能达到自然静止姿态。
+ * _waitForModelVisualStability 只检查 getBounds() 包围盒尺寸，
+ * 无法感知网格内部的物理变形（弹簧振荡、钟摆摆动）。
+ * 
+ * 本方法通过直接调用 internalModel.update() 多次小步进，
+ * 在模型不可见期间（alpha=0.001）快速模拟物理时间，
+ * 等到模型淡入时物理已完全收敛，不会出现任何变形。
+ * 
+ * 兼容 Cubism 2 和 Cubism 4（两者的 internalModel.update 签名相同）。
+ * 
+ * @param {Object} model - Live2DModel 对象（PIXI Container）
+ * @param {number} simulatedMs - 要模拟的虚拟时间（毫秒），默认 2000
+ * @param {number} stepMs - 每步时间（毫秒），默认 16（~60fps）
+ */
+Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, stepMs, loadToken) {
+    if (!model || !model.internalModel) return;
+
+    const internalModel = model.internalModel;
+
+    // 只有存在物理系统时才需要预跑
+    if (!internalModel.physics) {
+        console.log('[Live2D] 模型无物理数据，跳过物理预跑');
+        return;
+    }
+
+    // 默认参数
+    if (typeof simulatedMs !== 'number' || simulatedMs <= 0) simulatedMs = 2000;
+    if (typeof stepMs !== 'number' || stepMs <= 0) stepMs = 16;
+
+    const totalSteps = Math.ceil(simulatedMs / stepMs);
+    // 每批次运行的步数：在流畅性与延迟之间取平衡
+    // 20步 × 16ms = ~0.3ms CPU 时间，足够轻量不会卡顿主线程
+    const BATCH_SIZE = 20;
+    console.log(`[Live2D] 开始物理预跑: ${simulatedMs}ms / ${stepMs}ms步长 = ${totalSteps}步，分批${BATCH_SIZE}步/帧`);
+
+    let completed = 0;
+
+    try {
+        while (completed < totalSteps) {
+            // 在每批次开始前检查 loadToken 是否仍有效
+            if (loadToken != null && !this._isLoadTokenActive(loadToken)) {
+                console.log('[Live2D] 物理预跑中止（loadToken 已过期）');
+                return;
+            }
+            if (model.destroyed) {
+                console.log('[Live2D] 物理预跑中止（模型已销毁）');
+                return;
+            }
+
+            const batchEnd = Math.min(completed + BATCH_SIZE, totalSteps);
+            for (let i = completed; i < batchEnd; i++) {
+                internalModel.update(stepMs, model.elapsedTime);
+                model.elapsedTime += stepMs;
+            }
+            completed = batchEnd;
+
+            // 如果还有剩余步数，让出事件循环以避免主线程卡顿
+            if (completed < totalSteps) {
+                await new Promise(r => requestAnimationFrame(r));
+            }
+        }
+    } catch (e) {
+        console.warn('[Live2D] 物理预跑过程中出错:', e);
+    }
+
+    // 重置 deltaTime 累加器，确保下一次 _render() 的 internalModel.update
+    // 使用正常的帧间增量，而非包含预跑时间的巨大值
+    model.deltaTime = 0;
+
+    console.log('[Live2D] 物理预跑完成');
 };
 
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
@@ -301,7 +438,23 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
     // 应用位置和缩放设置
     this.applyModelSettings(model, options);
-    model.alpha = 0;
+    // 使用极小但非零的 alpha 值隐藏模型（而非 alpha=0）
+    // 原因：PIXI 在 worldAlpha<=0 时会跳过 _render() 调用，
+    // 导致 Live2D 裁剪蒙版纹理和变形器输出未被初始化，
+    // 当 alpha 切换为 1 时首帧会出现变形。
+    // alpha=0.001 在 8-bit 显示上不可见（0.001*255≈0.26 → 0），
+    // 但能让 PIXI 正常执行渲染流水线，预热 GPU 资源。
+    model.alpha = 0.001;
+
+    // ★ CSS 合成器层级隐藏：在浏览器合成阶段（WebGL 之后）彻底隐藏画布
+    // 这是多层防护中最外层也是最可靠的一层：无论 WebGL 内部渲染管线
+    // 发生任何中间态（裁剪蒙版纹理填充、变形器首帧输出、物理振荡），
+    // CSS opacity=0 都能绝对保证用户看不到任何渲染瑕疵。
+    // 画布仍然正常渲染（不同于 display:none），GL 资源得以完整预热。
+    if (this.pixi_app.view) {
+        this.pixi_app.view.style.transition = 'none';
+        this.pixi_app.view.style.opacity = '0';
+    }
     
     // 注意：用户偏好参数的应用延迟到模型目录参数加载完成后，
     // 以确保正确的优先级顺序（模型目录参数 > 用户偏好参数）
@@ -488,8 +641,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('[Live2D Model] Ticker 已确保启动');
     }
 
-    // 模型加载完成后，延迟播放Idle情绪（给模型一些时间完全初始化）
-    // 兼容新旧两种配置格式:
+    // 检测是否有 Idle 情绪配置（兼容新旧两种格式）
     // - 新格式: EmotionMapping.motions['Idle'] / EmotionMapping.expressions['Idle']
     // - 旧格式: FileReferences.Motions['Idle'] / FileReferences.Expressions 中的 Idle 前缀
     const hasIdleInEmotionMapping = this.emotionMapping && 
@@ -498,18 +650,18 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         (this.fileReferences.Motions?.['Idle'] || 
          (Array.isArray(this.fileReferences.Expressions) && 
           this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
-    
-    if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
-        // 使用 setTimeout 延迟500ms，确保模型完全初始化
-        setTimeout(async () => {
-            try {
-                console.log('[Live2D Model] 模型加载完成，开始播放Idle情绪');
-                await this.setEmotion('Idle');
-            } catch (error) {
-                console.warn('[Live2D Model] 播放Idle情绪失败:', error);
-            }
-        }, 500);
+    // 注意：Idle 情绪播放已移至模型淡入完成后触发，
+    // 避免在加载过程中独立 setTimeout 可能导致的变形/抖动
+
+    // ★ 预跑物理模拟：在模型仍不可见（alpha=0.001）时，
+    // 通过虚拟时间步进让弹簧/钟摆系统收敛到平衡态。
+    // 这是解决"加载变形"的核心手段——getBounds() 稳定性检查无法
+    // 感知网格内部的物理变形，只有让物理实际跑完才能彻底消除。
+    // 先检查 loadToken 是否仍然有效，避免对过期模型执行昂贵的物理预跑
+    if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
+        return;
     }
+    await this._preTickPhysics(model, 2000, 16, loadToken);
 
     this._modelLoadState = 'settling';
     if (this._isLoadTokenActive(loadToken)) {
@@ -530,9 +682,45 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             console.warn('[Live2D Model] 初次加载边界校正失败:', e);
         }
     }
+    // ★ CSS 合成器层级揭示（替代原 GL alpha 淡入）
+    // 先在 GL 层面设为完全不透明（仍被 CSS opacity:0 隐藏），
+    // 等渲染管线在 alpha=1 下输出若干完全稳定的帧后，
+    // 再通过 CSS transition 平滑揭示画布——用户只会看到最终稳定态。
     model.alpha = 1;
+    // 等待 3 帧：让渲染器在 alpha=1 下输出完全稳定的画面
+    // （含裁剪蒙版纹理刷新、变形器最终输出、物理末帧收敛）
+    await new Promise(r => requestAnimationFrame(() =>
+        requestAnimationFrame(() => requestAnimationFrame(r))));
+    if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
+        return;
+    }
+    // CSS 平滑过渡揭示画布
+    if (this.pixi_app && this.pixi_app.view) {
+        const cv = this.pixi_app.view;
+        cv.style.transition = 'opacity 0.28s ease-out';
+        cv.style.opacity = '1';
+        // 过渡完成后清除内联样式，避免干扰后续功能
+        if (this._canvasRevealTimer) clearTimeout(this._canvasRevealTimer);
+        this._canvasRevealTimer = setTimeout(() => {
+            cv.style.transition = '';
+            cv.style.opacity = '';
+            this._canvasRevealTimer = null;
+        }, 320);
+    }
     this._isModelReadyForInteraction = true;
     this._modelLoadState = 'ready';
+
+    // 模型完全可见后播放 Idle 情绪（替代原来的独立 setTimeout）
+    if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
+        try {
+            console.log('[Live2D Model] 模型淡入完成，开始播放Idle情绪');
+            this.setEmotion('Idle').catch(error => {
+                console.warn('[Live2D Model] 播放Idle情绪失败:', error);
+            });
+        } catch (error) {
+            console.warn('[Live2D Model] 播放Idle情绪失败:', error);
+        }
+    }
 
     // 调用回调函数
     if (this.onModelLoaded) {
