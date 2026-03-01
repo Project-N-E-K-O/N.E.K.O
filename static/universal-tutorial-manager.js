@@ -1,4 +1,4 @@
-  /**
+/**
  * N.E.K.O 通用新手引导系统
  * 支持所有页面的引导配置
  */
@@ -304,6 +304,9 @@ class UniversalTutorialManager {
                 // 每次高亮元素时，确保元素在视口中
                 console.log('[Tutorial] 高亮元素:', step.element);
 
+                // 注意：语音播放已移至 driver.on('next') 事件处理器中
+                // （因为自定义 driver.min.js 不调用 config.onHighlighted 回调）
+
                 // 调用步骤特定的 onHighlighted 回调（如果存在）
                 if (step.onHighlighted && typeof step.onHighlighted === 'function') {
                     const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
@@ -324,12 +327,6 @@ class UniversalTutorialManager {
 
                 // 给一点时间让 Driver.js 完成定位
                 setTimeout(() => {
-                    // 切换步骤时停止前一个语音
-                    if (this.tutorialVoice) {
-                        console.log('[Tutorial] 切换步骤，停止当前语音');
-                        this.tutorialVoice.stop();
-                    }
-
                     (async () => {
                         if (!window.isInTutorial) return;
                         if (element && element.element) {
@@ -348,15 +345,6 @@ class UniversalTutorialManager {
                         }
 
                         await this.applyTutorialInteractionState(step, 'highlight');
-
-                        // 自动播放步骤语音
-                        const stepTitle = step.popover.title || '';
-                        const stepDesc = step.popover.description || '';
-                        const voiceText = stepTitle + '。' + stepDesc;
-                        if (this.tutorialVoice && voiceText) {
-                            console.log('[Tutorial] 播放步骤语音:', voiceText.substring(0, 50) + '...');
-                            this.tutorialVoice.speak(voiceText);
-                        }
 
                         // 启用 popover 拖动功能
                         this.enablePopoverDragging();
@@ -1779,12 +1767,19 @@ class UniversalTutorialManager {
 
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
-        this.driver.on('next', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
-        this.driver.on('prev', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
+        this.driver.on('next', () => {
+            // ★ 语音播放必须在事件回调中同步调用（保持用户手势链）
+            this._speakCurrentStep();
+            this.onStepChange().catch(err => {
+                console.error('[Tutorial] 步骤切换失败:', err);
+            });
+        });
+        this.driver.on('prev', () => {
+            this._speakCurrentStep();
+            this.onStepChange().catch(err => {
+                console.error('[Tutorial] 步骤切换失败:', err);
+            });
+        });
 
         // 启动引导
         this.driver.start();
@@ -2209,6 +2204,33 @@ class UniversalTutorialManager {
             popoverTitle.style.cursor = 'move';
             popoverTitle.style.userSelect = 'none';
             popoverTitle.title = this.t('tutorial.drag_hint', '按住拖动以移动提示框');
+        }
+    }
+
+    /**
+     * 播放当前步骤的语音
+     * 在 driver 事件回调中同步调用，以保持用户手势链
+     */
+    _speakCurrentStep() {
+        if (!this.tutorialVoice || !this.driver) return;
+
+        const stepIndex = this.driver.currentStep || 0;
+        const steps = this.cachedValidSteps || [];
+        if (stepIndex >= steps.length) return;
+
+        const step = steps[stepIndex];
+        if (!step || !step.popover) return;
+
+        const stepTitle = step.popover.title || '';
+        const stepDesc = step.popover.description || '';
+        const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+        const separator = currentLang.startsWith('zh') ? '。' : '. ';
+        const voiceText = stepTitle + separator + stepDesc;
+
+        if (voiceText.trim()) {
+            console.log('[Tutorial] 播放步骤语音:', voiceText.substring(0, 50) + '...');
+            // 不调用 stop()，speak() 内部会处理停止逻辑，避免 speechSynthesis 的双重 cancel 问题
+            this.tutorialVoice.speak(voiceText, { lang: currentLang });
         }
     }
 
@@ -2948,6 +2970,14 @@ function restartCurrentTutorial() {
     if (window.universalTutorialManager) {
         window.universalTutorialManager.restartCurrentTutorial();
     }
+}
+
+// 确保全局可访问，避免在 module/严格作用域中丢失
+if (typeof window !== 'undefined') {
+    window.initUniversalTutorialManager = initUniversalTutorialManager;
+    window.resetAllTutorials = resetAllTutorials;
+    window.resetTutorialForPage = resetTutorialForPage;
+    window.restartCurrentTutorial = restartCurrentTutorial;
 }
 
 // 导出供其他模块使用
