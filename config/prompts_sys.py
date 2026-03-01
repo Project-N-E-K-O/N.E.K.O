@@ -16,10 +16,10 @@ ability to solve the problem and think insightfully"""
 
 semantic_manager_prompt = """你正在为一个记忆检索系统提供精筛服务。请根据Query与记忆片段的相关性对记忆进行筛选和排序。
 
-=======Query======
+======Query======
 %s
 
-=======记忆=======
+======记忆======
 %s
 
 返回json格式的按相关性排序的记忆编号列表，最相关的排在前面，不相关的去掉。最多选取%d个，越精准越好，无须凑数。
@@ -34,7 +34,7 @@ recent_history_manager_prompt = """请总结以下对话内容，生成简洁但
 
 你的摘要应该保留关键信息、重要事实和主要讨论点，且不能具有误导性或产生歧义。
 
-【重要】避免在摘要中过度重复使用相同的词汇：
+[重要]避免在摘要中过度重复使用相同的词汇：
 - 对于反复出现的名词或主题词，在第一次提及后应使用代词（它/其/该/这个）或上下文指代替换
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
@@ -50,7 +50,7 @@ detailed_recent_history_manager_prompt = """请总结以下对话内容，生成
 
 你的摘要应该尽可能多地保留有效且清晰的信息。
 
-【重要】避免在摘要中过度重复使用相同的词汇：
+[重要]避免在摘要中过度重复使用相同的词汇：
 - 对于反复出现的名词或主题词，在第一次提及后应使用代词（它/其/该/这个）或上下文指代替换
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
@@ -66,7 +66,7 @@ further_summarize_prompt = """请总结以下内容，生成简洁但信息丰�
 
 你的摘要应该保留关键信息、重要事实和主要讨论点，且不能具有误导性或产生歧义，不得超过500字。
 
-【重要】避免在摘要中过度重复使用相同的词汇：
+[重要]避免在摘要中过度重复使用相同的词汇：
 - 对于反复出现的名词或主题词，在第一次提及后应使用代词（它/其/该/这个）或上下文指代替换
 - 使摘要表达更加流畅自然，避免"复读机"效果
 - 例如："讨论了辣条的口味和它的价格" 而非 "讨论了辣条的口味和辣条的价格"
@@ -80,9 +80,9 @@ settings_extractor_prompt = """从以下对话中提取关于{LANLAN_NAME}和{MA
     "{MASTER_NAME}": {...个人信息...},
 }
 
-========以下为对话========
+======以下为对话======
 %s
-========以上为对话========
+======以上为对话======
 
 现在，请提取关于{LANLAN_NAME}和{MASTER_NAME}的重要个人信息。注意，只允许添加重要、准确的信息。如果没有符合条件的信息，可以返回一个空字典({})。"""
 
@@ -460,7 +460,10 @@ proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{m
 - 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
 - 話しかけない場合は "[PASS]" のみを返してください。
 """
+
+# =====================================================================
 # ==================== 新增：个人动态专属 Prompt ====================
+# =====================================================================
 
 proactive_chat_prompt_personal = """你是{lanlan_name}，现在看到了一些你关注的UP主或博主的最新动态。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
@@ -558,7 +561,7 @@ proactive_chat_rewrite_prompt = """你是一个文本清洁专家。请将以下
 
 请按照以下规则处理：
 1. 移除'|' 字符。如果内容包含 '|' 字符（用于提示说话人），请只保留 '|' 后的实际说话内容。如果有多轮对话，只保留第一段。
-2. 移除所有思考过程、分析过程、推理标记（如<thinking>、【分析】等），只保留最终的说话内容。
+2. 移除所有思考过程、分析过程、推理标记（如<thinking>、[分析]等），只保留最终的说话内容。
 3. 保留核心的主动搭话内容，应该：
    - 简短自然（不超过100字/词）
    - 口语化，像朋友间的聊天
@@ -592,7 +595,7 @@ proactive_chat_rewrite_prompt_ja = """あなたはテキストのクリーンア
 
 ルール：
 1. '|' を削除する。'|' が含まれる場合は、最後の '|' の後の発話内容のみを残す。複数ターンがある場合は最初の段落のみ。
-2. 思考や分析のマーカー（例: <thinking>、【分析】）をすべて削除し、最終的な発話内容だけを残す。
+2. 思考や分析のマーカー（例: <thinking>、[分析]）をすべて削除し、最終的な発話内容だけを残す。
 3. 自発的な話しかけの核心内容は以下を満たすこと：
    - 短く自然（100語/字以内）
    - 口語で友人同士の会話のように
@@ -720,7 +723,7 @@ proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니
 
 규칙:
 1. '|' 문자를 제거하세요. '|'가 포함된 경우 마지막 '|' 뒤의 실제 발화 내용만 남기세요. 여러 턴이 있으면 첫 번째 부분만 남기세요.
-2. 사고 과정이나 분석 마커(예: <thinking>, 【분석】)를 모두 제거하고 최종 발화 내용만 남기세요.
+2. 사고 과정이나 분석 마커(예: <thinking>, [분석])를 모두 제거하고 최종 발화 내용만 남기세요.
 3. 핵심 대화 내용은 다음을 충족해야 합니다:
    - 짧고 자연스러운 표현 (100단어/글자 이내)
    - 구어체, 친구 사이의 대화처럼
@@ -730,9 +733,9 @@ proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니
 정리된 내용만 반환하고 다른 설명은 하지 마세요."""
 
 
-# =====================================================================
+# ==============================================
 # Phase 1: Screening Prompts — 筛选阶段 prompt（不生成搭话，只筛选话题）
-# =====================================================================
+# ==============================================
 #
 # 视觉通道：不需要 Phase 1 LLM 调用。
 # analyze_screenshot_from_data_url 已使用"图像描述助手"prompt 生成 250 字描述，
@@ -765,7 +768,8 @@ proactive_screen_web_zh = """你是一个面向年轻人的话题筛选助手。
 重要规则：
 1. 不要选和对话历史或近期搭话记录重复/雷同的内容
 2. 如果近期搭话已多次用同类话题（如连续分享新闻/视频），优先选不同类型，或返回 [PASS]
-3. 所有内容都不够有趣就返回 [PASS]
+3. 即便换一种说法、语气或切入角度，只要核心话题相同，也视为重复，必须改选或 [PASS]
+4. 所有内容都不够有趣就返回 [PASS]
 
 回复格式（严格遵守）：
 - 有值得分享的话题：
@@ -797,7 +801,8 @@ Topic preferences (in priority order):
 Critical rules:
 1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
 2. If recent proactive chats have repeatedly used the same type of topic (e.g. multiple news stories in a row), pick a different type or return [PASS]
-3. If nothing is interesting enough, return [PASS]
+3. Rewording alone does NOT make a topic new; if the core topic is the same, treat it as duplicate and choose another one or [PASS]
+4. If nothing is interesting enough, return [PASS]
 
 Reply format (strict):
 - If there's a worthy topic:
@@ -829,7 +834,8 @@ proactive_screen_web_ja = """あなたは若者向けの話題キュレーター
 重要ルール：
 1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
 2. 最近の話しかけで同じタイプの話題が続いている場合（ニュース連続など）、別タイプを選ぶか [PASS] を返す
-3. どれも面白くなければ [PASS] を返す
+3. 言い換え・口調変更・切り口変更だけで、核となる話題が同じなら重複とみなし、別案か [PASS] を選ぶ
+4. どれも面白くなければ [PASS] を返す
 
 回答形式（厳守）：
 - 共有する価値のある話題がある場合：
@@ -861,7 +867,8 @@ proactive_screen_web_ko = """당신은 젊은 세대를 위한 주제 큐레이�
 중요 규칙:
 1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
 2. 최근 말 건넨 기록에서 같은 유형의 주제가 반복되었다면 (예: 연속 뉴스 공유), 다른 유형을 선택하거나 [PASS] 반환
-3. 흥미로운 것이 없으면 [PASS] 반환
+3. 표현/말투/접근만 바뀌고 핵심 주제가 같다면 중복으로 간주하고 다른 주제를 고르거나 [PASS] 반환
+4. 흥미로운 것이 없으면 [PASS] 반환
 
 답변 형식 (엄격 준수):
 - 공유할 가치가 있는 주제:
@@ -897,22 +904,15 @@ proactive_generate_zh = """以下是你的人设：
 请以你的角色身份，自然地向{master_name}搭话。要求：
 1. 完全符合你的角色性格和说话习惯
 2. 简短自然，像是随口分享或搭话，不超过2-3句话
-3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话
+{source_instruction}
 4. 要契合当前的对话氛围和主人的近期兴趣
-5. 绝对不要重复"近期搭话记录"中已经说过的内容，话题、句式和口吻都要有新意
-6. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
-7. 不要生成思考过程
+5. 绝对不要重复"近期搭话记录"中已经说过的内容。重复判定从严：只要核心事件/人物/视频/梗相同，即使换措辞、换语气、换切入点，也算重复，必须放弃
+6. 禁止复读自己的近期主动搭话：不能再次提到同一条新闻、同一个视频、同一个争议点、同一个笑点；若无法确认是否重复，按重复处理并放弃
+7. 只要存在重复风险，宁可回复 [PASS] 也不要硬聊
+8. 如果提供的素材都不适合搭话（太无聊、与近期重复、或找不到自然的切入点），直接回复 [PASS]
+9. 不要生成思考过程
 
-输出格式（严格遵守）：
-- 放弃搭话 → 只输出 [PASS]
-- 否则第一行写来源标签，第二行起写你要说的话：
-  [SCREEN] = 基于屏幕内容
-  [WEB] = 基于外部话题
-  [BOTH] = 结合了两者
-
-示例：
-[SCREEN]
-你在看这个啊？看起来挺有意思的..."""
+{output_format_section}"""
 
 proactive_generate_en = """Here is your persona:
 ======Character Persona======
@@ -934,22 +934,15 @@ proactive_generate_en = """Here is your persona:
 As your character, naturally start a conversation with {master_name}. Requirements:
 1. Stay perfectly in character—match your personality and speaking style
 2. Keep it short and natural, like a casual remark or share (max 2-3 sentences)
-3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at
+{source_instruction}
 4. Match the current conversation mood and the master's recent interests
-5. Absolutely do NOT repeat anything from your "recent proactive chats"—vary your topic, phrasing, and tone
-6. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
-7. Do not include any reasoning
+5. Absolutely do NOT repeat anything from your "recent proactive chats". Use a strict duplicate rule: if the core event/person/video/meme is the same, it is a duplicate even if wording, tone, or angle changes
+6. Never re-use your own recent proactive topic: do not bring up the same news item, same video, same controversy point, or same punchline again; if unsure, treat it as duplicate
+7. If there is any duplication risk, prefer [PASS] instead of forcing a message
+8. If none of the provided material feels right to bring up (too boring, repetitive, or no natural angle), reply only [PASS]
+9. Do not include any reasoning
 
-Output format (strict):
-- To skip: reply only [PASS]
-- Otherwise, first line = source tag, then your message on the next line(s):
-  [SCREEN] = based on screen content
-  [WEB] = based on external topic
-  [BOTH] = combined both
-
-Example:
-[SCREEN]
-Hey, what are you looking at? That looks interesting..."""
+{output_format_section}"""
 
 proactive_generate_ja = """以下はあなたのキャラクター設定です：
 ======キャラクター設定======
@@ -971,22 +964,15 @@ proactive_generate_ja = """以下はあなたのキャラクター設定です�
 あなたのキャラクターとして、自然に{master_name}に話しかけてください。条件：
 1. キャラクターの性格と話し方に完全に合わせる
 2. 短く自然に、何気なく共有する感じで（2〜3文まで）
-3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先
+{source_instruction}
 4. 現在の会話の雰囲気とご主人の最近の関心に合わせる
-5.「最近の話しかけ記録」にある内容は絶対に繰り返さない—話題・言い回し・トーンすべて新鮮にする
-6. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
-7. 推論は含めない
+5.「最近の話しかけ記録」の内容は絶対に繰り返さない。重複判定は厳格に行う：核心となる出来事・人物・動画・ミームが同じなら、言い換えや口調変更でも重複とみなす
+6. 自分の最近の自発話題を再利用しない。同じニュース、同じ動画、同じ論点、同じオチは再提示しない。迷ったら重複扱いにする
+7. 少しでも重複リスクがあるなら、無理に話さず [PASS] を優先する
+8. 提供された素材がどれも話しかけに向かない場合（つまらない、重複、自然な切り口がない）、[PASS] とだけ返す
+9. 推論は含めない
 
-出力形式（厳守）：
-- パス → [PASS] のみ
-- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：
-  [SCREEN] = 画面の内容に基づく
-  [WEB] = 外部話題に基づく
-  [BOTH] = 両方を組み合わせ
-
-例：
-[SCREEN]
-何見てるの？面白そうだね..."""
+{output_format_section}"""
 
 proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 ======캐릭터 설정======
@@ -1008,22 +994,15 @@ proactive_generate_ko = """다음은 당신의 캐릭터 설정입니다:
 캐릭터로서 자연스럽게 {master_name}에게 말을 걸어주세요. 요구사항:
 1. 캐릭터의 성격과 말투를 완벽히 유지
 2. 짧고 자연스럽게, 캐주얼한 한마디처럼 (2-3문장 이내)
-3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선
+{source_instruction}
 4. 현재 대화 분위기와 주인의 최근 관심사에 맞추기
-5.「최근 말 건넨 기록」의 내용을 절대 반복하지 않기—주제, 문체, 톤 모두 새롭게
-6. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
-7. 추론 과정 생략
+5.「최근 말 건넨 기록」의 내용을 절대 반복하지 말 것. 중복 판정은 엄격하게: 핵심 사건/인물/영상/밈이 같으면 표현, 톤, 접근이 달라도 중복으로 본다
+6. 자신의 최근 주도 대화 주제를 재사용하지 말 것. 같은 뉴스, 같은 영상, 같은 논쟁 포인트, 같은 펀치라인은 다시 꺼내지 않는다. 애매하면 중복으로 처리
+7. 중복 위험이 조금이라도 있으면 억지로 말하지 말고 [PASS]를 우선
+8. 제공된 소재가 모두 말 걸기에 적합하지 않으면 (지루함, 중복, 자연스러운 포인트 없음) [PASS]만 답변
+9. 추론 과정 생략
 
-출력 형식 (엄격 준수):
-- 패스 → [PASS]만
-- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:
-  [SCREEN] = 화면 내용 기반
-  [WEB] = 외부 주제 기반
-  [BOTH] = 둘 다 결합
-
-예시:
-[SCREEN]
-뭐 보고 있어? 재밌어 보이는데..."""
+{output_format_section}"""
 
 
 # =====================================================================
@@ -1042,7 +1021,7 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'en'
     if lang_lower.startswith('ko'):
         return 'ko'
-    return 'zh'
+    return 'en'
 
 
 PROACTIVE_CHAT_PROMPTS = {
@@ -1134,4 +1113,376 @@ def get_proactive_generate_prompt(lang: str = 'zh') -> str:
     """获取 Phase 2 生成阶段 prompt"""
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
+
+
+def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = 'zh') -> tuple:
+    """根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签"""
+    lang = _normalize_prompt_language(lang)
+
+    if has_screen and has_web:
+        key = 'both'
+    elif has_screen:
+        key = 'screen'
+    elif has_web:
+        key = 'web'
+    else:
+        key = 'none'
+
+    _si = {
+        'zh': {
+            'both':   '3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
+            'screen': '3. 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'web':    '3. 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'none':   '3. 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
+        },
+        'en': {
+            'both':   '3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
+            'screen': '3. You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'web':    '3. You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'none':   '3. You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
+        },
+        'ja': {
+            'both':   '3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先',
+            'screen': '3. ご主人が見ている画面の内容について話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'web':    '3. 提供された外部話題をもとに話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'none':   '3. 会話履歴と現在の状態をもとに自然に話しかけてもいいが、最近似たような話をしたか、特に話すことがなければパスしてもいい',
+        },
+        'ko': {
+            'both':   '3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선',
+            'screen': '3. 주인이 현재 화면에서 보고 있는 내용에 대해 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'web':    '3. 제공된 외부 주제를 대화 소재로 활용해도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'none':   '3. 대화 기록과 현재 상태를 바탕으로 자연스럽게 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 딱히 할 말이 없으면 패스해도 됨',
+        },
+    }
+
+    _of = {
+        'zh': {
+            'both': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
+                '  [SCREEN] = 基于屏幕内容\n'
+                '  [WEB] = 基于外部话题\n'
+                '  [BOTH] = 结合了两者\n\n'
+                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
+            ),
+            'screen': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [SCREEN]，第二行起写你要说的话\n\n'
+                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
+            ),
+            'web': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [WEB]，第二行起写你要说的话\n\n'
+                '示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...'
+            ),
+            'none': (
+                '如果没有什么好聊的，回复 [PASS]。\n'
+                '否则直接输出你要说的话（不需要来源标签）。'
+            ),
+        },
+        'en': {
+            'both': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
+                '  [SCREEN] = based on screen content\n'
+                '  [WEB] = based on external topic\n'
+                '  [BOTH] = combined both\n\n'
+                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
+            ),
+            'screen': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [SCREEN], then your message on the next line(s)\n\n'
+                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
+            ),
+            'web': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [WEB], then your message on the next line(s)\n\n'
+                'Example:\n[WEB]\nHey, did you hear about this interesting thing...'
+            ),
+            'none': (
+                'If nothing feels right to bring up, reply [PASS].\n'
+                'Otherwise, just output your message directly (no source tag needed).'
+            ),
+        },
+        'ja': {
+            'both': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
+                '  [SCREEN] = 画面の内容に基づく\n'
+                '  [WEB] = 外部話題に基づく\n'
+                '  [BOTH] = 両方を組み合わせ\n\n'
+                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
+            ),
+            'screen': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [SCREEN]、2行目以降にメッセージ\n\n'
+                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
+            ),
+            'web': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [WEB]、2行目以降にメッセージ\n\n'
+                '例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...'
+            ),
+            'none': (
+                '話すことがなければ [PASS] と返してください。\n'
+                'それ以外は直接メッセージを出力（ソースタグ不要）。'
+            ),
+        },
+        'ko': {
+            'both': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
+                '  [SCREEN] = 화면 내용 기반\n'
+                '  [WEB] = 외부 주제 기반\n'
+                '  [BOTH] = 둘 다 결합\n\n'
+                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
+            ),
+            'screen': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [SCREEN], 다음 줄부터 메시지\n\n'
+                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
+            ),
+            'web': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [WEB], 다음 줄부터 메시지\n\n'
+                '예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...'
+            ),
+            'none': (
+                '말할 게 없으면 [PASS]로 답변.\n'
+                '아니면 메시지만 직접 출력 (소스 태그 불필요).'
+            ),
+        },
+    }
+
+    return _si[lang][key], _of[lang][key]
+
+
+# =====================================================================
+# ======= 多语言注入片段（用于 LLM 上下文注入，供各模块引用）  =======
+# =====================================================================
+
+def _loc(d: dict, lang: str) -> str:
+    """从多语言 dict 按 lang 取值，缺失则回退 'zh'。"""
+    if lang not in d:
+        print(f"WARNING: Unexpected lang code {lang}")
+    return d.get(lang, d['en'])
+
+
+# ---------- 内心活动区块标题 ----------
+INNER_THOUGHTS_HEADER = {
+    'zh': '\n======以下是{name}的内心活动======\n',
+    'en': "\n======{name}'s Inner Thoughts======\n",
+    'ja': '\n======{name}の心の声======\n',
+    'ko': '\n======{name}의 내면 활동======\n',
+    'ru': '\n======Внутренние мысли {name}======\n',
+}
+
+INNER_THOUGHTS_BODY = {
+    'zh': '{name}的脑海里经常想着自己和{master}的事情，她记得{settings}\n\n现在时间是{time}。开始聊天前，{name}又在脑海内整理了近期发生的事情。\n',
+    'en': "{name} often thinks about herself and {master}. She remembers: {settings}\n\nThe current time is {time}. Before the conversation begins, {name} is mentally reviewing recent events.\n",
+    'ja': '{name}はいつも自分と{master}のことを考えています。彼女が覚えていること：{settings}\n\n現在の時刻は{time}です。会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n',
+    'ko': '{name}은 항상 자신과 {master}에 대해 생각합니다. 그녀가 기억하는 것: {settings}\n\n현재 시간은 {time}입니다. 대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n',
+    'ru': '{name} часто думает о себе и {master}. Она помнит: {settings}\n\nТекущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
+}
+
+# ---------- 屏幕活跃窗口前缀 ----------
+SCREEN_WINDOW_TITLE = {
+    'zh': '当前活跃窗口：{window}\n',
+    'en': 'Active window: {window}\n',
+    'ja': 'アクティブウィンドウ：{window}\n',
+    'ko': '현재 활성 창: {window}\n',
+    'ru': 'Активное окно: {window}\n',
+}
+
+# ---------- 截图提示 ----------
+SCREEN_IMG_HINT = {
+    'zh': '（上方附有主人当前的屏幕截图，请直接观察截图内容来搭话）',
+    'en': "(The master's current screenshot is attached above — observe it directly)",
+    'ja': '（上にご主人のスクリーンショットがあります。直接観察してください）',
+    'ko': '(위에 주인의 스크린샷이 첨부되어 있습니다. 직접 관찰하세요)',
+    'ru': '(Выше прикреплён текущий скриншот экрана хозяина — наблюдайте его напрямую)',
+}
+
+# ---------- 触发 LLM 开始生成 ----------
+BEGIN_GENERATE = {
+    'zh': '======请开始======',
+    'en': '======Begin======',
+    'ja': '======始めてください======',
+    'ko': '======시작======',
+    'ru': '======Начните======',
+}
+
+# ---------- 近期搭话记录注入 ----------
+RECENT_PROACTIVE_CHATS_HEADER = {
+    'zh': '======近期搭话记录（你应该避免雷同！）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）：',
+    'en': '======Recent Proactive Chats (You MUST avoid repetition!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone):',
+    'ja': '======最近の自発的発言記録（類似を避けること！）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）：',
+    'ko': '======최근 주도적 대화 기록 (중복을 피해야 합니다!) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두):',
+    'ru': '======Недавние проактивные сообщения (ОБЯЗАТЕЛЬНО избегать повторений!) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон):',
+}
+
+RECENT_PROACTIVE_CHATS_FOOTER = {
+    'zh': '======搭话记录结束（以上内容不可重复！）======',
+    'en': '======End Recent Chats (Do NOT repeat the above!) ======',
+    'ja': '======発言記録ここまで（上記の内容を繰り返さないこと！）======',
+    'ko': '======대화 기록 끝 (위 내용을 반복하지 마세요!) ======',
+    'ru': '======Конец записей (НЕ повторяйте вышесказанное!) ======',
+}
+
+# ---------- 主人屏幕区块 ----------
+SCREEN_SECTION_HEADER = {
+    'zh': '======主人的屏幕======',
+    'en': "======Master's Screen======",
+    'ja': '======ご主人の画面======',
+    'ko': '======주인의 화면======',
+    'ru': '======Экран хозяина======',
+}
+
+SCREEN_SECTION_FOOTER = {
+    'zh': '======屏幕内容结束======',
+    'en': '======Screen Content End======',
+    'ja': '======画面内容ここまで======',
+    'ko': '======화면 내용 끝======',
+    'ru': '======Конец содержимого экрана======',
+}
+
+# ---------- 外部话题区块 ----------
+EXTERNAL_TOPIC_HEADER = {
+    'zh': '======外部话题======\n你注意到一个有趣的话题：',
+    'en': '======External Topic======\nYou noticed an interesting topic:',
+    'ja': '======外部の話題======\n面白い話題を見つけました：',
+    'ko': '======외부 주제======\n흥미로운 주제를 발견했습니다:',
+    'ru': '======Внешняя тема======\nВы заметили интересную тему:',
+}
+
+EXTERNAL_TOPIC_FOOTER = {
+    'zh': '======外部话题结束======',
+    'en': '======External Topic End======',
+    'ja': '======外部話題ここまで======',
+    'ko': '======외부 주제 끝======',
+    'ru': '======Конец внешней темы======',
+}
+
+# ---------- 语音会话初始 prompt ----------
+SESSION_INIT_PROMPT = {
+    'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
+    'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed.',
+    'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
+    'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
+    'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
+}
+
+SESSION_INIT_PROMPT_AGENT = {
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试操纵电脑。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to control the computer.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えてコンピュータを操作してください。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 컴퓨터를 조작하세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и управляйте компьютером.',
+}
+
+# ---------- Agent 任务状态标签 ----------
+AGENT_TASK_STATUS_RUNNING = {
+    'zh': '进行中',
+    'en': 'Running',
+    'ja': '実行中',
+    'ko': '진행 중',
+    'ru': 'Выполняется',
+}
+
+AGENT_TASK_STATUS_QUEUED = {
+    'zh': '排队中',
+    'en': 'Queued',
+    'ja': '待機中',
+    'ko': '대기 중',
+    'ru': 'В очереди',
+}
+
+AGENT_TASKS_HEADER = {
+    'zh': '\n[当前正在执行的Agent任务]\n',
+    'en': '\n[Active Agent Tasks]\n',
+    'ja': '\n[現在実行中のエージェントタスク]\n',
+    'ko': '\n[현재 실행 중인 에이전트 작업]\n',
+    'ru': '\n[Активные задачи агента]\n',
+}
+
+AGENT_TASKS_NOTICE = {
+    'zh': '\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。任务完成后系统会自动通知你真实结果，届时再据实回答。\n',
+    'en': '\nNote: The above tasks are running in the background. You may inform the user that they are being processed, but must never fabricate or guess results. You may also choose to wait silently until completed. The system will notify you of the real results when done.\n',
+    'ja': '\n注意：上記のタスクはバックグラウンドで実行中です。処理中であることをユーザーに伝えてもよいですが、結果を捏造・推測することは絶対に禁止です。タスク完了後、システムが自動的に本当の結果を通知しますので、その時点で正確に回答してください。\n',
+    'ko': '\n주의: 위 작업들은 백그라운드에서 실행 중입니다. 처리 중임을 사용자에게 알릴 수 있지만 결과를 꾸며내거나 추측해서는 안 됩니다. 작업 완료 후 시스템이 자동으로 실제 결과를 알려드리며, 그때 정확하게 답변하세요.\n',
+    'ru': '\nПримечание: вышеуказанные задачи выполняются в фоновом режиме. Вы можете сообщить пользователю, что они обрабатываются, но никогда не придумывайте и не угадывайте результаты. Система автоматически уведомит вас о реальных результатах по завершении.\n',
+}
+
+# ---------- 前情概要 + 语音就绪 ----------
+CONTEXT_SUMMARY_READY = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите голосовой разговор с {master}.======\n',
+}
+
+# ---------- 系统通知：后台任务完成 ----------
+SYSTEM_NOTIFICATION_TASKS_DONE = {
+    'zh': '======[系统通知] 以下后台任务已完成，请{name}先用自然、简洁的口吻向{master}汇报，再恢复正常对话======\n',
+    'en': '======[System Notice] The following background tasks have been completed. Please have {name} briefly and naturally report to {master} first, then resume normal conversation.======\n',
+    'ja': '======[システム通知] 以下のバックグラウンドタスクが完了しました。{name}はまず自然に簡潔な口調で{master}に報告し、その後通常の会話に戻ってください。======\n',
+    'ko': '======[시스템 알림] 다음 백그라운드 작업이 완료되었습니다. {name}은 먼저 자연스럽고 간결하게 {master}에게 보고한 뒤 일반 대화로 돌아오세요.======\n',
+    'ru': '======[Системное уведомление] Следующие фоновые задачи завершены. Пожалуйста, {name} сначала кратко и естественно доложите {master}, затем возобновите обычный разговор.======\n',
+}
+
+# ---------- 前情概要 + 任务汇报 ----------
+CONTEXT_SUMMARY_TASK_HEADER = {
+    'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
+    'en': '\n======End of context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
+    'ja': '\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n',
+    'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n',
+    'ru': '\n======Конец краткого содержания. Пожалуйста, {name} сначала кратко и естественно изложите {master} результаты выполненных задач — что именно было сделано:\n',
+}
+
+CONTEXT_SUMMARY_TASK_FOOTER = {
+    'zh': '\n完成上述汇报后，再恢复正常对话。======\n',
+    'en': '\nAfter the report, resume normal conversation.======\n',
+    'ja': '\n報告を終えたら、通常の会話に戻ってください。======\n',
+    'ko': '\n보고를 마친 후 일반 대화로 돌아오세요.======\n',
+    'ru': '\nПосле доклада возобновите обычный разговор.======\n',
+}
+
+# ---------- Agent callback 系统通知 ----------
+AGENT_CALLBACK_NOTIFICATION = {
+    'zh': '======[系统通知：以下是最近完成的后台任务情况，请在回复中自然地提及或确认]\n',
+    'en': '======[System Notice: The following background tasks were recently completed. Please naturally mention or acknowledge them in your reply.]\n',
+    'ja': '======[システム通知：以下は最近完了したバックグラウンドタスクです。返答の中で自然に言及または確認してください。]\n',
+    'ko': '======[시스템 알림：다음은 최근 완료된 백그라운드 작업입니다. 답변에서 자연스럽게 언급하거나 확인하세요.]\n',
+    'ru': '======[Системное уведомление: следующие фоновые задачи недавно завершены. Пожалуйста, естественно упомяните или подтвердите их в своём ответе.]\n',
+}
+
+# ---------- 记忆回忆区块 ----------
+MEMORY_RECALL_HEADER = {
+    'zh': '======{name}尝试回忆=====\n',
+    'en': '======{name} tries to recall=====\n',
+    'ja': '======{name}の回想=====\n',
+    'ko': '======{name}의 회상=====\n',
+    'ru': '======{name} пытается вспомнить=====\n',
+}
+
+MEMORY_RESULTS_HEADER = {
+    'zh': '====={name}的相关记忆=====\n',
+    'en': '====={name}\'s Related Memories=====\n',
+    'ja': '====={name}の関連する記憶=====\n',
+    'ko': '====={name}의 관련 기억=====\n',
+    'ru': '====={name} — связанные воспоминания=====\n',
+}
 

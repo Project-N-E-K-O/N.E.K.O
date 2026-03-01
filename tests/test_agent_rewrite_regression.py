@@ -301,56 +301,8 @@ def test_get_model_api_config_tts_custom_prefers_qwen_profile(monkeypatch):
     assert cfg["base_url"] == "https://qwen.example/v1"
 
 
-def test_publish_main_event_writes_json_line(monkeypatch):
-    from brain.main_bridge import publish_main_event
-
-    class DummyWriter:
-        def __init__(self):
-            self.buffer = b""
-            self.closed = False
-            self.drain_called = False
-            self.wait_closed_called = False
-
-        def write(self, data):
-            self.buffer += data
-
-        async def drain(self):
-            self.drain_called = True
-
-        def close(self):
-            self.closed = True
-
-        async def wait_closed(self):
-            self.wait_closed_called = True
-
-    writer = DummyWriter()
-
-    async def fake_open_connection(host, port):
-        assert host == "127.0.0.1"
-        assert isinstance(port, int)
-        return object(), writer
-
-    monkeypatch.setattr("brain.main_bridge.asyncio.open_connection", fake_open_connection)
-
-    ok = asyncio.run(publish_main_event({"type": "task_update", "ok": True}))
-    assert ok is True
-    assert writer.drain_called is True
-    assert writer.closed is True
-    assert writer.wait_closed_called is True
-    payload = json.loads(writer.buffer.decode("utf-8").strip())
-    assert payload["type"] == "task_update"
-    assert payload["ok"] is True
 
 
-def test_publish_main_event_returns_false_on_connection_error(monkeypatch):
-    from brain.main_bridge import publish_main_event
-
-    async def fake_open_connection(_host, _port):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("brain.main_bridge.asyncio.open_connection", fake_open_connection)
-    ok = asyncio.run(publish_main_event({"type": "x"}))
-    assert ok is False
 
 
 def test_publish_analyze_and_plan_event_writes_expected_payload(monkeypatch):

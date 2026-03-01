@@ -399,6 +399,17 @@ def run_main_server(ready_event: Event):
         # 运行服务器
         server.run()
     except Exception as e:
+        # 兜底崩溃日志：即使主日志系统未初始化，也能保留首个异常原因
+        try:
+            import traceback
+            crash_file = os.path.join(os.getcwd(), "main_server_bootstrap_crash.log")
+            with open(crash_file, "a", encoding="utf-8") as f:
+                f.write("\n" + "=" * 80 + "\n")
+                f.write(f"[{datetime.now().isoformat()}] Main Server bootstrap error: {e}\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
+        except Exception:
+            pass
         print(f"Main Server error: {e}")
         import traceback
         traceback.print_exc()
@@ -751,6 +762,17 @@ def wait_for_servers(timeout: int = 60) -> bool:
     
     # 第一步：等待所有端口就绪
     while time.time() - start_time < timeout:
+        # 若某个子进程提前退出，立即报错而不是等到超时
+        for server in SERVERS:
+            proc = server.get('process')
+            if proc is not None and not proc.is_alive() and not check_port(server['port']):
+                report_startup_failure(
+                    f"Startup failed: {server['name']} exited early (exitcode={proc.exitcode})"
+                )
+                stop_spinner.set()
+                spinner_thread.join()
+                return False
+
         ready_count = 0
         for server in SERVERS:
             if check_port(server['port']):
@@ -827,15 +849,38 @@ def cleanup_servers():
                 proc.kill()
                 proc.join(timeout=2)
 
-            # 第三步：Windows 下兜底强杀整个进程树，防止孙进程残留
+            # 第三步：兜底强杀整个进程树，防止孙进程残留
             pid = proc.pid
-            if pid and sys.platform == 'win32':
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False
-                )
+            if pid:
+                if sys.platform == 'win32':
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False
+                    )
+                else:
+                    # macOS / Linux 下兜底强杀整个进程树
+                    try:
+                        import psutil
+                        try:
+                            parent = psutil.Process(pid)
+                            for child in parent.children(recursive=True):
+                                child.kill()
+                            parent.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    except ImportError:
+                        try:
+                            # 尽力而为的 pkill 兜底
+                            subprocess.run(
+                                ["pkill", "-9", "-P", str(pid)],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                check=False
+                            )
+                        except Exception:
+                            pass
 
             print(f"✓ {server['name']} 已关闭", flush=True)
         except Exception as e:
@@ -859,11 +904,10 @@ def _handle_termination_signal(signum, _frame):
 def register_shutdown_hooks():
     """注册退出钩子，覆盖更多退出路径。"""
     atexit.register(cleanup_servers)
-    if sys.platform == 'win32':
-        try:
-            signal.signal(signal.SIGTERM, _handle_termination_signal)
-        except Exception:
-            pass
+    try:
+        signal.signal(signal.SIGTERM, _handle_termination_signal)
+    except Exception:
+        pass
 
 def _ensure_playwright_browsers():
     """Auto-install Playwright Chromium if missing (needed by browser-use).

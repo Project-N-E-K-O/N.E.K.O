@@ -48,6 +48,7 @@ class VRMManager {
 
         // CursorFollow 控制器（眼睛注视 + 头/脖子跟随）
         this._cursorFollow = null;
+        this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
@@ -246,6 +247,14 @@ class VRMManager {
             if (!this._cursorFollow._initialized) {
                 this._cursorFollow.init(this);
             }
+            // 同步鼠标跟踪启用状态
+            const isEnabled = Boolean(window.mouseTrackingEnabled);
+            console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
+            if (this._cursorFollow.isEnabled() !== isEnabled) {
+                this._cursorFollow.setEnabled(isEnabled);
+            }
+            // 同步内部状态
+            this._mouseTrackingEnabled = isEnabled;
             // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
             return;
         }
@@ -656,14 +665,19 @@ class VRMManager {
                 // 3. 设置 lookAt 目标
                 if (this.currentModel.vrm.lookAt) {
                     if (this._cursorFollow && this._cursorFollow.eyesTarget) {
-                        this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
+                        if (this.currentModel.vrm.lookAt.target !== this._cursorFollow.eyesTarget) {
+                            this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
+                        }
                     } else {
                         if (this._lookAtTarget && this._lookAtDesiredPoint) {
                             const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
                             const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));
                             this._lookAtTarget.position.lerp(this._lookAtDesiredPoint, alpha);
                         }
-                        this.currentModel.vrm.lookAt.target = this._lookAtTarget || this.camera;
+                        const fallbackLookAtTarget = this._lookAtTarget || this.camera;
+                        if (this.currentModel.vrm.lookAt.target !== fallbackLookAtTarget) {
+                            this.currentModel.vrm.lookAt.target = fallbackLookAtTarget;
+                        }
                     }
                 }
 
@@ -719,6 +733,35 @@ class VRMManager {
 
     toggleSpringBone(enable) {
         this.enablePhysics = enable;
+    }
+
+    /**
+     * 设置鼠标追踪性能档位
+     * @param {'none'|'low'|'medium'|'high'} level
+     */
+    setCursorFollowPerformance(level = 'high') {
+        const normalized = typeof level === 'string' ? level.toLowerCase() : 'high';
+        const finalLevel = (normalized === 'none' || normalized === 'low' || normalized === 'medium' || normalized === 'high')
+            ? normalized
+            : 'high';
+
+        if (this._cursorFollow && typeof this._cursorFollow.setPerformanceLevel === 'function') {
+            this._cursorFollow.setPerformanceLevel(finalLevel);
+        }
+        // 保留全局状态，便于初始化前设置
+        window.cursorFollowPerformanceLevel = finalLevel;
+        return finalLevel;
+    }
+
+    /**
+     * 获取当前鼠标追踪性能档位
+     * @returns {'none'|'low'|'medium'|'high'}
+     */
+    getCursorFollowPerformance() {
+        if (this._cursorFollow && typeof this._cursorFollow.getPerformanceLevel === 'function') {
+            return this._cursorFollow.getPerformanceLevel();
+        }
+        return window.cursorFollowPerformanceLevel || 'high';
     }
 
     /**
@@ -937,6 +980,21 @@ class VRMManager {
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
             this._isModelReadyForInteraction = true;
+
+            // 首次加载围栏：检查模型是否在屏幕外，如果是则立即校正（不动画）
+            if (this.interaction && this.currentModel?.vrm?.scene) {
+                try {
+                    const currentPos = this.currentModel.vrm.scene.position.clone();
+                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 300 });
+                    if (!currentPos.equals(correctedPos)) {
+                        this.currentModel.vrm.scene.position.copy(correctedPos);
+                        console.log('[VRM Manager] 首次加载围栏已校正模型位置');
+                    }
+                } catch (e) {
+                    console.warn('[VRM Manager] 首次加载围栏检查失败:', e);
+                }
+            }
+
             showAndFadeIn();
         } else if (this._isLoadTokenActive(loadToken)) {
             this._loadState = 'idle';
@@ -1230,6 +1288,27 @@ class VRMManager {
         this._isInitialized = false;
 
         console.log('[VRM Manager] VRM 资源清理完成');
+    }
+
+    /**
+     * 设置鼠标跟踪是否启用
+     * @param {boolean} enabled - 是否启用鼠标跟踪
+     */
+    setMouseTrackingEnabled(enabled) {
+        this._mouseTrackingEnabled = enabled;
+        window.mouseTrackingEnabled = enabled;
+
+        if (this._cursorFollow) {
+            this._cursorFollow.setEnabled(enabled);
+        }
+    }
+
+    /**
+     * 获取鼠标跟踪是否启用
+     * @returns {boolean}
+     */
+    isMouseTrackingEnabled() {
+        return this._mouseTrackingEnabled !== false;
     }
 }
 

@@ -1015,7 +1015,28 @@
         "deleteFailed": "削除失敗",
         "deleteError": "削除失敗：{{error}}",
         "freePresetLabel": "無料プリセット",
-        "freePresetBadge": "プリセット"
+        "freePresetBadge": "プリセット",
+        "silenceModal": {
+            "title": "スマート無音検出結果",
+            "originalDuration": "元の音声の長さ",
+            "silenceDuration": "除去可能な無音の長さ",
+            "estimatedDuration": "処理後の予想長さ",
+            "savingPercentage": "節約率",
+            "processing": "処理中...",
+            "analyzing": "分析中...",
+            "trimming": "トリミング中...",
+            "done": "完了",
+            "cancelled": "キャンセル済み",
+            "trimSuccess": "✅ トリミング完了！",
+            "downloadTrimmed": "処理済み音声をダウンロード",
+            "useTrimmed": "スマートトリミング音声を使用",
+            "useOriginal": "元の音声をアップロード",
+            "cancel": "キャンセル",
+            "noSilence": "除去可能な無音区間は検出されませんでした",
+            "trimError": "トリミング失敗: {{error}}",
+            "trimmedLabel": "[トリミング済]",
+            "confirmTrimmed": "トリミング済み音声を使用"
+        }
     },
     "memory": {
         "title": "メモリブラウザ",
@@ -1074,6 +1095,7 @@
         "profileName": "プロフィール名",
         "profileNameMaxHint": "最大20文字",
         "profileNameTooLong": "プロフィール名が長すぎます",
+        "profileNameContainsSlash": "プロフィール名にパス区切り文字(/または\\)を含めることはできません",
         "newProfileNameRequired": "新しいプロフィール名は空にできません",
         "newProfileNameTooLong": "プロフィール名が長すぎます",
         "required": "*",
@@ -1090,6 +1112,7 @@
         "lightingNotSet": "デフォルト",
         "live2dNotSet": "未設定",
         "voiceNotSet": "ボイスが指定されていません",
+        "voiceSetting": "ボイス設定",
         "manageModel": "クリックしてモデルを管理",
         "fillProfileNameFirst": "まず neko プロフィール名を入力してから、モデルを設定してください",
         "registerNewVoice": "新しいボイスを登録",
@@ -1298,7 +1321,8 @@
             "frameRate": "フレームレート",
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
-            "frameRateHigh": "60fps"
+            "frameRateHigh": "60fps",
+            "mouseTracking": "マウス追跡"
         }
     },
     "subtitle": {
@@ -1319,9 +1343,11 @@
             "disconnected": "サーバー接続が失われました",
             "agentDisconnected": "エージェントサーバー接続が失われました",
             "freeModelWarning": "クォータの制限により、無料モデルではAgentモードがブロックされやすくなります。有料モデルへの切り替えをお勧めします。\n\nすでに有料APIを設定済みの場合は、NEKOを再起動してみてください。",
-            "freeModelWarningTitle": "無料モデルのお知らせ"
+            "freeModelWarningTitle": "無料モデルのお知らせ",
+            "connectivityCheck": "Agent LLM 接続チェック中..."
         },
         "quotaExceeded": "無料 Agent モデルの本日の試用上限（{{limit}}回）に達しました。明日もう一度お試しください。",
+        "contentFilterError": "Agent が閲覧したウェブページの内容が AI モデルの安全フィルターに引っかかり、タスクが中止されました。ページにセンシティブなトピックが含まれている場合に発生します。別のキーワードやウェブサイトをお試しください。",
         "taskHud": {
             "title": "エージェントタスク",
             "running": "実行中",
@@ -2048,5 +2074,128 @@
         "switchToLight": "ライトモードに切り替え",
         "themeChanged": "テーマが変更されました"
     },
-    "characterModelNotSet": "現在のキャラクターにモデルが設定されていません"
+    "characterModelNotSet": "現在のキャラクターにモデルが設定されていません",
+    "cookiesLogin": {
+        "title": "N.E.K.O クレデンシャル制御センター",
+        "header": "🔐 クレデンシャル取得センター",
+        "bilibili": "📺 ビリビリ (Bilibili)",
+        "douyin": "🎵 抖音 (Douyin)",
+        "kuaishou": "🧡 快手 (Kuaishou)",
+        "weibo": "🌏 微博 (Weibo)",
+        "twitter": "🐦 Twitter/X",
+        "reddit": "👽 Reddit",
+        "saveConfig": "設定を保存",
+        "encryptStorage": "ローカルファイルに安全に暗号化保存",
+        "localMonitoring": "ローカルステータス監視",
+        "removeCredentials": "削除",
+        "confirmRemove": "{{platformName}}のログインクレデンシャルを本当にクリアしますか？",
+        "credentialsRemoved": "✅ クレデンシャルの削除に成功しました",
+        "credentialsSaved": "✅ {{platformName}} クレデンシャルの保存に成功しました！",
+        "credentialsRemovedFailed": "削除に失敗しました",
+        "removeFailed": "❌ 削除に失敗しました、ネットワークを確認してください",
+        "requiredField": "⚠️ 必須項目を記入してください: [{{fieldName}}]",
+        "invalidChars": "⚠️ [{{fieldName}}] に無効な文字が含まれています...",
+        "whitespaceTrimmed": "⚠️ [{{fieldName}}] に前後の空白が含まれていたため、自動的にトリミングされました。確認後、再提出してください",
+        "networkError": "❌ ネットワークエラー: バックエンドサービスに接続できません",
+        "saveFailed": "保存に失敗しました、フォーマットが正しいか確認してください",
+        "pasteHere": "ペーストここ",
+        "submitting": "安全に暗号化して送信する...",
+        "noCookies": "Cookiesを先に設定してください",
+        "statusLoadFailed": "状態の読み込みに失敗しました",
+        "thisPlatform": "このプラットフォーム",
+        "instructions": {
+            "bilibili": "📌 <b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
+            "douyin": "📌 <b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
+            "kuaishou": "📌 <b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
+            "weibo": "📌 <b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
+            "twitter": "📌 <b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
+            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。"
+        },
+        "guide": {
+            "title": "初心者向け共通ガイド",
+            "step1": "ブラウザで対象のウェブサイトを開き、<span class=\"highlight-text\">ログイン</span>します。",
+            "step2_prefix": "キーボードの",
+            "step2_suffix": "キーを押して開発者ツールを開きます。",
+            "step3": "上部にある <span class=\"highlight-text\">Application（アプリケーション）</span> タブを探してクリックします。",
+            "step4": "左側の <span class=\"highlight-text\">Cookies</span> を展開し、ドメインをクリックして右側にある必要な値をコピーします。"
+        },
+        "fields": {
+            "SESSDATA": {
+                "label": "SESSDATA",
+                "desc": "コアIDクレデンシャル (必須)"
+            },
+            "bili_jct": {
+                "label": "bili_jct",
+                "desc": "CSRFトークン (必須)"
+            },
+            "DedeUserID": {
+                "label": "DedeUserID",
+                "desc": "アカウントUID (必須)"
+            },
+            "buvid3": {
+                "label": "buvid3",
+                "desc": "デバイスフィンガープリント (任意)"
+            },
+            "sessionid": {
+                "label": "sessionid",
+                "desc": "コアセッションクレデンシャル (必須)"
+            },
+            "ttwid": {
+                "label": "ttwid",
+                "desc": "デバイスリスクコントロールコード (必須)"
+            },
+            "passport_csrf_token": {
+                "label": "csrf_token",
+                "desc": "セキュリティ検証トークン"
+            },
+            "odin_tt": {
+                "label": "odin_tt",
+                "desc": "デバイス特徴"
+            },
+            "ks_web_st": {
+                "label": "web_st",
+                "desc": "コアチケット (必須)"
+            },
+            "ks_web_ph": {
+                "label": "web_ph",
+                "desc": "補助チケット (必須)"
+            },
+            "userId": {
+                "label": "userId",
+                "desc": "ユーザーID"
+            },
+            "did": {
+                "label": "did",
+                "desc": "デバイスID"
+            },
+            "SUB": {
+                "label": "SUB",
+                "desc": "コアクレデンシャル (_2Aで始まる)"
+            },
+            "XSRF-TOKEN": {
+                "label": "XSRF-TOKEN",
+                "desc": "なりすまし防止トークン"
+            },
+            "auth_token": {
+                "label": "auth_token",
+                "desc": "コアIDトークン"
+            },
+            "ct0": {
+                "label": "ct0",
+                "desc": "CSRF検証コード"
+            },
+            "reddit_session": {
+                "label": "reddit_session",
+                "desc": "コアセッションクレデンシャル (必須)"
+            },
+            "csrftoken": {
+                "label": "csrftoken",
+                "desc": "CSRFトークン"
+            }
+        },
+        "status": {
+            "active": "● 準備完了",
+            "inactive": "○ 未設定"
+        }
+    }
 }

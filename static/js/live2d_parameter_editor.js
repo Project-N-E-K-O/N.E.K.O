@@ -933,6 +933,12 @@ function displayParameters() {
                 if (currentValue < minValue) minValue = currentValue;
                 if (currentValue > maxValue) maxValue = currentValue;
 
+                // 防止 min >= max 导致滑块无法拖动（例如某些参数范围为 [0, 0]）
+                if (minValue >= maxValue) {
+                    const epsilon = 0.1;
+                    maxValue = minValue + epsilon;
+                }
+
                 const paramItem = document.createElement('div');
                 paramItem.className = 'parameter-item';
 
@@ -989,14 +995,17 @@ function displayParameters() {
                 controlsBottom.appendChild(input);
                 controlsBottom.appendChild(resetBtn);
 
-                const updateParameter = (value) => {
+                const updateParameter = (value, source) => {
                     const numValue = parseFloat(value);
                     if (isNaN(numValue)) return;
 
                     const clampedValue = Math.max(minValue, Math.min(maxValue, numValue));
                     try {
                         coreModel.setParameterValueByIndex(i, clampedValue);
-                        slider.value = clampedValue;
+                        // 避免在拖拽滑块期间重设slider.value导致拖拽中断
+                        if (source !== 'slider') {
+                            slider.value = clampedValue;
+                        }
                         input.value = clampedValue;
                         currentParameters[paramId] = clampedValue;
                     } catch (e) {
@@ -1004,16 +1013,24 @@ function displayParameters() {
                     }
                 };
 
+                // 阻止slider上的pointer/touch事件冒泡到Live2D画布，防止触发模型拖拽
+                slider.addEventListener('pointerdown', (e) => {
+                    e.stopPropagation();
+                });
+                slider.addEventListener('touchstart', (e) => {
+                    e.stopPropagation();
+                }, { passive: false });
+
                 slider.addEventListener('input', (e) => {
-                    updateParameter(e.target.value);
+                    updateParameter(e.target.value, 'slider');
                 });
 
                 input.addEventListener('input', (e) => {
-                    updateParameter(e.target.value);
+                    updateParameter(e.target.value, 'input');
                 });
 
                 resetBtn.addEventListener('click', () => {
-                    updateParameter(initialValue);
+                    updateParameter(initialValue, 'reset');
                 });
 
                 controls.appendChild(sliderWrapper);

@@ -130,7 +130,7 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
         # 打印脱敏后的摘要，让用户安心
-        print(f"\n🔐 【{platform.capitalize()} 凭证摘要】:")
+        logger.info(f"\n🔐 【{platform.capitalize()} 凭证摘要】:")
         for k, v in list(cookies.items())[:3]: # 仅展示前三个键
             print(f"   - {k}: {mask_string(v)}")
         return True
@@ -178,9 +178,29 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
             logger.debug(f"解密 {platform} Cookie 失败，尝试明文加载: {decrypt_error}")
             
             try:
+                # 先检查文件是否存在以及是否有内容
+                if not cookie_file.exists():
+                    logger.warning(f"{platform} Cookie 文件不存在: {cookie_file}")
+                    return {}
+                
+                if cookie_file.stat().st_size == 0:
+                    logger.info(f"{platform} Cookie 文件为空: {cookie_file}")
+                    return {}
+                
                 with open(cookie_file, 'r', encoding='utf-8') as f:
-                    cookies = json.load(f)
+                    content = f.read().strip()
+                    if not content:
+                        logger.warning(f"{platform} Cookie 文件内容为空或只有空白字符: {cookie_file}")
+                        return {}
                     
+                    # 尝试解析JSON
+                    try:
+                        cookies = json.loads(content)
+                    except json.JSONDecodeError as json_error:
+                        logger.error(f"{platform} Cookie 文件JSON格式错误: {json_error}")
+                        logger.debug(f"错误的JSON内容预览: {content[:200]}...")
+                        return {}
+
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return cookies if isinstance(cookies, dict) else {}
             except Exception as plain_error:

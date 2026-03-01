@@ -5,7 +5,7 @@
 // ===== 自动吸附功能配置 =====
 const SNAP_CONFIG = {
     // 吸附阈值：模型在屏幕内剩余的像素小于此值时触发吸附（即模型绝大部分超出屏幕）
-    threshold: 50,
+    threshold: 200,
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
     // 动画持续时间（毫秒）
@@ -47,7 +47,7 @@ const EasingFunctions = {
 Live2DManager.prototype._checkSnapRequired = async function (model, options = {}) {
     if (!model) return null;
 
-    const { afterDisplaySwitch = false } = options;
+    const { afterDisplaySwitch = false, threshold: customThreshold } = options;
 
     try {
         const bounds = model.getBounds();
@@ -87,7 +87,7 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         // 检查是否有任何边超出阈值
         // 新逻辑：只有当模型在屏幕内剩余的部分小于 threshold 时才触发吸附
         // 即模型绝大部分都超出屏幕时才吸附
-        const threshold = SNAP_CONFIG.threshold;
+        const threshold = customThreshold ?? SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
 
         // 计算模型在屏幕内剩余的像素数
@@ -740,6 +740,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             return;
         }
 
+        // isFocusing 用于控制眼睛跟踪，悬浮菜单显示不受影响
         this.isFocusing = true;
         if (lockIcon) lockIcon.style.display = 'block';
         // 锁定状态下不显示浮动菜单
@@ -996,8 +997,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     canvasEl.style.cursor = 'grab';
                 }
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
+                // 同时检查鼠标跟踪是否启用
+                const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
                 if (this.isFocusing) {
-                    model.focus(pointer.x, pointer.y);
+                    if (isMouseTrackingEnabled) {
+                        model.focus(pointer.x, pointer.y);
+                    } else {
+                        model.focus(centerX, centerY);
+                    }
                 }
             } else {
                 // 鼠标离开模型区域，启动隐藏定时器
@@ -1117,26 +1124,15 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
 
         if (expressionFiles.length > 0) {
-            const choiceFile = this.getRandomElement(expressionFiles);
-            if (choiceFile) {
-                // 在 FileReferences 中查找匹配的表情名称
-                let expressionName = null;
-                if (this.fileReferences && this.fileReferences.Expressions) {
-                    for (const expr of this.fileReferences.Expressions) {
-                        if (expr.File === choiceFile) {
-                            expressionName = expr.Name;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!expressionName) {
-                    const base = String(choiceFile).split('/').pop() || '';
-                    expressionName = base.replace('.exp3.json', '');
-                }
+            // 跳过已确认失效的 expression，避免每次点击都重复 404
+            if (typeof this.isExpressionFileMissing === 'function') {
+                expressionFiles = expressionFiles.filter(file => !this.isExpressionFileMissing(file));
+            }
 
-                console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
-                await this.currentModel.expression(expressionName);
+            const choiceFile = this.getRandomElement(expressionFiles);
+            if (choiceFile && typeof this.playExpression === 'function') {
+                console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
+                await this.playExpression(emotion, choiceFile);
             }
         }
 

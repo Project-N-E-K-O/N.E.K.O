@@ -142,18 +142,18 @@
                                     placeholder="Enter your API Key" required style="max-width: 600px; width: 100%;">
                             </div>
 
-                            <div style="margin-top: 20px;">
+                            <!-- <div style="margin-top: 20px;">
                                 <button type="submit" id="save-settings-btn">
                                     <img src="/static/icons/import_model_button_icon.png" data-i18n-alt="common.save"
                                         class="button-icon">
                                     <span data-i18n="api.saveSettings">保存设置</span>
                                 </button>
-                            </div>
+                            </div> -->
                         </form>
                     </div>
 
                     <div id="current-api-key" class="status info" style="display: none;"></div>
-                    <div id="status" class="status"></div>
+                    <!-- <div id="status" class="status"></div> -->
                 </div>
 
                 <div id="advanced-section" class="section" style="margin-top: 0;">
@@ -683,6 +683,19 @@
         </div>
 
     </div> <!-- 关闭 main-content -->
+
+
+    <div class="save-button-box" >
+        <div id="status" class="status"></div>
+        <div style="margin-top: 20px;">
+            <button type="button" id="save-settings-btn" onclick="save_button_down(event)">
+                <img src="/static/icons/import_model_button_icon.png" data-i18n-alt="common.save"
+                    class="button-icon">
+                <span data-i18n="api.saveSettings">保存设置</span>
+            </button>
+        </div>
+    </div>
+
 
     <script src="/static/js/api_key_settings.js?v=5"></script>
 

@@ -655,6 +655,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }
     }, 100); // 延迟100ms确保位置已计算
 
+    // 根据全局状态同步按钮状态（修复画质变更后按钮状态丢失问题）
+    this._syncButtonStatesWithGlobalState();
+
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };
@@ -1119,4 +1122,32 @@ VRMManager.prototype.resetAllButtons = function () {
     Object.keys(this._floatingButtons).forEach(btnId => {
         this.setButtonActive(btnId, false);
     });
+};
+
+/**
+ * 【统一状态管理】根据全局状态同步浮动按钮状态
+ * 用于模型重新加载后恢复按钮状态（如画质变更后）
+ */
+VRMManager.prototype._syncButtonStatesWithGlobalState = function () {
+    if (!this._floatingButtons) return;
+
+    // 同步语音按钮状态
+    const isRecording = window.isRecording || false;
+    if (this._floatingButtons.mic) {
+        this.setButtonActive('mic', isRecording);
+    }
+
+    // 同步屏幕分享按钮状态
+    // 屏幕分享状态通过 DOM 元素判断（screenButton 的 active class 或 stopButton 的 disabled 状态）
+    let isScreenSharing = false;
+    const screenButton = document.getElementById('screenButton');
+    const stopButton = document.getElementById('stopButton');
+    if (screenButton && screenButton.classList.contains('active')) {
+        isScreenSharing = true;
+    } else if (stopButton && !stopButton.disabled) {
+        isScreenSharing = true;
+    }
+    if (this._floatingButtons.screen) {
+        this.setButtonActive('screen', isScreenSharing);
+    }
 };
