@@ -491,6 +491,15 @@ async function importWorkshopCharaFile(filePath, itemId) {
 let expandedCatgirlName = null;
 let shouldScrollToExpandedCatgirl = false;
 
+function scrollToElementCentered(element, delay = 100) {
+    if (!element) return;
+    setTimeout(() => {
+        if (document.body.contains(element)) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, delay);
+}
+
 async function loadCharacterData() {
     try {
         const resp = await fetch('/api/characters');
@@ -518,9 +527,7 @@ async function loadCharacterData() {
                                 showCatgirlForm(expandedCatgirlName, details);
                             }
                             if (shouldScrollToExpandedCatgirl) {
-                                setTimeout(() => {
-                                    block.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                }, 100);
+                                scrollToElementCentered(block);
                                 shouldScrollToExpandedCatgirl = false;
                             }
                         }
@@ -1851,9 +1858,7 @@ function showCatgirlForm(key, container) {
             block.appendChild(form);
             list.prepend(block);
 
-            setTimeout(() => {
-                block.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 100);
+            scrollToElementCentered(block);
         }
     }
 
