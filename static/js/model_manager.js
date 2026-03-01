@@ -61,6 +61,29 @@
 class DropdownManager {
     static instances = [];
 
+    static getVisualWidth(str) {
+        let width = 0;
+        for (const char of str) {
+            width += char.charCodeAt(0) > 127 ? 2 : 1;
+        }
+        return width;
+    }
+
+    static truncateText(text, maxVisualWidth) {
+        if (!text || DropdownManager.getVisualWidth(text) <= maxVisualWidth) {
+            return text;
+        }
+        let truncated = '';
+        let currentWidth = 0;
+        for (const char of text) {
+            const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
+            if (currentWidth + charWidth > maxVisualWidth - 3) break;
+            truncated += char;
+            currentWidth += charWidth;
+        }
+        return truncated + '...';
+    }
+
     constructor(config) {
         this.config = {
             buttonId: config.buttonId,
@@ -167,26 +190,7 @@ class DropdownManager {
         }
 
         const maxVisualWidth = this.config.maxVisualWidth || 13;
-        const getVisualWidth = (str) => {
-            let width = 0;
-            for (const char of str) {
-                width += char.charCodeAt(0) > 127 ? 2 : 1;
-            }
-            return width;
-        };
-        
-        let displayText = text;
-        if (text && getVisualWidth(text) > maxVisualWidth) {
-            let truncated = '';
-            let currentWidth = 0;
-            for (const char of text) {
-                const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
-                if (currentWidth + charWidth > maxVisualWidth - 1) break;
-                truncated += char;
-                currentWidth += charWidth;
-            }
-            displayText = truncated + '...';
-        }
+        const displayText = DropdownManager.truncateText(text, maxVisualWidth);
 
         this.textSpan.textContent = displayText;
         this.textSpan.setAttribute('data-text', displayText);

@@ -29,6 +29,25 @@
     /* 描边宽度（视觉上的） */
 }
 
+/* 通用按钮文字截断样式 - 合并重复规则 */
+#live2d-model-select-btn span:not(.dropdown-arrow),
+#motion-select-btn span:not(.dropdown-arrow),
+#expression-select-btn span:not(.dropdown-arrow),
+#vrm-model-select-btn span:not(.dropdown-arrow),
+#vrm-animation-select-btn span:not(.dropdown-arrow),
+#vrm-expression-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
 /* 可访问性改进：保留键盘导航的焦点指示
          * 移除全局 outline: none，改用 :focus-visible 仅在鼠标点击时隐藏轮廓
          * 键盘导航时会显示主题色的焦点指示
@@ -565,19 +584,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#live2d-model-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
-}
-
 #live2d-model-select-btn .dropdown-arrow {
     position: absolute;
     right: 15px;
@@ -697,19 +703,6 @@ body {
     height: 40px;
     max-width: 80px;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-}
-
-#motion-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
 }
 
 #motion-select-btn .dropdown-arrow {
@@ -835,19 +828,6 @@ body {
     height: 40px;
     max-width: 80px;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-}
-
-#expression-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
 }
 
 #expression-select-btn .dropdown-arrow {
@@ -1116,19 +1096,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#vrm-model-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
-}
-
 #vrm-model-select-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
@@ -1243,19 +1210,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#vrm-animation-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
-}
-
 #vrm-animation-select-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
@@ -1368,19 +1322,6 @@ body {
     height: 40px;
     max-width: 80px;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-}
-
-#vrm-expression-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
 }
 
 #trigger-vrm-expression-btn {

@@ -306,6 +306,31 @@ let statusTimeoutId = null;
 // 是否已选择模型（用于区分初始状态和用户主动选择）
 let hasSelectedModel = false;
 
+// 计算字符串的视觉宽度（中文字符宽度为2，其他为1）
+function getVisualWidth(str) {
+    let width = 0;
+    for (const char of str) {
+        width += char.charCodeAt(0) > 127 ? 2 : 1;
+    }
+    return width;
+}
+
+// 截断文本以适应最大视觉宽度
+function truncateText(text, maxVisualWidth) {
+    if (!text || getVisualWidth(text) <= maxVisualWidth) {
+        return text;
+    }
+    let truncated = '';
+    let currentWidth = 0;
+    for (const char of text) {
+        const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
+        if (currentWidth + charWidth > maxVisualWidth - 3) break;
+        truncated += char;
+        currentWidth += charWidth;
+    }
+    return truncated + '...';
+}
+
 // ===== 跨页面通信系统 =====
 // 使用 BroadcastChannel（如果可用）或 localStorage 作为后备
 const CHANNEL_NAME = 'neko_page_channel';
@@ -500,33 +525,12 @@ function updateModelDropdown() {
 function updateModelSelectButtonText() {
     if (!modelSelectText || !modelSelect) return;
     
-    const modelSelectBtn = document.getElementById('model-select-btn');
-    
     if (hasSelectedModel && modelSelect.value) {
         const selectedOption = modelSelect.options[modelSelect.selectedIndex];
         const fullText = selectedOption ? selectedOption.textContent : modelSelect.value;
         
         const maxVisualWidth = 13;
-        const getVisualWidth = (str) => {
-            let width = 0;
-            for (const char of str) {
-                width += char.charCodeAt(0) > 127 ? 2 : 1;
-            }
-            return width;
-        };
-        
-        let displayText = fullText;
-        if (fullText && getVisualWidth(fullText) > maxVisualWidth) {
-            let truncated = '';
-            let currentWidth = 0;
-            for (const char of fullText) {
-                const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
-                if (currentWidth + charWidth > maxVisualWidth - 1) break;
-                truncated += char;
-                currentWidth += charWidth;
-            }
-            displayText = truncated + '...';
-        }
+        const displayText = truncateText(fullText, maxVisualWidth);
         
         modelSelectText.textContent = displayText;
         modelSelectText.setAttribute('data-text', displayText);
