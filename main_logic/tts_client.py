@@ -319,43 +319,40 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
+
+                if sid == "__interrupt__":
+                    # 打断：立即关闭连接，不发 tts.text.done、不等服务器确认
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    session_id = None
+                    session_ready.clear()
+                    current_speech_id = None
+                    continue
                 
                 if sid is None:
-                    # 提交缓冲区完成当前合成
+                    # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
+                    # 音频继续通过 receive_task 流入 response_queue，
+                    # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_id and current_speech_id is not None:
                         try:
-                            response_done.clear()  # 清除完成标志，准备等待新的完成事件
                             done_event = {
                                 "type": "tts.text.done",
                                 "data": {"session_id": session_id}
                             }
                             await ws.send(json.dumps(done_event))
-                            # 等待服务器返回响应完成事件，然后关闭连接
-                            try:
-                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
-                                logger.debug("音频生成完成，主动关闭连接")
-                            except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
-                            
-                            # 主动关闭连接，避免连接一直保持到超时
-                            if ws:
-                                try:
-                                    await ws.close()
-                                except:  # noqa: E722
-                                    pass
-                                ws = None
-                            if receive_task and not receive_task.done():
-                                receive_task.cancel()
-                                try:
-                                    await receive_task
-                                except asyncio.CancelledError:
-                                    pass
-                                receive_task = None
-                            session_id = None
-                            session_ready.clear()
-                            current_speech_id = None  # 清空ID以便下次重连
                         except Exception as e:
-                            logger.error(f"完成生成失败: {e}")
+                            logger.warning(f"发送TTS完成信号失败: {e}")
                     continue
                 
                 # 新的语音ID，重新建立连接
@@ -632,41 +629,38 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
+
+                if sid == "__interrupt__":
+                    # 打断：立即关闭连接，不发 commit、不等服务器确认
+                    if ws:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    session_ready.clear()
+                    current_speech_id = None
+                    continue
                 
                 if sid is None:
-                    # 提交缓冲区完成当前合成（仅当之前有文本时）
+                    # 正常结束（非阻塞）：提交缓冲区，但不等待服务器确认、不关闭连接
+                    # 音频继续通过 receive_task 流入 response_queue，
+                    # 连接由下次 speech_id 切换 / __interrupt__ 关闭
                     if ws and session_ready.is_set() and current_speech_id is not None:
                         try:
-                            response_done.clear()  # 清除完成标志，准备等待新的完成事件
                             await ws.send(json.dumps({
                                 "type": "input_text_buffer.commit",
-                                "event_id": f"event_{int(time.time() * 1000)}_interrupt_commit"
+                                "event_id": f"event_{int(time.time() * 1000)}_commit"
                             }))
-                            # 等待服务器返回响应完成事件，然后关闭连接
-                            try:
-                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
-                                logger.debug("音频生成完成，主动关闭连接")
-                            except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
-                            
-                            # 主动关闭连接，避免连接一直保持到超时
-                            if ws:
-                                try:
-                                    await ws.close()
-                                except:  # noqa: E722
-                                    pass
-                                ws = None
-                            if receive_task and not receive_task.done():
-                                receive_task.cancel()
-                                try:
-                                    await receive_task
-                                except asyncio.CancelledError:
-                                    pass
-                                receive_task = None
-                            session_ready.clear()
-                            current_speech_id = None  # 清空ID以便下次重连
                         except Exception as e:
-                            logger.error(f"提交缓冲区失败: {e}")
+                            logger.warning(f"提交缓冲区失败: {e}")
                     continue
                 
                 # 新的语音ID，重新建立连接（类似 speech_synthesis_worker 的逻辑）
@@ -817,18 +811,41 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
     response_queue.put(("__ready__", True))
     
+    current_speech_id = None
+
     class Callback(ResultCallback):
         def __init__(self, response_queue):
             self.response_queue = response_queue
             self.connection_lost = False
+            self._muted = False
+            # 当前允许投递的 speech_id（由 worker 在回合边界显式设置）
+            # 不能在 on_data 时动态读取 current_speech_id，否则旧流尾包可能被错标到新流。
+            self.accepted_speech_id = None
+            # CosyVoice 常先回很小的 OGG 头页（~200B），前端会因“数据不足”暂不解码，
+            # 造成首词听感被吞。这里为每个 speech_id 做一次首包聚合后再下发。
+            self._active_sid = None
+            self._bootstrap_buffer = bytearray()
+            self._bootstrap_sent = False
+            self._bootstrap_min_bytes = 1024
+
+        def reset_bootstrap_state(self):
+            self._active_sid = None
+            self._bootstrap_buffer.clear()
+            self._bootstrap_sent = False
             
         def on_open(self): 
             self.connection_lost = False
+            self._muted = False
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self): 
-            pass
+            # 短句可能在首包聚合阈值前就结束，完成时强制冲刷缓冲，避免整句静音。
+            try:
+                if self._bootstrap_buffer and self._active_sid:
+                    self.response_queue.put(("__audio__", self._active_sid, bytes(self._bootstrap_buffer)))
+            finally:
+                self.reset_bootstrap_state()
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" in message:
@@ -844,10 +861,29 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
             
         def on_data(self, data: bytes) -> None:
-            self.response_queue.put(data)
+            sid = self.accepted_speech_id
+            if not sid or self._muted:
+                # 回合切换窗口或未就绪时直接丢弃，避免错序串包
+                return
+
+            # speech_id 切换时重置首包聚合状态
+            if sid != self._active_sid:
+                self._active_sid = sid
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = False
+
+            if not self._bootstrap_sent:
+                self._bootstrap_buffer.extend(data)
+                if len(self._bootstrap_buffer) < self._bootstrap_min_bytes:
+                    return
+                self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
+                self._bootstrap_buffer.clear()
+                self._bootstrap_sent = True
+                return
+
+            self.response_queue.put(("__audio__", sid, data))
             
     callback = Callback(response_queue)
-    current_speech_id = None
     synthesizer = None
     char_buffer = ""
     detected_lang = None
@@ -884,28 +920,38 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             logger.info("CosyVoice 检测到假名，语言标记为日文")
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
+            callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
         last_streaming_call_time = time.time()
         char_buffer = ""
 
     def _do_streaming_complete():
-        """在连接存活时调用 streaming_complete，连接已断开则跳过"""
+        """非阻塞地通知服务器文本已全部发送。
+        只发 FINISHED 信号，不等服务器确认。音频继续通过 on_data 回调流向前端。
+        synthesizer 保持开放，由下一次 speech_id 切换时关闭。
+        """
         nonlocal synthesizer, last_streaming_call_time
         if synthesizer is None:
+            callback.accepted_speech_id = None
+            callback.reset_bootstrap_state()
             return
         if callback.connection_lost:
             logger.info("CosyVoice WebSocket 已断开，跳过 streaming_complete")
-        else:
             try:
-                synthesizer.streaming_complete(complete_timeout_millis=8000)
-            except Exception as e:
-                logger.warning(f"TTS streaming_complete 失败: {e}")
+                synthesizer.close()
+            except Exception:
+                pass
+            synthesizer = None
+            last_streaming_call_time = None
+            return
+
         try:
-            synthesizer.close()
-        except Exception:
-            pass
-        synthesizer = None
+            synthesizer.ws.send(synthesizer.request.getFinishRequest())
+        except Exception as e:
+            logger.warning(f"发送TTS完成信号失败: {e}")
         last_streaming_call_time = None
+        # 这里不能立刻清 accepted_speech_id/bootstrap。
+        # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
 
     while True:
         # 非阻塞检查队列，优先处理打断
@@ -922,22 +968,45 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
         sid, tts_text = request_queue.get()
 
+        if sid == "__interrupt__":
+            # 打断：立即静音回调 → 关闭 synthesizer → 清理状态
+            # 先 mute 再 close，确保旧 SDK websocket 线程不再往 response_queue 灌数据
+            callback._muted = True
+            if synthesizer is not None:
+                try:
+                    synthesizer.close()
+                except Exception:
+                    pass
+            synthesizer = None
+            last_streaming_call_time = None
+            current_speech_id = None
+            char_buffer = ""
+            detected_lang = None
+            callback.connection_lost = False
+            callback.accepted_speech_id = None
+            callback.reset_bootstrap_state()
+            continue
+
         if sid is None:
-            # 停止当前合成 - 告诉TTS没有更多文本了
+            # 正常结束 - 告诉TTS没有更多文本了（非阻塞）
             try:
                 _flush_buffer()
             except Exception as e:
                 logger.warning(f"TTS flush buffer 失败: {e}")
             _do_streaming_complete()
-            current_speech_id = None
+            # 不清 current_speech_id / synthesizer：
+            # 音频继续流到前端，由下次 speech_id 切换时打断
             char_buffer = ""
             detected_lang = None
-            callback.connection_lost = False
             continue
 
         if current_speech_id is None:
             current_speech_id = sid
+            callback.accepted_speech_id = sid
         elif current_speech_id != sid:
+            # 先屏蔽回调，避免旧流尾包误标到新回合
+            callback.accepted_speech_id = None
+            callback._muted = True
             if synthesizer is not None:
                 try:
                     synthesizer.close()
@@ -948,6 +1017,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             current_speech_id = sid
             char_buffer = ""
             detected_lang = None
+            callback.accepted_speech_id = sid
             
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
@@ -964,6 +1034,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 if detected_lang == "ja":
                     logger.info("CosyVoice 检测到假名，语言标记为日文")
                 synthesizer = _create_synthesizer(detected_lang)
+                callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
                 last_streaming_call_time = time.time()
                 char_buffer = ""
@@ -974,6 +1045,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 char_buffer = ""
                 detected_lang = None
                 last_streaming_call_time = None
+                callback.accepted_speech_id = None
+                callback.reset_bootstrap_state()
                 time.sleep(0.1)
                 continue
         else:
@@ -991,6 +1064,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
+                    callback.accepted_speech_id = current_speech_id
                     synthesizer.streaming_call(tts_text)
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
@@ -998,6 +1072,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     synthesizer = None
                     current_speech_id = None
                     last_streaming_call_time = None
+                    callback.accepted_speech_id = None
+                    callback.reset_bootstrap_state()
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -1037,6 +1113,9 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
+
+                if sid == "__interrupt__":
+                    sid = None
                 
                 # 新的语音ID，清空缓冲区并重新开始
                 if current_speech_id != sid and sid is not None:
@@ -1265,6 +1344,9 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         except Exception:
             break
 
+        if sid == "__interrupt__":
+            sid = None
+
         if current_speech_id != sid and sid is not None:
             current_speech_id = sid
             text_buffer = []
@@ -1370,6 +1452,9 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     sid, tts_text = await loop.run_in_executor(None, request_queue.get)
                 except Exception:
                     break
+
+                if sid == "__interrupt__":
+                    sid = None
                 
                 # 新的语音ID，清空缓冲区并重新开始
                 if current_speech_id != sid and sid is not None:
@@ -1621,6 +1706,15 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 except Exception:
                     break
 
+                if sid == "__interrupt__":
+                    # 打断：立即关闭连接，不发 end、不等推理完成
+                    if _ws_is_open(ws):
+                        await close_session(ws, receive_task, send_end=False)
+                        ws = None
+                        receive_task = None
+                    current_speech_id = None
+                    continue
+
                 # speech_id 变化 → 打断旧会话，创建新连接
                 # 打断时不发 end（避免等待推理完成），直接关闭连接
                 if sid != current_speech_id and sid is not None:
@@ -1643,7 +1737,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         continue
 
                 if sid is None:
-                    # 终止信号：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
+                    # 正常结束：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
                     if _ws_is_open(ws):
                         await close_session(ws, receive_task, send_end=True)
                         ws = None
@@ -1699,8 +1793,7 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         try:
             # 持续清空队列以避免阻塞，但不做任何处理
             sid, tts_text = request_queue.get()
-            # 如果收到结束信号，继续等待下一个请求
-            if sid is None:
+            if sid is None or sid == "__interrupt__":
                 continue
         except Exception as e:
             logger.error(f"Dummy TTS Worker 错误: {e}")
@@ -1898,9 +1991,26 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 logger.error(f'队列获取异常: {e}')
                 break
 
+            if sid == "__interrupt__":
+                # 打断：立即关闭连接，不发 end 信号
+                if receive_task and not receive_task.done():
+                    receive_task.cancel()
+                    try:
+                        await receive_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    receive_task = None
+                if ws:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                current_speech_id = None
+                continue
+
             # speech_id 变化 -> 打断旧语音，建立新连接
             if sid != current_speech_id and sid is not None:
-                # 发送结束信号（文本已在实时流中发送过了）
                 if ws:
                     await send_end_signal(ws)
                 
@@ -1913,7 +2023,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     continue
 
             if sid is None:
-                # 终止信号：发送结束信号
+                # 正常结束：发送结束信号
                 if ws:
                     await send_end_signal(ws)
                 current_speech_id = None

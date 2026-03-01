@@ -1122,7 +1122,7 @@ function showCatgirlForm(key, container) {
     // 渲染进阶设定
     // 进阶设定（使用 DOM API）
     const fold = document.createElement('div');
-    fold.className = 'fold';
+    fold.className = 'fold open';
 
     const foldToggle = document.createElement('div');
     foldToggle.className = 'fold-toggle';
@@ -1134,7 +1134,7 @@ function showCatgirlForm(key, container) {
     arrowSpan.style.height = '32px';
     arrowSpan.style.verticalAlign = 'middle';
     arrowSpan.style.transition = 'transform 0.2s';
-    arrowSpan.style.transform = 'rotate(-90deg)';
+    arrowSpan.style.transform = 'rotate(0deg)';
     foldToggle.appendChild(arrowSpan);
     foldToggle.appendChild(document.createTextNode(' '));
     const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
@@ -1807,17 +1807,17 @@ function showCatgirlForm(key, container) {
         container.innerHTML = '';
         container.appendChild(form);
 
-        // 如果是编辑现有猫娘，尝试恢复进阶设定的展开状态
+        // 恢复进阶设定的折叠状态（默认展开，仅当用户明确折叠过才收起）
         if (key) {
             setTimeout(() => {
                 const savedState = localStorage.getItem(`catgirl_advanced_${key}`);
-                if (savedState === 'true') {
+                if (savedState === 'false') {
                     const advancedSettingsFold = form.querySelector('.fold');
                     const toggle = advancedSettingsFold.querySelector('.fold-toggle');
                     if (advancedSettingsFold && toggle) {
-                        advancedSettingsFold.classList.add('open');
+                        advancedSettingsFold.classList.remove('open');
                         const arrow = toggle.querySelector('.arrow');
-                        if (arrow) arrow.style.transform = 'rotate(0deg)';
+                        if (arrow) arrow.style.transform = 'rotate(-90deg)';
                     }
                 }
             }, 0);

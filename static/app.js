@@ -225,6 +225,11 @@ function init_app() {
     let currentPlayingSpeechId = null;   // 当前正在播放的 speech_id
     let pendingDecoderReset = false;     // 是否需要在下一个新 speech_id 时重置解码器
     let skipNextAudioBlob = false;       // 是否跳过下一个音频 blob（被打断的旧音频）
+    let incomingAudioBlobQueue = [];     // 二进制音频包队列（串行消费，避免并发解码竞态）
+    let pendingAudioChunkMetaQueue = []; // 与二进制包一一对应的 header 元数据队列
+    let incomingAudioEpoch = 0;          // 音频代际号：用于淘汰打断前在途包
+    let isProcessingIncomingAudioBlob = false;
+    let decoderResetPromise = null;      // speech 切换时的解码器重置任务
 
     // 麦克风静音检测相关变量
     let silenceDetectionTimer = null;
@@ -431,7 +436,7 @@ function init_app() {
                 if (window.DEBUG_AUDIO) {
                     console.log(window.t('console.audioBinaryReceived'), event.data.size, window.t('console.audioBinaryBytes'));
                 }
-                handleAudioBlob(event.data);
+                enqueueIncomingAudioBlob(event.data);
                 return;
             }
 
@@ -538,6 +543,9 @@ function init_app() {
                     interruptedSpeechId = response.interrupted_speech_id || null;
                     pendingDecoderReset = true;  // 标记需要在新 speech_id 到来时重置
                     skipNextAudioBlob = false;   // 重置跳过标志
+                    incomingAudioEpoch += 1;     // 让当前代际之前的在途包全部失效
+                    incomingAudioBlobQueue = []; // 丢弃尚未处理的旧音频包
+                    pendingAudioChunkMetaQueue = []; // 丢弃尚未消费的旧 header
 
                     // 只清空播放队列，不重置解码器（避免丢失新音频的头信息）
                     clearAudioQueueWithoutDecoderReset();
@@ -547,21 +555,20 @@ function init_app() {
                     }
                     // 精确打断控制：根据 speech_id 决定是否接收此音频
                     const speechId = response.speech_id;
+                    let shouldSkip = false;
 
                     // 检查是否是被打断的旧音频，如果是则丢弃
                     if (speechId && interruptedSpeechId && speechId === interruptedSpeechId) {
-                        console.log(window.t('console.discardInterruptedAudio'), speechId);
-                        skipNextAudioBlob = true;  // 标记跳过后续的二进制数据
-                        return;
-                    }
-
-                    // 检查是否是新的 speech_id（新轮对话开始）
-                    if (speechId && speechId !== currentPlayingSpeechId) {
+                        if (window.DEBUG_AUDIO) {
+                            console.log(window.t('console.discardInterruptedAudio'), speechId);
+                        }
+                        shouldSkip = true;
+                    } else if (speechId && speechId !== currentPlayingSpeechId) {
+                        // 检查是否是新的 speech_id（新轮对话开始）
                         // 新轮对话开始，在此时重置解码器（确保有新的头信息）
                         if (pendingDecoderReset) {
                             console.log(window.t('console.newConversationResetDecoder'), speechId);
-                            // 使用立即执行的异步函数等待重置完成，避免竞态条件
-                            (async () => {
+                            decoderResetPromise = (async () => {
                                 await resetOggOpusDecoder();
                                 pendingDecoderReset = false;
                             })();
@@ -572,7 +579,13 @@ function init_app() {
                         interruptedSpeechId = null;  // 清除旧的打断记录
                     }
 
-                    skipNextAudioBlob = false;  // 允许接收后续的二进制数据
+                    // 记录该 header 对应的 blob 处理策略，后续二进制包按顺序消费
+                    pendingAudioChunkMetaQueue.push({
+                        speechId: speechId || currentPlayingSpeechId || null,
+                        shouldSkip: shouldSkip,
+                        epoch: incomingAudioEpoch
+                    });
+                    skipNextAudioBlob = false;  // 兼容旧逻辑：重置标志
                 } else if (response.type === 'cozy_audio') {
                     // 处理音频响应
                     console.log(window.t('console.newAudioHeaderReceived'))
@@ -4542,14 +4555,11 @@ function init_app() {
     }
 
 
-    async function handleAudioBlob(blob) {
-        // 精确打断控制：检查是否应跳过此音频（属于被打断的旧音频）
-        if (skipNextAudioBlob) {
-            console.log('跳过被打断的音频 blob');
+    async function handleAudioBlob(blob, expectedEpoch = incomingAudioEpoch) {
+        const arrayBuffer = await blob.arrayBuffer();
+        if (expectedEpoch !== incomingAudioEpoch) {
             return;
         }
-
-        const arrayBuffer = await blob.arrayBuffer();
         if (!arrayBuffer || arrayBuffer.byteLength === 0) {
             console.warn('收到空的音频数据，跳过处理');
             return;
@@ -4562,6 +4572,9 @@ function init_app() {
 
         if (audioPlayerContext.state === 'suspended') {
             await audioPlayerContext.resume();
+            if (expectedEpoch !== incomingAudioEpoch) {
+                return;
+            }
         }
 
         // 检测是否是 OGG 格式 (魔数 "OggS" = 0x4F 0x67 0x67 0x53)
@@ -4575,6 +4588,9 @@ function init_app() {
             // OGG OPUS 格式，用 WASM 流式解码
             try {
                 const result = await decodeOggOpusChunk(new Uint8Array(arrayBuffer));
+                if (expectedEpoch !== incomingAudioEpoch) {
+                    return;
+                }
                 if (!result) {
                     // 数据不足，等待更多
                     return;
@@ -4595,6 +4611,9 @@ function init_app() {
         }
 
         if (!float32Data || float32Data.length === 0) {
+            return;
+        }
+        if (expectedEpoch !== incomingAudioEpoch) {
             return;
         }
 
@@ -4625,6 +4644,77 @@ function init_app() {
                     // 静默兜底，避免控制台噪声
                 }
             }, 0);
+        }
+    }
+
+    function enqueueIncomingAudioBlob(blob) {
+        const meta = pendingAudioChunkMetaQueue.shift();
+        if (!meta) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到无匹配 header 的音频 blob，已丢弃');
+            }
+            return;
+        }
+        if (!meta.speechId) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到 speechId 为空的音频 blob，已丢弃');
+            }
+            return;
+        }
+        incomingAudioBlobQueue.push({
+            blob,
+            shouldSkip: !!meta.shouldSkip,
+            speechId: meta.speechId,
+            epoch: meta.epoch
+        });
+        if (!isProcessingIncomingAudioBlob) {
+            void processIncomingAudioBlobQueue();
+        }
+    }
+
+    async function processIncomingAudioBlobQueue() {
+        if (isProcessingIncomingAudioBlob) return;
+        isProcessingIncomingAudioBlob = true;
+
+        try {
+            while (incomingAudioBlobQueue.length > 0) {
+                const item = incomingAudioBlobQueue.shift();
+                if (!item) continue;
+                if (item.epoch !== incomingAudioEpoch) {
+                    continue;
+                }
+
+                if (item.shouldSkip) {
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[Audio] 跳过被打断的音频 blob', item.speechId);
+                    }
+                    continue;
+                }
+
+                if (decoderResetPromise) {
+                    const resetTask = decoderResetPromise;
+                    try {
+                        await resetTask;
+                    } catch (e) {
+                        console.warn('等待 OGG OPUS 解码器重置失败:', e);
+                    } finally {
+                        // 仅清理当前等待的任务，避免覆盖并发写入的新任务
+                        if (decoderResetPromise === resetTask) {
+                            decoderResetPromise = null;
+                        }
+                    }
+                }
+                if (item.epoch !== incomingAudioEpoch) {
+                    continue;
+                }
+
+                await handleAudioBlob(item.blob, item.epoch);
+            }
+        } finally {
+            isProcessingIncomingAudioBlob = false;
+            if (incomingAudioBlobQueue.length > 0) {
+                void processIncomingAudioBlobQueue();
+            }
         }
     }
 
