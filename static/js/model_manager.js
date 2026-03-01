@@ -142,16 +142,17 @@ class DropdownManager {
         }
 
         let text = defaultText;
+        let fullText = null;
 
         // 如果配置了 alwaysShowDefault，始终显示默认文字
         if (this.config.alwaysShowDefault) {
             text = defaultText;
         } else if (this.select) {
             if (this.select.value) {
-                // 有选择的值，显示选中的选项
                 const selectedOption = this.select.options[this.select.selectedIndex];
                 if (selectedOption) {
                     text = this.config.getText(selectedOption);
+                    fullText = text;
                 }
             } else if (this.select.options.length > 0) {
                 // 没有选择，但有选项：显示第一个“可显示”的选项
@@ -165,8 +166,40 @@ class DropdownManager {
             }
         }
 
-        this.textSpan.textContent = text;
-        this.textSpan.setAttribute('data-text', text);
+        const maxVisualWidth = this.config.maxVisualWidth || 13;
+        const getVisualWidth = (str) => {
+            let width = 0;
+            for (const char of str) {
+                width += char.charCodeAt(0) > 127 ? 2 : 1;
+            }
+            return width;
+        };
+        
+        let displayText = text;
+        if (text && getVisualWidth(text) > maxVisualWidth) {
+            let truncated = '';
+            let currentWidth = 0;
+            for (const char of text) {
+                const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
+                if (currentWidth + charWidth > maxVisualWidth - 1) break;
+                truncated += char;
+                currentWidth += charWidth;
+            }
+            displayText = truncated + '...';
+        }
+
+        this.textSpan.textContent = displayText;
+        this.textSpan.setAttribute('data-text', displayText);
+
+        if (this.button) {
+            if (fullText && fullText !== defaultText) {
+                this.button.title = fullText;
+                this.button.removeAttribute('data-i18n-title');
+            } else {
+                const titleText = this.config.iconAltKey && window.t ? window.t(this.config.iconAltKey) : this.config.iconAlt;
+                this.button.title = titleText;
+            }
+        }
     }
 
     updateDropdown() {

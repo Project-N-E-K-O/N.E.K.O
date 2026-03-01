@@ -500,20 +500,53 @@ function updateModelDropdown() {
 function updateModelSelectButtonText() {
     if (!modelSelectText || !modelSelect) return;
     
-    // 如果已选择模型
+    const modelSelectBtn = document.getElementById('model-select-btn');
+    
     if (hasSelectedModel && modelSelect.value) {
         const selectedOption = modelSelect.options[modelSelect.selectedIndex];
-        const text = selectedOption ? selectedOption.textContent : modelSelect.value;
-        modelSelectText.textContent = text;
-        modelSelectText.setAttribute('data-text', text);
-        // 移除data-i18n属性，防止翻译系统覆盖模型名称
+        const fullText = selectedOption ? selectedOption.textContent : modelSelect.value;
+        
+        const maxVisualWidth = 13;
+        const getVisualWidth = (str) => {
+            let width = 0;
+            for (const char of str) {
+                width += char.charCodeAt(0) > 127 ? 2 : 1;
+            }
+            return width;
+        };
+        
+        let displayText = fullText;
+        if (fullText && getVisualWidth(fullText) > maxVisualWidth) {
+            let truncated = '';
+            let currentWidth = 0;
+            for (const char of fullText) {
+                const charWidth = char.charCodeAt(0) > 127 ? 2 : 1;
+                if (currentWidth + charWidth > maxVisualWidth - 1) break;
+                truncated += char;
+                currentWidth += charWidth;
+            }
+            displayText = truncated + '...';
+        }
+        
+        modelSelectText.textContent = displayText;
+        modelSelectText.setAttribute('data-text', displayText);
         modelSelectText.removeAttribute('data-i18n');
+        
+        if (modelSelectBtn) {
+            modelSelectBtn.title = fullText;
+            modelSelectBtn.removeAttribute('data-i18n-title');
+        }
     } else {
-        // 没有选择模型时，使用默认文本并恢复data-i18n属性
         const text = t('live2d.parameterEditor.selectModel', '选择模型');
         modelSelectText.textContent = text;
         modelSelectText.setAttribute('data-text', text);
         modelSelectText.setAttribute('data-i18n', 'live2d.parameterEditor.selectModel');
+        
+        if (modelSelectBtn) {
+            const titleText = t('live2d.parameterEditor.selectModel', '选择模型');
+            modelSelectBtn.title = titleText;
+            modelSelectBtn.setAttribute('data-i18n-title', 'live2d.parameterEditor.selectModel');
+        }
     }
 }
 

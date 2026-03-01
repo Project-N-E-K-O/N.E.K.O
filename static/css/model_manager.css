@@ -572,6 +572,10 @@ body {
     margin-right: 30px;
     flex: 1;
     font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #live2d-model-select-btn .dropdown-arrow {
@@ -702,6 +706,10 @@ body {
     margin-right: 30px;
     flex: 1;
     font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #motion-select-btn .dropdown-arrow {
@@ -836,6 +844,10 @@ body {
     margin-right: 30px;
     flex: 1;
     font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #expression-select-btn .dropdown-arrow {
@@ -1111,6 +1123,10 @@ body {
     margin-right: 30px;
     flex: 1;
     font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #vrm-model-select-btn:hover:not(:disabled) {
@@ -1234,6 +1250,10 @@ body {
     margin-right: 30px;
     flex: 1;
     font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #vrm-animation-select-btn:hover:not(:disabled) {
@@ -1360,6 +1380,7 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 200px;
 }
 
 #trigger-vrm-expression-btn {
