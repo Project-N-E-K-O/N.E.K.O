@@ -489,6 +489,7 @@ async function importWorkshopCharaFile(filePath, itemId) {
 // 加载角色数据
 // 跟踪当前展开的猫娘名称
 let expandedCatgirlName = null;
+let shouldScrollToExpandedCatgirl = false;
 
 async function loadCharacterData() {
     try {
@@ -501,13 +502,10 @@ async function loadCharacterData() {
         renderCatgirls();
         updateSwitchButtons();
 
-        // 如果有之前展开的猫娘，自动展开它
         if (expandedCatgirlName) {
             const catgirls = characterData['猫娘'] || {};
             if (catgirls[expandedCatgirlName]) {
-                // 使用 setTimeout 确保 DOM 已经渲染完成
                 setTimeout(() => {
-                    // 遍历所有猫娘块，找到匹配的
                     const blocks = document.querySelectorAll('.catgirl-block');
                     blocks.forEach(block => {
                         const titleSpan = block.querySelector('.catgirl-title');
@@ -515,17 +513,22 @@ async function loadCharacterData() {
                             const btn = block.querySelector('.catgirl-expand');
                             const details = block.querySelector('.catgirl-details');
                             if (btn && details && details.style.display === 'none') {
-                                // 展开这个猫娘
                                 details.style.display = 'block';
                                 btn.style.transform = 'rotate(180deg)';
                                 showCatgirlForm(expandedCatgirlName, details);
+                            }
+                            if (shouldScrollToExpandedCatgirl) {
+                                setTimeout(() => {
+                                    block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }, 100);
+                                shouldScrollToExpandedCatgirl = false;
                             }
                         }
                     });
                 }, 0);
             } else {
-                // 如果猫娘不存在了，清除记录
                 expandedCatgirlName = null;
+                shouldScrollToExpandedCatgirl = false;
             }
         }
     } catch (error) {
@@ -1776,10 +1779,10 @@ function showCatgirlForm(key, container) {
             // 保存当前展开的猫娘名称，以便重新加载后自动展开
             let formCatgirlName = data['档案名'];
             if (formCatgirlName) {
-                // 验证并清理猫娘名称，避免特殊字符
                 formCatgirlName = formCatgirlName.trim();
                 if (formCatgirlName) {
                     expandedCatgirlName = formCatgirlName;
+                    shouldScrollToExpandedCatgirl = true;
                 }
             }
 
@@ -1847,6 +1850,10 @@ function showCatgirlForm(key, container) {
             block.className = 'catgirl-block';
             block.appendChild(form);
             list.prepend(block);
+
+            setTimeout(() => {
+                block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
         }
     }
 
