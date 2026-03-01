@@ -324,7 +324,7 @@ Live2DManager.prototype._fadeInModel = function(model, loadToken, duration = 200
  * @param {number} simulatedMs - 要模拟的虚拟时间（毫秒），默认 2000
  * @param {number} stepMs - 每步时间（毫秒），默认 16（~60fps）
  */
-Live2DManager.prototype._preTickPhysics = function(model, simulatedMs, stepMs) {
+Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, stepMs, loadToken) {
     if (!model || !model.internalModel) return;
 
     const internalModel = model.internalModel;
@@ -339,19 +339,37 @@ Live2DManager.prototype._preTickPhysics = function(model, simulatedMs, stepMs) {
     if (typeof simulatedMs !== 'number' || simulatedMs <= 0) simulatedMs = 2000;
     if (typeof stepMs !== 'number' || stepMs <= 0) stepMs = 16;
 
-    const steps = Math.ceil(simulatedMs / stepMs);
-    console.log(`[Live2D] 开始物理预跑: ${simulatedMs}ms / ${stepMs}ms步长 = ${steps}步`);
+    const totalSteps = Math.ceil(simulatedMs / stepMs);
+    // 每批次运行的步数：在流畅性与延迟之间取平衡
+    // 20步 × 16ms = ~0.3ms CPU 时间，足够轻量不会卡顿主线程
+    const BATCH_SIZE = 20;
+    console.log(`[Live2D] 开始物理预跑: ${simulatedMs}ms / ${stepMs}ms步长 = ${totalSteps}步，分批${BATCH_SIZE}步/帧`);
 
-    // 保存当前累加器状态
-    const savedDeltaTime = model.deltaTime || 0;
+    let completed = 0;
 
     try {
-        for (let i = 0; i < steps; i++) {
-            // 调用 internalModel.update(deltaMs, elapsedMs)
-            // Cubism4 内部会 /1000 转换为秒传给 physics.evaluate()
-            // Cubism2 直接使用毫秒值传给 physics.update()
-            internalModel.update(stepMs, model.elapsedTime);
-            model.elapsedTime += stepMs;
+        while (completed < totalSteps) {
+            // 在每批次开始前检查 loadToken 是否仍有效
+            if (loadToken != null && !this._isLoadTokenActive(loadToken)) {
+                console.log('[Live2D] 物理预跑中止（loadToken 已过期）');
+                return;
+            }
+            if (model.destroyed) {
+                console.log('[Live2D] 物理预跑中止（模型已销毁）');
+                return;
+            }
+
+            const batchEnd = Math.min(completed + BATCH_SIZE, totalSteps);
+            for (let i = completed; i < batchEnd; i++) {
+                internalModel.update(stepMs, model.elapsedTime);
+                model.elapsedTime += stepMs;
+            }
+            completed = batchEnd;
+
+            // 如果还有剩余步数，让出事件循环以避免主线程卡顿
+            if (completed < totalSteps) {
+                await new Promise(r => requestAnimationFrame(r));
+            }
         }
     } catch (e) {
         console.warn('[Live2D] 物理预跑过程中出错:', e);
@@ -639,7 +657,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 通过虚拟时间步进让弹簧/钟摆系统收敛到平衡态。
     // 这是解决"加载变形"的核心手段——getBounds() 稳定性检查无法
     // 感知网格内部的物理变形，只有让物理实际跑完才能彻底消除。
-    this._preTickPhysics(model, 2000, 16);
+    // 先检查 loadToken 是否仍然有效，避免对过期模型执行昂贵的物理预跑
+    if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
+        return;
+    }
+    await this._preTickPhysics(model, 2000, 16, loadToken);
 
     this._modelLoadState = 'settling';
     if (this._isLoadTokenActive(loadToken)) {
