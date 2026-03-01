@@ -1277,7 +1277,7 @@ def _loc(d: dict, lang: str) -> str:
     """从多语言 dict 按 lang 取值，缺失则回退 'zh'。"""
     if lang not in d:
         print(f"WARNING: Unexpected lang code {lang}")
-    return d.get(lang, d['zh'])
+    return d.get(lang, d['en'])
 
 
 # ---------- 内心活动区块标题 ----------

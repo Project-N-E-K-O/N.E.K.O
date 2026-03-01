@@ -45,6 +45,8 @@ def compress_screenshot(
         ratio = target_h / h
         img = img.resize((int(w * ratio), target_h), _LANCZOS)
     buf = BytesIO()
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     return buf.getvalue()
 
@@ -166,7 +168,7 @@ async def analyze_image_with_vision_model(
                     ]
                 }
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             extra_body=get_extra_body(vision_model) or None
         )
         

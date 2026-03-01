@@ -455,10 +455,15 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                             return;
                         }
                         
-                        console.log('[Interaction] 点击效果持续时间结束，恢复到默认状态');
+                        console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
                         this._currentClickEffectId = null;
-                        // 清除表情，恢复到常驻表情或默认状态
-                        if (this.clearExpression) {
+                        // 使用平滑过渡恢复到常驻表情或默认状态（smoothReset 内部会在快照后停止 motion/expression）
+                        if (typeof this.smoothResetToInitialState === 'function') {
+                            this.smoothResetToInitialState().catch(e => {
+                                console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
+                                if (typeof this.clearExpression === 'function') this.clearExpression();
+                            });
+                        } else if (typeof this.clearExpression === 'function') {
                             this.clearExpression();
                         }
                     }, CLICK_EFFECT_DURATION);
@@ -999,8 +1004,12 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
                 // 同时检查鼠标跟踪是否启用
                 const isMouseTrackingEnabled = this.isMouseTrackingEnabled ? this.isMouseTrackingEnabled() : (window.mouseTrackingEnabled !== false);
-                if (this.isFocusing && isMouseTrackingEnabled) {
-                    model.focus(pointer.x, pointer.y);
+                if (this.isFocusing) {
+                    if (isMouseTrackingEnabled) {
+                        model.focus(pointer.x, pointer.y);
+                    } else {
+                        model.focus(centerX, centerY);
+                    }
                 }
             } else {
                 // 鼠标离开模型区域，启动隐藏定时器
@@ -1126,27 +1135,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             }
 
             const choiceFile = this.getRandomElement(expressionFiles);
-            if (choiceFile) {
-                const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
-                    ? this.resolveExpressionReferenceByFile(choiceFile)
-                    : null;
-                const canonicalChoiceFile = resolvedRef && resolvedRef.file ? resolvedRef.file : choiceFile;
-                const expressionName = resolvedRef && resolvedRef.name
-                    ? resolvedRef.name
-                    : ((typeof this.resolveExpressionNameByFile === 'function')
-                        ? this.resolveExpressionNameByFile(canonicalChoiceFile)
-                        : null);
-                const expressionNameLooksLikeFile = !!expressionName &&
-                    (/\.exp3\.json$/i.test(expressionName) || expressionName.includes('/'));
-
-                if (expressionName && !expressionNameLooksLikeFile) {
-                    console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
-                    await this.currentModel.expression(expressionName);
-                } else if (typeof this.playExpression === 'function') {
-                    // 某些配置只给 basename（如 expression15.exp3.json）或 name 本身像文件路径，回退到文件级播放逻辑
-                    console.warn(`[ClickEffect] 表情名不可安全使用，回退为文件播放: ${canonicalChoiceFile}`);
-                    await this.playExpression(emotion, canonicalChoiceFile);
-                }
+            if (choiceFile && typeof this.playExpression === 'function') {
+                console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
+                await this.playExpression(emotion, choiceFile);
             }
         }
 
@@ -1193,29 +1184,22 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 return;
             }
             
-            console.log('[ClickEffect] 临时效果结束，恢复到默认状态');
+            console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态');
             this._currentClickEffectId = null;
-            
-            const motionToStop = this._clickEffectMotion;
             this._clickEffectMotion = null;
-            if (motionToStop && typeof motionToStop.stop === 'function') {
-                try { motionToStop.stop(); } catch (e) {}
-            }
-            
-            try {
-                const expressionManager = this.currentModel &&
-                    this.currentModel.internalModel &&
-                    this.currentModel.internalModel.motionManager &&
-                    this.currentModel.internalModel.motionManager.expressionManager;
-                if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
-                    expressionManager.stopAllExpressions();
-                }
-            } catch (e) {
-                console.warn('[ClickEffect] Failed to stop expressions on currentModel:', e);
-            }
 
-            if (typeof this.applyPersistentExpressionsNative === 'function') {
-                try { this.applyPersistentExpressionsNative(true); } catch (e) {}
+            // 使用平滑过渡恢复到初始状态
+            // smoothResetToInitialState 会在第一帧 beforeModelUpdate 中捕获快照后，
+            // 再停止 motion/expression，确保过渡起点与屏幕一致，无视觉跳变。
+            if (typeof this.smoothResetToInitialState === 'function') {
+                this.smoothResetToInitialState().catch(e => {
+                    console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
+                    if (typeof this.clearExpression === 'function') {
+                        this.clearExpression();
+                    }
+                });
+            } else if (typeof this.clearExpression === 'function') {
+                this.clearExpression();
             }
         }, duration);
 

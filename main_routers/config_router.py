@@ -71,8 +71,22 @@ async def get_page_config(lanlan_name: str = ""):
                     model_path = vrm_path
                     logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {model_path}")
                 elif vrm_path.startswith('/'):
-                    model_path = vrm_path
-                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                    # 对已知前缀的路径验证文件是否实际存在，防止返回指向已删除文件的路径
+                    _vrm_file_verified = False
+                    if vrm_path.startswith(VRM_USER_PATH + '/'):
+                        _fname = vrm_path[len(VRM_USER_PATH) + 1:]
+                        _vrm_file_verified = (_config_manager.vrm_dir / _fname).exists()
+                    elif vrm_path.startswith(VRM_STATIC_PATH + '/'):
+                        _fname = vrm_path[len(VRM_STATIC_PATH) + 1:]
+                        _vrm_file_verified = (_config_manager.project_root / 'static' / 'vrm' / _fname).exists()
+                    else:
+                        _vrm_file_verified = True  # 未知前缀，不做判断
+                    if _vrm_file_verified:
+                        model_path = vrm_path
+                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                    else:
+                        model_path = ""
+                        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
                 else:
                     filename = os.path.basename(vrm_path)
                     project_root = _config_manager.project_root
@@ -240,7 +254,6 @@ async def get_steam_language():
         # 使用 language_utils 的归一化函数，统一映射逻辑
         # format='full' 返回 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' 格式（用于前端 i18n）
         i18n_language = normalize_language_code(steam_language, format='full')
-        logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
         # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
         ip_country = None
@@ -250,28 +263,18 @@ async def get_steam_language():
             # 使用 Steam Utils API 获取用户 IP 所在国家
             raw_ip_country = steamworks.Utils.GetIPCountry()
             
-            # 醒目调试日志
-            print("=" * 60)
-            print(f"[GeoIP API DEBUG] Raw GetIPCountry() returned: {repr(raw_ip_country)}")
-            
             if isinstance(raw_ip_country, bytes):
                 ip_country = raw_ip_country.decode('utf-8')
-                print(f"[GeoIP API DEBUG] Decoded from bytes: '{ip_country}'")
             else:
                 ip_country = raw_ip_country
             
-            # 转为大写以便比较
             if ip_country:
                 ip_country = ip_country.upper()
-                # 判断是否为中国大陆（国家代码为 "CN"）
                 is_mainland_china = (ip_country == "CN")
-                print(f"[GeoIP API DEBUG] Country (upper): '{ip_country}'")
-                print(f"[GeoIP API DEBUG] Is mainland China: {is_mainland_china}")
-            else:
-                print(f"[GeoIP API DEBUG] Country is empty/None")
-            print("=" * 60)
             
-            logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+            if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
+                get_steam_language._logged = True
+                logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
             # Write back to ConfigManager so URL adjustment uses the same result
             try:
                 from utils.config_manager import ConfigManager
@@ -279,7 +282,7 @@ async def get_steam_language():
             except Exception:
                 pass
         except Exception as geo_error:
-            print(f"[GeoIP API DEBUG] Exception: {geo_error}")
+            get_steam_language._logged = False
             logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
             ip_country = None
             is_mainland_china = False

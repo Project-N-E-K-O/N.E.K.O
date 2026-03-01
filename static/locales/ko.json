@@ -1347,6 +1347,7 @@
             "connectivityCheck": "Agent LLM 연결 확인 중..."
         },
         "quotaExceeded": "무료 Agent 모델의 일일 체험 한도({{limit}}회)에 도달했습니다. 내일 다시 시도해 주세요.",
+        "contentFilterError": "Agent가 탐색한 웹 페이지 내용이 AI 모델의 안전 필터에 의해 거부되어 작업이 중단되었습니다. 페이지에 민감한 주제가 포함된 경우 발생합니다. 다른 키워드나 웹사이트를 시도해 주세요.",
         "taskHud": {
             "title": "에이전트 작업",
             "running": "실행 중",

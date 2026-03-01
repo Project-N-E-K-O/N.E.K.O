@@ -71,6 +71,10 @@ Live2DManager.prototype.recordInitialParameters = function() {
 
 // 清除expression到默认状态（使用保存的初始参数）
 Live2DManager.prototype.clearExpression = function() {
+    // 取消正在进行的平滑过渡和手动表情覆盖
+    this._cancelSmoothReset();
+    this._removeManualExpressionOverride();
+
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
             console.warn('无法清除expression：模型未加载');
@@ -133,6 +137,272 @@ Live2DManager.prototype.clearExpression = function() {
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
     // 注意：这里传入 skipBackup=true，因为我们只是重新应用已有的常驻表情，不需要再次备份
     this.applyPersistentExpressionsNative(true);
+};
+
+/**
+ * 平滑过渡恢复 —— 差分淡出（Differential Fade）
+ *
+ * 核心思想：
+ *   **仅淡出表情（expression）叠加量，不干扰基础动作（idle motion）、
+ *   鼠标追踪（focus）、呼吸（breathing）等持续行为。**
+ *
+ * 工作原理（三阶段）：
+ *   Phase 0（第 1 帧 beforeModelUpdate）：
+ *     - 读取所有参数值 valuesA（包含表情叠加）
+ *     - 停止 expression 与手动覆盖（不停止 motion！）
+ *     - 回写 valuesA，保证本帧渲染结果零跳变
+ *   Phase 1（第 2 帧）：
+ *     - 读取所有参数值 valuesB（不含已停止的表情，但仍含 motion/focus/breathing）
+ *     - 计算 delta[i] = valuesA[i] − valuesB[i] ≈ 表情贡献量
+ *     - 将 delta 全量加回，视觉上依然等同于 Phase 0
+ *   Phase 2+（淡出帧）：
+ *     - 每帧读取当前值后 **加性** 叠加 delta × (1 − easedProgress)
+ *     - 基础动作照常演进，叠加量随时间衰减至 0
+ *   完成后重新应用常驻表情。
+ *
+ * @param {number} duration - 淡出持续时间（毫秒），默认 800ms
+ * @returns {Promise} 淡出完成后 resolve
+ */
+Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
+    // 钳制 duration：非法值回退到默认，范围 [0, 5000]
+    if (!Number.isFinite(duration) || duration < 0) {
+        duration = 800;
+    }
+    duration = Math.min(duration, 5000);
+
+    return new Promise((resolve) => {
+        this._cancelSmoothReset();
+
+        if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            this._removeManualExpressionOverride();
+            try { this.clearExpression(); } catch (e) {}
+            resolve();
+            return;
+        }
+
+        const self = this;
+        const emitter = this.currentModel.internalModel; // 捕获绑定时的 emitter 引用
+        this._smoothResetEmitter = emitter;
+        this._smoothResetResolve = resolve; // 存储 resolve 以便外部取消时也能结束 Promise
+        let phase = 0;          // 0 = 采集含表情, 1 = 采集无表情 & 计算 delta, 2 = 淡出
+        const valuesA = [];     // Phase 0 采集的全参数值（按索引）
+        const deltaByIndex = {}; // { 参数索引: 差值 }
+        let startTime = 0;
+
+        const onBeforeUpdate = function() {
+            if (!self.currentModel || !self.currentModel.internalModel || !self.currentModel.internalModel.coreModel) {
+                self._cancelSmoothReset();
+                resolve();
+                return;
+            }
+
+            // 防御性检查：确保当前模型仍是绑定时的模型，避免切模后旧 delta 写入新模型
+            if (self.currentModel.internalModel !== emitter) {
+                self._cancelSmoothReset();
+                resolve();
+                return;
+            }
+
+            const cm = self.currentModel.internalModel.coreModel;
+            const paramCount = cm.getParameterCount();
+
+            // ── Phase 0：采集含表情的参数快照 ──
+            if (phase === 0) {
+                for (let i = 0; i < paramCount; i++) {
+                    try { valuesA[i] = cm.getParameterValueByIndex(i); }
+                    catch (e) { valuesA[i] = 0; }
+                }
+
+                // 停止表情源（下一帧生效），不停止 motion
+                self._removeManualExpressionOverride();
+                try {
+                    const exprMgr = self.currentModel.internalModel.motionManager &&
+                        self.currentModel.internalModel.motionManager.expressionManager;
+                    if (exprMgr && typeof exprMgr.stopAllExpressions === 'function') {
+                        exprMgr.stopAllExpressions();
+                    }
+                } catch (e) {}
+                // ★ 此处不调用 stopAllMotions()，让 idle / 基础动作继续运行
+
+                // 回写 valuesA 保证本帧渲染与上一帧视觉一致
+                for (let i = 0; i < paramCount; i++) {
+                    try { cm.setParameterValueByIndex(i, valuesA[i]); }
+                    catch (e) {}
+                }
+
+                phase = 1;
+                return;
+            }
+
+            // ── Phase 1：采集无表情的参数，计算差分 ──
+            if (phase === 1) {
+                for (let i = 0; i < paramCount; i++) {
+                    try {
+                        const b = cm.getParameterValueByIndex(i);
+                        const a = valuesA[i];
+                        if (a !== undefined && Math.abs(a - b) > 0.0005) {
+                            deltaByIndex[i] = a - b;
+                        }
+                    } catch (e) {}
+                }
+
+                const deltaKeys = Object.keys(deltaByIndex);
+                console.log(`[smoothReset] 差分计算完成: ${deltaKeys.length} 个参数存在表情叠加量`);
+
+                if (deltaKeys.length === 0) {
+                    // 没有活跃表情，无需淡出
+                    self._cancelSmoothReset();
+                    try { self.applyPersistentExpressionsNative(true); } catch (e) {}
+                    resolve();
+                    return;
+                }
+
+                startTime = performance.now();
+                phase = 2;
+
+                // 本帧加回全量 delta，保持视觉连续
+                for (const idx of deltaKeys) {
+                    const i = parseInt(idx);
+                    try {
+                        const cur = cm.getParameterValueByIndex(i);
+                        cm.setParameterValueByIndex(i, cur + deltaByIndex[i]);
+                    } catch (e) {}
+                }
+                return;
+            }
+
+            // ── Phase 2+：加性淡出 delta ──
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            // 缓入缓出三次方
+            const eased = progress < 0.5
+                ? 4 * progress * progress * progress
+                : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+
+            const weight = 1 - eased; // 1 → 0
+
+            for (const idx of Object.keys(deltaByIndex)) {
+                const i = parseInt(idx);
+                try {
+                    const cur = cm.getParameterValueByIndex(i);
+                    cm.setParameterValueByIndex(i, cur + deltaByIndex[i] * weight);
+                } catch (e) {}
+            }
+
+            if (progress >= 1) {
+                self._cancelSmoothReset();
+                // 淡出完成，重新应用常驻表情
+                try { self.applyPersistentExpressionsNative(true); } catch (e) {}
+                console.log('[smoothReset] 差分淡出完成');
+                resolve();
+            }
+        };
+
+        this._smoothResetListener = onBeforeUpdate;
+        emitter.on('beforeModelUpdate', onBeforeUpdate);
+        console.log(`[smoothReset] 差分淡出启动, 持续 ${duration}ms`);
+    });
+};
+
+/**
+ * 取消正在进行的平滑过渡恢复
+ */
+Live2DManager.prototype._cancelSmoothReset = function() {
+    if (this._smoothResetListener) {
+        const emitter = this._smoothResetEmitter || (this.currentModel && this.currentModel.internalModel);
+        if (emitter) {
+            emitter.off('beforeModelUpdate', this._smoothResetListener);
+        }
+    }
+    this._smoothResetListener = null;
+    this._smoothResetEmitter = null;
+    // 外部取消时结束挂起的 Promise，避免调用方永久等待
+    if (this._smoothResetResolve) {
+        this._smoothResetResolve();
+        this._smoothResetResolve = null;
+    }
+};
+
+/**
+ * 安装手动表情覆盖（Method 2 回退时使用，带淡入效果）
+ *
+ * 与旧版不同，不再在第一帧捕获静态基准值快照。而是每帧读取当前
+ * 参数值并 lerp 到目标值。这样在表情生效期间，focus（鼠标追踪）、
+ * breathing（呼吸）等持续修改的参数仍能正常演进，不会被冻结。
+ *
+ * @param {Array} params - 表情参数数组 [{Id, Value}, ...]
+ * @param {number} fadeInDuration - 淡入持续时间（毫秒），默认 300ms
+ */
+Live2DManager.prototype._installManualExpressionOverride = function(params, fadeInDuration = 300) {
+    this._removeManualExpressionOverride();
+
+    if (!this.currentModel || !this.currentModel.internalModel || !params || params.length === 0) return;
+
+    // 钳制 fadeInDuration：非法值回退到默认，范围 [50, 5000]
+    if (!Number.isFinite(fadeInDuration) || fadeInDuration <= 0) {
+        fadeInDuration = 300;
+    }
+    fadeInDuration = Math.max(50, Math.min(fadeInDuration, 5000));
+
+    const self = this;
+    const startTime = performance.now();
+    const emitter = this.currentModel.internalModel; // 捕获绑定时的 emitter
+    this._manualExpressionEmitter = emitter;
+
+    this._manualExpressionParams = params;
+
+    const onBeforeUpdate = function() {
+        if (!self.currentModel || !self.currentModel.internalModel || !self.currentModel.internalModel.coreModel) {
+            self._removeManualExpressionOverride();
+            return;
+        }
+
+        // 防御性检查：确保当前模型仍是绑定时的模型，避免切模后跨模型写入
+        if (self.currentModel.internalModel !== emitter) {
+            self._removeManualExpressionOverride();
+            return;
+        }
+
+        const coreModel = self.currentModel.internalModel.coreModel;
+
+        const elapsed = performance.now() - startTime;
+        const fadeProgress = Math.min(elapsed / fadeInDuration, 1);
+        // 缓入缓出二次方
+        const weight = fadeProgress < 0.5
+            ? 2 * fadeProgress * fadeProgress
+            : 1 - Math.pow(-2 * fadeProgress + 2, 2) / 2;
+
+        for (const param of self._manualExpressionParams) {
+            if (Array.isArray(window.LIPSYNC_PARAMS) && window.LIPSYNC_PARAMS.includes(param.Id)) continue;
+            try {
+                // 每帧读取当前值（含 motion/focus/breathing 的实时贡献）
+                const current = coreModel.getParameterValueById(param.Id);
+                // lerp(current, target, weight)：weight=0 维持当前值，weight=1 完全覆盖为目标
+                const blendedVal = current + (param.Value - current) * weight;
+                coreModel.setParameterValueById(param.Id, blendedVal);
+            } catch (e) {}
+        }
+    };
+
+    this._manualExpressionListener = onBeforeUpdate;
+    emitter.on('beforeModelUpdate', onBeforeUpdate);
+    console.log(`[ManualExpression] 安装手动表情覆盖，${params.length}个参数，淡入 ${fadeInDuration}ms`);
+};
+
+/**
+ * 移除手动表情覆盖
+ */
+Live2DManager.prototype._removeManualExpressionOverride = function() {
+    if (this._manualExpressionListener) {
+        const emitter = this._manualExpressionEmitter || (this.currentModel && this.currentModel.internalModel);
+        if (emitter) {
+            emitter.off('beforeModelUpdate', this._manualExpressionListener);
+        }
+    }
+    this._manualExpressionListener = null;
+    this._manualExpressionEmitter = null;
+    this._manualExpressionParams = null;
 };
 
 // 播放表情（优先使用 EmotionMapping.expressions）
@@ -268,25 +538,14 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             }
         }
         
-        // 方法2: 回退到手动参数设置
-        console.log('使用手动参数设置播放expression');
-        // 口型参数列表，手动设置时跳过以避免覆盖lipsync（使用共享常量）
-        if (expressionData.Parameters) {
-            for (const param of expressionData.Parameters) {
-                // 跳过口型参数，避免覆盖lipsync
-                if (window.LIPSYNC_PARAMS.includes(param.Id)) {
-                    console.log(`跳过口型参数: ${param.Id}，避免覆盖lipsync`);
-                    continue;
-                }
-                try {
-                    this.currentModel.internalModel.coreModel.setParameterValueById(param.Id, param.Value);
-                } catch (paramError) {
-                    console.warn(`设置参数 ${param.Id} 失败:`, paramError);
-                }
-            }
+        // 方法2: 回退到手动参数设置（使用每帧应用 + 淡入效果，避免参数被 loadParameters 覆盖）
+        console.log('使用手动参数设置播放expression（带淡入过渡）');
+        if (expressionData.Parameters && expressionData.Parameters.length > 0) {
+            // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
+            this._installManualExpressionOverride(expressionData.Parameters, 300);
         }
         
-        console.log(`手动设置表情: ${loadedExpressionFile}`);
+        console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
     } catch (error) {
         console.error('播放表情失败:', error);
     }
@@ -599,6 +858,9 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         this._currentClickEffectId = null;
     }
     
+    // 取消正在进行的平滑过渡，防止与新情感冲突
+    this._cancelSmoothReset();
+    
     // 获取将要使用的表情文件（用于精确比较）
     let targetExpressionFile = null;
     
@@ -631,6 +893,9 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         }
         return;
     }
+    
+    // 确定要更换表情后，移除手动表情覆盖，防止与新情感冲突
+    this._removeManualExpressionOverride();
     
     // 相同情绪但不同表情，或者全新情绪，需要重置
     if (this.currentEmotion === emotion && this.currentExpressionFile !== targetExpressionFile) {

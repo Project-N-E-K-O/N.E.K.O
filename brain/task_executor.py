@@ -246,7 +246,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
+                    "max_completion_tokens": 500
                 }
                 
                 extra_body = get_extra_body(model)
@@ -326,7 +326,7 @@ Rules:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0,
-                "max_tokens": 500,
+                "max_completion_tokens": 500,
             }
             extra_body = get_extra_body(model)
             if extra_body:
@@ -503,7 +503,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
+                    "max_completion_tokens": 500
                 }
                 
                 extra_body = get_extra_body(model)

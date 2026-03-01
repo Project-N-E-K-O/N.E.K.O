@@ -720,6 +720,10 @@ class Live2DManager {
             }
         } else {
             this.isFocusing = false;
+            if (this.currentModel) {
+                const b = this.currentModel.getBounds();
+                this.currentModel.focus((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+            }
         }
     }
 

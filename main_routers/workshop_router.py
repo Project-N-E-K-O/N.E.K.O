@@ -590,7 +590,6 @@ async def get_subscribed_workshop_items():
     try:
         # 获取订阅物品数量
         num_subscribed_items = steamworks.Workshop.GetNumSubscribedItems()
-        logger.info(f"获取到 {num_subscribed_items} 个订阅的创意工坊物品")
         
         # 如果没有订阅物品，返回空列表
         if num_subscribed_items == 0:
@@ -602,7 +601,6 @@ async def get_subscribed_workshop_items():
         
         # 获取订阅物品ID列表
         subscribed_items = steamworks.Workshop.GetSubscribedItems()
-        logger.info(f'获取到 {len(subscribed_items)} 个订阅的创意工坊物品')
         
         # 存储处理后的物品信息
         items_info = []
@@ -621,7 +619,7 @@ async def get_subscribed_workshop_items():
             if all_item_ids:
                 # 优先使用缓存（如果所有条目都存在且各自在有效期内）
                 if _all_items_cache_valid(all_item_ids):
-                    logger.info(f"使用 UGC 缓存（{len(all_item_ids)} 个物品）")
+                    logger.debug(f"使用 UGC 缓存（{len(all_item_ids)} 个物品）")
                 elif _ugc_warmup_task is not None and not _ugc_warmup_task.done():
                     # 预热任务仍在运行，等待它完成而非发起重复查询
                     logger.info("等待 UGC 缓存预热任务完成...")
@@ -2759,6 +2757,10 @@ async def sync_workshop_character_cards() -> dict:
                             for k, v in chara_data.items():
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
+
+                            # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
+                            # 仅影响新增角色；已存在角色会在上面的分支直接跳过。
+                            set_reserved(catgirl_data, 'voice_id', '')
                             
                             # 如果角色卡有 live2d 字段，同时保存到 _reserved.avatar.asset_source_id
                             # COMPAT(v1->v2): 旧字段 live2d_item_id 已迁移，不再写回平铺 key。

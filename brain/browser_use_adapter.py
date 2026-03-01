@@ -234,6 +234,17 @@ def _find_bundled_chromium() -> Optional[str]:
     return None
 
 
+def _find_system_chrome_path() -> Optional[str]:
+    """Find an installed system Chrome / Chromium executable."""
+    try:
+        from browser_use.browser.watchdogs.local_browser_watchdog import (
+            LocalBrowserWatchdog,
+        )
+        return LocalBrowserWatchdog._find_installed_browser_path()
+    except Exception:
+        return None
+
+
 def _find_chrome_path() -> Optional[str]:
     """Pre-flight: locate a usable Chrome / Chromium executable.
 
@@ -243,13 +254,7 @@ def _find_chrome_path() -> Optional[str]:
     bundled = _find_bundled_chromium()
     if bundled:
         return bundled
-    try:
-        from browser_use.browser.watchdogs.local_browser_watchdog import (
-            LocalBrowserWatchdog,
-        )
-        return LocalBrowserWatchdog._find_installed_browser_path()
-    except Exception:
-        return None
+    return _find_system_chrome_path()
 
 def _dump_history(history, mode: str) -> None:
     """Print detailed diagnostics from a browser-use AgentHistory."""
@@ -331,6 +336,8 @@ class BrowserUseAdapter:
       - Automatic session cleanup on error or explicit close.
     """
 
+    _ip_country_cache: Optional[str] = None
+
     def __init__(self, headless: bool = False) -> None:
         self._config_manager = get_config_manager()
         self.last_error: Optional[str] = None
@@ -348,6 +355,46 @@ class BrowserUseAdapter:
         except Exception as e:
             self._ready_import = False
             self.last_error = str(e)
+
+    @staticmethod
+    def _get_ip_country() -> Optional[str]:
+        """Return the user's IP country code (e.g. 'US', 'JP', 'CN').
+
+        Priority: Steam GeoIP -> ipinfo.io fallback.
+        Cached after first successful lookup.
+        """
+        if BrowserUseAdapter._ip_country_cache is not None:
+            return BrowserUseAdapter._ip_country_cache
+
+        # Try Steam GeoIP first
+        try:
+            from main_routers.shared_state import get_steamworks
+            sw = get_steamworks()
+            if sw is not None:
+                raw = sw.Utils.GetIPCountry()
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                if raw:
+                    code = raw.upper()
+                    BrowserUseAdapter._ip_country_cache = code
+                    return code
+        except Exception as e:
+            logger.debug("[BrowserUse] Steam GeoIP failed: %s", e)
+
+        # Fallback: public GeoIP API
+        try:
+            import urllib.request
+            import json as _json
+            with urllib.request.urlopen("https://ipinfo.io/json", timeout=3) as resp:
+                data = _json.loads(resp.read())
+            code = (data.get("country") or "").upper()
+            if code:
+                BrowserUseAdapter._ip_country_cache = code
+                return code
+        except Exception as e:
+            logger.debug("[BrowserUse] ipinfo.io fallback failed: %s", e)
+
+        return None
 
     def cancel_running(self) -> None:
         """Signal the currently running task to stop at the next step boundary."""
@@ -451,6 +498,20 @@ class BrowserUseAdapter:
             "response_format" in msg
             and ("invalid" in msg or "must be text or json_object" in msg)
         )
+
+    @staticmethod
+    def _is_content_filter_error(err) -> bool:
+        """Detect LLM content inspection / safety filter rejections."""
+        msg = str(err).lower()
+        return any(s in msg for s in (
+            "data_inspection_failed",
+            "datainspectionfailed",
+            "inappropriate content",
+            "content_filter",
+            "content filter",
+            "responsible ai policy",
+            "content management policy",
+        ))
 
     @staticmethod
     def _is_unsupported_param_error(err) -> bool:
@@ -583,11 +644,25 @@ class BrowserUseAdapter:
         """
         self._cancelled = False
 
+        country = self._get_ip_country()
+        if country:
+            instruction = (
+                f"[User IP country: {country}] "
+                f"Keep this in mind when choosing search engine or regional settings.\n\n"
+                f"{instruction}"
+            )
+
         status = self.is_available()
         if not status.get("ready"):
             return {"success": False, "error": "; ".join(status.get("reasons", []))}
 
-        chrome = _find_chrome_path()
+        bundled_chrome = _find_bundled_chromium()
+        system_chrome = _find_system_chrome_path()
+        chrome = bundled_chrome or system_chrome
+        fallback_chrome: Optional[str] = None
+        if bundled_chrome and system_chrome and bundled_chrome != system_chrome:
+            fallback_chrome = system_chrome
+
         if not chrome:
             msg = (
                 "未找到 Chrome / Chromium 浏览器，请安装 Google Chrome 后重试。"
@@ -596,7 +671,11 @@ class BrowserUseAdapter:
             print(f"[BrowserUse] PREFLIGHT FAIL: {msg}", flush=True)
             return {"success": False, "error": msg}
         self._chrome_path = chrome
-        print(f"[BrowserUse] preflight OK, chrome={chrome}", flush=True)
+        source = "bundled" if chrome == bundled_chrome else "system"
+        print(
+            f"[BrowserUse] preflight OK, chrome={chrome}, source={source}",
+            flush=True,
+        )
 
         from browser_use import Agent
 
@@ -643,9 +722,10 @@ class BrowserUseAdapter:
 
                         self._start_overlay(browser_session)
                         _disconnect_errors = 0
+                        _content_filter_errors = 0
 
                         async def _on_step_end(a: Any) -> None:
-                            nonlocal _disconnect_errors
+                            nonlocal _disconnect_errors, _content_filter_errors
                             if self._cancelled:
                                 print("[BrowserUse] Task cancelled by user", flush=True)
                                 raise asyncio.CancelledError("Task cancelled by user")
@@ -667,7 +747,18 @@ class BrowserUseAdapter:
                                 f"{', DONE' if done else ''}",
                                 flush=True,
                             )
-                            if err and BrowserUseAdapter._is_browser_disconnected_error(err):
+                            if err and BrowserUseAdapter._is_content_filter_error(err):
+                                _content_filter_errors += 1
+                                if _content_filter_errors >= 2:
+                                    print(
+                                        f"[BrowserUse] Content filter triggered ({_content_filter_errors} consecutive errors), aborting task",
+                                        flush=True,
+                                    )
+                                    raise RuntimeError(
+                                        "CONTENT_FILTER: The page content was rejected by the AI model's safety filter. "
+                                        "This usually happens when the page contains sensitive topics."
+                                    )
+                            elif err and BrowserUseAdapter._is_browser_disconnected_error(err):
                                 _disconnect_errors += 1
                                 if _disconnect_errors >= 2:
                                     print(
@@ -677,6 +768,7 @@ class BrowserUseAdapter:
                                     raise ConnectionError("Browser disconnected - user closed the browser")
                             else:
                                 _disconnect_errors = 0
+                                _content_filter_errors = 0
 
                         history = await asyncio.wait_for(
                             agent.run(on_step_end=_on_step_end),
@@ -784,6 +876,20 @@ class BrowserUseAdapter:
                     del self._agents[session_id]
                 return {"success": False, "error": f"timed out after {timeout_s}s"}
             except Exception as e:
+                if (
+                    launch_attempt == 0
+                    and browser_session is None
+                    and fallback_chrome
+                    and self._chrome_path != fallback_chrome
+                ):
+                    logger.warning(
+                        "[BrowserUse] Bundled browser launch failed, "
+                        "falling back to system browser: %s",
+                        e,
+                    )
+                    self._chrome_path = fallback_chrome
+                    await self._close_browser()
+                    continue
                 if browser_session:
                     await self._remove_overlay(browser_session)
                 if session_id and session_id in self._agents:
@@ -791,6 +897,13 @@ class BrowserUseAdapter:
                 if self._is_browser_disconnected_error(e):
                     logger.warning("[BrowserUse] Browser disconnected, task aborted: %s", e)
                     return {"success": False, "error": "Browser disconnected - browser window was closed"}
+                if self._is_content_filter_error(e):
+                    logger.warning("[BrowserUse] Content filter triggered: %s", e)
+                    return {
+                        "success": False,
+                        "error": "CONTENT_FILTER: The page content was rejected by the AI model's safety filter. "
+                                 "This usually happens when the page contains sensitive topics.",
+                    }
                 if launch_attempt == 0 and not self._is_response_format_error(e):
                     await self._close_browser()
                     logger.warning("[BrowserUse] Browser error (attempt 1), retrying: %s", e)

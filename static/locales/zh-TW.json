@@ -1347,6 +1347,7 @@
             "connectivityCheck": "Agent LLM 連接檢查中..."
         },
         "quotaExceeded": "免費 Agent 模型今日試用次數已達上限（{{limit}}次），請明日再試。",
+        "contentFilterError": "Agent 瀏覽的網頁內容觸發了 AI 模型的安全審查過濾，任務已中止。這通常發生在頁面包含敏感話題時，請嘗試其他關鍵詞或網站。",
         "taskHud": {
             "title": "Agent 任務",
             "running": "運行中",

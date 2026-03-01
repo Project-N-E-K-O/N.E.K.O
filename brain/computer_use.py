@@ -241,13 +241,30 @@ class _ScaledPyAutoGUI:
 
     _COORD_MAX = 999
 
-    def __init__(self, backend, screen_w: int, screen_h: int):
+    def __init__(
+        self,
+        backend,
+        screen_w: int,
+        screen_h: int,
+        cancel_event: Optional[threading.Event] = None,
+    ):
         self._backend = backend
         self._w = screen_w
         self._h = screen_h
+        self._cancel_event = cancel_event
 
     def __getattr__(self, name):
-        return getattr(self._backend, name)
+        attr = getattr(self._backend, name)
+        if callable(attr):
+            def _wrapped(*args, **kwargs):
+                self._ensure_not_cancelled()
+                return attr(*args, **kwargs)
+            return _wrapped
+        return attr
+
+    def _ensure_not_cancelled(self) -> None:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise InterruptedError("Task cancelled")
 
     def _in_range(self, x, y) -> bool:
         return (
@@ -281,26 +298,32 @@ class _ScaledPyAutoGUI:
         return args, kwargs
 
     def click(self, *a, **kw):
+        self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         return self._backend.click(*a, **kw)
 
     def doubleClick(self, *a, **kw):
+        self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         return self._backend.doubleClick(*a, **kw)
 
     def rightClick(self, *a, **kw):
+        self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         return self._backend.rightClick(*a, **kw)
 
     def moveTo(self, *a, **kw):
+        self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         return self._backend.moveTo(*a, **kw)
 
     def dragTo(self, *a, **kw):
+        self._ensure_not_cancelled()
         a, kw = self._project(a, kw)
         return self._backend.dragTo(*a, **kw)
 
     def scroll(self, clicks, x=None, y=None, *args, **kwargs):
+        self._ensure_not_cancelled()
         if x is not None and y is not None:
             if self._in_range(x, y):
                 scaled_x = int(round(x * self._w / self._COORD_MAX))
@@ -312,6 +335,7 @@ class _ScaledPyAutoGUI:
 
     def _clipboard_type(self, text: str):
         """Type text via clipboard paste — handles CJK / Unicode reliably."""
+        self._ensure_not_cancelled()
         import pyperclip
         paste_key = "command" if platform.system() == "Darwin" else "ctrl"
         pyperclip.copy(text)
@@ -319,6 +343,7 @@ class _ScaledPyAutoGUI:
         time.sleep(0.05)
 
     def write(self, text, *a, **kw):
+        self._ensure_not_cancelled()
         text_str = str(text)
         # Clipboard paste is only needed for non-ASCII (CJK, emoji, etc.)
         # that pyautogui.write() cannot handle natively.
@@ -437,7 +462,7 @@ class ComputerUseAdapter:
             resp = self._llm_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "ok"}],
-                max_tokens=5,
+                max_completion_tokens=5,
                 timeout=15,
                 extra_body=extra or None,
             )
@@ -781,7 +806,10 @@ class ComputerUseAdapter:
                 try:
                     exec_env: dict = {"__builtins__": __builtins__}
                     exec_env["pyautogui"] = _ScaledPyAutoGUI(
-                        pyautogui, self.screen_width, self.screen_height
+                        pyautogui,
+                        self.screen_width,
+                        self.screen_height,
+                        cancel_event=self._cancel_event,
                     )
                     exec_env["time"] = self._make_cancellable_time_module()
                     exec_env["os"] = os

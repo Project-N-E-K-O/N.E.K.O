@@ -79,7 +79,6 @@ async def get_live2d_models(simple: bool = False):
             # 处理响应结果
             if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
                 items = workshop_items_result.get('items', [])
-                logger.info(f"获取到{len(items)}个订阅的创意工坊物品")
                 
                 # 遍历所有物品，提取已安装的模型
                 for item in items:
@@ -454,7 +453,7 @@ def get_model_files(model_name: str):
                             relative_path = os.path.relpath(item_path, model_dir)
                             # 转换为正斜杠格式（跨平台兼容）
                             relative_path = relative_path.replace('\\', '/')
-                            result_list.append(encode_url_path(relative_path))
+                            result_list.append(relative_path)
                     elif os.path.isdir(item_path):
                         # 递归搜索子目录
                         search_files_recursive(item_path, target_ext, result_list)
@@ -467,7 +466,7 @@ def get_model_files(model_name: str):
         # 搜索表情文件
         search_files_recursive(model_dir, '.exp3.json', expression_files)
         
-        logger.info(f"模型 {model_name} 文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
+        logger.debug(f"模型 {model_name} 文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
         return {
             "success": True, 
             "motion_files": motion_files,
@@ -804,7 +803,7 @@ def get_model_files_by_id(model_id: str):
                             relative_path = os.path.relpath(item_path, actual_model_dir)
                             # 转换为正斜杠格式（跨平台兼容）
                             relative_path = relative_path.replace('\\', '/')
-                            result_list.append(encode_url_path(relative_path))
+                            result_list.append(relative_path)
                     elif os.path.isdir(item_path):
                         # 递归搜索子目录
                         search_files_recursive(item_path, target_ext, result_list)
@@ -832,7 +831,7 @@ def get_model_files_by_id(model_id: str):
                 model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
-        logger.info(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
+        logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
         return {
             "success": True, 
             "motion_files": motion_files,

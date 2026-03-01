@@ -160,7 +160,7 @@ def initialize_global_language() -> str:
     
     with _global_language_lock:
         if _global_language_initialized:
-            return _global_language or 'zh'
+            return _global_language or 'en'
         
         # 判断区域
         _global_region = 'china' if _is_china_region() else 'non-china'
@@ -178,8 +178,8 @@ def initialize_global_language() -> str:
         
         # 优先级2：从系统设置获取
         system_lang = _get_system_language()
-        _global_language = system_lang
-        _global_language_full = system_lang
+        _global_language = normalize_language_code(system_lang, format='short')
+        _global_language_full = normalize_language_code(system_lang, format='full')
         logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
         _global_language_initialized = True
         return _global_language
@@ -905,7 +905,7 @@ class TranslationService:
                 base_url=config['base_url'],
                 api_key=config['api_key'],
                 temperature=0.3,
-                max_tokens=2000,
+                max_completion_tokens=2000,
                 timeout=30.0,
             )
             
@@ -1005,12 +1005,13 @@ class TranslationService:
             
             system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
 
-Rules:
+======以下为规则======
 1. Keep the meaning and tone exactly the same
 2. Maintain any special formatting (like commas, spaces)
 3. For character names or nicknames, translate naturally
 4. Return ONLY the translated text, no explanations or additional text
-5. If the text is already in {target_lang_name}, return it unchanged"""
+5. If the text is already in {target_lang_name}, return it unchanged
+======以上为规则======"""
 
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
