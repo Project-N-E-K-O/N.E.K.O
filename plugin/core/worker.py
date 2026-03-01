@@ -24,6 +24,7 @@ class WorkerTask:
     kwargs: dict
     timeout: float
     result_future: Future
+    executor_future: Optional[Future] = None
 
 
 class WorkerExecutor:
@@ -89,6 +90,8 @@ class WorkerExecutor:
         
         # 记录活跃任务
         with self._lock:
+            if task_id in self._active_tasks:
+                raise ValueError(f"Duplicate active task_id: {task_id}")
             self._active_tasks[task_id] = task
         
         # Capture caller's contextvars (including _CURRENT_RUN_ID) so that
@@ -126,7 +129,8 @@ class WorkerExecutor:
                     self._active_tasks.pop(task_id, None)
 
         try:
-            self._executor.submit(_worker)
+            exec_future = self._executor.submit(_worker)
+            task.executor_future = exec_future
         except Exception as e:
             with self._lock:
                 self._active_tasks.pop(task_id, None)
@@ -176,6 +180,11 @@ class WorkerExecutor:
         self._shutdown = True
         if not wait:
             self._executor.shutdown(wait=False, cancel_futures=True)
+            with self._lock:
+                for task in self._active_tasks.values():
+                    if task.executor_future is not None and task.executor_future.cancelled():
+                        if not task.result_future.done():
+                            task.result_future.cancel()
             return
 
         # For wait=True, implement timeout by waiting on tracked task futures.

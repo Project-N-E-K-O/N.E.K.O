@@ -123,7 +123,8 @@ class PluginStatusManager:
         Args:
             plugin_hosts_getter: 返回 plugin_hosts 字典的回调函数
         """
-        self._ensure_shutdown_event()
+        # 每次启动都重建，避免复用已 set 的事件导致任务立即退出
+        self._shutdown_event = asyncio.Event()
         self._plugin_hosts_getter = plugin_hosts_getter
         if self._status_consumer_task is None or self._status_consumer_task.done():
             self._status_consumer_task = asyncio.create_task(self._consume_status())

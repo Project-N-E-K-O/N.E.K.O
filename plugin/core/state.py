@@ -299,19 +299,19 @@ class GlobalState:
     @contextmanager
     def acquire_plugins_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
         """获取 plugins_lock（带超时）- 已废弃，请使用 acquire_plugins_write_lock"""
-        with timed_lock(self.plugins_lock, timeout, "plugins_lock"):
+        with self._plugins_rwlock.write_lock(timeout, "plugins_write"):
             yield
 
     @contextmanager
     def acquire_plugin_hosts_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
         """获取 plugin_hosts_lock（带超时）- 已废弃，请使用 acquire_plugin_hosts_write_lock"""
-        with timed_lock(self.plugin_hosts_lock, timeout, "plugin_hosts_lock"):
+        with self._plugin_hosts_rwlock.write_lock(timeout, "plugin_hosts_write"):
             yield
 
     @contextmanager
     def acquire_event_handlers_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
         """获取 event_handlers_lock（带超时）- 已废弃，请使用 acquire_event_handlers_write_lock"""
-        with timed_lock(self.event_handlers_lock, timeout, "event_handlers_lock"):
+        with self._event_handlers_rwlock.write_lock(timeout, "event_handlers_write"):
             yield
     
     # RWLock 写锁上下文管理器（用于修改操作）
@@ -532,9 +532,9 @@ class GlobalState:
         """
         lock_order = {'plugins': 1, 'hosts': 2, 'handlers': 3}
         lock_map = {
-            'plugins': self.plugins_lock,
-            'hosts': self.plugin_hosts_lock,
-            'handlers': self.event_handlers_lock,
+            'plugins': self._plugins_rwlock,
+            'hosts': self._plugin_hosts_rwlock,
+            'handlers': self._event_handlers_rwlock,
         }
         
         # 验证锁名称和顺序
@@ -555,17 +555,17 @@ class GlobalState:
         acquired_locks = []
         try:
             for name in lock_names:
-                lock = lock_map[name]
-                if not lock.acquire(timeout=timeout):
+                rwlock = lock_map[name]
+                if not rwlock.acquire_write(timeout=timeout):
                     logger.error("Failed to acquire {} lock within {}s", name, timeout)
                     raise TimeoutError(f"Failed to acquire {name} lock within {timeout}s")
-                acquired_locks.append(lock)
+                acquired_locks.append(rwlock)
             yield
         finally:
             # 释放所有已获取的锁（逆序释放）
-            for lock in reversed(acquired_locks):
+            for rwlock in reversed(acquired_locks):
                 try:
-                    lock.release()
+                    rwlock.release_write()
                 except Exception:
                     pass
 
@@ -1675,6 +1675,8 @@ class GlobalState:
                 logger.bind(component="server").debug("Plugin communication queue closed")
             except Exception as e:
                 logger.bind(component="server").warning(f"Error closing plugin communication queue: {e}")
+            finally:
+                self._plugin_comm_queue = None
         
         # 清理响应映射和 Manager
         if self._plugin_response_map_manager is not None:

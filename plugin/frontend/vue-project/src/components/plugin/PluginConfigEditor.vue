@@ -426,14 +426,16 @@ const previewConfigJson = computed(() => {
   }
 })
 
-async function loadProfileDraft(name: string) {
+async function loadProfileDraft(name: string, expectedVersion = loadVersion) {
   if (!props.pluginId) return
   try {
     const res = await getPluginProfileConfig(props.pluginId, name)
+    if (expectedVersion !== loadVersion) return
     const cfg = (res.config || {}) as Record<string, any>
     originalProfileConfig.value = deepClone(cfg)
     profileDraftConfig.value = deepClone(cfg)
   } catch {
+    if (expectedVersion !== loadVersion) return
     // 如果 profile 文件不存在或解析失败，则从空配置开始
     originalProfileConfig.value = {}
     profileDraftConfig.value = {}
@@ -479,7 +481,7 @@ async function loadAll() {
 
     selectedProfileName.value = toSelect
     if (toSelect) {
-      await loadProfileDraft(toSelect)
+      await loadProfileDraft(toSelect, currentVersion)
     } else {
       profileDraftConfig.value = null
       originalProfileConfig.value = null

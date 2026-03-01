@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
-from typing import TYPE_CHECKING, Any, Awaitable, Dict, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 try:
     import ormsgpack
@@ -217,7 +217,7 @@ class PluginContext:
         except Exception:
             pass
 
-    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Union[Dict[str, Any], Awaitable[Dict[str, Any]]]:
+    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
         """[DEPRECATED] Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."""
         try:
             self.logger.warning(
@@ -229,10 +229,10 @@ class PluginContext:
         from plugin.sdk.bus.memory import MemoryClient as BusMemoryClient
         bus_client = BusMemoryClient(self)
         if self._is_in_event_loop():
-            async def _wrap() -> Dict[str, Any]:
-                result = await bus_client.get_async(bucket_id=bucket_id, limit=limit, timeout=timeout)
-                return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
-            return _wrap()  # type: ignore[return-value]
+            raise RuntimeError(
+                "get_user_context() cannot be called from within an event loop; "
+                "use await ctx.bus.memory.get_async(...) instead."
+            )
         result = bus_client.get_sync(bucket_id=bucket_id, limit=limit, timeout=timeout)
         return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
 
@@ -1193,14 +1193,12 @@ class PluginContext:
                         return result if isinstance(result, dict) else {"result": result}
                     return result
                 if isinstance(pending, dict) and rid:
-                    try:
-                        if len(pending) > 1024:
-                            keys_to_remove = list(pending.keys())[:512]
-                            for k in keys_to_remove:
-                                pending.pop(k, None)
-                        pending[str(rid)] = msg
-                    except Exception:
-                        pass
+                    if len(pending) > 1024:
+                        raise RuntimeError(
+                            f"_response_pending overflow (size={len(pending)}, rid={rid}); "
+                            "upstream response correlation/backpressure bug must be fixed."
+                        )
+                    pending[str(rid)] = msg
 
         check_interval = 0.01
         while time.time() < deadline:

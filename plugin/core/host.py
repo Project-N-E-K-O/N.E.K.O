@@ -1314,6 +1314,11 @@ def _plugin_process_runner(
                                             elapsed = time.monotonic() - start_ts
                                             remain = timeout - elapsed
                                             if remain <= 0:
+                                                cancel_event.set()
+                                                try:
+                                                    future.cancel()
+                                                except Exception:
+                                                    pass
                                                 raise TimeoutError(f"Worker task {entry_id} timed out")
                                             slice_timeout = min(slice_timeout, remain)
 
@@ -1336,6 +1341,11 @@ def _plugin_process_runner(
                                         except Exception as persist_err:
                                             logger.debug("Failed to persist state after worker task: {}", persist_err)
                                 except TimeoutError as e:
+                                    cancel_event.set()
+                                    try:
+                                        future.cancel()
+                                    except Exception:
+                                        pass
                                     logger.error("Worker task {} timed out", entry_id)
                                     ret_payload["error"] = str(e)
                                 except Exception as e:

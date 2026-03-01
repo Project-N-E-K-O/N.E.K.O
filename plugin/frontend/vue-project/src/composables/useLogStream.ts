@@ -24,8 +24,9 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   // 获取 WebSocket URL
   function getWebSocketUrl(): string {
     const id = pluginId.value
+    const encodedId = encodeURIComponent(id)
     const authCode = authStore.authCode
-    
+
     // 构建基础 URL
     let baseUrl: string
     // 在开发环境中，如果使用代理（API_BASE_URL 为空），使用当前窗口的 host
@@ -33,20 +34,20 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
     if (!API_BASE_URL || API_BASE_URL === '') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
-      baseUrl = `${protocol}//${host}/ws/logs/${id}`
+      baseUrl = `${protocol}//${host}/ws/logs/${encodedId}`
     } else {
       // 生产环境：使用与 HTTP API 相同的基础 URL
       try {
         const apiUrl = new URL(API_BASE_URL)
         const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
         const host = apiUrl.host
-        baseUrl = `${protocol}//${host}/ws/logs/${id}`
+        baseUrl = `${protocol}//${host}/ws/logs/${encodedId}`
       } catch (e) {
         // 如果 URL 解析失败，回退到当前窗口的 host
         console.warn('[LogStream] Failed to parse API_BASE_URL, using current host:', e)
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const host = window.location.host
-        baseUrl = `${protocol}//${host}/ws/logs/${id}`
+        baseUrl = `${protocol}//${host}/ws/logs/${encodedId}`
       }
     }
     
@@ -66,26 +67,28 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
     }
 
     try {
+      const connectionPluginId = pluginId.value
       const url = getWebSocketUrl()
       ws.value = new WebSocket(url)
 
       ws.value.onopen = () => {
         isConnected.value = true
         reconnectAttempts.value = 0
-        console.log(`[LogStream] Connected to ${pluginId.value}`)
+        console.log(`[LogStream] Connected to ${connectionPluginId}`)
       }
 
       ws.value.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          
+
           // 基础结构校验
           if (!data || typeof data !== 'object' || !('type' in data)) {
             console.warn('[LogStream] Invalid message format:', data)
             return
           }
-          
-          const id = pluginId.value
+
+          const id = connectionPluginId
+          if (pluginId.value !== connectionPluginId) return
           
           if (data.type === 'initial') {
             if (!Array.isArray(data.logs)) {
