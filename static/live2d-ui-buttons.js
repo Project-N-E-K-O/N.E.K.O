@@ -950,6 +950,11 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     // 为"请她回来"按钮容器添加拖动功能
     this.setupReturnButtonContainerDrag(returnButtonContainer);
 
+    // 根据全局状态同步按钮状态（修复画质变更后按钮状态丢失问题）
+    // 语音状态：window.isRecording 由语音控制模块设置
+    // 屏幕分享状态：通过 screenCaptureStream 变量判断（在 app.js 中）
+    this._syncButtonStatesWithGlobalState();
+
     // 通知其他代码浮动按钮已经创建完成（用于app.js中绑定Agent开关事件）
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');

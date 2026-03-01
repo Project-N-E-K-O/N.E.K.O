@@ -7,7 +7,7 @@ import os
 import uuid
 from types import MappingProxyType
 
-from config.prompts_chara import lanlan_prompt
+from config.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_default_prompt
 
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
@@ -15,6 +15,83 @@ logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
 GSV_VOICE_PREFIX = "gsv:"
+
+# 角色档案保留字段（统一管理）
+# - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
+# - workshop: 创意工坊导入/发布流程专用，不应从外部角色卡直接透传
+CHARACTER_SYSTEM_RESERVED_FIELDS = (
+    "_reserved",
+    "live2d",
+    "voice_id",
+    "system_prompt",
+    "model_type",
+    "vrm",
+    "vrm_animation",
+    "lighting",
+    "vrm_rotation",
+    "live2d_item_id",
+    "item_id",
+    "idleAnimation",
+)
+
+CHARACTER_WORKSHOP_RESERVED_FIELDS = (
+    "原始数据",
+    "文件路径",
+    "创意工坊物品ID",
+    "description",
+    "tags",
+    "name",
+    "描述",
+    "标签",
+    "关键词",
+)
+
+CHARACTER_RESERVED_FIELDS = tuple(
+    dict.fromkeys((*CHARACTER_SYSTEM_RESERVED_FIELDS, *CHARACTER_WORKSHOP_RESERVED_FIELDS))
+)
+
+
+def get_character_reserved_fields() -> tuple[str, ...]:
+    """返回角色档案保留字段（去重后、有序）。"""
+    return CHARACTER_RESERVED_FIELDS
+
+
+# 角色保留字段 schema（v2）
+# 所有系统保留字段统一收口到 `_reserved`，并按 avatar/live2d/vrm 分层。
+RESERVED_FIELD_SCHEMA = {
+    "voice_id": str,
+    "system_prompt": str,
+    "avatar": {
+        "model_type": str,
+        "asset_source": str,
+        "asset_source_id": str,
+        "live2d": {
+            "model_path": str,
+        },
+        "vrm": {
+            "model_path": str,
+            "animation": (str, dict, list, type(None)),
+            "idle_animation": str,
+            "lighting": (dict, type(None)),
+        },
+    },
+}
+
+# 兼容迁移映射：旧平铺字段 -> _reserved 路径
+# 注意：rotation / camera_position / position / scale / viewport / display 保持本地偏好存储，
+# 不迁移到 characters.json。
+LEGACY_FLAT_TO_RESERVED = {
+    "voice_id": ("voice_id",),
+    "system_prompt": ("system_prompt",),
+    "model_type": ("avatar", "model_type"),
+    "live2d_item_id": ("avatar", "asset_source_id"),
+    "item_id": ("avatar", "asset_source_id"),
+    "live2d": ("avatar", "live2d", "model_path"),
+    "vrm": ("avatar", "vrm", "model_path"),
+    "vrm_animation": ("avatar", "vrm", "animation"),
+    "idleAnimation": ("avatar", "vrm", "idle_animation"),
+    "lighting": ("avatar", "vrm", "lighting"),
+}
 
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>
@@ -127,9 +204,24 @@ DEFAULT_LANLAN_TEMPLATE = {
         "性别": "女",
         "年龄": 15,
         "昵称": "T酱, 小T",
-        "live2d": "mao_pro",
-        "voice_id": "",
-        "system_prompt": lanlan_prompt,
+        "_reserved": {
+            "voice_id": "",
+            "system_prompt": lanlan_prompt,
+            "avatar": {
+                "model_type": "live2d",
+                "asset_source": "local",
+                "asset_source_id": "",
+                "live2d": {
+                    "model_path": "mao_pro/mao_pro.model3.json",
+                },
+                "vrm": {
+                    "model_path": "",
+                    "animation": None,
+                    "idle_animation": "",
+                    "lighting": None,
+                },
+            },
+        },
     }
 }
 
@@ -139,7 +231,9 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "fill": 0.5,     # 补光强度
     "rim": 0.8,      # 轮廓光强度
     "top": 0.3,      # 顶光强度
-    "bottom": 0.15   # 底光强度
+    "bottom": 0.15,  # 底光强度
+    "exposure": 0.0, # 曝光值
+    "toneMapping": 0 # 色调映射类型
 }
 
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
@@ -150,7 +244,9 @@ VRM_LIGHTING_RANGES = {
     'fill': (0, 1.0),
     'rim': (0, 1.5),
     'top': (0, 1.0),
-    'bottom': (0, 0.5)
+    'bottom': (0, 0.5),
+    'exposure': (-10.0, 10.0),
+    'toneMapping': (0, 5),
 }
 
 
@@ -477,6 +573,12 @@ def get_agent_extra_body(model: str) -> dict | None:
 __all__ = [
     'APP_NAME',
     'GSV_VOICE_PREFIX',
+    'CHARACTER_SYSTEM_RESERVED_FIELDS',
+    'CHARACTER_WORKSHOP_RESERVED_FIELDS',
+    'CHARACTER_RESERVED_FIELDS',
+    'RESERVED_FIELD_SCHEMA',
+    'LEGACY_FLAT_TO_RESERVED',
+    'get_character_reserved_fields',
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',
@@ -485,6 +587,8 @@ __all__ = [
     'get_default_vrm_lighting',
     'DEFAULT_CHARACTERS_CONFIG',
     'get_localized_default_characters',
+    'get_lanlan_prompt',
+    'is_default_prompt',
     'DEFAULT_CORE_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',

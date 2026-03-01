@@ -336,6 +336,7 @@ function init_app() {
     // 动画设置：画质和帧率
     let renderQuality = 'medium';   // 'low' | 'medium' | 'high'
     let targetFrameRate = 60;       // 30 | 45 | 60
+    const mapRenderQualityToFollowPerf = (quality) => (quality === 'high' ? 'medium' : 'low');
 
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
@@ -350,6 +351,7 @@ function init_app() {
     window.proactiveVisionInterval = proactiveVisionInterval;
     window.renderQuality = renderQuality;
     window.targetFrameRate = targetFrameRate;
+    window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
 
     // WebSocket心跳保活
     let heartbeatInterval = null;
@@ -366,9 +368,21 @@ function init_app() {
 
     // 建立WebSocket连接
     function connectWebSocket() {
+        const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
+            ? window.lanlan_config.lanlan_name
+            : '';
+        if (!currentLanlanName) {
+            console.warn('[WebSocket] lanlan_name is empty, wait for page config and retry');
+            if (autoReconnectTimeoutId) {
+                clearTimeout(autoReconnectTimeoutId);
+            }
+            autoReconnectTimeoutId = setTimeout(connectWebSocket, 500);
+            return;
+        }
+
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const wsUrl = `${protocol}://${window.location.host}/ws/${lanlan_config.lanlan_name}`;
-        console.log(window.t('console.websocketConnecting'), lanlan_config.lanlan_name, window.t('console.websocketUrl'), wsUrl);
+        const wsUrl = `${protocol}://${window.location.host}/ws/${currentLanlanName}`;
+        console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
@@ -817,6 +831,8 @@ function init_app() {
                     if (msg) {
                         setFloatingAgentStatus(msg, response.status || 'completed');
                         maybeShowAgentQuotaExceededModal(msg);
+                        maybeShowContentFilterModal(msg);
+                        if (response.error_message) maybeShowContentFilterModal(response.error_message);
                     }
                 } else if (response.type === 'agent_task_update') {
                     try {
@@ -842,6 +858,7 @@ function init_app() {
                             const errMsg = task.error || task.reason || '';
                             if (errMsg) {
                                 maybeShowAgentQuotaExceededModal(errMsg);
+                                maybeShowContentFilterModal(errMsg);
                             }
                         }
                     } catch (e) {
@@ -2190,8 +2207,16 @@ function init_app() {
         }
     }
 
-    // 保存选择的麦克风到服务器
+    // 保存选择的麦克风到服务器和 localStorage
     async function saveSelectedMicrophone(deviceId) {
+        try {
+            if (deviceId) {
+                localStorage.setItem('neko_selected_microphone', deviceId);
+            } else {
+                localStorage.removeItem('neko_selected_microphone');
+            }
+        } catch (e) { }
+
         try {
             const response = await fetch('/api/characters/set_microphone', {
                 method: 'POST',
@@ -2211,16 +2236,15 @@ function init_app() {
         }
     }
 
-    // 加载上次选择的麦克风
-    async function loadSelectedMicrophone() {
+    // 加载上次选择的麦克风（优先从 localStorage 加载，快速恢复）
+    function loadSelectedMicrophone() {
         try {
-            const response = await fetch('/api/characters/get_microphone');
-            if (response.ok) {
-                const data = await response.json();
-                selectedMicrophoneId = data.microphone_id || null;
+            const saved = localStorage.getItem('neko_selected_microphone');
+            if (saved) {
+                selectedMicrophoneId = saved;
+                console.log(`已加载麦克风设置: ${saved}`);
             }
-        } catch (err) {
-            console.error(window.t('console.loadMicrophoneSelectionFailed'), err);
+        } catch (e) {
             selectedMicrophoneId = null;
         }
     }
@@ -2926,6 +2950,12 @@ function init_app() {
 
             screenButton.classList.add('active');
             syncFloatingScreenButtonState(true);
+
+            if (window.unlockAchievement) {
+                window.unlockAchievement('ACH_SEND_IMAGE').catch(err => {
+                    console.error('解锁发送图片成就失败:', err);
+                });
+            }
 
             try {
                 stopProactiveVisionDuringSpeech();
@@ -5897,7 +5927,7 @@ function init_app() {
     window.agentStateMachine = agentStateMachine;
     window._agentStatusSnapshot = window._agentStatusSnapshot || null;
 
-    // Agent 定时检查器（暴露到 window 供 live2d-ui-hud.js 调用）
+    // Agent 定时检查器
     let agentCheckInterval = null;
     let lastFlagsSyncTime = 0;
     const FLAGS_SYNC_INTERVAL = 3000; // 3秒同步一次后端flags状态
@@ -6071,7 +6101,7 @@ function init_app() {
                         if (notification) {
                             console.log('[App] 收到后端通知:', notification);
                             setFloatingAgentStatus(notification);
-                            // 如果是错误通知，也可以考虑弹窗
+                            maybeShowContentFilterModal(notification);
                             if (notification.includes('失败') || notification.includes('断开') || notification.includes('错误')) {
                                 showStatusToast(notification, 3000);
                             }
@@ -6286,6 +6316,45 @@ function init_app() {
             .catch(() => { /* ignore */ })
             .finally(() => {
                 _agentQuotaModalOpen = false;
+            });
+    }
+
+    let _contentFilterModalOpen = false;
+    let _contentFilterModalCooldownUntil = 0;
+
+    function _isContentFilterError(text) {
+        if (!text) return false;
+        const s = String(text).toLowerCase();
+        return (
+            s.includes('content_filter') ||
+            s.includes('data_inspection_failed') ||
+            s.includes('datainspectionfailed') ||
+            s.includes('inappropriate content') ||
+            s.includes('content filter') ||
+            s.includes('responsible ai policy') ||
+            s.includes('content management policy')
+        );
+    }
+
+    function maybeShowContentFilterModal(rawMessage) {
+        if (!_isContentFilterError(rawMessage)) return;
+        if (typeof window.showAlert !== 'function') return;
+
+        const now = Date.now();
+        if (_contentFilterModalOpen || now < _contentFilterModalCooldownUntil) return;
+
+        _contentFilterModalOpen = true;
+        _contentFilterModalCooldownUntil = now + 5000;
+
+        const title = window.t ? window.t('common.alert') : '提示';
+        const msg = window.t
+            ? window.t('agent.contentFilterError')
+            : 'Agent 浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。';
+
+        Promise.resolve(window.showAlert(msg, title))
+            .catch(() => { /* ignore */ })
+            .finally(() => {
+                _contentFilterModalOpen = false;
             });
     }
 
@@ -7248,9 +7317,12 @@ function init_app() {
                 return;
             }
 
+            keyboardCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            browserCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             if (userPluginCheckbox) {
+                userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             
@@ -8371,6 +8443,11 @@ function init_app() {
                     const screenshotDataUrl = results[screenshotIndex];
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        if (window.unlockAchievement) {
+                            window.unlockAchievement('ACH_SEND_IMAGE').catch(err => {
+                                console.error('解锁发送图片成就失败:', err);
+                            });
+                        }
                     } else {
                         // 截图失败，从 enabled_modes 中移除 vision
                         console.log('截图失败，移除 vision 模式');
@@ -8793,6 +8870,9 @@ function init_app() {
         const currentTargetFrameRate = typeof window.targetFrameRate !== 'undefined'
             ? window.targetFrameRate
             : targetFrameRate;
+        const currentMouseTracking = typeof window.mouseTrackingEnabled !== 'undefined'
+            ? window.mouseTrackingEnabled
+            : true;
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -8806,7 +8886,8 @@ function init_app() {
             proactiveVisionInterval: currentProactiveVisionInterval,
             proactivePersonalChatEnabled: currentPersonalChat,
             renderQuality: currentRenderQuality,
-            targetFrameRate: currentTargetFrameRate
+            targetFrameRate: currentTargetFrameRate,
+            mouseTrackingEnabled: currentMouseTracking
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
 
@@ -8911,9 +8992,18 @@ function init_app() {
                 // 画质设置
                 renderQuality = settings.renderQuality ?? 'medium';
                 window.renderQuality = renderQuality;
+                window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
                 // 帧率设置
                 targetFrameRate = settings.targetFrameRate ?? 60;
                 window.targetFrameRate = targetFrameRate;
+                // 鼠标跟踪设置（严格转换为布尔值）
+                if (typeof settings.mouseTrackingEnabled === 'boolean') {
+                    window.mouseTrackingEnabled = settings.mouseTrackingEnabled;
+                } else if (typeof settings.mouseTrackingEnabled === 'string') {
+                    window.mouseTrackingEnabled = settings.mouseTrackingEnabled === 'true';
+                } else {
+                    window.mouseTrackingEnabled = true;
+                }
 
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
@@ -8947,7 +9037,9 @@ function init_app() {
                 window.proactiveChatInterval = proactiveChatInterval;
                 window.proactiveVisionInterval = proactiveVisionInterval;
                 window.renderQuality = renderQuality;
+                window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
                 window.targetFrameRate = targetFrameRate;
+                window.mouseTrackingEnabled = true;
 
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
@@ -8966,12 +9058,17 @@ function init_app() {
             window.proactiveChatInterval = proactiveChatInterval;
             window.proactiveVisionInterval = proactiveVisionInterval;
             window.renderQuality = renderQuality;
+            window.cursorFollowPerformanceLevel = mapRenderQualityToFollowPerf(renderQuality);
             window.targetFrameRate = targetFrameRate;
+            window.mouseTrackingEnabled = true;
         }
     }
 
     // 加载设置
     loadSettings();
+
+    // 加载麦克风设备选择
+    loadSelectedMicrophone();
 
     // 加载麦克风增益设置
     loadMicGainSetting();
@@ -9860,9 +9957,31 @@ function init_app() {
     });
 } // 兼容老按钮
 
-const ready = () => {
+const ready = async () => {
     if (ready._called) return;
     ready._called = true;
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        const PAGE_CONFIG_READY_TIMEOUT = Symbol('page-config-ready-timeout');
+        const PAGE_CONFIG_READY_TIMEOUT_MS = 3000;
+        let timeoutId = null;
+        try {
+            const waitResult = await Promise.race([
+                window.pageConfigReady,
+                new Promise(resolve => {
+                    timeoutId = setTimeout(() => resolve(PAGE_CONFIG_READY_TIMEOUT), PAGE_CONFIG_READY_TIMEOUT_MS);
+                })
+            ]);
+            if (waitResult === PAGE_CONFIG_READY_TIMEOUT) {
+                console.warn(`[Init] pageConfigReady pending over ${PAGE_CONFIG_READY_TIMEOUT_MS}ms, continue with fallback config`);
+            }
+        } catch (error) {
+            console.warn('[Init] pageConfigReady rejected, continue with fallback config', error);
+        } finally {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+            }
+        }
+    }
     init_app();
 };
 

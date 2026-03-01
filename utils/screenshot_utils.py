@@ -166,7 +166,7 @@ async def analyze_image_with_vision_model(
                     ]
                 }
             ],
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             extra_body=get_extra_body(vision_model) or None
         )
         

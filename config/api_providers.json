@@ -75,7 +75,7 @@
       "correction_model": "gpt-5-chat-latest",
       "emotion_model": "gpt-4.1-nano",
       "vision_model": "gpt-5-chat-latest",
-      "agent_model": "gpt-5.2-codex"
+      "agent_model": "gpt-5.2"
     },
     "glm": {
       "key": "glm",

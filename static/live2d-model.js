@@ -272,7 +272,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
         this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
-        this.modelName = parts.length > 0 ? parts[parts.length - 1] : null;
+        const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
+        try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }
         console.log('模型根路径解析:', { modelUrl: urlString, modelName: this.modelName, modelRootPath: this.modelRootPath });
     } catch (e) {
         console.warn('解析模型根路径失败，将使用默认值', e);
@@ -323,10 +324,12 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.setupTouchZoom(model);
     }
 
-    // 启用鼠标跟踪
-    if (options.mouseTracking !== false) {
-        this.enableMouseTracking(model);
-    }
+    // 启用鼠标跟踪（始终启用监听器，内部根据设置决定是否执行眼睛跟踪）
+    // enableMouseTracking 包含悬浮菜单显示/隐藏逻辑，必须始终启用
+    this.enableMouseTracking(model);
+    // 同步内部状态（眼睛跟踪是否启用）
+    this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+    console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
 
     // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
     this.setupFloatingButtons(model);
@@ -341,16 +344,71 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             // 保存原始 FileReferences
             this.fileReferences = settings.FileReferences || null;
 
+            // 从服务器 API 获取经过验证的表情/动作文件路径
+            // model_manager 页面在加载前已手动注入；此处为 index 等其他页面补齐相同逻辑
+            let verifiedExpressionBasenames = null;
+            try {
+                const rootParts = this.modelRootPath.split('/').filter(Boolean);
+                let filesApiUrl = null;
+                if (rootParts[0] === 'workshop' && rootParts.length >= 2 && /^\d+$/.test(rootParts[1])) {
+                    filesApiUrl = `/api/live2d/model_files_by_id/${rootParts[1]}`;
+                } else if (this.modelName) {
+                    filesApiUrl = `/api/live2d/model_files/${encodeURIComponent(this.modelName)}`;
+                }
+                if (filesApiUrl) {
+                    const filesResp = await fetch(filesApiUrl);
+                    if (filesResp.ok) {
+                        const filesData = await filesResp.json();
+                        if (filesData.success !== false && Array.isArray(filesData.expression_files)) {
+                            if (!this.fileReferences) this.fileReferences = {};
+                            this.fileReferences.Expressions = filesData.expression_files.map(file => ({
+                                Name: file.split('/').pop().replace('.exp3.json', ''),
+                                File: file
+                            }));
+                            verifiedExpressionBasenames = new Set(
+                                filesData.expression_files.map(f => f.split('/').pop().toLowerCase())
+                            );
+                            console.log('已从服务器更新表情文件引用:', this.fileReferences.Expressions.length, '个表情');
+                        }
+                        if (filesData.success !== false && Array.isArray(filesData.motion_files)) {
+                            if (!this.fileReferences) this.fileReferences = {};
+                            if (!this.fileReferences.Motions) this.fileReferences.Motions = {};
+                            this.fileReferences.Motions.PreviewAll = filesData.motion_files.map(file => ({ File: file }));
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('获取服务器端表情文件列表失败，将使用模型配置中的路径:', e);
+            }
+
             // 优先使用顶层 EmotionMapping，否则从 FileReferences 推导
             if (settings.EmotionMapping && (settings.EmotionMapping.expressions || settings.EmotionMapping.motions)) {
                 this.emotionMapping = settings.EmotionMapping;
             } else {
                 this.emotionMapping = this.deriveEmotionMappingFromFileRefs(this.fileReferences || {});
             }
+
+            // 用服务器验证过的表情文件集过滤 emotionMapping，剔除磁盘上不存在的条目
+            if (verifiedExpressionBasenames && this.emotionMapping && this.emotionMapping.expressions) {
+                for (const emotion of Object.keys(this.emotionMapping.expressions)) {
+                    const before = this.emotionMapping.expressions[emotion];
+                    if (!Array.isArray(before)) continue;
+                    this.emotionMapping.expressions[emotion] = before.filter(f => {
+                        const base = String(f).split('/').pop().toLowerCase();
+                        return verifiedExpressionBasenames.has(base);
+                    });
+                }
+                console.log('已根据服务器验证结果过滤 emotionMapping');
+            }
             console.log('已加载情绪映射:', this.emotionMapping);
         } else {
             console.warn('模型配置中未找到 settings.json，无法加载情绪映射');
         }
+    }
+
+    // 切换模型后清空失效 expression 缓存，避免污染其他模型
+    if (typeof this.clearMissingExpressionFiles === 'function') {
+        this.clearMissingExpressionFiles();
     }
 
     // 记录模型的初始参数（用于expression重置）
@@ -463,7 +521,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”
     if (typeof this._checkSnapRequired === 'function') {
         try {
-            const snapInfo = await this._checkSnapRequired(model);
+            const snapInfo = await this._checkSnapRequired(model, { threshold: 300 });
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
                 model.x = snapInfo.targetX;
                 model.y = snapInfo.targetY;
@@ -684,6 +742,48 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 然后在动作更新后立即覆盖参数
             try {
+                // === 点击效果平滑过渡处理 ===
+                // 当 _clickFadeState 存在时，说明点击效果正在平滑恢复中
+                // 此时跳过 savedModelParameters 和 persistentExpression 的强制写入
+                // 改为执行插值过渡
+                const fadeState = this._clickFadeState;
+                if (fadeState) {
+                    const now = performance.now();
+                    const elapsed = now - fadeState.startTime;
+                    // 防御性校验：确保 duration 为有限正数，否则视为立即完成
+                    const safeDuration = (Number.isFinite(fadeState.duration) && fadeState.duration > 0) ? fadeState.duration : 1;
+                    const linearProgress = Math.min(Math.max(elapsed / safeDuration, 0), 1);
+                    // cubic ease-out: 快进慢出
+                    const t = 1 - Math.pow(1 - linearProgress, 3);
+
+                    for (const [paramId, target] of Object.entries(fadeState.targetValues)) {
+                        const start = fadeState.startValues[paramId];
+                        if (start === undefined) continue;
+                        try {
+                            const interpolated = start + (target - start) * t;
+                            coreModel.setParameterValueById(paramId, interpolated);
+                        } catch (_) {}
+                    }
+
+                    // 口型参数不受过渡影响，照常写入
+                    for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        try {
+                            coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                        } catch (_) {}
+                    }
+
+                    // 过渡完成：清除 fade 状态，恢复正常覆写逻辑
+                    if (linearProgress >= 1) {
+                        this._clickFadeState = null;
+                        console.log('[ClickEffect] 平滑过渡完成');
+                        // 确保常驻表情最终精确应用
+                        if (typeof this.applyPersistentExpressionsNative === 'function') {
+                            try { this.applyPersistentExpressionsNative(true); } catch (_) {}
+                        }
+                    }
+                    // 跳过下方的正常覆写逻辑
+                } else {
+                // === 正常帧：应用保存参数 + 常驻表情 ===
                 // 1. 应用保存的模型参数（智能叠加模式）
                 if (this.savedModelParameters && this._shouldApplySavedParams) {
                     const persistentParamIds = this.getPersistentExpressionParamIds();
@@ -743,6 +843,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         }
                     }
                 }
+                } // 结束 else（正常帧覆写逻辑）
             } catch (_) {}
         };
         } // 结束 else 块（确保 motionManager 和 coreModel 都已准备好）
@@ -797,7 +898,8 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
-            if (this.persistentExpressionParamsByName) {
+            // 当点击效果正在淡入淡出时，跳过常驻表情写入以避免覆盖插值
+            if (this.persistentExpressionParamsByName && !this._clickFadeState) {
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {

@@ -160,42 +160,101 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             return;
         }
 
+        // 过滤已确认失效的 expression，避免重复请求 404
+        if (typeof this.isExpressionFileMissing === 'function') {
+            expressionFiles = expressionFiles.filter(file => !this.isExpressionFileMissing(file));
+        }
+
+        if (!expressionFiles || expressionFiles.length === 0) {
+            console.log(`情感 ${emotion} 的表情文件均已标记失效，跳过表情播放`);
+            return;
+        }
+
         choiceFile = this.getRandomElement(expressionFiles);
     }
     if (!choiceFile) return;
+
+    // 将 basename（如 expression7.exp3.json）归一化回 FileReferences 中的真实路径（如 expressions/expression7.exp3.json）
+    const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
+        ? this.resolveExpressionReferenceByFile(choiceFile)
+        : null;
+    const resolvedExpressionName = resolvedRef && resolvedRef.name ? resolvedRef.name : null;
+    const canonicalChoiceFile = resolvedRef && resolvedRef.file ? resolvedRef.file : choiceFile;
     
     try {
-        // 计算表达文件路径（相对模型根目录）
-        const expressionPath = this.resolveAssetPath(choiceFile);
-        const response = await fetch(expressionPath);
-        if (!response.ok) {
-            throw new Error(`Failed to load expression: ${response.statusText}`);
+        // 构造候选表达文件路径：优先 canonical，其次同名 FileReferences，再尝试 expressions/ 前缀
+        const candidateFiles = [];
+        const pushCandidate = (filePath) => {
+            if (!filePath || typeof filePath !== 'string') return;
+            const normalized = filePath.replace(/\\/g, '/');
+            if (!candidateFiles.includes(normalized)) candidateFiles.push(normalized);
+        };
+
+        pushCandidate(canonicalChoiceFile);
+
+        const baseName = String(canonicalChoiceFile).replace(/\\/g, '/').split('/').pop() || '';
+        if (this.fileReferences && Array.isArray(this.fileReferences.Expressions) && baseName) {
+            for (const expr of this.fileReferences.Expressions) {
+                if (!expr || typeof expr !== 'object' || !expr.File) continue;
+                const exprFile = String(expr.File).replace(/\\/g, '/');
+                const exprBase = exprFile.split('/').pop() || '';
+                if (exprBase === baseName) pushCandidate(exprFile);
+            }
         }
-        
-        const expressionData = await response.json();
-        console.log(`加载表情文件: ${choiceFile}`, expressionData);
+
+        if (baseName && !baseName.includes('/')) {
+            // 常见工坊结构：表达文件位于 expressions/ 子目录
+            pushCandidate(`expressions/${baseName}`);
+        }
+
+        let expressionData = null;
+        let loadedExpressionFile = null;
+        let lastFetchError = null;
+
+        for (const candidateFile of candidateFiles) {
+            try {
+                const expressionPath = this.resolveAssetPath(candidateFile);
+                const response = await fetch(expressionPath);
+                if (!response.ok) {
+                    lastFetchError = new Error(`Failed to load expression: ${response.statusText}`);
+                    continue;
+                }
+                expressionData = await response.json();
+                loadedExpressionFile = candidateFile;
+                break;
+            } catch (e) {
+                lastFetchError = e;
+            }
+        }
+
+        if (!expressionData || !loadedExpressionFile) {
+            if (typeof this.markExpressionFileMissing === 'function') {
+                for (const file of candidateFiles) this.markExpressionFileMissing(file);
+            }
+            throw lastFetchError || new Error('Failed to load expression');
+        }
+        console.log(`加载表情文件: ${loadedExpressionFile}`, expressionData);
         
         // 方法1: 尝试使用原生expression API
         if (this.currentModel.expression) {
             try {
-                // 在 FileReferences 中查找匹配的表情名称
-                let expressionName = null;
-                if (this.fileReferences && this.fileReferences.Expressions) {
-                    for (const expr of this.fileReferences.Expressions) {
-                        if (expr.File === choiceFile) {
-                            expressionName = expr.Name;
-                            break;
-                        }
-                    }
-                }
-                
-                // 如果找不到，回退到使用文件名
+                const expressionName = resolvedExpressionName || ((typeof this.resolveExpressionNameByFile === 'function')
+                    ? this.resolveExpressionNameByFile(canonicalChoiceFile)
+                    : null);
+
                 if (!expressionName) {
-                    const base = String(choiceFile).split('/').pop() || '';
-                    expressionName = base.replace('.exp3.json', '');
+                    console.warn(`未找到表情名映射，将跳过原生API并回退到手动参数设置: ${loadedExpressionFile}`);
+                    throw new Error('Expression name mapping not found');
+                }
+
+                // 一些工坊模型会把 Name/映射写成 *.exp3.json，底层会将其当文件路径并错误拼接，故直接回退手动参数应用
+                const nameLooksLikeFile = /\.exp3\.json$/i.test(expressionName) || expressionName.includes('/');
+                if (nameLooksLikeFile) {
+                    console.warn(`表情名疑似文件路径，跳过原生API避免404: ${expressionName}`);
+                    throw new Error('Expression name appears to be a file path');
                 }
                 
-                console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${choiceFile})`);
+                console.log(`尝试使用原生API播放expression: ${expressionName} (file: ${loadedExpressionFile})`);
                 
                 const expression = await this.currentModel.expression(expressionName);
                 if (expression) {
@@ -227,7 +286,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
             }
         }
         
-        console.log(`手动设置表情: ${choiceFile}`);
+        console.log(`手动设置表情: ${loadedExpressionFile}`);
     } catch (error) {
         console.error('播放表情失败:', error);
     }

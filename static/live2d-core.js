@@ -85,6 +85,7 @@ class Live2DManager {
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
+        this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
         
         // 模型加载锁，防止并发加载导致重复模型叠加
         this._isLoadingModel = false;
@@ -119,6 +120,9 @@ class Live2DManager {
         // 口型覆盖重新安装标志（防止重复安装）
         this._reinstallScheduled = false;
 
+        // 记录已确认不存在的 expression 文件，避免重复 404 请求
+        this._missingExpressionFiles = new Set();
+        
         
     }
 
@@ -204,11 +208,11 @@ class Live2DManager {
 
         this._initPIXIPromise = (async () => {
             try {
-                // 等待一帧让页面布局稳定，避免读到 CSS 未完全生效时的临时尺寸
-                await new Promise(resolve => requestAnimationFrame(resolve));
-
-                const initW = Math.max(container.clientWidth || 0, 1);
-                const initH = Math.max(container.clientHeight || 0, 1);
+                // 使用 window.screen 全屏尺寸初始化渲染器，画布始终覆盖整个屏幕区域
+                // 任务栏/DevTools/键盘等造成的视口缩小只会裁切画布边缘（overflow:hidden），
+                // 不会导致缝隙或模型位移
+                const initW = Math.max(window.screen.width || 1, 1);
+                const initH = Math.max(window.screen.height || 1, 1);
                 this.pixi_app = new PIXI.Application({
                     view: canvas,
                     width: initW,
@@ -217,7 +221,6 @@ class Live2DManager {
                     ...options
                 });
 
-                // 验证 pixi_app 和 stage 是否创建成功
                 if (!this.pixi_app) {
                     throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
                 }
@@ -228,13 +231,12 @@ class Live2DManager {
 
                 this.isInitialized = true;
                 this._lastPIXIContext = { canvasId, containerId };
-                // 应用初始帧率设置
                 if (window.targetFrameRate && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
 
-                // 仅在屏幕分辨率真正变化（换显示器/跨屏移动）时 resize 渲染器
-                // DevTools、输入法、窗口拖拽等临时视口变化一律忽略，节省 GPU 开销
+                // 仅在屏幕分辨率真正变化（换显示器/屏幕旋转）时 resize 渲染器并调整模型坐标
+                // 任务栏、DevTools、输入法等视口变化不触发任何操作
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
                 this._screenChangeHandler = () => {
@@ -246,16 +248,12 @@ class Live2DManager {
 
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    const el = document.getElementById(containerId);
-                    const measuredW = el ? el.clientWidth : prevW;
-                    const measuredH = el ? el.clientHeight : prevH;
-                    const measuredContainerIsZero = !!el && (measuredW <= 0 || measuredH <= 0);
-                    const newW = Math.max(measuredW, 1);
-                    const newH = Math.max(measuredH, 1);
+                    const newW = Math.max(sw, 1);
+                    const newH = Math.max(sh, 1);
 
                     this.pixi_app.renderer.resize(newW, newH);
 
-                    if (this.currentModel && prevW > 0 && prevH > 0 && !measuredContainerIsZero) {
+                    if (this.currentModel && prevW > 0 && prevH > 0) {
                         const wRatio = newW / prevW;
                         const hRatio = newH / prevH;
                         this.currentModel.x *= wRatio;
@@ -458,6 +456,78 @@ class Live2DManager {
         return `${this.modelRootPath}/${rel}`;
     }
 
+    // 规范化资源路径，用于宽松比较（忽略斜杠差异与大小写）
+    normalizeAssetPathForCompare(assetPath) {
+        if (!assetPath) return '';
+        const decoded = String(assetPath).trim();
+        const unified = decoded.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+        return unified.toLowerCase();
+    }
+
+    // 通过表达文件路径解析 expression name（兼容 "expressions/a.exp3.json" 与 "a.exp3.json"）
+    resolveExpressionNameByFile(expressionFile) {
+        const ref = this.resolveExpressionReferenceByFile(expressionFile);
+        return ref ? ref.name : null;
+    }
+
+    normalizeExpressionFileKey(expressionFile) {
+        if (!expressionFile || typeof expressionFile !== 'string') return '';
+        return expressionFile.replace(/\\/g, '/').trim().toLowerCase();
+    }
+
+    markExpressionFileMissing(expressionFile) {
+        const key = this.normalizeExpressionFileKey(expressionFile);
+        if (!key) return;
+        if (!this._missingExpressionFiles) this._missingExpressionFiles = new Set();
+        this._missingExpressionFiles.add(key);
+        const base = key.split('/').pop();
+        if (base) this._missingExpressionFiles.add(base);
+    }
+
+    isExpressionFileMissing(expressionFile) {
+        const key = this.normalizeExpressionFileKey(expressionFile);
+        if (!key || !this._missingExpressionFiles) return false;
+        if (this._missingExpressionFiles.has(key)) return true;
+        const base = key.split('/').pop();
+        return !!base && this._missingExpressionFiles.has(base);
+    }
+
+    clearMissingExpressionFiles() {
+        if (this._missingExpressionFiles) this._missingExpressionFiles.clear();
+    }
+
+    // 通过 expression 文件路径解析出标准引用（Name + File）
+    resolveExpressionReferenceByFile(expressionFile) {
+        if (!expressionFile || !this.fileReferences || !Array.isArray(this.fileReferences.Expressions)) {
+            return null;
+        }
+
+        const targetNorm = this.normalizeAssetPathForCompare(expressionFile);
+        const targetBase = targetNorm.split('/').pop() || '';
+
+        // 1) 优先精确匹配规范化后的 File 路径
+        for (const expr of this.fileReferences.Expressions) {
+            if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
+            const fileNorm = this.normalizeAssetPathForCompare(expr.File);
+            if (fileNorm === targetNorm) {
+                return { name: expr.Name, file: expr.File };
+            }
+        }
+
+        // 2) 兜底按文件名匹配（处理映射只给 basename 的情况）
+        if (targetBase) {
+            for (const expr of this.fileReferences.Expressions) {
+                if (!expr || typeof expr !== 'object' || !expr.Name || !expr.File) continue;
+                const fileBase = this.normalizeAssetPathForCompare(expr.File).split('/').pop() || '';
+                if (fileBase === targetBase) {
+                    return { name: expr.Name, file: expr.File };
+                }
+            }
+        }
+
+        return null;
+    }
+
     // 获取当前模型
     getCurrentModel() {
         return this.currentModel;
@@ -605,6 +675,64 @@ class Live2DManager {
         Object.keys(this._floatingButtons).forEach(btnId => {
             this.setButtonActive(btnId, false);
         });
+    }
+
+    /**
+     * 【统一状态管理】根据全局状态同步浮动按钮状态
+     * 用于模型重新加载后恢复按钮状态（如画质变更后）
+     */
+    _syncButtonStatesWithGlobalState() {
+        if (!this._floatingButtons) return;
+
+        // 同步语音按钮状态
+        const isRecording = window.isRecording || false;
+        if (this._floatingButtons.mic) {
+            this.setButtonActive('mic', isRecording);
+        }
+
+        // 同步屏幕分享按钮状态
+        // 屏幕分享状态通过 DOM 元素判断（screenButton 的 active class 或 stopButton 的 disabled 状态）
+        let isScreenSharing = false;
+        const screenButton = document.getElementById('screenButton');
+        const stopButton = document.getElementById('stopButton');
+        if (screenButton && screenButton.classList.contains('active')) {
+            isScreenSharing = true;
+        } else if (stopButton && !stopButton.disabled) {
+            isScreenSharing = true;
+        }
+        if (this._floatingButtons.screen) {
+            this.setButtonActive('screen', isScreenSharing);
+        }
+    }
+
+    /**
+     * 设置鼠标跟踪是否启用
+     * @param {boolean} enabled - 是否启用鼠标跟踪
+     */
+    setMouseTrackingEnabled(enabled) {
+        this._mouseTrackingEnabled = enabled;
+        window.mouseTrackingEnabled = enabled;
+
+        if (enabled) {
+            // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
+            if (this.currentModel && !this._mouseTrackingListener) {
+                this.enableMouseTracking(this.currentModel);
+            }
+        } else {
+            this.isFocusing = false;
+            if (this.currentModel) {
+                const b = this.currentModel.getBounds();
+                this.currentModel.focus((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+            }
+        }
+    }
+
+    /**
+     * 获取鼠标跟踪是否启用
+     * @returns {boolean}
+     */
+    isMouseTrackingEnabled() {
+        return this._mouseTrackingEnabled !== false;
     }
 }
 

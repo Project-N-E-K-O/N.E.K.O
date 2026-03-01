@@ -608,6 +608,18 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                 }
             });
         }
+
+        // 同步鼠标跟踪开关状态
+        const mouseTrackingCheckbox = popup.querySelector('#live2d-mouse-tracking-toggle');
+        if (mouseTrackingCheckbox && typeof window.mouseTrackingEnabled !== 'undefined') {
+            const newChecked = window.mouseTrackingEnabled;
+            if (mouseTrackingCheckbox.checked !== newChecked) {
+                mouseTrackingCheckbox.checked = newChecked;
+            }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(mouseTrackingCheckbox);
+            });
+        }
     }
 
     // 如果是 agent 弹窗，触发服务器状态检查事件

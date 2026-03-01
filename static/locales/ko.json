@@ -1015,7 +1015,28 @@
         "deleteFailed": "삭제 실패",
         "deleteError": "삭제 실패: {{error}}",
         "freePresetLabel": "무료 사전 설정",
-        "freePresetBadge": "사전 설정"
+        "freePresetBadge": "사전 설정",
+        "silenceModal": {
+            "title": "스마트 무음 감지 결과",
+            "originalDuration": "원본 오디오 길이",
+            "silenceDuration": "제거 가능한 무음 길이",
+            "estimatedDuration": "처리 후 예상 길이",
+            "savingPercentage": "절약 비율",
+            "processing": "처리 중...",
+            "analyzing": "분석 중...",
+            "trimming": "트리밍 중...",
+            "done": "완료",
+            "cancelled": "취소됨",
+            "trimSuccess": "✅ 트리밍 완료!",
+            "downloadTrimmed": "처리된 오디오 다운로드",
+            "useTrimmed": "스마트 트리밍 오디오 사용",
+            "useOriginal": "원본 오디오 업로드",
+            "cancel": "취소",
+            "noSilence": "제거 가능한 무음 구간이 감지되지 않았습니다",
+            "trimError": "트리밍 실패: {{error}}",
+            "trimmedLabel": "[트리밍됨]",
+            "confirmTrimmed": "트리밍된 오디오 사용"
+        }
     },
     "memory": {
         "title": "메모리 브라우저",
@@ -1074,6 +1095,7 @@
         "profileName": "프로필 이름",
         "profileNameMaxHint": "최대 20자",
         "profileNameTooLong": "프로필 이름이 너무 깁니다.",
+        "profileNameContainsSlash": "프로필 이름에 경로 구분 기호(/ 또는 \\)를 포함할 수 없습니다",
         "newProfileNameRequired": "새 프로필 이름은 비워둘 수 없습니다.",
         "newProfileNameTooLong": "프로필 이름이 너무 깁니다.",
         "required": "*",
@@ -1090,6 +1112,7 @@
         "lightingNotSet": "기본값",
         "live2dNotSet": "설정되지 않음",
         "voiceNotSet": "지정된 음성 없음",
+        "voiceSetting": "음성 설정",
         "manageModel": "모델을 관리하려면 클릭하세요.",
         "fillProfileNameFirst": "먼저 neko 프로필 이름을 입력한 다음 모델을 설정하세요.",
         "registerNewVoice": "새 음성 등록",
@@ -1298,7 +1321,8 @@
             "frameRate": "프레임 레이트",
             "frameRateLow": "30fps",
             "frameRateMedium": "45fps",
-            "frameRateHigh": "60fps"
+            "frameRateHigh": "60fps",
+            "mouseTracking": "마우스 추적"
         }
     },
     "subtitle": {
@@ -1319,9 +1343,11 @@
             "disconnected": "서버 연결이 끊어졌습니다.",
             "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다.",
             "freeModelWarning": "할당량 제한으로 인해 무료 모델은 Agent 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
-            "freeModelWarningTitle": "무료 모델 안내"
+            "freeModelWarningTitle": "무료 모델 안내",
+            "connectivityCheck": "Agent LLM 연결 확인 중..."
         },
         "quotaExceeded": "무료 Agent 모델의 일일 체험 한도({{limit}}회)에 도달했습니다. 내일 다시 시도해 주세요.",
+        "contentFilterError": "Agent가 탐색한 웹 페이지 내용이 AI 모델의 안전 필터에 의해 거부되어 작업이 중단되었습니다. 페이지에 민감한 주제가 포함된 경우 발생합니다. 다른 키워드나 웹사이트를 시도해 주세요.",
         "taskHud": {
             "title": "에이전트 작업",
             "running": "실행 중",
@@ -2048,5 +2074,128 @@
         "switchToLight": "라이트 모드로 전환",
         "themeChanged": "테마가 변경되었습니다"
     },
-    "characterModelNotSet": "현재 캐릭터에 모델이 설정되지 않았습니다"
+    "characterModelNotSet": "현재 캐릭터에 모델이 설정되지 않았습니다",
+    "cookiesLogin": {
+        "title": "N.E.K.O 자격 증명 제어 센터",
+        "header": "🔐 자격 증명 획득 센터",
+        "bilibili": "📺 빌리빌리 (Bilibili)",
+        "douyin": "🎵 도인 (Douyin)",
+        "kuaishou": "🧡 쾌수 (Kuaishou)",
+        "weibo": "🌏 위보 (Weibo)",
+        "twitter": "🐦 트위터/X (Twitter/X)",
+        "reddit": "👽 레딧 (Reddit)",
+        "saveConfig": "설정 저장",
+        "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
+        "localMonitoring": "로컬 상태 모니터링",
+        "removeCredentials": "삭제",
+        "confirmRemove": "{{platformName}}의 로그인 자격 증명을 정말로 지우시겠습니까?",
+        "credentialsRemoved": "✅ 자격 증명이 성공적으로 삭제되었습니다",
+        "credentialsSaved": "✅ {{platformName}} 자격 증명이 성공적으로 저장되었습니다!",
+        "credentialsRemovedFailed": "삭제 실패",
+        "removeFailed": "❌ 삭제 실패, 네트워크를 확인해주세요",
+        "requiredField": "⚠️ 필수 항목을 입력해주세요: [{{fieldName}}]",
+        "invalidChars": "⚠️ [{{fieldName}}]에 유효하지 않은 문자가 포함되어 있습니다...",
+        "whitespaceTrimmed": "⚠️ [{{fieldName}}]에 앞/뒤 공백이 포함되어 자동으로 제거되었습니다. 확인 후 다시 제출해주세요",
+        "networkError": "❌ 네트워크 오류: 백엔드 서비스에 연결할 수 없습니다",
+        "saveFailed": "저장 실패, 형식이 올바른지 확인해주세요",
+        "pasteHere": "여기에 붙여넣기",
+        "submitting": "안전하게 암호화하여 전송 중...",
+        "noCookies": "먼저 쿠키를 설정하세요",
+        "statusLoadFailed": "상태 로드 실패",
+        "thisPlatform": "이 플랫폼",
+        "instructions": {
+            "bilibili": "📌 <b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "douyin": "📌 <b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요."
+        },
+        "guide": {
+            "title": "초보자를 위한 공통 가이드",
+            "step1": "브라우저에서 대상 플랫폼 웹사이트를 열고 <span class=\"highlight-text\">로그인</span>합니다.",
+            "step2_prefix": "키보드에서",
+            "step2_suffix": "키를 눌러 개발자 도구를 엽니다.",
+            "step3": "상단에서 <span class=\"highlight-text\">Application (애플리케이션)</span> 탭을 찾아 클릭합니다.",
+            "step4": "왼쪽 사이드바에서 <span class=\"highlight-text\">Cookies</span>를 찾아 도메인을 클릭한 후, 오른쪽에서 필요한 값을 복사합니다."
+        },
+        "fields": {
+            "SESSDATA": {
+                "label": "SESSDATA",
+                "desc": "핵심 신분 자격 증명 (필수)"
+            },
+            "bili_jct": {
+                "label": "bili_jct",
+                "desc": "CSRF 토큰 (필수)"
+            },
+            "DedeUserID": {
+                "label": "DedeUserID",
+                "desc": "계정 UID (필수)"
+            },
+            "buvid3": {
+                "label": "buvid3",
+                "desc": "기기 지문 (선택 사항)"
+            },
+            "sessionid": {
+                "label": "sessionid",
+                "desc": "핵심 세션 자격 증명 (필수)"
+            },
+            "ttwid": {
+                "label": "ttwid",
+                "desc": "기기 리스크 제어 코드 (필수)"
+            },
+            "passport_csrf_token": {
+                "label": "csrf_token",
+                "desc": "보안 인증 토큰"
+            },
+            "odin_tt": {
+                "label": "odin_tt",
+                "desc": "기기 특징"
+            },
+            "ks_web_st": {
+                "label": "web_st",
+                "desc": "핵심 티켓 (필수)"
+            },
+            "ks_web_ph": {
+                "label": "web_ph",
+                "desc": "보조 티켓 (필수)"
+            },
+            "userId": {
+                "label": "userId",
+                "desc": "사용자 ID"
+            },
+            "did": {
+                "label": "did",
+                "desc": "기기 ID"
+            },
+            "SUB": {
+                "label": "SUB",
+                "desc": "핵심 자격 증명 (_2A로 시작)"
+            },
+            "XSRF-TOKEN": {
+                "label": "XSRF-TOKEN",
+                "desc": "위조 방지 토큰"
+            },
+            "auth_token": {
+                "label": "auth_token",
+                "desc": "핵심 신분 토큰"
+            },
+            "ct0": {
+                "label": "ct0",
+                "desc": "CSRF 검증 코드"
+            },
+            "reddit_session": {
+                "label": "reddit_session",
+                "desc": "핵심 세션 자격 증명 (필수)"
+            },
+            "csrftoken": {
+                "label": "csrftoken",
+                "desc": "CSRF 토큰"
+            }
+        },
+        "status": {
+            "active": "● 준비 완료",
+            "inactive": "○ 구성되지 않음"
+        }
+    }
 }
