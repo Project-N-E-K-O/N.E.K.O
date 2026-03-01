@@ -2408,6 +2408,11 @@ body {
     letter-spacing: 1px;
     color: transparent;
     flex: 0 1 auto;
+    max-width: 200px;
+    min-width: 50px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .dropdown-item-text::before {
@@ -2420,6 +2425,9 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     text-shadow:
         2px 0 0 var(--button-text-stroke-color),
         0 2px 0 var(--button-text-stroke-color),
@@ -2456,6 +2464,9 @@ body {
     background-clip: text;
     color: transparent;
     text-shadow: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* 自定义滚动条样式 - 与模型管理页面风格一致 */
