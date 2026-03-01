@@ -20,7 +20,7 @@ logger = get_module_logger(__name__, "Main")
 
 # Edge TTS 语音映射（全部使用女性 Neural 语音，与项目风格一致）
 EDGE_TTS_VOICE_MAP = {
-    'zh-CN': 'zh-CN-XiaoxiaoNeural',       # 中文女声，年轻甜美
+    'zh-CN': 'zh-CN-XiaoyiNeural',         # 中文女声，温柔亲切
     'zh-TW': 'zh-TW-HsiaoChenNeural',      # 台湾中文女声
     'en':    'en-US-JennyNeural',           # 英文女声，自然清晰
     'ja':    'ja-JP-NanamiNeural',          # 日文女声，自然柔和

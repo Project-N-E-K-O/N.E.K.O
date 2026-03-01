@@ -1784,6 +1784,18 @@ class UniversalTutorialManager {
         // 启动引导
         this.driver.start();
 
+        // 后台预加载所有步骤的 Edge TTS 音频
+        if (this.tutorialVoice && this.tutorialVoice.prefetchSteps) {
+            const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+            const separator = currentLang.startsWith('zh') ? '。' : '. ';
+            const voiceSteps = validSteps.map(step => {
+                const title = (step.popover && step.popover.title) || '';
+                const desc = (step.popover && step.popover.description) || '';
+                return { text: title + separator + desc };
+            }).filter(s => s.text.trim());
+            this.tutorialVoice.prefetchSteps(voiceSteps, currentLang);
+        }
+
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
