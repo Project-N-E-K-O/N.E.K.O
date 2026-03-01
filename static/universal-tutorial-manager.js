@@ -1793,22 +1793,6 @@ class UniversalTutorialManager {
         // 启动引导
         this.driver.start();
 
-        // ★ 第一步语音：自动启动时 Audio.play() 可能被浏览器阻止
-        // 监听用户首次交互（点击遮罩/弹窗），此时补播第一步语音
-        if (this.tutorialVoice) {
-            const self = this;
-            const playFirstStepOnGesture = (e) => {
-                document.removeEventListener('pointerdown', playFirstStepOnGesture, true);
-                // 如果点击的是导航按钮，由 driver.on('next') 处理，不重复播放
-                if (e.target.closest && e.target.closest('.driver-next, .driver-prev, .driver-finish')) return;
-                // 仅在仍处于第一步时播放
-                if (window.isInTutorial && self.driver && self.driver.currentStep === 0) {
-                    self._speakCurrentStep();
-                }
-            };
-            document.addEventListener('pointerdown', playFirstStepOnGesture, true);
-        }
-
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
@@ -2241,16 +2225,7 @@ class UniversalTutorialManager {
         const stepDesc = step.popover.description || '';
         const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
         const separator = currentLang.startsWith('zh') ? '。' : '. ';
-        let voiceText = stepTitle + separator + stepDesc;
-        // 猫娘语气词
-        if (currentLang.startsWith('zh')) {
-            voiceText += '喵~';
-        } else if (currentLang.startsWith('ja')) {
-            voiceText += 'にゃ～';
-        } else {
-            voiceText += ' meow~';
-        }
-        return voiceText;
+        return stepTitle + separator + stepDesc;
     }
 
     /**
@@ -2500,6 +2475,12 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        // 停止语音播放
+        if (this.tutorialVoice) {
+            this.tutorialVoice.stop();
+            this.tutorialVoice.clearQueue();
+        }
+
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();

@@ -6,17 +6,23 @@
  * 2. 缓存命中：直接播放高质量 Edge TTS 音频（瞬时）
  * 3. 缓存未命中：实时请求 Edge TTS 并播放
  * 4. Edge TTS 不可用时：静默跳过（不使用浏览器机器人语音）
+ *
+ * 音频播放使用 Web Audio API (AudioContext) 而非 new Audio()，
+ * 以绕过 Chromium 自动播放策略限制。AudioContext 只需一次 resume()
+ * 即可解锁后续所有播放，且在 Electron 中通常无需用户手势。
  */
 
 class TutorialAutoVoice {
     constructor() {
         // 播放状态
-        this.currentAudio = null;
+        this._currentSource = null;   // AudioBufferSourceNode
+        this._currentGain = null;     // GainNode
         this.isSpeaking = false;
         this.isPaused = false;
         this.queue = [];
         this._currentText = '';
         this._speakId = 0;
+        this._isPlaying = false;  // 标记是否有音频正在播放（用于立即中断）
 
         // 配置
         this.enabled = true;
@@ -32,13 +38,17 @@ class TutorialAutoVoice {
         // 语言
         this._lang = this._detectLanguage();
 
-        // Edge TTS 音频缓存：cacheKey -> blobURL
+        // Edge TTS 音频缓存：cacheKey -> ArrayBuffer（解码前的原始数据）
         this._audioCache = new Map();
         this._cacheOrder = [];
         this._MAX_CACHE_SIZE = 50;
 
         // 预加载状态
         this._prefetching = false;
+
+        // Web Audio API
+        this._audioContext = null;
+        this._unlocked = false;
 
         this._init();
     }
@@ -49,7 +59,71 @@ class TutorialAutoVoice {
             this._lang = this._detectLanguage();
         });
 
-        console.log(`[TutorialVoice] 初始化完成 (语言: ${this._lang}, 仅 Edge TTS)`);
+        console.log(`[TutorialVoice] 初始化完成 (语言: ${this._lang}, AudioContext: 延迟创建)`);
+    }
+
+    /**
+     * 延迟创建 AudioContext（避免触发浏览器自动播放策略警告）
+     * 只在首次需要时创建，通常在用户手势后
+     */
+    _ensureAudioContext() {
+        if (this._audioContext) return this._audioContext;
+
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+
+        this._audioContext = new AC();
+        console.log(`[TutorialVoice] AudioContext 已创建 (state: ${this._audioContext.state})`);
+
+        // 设置解锁监听器
+        this._tryUnlock();
+
+        return this._audioContext;
+    }
+
+    /**
+     * 尝试解锁 AudioContext（绕过自动播放策略）
+     * 1. 立即尝试 resume()（在 Electron 中通常直接成功）
+     * 2. 如果失败，监听用户首次交互再 resume
+     */
+    _tryUnlock() {
+        if (!this._audioContext) return;
+
+        const ctx = this._audioContext;
+
+        if (ctx.state === 'running') {
+            this._unlocked = true;
+            return;
+        }
+
+        // 等待用户手势后再 resume，避免触发浏览器自动播放策略警告
+        const unlock = () => {
+            if (this._unlocked) return;
+            ctx.resume().then(() => {
+                if (ctx.state === 'running') {
+                    this._unlocked = true;
+                    document.removeEventListener('pointerdown', unlock, true);
+                    document.removeEventListener('keydown', unlock, true);
+                    document.removeEventListener('touchstart', unlock, true);
+                    console.log('[TutorialVoice] AudioContext 已解锁（用户交互）');
+                }
+            }).catch(() => {});
+        };
+
+        document.addEventListener('pointerdown', unlock, true);
+        document.addEventListener('keydown', unlock, true);
+        document.addEventListener('touchstart', unlock, true);
+
+        // 监听 AudioContext 状态变化
+        ctx.addEventListener('statechange', () => {
+            if (ctx.state === 'running' && !this._unlocked) {
+                this._unlocked = true;
+                document.removeEventListener('pointerdown', unlock, true);
+                document.removeEventListener('keydown', unlock, true);
+                document.removeEventListener('touchstart', unlock, true);
+                console.log('[TutorialVoice] AudioContext 状态变为 running');
+            }
+        });
     }
 
     _detectLanguage() {
@@ -61,7 +135,10 @@ class TutorialAutoVoice {
 
     // ==================== 公共 API ====================
 
-    isAvailable() { return true; }
+    isAvailable() {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        return !!AC;
+    }
     checkSpeaking() { return this.isSpeaking; }
 
     /**
@@ -70,23 +147,26 @@ class TutorialAutoVoice {
     speak(text, options = {}) {
         if (!this.enabled) return;
 
+        // 延迟创建 AudioContext（首次调用时创建）
+        const ctx = this._ensureAudioContext();
+        if (!ctx) return;
+
         const cleanText = this._cleanText(text);
         if (!cleanText || cleanText.trim().length === 0) return;
 
         const lang = options.lang || this._lang;
 
-        // 停止当前播放
+        // 停止当前播放（会递增 _speakId）
         this._stopAll();
 
         this._currentText = cleanText;
-        this._speakId++;
-        const currentId = this._speakId;
+        const currentId = this._speakId;  // 使用 _stopAll 后的 ID
         const cacheKey = this._generateCacheKey(cleanText, lang);
 
         // 缓存命中 → 直接播放
         if (this._audioCache.has(cacheKey)) {
             console.log('[TutorialVoice] 缓存命中，播放');
-            this._playAudioBlob(this._audioCache.get(cacheKey));
+            this._playFromArrayBuffer(this._audioCache.get(cacheKey), currentId);
             return;
         }
 
@@ -122,11 +202,10 @@ class TutorialAutoVoice {
                 });
                 if (!response.ok) continue;
 
-                const blob = await response.blob();
-                if (blob.size === 0) continue;
+                const arrayBuffer = await response.arrayBuffer();
+                if (arrayBuffer.byteLength === 0) continue;
 
-                const blobUrl = URL.createObjectURL(blob);
-                this._addToCache(cacheKey, blobUrl);
+                this._addToCache(cacheKey, arrayBuffer);
                 loaded++;
             } catch (e) {
                 // 预加载失败，静默跳过
@@ -153,14 +232,18 @@ class TutorialAutoVoice {
     }
 
     pause() {
-        if (!this.isSpeaking || !this.currentAudio) return;
-        this.currentAudio.pause();
+        if (!this.isSpeaking) return;
+        const ctx = this._ensureAudioContext();
+        if (!ctx) return;
+        ctx.suspend().catch(() => {});
         this.isPaused = true;
     }
 
     resume() {
-        if (!this.isPaused || !this.currentAudio) return;
-        this.currentAudio.play().catch(() => {});
+        if (!this.isPaused) return;
+        const ctx = this._ensureAudioContext();
+        if (!ctx) return;
+        ctx.resume().catch(() => {});
         this.isPaused = false;
     }
 
@@ -174,18 +257,21 @@ class TutorialAutoVoice {
 
     setVolume(volume) {
         this.volume = Math.max(0, Math.min(1, volume));
-        if (this.currentAudio) this.currentAudio.volume = this.volume;
+        if (this._currentGain) {
+            this._currentGain.gain.value = this.volume;
+        }
     }
 
     getStatus() {
         return {
-            isAvailable: true,
+            isAvailable: this.isAvailable(),
             isEnabled: this.enabled,
             isSpeaking: this.isSpeaking,
             isPaused: this.isPaused,
             queueLength: this.queue.length,
             language: this._lang,
             cacheSize: this._audioCache.size,
+            audioContextState: this._audioContext ? this._audioContext.state : 'not created',
             rate: this.rate, pitch: this.pitch, volume: this.volume
         };
     }
@@ -193,21 +279,28 @@ class TutorialAutoVoice {
     destroy() {
         this.stop();
         this.clearQueue();
-        for (const blobUrl of this._audioCache.values()) URL.revokeObjectURL(blobUrl);
         this._audioCache.clear();
         this._cacheOrder = [];
-        this.currentAudio = null;
+        this._currentSource = null;
+        this._currentGain = null;
+        if (this._audioContext) {
+            this._audioContext.close().catch(() => {});
+            this._audioContext = null;
+        }
     }
 
     // ==================== 内部 ====================
 
     _stopAll() {
         this._speakId++;
-        if (this.currentAudio) {
-            this.currentAudio.pause();
-            this.currentAudio.currentTime = 0;
-            this.currentAudio = null;
+        this._isPlaying = false;  // 立即标记为非播放状态，阻止所有异步操作继续
+
+        if (this._currentSource) {
+            try { this._currentSource.stop(); } catch (e) { /* already stopped */ }
+            this._currentSource = null;
         }
+        this._currentGain = null;
+        this.isSpeaking = false;
     }
 
     async _fetchAndPlayEdgeTTS(text, lang, cacheKey, speakId) {
@@ -220,15 +313,14 @@ class TutorialAutoVoice {
 
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-            const blob = await response.blob();
-            if (blob.size === 0) throw new Error('Empty audio');
+            const arrayBuffer = await response.arrayBuffer();
+            if (arrayBuffer.byteLength === 0) throw new Error('Empty audio');
 
-            const blobUrl = URL.createObjectURL(blob);
-            this._addToCache(cacheKey, blobUrl);
+            this._addToCache(cacheKey, arrayBuffer);
 
             if (this._speakId !== speakId) return;
 
-            this._playAudioBlob(blobUrl);
+            this._playFromArrayBuffer(arrayBuffer, speakId);
         } catch (e) {
             console.warn('[TutorialVoice] Edge TTS 请求失败:', e.message);
             this.isSpeaking = false;
@@ -236,33 +328,75 @@ class TutorialAutoVoice {
         }
     }
 
-    _playAudioBlob(blobUrl) {
-        const audio = new Audio(blobUrl);
-        audio.volume = this.volume;
-        audio.playbackRate = this.rate;
-        this.currentAudio = audio;
+    /**
+     * 通过 AudioContext 解码并播放 ArrayBuffer 音频数据
+     */
+    async _playFromArrayBuffer(arrayBuffer, speakId) {
+        // 立即检查是否已被取消（在任何异步操作之前）
+        if (this._speakId !== speakId) return;
 
-        audio.onplay = () => {
+        const ctx = this._ensureAudioContext();
+        if (!ctx) return;
+
+        // 标记开始播放
+        this._isPlaying = true;
+
+        try {
+            // 确保 AudioContext 处于 running 状态
+            if (ctx.state !== 'running') {
+                await ctx.resume();
+                // resume 后检查是否已被取消
+                if (this._speakId !== speakId || !this._isPlaying) return;
+            }
+
+            // decodeAudioData 需要 ArrayBuffer 的副本（因为它会 detach 原始 buffer）
+            const bufferCopy = arrayBuffer.slice(0);
+            const audioBuffer = await ctx.decodeAudioData(bufferCopy);
+
+            // 检查是否已被取消
+            if (this._speakId !== speakId || !this._isPlaying) return;
+
+            // 创建音频节点
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.playbackRate.value = this.rate;
+
+            const gainNode = ctx.createGain();
+            gainNode.gain.value = this.volume;
+
+            source.connect(gainNode);
+            gainNode.connect(ctx.destination);
+
+            this._currentSource = source;
+            this._currentGain = gainNode;
+
+            // 状态管理
             this.isSpeaking = true;
             if (typeof this.onStart === 'function') this.onStart();
-        };
-        audio.onended = () => {
-            this.isSpeaking = false;
-            this.isPaused = false;
-            this.currentAudio = null;
-            if (typeof this.onEnd === 'function') this.onEnd();
-            this._playNext();
-        };
-        audio.onerror = () => {
-            this.isSpeaking = false;
-            this.currentAudio = null;
-            this._playNext();
-        };
 
-        audio.play().catch(() => {
-            this.currentAudio = null;
+            source.onended = () => {
+                // 只有当前播放的 source 结束时才更新状态
+                if (this._currentSource === source) {
+                    this.isSpeaking = false;
+                    this.isPaused = false;
+                    this._currentSource = null;
+                    this._currentGain = null;
+                    this._isPlaying = false;
+                    if (typeof this.onEnd === 'function') this.onEnd();
+                    this._playNext();
+                }
+            };
+
+            source.start();
+            console.log('[TutorialVoice] AudioContext 播放中...');
+        } catch (e) {
+            console.warn('[TutorialVoice] AudioContext 播放失败:', e.message);
+            this.isSpeaking = false;
+            this._isPlaying = false;
+            this._currentSource = null;
+            this._currentGain = null;
             this._playNext();
-        });
+        }
     }
 
     _playNext() {
@@ -273,7 +407,7 @@ class TutorialAutoVoice {
 
     // ==================== 缓存管理 ====================
 
-    _addToCache(key, blobUrl) {
+    _addToCache(key, arrayBuffer) {
         if (this._audioCache.has(key)) {
             this._cacheOrder = this._cacheOrder.filter(k => k !== key);
             this._cacheOrder.push(key);
@@ -281,11 +415,9 @@ class TutorialAutoVoice {
         }
         while (this._cacheOrder.length >= this._MAX_CACHE_SIZE) {
             const oldKey = this._cacheOrder.shift();
-            const oldUrl = this._audioCache.get(oldKey);
-            if (oldUrl) URL.revokeObjectURL(oldUrl);
             this._audioCache.delete(oldKey);
         }
-        this._audioCache.set(key, blobUrl);
+        this._audioCache.set(key, arrayBuffer);
         this._cacheOrder.push(key);
     }
 
@@ -341,11 +473,16 @@ window.testTutorialVoice = async function() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: '你好，欢迎使用新手引导', lang: 'zh-CN' })
         });
-        if (resp.ok) {
-            const blob = await resp.blob();
-            const audio = new Audio(URL.createObjectURL(blob));
-            audio.play();
-            console.log('3. Edge TTS: OK - 正在播放');
+        if (resp.ok && voice && voice._audioContext) {
+            const arrayBuffer = await resp.arrayBuffer();
+            const ctx = voice._audioContext;
+            if (ctx.state !== 'running') await ctx.resume();
+            const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.start();
+            console.log('3. Edge TTS + AudioContext: OK - 正在播放');
         } else {
             console.log('3. Edge TTS: FAIL (' + resp.status + ')');
         }
