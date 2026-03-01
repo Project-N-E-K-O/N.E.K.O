@@ -208,7 +208,7 @@ class TutorialAutoVoice {
                 this._addToCache(cacheKey, arrayBuffer);
                 loaded++;
             } catch (e) {
-                // 预加载失败，静默跳过
+                console.debug('[TutorialVoice] 预加载失败:', step.text?.slice(0, 30), e.message);
             }
         }
 

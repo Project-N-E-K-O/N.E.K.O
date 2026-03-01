@@ -52,7 +52,7 @@ def _normalize_lang(lang: str) -> str:
     if not lang:
         return 'zh-CN'
     lang = lang.strip().lower()
-    if lang in ('zh', 'zh-cn', 'cmn'):
+    if lang in ('zh', 'zh-cn', 'cmn', 'zh-hans'):
         return 'zh-CN'
     if lang in ('zh-tw', 'zh-hant'):
         return 'zh-TW'
