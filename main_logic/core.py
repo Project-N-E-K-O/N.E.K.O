@@ -18,11 +18,14 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from config.prompts_sys import (
     _loc,
-    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT_DYNAMIC,
+    AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
+    AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
+    AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
     SYSTEM_NOTIFICATION_TASKS_DONE,
@@ -131,6 +134,7 @@ class LLMSessionManager:
             'agent_enabled': False,
             'computer_use_enabled': False,
             'browser_use_enabled': False,
+            'user_plugin_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -260,6 +264,28 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
+
+    async def handle_proactive_complete(self):
+        """Lightweight completion for proactive (agent callback) replies.
+
+        Only flushes TTS and sends turn_end to the frontend so that the
+        realistic-queue buffer is flushed.  Does NOT trigger hot-swap,
+        analyze_request, or agent-callback re-delivery — those belong
+        exclusively to user-initiated conversation turns.
+        """
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            try:
+                self.tts_request_queue.put((None, None))
+            except Exception as e:
+                logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+        if self.sync_message_queue:
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+        # Send turn_end to frontend so processRealisticQueue flushes remaining buffer
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+        except Exception as e:
+            logger.debug(f"WS Send Turn End (proactive) error: {e}")
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -988,13 +1014,9 @@ class LLMSessionManager:
         async def start_llm_session():
             """异步创建并连接 LLM Session"""
             guard_max_length = self._get_text_guard_max_length()
-            # 获取初始 prompt
             _lang = normalize_language_code(self.user_language, format='short')
-            _init_tmpl = SESSION_INIT_PROMPT_AGENT if self._is_agent_enabled() else SESSION_INIT_PROMPT
-            initial_prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
-
-            # 注入当前活跃的Agent任务列表
-            initial_prompt += await self._fetch_active_agent_tasks_prompt()
+            # 获取初始 prompt（动态能力描述 + 插件摘要 + 活跃任务）
+            initial_prompt = await self._build_initial_prompt()
             
             # 连接 Memory Server 获取记忆上下文
             _mem_start = time.time()
@@ -1035,6 +1057,8 @@ class LLMSessionManager:
                     on_response_discarded=self.handle_response_discarded,
                     max_response_length=guard_max_length
                 )
+                # Lightweight callback for stream_proactive (TTS flush + turn_end only)
+                self.session.on_proactive_done = self.handle_proactive_complete
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
@@ -1253,6 +1277,36 @@ class LLMSessionManager:
             res += f"{i['role']} | {i['text']}\n"
         return res
 
+    async def _build_initial_prompt(self) -> str:
+        """Build the system prompt with dynamic capability descriptions and plugin summary."""
+        _lang = normalize_language_code(self.user_language, format='short')
+        if self._is_agent_enabled():
+            capability_parts = []
+            if self.agent_flags.get('computer_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+            if self.agent_flags.get('browser_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+            if self.agent_flags.get('user_plugin_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+            caps_text = (
+                _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+                if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            )
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+                name=self.lanlan_name,
+                capabilities=caps_text,
+            ) + self.lanlan_prompt
+        else:
+            prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+        if self._is_agent_enabled():
+            plugin_prompt, active_tasks_prompt = await asyncio.gather(
+                self._fetch_plugin_summary_prompt(),
+                self._fetch_active_agent_tasks_prompt(),
+            )
+            prompt += plugin_prompt
+            prompt += active_tasks_prompt
+        return prompt
+
     def _is_agent_enabled(self):
         try:
             gate_ok, _ = self._config_manager.is_agent_api_ready()
@@ -1261,7 +1315,44 @@ class LLMSessionManager:
         return gate_ok and self.agent_flags['agent_enabled'] and (
             self.agent_flags['computer_use_enabled']
             or self.agent_flags.get('browser_use_enabled', False)
+            or self.agent_flags.get('user_plugin_enabled', False)
         )
+
+    async def _fetch_plugin_summary_prompt(self) -> str:
+        """Fetch installed plugin list and return a concise prompt snippet.
+
+        - ≤5 plugins: list each plugin's id (~200 tokens)
+        - >5 plugins: just mention the count (~20 tokens)
+        """
+        if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
+            return ""
+        _lang = normalize_language_code(self.user_language, format='short')
+        header = _loc(AGENT_PLUGINS_HEADER, _lang)
+        count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
+                r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+                if r.status_code != 200:
+                    return ""
+                data = r.json()
+                plugins = data.get("plugins", []) if isinstance(data, dict) else []
+                if not plugins:
+                    return ""
+                if len(plugins) <= 5:
+                    lines = []
+                    for p in plugins:
+                        if not isinstance(p, dict):
+                            continue
+                        pid = p.get("id", "")
+                        if pid:
+                            lines.append(f"  - {pid}")
+                    if lines:
+                        return header + "\n".join(lines) + "\n"
+                else:
+                    return count_tmpl.format(count=len(plugins))
+        except Exception as e:
+            logger.debug(f"获取插件摘要失败，已忽略: {e}")
+        return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:
         """Query agent server for active tasks and return a prompt snippet."""
@@ -1353,6 +1444,7 @@ class LLMSessionManager:
                     on_response_discarded=self.handle_response_discarded,
                     max_response_length=guard_max_length
                 )
+                self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -1374,10 +1466,7 @@ class LLMSessionManager:
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
-            _lang = normalize_language_code(self.user_language, format='short')
-            _init_tmpl = SESSION_INIT_PROMPT_AGENT if self._is_agent_enabled() else SESSION_INIT_PROMPT
-            initial_prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
-            initial_prompt += await self._fetch_active_agent_tasks_prompt()
+            initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient(timeout=2.0) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
@@ -1428,7 +1517,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
