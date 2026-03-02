@@ -192,19 +192,11 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                     if not content:
                         logger.warning(f"{platform} Cookie 文件内容为空或只有空白字符: {cookie_file}")
                         return {}
-                    
-                    # 尝试解析JSON
-                    try:
-                        cookies = json.loads(content)
-                    except json.JSONDecodeError as json_error:
-                        logger.error(f"{platform} Cookie 文件JSON格式错误: {json_error}")
-                        logger.debug(f"错误的JSON内容预览: {content[:200]}...")
-                        return {}
 
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return cookies if isinstance(cookies, dict) else {}
             except Exception as plain_error:
-                logger.error(f"明文加载 {platform} Cookie 也失败: {plain_error}")
+                logger.error(f"明文加载 {platform} Cookie 失败: {plain_error}")
                 return {}
         
     except Exception as e:
