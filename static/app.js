@@ -8892,29 +8892,39 @@ function init_app() {
 
     // 主动搭话截图函数（前端 getDisplayMedia → 后端 pyautogui 兜底）
     async function captureProactiveChatScreenshot() {
-        // 策略1: 前端 getDisplayMedia
+        // 策略1: 复用已缓存的 screenCaptureStream，或通过 getDisplayMedia 获取新流
         if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
-                const captureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: 'always' },
-                    audio: false,
-                });
+                // 优先复用缓存流
+                let captureStream = screenCaptureStream;
 
-                // 将流缓存到 screenCaptureStream，避免下次再弹权限窗口
-                screenCaptureStream = captureStream;
+                if (!captureStream || !captureStream.active) {
+                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: 'always', frameRate: { max: 1 } },
+                        audio: false,
+                    });
+
+                    // 将流缓存到 screenCaptureStream，避免下次再弹权限窗口
+                    screenCaptureStream = captureStream;
+
+                    // 监听流结束事件（用户在浏览器中点击"停止共享"时触发）
+                    captureStream.getVideoTracks().forEach(track => {
+                        track.addEventListener('ended', () => {
+                            console.log('[ProactiveVision] 屏幕共享流被用户终止');
+                            if (screenCaptureStream === captureStream) {
+                                screenCaptureStream = null;
+                                screenCaptureStreamLastUsed = null;
+                                if (screenCaptureStreamIdleTimer) {
+                                    clearTimeout(screenCaptureStreamIdleTimer);
+                                    screenCaptureStreamIdleTimer = null;
+                                }
+                            }
+                        });
+                    });
+                }
+
                 screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
-
-                // 监听流结束事件（用户在浏览器中点击"停止共享"时触发）
-                captureStream.getVideoTracks().forEach(track => {
-                    track.addEventListener('ended', () => {
-                        console.log('[ProactiveVision] 屏幕共享流被用户终止');
-                        if (screenCaptureStream === captureStream) {
-                            screenCaptureStream = null;
-                            screenCaptureStreamLastUsed = null;
-                        }
-                    });
-                });
 
                 const video = document.createElement('video');
                 video.srcObject = captureStream;
