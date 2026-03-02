@@ -108,13 +108,25 @@ function init_app() {
     window.showStatusToast = showStatusToast;
     const chatContainer = document.getElementById('chatContainer');
     const textInputBox = document.getElementById('textInputBox');
+    const textInputArea = document.getElementById('text-input-area');
     const textSendButton = document.getElementById('textSendButton');
     const screenshotButton = document.getElementById('screenshotButton');
     const screenshotThumbnailContainer = document.getElementById('screenshot-thumbnail-container');
     const screenshotsList = document.getElementById('screenshots-list');
     const screenshotCount = document.getElementById('screenshot-count');
     const clearAllScreenshots = document.getElementById('clear-all-screenshots');
-
+    // ==========================================
+    // 【将初始化代码移动到这里，确保只执行一次】
+    // 初始化音乐消息提示词模块
+    if (typeof window.MusicPrompt !== 'undefined') {
+        try {
+            window.MusicPrompt.initMusicPromptModule(textInputBox, textInputArea);
+            console.log('[MusicPrompt] 模块已初始化');
+        } catch (e) {
+            console.error('[MusicPrompt] 初始化失败:', e);
+        }
+    }
+    // ==========================================
     let audioContext;
     let workletNode;
     let stream;
@@ -916,7 +928,15 @@ function init_app() {
                             typeof window.currentGeminiMessage.textContent === 'string')
                             ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '')
                             : '';
-                        const fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+
+                        let fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+                        // 1. 触发音乐气泡生成
+                        if (typeof processMusicCommands === 'function' && bufferedFullText) {
+                            processMusicCommands(bufferedFullText);
+                        }
+                        
+                        // 2. 剔除音乐指令，避免影响后续的情感分析和字幕翻译
+                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
 
                         if (!fullText || !fullText.trim()) {
                             return;
@@ -1840,6 +1860,25 @@ function init_app() {
         }
     }
 
+    function processMusicCommands(text) {
+        if (!text) return;
+        // 匹配完整的 [play_music: {"name":"...","artist":"..."}] 指令
+        const musicRegex = /\[play_music:\s*({.*?})\]/g;
+        let match;
+        
+        while ((match = musicRegex.exec(text)) !== null) {
+            try {
+                const trackInfo = JSON.parse(match[1]);
+                // 调用你之前在 common_ui.js 中写好的气泡生成函数
+                if (window.sendMusicMessage) {
+                    window.sendMusicMessage(trackInfo);
+                }
+            } catch (e) {
+                console.error('[Music Parser] 解析音乐 JSON 指令失败:', e);
+            }
+        }
+    }
+
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
         function isMergeMessagesEnabled() {
@@ -1912,7 +1951,9 @@ function init_app() {
                 window._lastBubbleTime = 0; // 重置时间戳，第一句立即显示
             }
             const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
-            const combined = prev + normalizeGeminiText(text);
+            let combined = prev + normalizeGeminiText(text);
+            combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+
             const { sentences, rest } = splitIntoSentences(combined);
             window._realisticGeminiBuffer = rest;
 
@@ -1928,7 +1969,8 @@ function init_app() {
             window._lastBubbleTime = 0;
             const messageDiv = document.createElement('div');
             messageDiv.classList.add('message', 'gemini');
-            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
+            const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanNewText;
             chatContainer.appendChild(messageDiv);
             window.currentGeminiMessage = messageDiv;
             // ========== 新增：追踪本轮气泡 ==========
@@ -1945,8 +1987,13 @@ function init_app() {
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && !isNewMessage && window.currentGeminiMessage &&
             window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
             window.currentGeminiMessage.isConnected) {
+
             // 追加到现有消息（使用 textContent 避免 XSS 风险）
-            window.currentGeminiMessage.textContent += text;
+            // window.currentGeminiMessage.textContent += text;
+            // 【替换为以下三行】：使用正则处理过的完整文本整体替换，避免打字机效果暴露出残缺代码
+            const cleanText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            const timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /) || [""];
+            window.currentGeminiMessage.textContent = timePrefix[0] + cleanText;
 
             // 防抖机制优化流式输出时的语言检测
             if (subtitleCheckDebounceTimer) {

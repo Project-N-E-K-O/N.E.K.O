@@ -789,8 +789,72 @@ if (toggleBtn) {
 // 注意：sidebar元素本身需要保留（虽然隐藏），因为app.js中的功能逻辑仍需要使用sidebar内的按钮元素
 const sidebar = document.getElementById('sidebar');
 
+
 // --- 初始化 ---
 document.addEventListener('DOMContentLoaded', () => {
+// --- 【新增：APlayer UI 美化样式】 ---
+    if (!document.getElementById('aplayer-custom-style')) {
+        const aplayerStyle = document.createElement('style');
+        aplayerStyle.id = 'aplayer-custom-style';
+        aplayerStyle.textContent = `
+            /* 1. 容器悬浮与毛玻璃质感 */
+            .music-msg-container .aplayer {
+                border-radius: 12px !important;
+                background: rgba(30, 30, 30, 0.65) !important;
+                backdrop-filter: blur(15px);
+                -webkit-backdrop-filter: blur(15px);
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                font-family: inherit !important;
+                overflow: hidden;
+                margin-bottom: 5px;
+            }
+
+            /* 适配浅色主题 */
+            [data-theme="light"] .music-msg-container .aplayer,
+            .aplayer-theme-light .aplayer {
+                background: rgba(255, 255, 255, 0.75) !important;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+                border: 1px solid rgba(0, 0, 0, 0.05);
+            }
+
+            /* 2. 封面图圆角内缩设计 */
+            .music-msg-container .aplayer .aplayer-pic {
+                border-radius: 8px;
+                margin: 6px;
+                height: calc(100% - 12px) !important;
+                width: 60px !important;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            }
+
+            /* 3. 进度条主题色：呼应你聊天框的专属蓝色 (#44b7fe) */
+            .music-msg-container .aplayer .aplayer-info .aplayer-controller .aplayer-bar-wrap .aplayer-bar .aplayer-played {
+                background: #44b7fe !important;
+            }
+            .music-msg-container .aplayer .aplayer-info .aplayer-controller .aplayer-bar-wrap .aplayer-bar .aplayer-played .aplayer-thumb {
+                background: #44b7fe !important;
+                box-shadow: 0 0 6px rgba(68, 183, 254, 0.8) !important;
+                transform: scale(1.2);
+            }
+
+            /* 4. 歌词与文字样式优化 */
+            .music-msg-container .aplayer .aplayer-info .aplayer-music .aplayer-title {
+                font-weight: 600;
+                font-size: 15px;
+            }
+            .music-msg-container .aplayer .aplayer-lrc p {
+                color: #fff;
+                text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+            }
+            [data-theme="light"] .music-msg-container .aplayer .aplayer-lrc p {
+                color: #333;
+                text-shadow: none;
+            }
+        `;
+        document.head.appendChild(aplayerStyle);
+    }
+    // --- 【美化样式结束】 ---
+
     setupResizableChatContainer();
 
     // 设置初始按钮状态 - 聊天框
@@ -911,4 +975,54 @@ window.triggerScreenshot = function() {
     } else {
         console.log('[Electron Shortcut] triggerScreenshot: button disabled or not found');
     }
+};
+
+// ========== 音乐聊天气泡功能 ==========
+window.sendMusicMessage = function(trackInfo) {
+    // 【新增】依赖项安全检查
+    if (typeof APlayer === 'undefined') {
+        console.error('[Common UI] APlayer 库未加载，无法渲染音乐气泡');
+        return;
+    }
+
+    const playerId = 'music-msg-' + Date.now();
+    const messageHTML = `
+        <div class="chat-message bot-message" style="margin-bottom: 15px; display: flex; align-items: flex-start;">
+            <div style="width: 32px; height: 32px; border-radius: 50%; background: #44b7fe; margin-right: 10px; flex-shrink: 0; display: flex; justify-content: center; align-items: center; color: white; font-size: 16px; box-shadow: 0 2px 6px rgba(68,183,254,0.4);">
+                🎵
+            </div>
+            <div class="message-bubble" style="background: var(--bg-color, #f4f6f8); border-radius: 4px 18px 18px 18px; padding: 10px; width: 280px; max-width: 80%; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
+                <div id="${playerId}" class="music-msg-container" style="margin: 0; width: 100%;"></div>
+            </div>
+        </div>
+    `;
+
+    addNewMessage(messageHTML);
+
+    // 【修改】使用双重 requestAnimationFrame 确保 DOM 绝对已经渲染在页面上
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            const container = document.getElementById(playerId);
+            if (container) {
+                new APlayer({
+                    container: container,
+                    theme: '#44b7fe', 
+                    loop: 'none',
+                    preload: 'none',
+                    mutex: true,      
+                    listFolded: true,
+                    audio: [trackInfo]
+                });
+
+                const apElement = container.querySelector('.aplayer');
+                if (apElement) {
+                    apElement.style.boxShadow = 'none';
+                    apElement.style.background = 'transparent';
+                    apElement.style.border = 'none';
+                }
+            } else {
+                console.error('[Common UI] 找不到音乐气泡挂载点 ID:', playerId);
+            }
+        });
+    });
 };
