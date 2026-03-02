@@ -59,7 +59,7 @@
                                 <option value="voice_clone" data-i18n="memory.tutorialPageVoiceClone">语音克隆</option>
                                 <option value="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</option>
                             </select>
-                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" onclick="resetTutorialForPage(document.getElementById('tutorial-reset-select').value)">
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" onclick="window.resetTutorialForPage && window.resetTutorialForPage(document.getElementById('tutorial-reset-select').value)">
                                 <span data-i18n="memory.resetTutorialBtn">重置引导</span>
                             </button>
                         </div>
@@ -90,6 +90,7 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
 
     <!-- 通用教程管理器 -->
+    <script src="/static/tutorial_auto_voice.js"></script>
     <script src="/static/universal-tutorial-manager.js"></script>
 
     <!-- 初始化 -->

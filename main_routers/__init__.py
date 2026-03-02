@@ -15,6 +15,7 @@ from .pages_router import router as pages_router
 from .websocket_router import router as websocket_router
 from .agent_router import router as agent_router
 from .system_router import router as system_router
+from .tutorial_tts_router import router as tutorial_tts_router
 
 __all__ = [
     'config_router',
@@ -27,4 +28,5 @@ __all__ = [
     'websocket_router',
     'agent_router',
     'system_router',
+    'tutorial_tts_router',
 ]

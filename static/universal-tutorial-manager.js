@@ -8,6 +8,11 @@
 // 并不完全等同于 detectPage() 返回的逻辑页面集合。
 const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 
+// 引入自动语音模块
+if (typeof TutorialAutoVoice === 'undefined') {
+    console.warn('[Tutorial] TutorialAutoVoice 未定义，请在 HTML 中引入 tutorial_auto_voice.js');
+}
+
 class UniversalTutorialManager {
     constructor() {
         // 立即设置全局引用，以便在 getter 中使用
@@ -41,6 +46,15 @@ class UniversalTutorialManager {
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
+
+        // 初始化自动语音模块
+        if (typeof TutorialAutoVoice !== 'undefined') {
+            this.tutorialVoice = new TutorialAutoVoice();
+            console.log('[Tutorial] 自动语音模块已初始化');
+        } else {
+            this.tutorialVoice = null;
+            console.warn('[Tutorial] 自动语音模块不可用');
+        }
 
         console.log('[Tutorial] 当前页面:', this.currentPage);
 
@@ -267,6 +281,13 @@ class UniversalTutorialManager {
             prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
             doneBtnText: this.t('tutorial.buttons.done', '完成'),
             onDestroyStarted: () => {
+                // 停止教程语音
+                if (this.tutorialVoice) {
+                    console.log('[Tutorial] 停止教程语音');
+                    this.tutorialVoice.stop();
+                    this.tutorialVoice.clearQueue();
+                }
+
                 // 教程结束时，如果需要标记 hint 已显示
                 if (this.shouldMarkHintShown) {
                     localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
@@ -282,6 +303,9 @@ class UniversalTutorialManager {
                 //    确保同一步骤的逻辑（特别是交互状态应用）只执行一次，避免竞争。
                 // 每次高亮元素时，确保元素在视口中
                 console.log('[Tutorial] 高亮元素:', step.element);
+
+                // 注意：语音播放已移至 driver.on('next') 事件处理器中
+                // （因为自定义 driver.min.js 不调用 config.onHighlighted 回调）
 
                 // 调用步骤特定的 onHighlighted 回调（如果存在）
                 if (step.onHighlighted && typeof step.onHighlighted === 'function') {
@@ -1743,15 +1767,32 @@ class UniversalTutorialManager {
 
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
-        this.driver.on('next', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
-        this.driver.on('prev', () => this.onStepChange().catch(err => {
-            console.error('[Tutorial] 步骤切换失败:', err);
-        }));
+        this.driver.on('next', () => {
+            // ★ 语音播放必须在事件回调中同步调用（保持用户手势链）
+            this._speakCurrentStep();
+            this.onStepChange().catch(err => {
+                console.error('[Tutorial] 步骤切换失败:', err);
+            });
+        });
+        this.driver.on('prev', () => {
+            this._speakCurrentStep();
+            this.onStepChange().catch(err => {
+                console.error('[Tutorial] 步骤切换失败:', err);
+            });
+        });
+
+        // ★ 预加载所有步骤的 Edge TTS 音频（在 driver.start 之前，让第一步尽早缓存）
+        if (this.tutorialVoice && this.tutorialVoice.prefetchSteps) {
+            const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+            const voiceSteps = validSteps.map(step => {
+                return { text: this._buildStepVoiceText(step) };
+            }).filter(s => s.text.trim());
+            this.tutorialVoice.prefetchSteps(voiceSteps, currentLang);
+        }
 
         // 启动引导
         this.driver.start();
+
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
@@ -2176,6 +2217,38 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 构建步骤语音文本
+     */
+    _buildStepVoiceText(step) {
+        if (!step || !step.popover) return '';
+        const stepTitle = step.popover.title || '';
+        const stepDesc = step.popover.description || '';
+        const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+        const separator = currentLang.startsWith('zh') ? '。' : '. ';
+        return stepTitle + separator + stepDesc;
+    }
+
+    /**
+     * 播放当前步骤的语音
+     * 在 driver 事件回调中同步调用，以保持用户手势链
+     */
+    _speakCurrentStep() {
+        if (!this.tutorialVoice || !this.driver) return;
+
+        const stepIndex = this.driver.currentStep || 0;
+        const steps = this.cachedValidSteps || [];
+        if (stepIndex >= steps.length) return;
+
+        const voiceText = this._buildStepVoiceText(steps[stepIndex]);
+        const currentLang = (window.i18next && window.i18next.language) || 'zh-CN';
+
+        if (voiceText.trim()) {
+            console.log('[Tutorial] 播放步骤语音:', voiceText.substring(0, 50) + '...');
+            this.tutorialVoice.speak(voiceText, { lang: currentLang });
+        }
+    }
+
+    /**
      * 步骤改变时的回调
      */
     async onStepChange() {
@@ -2402,6 +2475,12 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        // 停止语音播放
+        if (this.tutorialVoice) {
+            this.tutorialVoice.stop();
+            this.tutorialVoice.clearQueue();
+        }
+
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
@@ -2911,6 +2990,14 @@ function restartCurrentTutorial() {
     if (window.universalTutorialManager) {
         window.universalTutorialManager.restartCurrentTutorial();
     }
+}
+
+// 确保全局可访问，避免在 module/严格作用域中丢失
+if (typeof window !== 'undefined') {
+    window.initUniversalTutorialManager = initUniversalTutorialManager;
+    window.resetAllTutorials = resetAllTutorials;
+    window.resetTutorialForPage = resetTutorialForPage;
+    window.restartCurrentTutorial = restartCurrentTutorial;
 }
 
 // 导出供其他模块使用

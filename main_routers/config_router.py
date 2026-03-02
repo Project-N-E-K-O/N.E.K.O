@@ -143,6 +143,22 @@ async def get_page_config(lanlan_name: str = ""):
         }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @router.get("/preferences")
 async def get_preferences():
     """获取用户偏好设置"""

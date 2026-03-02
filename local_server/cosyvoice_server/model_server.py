@@ -217,5 +217,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    # 启动服务，端口 8000
-    uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT)
+    host = getattr(config, "SERVER_HOST", "127.0.0.1")
+    port = getattr(config, "SERVER_PORT", 50000)
+    uvicorn.run(app, host=host, port=port)
