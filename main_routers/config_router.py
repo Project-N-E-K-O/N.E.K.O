@@ -749,6 +749,6 @@ async def set_proxy_mode(request: Request):
         import urllib.request
         proxies_after = _sanitize_proxies(urllib.request.getproxies())
         return {"success": True, "direct": direct, "proxies_after": proxies_after}
-    except Exception as e:
-        logger.error(f"[ProxyMode] 切换失败: {e}")
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    except Exception:
+        logger.exception("[ProxyMode] 切换失败")
+        return JSONResponse({"success": False, "error": "切换失败，服务器内部错误"}, status_code=500)
