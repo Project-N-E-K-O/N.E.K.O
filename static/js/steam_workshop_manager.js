@@ -3781,7 +3781,7 @@ function updateCardPreview() {
 
         // 创建属性行
         const row = document.createElement('div');
-        row.style.cssText = `color: ${isDark ? '#b0b0b0' : '#555'}; margin-bottom: 8px;`;
+        row.style.cssText = `color: ${isDark ? '#e0e0e0' : '#000'}; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid ${isDark ? 'rgba(64, 197, 241, 0.25)' : 'rgba(64, 197, 241, 0.45)'};`;
 
         // 格式化值
         let displayValue = '';
@@ -3924,6 +3924,11 @@ async function initLive2DPreview() {
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置
         function resizePreviewModel() {
+            const container = document.getElementById('live2d-preview-content');
+            if (live2dPreviewManager && live2dPreviewManager.pixi_app && container &&
+                container.clientWidth > 0 && container.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(container.clientWidth, container.clientHeight);
+            }
             if (live2dPreviewManager && live2dPreviewManager.currentModel) {
                 // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
                 live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});

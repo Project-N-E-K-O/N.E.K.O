@@ -1,10 +1,10 @@
 @import url('base.css');
 
 html, body {
-min-height: 100vh; 
-margin: 0; 
-padding: 0; 
-background: transparent; 
+min-height: 100vh;
+margin: 0;
+padding: 0;
+background: #e1f4ff;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
 overflow-x: hidden;
@@ -12,48 +12,118 @@ overflow-x: hidden;
 
 /* 页面标题栏 - 支持窗口拖动 */
 .page-title-bar {
-    background: #fff;
-    border-radius: 0; /* 无边框窗口不需要圆角 */
-    padding: 15px 20px;
+    background: #40C5F1;
+    padding: 18px 24px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    -webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+    border-radius: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    -webkit-app-region: drag;
 }
 
-.page-title-bar h1 {
-    margin: 0;
-    font-size: 24px;
-    font-weight: 600;
-    color: #333;
-    border: none;
-    padding: 0;
+/* 标题栏内的可交互元素需要禁用拖动 */
+.page-title-bar .close-btn {
+    -webkit-app-region: no-drag;
 }
+
+.page-title-bar h1,
+.page-title-bar h2 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+    position: relative;
+    font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
+    letter-spacing: 1px;
+    color: transparent;
+    --button-text-stroke-color: #22b3ff;
+}
+
+.page-title-bar h1::before,
+.page-title-bar h2::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    color: var(--button-text-stroke-color);
+    -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    text-shadow:
+        2px 0 0 var(--button-text-stroke-color),
+        0 2px 0 var(--button-text-stroke-color),
+        -2px 0 0 var(--button-text-stroke-color),
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color),
+        -1.4px 1.4px 0 var(--button-text-stroke-color),
+        1.4px -1.4px 0 var(--button-text-stroke-color),
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color),
+        -1.8px 0.8px 0 var(--button-text-stroke-color),
+        1.8px -0.8px 0 var(--button-text-stroke-color),
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color),
+        -0.8px 1.8px 0 var(--button-text-stroke-color),
+        0.8px -1.8px 0 var(--button-text-stroke-color),
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color),
+        -1px 0 0 var(--button-text-stroke-color),
+        0 1px 0 var(--button-text-stroke-color),
+        0 -1px 0 var(--button-text-stroke-color);
+    white-space: nowrap;
+}
+
+.page-title-bar h1::after,
+.page-title-bar h2::after {
+    content: attr(data-text);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: none;
+    white-space: nowrap;
+}   
 
 .page-title-bar .close-btn {
     background: transparent;
     border: none;
+    color: #fff;
     cursor: pointer;
-    padding: 4px;
+    padding: 0;
+    line-height: 1;
+    border-radius: 4px;
+    transition: background 0.2s, transform 0.1s ease;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.2s ease, opacity 0.2s ease;
-    opacity: 0.9;
-    -webkit-app-region: no-drag; /* 关闭按钮不参与拖动 */
-}
-
-.page-title-bar .close-btn:hover {
-    opacity: 0.7;
-    transform: scale(1.1);
 }
 
 .page-title-bar .close-btn img {
     width: 32px;
     height: 32px;
-    object-fit: contain;
     display: block;
+}
+
+.page-title-bar .close-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+}
+
+.page-title-bar .close-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(1px) scale(0.95);
+    opacity: 0.9;
 }
 
 /* 布局容器 */
@@ -69,24 +139,147 @@ padding: 0 20px;
     display: flex;
     flex-direction: column;
     gap: 10px;
-    min-width: 280px;
-    width: 300px;
+    flex: 0 0 20%;
+    min-width: 200px;
     padding: 15px;
-    background: #fff;
+    background: transparent;
     border-radius: 12px;
     box-sizing: border-box;
 }
 
+/* 角色卡封面图展示区域 */
+.character-card-cover-section {
+    margin-top: 10px;
+}
+
+.character-card-cover {
+    width: 100%;
+    aspect-ratio: 3/4;
+    background: transparent;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.character-card-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.character-card-cover img[src=""] {
+    display: none;
+}
+
+.character-card-cover img[src=""] + .cover-placeholder {
+    display: flex;
+}
+
+.cover-placeholder {
+    text-align: center;
+    color: #999;
+    padding: 20px;
+    display: none;
+}
+
+/* 当浏览器过窄时隐藏角色卡封面图 */
+@media (max-width: 1024px) {
+    .character-card-cover-section {
+        display: none;
+    }
+}
+
 .main-content {
-flex: 1;
-background: #fff;
+flex: 0 0 80%;
+background: transparent;
 border-radius: 12px;
 padding: 20px;
 min-width: 0;
-max-width: calc(100% - 300px);
 /* 防止flex子项溢出 */
 overflow: visible;
 box-sizing: border-box;
+}
+
+/* subscriptions-content 内部的 section-card 样式 */
+#subscriptions-content .section-card {
+    margin: 0;
+    padding: 0;
+}
+
+/* subscriptions-content 内部的 filter-controls 样式：直角、左右无空隙、无阴影、透明背景 */
+#subscriptions-content .section-card .filter-controls {
+    border-radius: 0;
+    margin: 0;
+    box-shadow: none;
+    background: transparent;
+}
+
+/* 搜索框图标容器 */
+.search-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+}
+
+.search-input-wrapper .control-input {
+    width: 100%;
+    padding-right: 40px; /* 为图标留出空间 */
+}
+
+.search-icon {
+    position: absolute;
+    right: 12px;
+    width: 20px;
+    height: 20px;
+    pointer-events: none; /* 让点击穿透到输入框 */
+}
+
+/* 下拉框图标容器 */
+.select-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.select-input-wrapper .control-select {
+    width: 100%;
+    padding-right: 40px; /* 为图标留出空间 */
+}
+
+.select-arrow-icon {
+    position: absolute;
+    right: 12px;
+    width: 16px;
+    height: 16px;
+    pointer-events: none; /* 让点击穿透到下拉框 */
+}
+
+/* 刷新按钮图标容器 */
+.refresh-button-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.refresh-button-wrapper .btn {
+    padding-right: 36px; /* 为图标留出空间 */
+}
+
+.refresh-icon {
+    position: absolute;
+    right: 12px;
+    width: 16px;
+    height: 16px;
+    pointer-events: none; /* 让点击穿透到按钮 */
+}
+
+/* 排序下拉框向右移动，但保持在刷新按钮左侧 */
+.filter-group:has(#sort-subscription) {
+    margin-left: auto;
 }
 
 .control-group {
@@ -122,6 +315,20 @@ gap: 8px;
 
 .control-select:focus,
 .control-input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+}
+
+/* sort-subscription 与 search-subscription 边框样式统一 */
+#sort-subscription {
+    border: 2px solid #b3e5fc;
+    border-radius: 50px;
+    background: #fff;
+    color: #40C5F1;
+}
+
+#sort-subscription:focus {
     outline: none;
     border-color: #40C5F1;
     box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
@@ -424,7 +631,7 @@ user-select: none;
 
 .btn {
 padding: 10px 15px;
-border-radius: 8px;
+border-radius: 999px;
 border: none;
 font-size: 14px;
 cursor: pointer;
@@ -638,6 +845,30 @@ box-sizing: border-box;
 .tab-contents {
 width: 100%;
 max-width: 100%;
+background-image: url('/static/icons/subscriptions-content_bg.png');
+background-size: cover;
+background-position: center;
+background-repeat: no-repeat;
+}
+
+/* tab-contents 内部元素透明背景、无边框（除 section-header 外） */
+.tab-contents .tab-content .section-card,
+.tab-contents .filter-controls,
+.tab-contents .cards-container,
+.tab-contents .card,
+.tab-contents .empty-state,
+.tab-contents .pagination,
+.tab-contents .control-input,
+.tab-contents .control-select,
+.tab-contents #subscriptions-result,
+.tab-contents #local-items-list {
+    background: transparent;
+    border: none;
+}
+
+/* 保持 section-header 的背景 */
+.tab-contents .section-header {
+    background: #fff;
 }
 
 /* 菜单部分样式 */
@@ -1250,7 +1481,7 @@ gap: 8px;
 .card-actions .button {
 width: 100%;
 padding: 11px 16px;
-border-radius: 12px;
+border-radius: 999px;
 font-size: 14px;
 font-weight: 600;
 cursor: pointer;
@@ -1904,4 +2135,90 @@ color: #4f8cff;
 font-size: 14px;
 font-weight: 500;
 margin-top: 10px;
+}
+
+/* ===== 订阅部分 & 角色卡部分 - 文本框胶囊样式（参考角色管理） ===== */
+
+/* 订阅部分搜索框 */
+#subscriptions-content .control-input {
+    border: 2px solid #b3e5fc;
+    border-radius: 50px;
+    color: #40C5F1;
+    background: #fff;
+    box-shadow: none;
+    transition: border-color 0.2s;
+}
+
+#subscriptions-content .control-input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: none;
+}
+
+#subscriptions-content .control-input::placeholder {
+    color: #b3e5fc;
+}
+
+#subscriptions-content .filter-label {
+    color: #40C5F1;
+    font-weight: 700;
+}
+
+/* 角色卡部分单行输入框和下拉框 */
+#character-cards-content .control-input:not(textarea) {
+    border: 2px solid #b3e5fc;
+    border-radius: 50px;
+    color: #40C5F1;
+    background: #fff;
+    box-shadow: none;
+    transition: border-color 0.2s;
+}
+
+#character-cards-content .control-input:not(textarea):focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: none;
+}
+
+#character-cards-content .control-input:not(textarea)::placeholder {
+    color: #b3e5fc;
+}
+
+/* 角色卡部分标签文字 */
+#character-cards-content .control-label {
+    color: #40C5F1;
+    font-weight: 700;
+    font-size: 1.1rem;
+}
+
+/* 角色卡描述文本框 - 胶囊样式（使用更高特异性选择器替代 !important） */
+#character-cards-content #character-card-description {
+    border: 2px solid #b3e5fc;
+    border-radius: 16px;
+    color: #40C5F1;
+    background: #fff;
+    box-shadow: none;
+    transition: border-color 0.2s;
+}
+
+#character-cards-content #character-card-description:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: none;
+}
+
+#character-card-description::placeholder {
+    color: #b3e5fc;
+}
+
+/* 角色卡标签输入框 */
+#character-card-tag-input::placeholder {
+    color: #b3e5fc;
+}
+
+/* 角色卡标签展示区外框（使用更高特异性选择器替代 !important） */
+#character-cards-content #character-card-tags-wrapper {
+    border: 2px solid #b3e5fc;
+    border-radius: 16px;
+    background: #fff;
 }

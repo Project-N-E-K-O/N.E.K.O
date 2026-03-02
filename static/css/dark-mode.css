@@ -1179,13 +1179,15 @@ html #chat-container {
 /* Steam Workshop：ID 针对性暗色覆盖（内联样式需 !important） */
 [data-theme="dark"] #card-info-preview,
 [data-theme="dark"] #live2d-preview-container {
-  background-color: #2d2d2d !important;
-  border-color: #444 !important;
+  background: transparent !important;
 }
 
 [data-theme="dark"] #live2d-preview-controls {
-  background-color: #333 !important;
-  border-top-color: #444 !important;
+  background: transparent !important;
+}
+
+[data-theme="dark"] #character-card-description {
+  color: #e0e0e0 !important;
 }
 
 [data-theme="dark"] #copyright-warning {
@@ -1201,8 +1203,8 @@ html #chat-container {
 }
 
 [data-theme="dark"] #character-card-tags-wrapper {
-  background-color: #2d2d2d !important;
-  border-color: #444 !important;
+  background: transparent !important;
+  border-color: #b3e5fc !important;
 }
 
 [data-theme="dark"] #no-uploadable-models-warning,

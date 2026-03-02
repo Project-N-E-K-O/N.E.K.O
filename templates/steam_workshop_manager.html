@@ -17,11 +17,9 @@
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
-        <h1 data-i18n="steam.workshopManager">Steam 创意工坊管理 - Project N.E.K.O.</h1>
-        <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭" style="width: 36px; height: 36px; background: #ff5f57; border: none; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; -webkit-app-region: no-drag;">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 4L4 12M4 4L12 12" stroke="white" stroke-width="2" stroke-linecap="round"/>
-            </svg>
+        <h2 data-i18n="steam.workshopManager" data-text="Steam 创意工坊管理";>Steam 创意工坊管理 - Project N.E.K.O.</h2>
+        <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
+            <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
         </button>
     </div>
 
@@ -52,6 +50,16 @@
 </div>
 </div>
 
+<!-- 角色卡封面图展示区域 -->
+<div class="menu-section character-card-cover-section">
+<div id="character-card-cover" class="character-card-cover">
+<!-- 根据选择的角色动态展示角色卡封面图 -->
+<img id="character-card-cover-img" src="/static/icons/default_character_card.png" alt="角色卡封面" style="width: 100%; border-radius: 8px;">
+<div id="character-card-cover-placeholder" class="cover-placeholder">
+<p data-i18n="steam.selectCharacterForCover">请选择角色查看封面</p>
+</div>
+</div>
+</div>
 
 </div>
 
@@ -69,12 +77,16 @@
 </div>
                     
 <div class="filter-controls">
-<div class="filter-group">
-<div class="filter-label" data-i18n="steam.search">搜索：</div>
-<input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder">
+<div class="filter-group search-group">
+<!--<div class="filter-label" data-i18n="steam.search">搜索：</div>-->
+<div class="search-input-wrapper">
+    <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder">
+    <img src="/static/icons/search_icon.png" class="search-icon" alt="搜索">
+</div>
 </div>
 <div class="filter-group">
-<div class="filter-label" data-i18n="steam.sort.title">排序：</div>
+<!--<div class="filter-label" data-i18n="steam.sort.title">排序：</div>-->
+<div class="select-input-wrapper">
 <select id="sort-subscription" class="control-select" onchange="applySort(this.value)">
 <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
 <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
@@ -85,9 +97,14 @@
 <option value="update_asc" data-i18n="steam.sort.updateAsc">更新时间（升序）</option>
 <option value="update_desc" data-i18n="steam.sort.updateDesc">更新时间（降序）</option>
 </select>
+<img src="/static/icons/drop_down_arrow_icon.png" class="select-arrow-icon" alt="下拉箭头">
+</div>
 </div>
 <div class="filter-group">
+<div class="refresh-button-wrapper">
 <button class="btn btn-primary" onclick="loadSubscriptions()" data-i18n="steam.refresh">刷新订阅内容</button>
+<img src="/static/icons/roload_icon.png" class="refresh-icon" alt="刷新">
+</div>
 </div>
 </div>
                 
