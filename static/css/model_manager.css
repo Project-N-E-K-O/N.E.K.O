@@ -27,6 +27,8 @@
     /* 描边颜色 */
     --button-text-stroke-width: 2px;
     /* 描边宽度（视觉上的） */
+    --dropdown-text-max-width: 200px;
+    /* 下拉菜单项文字最大宽度，超出显示省略号 */
 }
 
 /* 可访问性改进：保留键盘导航的焦点指示
@@ -650,6 +652,22 @@ body {
 .live2d-model-dropdown .dropdown-item:last-child {
     border-bottom-left-radius: 12px;
     border-bottom-right-radius: 12px;
+}
+
+.steam-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #1a9fff;
+    background-color: rgba(26, 159, 255, 0.15);
+    border: 1px solid #1a9fff;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 /* 动作选择器按钮样式（参考模型类型选择器模式） */
@@ -2391,7 +2409,12 @@ body {
     font-size: 16px !important;
     letter-spacing: 1px;
     color: transparent;
-    flex: 1;
+    flex: 0 1 auto;
+    max-width: var(--dropdown-text-max-width, 200px);
+    min-width: 50px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .dropdown-item-text::before {
@@ -2404,6 +2427,9 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     text-shadow:
         2px 0 0 var(--button-text-stroke-color),
         0 2px 0 var(--button-text-stroke-color),
@@ -2440,6 +2466,9 @@ body {
     background-clip: text;
     color: transparent;
     text-shadow: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* 自定义滚动条样式 - 与模型管理页面风格一致 */
