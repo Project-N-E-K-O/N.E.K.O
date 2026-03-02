@@ -724,10 +724,12 @@ async def set_proxy_mode(request: Request):
         ]
 
         global _proxy_snapshot
+        all_keys = proxy_keys + ['NO_PROXY', 'no_proxy']
         with _PROXY_LOCK:
             if direct:
-                # 保存当前代理环境变量快照
-                _proxy_snapshot = {k: os.environ[k] for k in proxy_keys if k in os.environ}
+                # 仅在首次切换到直连时保存快照，避免重复调用覆盖原始值
+                if not _proxy_snapshot:
+                    _proxy_snapshot = {k: os.environ[k] for k in all_keys if k in os.environ}
                 # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
                 os.environ['NO_PROXY'] = '*'
                 os.environ['no_proxy'] = '*'
@@ -735,12 +737,12 @@ async def set_proxy_mode(request: Request):
                     os.environ.pop(key, None)
                 logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
             else:
-                # 恢复：移除 NO_PROXY
-                os.environ.pop('NO_PROXY', None)
-                os.environ.pop('no_proxy', None)
-                # 从快照恢复先前的代理环境变量
-                for k, v in _proxy_snapshot.items():
-                    os.environ[k] = v
+                # 从快照恢复所有代理相关环境变量（含 NO_PROXY）
+                for k in all_keys:
+                    if k in _proxy_snapshot:
+                        os.environ[k] = _proxy_snapshot[k]
+                    else:
+                        os.environ.pop(k, None)
                 _proxy_snapshot = {}
                 logger.info("[ProxyMode] 已恢复系统代理模式")
 
