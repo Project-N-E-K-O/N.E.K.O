@@ -826,6 +826,33 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                     except Exception as emit_err:
                         logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
+                except asyncio.CancelledError as e:
+                    cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                    _reg = Modules.task_registry.get(result.task_id)
+                    if _reg:
+                        _reg["status"] = "cancelled"
+                        _reg["error"] = cancel_msg
+                    try:
+                        await _emit_task_result(
+                            lanlan_name,
+                            channel="user_plugin",
+                            task_id=str(result.task_id or ""),
+                            success=False,
+                            summary='插件任务已取消',
+                            error_message=cancel_msg,
+                        )
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": result.task_id, "status": "cancelled", "type": "user_plugin",
+                                  "start_time": up_start, "end_time": _now_iso(),
+                                  "error": cancel_msg},
+                        )
+                    except Exception as emit_err:
+                        logger.debug("[TaskExecutor] emit task_update(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                    raise
                 except Exception as e:
                     logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
                     _reg = Modules.task_registry.get(result.task_id)
@@ -1225,6 +1252,21 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
+        except asyncio.CancelledError:
+            info["status"] = "cancelled"
+            info["error"] = "Cancelled by shutdown"
+            try:
+                await _emit_task_result(
+                    lanlan_name,
+                    channel="user_plugin",
+                    task_id=task_id,
+                    success=False,
+                    summary=f'插件任务 "{plugin_id}" 已取消',
+                    error_message="cancelled",
+                )
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
+            raise
         except Exception as e:
             info["status"] = "failed"
             info["error"] = str(e)[:500]

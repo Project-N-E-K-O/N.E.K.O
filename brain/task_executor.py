@@ -1230,7 +1230,16 @@ Return only the JSON object, nothing else.
 
             return plugin_result
 
-    async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
+    async def execute_user_plugin_direct(
+        self,
+        task_id: str,
+        plugin_id: str,
+        plugin_args: Dict[str, Any],
+        entry_id: Optional[str] = None,
+        lanlan_name: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> TaskResult:
         """
         Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
@@ -1242,6 +1251,9 @@ Return only the JSON object, nothing else.
             entry_id=entry_id,
             task_description=f"Direct plugin call {plugin_id}",
             reason="direct_call",
+            lanlan_name=lanlan_name,
+            conversation_id=conversation_id,
+            on_progress=on_progress,
         )
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:

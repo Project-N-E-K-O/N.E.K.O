@@ -1278,8 +1278,9 @@ class LLMSessionManager:
         _lang = normalize_language_code(self.user_language, format='short')
         _init_tmpl = SESSION_INIT_PROMPT_AGENT if self._is_agent_enabled() else SESSION_INIT_PROMPT
         prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
-        prompt += await self._fetch_plugin_summary_prompt()
-        prompt += await self._fetch_active_agent_tasks_prompt()
+        if self._is_agent_enabled():
+            prompt += await self._fetch_plugin_summary_prompt()
+            prompt += await self._fetch_active_agent_tasks_prompt()
         return prompt
 
     def _is_agent_enabled(self):
@@ -1299,7 +1300,7 @@ class LLMSessionManager:
         - ≤5 plugins: list each plugin's id and one-line description (~200 tokens)
         - >5 plugins: just mention the count (~20 tokens)
         """
-        if not self.agent_flags.get('user_plugin_enabled'):
+        if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
             return ""
         _lang = normalize_language_code(self.user_language, format='short')
         header = _loc(AGENT_PLUGINS_HEADER, _lang)
@@ -1319,9 +1320,8 @@ class LLMSessionManager:
                         if not isinstance(p, dict):
                             continue
                         pid = p.get("id", "")
-                        desc = p.get("description", "")
                         if pid:
-                            lines.append(f"  - {pid}: {desc}" if desc else f"  - {pid}")
+                            lines.append(f"  - {pid}")
                     if lines:
                         return header + "\n".join(lines) + "\n"
                 else:

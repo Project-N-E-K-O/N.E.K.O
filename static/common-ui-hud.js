@@ -580,21 +580,27 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Minimum display duration (ms) — keep completed/failed tasks visible briefly
     const MIN_DISPLAY_MS = 1500;
     if (!this._taskFirstSeen) this._taskFirstSeen = {};
+    if (!this._taskStatusById) this._taskStatusById = {};
+    if (!this._taskTerminalAt) this._taskTerminalAt = {};
     const now = Date.now();
 
-    // Track first-seen time for every task
+    // Track first-seen/status transition for every task
     (tasksData.tasks || []).forEach(t => {
-        if (t.id && !this._taskFirstSeen[t.id]) {
-            this._taskFirstSeen[t.id] = now;
+        if (!t.id) return;
+        if (!this._taskFirstSeen[t.id]) this._taskFirstSeen[t.id] = now;
+        const prevStatus = this._taskStatusById[t.id];
+        if ((t.status === 'completed' || t.status === 'failed') && prevStatus !== t.status) {
+            this._taskTerminalAt[t.id] = now;
         }
+        this._taskStatusById[t.id] = t.status;
     });
 
     // Active = running/queued, plus recently-terminated tasks within MIN_DISPLAY_MS
     const activeTasks = (tasksData.tasks || []).filter(t => {
         if (t.status === 'running' || t.status === 'queued') return true;
         // Keep completed/failed tasks visible for at least MIN_DISPLAY_MS
-        const firstSeen = this._taskFirstSeen[t.id];
-        if (firstSeen && (now - firstSeen) < MIN_DISPLAY_MS) return true;
+        const terminalAt = this._taskTerminalAt[t.id];
+        if (terminalAt && (now - terminalAt) < MIN_DISPLAY_MS) return true;
         return false;
     });
 
@@ -617,9 +623,12 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         }
     }
 
-    // Clean up old first-seen entries (older than 30s)
+    // Clean up old cache entries (older than 30s)
     for (const tid in this._taskFirstSeen) {
-        if (now - this._taskFirstSeen[tid] > 30000) delete this._taskFirstSeen[tid];
+        if (now - this._taskFirstSeen[tid] <= 30000) continue;
+        delete this._taskFirstSeen[tid];
+        delete this._taskStatusById[tid];
+        delete this._taskTerminalAt[tid];
     }
 
     if (cancelBtn) {

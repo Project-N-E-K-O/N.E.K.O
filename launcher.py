@@ -1105,7 +1105,7 @@ def main():
                     # POSIX: 逐个终止子进程，避免向自身进程组发送 SIGKILL
                     for server in SERVERS:
                         proc = server.get('process')
-                        if not proc:
+                        if not proc or not proc.is_alive():
                             continue
                         pid = getattr(proc, 'pid', None)
                         if not pid:
@@ -1133,7 +1133,7 @@ def main():
                     import subprocess
                     for server in SERVERS:
                         proc = server.get('process')
-                        if not proc:
+                        if not proc or not proc.is_alive():
                             continue
                         pid = getattr(proc, 'pid', None)
                         if not pid:
@@ -1163,4 +1163,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
