@@ -1392,6 +1392,54 @@ SESSION_INIT_PROMPT_AGENT = {
     'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и управляйте компьютером.',
 }
 
+SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
+    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}），并在对方请求时、回答"我试试"并尝试执行。',
+    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed, and when the user asks, respond "Let me try" and attempt to execute the request.',
+    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーに頼まれたら「やってみる」と答えて実行を試みてください。',
+    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하고, 상대방이 요청하면 "해볼게요"라고 답하며 실행을 시도하세요.',
+    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям, а когда пользователь просит — отвечайте "Попробую" и пытайтесь выполнить запрос.',
+}
+
+AGENT_CAPABILITY_COMPUTER_USE = {
+    'zh': '操纵电脑（键鼠控制、打开应用等）',
+    'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
+    'ja': 'コンピュータを操作する（マウス・キーボード操作、アプリ起動など）',
+    'ko': '컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)',
+    'ru': 'управлять компьютером (клавиатура/мышь, запуск приложений и т.д.)',
+}
+
+AGENT_CAPABILITY_BROWSER_USE = {
+    'zh': '浏览器自动化（网页搜索、填写表单等）',
+    'en': 'perform browser automation (web search, form filling, etc.)',
+    'ja': 'ブラウザ自動化を行う（Web検索、フォーム入力など）',
+    'ko': '브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)',
+    'ru': 'выполнять автоматизацию в браузере (поиск в сети, заполнение форм и т.д.)',
+}
+
+AGENT_CAPABILITY_USER_PLUGIN_USE = {
+    'zh': '调用已安装的插件来完成特定任务',
+    'en': 'use installed plugins to complete specific tasks',
+    'ja': 'インストール済みプラグインを使って特定のタスクを実行する',
+    'ko': '설치된 플러그인을 사용해 특정 작업을 수행하는 것',
+    'ru': 'использовать установленные плагины для выполнения конкретных задач',
+}
+
+AGENT_CAPABILITY_GENERIC = {
+    'zh': '执行各种操作',
+    'en': 'perform various operations',
+    'ja': 'さまざまな操作を実行する',
+    'ko': '다양한 작업을 수행하는 것',
+    'ru': 'выполнять различные операции',
+}
+
+AGENT_CAPABILITY_SEPARATOR = {
+    'zh': '、',
+    'en': ', ',
+    'ja': '、',
+    'ko': ', ',
+    'ru': ', ',
+}
+
 # ---------- Agent 任务状态标签 ----------
 AGENT_TASK_STATUS_RUNNING = {
     'zh': '进行中',
@@ -1407,6 +1455,23 @@ AGENT_TASK_STATUS_QUEUED = {
     'ja': '待機中',
     'ko': '대기 중',
     'ru': 'В очереди',
+}
+
+# ---------- Agent 插件摘要 ----------
+AGENT_PLUGINS_HEADER = {
+    'zh': '\n【已安装的插件】\n',
+    'en': '\n[Installed Plugins]\n',
+    'ja': '\n[インストール済みプラグイン]\n',
+    'ko': '\n[설치된 플러그인]\n',
+    'ru': '\n[Установленные плагины]\n',
+}
+
+AGENT_PLUGINS_COUNT = {
+    'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
+    'en': '\n[Installed Plugins] {count} plugins are available.\n',
+    'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
+    'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
+    'ru': '\n[Установленные плагины] Доступно плагинов: {count}.\n',
 }
 
 AGENT_TASKS_HEADER = {
@@ -1485,4 +1550,3 @@ MEMORY_RESULTS_HEADER = {
     'ko': '====={name}의 관련 기억=====\n',
     'ru': '====={name} — связанные воспоминания=====\n',
 }
-

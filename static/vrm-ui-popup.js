@@ -190,7 +190,8 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
     const agentToggles = [
         { id: 'agent-master', label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', labelKey: 'settings.toggles.agentMaster', initialDisabled: true },
         { id: 'agent-keyboard', label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', labelKey: 'settings.toggles.keyboardControl', initialDisabled: true },
-        { id: 'agent-browser', label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control', labelKey: 'settings.toggles.browserUse', initialDisabled: true }
+        { id: 'agent-browser', label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control', labelKey: 'settings.toggles.browserUse', initialDisabled: true },
+        { id: 'agent-user-plugin', label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件', labelKey: 'settings.toggles.userPlugin', initialDisabled: true }
     ];
 
     agentToggles.forEach(toggle => {
@@ -200,7 +201,6 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
 
     // 添加适配中的按钮（不可选）
     const adaptingItems = [
-        { labelKey: 'settings.toggles.userPluginAdapting', fallback: '用户插件（开发中）' },
         { labelKey: 'settings.toggles.moltbotAdapting', fallback: 'moltbot（开发中）' }
     ];
 
