@@ -682,7 +682,7 @@ function init_app() {
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
                                         sessionStartedRejecter = reject; //  保存 reject 函数
-                                        
+
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -7339,9 +7339,9 @@ function init_app() {
             || (userPlugin && userPlugin.checked);
 
         // Extract backend/cached state
-        const snap = window._agentStatusSnapshot; 
+        const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
-        
+
         // We prefer snapshot flags if they exist and are populated, else fallback to machine cached flags
         const flags = (snap && snap.flags && Object.keys(snap.flags).length > 0) ? snap.flags : machineFlags;
 
@@ -7349,11 +7349,11 @@ function init_app() {
         let optMaster = undefined;
         let optChild = undefined;
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
-             const opt = window.agent_ui_v2_state.optimistic;
-             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-             if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
-                 optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
-             }
+            const opt = window.agent_ui_v2_state.optimistic;
+            if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
+            }
         }
 
         let isMasterOn = false;
@@ -7415,11 +7415,11 @@ function init_app() {
                 userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            
+
             checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
         };
-        
+
         // 由于不同模型(Live2D/VRM)构建 popup DOM 的时机不同，这里采用递归轮询直到元素出现为止
         setTimeout(bindHUD, 100);
     });
@@ -8409,10 +8409,10 @@ function init_app() {
         try {
             const response = await fetch('/api/auth/cookies/status');
             if (!response.ok) return [];
-            
+
             const result = await response.json();
             let availablePlatforms = [];
-            
+
             if (result.success && result.data) {
                 for (const [platform, info] of Object.entries(result.data)) {
                     if (platform !== 'platforms' && info.has_cookies) {
@@ -8454,8 +8454,8 @@ function init_app() {
             // 个人动态搭话：使用B站和微博个人动态
             if (proactivePersonalChatEnabled && proactiveChatEnabled) {
                 if (proactivePersonalChatEnabled && proactiveChatEnabled) {
-                // 检查是否有可用的 Cookie 凭证
-                const platforms = await getAvailablePersonalPlatforms();
+                    // 检查是否有可用的 Cookie 凭证
+                    const platforms = await getAvailablePersonalPlatforms();
                     if (platforms.length > 0) {
                         availableModes.push('personal');
                         console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
@@ -8521,7 +8521,7 @@ function init_app() {
                 if (proactivePersonalChatEnabled && proactiveChatEnabled) {
                     latestModes.push('personal');
                 }
-                
+
                 availableModes = availableModes.filter(m => latestModes.includes(m));
                 requestBody.enabled_modes = availableModes;
                 if (availableModes.length === 0) {
@@ -8872,9 +8872,18 @@ function init_app() {
         }
     }
 
-    // 主动搭话截图函数（前端 getDisplayMedia → 后端 pyautogui 兜底）
+    // 主动搭话截图函数（优先后端 pyautogui 兜底静默截图 → 前端 getDisplayMedia）
     async function captureProactiveChatScreenshot() {
-        // 策略1: 前端 getDisplayMedia
+        // 策略1: 后端 pyautogui 兜底优先
+        // 这一步在本地运行时是完全静默的，避免了 Mac 每次弹窗请求权限的干扰
+        const backendDataUrl = await fetchBackendScreenshot();
+        if (backendDataUrl) {
+            console.log('[主动搭话截图] 后端兜底截图成功');
+            return backendDataUrl;
+        }
+
+        // 策略2: 前端 getDisplayMedia（作为远程服务器等后端不可用情况下的次要备选方案）
+        // 该方法每次被调用都会强制弹出屏幕/窗口选择权限框，中断用户体验
         if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             let captureStream = null;
             try {
@@ -8893,22 +8902,15 @@ function init_app() {
                 video.srcObject = null;
                 video.remove();
 
-                console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
+                console.log(`[主动搭话截图] 前端 getDisplayMedia 截图成功，尺寸: ${width}x${height}`);
                 return dataUrl;
             } catch (err) {
-                console.warn('[主动搭话截图] getDisplayMedia 失败，尝试后端兜底:', err);
+                console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
             } finally {
                 if (captureStream) {
                     captureStream.getTracks().forEach(track => track.stop());
                 }
             }
-        }
-
-        // 策略2: 后端 pyautogui 兜底
-        const backendDataUrl = await fetchBackendScreenshot();
-        if (backendDataUrl) {
-            console.log('[主动搭话截图] 后端兜底截图成功');
-            return backendDataUrl;
         }
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
@@ -9005,7 +9007,7 @@ function init_app() {
             if (/^asia\/(shanghai|chongqing|urumqi|harbin|kashgar)$/.test(tz)) return true;
             const lang = (navigator.language || '').toLowerCase();
             if (lang === 'zh' || lang.startsWith('zh-cn') || lang.startsWith('zh-hans')) return true;
-        } catch (_) {}
+        } catch (_) { }
         return false;
     }
 
