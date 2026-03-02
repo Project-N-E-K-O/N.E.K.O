@@ -74,6 +74,8 @@ class Modules:
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
+    # Cancellable background task handles by logical task_id
+    task_async_handles: ClassVar[Dict[str, asyncio.Task]] = {}
 
 
 def _rewire_computer_use_dependents() -> None:
@@ -882,8 +884,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
 
                 up_task = asyncio.create_task(_run_user_plugin_dispatch())
+                Modules.task_async_handles[result.task_id] = up_task
                 Modules._background_tasks.add(up_task)
-                up_task.add_done_callback(Modules._background_tasks.discard)
+                def _cleanup_up_task(_t, _tid=result.task_id):
+                    Modules._background_tasks.discard(_t)
+                    Modules.task_async_handles.pop(_tid, None)
+                up_task.add_done_callback(_cleanup_up_task)
             else:
                 logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
         elif result.execution_method == 'browser_use':
@@ -916,73 +922,108 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     )
                 except Exception as e:
                     logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
-                try:
-                    bres = await Modules.browser_use.run_instruction(
-                        result.task_description,
-                        session_id=bu_session.session_id,
-                    )
-                    success = bres.get("success", False) if isinstance(bres, dict) else False
-                    summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                    result_detail = ""
-                    error_detail = ""
-                    if isinstance(bres, dict):
-                        result_detail = str(bres.get("result") or bres.get("message") or "")
-                        error_detail = str(bres.get("error") or "") if not success else ""
-                        display_detail = result_detail or error_detail
-                        if success:
-                            summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
-                        else:
-                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                    bu_session.complete_task(result_detail or summary, success)
-                    bu_info["status"] = "completed" if success else "failed"
-                    bu_info["result"] = bres
-                    await _emit_task_result(
-                        lanlan_name,
-                        channel="browser_use",
-                        task_id=bu_task_id,
-                        success=success,
-                        summary=summary,
-                        detail=result_detail,
-                        error_message=error_detail,
-                    )
+                async def _run_browser_use_dispatch():
                     try:
-                        await _emit_main_event(
-                            "task_update", lanlan_name,
-                            task={"id": bu_task_id, "status": bu_info["status"],
-                                  "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                  "error": error_detail[:500] if error_detail else "",
-                                  "session_id": bu_session.session_id},
+                        bres = await Modules.browser_use.run_instruction(
+                            result.task_description,
+                            session_id=bu_session.session_id,
                         )
-                    except Exception as emit_err:
-                        logger.debug("[BrowserUse] emit task_update(terminal) failed: task_id=%s error=%s", bu_task_id, emit_err)
-                except Exception as e:
-                    logger.warning(f"[BrowserUse] Failed: {e}")
-                    bu_info["status"] = "failed"
-                    bu_info["error"] = str(e)[:500]
-                    bu_session.complete_task(str(e), success=False)
-                    try:
+                        success = bres.get("success", False) if isinstance(bres, dict) else False
+                        summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
+                        result_detail = ""
+                        error_detail = ""
+                        if isinstance(bres, dict):
+                            result_detail = str(bres.get("result") or bres.get("message") or "")
+                            error_detail = str(bres.get("error") or "") if not success else ""
+                            display_detail = result_detail or error_detail
+                            if success:
+                                summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
+                            else:
+                                summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
+                        bu_session.complete_task(result_detail or summary, success)
+                        bu_info["status"] = "completed" if success else "failed"
+                        bu_info["result"] = bres
                         await _emit_task_result(
                             lanlan_name,
                             channel="browser_use",
                             task_id=bu_task_id,
-                            success=False,
-                            summary=f'你的任务"{result.task_description}"执行异常',
-                            error_message=str(e),
+                            success=success,
+                            summary=summary,
+                            detail=result_detail,
+                            error_message=error_detail,
                         )
-                    except Exception as emit_err:
-                        logger.debug("[BrowserUse] emit task_result(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
-                    try:
-                        await _emit_main_event(
-                            "task_update", lanlan_name,
-                            task={"id": bu_task_id, "status": "failed", "type": "browser_use",
-                                  "start_time": bu_start, "end_time": _now_iso(),
-                                  "error": str(e)[:500],
-                                  "session_id": bu_session.session_id},
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[BrowserUse] emit task_update(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
-                finally:
-                    Modules.active_browser_use_task_id = None
+                        try:
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": bu_task_id, "status": bu_info["status"],
+                                      "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
+                                      "error": error_detail[:500] if error_detail else "",
+                                      "session_id": bu_session.session_id},
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_update(terminal) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                    except asyncio.CancelledError as e:
+                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        bu_info["status"] = "cancelled"
+                        bu_info["error"] = cancel_msg
+                        bu_session.complete_task(cancel_msg, success=False)
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="browser_use",
+                                task_id=bu_task_id,
+                                success=False,
+                                summary=f'你的任务"{result.task_description}"已取消',
+                                error_message=cancel_msg,
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_result(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                        try:
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": bu_task_id, "status": "cancelled", "type": "browser_use",
+                                      "start_time": bu_start, "end_time": _now_iso(),
+                                      "error": cancel_msg, "session_id": bu_session.session_id},
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_update(cancelled) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[BrowserUse] Failed: {e}")
+                        bu_info["status"] = "failed"
+                        bu_info["error"] = str(e)[:500]
+                        bu_session.complete_task(str(e), success=False)
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="browser_use",
+                                task_id=bu_task_id,
+                                success=False,
+                                summary=f'你的任务"{result.task_description}"执行异常',
+                                error_message=str(e),
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_result(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                        try:
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": bu_task_id, "status": "failed", "type": "browser_use",
+                                      "start_time": bu_start, "end_time": _now_iso(),
+                                      "error": str(e)[:500],
+                                      "session_id": bu_session.session_id},
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[BrowserUse] emit task_update(failed) failed: task_id=%s error=%s", bu_task_id, emit_err)
+                    finally:
+                        Modules.active_browser_use_task_id = None
+
+                bu_task = asyncio.create_task(_run_browser_use_dispatch())
+                Modules.task_async_handles[bu_task_id] = bu_task
+                Modules._background_tasks.add(bu_task)
+                def _cleanup_bu_task(_t, _tid=bu_task_id):
+                    Modules._background_tasks.discard(_t)
+                    Modules.task_async_handles.pop(_tid, None)
+                bu_task.add_done_callback(_cleanup_bu_task)
             else:
                 logger.warning("[BrowserUse] Task requires BrowserUse but it is disabled")
         
@@ -1230,6 +1271,20 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 
     # Execute via task_executor.execute_user_plugin_direct in background
     async def _run_plugin():
+        try:
+            await _emit_main_event(
+                "task_update", lanlan_name,
+                task={
+                    "id": task_id,
+                    "status": "running",
+                    "type": "plugin_direct",
+                    "start_time": info["start_time"],
+                    "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                },
+            )
+        except Exception as emit_err:
+            logger.debug("[Plugin] emit task_update(running) failed: task_id=%s error=%s", task_id, emit_err)
+
         async def _on_plugin_progress(
             *, progress=None, stage=None, message=None, step=None, step_total=None,
         ):
@@ -1316,10 +1371,29 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
+        finally:
+            try:
+                await _emit_main_event(
+                    "task_update", lanlan_name,
+                    task={
+                        "id": task_id,
+                        "status": info.get("status"),
+                        "type": "plugin_direct",
+                        "start_time": info.get("start_time"),
+                        "end_time": _now_iso(),
+                        "error": info.get("error"),
+                    },
+                )
+            except Exception as emit_err:
+                logger.debug("[Plugin] emit task_update(terminal) failed: task_id=%s error=%s", task_id, emit_err)
 
     plugin_task = asyncio.create_task(_run_plugin())
+    Modules.task_async_handles[task_id] = plugin_task
     Modules._background_tasks.add(plugin_task)
-    plugin_task.add_done_callback(Modules._background_tasks.discard)
+    def _cleanup_plugin_task(_t, _tid=task_id):
+        Modules._background_tasks.discard(_t)
+        Modules.task_async_handles.pop(_tid, None)
+    plugin_task.add_done_callback(_cleanup_plugin_task)
     return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
 
 
@@ -1343,6 +1417,9 @@ async def cancel_task(task_id: str):
         return {"success": False, "error": "task is not active"}
 
     task_type = info.get("type")
+    bg = Modules.task_async_handles.get(task_id)
+    if bg and not bg.done():
+        bg.cancel()
     if task_type == "computer_use":
         if Modules.computer_use:
             Modules.computer_use.cancel_running()

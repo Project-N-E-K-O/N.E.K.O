@@ -556,6 +556,8 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
 // 更新任务 HUD 内容
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
+    // Cache latest snapshot so deferred re-render won't use stale closure data.
+    this._latestTasksData = tasksData;
     const taskList = document.getElementById('agent-task-list');
     const emptyState = document.getElementById('agent-task-empty');
     const runningCount = document.getElementById('hud-running-count');
@@ -609,7 +611,9 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         if (this._minDisplayTimer) clearTimeout(this._minDisplayTimer);
         this._minDisplayTimer = setTimeout(() => {
             this._minDisplayTimer = null;
-            this.updateAgentTaskHUD(tasksData);
+            if (this._latestTasksData) {
+                this.updateAgentTaskHUD(this._latestTasksData);
+            }
         }, MIN_DISPLAY_MS);
     }
 

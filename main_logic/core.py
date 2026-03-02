@@ -278,6 +278,8 @@ class LLMSessionManager:
                 self.tts_request_queue.put((None, None))
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
+        if self.sync_message_queue:
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
         # Send turn_end to frontend so processRealisticQueue flushes remaining buffer
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
