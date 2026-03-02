@@ -765,120 +765,125 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         task_payload["step_total"] = step_total
                     await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
-                try:
-                    up_result = await Modules.task_executor._execute_user_plugin(
-                        task_id=result.task_id,
-                        plugin_id=plugin_id,
-                        plugin_args=plugin_args if isinstance(plugin_args, dict) else None,
-                        entry_id=entry_id,
-                        task_description=result.task_description,
-                        reason=result.reason,
-                        lanlan_name=lanlan_name,
-                        conversation_id=conversation_id,
-                        on_progress=_on_plugin_progress,
-                    )
-                    up_terminal = "completed" if up_result.success else "failed"
-                    # Update task_registry with terminal state
-                    _reg = Modules.task_registry.get(result.task_id)
-                    if _reg:
-                        _reg["status"] = up_terminal
-                        _reg["result"] = up_result.result
-                        if not up_result.success and up_result.error:
-                            _reg["error"] = str(up_result.error)[:500]
-                    run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
-                    detail = str(run_data)[:500] if run_data else ""
-                    if up_result.success:
-                        logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
-                        summary = f'插件任务 "{plugin_id}" 已完成'
-                        if detail:
-                            summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                async def _run_user_plugin_dispatch():
+                    try:
+                        up_result = await Modules.task_executor._execute_user_plugin(
+                            task_id=result.task_id,
+                            plugin_id=plugin_id,
+                            plugin_args=plugin_args if isinstance(plugin_args, dict) else None,
+                            entry_id=entry_id,
+                            task_description=result.task_description,
+                            reason=result.reason,
+                            lanlan_name=lanlan_name,
+                            conversation_id=conversation_id,
+                            on_progress=_on_plugin_progress,
+                        )
+                        up_terminal = "completed" if up_result.success else "failed"
+                        # Update task_registry with terminal state
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = up_terminal
+                            _reg["result"] = up_result.result
+                            if not up_result.success and up_result.error:
+                                _reg["error"] = str(up_result.error)[:500]
+                        run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
+                        detail = str(run_data)[:500] if run_data else ""
+                        if up_result.success:
+                            logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
+                            summary = f'插件任务 "{plugin_id}" 已完成'
+                            if detail:
+                                summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                            try:
+                                await _emit_task_result(
+                                    lanlan_name,
+                                    channel="user_plugin",
+                                    task_id=str(up_result.task_id or ""),
+                                    success=True,
+                                    summary=summary[:500],
+                                    detail=detail,
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                        else:
+                            logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                            try:
+                                await _emit_task_result(
+                                    lanlan_name,
+                                    channel="user_plugin",
+                                    task_id=str(up_result.task_id or ""),
+                                    success=False,
+                                    summary=f'插件任务 "{plugin_id}" 执行失败',
+                                    error_message=str(up_result.error or "unknown error")[:500],
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                        # Emit task_update (terminal) so AgentHUD removes the running card
                         try:
-                            await _emit_task_result(
-                                lanlan_name,
-                                channel="user_plugin",
-                                task_id=str(up_result.task_id or ""),
-                                success=True,
-                                summary=summary[:500],
-                                detail=detail,
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
+                                      "start_time": up_start, "end_time": _now_iso(),
+                                      "error": str(up_result.error or "")[:500] if not up_result.success else None},
                             )
                         except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
-                    else:
-                        logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                            logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
+                    except asyncio.CancelledError as e:
+                        cancel_msg = str(e)[:500] if str(e) else "cancelled"
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = "cancelled"
+                            _reg["error"] = cancel_msg
                         try:
                             await _emit_task_result(
                                 lanlan_name,
                                 channel="user_plugin",
-                                task_id=str(up_result.task_id or ""),
+                                task_id=str(result.task_id or ""),
                                 success=False,
-                                summary=f'插件任务 "{plugin_id}" 执行失败',
-                                error_message=str(up_result.error or "unknown error")[:500],
+                                summary='插件任务已取消',
+                                error_message=cancel_msg,
                             )
                         except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
-                    # Emit task_update (terminal) so AgentHUD removes the running card
-                    try:
-                        await _emit_main_event(
-                            "task_update", lanlan_name,
-                            task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
-                                  "start_time": up_start, "end_time": _now_iso(),
-                                  "error": str(up_result.error or "")[:500] if not up_result.success else None},
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
-                except asyncio.CancelledError as e:
-                    cancel_msg = str(e)[:500] if str(e) else "cancelled"
-                    _reg = Modules.task_registry.get(result.task_id)
-                    if _reg:
-                        _reg["status"] = "cancelled"
-                        _reg["error"] = cancel_msg
-                    try:
-                        await _emit_task_result(
-                            lanlan_name,
-                            channel="user_plugin",
-                            task_id=str(result.task_id or ""),
-                            success=False,
-                            summary='插件任务已取消',
-                            error_message=cancel_msg,
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
-                    try:
-                        await _emit_main_event(
-                            "task_update", lanlan_name,
-                            task={"id": result.task_id, "status": "cancelled", "type": "user_plugin",
-                                  "start_time": up_start, "end_time": _now_iso(),
-                                  "error": cancel_msg},
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[TaskExecutor] emit task_update(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
-                    raise
-                except Exception as e:
-                    logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
-                    _reg = Modules.task_registry.get(result.task_id)
-                    if _reg:
-                        _reg["status"] = "failed"
-                        _reg["error"] = str(e)[:500]
-                    try:
-                        await _emit_task_result(
-                            lanlan_name,
-                            channel="user_plugin",
-                            task_id=str(result.task_id or ""),
-                            success=False,
-                            summary='插件任务分发失败',
-                            error_message=str(e)[:500],
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
-                    try:
-                        await _emit_main_event(
-                            "task_update", lanlan_name,
-                            task={"id": result.task_id, "status": "failed", "type": "user_plugin",
-                                  "start_time": up_start, "end_time": _now_iso(),
-                                  "error": str(e)[:500]},
-                        )
-                    except Exception as emit_err:
-                        logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
+                            logger.debug("[TaskExecutor] emit task_result(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        try:
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": result.task_id, "status": "cancelled", "type": "user_plugin",
+                                      "start_time": up_start, "end_time": _now_iso(),
+                                      "error": cancel_msg},
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_update(cancelled) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        raise
+                    except Exception as e:
+                        logger.exception("[TaskExecutor] UserPlugin dispatch failed: %s", e)
+                        _reg = Modules.task_registry.get(result.task_id)
+                        if _reg:
+                            _reg["status"] = "failed"
+                            _reg["error"] = str(e)[:500]
+                        try:
+                            await _emit_task_result(
+                                lanlan_name,
+                                channel="user_plugin",
+                                task_id=str(result.task_id or ""),
+                                success=False,
+                                summary='插件任务分发失败',
+                                error_message=str(e)[:500],
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_result(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
+                        try:
+                            await _emit_main_event(
+                                "task_update", lanlan_name,
+                                task={"id": result.task_id, "status": "failed", "type": "user_plugin",
+                                      "start_time": up_start, "end_time": _now_iso(),
+                                      "error": str(e)[:500]},
+                            )
+                        except Exception as emit_err:
+                            logger.debug("[TaskExecutor] emit task_update(dispatch_failed) failed: task_id=%s error=%s", result.task_id, emit_err)
+
+                up_task = asyncio.create_task(_run_user_plugin_dispatch())
+                Modules._background_tasks.add(up_task)
+                up_task.add_done_callback(Modules._background_tasks.discard)
             else:
                 logger.warning("[UserPlugin] ⚠️ Task requires UserPlugin but it's disabled")
         elif result.execution_method == 'browser_use':
@@ -1201,6 +1206,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
         raise HTTPException(400, "args must be a JSON object")
     args = raw_args
     lanlan_name = (payload or {}).get("lanlan_name")
+    conversation_id = (payload or {}).get("conversation_id")
     if not plugin_id or not isinstance(plugin_id, str):
         raise HTTPException(400, "plugin_id required")
 
@@ -1224,9 +1230,37 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
 
     # Execute via task_executor.execute_user_plugin_direct in background
     async def _run_plugin():
+        async def _on_plugin_progress(
+            *, progress=None, stage=None, message=None, step=None, step_total=None,
+        ):
+            task_payload: Dict[str, Any] = {
+                "id": task_id,
+                "status": "running",
+                "type": "plugin_direct",
+                "start_time": info["start_time"],
+                "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+            }
+            if progress is not None:
+                task_payload["progress"] = progress
+            if stage is not None:
+                task_payload["stage"] = stage
+            if message is not None:
+                task_payload["message"] = message
+            if step is not None:
+                task_payload["step"] = step
+            if step_total is not None:
+                task_payload["step_total"] = step_total
+            await _emit_main_event("task_update", lanlan_name, task=task_payload)
+
         try:
             res = await Modules.task_executor.execute_user_plugin_direct(
-                task_id=task_id, plugin_id=plugin_id, plugin_args=args, entry_id=entry_id
+                task_id=task_id,
+                plugin_id=plugin_id,
+                plugin_args=args,
+                entry_id=entry_id,
+                lanlan_name=lanlan_name,
+                conversation_id=conversation_id,
+                on_progress=_on_plugin_progress,
             )
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"

@@ -21,7 +21,9 @@ from main_logic.tts_client import get_tts_worker
 from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from config.prompts_sys import (
     _loc,
-    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
+    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT_DYNAMIC,
+    AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
+    AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
@@ -1276,8 +1278,24 @@ class LLMSessionManager:
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt with dynamic capability descriptions and plugin summary."""
         _lang = normalize_language_code(self.user_language, format='short')
-        _init_tmpl = SESSION_INIT_PROMPT_AGENT if self._is_agent_enabled() else SESSION_INIT_PROMPT
-        prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
+        if self._is_agent_enabled():
+            capability_parts = []
+            if self.agent_flags.get('computer_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+            if self.agent_flags.get('browser_use_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+            if self.agent_flags.get('user_plugin_enabled'):
+                capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+            caps_text = (
+                _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+                if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            )
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+                name=self.lanlan_name,
+                capabilities=caps_text,
+            ) + self.lanlan_prompt
+        else:
+            prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
             prompt += await self._fetch_plugin_summary_prompt()
             prompt += await self._fetch_active_agent_tasks_prompt()

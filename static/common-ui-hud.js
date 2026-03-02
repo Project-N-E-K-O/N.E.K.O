@@ -625,7 +625,11 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
 
     // Clean up old cache entries (older than 30s)
     for (const tid in this._taskFirstSeen) {
-        if (now - this._taskFirstSeen[tid] <= 30000) continue;
+        const firstSeen = this._taskFirstSeen[tid];
+        const terminalAt = this._taskTerminalAt[tid];
+        const cleanupBase = terminalAt || firstSeen;
+        if (!cleanupBase) continue;
+        if (now - cleanupBase <= 30000) continue;
         delete this._taskFirstSeen[tid];
         delete this._taskStatusById[tid];
         delete this._taskTerminalAt[tid];
