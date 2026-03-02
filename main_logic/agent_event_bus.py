@@ -131,6 +131,25 @@ class MainServerAgentBridge:
         except Exception:
             return False
 
+    async def stop(self) -> None:
+        """Shut down ZMQ resources and background thread."""
+        self._stop.set()
+        self.ready = False
+        if self._recv_thread is not None:
+            await asyncio.to_thread(self._recv_thread.join, 2.0)
+        for sock in (self.pull, self.analyze_push, self.pub):
+            if sock is not None:
+                try:
+                    sock.close(linger=0)
+                except Exception:
+                    pass
+        if self.ctx is not None:
+            try:
+                self.ctx.term()
+            except Exception:
+                pass
+        logger.debug("[EventBus] Main bridge stopped")
+
     async def publish_session_event_threadsafe(self, event: Dict[str, Any]) -> bool:
         if self.owner_loop is None:
             return False
@@ -300,6 +319,7 @@ async def publish_analyze_request_reliably(
     *,
     ack_timeout_s: float = 0.5,
     retries: int = 1,
+    conversation_id: Optional[str] = None,
 ) -> bool:
     """可靠发布 analyze_request：携带 event_id + ack，并支持短重试。"""
     event_id = uuid.uuid4().hex
@@ -313,6 +333,8 @@ async def publish_analyze_request_reliably(
             "lanlan_name": lanlan_name,
             "messages": messages,
         }
+        if conversation_id:
+            event["conversation_id"] = conversation_id
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()
@@ -333,10 +355,18 @@ async def publish_analyze_request_reliably(
             sent = await bridge.publish_analyze_request(event)
         else:
             try:
-                cf = asyncio.run_coroutine_threadsafe(
-                    bridge.publish_analyze_request(event), bridge.owner_loop,
-                )
-                sent = await asyncio.wrap_future(cf)
+                if bridge.owner_loop.is_closed():
+                    logger.debug("[EventBus] owner_loop closed, skipping publish")
+                    sent = False
+                else:
+                    coro = bridge.publish_analyze_request(event)
+                    try:
+                        cf = asyncio.run_coroutine_threadsafe(coro, bridge.owner_loop)
+                        sent = await asyncio.wrap_future(cf)
+                    except Exception as e:
+                        coro.close()
+                        logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                        sent = False
             except Exception as e:
                 logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
                 sent = False

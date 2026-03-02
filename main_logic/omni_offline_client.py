@@ -81,6 +81,7 @@ class OmniOfflineClient:
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
         self.on_response_done = on_response_done
+        self.on_proactive_done: Optional[Callable[[], Awaitable[None]]] = None
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
@@ -460,7 +461,10 @@ class OmniOfflineClient:
         It is **not** persisted to _conversation_history.  Only the AI's
         natural-language response (AIMessage) is kept in history.
 
-        Calls on_response_done() when finished (same as stream_text).
+        Calls on_proactive_done() when finished — a lightweight callback that only
+        flushes TTS and sends turn_end to the frontend, WITHOUT triggering hot-swap
+        or analyze_request logic.  Falls back to on_response_done() if
+        on_proactive_done is not set.
         Returns True if any text was generated, False if aborted or empty.
         """
         if not instruction or not instruction.strip():
@@ -498,8 +502,11 @@ class OmniOfflineClient:
             self._is_responding = False
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
-            if self.on_response_done:
-                await self.on_response_done()
+            # Use lightweight proactive-done callback (TTS flush + turn_end only),
+            # falling back to full on_response_done for backward compatibility.
+            done_cb = getattr(self, "on_proactive_done", None) or self.on_response_done
+            if done_cb:
+                await done_cb()
 
         return bool(assistant_message)
 
