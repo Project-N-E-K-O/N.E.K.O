@@ -737,14 +737,17 @@ async def set_proxy_mode(request: Request):
                     os.environ.pop(key, None)
                 logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
             else:
-                # 从快照恢复所有代理相关环境变量（含 NO_PROXY）
-                for k in all_keys:
-                    if k in _proxy_snapshot:
-                        os.environ[k] = _proxy_snapshot[k]
-                    else:
-                        os.environ.pop(k, None)
-                _proxy_snapshot = {}
-                logger.info("[ProxyMode] 已恢复系统代理模式")
+                if _proxy_snapshot:
+                    # 从快照恢复所有代理相关环境变量（含 NO_PROXY）
+                    for k in all_keys:
+                        if k in _proxy_snapshot:
+                            os.environ[k] = _proxy_snapshot[k]
+                        else:
+                            os.environ.pop(k, None)
+                    _proxy_snapshot = {}
+                    logger.info("[ProxyMode] 已恢复系统代理模式")
+                else:
+                    logger.info("[ProxyMode] 无快照可恢复，保持当前环境变量")
 
         import urllib.request
         proxies_after = _sanitize_proxies(urllib.request.getproxies())
