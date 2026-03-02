@@ -1321,7 +1321,7 @@ class LLMSessionManager:
     async def _fetch_plugin_summary_prompt(self) -> str:
         """Fetch installed plugin list and return a concise prompt snippet.
 
-        - ≤5 plugins: list each plugin's id and one-line description (~200 tokens)
+        - ≤5 plugins: list each plugin's id (~200 tokens)
         - >5 plugins: just mention the count (~20 tokens)
         """
         if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
