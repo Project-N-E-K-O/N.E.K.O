@@ -13,6 +13,7 @@ import json
 import os
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
@@ -670,3 +671,41 @@ async def list_gptsovits_voices(request: Request):
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
         return {"success": False, "error": str(e)}
+
+
+@router.post("/set_proxy_mode")
+async def set_proxy_mode(request: Request):
+    """运行时热切换代理模式。
+
+    body: { "direct": true }   → 直连（禁用代理）
+    body: { "direct": false }  → 恢复系统代理
+    """
+    try:
+        data = await request.json()
+        direct = bool(data.get("direct", False))
+
+        # 代理相关环境变量 key 列表
+        proxy_keys = [
+            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy',
+        ]
+
+        if direct:
+            # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
+            os.environ['NO_PROXY'] = '*'
+            os.environ['no_proxy'] = '*'
+            for key in proxy_keys:
+                os.environ.pop(key, None)
+            logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
+        else:
+            # 恢复：移除 NO_PROXY 让 Python 重新读取系统代理
+            os.environ.pop('NO_PROXY', None)
+            os.environ.pop('no_proxy', None)
+            logger.info("[ProxyMode] 已恢复系统代理模式")
+
+        import urllib.request
+        proxies_after = urllib.request.getproxies()
+        return {"success": True, "direct": direct, "proxies_after": proxies_after}
+    except Exception as e:
+        logger.error(f"[ProxyMode] 切换失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
