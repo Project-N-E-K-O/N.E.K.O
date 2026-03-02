@@ -610,10 +610,17 @@ Return only the JSON object, nothing else.
                 except Exception:
                     valid_entries_map = {}
 
-                if d_has and d_can and d_pid and d_eid:
+                if d_has and d_can:
                     correction_hint = None
-                    if d_pid not in valid_entries_map:
+                    if not d_pid:
+                        correction_hint = f"plugin_id is required when has_task/can_execute are true. Available plugins: {list(valid_entries_map.keys())}"
+                    elif d_pid not in valid_entries_map:
                         correction_hint = f"plugin_id '{d_pid}' does not exist. Available plugins: {list(valid_entries_map.keys())}"
+                    elif not d_eid:
+                        correction_hint = (
+                            f"entry_id is required for plugin '{d_pid}' when has_task/can_execute are true. "
+                            f"Available entries: {valid_entries_map.get(d_pid, [])}"
+                        )
                     elif valid_entries_map[d_pid] and d_eid not in valid_entries_map[d_pid]:
                         correction_hint = f"entry_id '{d_eid}' does not exist in plugin '{d_pid}'. Available entries: {valid_entries_map[d_pid]}"
 
@@ -642,13 +649,21 @@ Return only the JSON object, nothing else.
                 final_eid = decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id")
                 final_has = decision.get("has_task", False)
                 final_can = decision.get("can_execute", False)
-                if final_has and final_can and valid_entries_map:
-                    if final_pid not in valid_entries_map:
+                if final_has and final_can:
+                    if not final_eid:
+                        logger.warning(
+                            "[UserPlugin Assessment] Final check: entry_id missing while has_task/can_execute=true (plugin_id=%s), forcing can_execute=false",
+                            final_pid,
+                        )
+                        final_can = False
+                        decision["can_execute"] = False
+                        decision["reason"] = "entry_id missing"
+                    elif valid_entries_map and final_pid not in valid_entries_map:
                         logger.warning("[UserPlugin Assessment] Final check: plugin_id '%s' still invalid after retry, forcing can_execute=false", final_pid)
                         final_can = False
                         decision["can_execute"] = False
                         decision["reason"] = f"plugin_id '{final_pid}' not found"
-                    elif valid_entries_map.get(final_pid) and final_eid and final_eid not in valid_entries_map[final_pid]:
+                    elif valid_entries_map and valid_entries_map.get(final_pid) and final_eid not in valid_entries_map[final_pid]:
                         logger.warning("[UserPlugin Assessment] Final check: entry_id '%s' still invalid for plugin '%s', forcing can_execute=false", final_eid, final_pid)
                         final_can = False
                         decision["can_execute"] = False

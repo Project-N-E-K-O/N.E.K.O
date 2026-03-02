@@ -1343,7 +1343,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except asyncio.CancelledError:
             info["status"] = "cancelled"
-            info["error"] = "Cancelled by shutdown"
+            if not info.get("error"):
+                info["error"] = "Cancelled by shutdown"
             try:
                 await _emit_task_result(
                     lanlan_name,

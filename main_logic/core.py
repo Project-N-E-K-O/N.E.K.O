@@ -1299,8 +1299,12 @@ class LLMSessionManager:
         else:
             prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
-            prompt += await self._fetch_plugin_summary_prompt()
-            prompt += await self._fetch_active_agent_tasks_prompt()
+            plugin_prompt, active_tasks_prompt = await asyncio.gather(
+                self._fetch_plugin_summary_prompt(),
+                self._fetch_active_agent_tasks_prompt(),
+            )
+            prompt += plugin_prompt
+            prompt += active_tasks_prompt
         return prompt
 
     def _is_agent_enabled(self):
