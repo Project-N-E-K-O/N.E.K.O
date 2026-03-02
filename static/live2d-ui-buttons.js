@@ -281,6 +281,8 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         { id: 'goodbye', emoji: '💤', title: window.t ? window.t('buttons.leave') : '请她离开', titleKey: 'buttons.leave', hasPopup: false, iconOff: '/static/icons/rest_off.png' + iconVersion, iconOn: '/static/icons/rest_on.png' + iconVersion }
     ];
 
+    this._buttonConfigs = buttonConfigs;
+
     // 创建主按钮
     buttonConfigs.forEach(config => {
         // 移动端隐藏 agent 和 goodbye 按钮
