@@ -31,6 +31,25 @@
     /* 下拉菜单项文字最大宽度，超出显示省略号 */
 }
 
+/* 通用按钮文字截断样式 - 合并重复规则 */
+#live2d-model-select-btn span:not(.dropdown-arrow),
+#motion-select-btn span:not(.dropdown-arrow),
+#expression-select-btn span:not(.dropdown-arrow),
+#vrm-model-select-btn span:not(.dropdown-arrow),
+#vrm-animation-select-btn span:not(.dropdown-arrow),
+#vrm-expression-select-btn span:not(.dropdown-arrow) {
+    position: relative;
+    z-index: 20;
+    margin-left: 0;
+    margin-right: 30px;
+    flex: 1;
+    font-size: var(--button-text-size);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: var(--dropdown-text-max-width);
+}
+
 /* 可访问性改进：保留键盘导航的焦点指示
          * 移除全局 outline: none，改用 :focus-visible 仅在鼠标点击时隐藏轮廓
          * 键盘导航时会显示主题色的焦点指示
@@ -482,8 +501,7 @@ body {
     position: absolute;
     top: 100%;
     left: 0;
-    width: 90%;
-    /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
+    width: auto;
     min-width: 270px;
     background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
     backdrop-filter: blur(10px);
@@ -509,6 +527,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .model-type-dropdown .dropdown-item:hover {
@@ -567,15 +586,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#live2d-model-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-}
-
 #live2d-model-select-btn .dropdown-arrow {
     position: absolute;
     right: 15px;
@@ -609,7 +619,7 @@ body {
     position: absolute;
     top: 100%;
     left: 0;
-    width: 90%;
+    width: auto;
     min-width: 270px;
     max-height: 300px;
     overflow-y: auto;
@@ -638,6 +648,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .live2d-model-dropdown .dropdown-item:hover {
@@ -713,15 +724,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#motion-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-}
-
 #motion-select-btn .dropdown-arrow {
     position: absolute;
     right: 15px;
@@ -789,6 +791,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .motion-dropdown .dropdown-item:hover {
@@ -845,15 +848,6 @@ body {
     height: 40px;
     max-width: 80px;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-}
-
-#expression-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
 }
 
 #expression-select-btn .dropdown-arrow {
@@ -923,6 +917,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .expression-dropdown .dropdown-item:hover {
@@ -1122,15 +1117,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#vrm-model-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-}
-
 #vrm-model-select-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
@@ -1186,6 +1172,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .vrm-model-dropdown .dropdown-item:hover {
@@ -1245,15 +1232,6 @@ body {
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
-#vrm-animation-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-}
-
 #vrm-animation-select-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
     background-color: transparent;
@@ -1309,6 +1287,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .vrm-animation-dropdown .dropdown-item:hover {
@@ -1366,18 +1345,6 @@ body {
     height: 40px;
     max-width: 80px;
     filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-}
-
-#vrm-expression-select-btn span:not(.dropdown-arrow) {
-    position: relative;
-    z-index: 20;
-    margin-left: 0;
-    margin-right: 30px;
-    flex: 1;
-    font-size: var(--button-text-size);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 #trigger-vrm-expression-btn {
@@ -1452,7 +1419,8 @@ body {
     position: absolute;
     top: 100%;
     left: 0;
-    width: 270px;
+    width: auto;
+    min-width: 270px;
     max-height: 300px;
     overflow-y: auto;
     background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -1480,6 +1448,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .vrm-expression-dropdown .dropdown-item:hover {
@@ -1607,6 +1576,7 @@ body {
     min-height: 36px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
 }
 
 .persistent-expression-dropdown .dropdown-item:hover {
@@ -2409,11 +2379,9 @@ body {
     font-size: 16px !important;
     letter-spacing: 1px;
     color: transparent;
-    flex: 0 1 auto;
-    max-width: var(--dropdown-text-max-width, 200px);
+    flex: 0 0 auto;
     min-width: 50px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow: visible;
     white-space: nowrap;
 }
 
@@ -2427,8 +2395,6 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     text-shadow:
         2px 0 0 var(--button-text-stroke-color),
@@ -2466,8 +2432,6 @@ body {
     background-clip: text;
     color: transparent;
     text-shadow: none;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
