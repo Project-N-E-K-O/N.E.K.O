@@ -11,6 +11,8 @@ Handles configuration-related API endpoints including:
 
 import json
 import os
+import threading
+import urllib.parse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -28,6 +30,10 @@ from config import (
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+
+# --- proxy mode helpers ---
+_PROXY_LOCK = threading.Lock()
+_proxy_snapshot: dict[str, str] = {}
 logger = get_module_logger(__name__, "Main")
 
 # VRM 模型路径常量
@@ -673,6 +679,27 @@ async def list_gptsovits_voices(request: Request):
         return {"success": False, "error": str(e)}
 
 
+def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
+    """Remove credentials from proxy URLs before returning to the client."""
+    sanitized: dict[str, str] = {}
+    for scheme, url in proxies.items():
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.username or parsed.password:
+                # Rebuild without credentials
+                netloc = parsed.hostname or ""
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                sanitized[scheme] = urllib.parse.urlunparse(
+                    (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+                )
+            else:
+                sanitized[scheme] = url
+        except Exception:
+            sanitized[scheme] = "<redacted>"
+    return sanitized
+
+
 @router.post("/set_proxy_mode")
 async def set_proxy_mode(request: Request):
     """运行时热切换代理模式。
@@ -682,7 +709,13 @@ async def set_proxy_mode(request: Request):
     """
     try:
         data = await request.json()
-        direct = bool(data.get("direct", False))
+        raw_direct = data.get("direct", False)
+        if isinstance(raw_direct, bool):
+            direct = raw_direct
+        elif isinstance(raw_direct, str):
+            direct = raw_direct.lower() in ("true", "1", "yes")
+        else:
+            direct = bool(raw_direct)
 
         # 代理相关环境变量 key 列表
         proxy_keys = [
@@ -690,21 +723,29 @@ async def set_proxy_mode(request: Request):
             'http_proxy', 'https_proxy', 'all_proxy',
         ]
 
-        if direct:
-            # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
-            os.environ['NO_PROXY'] = '*'
-            os.environ['no_proxy'] = '*'
-            for key in proxy_keys:
-                os.environ.pop(key, None)
-            logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
-        else:
-            # 恢复：移除 NO_PROXY 让 Python 重新读取系统代理
-            os.environ.pop('NO_PROXY', None)
-            os.environ.pop('no_proxy', None)
-            logger.info("[ProxyMode] 已恢复系统代理模式")
+        global _proxy_snapshot
+        with _PROXY_LOCK:
+            if direct:
+                # 保存当前代理环境变量快照
+                _proxy_snapshot = {k: os.environ[k] for k in proxy_keys if k in os.environ}
+                # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
+                os.environ['NO_PROXY'] = '*'
+                os.environ['no_proxy'] = '*'
+                for key in proxy_keys:
+                    os.environ.pop(key, None)
+                logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
+            else:
+                # 恢复：移除 NO_PROXY
+                os.environ.pop('NO_PROXY', None)
+                os.environ.pop('no_proxy', None)
+                # 从快照恢复先前的代理环境变量
+                for k, v in _proxy_snapshot.items():
+                    os.environ[k] = v
+                _proxy_snapshot = {}
+                logger.info("[ProxyMode] 已恢复系统代理模式")
 
         import urllib.request
-        proxies_after = urllib.request.getproxies()
+        proxies_after = _sanitize_proxies(urllib.request.getproxies())
         return {"success": True, "direct": direct, "proxies_after": proxies_after}
     except Exception as e:
         logger.error(f"[ProxyMode] 切换失败: {e}")
