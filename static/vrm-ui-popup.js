@@ -1589,13 +1589,25 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     popup.style.opacity = '0';
     const closeOpensLeft = popup.dataset.opensLeft === 'true';
     popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
+    
+    // 复位小三角图标
+    const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
+    if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
+    
     popup._hideTimeoutId = setTimeout(() => {
         finalizePopupClosedState(popup);
     }, VRM_POPUP_ANIMATION_DURATION_MS);
 
-    // 更新按钮状态
-    if (typeof this.setButtonActive === 'function') {
-        this.setButtonActive(buttonId, false);
+    // 检查按钮是否有 separatePopupTrigger 配置
+    // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
+    // 关闭弹出框时不应该重置按钮状态
+    const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(config => config.id === buttonId && config.separatePopupTrigger);
+    
+    if (!hasSeparatePopupTrigger) {
+        // 更新按钮状态
+        if (typeof this.setButtonActive === 'function') {
+            this.setButtonActive(buttonId, false);
+        }
     }
     return true;
 };
@@ -1689,9 +1701,16 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
-        // 更新按钮状态为关闭
-        if (typeof this.setButtonActive === 'function') {
-            this.setButtonActive(buttonId, false);
+        // 检查按钮是否有 separatePopupTrigger 配置
+        // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
+        // 关闭弹出框时不应该重置按钮状态
+        const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(config => config.id === buttonId && config.separatePopupTrigger);
+        
+        if (!hasSeparatePopupTrigger) {
+            // 更新按钮状态为关闭
+            if (typeof this.setButtonActive === 'function') {
+                this.setButtonActive(buttonId, false);
+            }
         }
 
         // 存储 timeout ID，以便在快速重新打开时能够清除
@@ -1711,9 +1730,16 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
 
-        // 更新按钮状态为打开
-        if (typeof this.setButtonActive === 'function') {
-            this.setButtonActive(buttonId, true);
+        // 检查按钮是否有 separatePopupTrigger 配置
+        // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
+        // 打开弹出框时不应该点亮按钮
+        const hasSeparatePopupTrigger = this._buttonConfigs && this._buttonConfigs.find(config => config.id === buttonId && config.separatePopupTrigger);
+        
+        if (!hasSeparatePopupTrigger) {
+            // 更新按钮状态为打开
+            if (typeof this.setButtonActive === 'function') {
+                this.setButtonActive(buttonId, true);
+            }
         }
 
         // 预加载图片
@@ -1739,6 +1765,13 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                 if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                 popup.style.visibility = 'visible';
                 popup.style.opacity = '1';
+                
+                // 设置小三角图标的旋转状态（旋转180度）
+                const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
+                if (triggerIcon) {
+                    triggerIcon.style.transform = 'rotate(180deg)';
+                }
+                
                 requestAnimationFrame(() => {
                     if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                     popup.style.transform = 'translateX(0)';

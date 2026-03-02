@@ -11,8 +11,11 @@ Handles configuration-related API endpoints including:
 
 import json
 import os
+import threading
+import urllib.parse
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
@@ -27,6 +30,10 @@ from config import (
 
 
 router = APIRouter(prefix="/api/config", tags=["config"])
+
+# --- proxy mode helpers ---
+_PROXY_LOCK = threading.Lock()
+_proxy_snapshot: dict[str, str] = {}
 logger = get_module_logger(__name__, "Main")
 
 # VRM 模型路径常量
@@ -670,3 +677,81 @@ async def list_gptsovits_voices(request: Request):
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
         return {"success": False, "error": str(e)}
+
+
+def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
+    """Remove credentials from proxy URLs before returning to the client."""
+    sanitized: dict[str, str] = {}
+    for scheme, url in proxies.items():
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.username or parsed.password:
+                # Rebuild without credentials
+                netloc = parsed.hostname or ""
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                sanitized[scheme] = urllib.parse.urlunparse(
+                    (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+                )
+            else:
+                sanitized[scheme] = url
+        except Exception:
+            sanitized[scheme] = "<redacted>"
+    return sanitized
+
+
+@router.post("/set_proxy_mode")
+async def set_proxy_mode(request: Request):
+    """运行时热切换代理模式。
+
+    body: { "direct": true }   → 直连（禁用代理）
+    body: { "direct": false }  → 恢复系统代理
+    """
+    try:
+        data = await request.json()
+        raw_direct = data.get("direct", False)
+        if isinstance(raw_direct, bool):
+            direct = raw_direct
+        elif isinstance(raw_direct, str):
+            direct = raw_direct.lower() in ("true", "1", "yes")
+        else:
+            direct = bool(raw_direct)
+
+        # 代理相关环境变量 key 列表
+        proxy_keys = [
+            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy',
+        ]
+
+        global _proxy_snapshot
+        all_keys = proxy_keys + ['NO_PROXY', 'no_proxy']
+        with _PROXY_LOCK:
+            if direct:
+                # 仅在首次切换到直连时保存快照，避免重复调用覆盖原始值
+                if not _proxy_snapshot:
+                    _proxy_snapshot = {k: os.environ[k] for k in all_keys if k in os.environ}
+                # 设置 NO_PROXY=* 使 httpx/aiohttp/urllib 跳过 Windows 注册表系统代理
+                os.environ['NO_PROXY'] = '*'
+                os.environ['no_proxy'] = '*'
+                for key in proxy_keys:
+                    os.environ.pop(key, None)
+                logger.info("[ProxyMode] 已切换到直连模式 (NO_PROXY=*)")
+            else:
+                if _proxy_snapshot:
+                    # 从快照恢复所有代理相关环境变量（含 NO_PROXY）
+                    for k in all_keys:
+                        if k in _proxy_snapshot:
+                            os.environ[k] = _proxy_snapshot[k]
+                        else:
+                            os.environ.pop(k, None)
+                    _proxy_snapshot = {}
+                    logger.info("[ProxyMode] 已恢复系统代理模式")
+                else:
+                    logger.info("[ProxyMode] 无快照可恢复，保持当前环境变量")
+
+        import urllib.request
+        proxies_after = _sanitize_proxies(urllib.request.getproxies())
+        return {"success": True, "direct": direct, "proxies_after": proxies_after}
+    except Exception:
+        logger.exception("[ProxyMode] 切换失败")
+        return JSONResponse({"success": False, "error": "切换失败，服务器内部错误"}, status_code=500)
