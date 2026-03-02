@@ -8876,11 +8876,26 @@ function init_app() {
     async function captureProactiveChatScreenshot() {
         // 策略1: 前端 getDisplayMedia
         if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-            let captureStream = null;
             try {
-                captureStream = await navigator.mediaDevices.getDisplayMedia({
+                const captureStream = await navigator.mediaDevices.getDisplayMedia({
                     video: { cursor: 'always' },
                     audio: false,
+                });
+
+                // 将流缓存到 screenCaptureStream，避免下次再弹权限窗口
+                screenCaptureStream = captureStream;
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
+
+                // 监听流结束事件（用户在浏览器中点击"停止共享"时触发）
+                captureStream.getVideoTracks().forEach(track => {
+                    track.addEventListener('ended', () => {
+                        console.log('[ProactiveVision] 屏幕共享流被用户终止');
+                        if (screenCaptureStream === captureStream) {
+                            screenCaptureStream = null;
+                            screenCaptureStreamLastUsed = null;
+                        }
+                    });
                 });
 
                 const video = document.createElement('video');
@@ -8893,14 +8908,10 @@ function init_app() {
                 video.srcObject = null;
                 video.remove();
 
-                console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
+                console.log(`主动搭话截图成功（流已缓存），尺寸: ${width}x${height}`);
                 return dataUrl;
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败，尝试后端兜底:', err);
-            } finally {
-                if (captureStream) {
-                    captureStream.getTracks().forEach(track => track.stop());
-                }
             }
         }
 
