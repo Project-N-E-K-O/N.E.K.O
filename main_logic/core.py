@@ -23,6 +23,7 @@ from config.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
+    AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
     SYSTEM_NOTIFICATION_TASKS_DONE,
@@ -1274,18 +1275,9 @@ class LLMSessionManager:
 
     async def _build_initial_prompt(self) -> str:
         """Build the system prompt with dynamic capability descriptions and plugin summary."""
-        if self._is_agent_enabled():
-            capability_parts = []
-            if self.agent_flags.get('computer_use_enabled'):
-                capability_parts.append("操纵电脑（键鼠控制、打开应用等）")
-            if self.agent_flags.get('browser_use_enabled'):
-                capability_parts.append("浏览器自动化（网页搜索、填写表单等）")
-            if self.agent_flags.get('user_plugin_enabled'):
-                capability_parts.append("调用已安装的插件来完成特定任务")
-            caps_text = "、".join(capability_parts) if capability_parts else "执行各种操作"
-            prompt = f"你是一个角色扮演大师，并且能够{caps_text}。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试执行。" + self.lanlan_prompt
-        else:
-            prompt = f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。" + self.lanlan_prompt
+        _lang = normalize_language_code(self.user_language, format='short')
+        _init_tmpl = SESSION_INIT_PROMPT_AGENT if self._is_agent_enabled() else SESSION_INIT_PROMPT
+        prompt = _loc(_init_tmpl, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         prompt += await self._fetch_plugin_summary_prompt()
         prompt += await self._fetch_active_agent_tasks_prompt()
         return prompt
@@ -1309,6 +1301,9 @@ class LLMSessionManager:
         """
         if not self.agent_flags.get('user_plugin_enabled'):
             return ""
+        _lang = normalize_language_code(self.user_language, format='short')
+        header = _loc(AGENT_PLUGINS_HEADER, _lang)
+        count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
                 r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
@@ -1328,9 +1323,9 @@ class LLMSessionManager:
                         if pid:
                             lines.append(f"  - {pid}: {desc}" if desc else f"  - {pid}")
                     if lines:
-                        return "\n【已安装的插件】\n" + "\n".join(lines) + "\n"
+                        return header + "\n".join(lines) + "\n"
                 else:
-                    return f"\n【已安装的插件】共 {len(plugins)} 个插件可用。\n"
+                    return count_tmpl.format(count=len(plugins))
         except Exception as e:
             logger.debug(f"获取插件摘要失败，已忽略: {e}")
         return ""

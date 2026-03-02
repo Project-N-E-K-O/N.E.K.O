@@ -1090,7 +1090,6 @@ def main():
         
         # 等待一段时间，确认进程是否真的无法终止
         print("\n等待进程清理完成...", flush=True)
-        time.sleep(2)
         
         # 检查是否还有存活的进程
         has_alive = any(

@@ -53,7 +53,6 @@ playwright_browsers/
 .env.test.local
 .env.production.local
 .ruff_cache
-.agent
 *.code-workspace
 .claude
 CLAUDE.md

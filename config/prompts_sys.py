@@ -1409,6 +1409,23 @@ AGENT_TASK_STATUS_QUEUED = {
     'ru': 'В очереди',
 }
 
+# ---------- Agent 插件摘要 ----------
+AGENT_PLUGINS_HEADER = {
+    'zh': '\n【已安装的插件】\n',
+    'en': '\n[Installed Plugins]\n',
+    'ja': '\n[インストール済みプラグイン]\n',
+    'ko': '\n[설치된 플러그인]\n',
+    'ru': '\n[Установленные плагины]\n',
+}
+
+AGENT_PLUGINS_COUNT = {
+    'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
+    'en': '\n[Installed Plugins] {count} plugins are available.\n',
+    'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
+    'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
+    'ru': '\n[Установленные плагины] Доступно плагинов: {count}.\n',
+}
+
 AGENT_TASKS_HEADER = {
     'zh': '\n[当前正在执行的Agent任务]\n',
     'en': '\n[Active Agent Tasks]\n',
@@ -1485,4 +1502,3 @@ MEMORY_RESULTS_HEADER = {
     'ko': '====={name}의 관련 기억=====\n',
     'ru': '====={name} — связанные воспоминания=====\n',
 }
-
