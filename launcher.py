@@ -6,6 +6,7 @@ N.E.K.O. 统一启动器
 import sys
 import os
 import io
+import signal
 
 # 强制 UTF-8 编码
 if sys.platform == 'win32':
@@ -1065,18 +1066,100 @@ def main():
             break  # 内层 for 触发 break 时跳出外层 while
 
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，正在关闭...", flush=True)
+        print("\n\n收到中断信号，等待子进程退出...", flush=True)
+        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
+        start_wait = time.time()
+        while time.time() - start_wait < 3:
+            all_dead = True
+            for server in SERVERS:
+                if server.get('process') and server['process'].is_alive():
+                    all_dead = False
+                    break
+            if all_dead:
+                break
+            time.sleep(0.1)
+            
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)
         report_startup_failure(f"Launcher unhandled exception: {e}")
     finally:
+        print("\n正在关闭所有进程...", flush=True)
+        
+        # 尝试优雅关闭
         cleanup_servers()
+        
+        # 等待一段时间，确认进程是否真的无法终止
+        print("\n等待进程清理完成...", flush=True)
+        
+        # 检查是否还有存活的进程
+        has_alive = any(
+            server.get('process') and server['process'].is_alive()
+            for server in SERVERS
+        )
+        
+        if has_alive:
+            print("\n检测到进程未能正常退出，尝试强制终止...", flush=True)
+            
+            try:
+                if hasattr(os, 'killpg'):
+                    # POSIX: 逐个终止子进程，避免向自身进程组发送 SIGKILL
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc or not proc.is_alive():
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                    time.sleep(1)
+
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc or not proc.is_alive():
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    time.sleep(0.5)
+                else:
+                    # Windows: 使用 taskkill 强制杀死进程树
+                    import subprocess
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc or not proc.is_alive():
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+            except Exception as e:
+                # 强制终止失败，忽略错误（进程可能已经退出）
+                print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
+
+            # 强制终止后重新检查是否还有存活的进程
+            has_alive = any(
+                server.get('process') and server['process'].is_alive()
+                for server in SERVERS
+            )
+        
+        print("\n清理完成", flush=True)
         release_startup_lock()
+        # 如果还有残留进程，使用非零退出码
+        if has_alive:
+            sys.exit(1)
+    
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
-
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
-
