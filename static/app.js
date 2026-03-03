@@ -8882,15 +8882,37 @@ function init_app() {
             return backendDataUrl;
         }
 
-        // 策略2: 前端 getDisplayMedia（作为远程服务器等后端不可用情况下的次要备选方案）
-        // 该方法每次被调用都会强制弹出屏幕/窗口选择权限框，中断用户体验
+        // 策略2: 前端 getDisplayMedia（远程服务器等后端不可用时的备选）
+        // 复用缓存的 screenCaptureStream，仅在无有效流时才请求新流
         if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-            let captureStream = null;
             try {
-                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: 'always' },
-                    audio: false,
-                });
+                let captureStream = screenCaptureStream;
+
+                if (!captureStream || !captureStream.active) {
+                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: 'always', frameRate: { max: 1 } },
+                        audio: false,
+                    });
+
+                    screenCaptureStream = captureStream;
+
+                    captureStream.getVideoTracks().forEach(track => {
+                        track.addEventListener('ended', () => {
+                            console.log('[ProactiveVision] 屏幕共享流被用户终止');
+                            if (screenCaptureStream === captureStream) {
+                                screenCaptureStream = null;
+                                screenCaptureStreamLastUsed = null;
+                                if (screenCaptureStreamIdleTimer) {
+                                    clearTimeout(screenCaptureStreamIdleTimer);
+                                    screenCaptureStreamIdleTimer = null;
+                                }
+                            }
+                        });
+                    });
+                }
+
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
 
                 const video = document.createElement('video');
                 video.srcObject = captureStream;
@@ -8902,14 +8924,10 @@ function init_app() {
                 video.srcObject = null;
                 video.remove();
 
-                console.log(`[主动搭话截图] 前端 getDisplayMedia 截图成功，尺寸: ${width}x${height}`);
+                console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
                 return dataUrl;
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
-            } finally {
-                if (captureStream) {
-                    captureStream.getTracks().forEach(track => track.stop());
-                }
             }
         }
 
