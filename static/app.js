@@ -5958,7 +5958,7 @@ function init_app() {
         _updateUI() {
             const master = document.getElementById('live2d-agent-master');
             const keyboard = document.getElementById('live2d-agent-keyboard');
-
+            const browser = document.getElementById('live2d-agent-browser');
             const userPlugin = document.getElementById('live2d-agent-user-plugin');
             const status = document.getElementById('live2d-agent-status');
 
@@ -5971,7 +5971,7 @@ function init_app() {
                     // 空闲：所有按钮禁用
                     if (master) { master.disabled = true; master.title = ''; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; keyboard.title = ''; syncUI(keyboard); }
-
+                    if (browser) { browser.disabled = true; browser.checked = false; browser.title = ''; syncUI(browser); }
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; userPlugin.title = ''; syncUI(userPlugin); }
                     break;
 
@@ -5987,7 +5987,11 @@ function init_app() {
                         keyboard.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                         syncUI(keyboard);
                     }
-
+                    if (browser) {
+                        browser.disabled = true;
+                        browser.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+                        syncUI(browser);
+                    }
                     if (userPlugin) {
                         userPlugin.disabled = true;
                         userPlugin.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -6015,7 +6019,7 @@ function init_app() {
                         syncUI(master);
                     }
                     if (keyboard) { keyboard.disabled = true; keyboard.checked = false; syncUI(keyboard); }
-
+                    if (browser) { browser.disabled = true; browser.checked = false; syncUI(browser); }
                     if (status) status.textContent = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
                     if (userPlugin) { userPlugin.disabled = true; userPlugin.checked = false; syncUI(userPlugin); }
                     break;
@@ -6024,7 +6028,7 @@ function init_app() {
                     // 处理中：所有按钮禁用，防止重复操作
                     if (master) { master.disabled = true; syncUI(master); }
                     if (keyboard) { keyboard.disabled = true; syncUI(keyboard); }
-
+                    if (browser) { browser.disabled = true; syncUI(browser); }
                     if (userPlugin) { userPlugin.disabled = true; syncUI(userPlugin); }
                     break;
             }
@@ -6048,7 +6052,7 @@ function init_app() {
     const checkAgentCapabilities = async () => {
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-
+        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         // 【状态机控制】如果正在处理用户操作，跳过轮询
@@ -6122,7 +6126,7 @@ function init_app() {
         // 【减少能力检查频率】只在必要时检查子功能可用性
         const checks = [
             { id: 'live2d-agent-keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
-
+            { id: 'live2d-agent-browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
             { id: 'live2d-agent-user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' }
         ];
         for (const { id, capability, flagKey, nameKey } of checks) {
@@ -6225,7 +6229,7 @@ function init_app() {
                             agentMasterCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
-                            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -6275,6 +6279,31 @@ function init_app() {
 
 
 
+                        // 浏览器控制 flag 同步
+                        if (agentBrowserCheckbox && !agentBrowserCheckbox._processing) {
+                            const flagEnabled = flags.browser_use_enabled || false;
+                            const isAvailable = capabilityCheckFailed
+                                ? agentBrowserCheckbox.checked
+                                : (capabilityResults['browser_use_enabled'] !== false);
+                            const shouldBeChecked = flagEnabled && isAvailable;
+
+                            if (agentBrowserCheckbox.checked !== shouldBeChecked) {
+                                if (shouldBeChecked) {
+                                    agentBrowserCheckbox.checked = true;
+                                    agentBrowserCheckbox._autoDisabled = true;
+                                    agentBrowserCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentBrowserCheckbox._autoDisabled = false;
+                                    if (typeof agentBrowserCheckbox._updateStyle === 'function') agentBrowserCheckbox._updateStyle();
+                                } else if (!flagEnabled) {
+                                    agentBrowserCheckbox.checked = false;
+                                    agentBrowserCheckbox._autoDisabled = true;
+                                    agentBrowserCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                    agentBrowserCheckbox._autoDisabled = false;
+                                    if (typeof agentBrowserCheckbox._updateStyle === 'function') agentBrowserCheckbox._updateStyle();
+                                }
+                            }
+                        }
+
                         // 用户插件 flag 同步独立处理，避免依赖 MCP 分支
                         if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing) {
                             const flagEnabled = flags.user_plugin_enabled || false;
@@ -6320,7 +6349,7 @@ function init_app() {
                 agentMasterCheckbox._autoDisabled = false;
                 if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
 
-                [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
+                [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox].forEach(cb => {
                     if (cb) {
                         cb.checked = false;
                         cb.disabled = true;
@@ -6487,6 +6516,7 @@ function init_app() {
     async function checkCapability(kind, showError = true) {
         const apis = {
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
+            browser_use: { url: '/api/agent/browser_use/availability', nameKey: 'browserUse' },
             user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' }
         };
         const config = apis[kind];
@@ -6525,7 +6555,7 @@ function init_app() {
 
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-
+        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         if (!agentMasterCheckbox) {
@@ -6537,13 +6567,13 @@ function init_app() {
 
         // 【状态机】操作序列号由状态机管理，子开关保留独立序列号
         let keyboardOperationSeq = 0;
-
+        let browserOperationSeq = 0;
         let userPluginOperationSeq = 0;
 
         // 标记这些 checkbox 有外部处理器
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
-
+        if (agentBrowserCheckbox) agentBrowserCheckbox._hasExternalHandler = true;
         if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
 
 
@@ -6611,6 +6641,13 @@ function init_app() {
             );
 
             applySub(
+                agentBrowserCheckbox,
+                flags.browser_use_enabled,
+                caps.browser_use_ready,
+                window.t ? window.t('settings.toggles.browserUse') : 'Browser Control'
+            );
+
+            applySub(
                 agentUserPluginCheckbox,
                 flags.user_plugin_enabled,
                 caps.user_plugin_ready,
@@ -6624,10 +6661,10 @@ function init_app() {
         const resetSubCheckboxes = () => {
             const names = {
                 'live2d-agent-keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-
+                'live2d-agent-browser': window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
                 'live2d-agent-user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '用户插件'
             };
-            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
@@ -6701,6 +6738,12 @@ function init_app() {
                         syncCheckboxUI(agentKeyboardCheckbox);
                     }
 
+                    if (agentBrowserCheckbox) {
+                        agentBrowserCheckbox.disabled = true;
+                        agentBrowserCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
+                        syncCheckboxUI(agentBrowserCheckbox);
+                    }
+
                     if (agentUserPluginCheckbox) {
                         agentUserPluginCheckbox.disabled = true;
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
@@ -6721,6 +6764,20 @@ function init_app() {
                             agentKeyboardCheckbox.disabled = !available;
                             agentKeyboardCheckbox.title = available ? (window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.keyboardControl') }) : '键鼠控制不可用');
                             syncCheckboxUI(agentKeyboardCheckbox);
+                        })(),
+
+                        (async () => {
+                            if (!agentBrowserCheckbox) return;
+                            const available = await checkCapability('browser_use', false);
+                            if (isExpired() || !agentMasterCheckbox.checked) {
+                                agentBrowserCheckbox.disabled = true;
+                                agentBrowserCheckbox.checked = false;
+                                syncCheckboxUI(agentBrowserCheckbox);
+                                return;
+                            }
+                            agentBrowserCheckbox.disabled = !available;
+                            agentBrowserCheckbox.title = available ? (window.t ? window.t('settings.toggles.browserUse') : 'Browser Control') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.browserUse') }) : 'Browser Control不可用');
+                            syncCheckboxUI(agentBrowserCheckbox);
                         })(),
 
                         (async () => {
@@ -6747,7 +6804,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: true, computer_use_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: true, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
@@ -6813,7 +6870,7 @@ function init_app() {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name,
-                                flags: { agent_enabled: false, computer_use_enabled: false, user_plugin_enabled: false }
+                                flags: { agent_enabled: false, computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false }
                             })
                         });
 
@@ -6957,6 +7014,15 @@ function init_app() {
             () => ++keyboardOperationSeq
         );
 
+        // 浏览器控制开关逻辑（传入序列号的getter和setter）
+        setupSubCheckbox(
+            agentBrowserCheckbox,
+            'browser_use',
+            'browser_use_enabled',
+            'browserUse',
+            () => browserOperationSeq,
+            () => ++browserOperationSeq
+        );
 
         // 用户插件开关逻辑（传入序列号的getter和setter）
         setupSubCheckbox(
@@ -7042,12 +7108,26 @@ function init_app() {
                     }
                     syncCheckboxUI(agentKeyboardCheckbox);
                 }
+                // 同步 浏览器控制子开关
+                if (agentBrowserCheckbox) {
+                    if (analyzerEnabled) {
+                        // Agent 已开启，但子开关保持禁用等待能力检查
+                        agentBrowserCheckbox.checked = false;
+                        agentBrowserCheckbox.disabled = true;
+                        agentBrowserCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
+                    } else {
+                        agentBrowserCheckbox.checked = false;
+                        agentBrowserCheckbox.disabled = true;
+                        agentBrowserCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', { name: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control' }) : '请先开启Agent总开关';
+                    }
+                    syncCheckboxUI(agentBrowserCheckbox);
+                }
                 // 同步 用户插件子开关
                 if (agentUserPluginCheckbox) {
                     if (analyzerEnabled) {
-                        // Agent 已开启，根据后端状态设置
-                        agentUserPluginCheckbox.checked = flags.user_plugin_enabled || false;
-                        agentUserPluginCheckbox.disabled = true; // 先设为可用，后续可用性检查会更新
+                        // Agent 已开启，但子开关保持禁用等待能力检查
+                        agentUserPluginCheckbox.checked = false;
+                        agentUserPluginCheckbox.disabled = true;
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                     } else {
                         // Agent 未开启，复位子开关
@@ -7107,7 +7187,7 @@ function init_app() {
                 agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                 syncCheckboxUI(agentMasterCheckbox);
             }
-            [agentKeyboardCheckbox, agentUserPluginCheckbox].forEach(cb => {
+            [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
@@ -7120,11 +7200,11 @@ function init_app() {
                 agentStateMachine.recordCheck();
 
                 // 并行请求所有状态
-                const [healthOk, flagsData, keyboardAvailable, mcpAvailable, userPluginAvailable] = await Promise.all([
+                const [healthOk, flagsData, keyboardAvailable, browserAvailable, userPluginAvailable] = await Promise.all([
                     checkToolServerHealth(),
                     fetch('/api/agent/flags').then(r => r.ok ? r.json() : { success: false }),
                     checkCapability('computer_use', false),
-
+                    checkCapability('browser_use', false),
                     checkCapability('user_plugin', false)
                 ]);
 
@@ -7170,7 +7250,14 @@ function init_app() {
                             syncCheckboxUI(agentKeyboardCheckbox);
                         }
 
-
+                        // 浏览器控制
+                        if (agentBrowserCheckbox) {
+                            const shouldEnable = flags.browser_use_enabled && browserAvailable;
+                            agentBrowserCheckbox.checked = shouldEnable;
+                            agentBrowserCheckbox.disabled = !browserAvailable;
+                            agentBrowserCheckbox.title = browserAvailable ? (window.t ? window.t('settings.toggles.browserUse') : 'Browser Control') : (window.t ? window.t('settings.toggles.unavailable', { name: window.t('settings.toggles.browserUse') }) : 'Browser Control不可用');
+                            syncCheckboxUI(agentBrowserCheckbox);
+                        }
 
                         // 用户插件
                         if (agentUserPluginCheckbox) {
