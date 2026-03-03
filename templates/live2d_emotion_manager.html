@@ -161,6 +161,16 @@
         }
 
         .field-row select {
+            display: none;
+        }
+
+        /* Custom Single-select Styles (for model select) */
+        .custom-singleselect {
+            position: relative;
+            width: 100%;
+        }
+
+        .singleselect-header {
             width: 100%;
             padding: 12px 16px;
             background: white;
@@ -170,22 +180,94 @@
             font-size: 14px;
             cursor: pointer;
             transition: all 0.2s ease;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 16px center;
-            padding-right: 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 46px;
+            user-select: none;
         }
 
-        .field-row select:hover {
+        .singleselect-header:hover {
             border-color: var(--color-n-main);
             transform: translateY(-1px);
         }
 
-        .field-row select:focus {
-            outline: none;
-            border-color: var(--color-n-main);
-            box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+        .singleselect-header::after {
+            content: '';
+            width: 12px;
+            height: 12px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: center;
+            transition: transform 0.2s ease;
+        }
+
+        .custom-singleselect.active .singleselect-header::after {
+            transform: rotate(180deg);
+        }
+
+        .singleselect-options {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            width: 100%;
+            background: white;
+            border: 2px solid var(--color-n-border);
+            border-radius: var(--radius-card);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            z-index: 100;
+            max-height: 250px;
+            overflow-y: auto;
+            display: none;
+            padding: var(--spacing-sm);
+            scrollbar-width: thin;
+            scrollbar-color: #96e8ff #f0f8ff;
+        }
+
+        .singleselect-options.has-scrollbar {
+            border-radius: var(--radius-card) 0 0 var(--radius-card);
+        }
+
+        .singleselect-options::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .singleselect-options::-webkit-scrollbar-track {
+            background: #f0f8ff;
+            border-radius: 4px;
+        }
+
+        .singleselect-options::-webkit-scrollbar-thumb {
+            background: #96e8ff;
+            border-radius: 4px;
+        }
+
+        .singleselect-options::-webkit-scrollbar-thumb:hover {
+            background: #7dd3ff;
+        }
+
+        .custom-singleselect.active .singleselect-options {
+            display: block;
+        }
+
+        .singleselect-item {
+            padding: 10px 12px;
+            border-radius: var(--spacing-sm);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            transition: background 0.2s ease;
+            font-size: 14px;
+            color: var(--color-text-dark);
+        }
+
+        .singleselect-item:hover {
+            background: var(--color-n-light);
+        }
+
+        .singleselect-item.selected {
+            background: var(--color-n-light);
+            color: var(--color-n-deep);
         }
 
         /* Custom Multi-select Styles */
@@ -244,6 +326,30 @@
             overflow-y: auto;
             display: none;
             padding: var(--spacing-sm);
+            scrollbar-width: thin;
+            scrollbar-color: #96e8ff #f0f8ff;
+        }
+
+        .multiselect-options.has-scrollbar {
+            border-radius: var(--radius-card) 0 0 var(--radius-card);
+        }
+
+        .multiselect-options::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .multiselect-options::-webkit-scrollbar-track {
+            background: #f0f8ff;
+            border-radius: 4px;
+        }
+
+        .multiselect-options::-webkit-scrollbar-thumb {
+            background: #96e8ff;
+            border-radius: 4px;
+        }
+
+        .multiselect-options::-webkit-scrollbar-thumb:hover {
+            background: #7dd3ff;
         }
 
         .custom-multiselect.active .multiselect-options {
@@ -492,9 +598,15 @@
         <div class="container-content">
             <div class="field-row">
                 <label for="model-select" data-i18n="emotionManager.selectModel">选择 Live2D 模型</label>
-                <select id="model-select">
+                <select id="model-select" style="display: none;">
                     <option value="" data-i18n="common.loading">加载中...</option>
                 </select>
+                <div class="custom-singleselect" id="model-singleselect">
+                    <div class="singleselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="selected-text" data-i18n="common.loading">加载中...</span>
+                    </div>
+                    <div class="singleselect-options"></div>
+                </div>
             </div>
 
             <div id="emotion-config" style="display: none;">
@@ -648,6 +760,10 @@
 
     <script>
         const modelSelect = document.getElementById('model-select');
+        const modelSingleselect = document.getElementById('model-singleselect');
+        const modelSingleselectHeader = modelSingleselect.querySelector('.singleselect-header');
+        const modelSingleselectText = modelSingleselect.querySelector('.selected-text');
+        const modelSingleselectOptions = modelSingleselect.querySelector('.singleselect-options');
         const emotionConfig = document.getElementById('emotion-config');
         const saveBtn = document.getElementById('save-btn');
         const resetBtn = document.getElementById('reset-btn');
@@ -738,6 +854,7 @@
 
                 if (Array.isArray(models) && models.length > 0) {
                     modelSelect.innerHTML = `<option value="">${t('emotionManager.pleaseSelectModel')}</option>`;
+                    modelSingleselectOptions.innerHTML = '';
 
                     models.forEach(model => {
                         const option = document.createElement('option');
@@ -745,7 +862,17 @@
                         option.textContent = model.name;
                         option.dataset.info = JSON.stringify(model);
                         modelSelect.appendChild(option);
+
+                        const item = document.createElement('div');
+                        item.className = 'singleselect-item';
+                        item.dataset.value = model.name;
+                        item.dataset.info = JSON.stringify(model);
+                        item.textContent = model.name;
+                        item.addEventListener('click', () => selectModelFromDropdown(model.name, model));
+                        modelSingleselectOptions.appendChild(item);
                     });
+
+                    modelSingleselectText.textContent = t('emotionManager.pleaseSelectModel');
                 } else {
                     showStatus(t('emotionManager.noModelsFound'), 'error');
                 }
@@ -754,6 +881,59 @@
                 showStatus(t('emotionManager.loadModelListFailed') + ': ' + error.message, 'error');
             }
         }
+
+        // 从下拉框选择模型
+        function selectModelFromDropdown(modelName, modelInfo) {
+            currentModelInfo = modelInfo;
+            modelSingleselectText.textContent = modelName;
+            modelSingleselect.classList.remove('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+            
+            modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
+                item.classList.toggle('selected', item.dataset.value === modelName);
+            });
+
+            loadModelFiles(modelName, modelInfo).then(() => {
+                loadEmotionMapping(modelName);
+            });
+        }
+
+        // 切换模型选择下拉框
+        function toggleModelDropdown(event) {
+            const wasActive = modelSingleselect.classList.contains('active');
+
+            document.querySelectorAll('.custom-multiselect').forEach(ms => {
+                ms.classList.remove('active');
+                const h = ms.querySelector('.multiselect-header');
+                if (h) h.setAttribute('aria-expanded', 'false');
+            });
+
+            if (wasActive) {
+                modelSingleselect.classList.remove('active');
+                modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+            } else {
+                modelSingleselect.classList.add('active');
+                modelSingleselectHeader.setAttribute('aria-expanded', 'true');
+                
+                requestAnimationFrame(() => {
+                    if (modelSingleselectOptions.scrollHeight > modelSingleselectOptions.clientHeight) {
+                        modelSingleselectOptions.classList.add('has-scrollbar');
+                    } else {
+                        modelSingleselectOptions.classList.remove('has-scrollbar');
+                    }
+                });
+            }
+
+            event.stopPropagation();
+        }
+
+        modelSingleselectHeader.addEventListener('click', toggleModelDropdown);
+        modelSingleselectHeader.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleModelDropdown(e);
+            }
+        });
 
         // 加载模型文件列表
         async function loadModelFiles(modelName, modelInfo) {
@@ -791,6 +971,7 @@
         function toggleDropdown(event) {
             const multiselect = event.currentTarget.closest('.custom-multiselect');
             const header = multiselect.querySelector('.multiselect-header');
+            const options = multiselect.querySelector('.multiselect-options');
             const wasActive = multiselect.classList.contains('active');
 
             // 关闭所有其他下拉菜单
@@ -799,10 +980,23 @@
                 const h = ms.querySelector('.multiselect-header');
                 if (h) h.setAttribute('aria-expanded', 'false');
             });
+            modelSingleselect.classList.remove('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
 
             if (!wasActive) {
                 multiselect.classList.add('active');
                 if (header) header.setAttribute('aria-expanded', 'true');
+                
+                // 检测是否显示滚动条
+                if (options) {
+                    requestAnimationFrame(() => {
+                        if (options.scrollHeight > options.clientHeight) {
+                            options.classList.add('has-scrollbar');
+                        } else {
+                            options.classList.remove('has-scrollbar');
+                        }
+                    });
+                }
             }
 
             event.stopPropagation();
@@ -815,6 +1009,8 @@
                 const h = ms.querySelector('.multiselect-header');
                 if (h) h.setAttribute('aria-expanded', 'false');
             });
+            modelSingleselect.classList.remove('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
         });
 
         // 更新头部显示
@@ -1072,18 +1268,6 @@
         }
 
         // 事件监听
-        modelSelect.addEventListener('change', async (e) => {
-            const selectedOption = e.target.options[e.target.selectedIndex];
-            if (selectedOption.value && selectedOption.dataset.info) {
-                currentModelInfo = JSON.parse(selectedOption.dataset.info);
-                await loadModelFiles(currentModelInfo.name, currentModelInfo);
-                await loadEmotionMapping(currentModelInfo.name);
-            } else {
-                emotionConfig.style.display = 'none';
-                currentModelInfo = null;
-            }
-        });
-
         saveBtn.addEventListener('click', saveEmotionMapping);
         resetBtn.addEventListener('click', resetConfig);
 

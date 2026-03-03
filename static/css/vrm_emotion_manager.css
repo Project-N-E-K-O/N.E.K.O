@@ -156,6 +156,16 @@ body {
 }
 
 .field-row select {
+    display: none;
+}
+
+/* Custom Single-select Styles (for model select) */
+.custom-singleselect {
+    position: relative;
+    width: 100%;
+}
+
+.singleselect-header {
     width: 100%;
     padding: 12px 16px;
     background: white;
@@ -165,22 +175,94 @@ body {
     font-size: 14px;
     cursor: pointer;
     transition: all 0.2s ease;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 16px center;
-    padding-right: 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 46px;
+    user-select: none;
 }
 
-.field-row select:hover {
+.singleselect-header:hover {
     border-color: var(--color-n-main);
     transform: translateY(-1px);
 }
 
-.field-row select:focus {
-    outline: none;
-    border-color: var(--color-n-main);
-    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+.singleselect-header::after {
+    content: '';
+    width: 12px;
+    height: 12px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s ease;
+}
+
+.custom-singleselect.active .singleselect-header::after {
+    transform: rotate(180deg);
+}
+
+.singleselect-options {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    width: 100%;
+    background: white;
+    border: 2px solid var(--color-n-border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 100;
+    max-height: 250px;
+    overflow-y: auto;
+    display: none;
+    padding: var(--spacing-sm);
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+.singleselect-options.has-scrollbar {
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
+.singleselect-options::-webkit-scrollbar {
+    width: 8px;
+}
+
+.singleselect-options::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.singleselect-options::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.singleselect-options::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
+}
+
+.custom-singleselect.active .singleselect-options {
+    display: block;
+}
+
+.singleselect-item {
+    padding: 10px 12px;
+    border-radius: var(--spacing-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: background 0.2s ease;
+    font-size: 14px;
+    color: var(--color-text-dark);
+}
+
+.singleselect-item:hover {
+    background: var(--color-n-light);
+}
+
+.singleselect-item.selected {
+    background: var(--color-n-light);
+    color: var(--color-n-deep);
 }
 
 /* Custom Multi-select Styles */
@@ -232,13 +314,37 @@ body {
     width: 100%;
     background: white;
     border: 2px solid var(--color-n-border);
-    border-radius: 25px;
+    border-radius: var(--radius-card);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
     z-index: 100;
     max-height: 250px;
     overflow-y: auto;
     display: none;
     padding: var(--spacing-sm);
+    scrollbar-width: thin;
+    scrollbar-color: #96e8ff #f0f8ff;
+}
+
+.multiselect-options.has-scrollbar {
+    border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
+.multiselect-options::-webkit-scrollbar {
+    width: 8px;
+}
+
+.multiselect-options::-webkit-scrollbar-track {
+    background: #f0f8ff;
+    border-radius: 4px;
+}
+
+.multiselect-options::-webkit-scrollbar-thumb {
+    background: #96e8ff;
+    border-radius: 4px;
+}
+
+.multiselect-options::-webkit-scrollbar-thumb:hover {
+    background: #7dd3ff;
 }
 
 .custom-multiselect.active .multiselect-options {

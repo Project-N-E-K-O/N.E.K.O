@@ -297,11 +297,21 @@ class DropdownManager {
 
         this.updateDropdown();
         this.dropdown.style.display = 'block';
+        
+        // 检测是否显示滚动条
+        requestAnimationFrame(() => {
+            if (this.dropdown.scrollHeight > this.dropdown.clientHeight) {
+                this.dropdown.classList.add('has-scrollbar');
+            } else {
+                this.dropdown.classList.remove('has-scrollbar');
+            }
+        });
     }
 
     hideDropdown() {
         if (this.dropdown) {
             this.dropdown.style.display = 'none';
+            this.dropdown.classList.remove('has-scrollbar');
         }
     }
 

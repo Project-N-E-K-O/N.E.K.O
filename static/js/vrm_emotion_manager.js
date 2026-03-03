@@ -7,6 +7,10 @@
 
     // DOM 元素
     const modelSelect = document.getElementById('model-select');
+    const modelSingleselect = document.getElementById('model-singleselect');
+    const modelSingleselectHeader = modelSingleselect.querySelector('.singleselect-header');
+    const modelSingleselectText = modelSingleselect.querySelector('.selected-text');
+    const modelSingleselectOptions = modelSingleselect.querySelector('.singleselect-options');
     const emotionConfig = document.getElementById('emotion-config');
     const saveBtn = document.getElementById('save-btn');
     const resetBtn = document.getElementById('reset-btn');
@@ -62,18 +66,28 @@
 
             if (data.success && Array.isArray(data.models) && data.models.length > 0) {
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.pleaseSelectModel', '请选择模型')}</option>`;
+                modelSingleselectOptions.innerHTML = '';
 
                 data.models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;
-                    const locationText = model.location === 'user' ?
-                        t('common.user', '用户') : t('common.project', '项目');
-                    option.textContent = `${model.name} (${locationText})`;
                     option.dataset.info = JSON.stringify(model);
+                    option.textContent = model.name;
                     modelSelect.appendChild(option);
+
+                    const item = document.createElement('div');
+                    item.className = 'singleselect-item';
+                    item.dataset.value = model.name;
+                    item.dataset.info = JSON.stringify(model);
+                    item.textContent = model.name;
+                    item.addEventListener('click', () => selectModelFromDropdown(model.name, model));
+                    modelSingleselectOptions.appendChild(item);
                 });
+
+                modelSingleselectText.textContent = t('vrmEmotionManager.pleaseSelectModel', '请选择模型');
             } else {
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型')}</option>`;
+                modelSingleselectText.textContent = t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型');
                 showStatus(t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型，请先上传模型'), 'warning');
             }
         } catch (error) {
@@ -81,6 +95,59 @@
             showStatus(t('vrmEmotionManager.loadModelListFailed', '加载模型列表失败') + ': ' + error.message, 'error');
         }
     }
+
+    // 从下拉框选择模型
+    function selectModelFromDropdown(modelName, modelInfo) {
+        currentModelInfo = modelInfo;
+        modelSingleselectText.textContent = modelName;
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+        
+        modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
+            item.classList.toggle('selected', item.dataset.value === modelName);
+        });
+
+        loadModelExpressions(modelName, modelInfo).then(() => {
+            loadEmotionMapping(modelName);
+        });
+    }
+
+    // 切换模型选择下拉框
+    function toggleModelDropdown(event) {
+        const wasActive = modelSingleselect.classList.contains('active');
+
+        document.querySelectorAll('.custom-multiselect').forEach(ms => {
+            ms.classList.remove('active');
+            const h = ms.querySelector('.multiselect-header');
+            if (h) h.setAttribute('aria-expanded', 'false');
+        });
+
+        if (wasActive) {
+            modelSingleselect.classList.remove('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+        } else {
+            modelSingleselect.classList.add('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'true');
+            
+            requestAnimationFrame(() => {
+                if (modelSingleselectOptions.scrollHeight > modelSingleselectOptions.clientHeight) {
+                    modelSingleselectOptions.classList.add('has-scrollbar');
+                } else {
+                    modelSingleselectOptions.classList.remove('has-scrollbar');
+                }
+            });
+        }
+
+        event.stopPropagation();
+    }
+
+    modelSingleselectHeader.addEventListener('click', toggleModelDropdown);
+    modelSingleselectHeader.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleModelDropdown(e);
+        }
+    });
 
     // 从父窗口获取实际模型表情列表
     function getExpressionsFromParentWindow() {
@@ -235,6 +302,7 @@
     function toggleDropdown(event) {
         const multiselect = event.currentTarget.closest('.custom-multiselect');
         const header = multiselect.querySelector('.multiselect-header');
+        const options = multiselect.querySelector('.multiselect-options');
         const wasActive = multiselect.classList.contains('active');
 
         // 关闭所有其他下拉菜单
@@ -243,10 +311,23 @@
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
 
         if (!wasActive) {
             multiselect.classList.add('active');
             if (header) header.setAttribute('aria-expanded', 'true');
+            
+            // 检测是否显示滚动条
+            if (options) {
+                requestAnimationFrame(() => {
+                    if (options.scrollHeight > options.clientHeight) {
+                        options.classList.add('has-scrollbar');
+                    } else {
+                        options.classList.remove('has-scrollbar');
+                    }
+                });
+            }
         }
 
         event.stopPropagation();
@@ -259,6 +340,8 @@
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
     });
 
     // 更新头部显示
@@ -449,18 +532,6 @@
     }
 
     // 事件监听
-    modelSelect.addEventListener('change', async (e) => {
-        const selectedOption = e.target.options[e.target.selectedIndex];
-        if (selectedOption.value && selectedOption.dataset.info) {
-            currentModelInfo = JSON.parse(selectedOption.dataset.info);
-            await loadModelExpressions(currentModelInfo.name, currentModelInfo);
-            await loadEmotionMapping(currentModelInfo.name);
-        } else {
-            emotionConfig.style.display = 'none';
-            currentModelInfo = null;
-        }
-    });
-
     saveBtn.addEventListener('click', saveEmotionMapping);
     resetBtn.addEventListener('click', resetConfig);
 
