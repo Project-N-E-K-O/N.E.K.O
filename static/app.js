@@ -7111,7 +7111,8 @@ function init_app() {
                 // 同步 浏览器控制子开关
                 if (agentBrowserCheckbox) {
                     if (analyzerEnabled) {
-                        agentBrowserCheckbox.checked = flags.browser_use_enabled || false;
+                        // Agent 已开启，但子开关保持禁用等待能力检查
+                        agentBrowserCheckbox.checked = false;
                         agentBrowserCheckbox.disabled = true;
                         agentBrowserCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                     } else {
@@ -7124,9 +7125,9 @@ function init_app() {
                 // 同步 用户插件子开关
                 if (agentUserPluginCheckbox) {
                     if (analyzerEnabled) {
-                        // Agent 已开启，根据后端状态设置
-                        agentUserPluginCheckbox.checked = flags.user_plugin_enabled || false;
-                        agentUserPluginCheckbox.disabled = true; // 先设为可用，后续可用性检查会更新
+                        // Agent 已开启，但子开关保持禁用等待能力检查
+                        agentUserPluginCheckbox.checked = false;
+                        agentUserPluginCheckbox.disabled = true;
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                     } else {
                         // Agent 未开启，复位子开关
