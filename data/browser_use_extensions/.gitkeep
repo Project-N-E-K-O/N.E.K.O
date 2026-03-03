@@ -1,0 +1,3 @@
+# 保留目录结构
+# browser-use 扩展将在此目录预缓存，避免首次启动时网络下载
+# 构建时通过 scripts/prepare_extensions.py 预下载
