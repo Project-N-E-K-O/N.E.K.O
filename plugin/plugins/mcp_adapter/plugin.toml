@@ -1,0 +1,35 @@
+[plugin]
+name = "MCP Adapter"
+type = "adapter"
+description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
+version = "0.1.0"
+id = "mcp_adapter"
+entry = "plugins.mcp_adapter:MCPAdapterPlugin"
+
+[plugin.author]
+name = "NEKO Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin_state]
+backend = "file"
+persist_mode = "auto"
+
+[mcp_servers]
+
+[adapter]
+mode = "gateway"
+priority = 0
+
+[mcp_adapter]
+connect_timeout = 30
+tool_timeout = 60
+auto_reconnect = true
+reconnect_interval = 5
+max_reconnect_attempts = 3

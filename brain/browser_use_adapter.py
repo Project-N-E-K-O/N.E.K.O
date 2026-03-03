@@ -234,6 +234,17 @@ def _find_bundled_chromium() -> Optional[str]:
     return None
 
 
+def _find_system_chrome_path() -> Optional[str]:
+    """Find an installed system Chrome / Chromium executable."""
+    try:
+        from browser_use.browser.watchdogs.local_browser_watchdog import (
+            LocalBrowserWatchdog,
+        )
+        return LocalBrowserWatchdog._find_installed_browser_path()
+    except Exception:
+        return None
+
+
 def _find_chrome_path() -> Optional[str]:
     """Pre-flight: locate a usable Chrome / Chromium executable.
 
@@ -243,13 +254,7 @@ def _find_chrome_path() -> Optional[str]:
     bundled = _find_bundled_chromium()
     if bundled:
         return bundled
-    try:
-        from browser_use.browser.watchdogs.local_browser_watchdog import (
-            LocalBrowserWatchdog,
-        )
-        return LocalBrowserWatchdog._find_installed_browser_path()
-    except Exception:
-        return None
+    return _find_system_chrome_path()
 
 def _dump_history(history, mode: str) -> None:
     """Print detailed diagnostics from a browser-use AgentHistory."""
@@ -656,7 +661,13 @@ class BrowserUseAdapter:
         if not status.get("ready"):
             return {"success": False, "error": "; ".join(status.get("reasons", []))}
 
-        chrome = _find_chrome_path()
+        bundled_chrome = _find_bundled_chromium()
+        system_chrome = _find_system_chrome_path()
+        chrome = bundled_chrome or system_chrome
+        fallback_chrome: Optional[str] = None
+        if bundled_chrome and system_chrome and bundled_chrome != system_chrome:
+            fallback_chrome = system_chrome
+
         if not chrome:
             msg = (
                 "未找到 Chrome / Chromium 浏览器，请安装 Google Chrome 后重试。"
@@ -665,7 +676,11 @@ class BrowserUseAdapter:
             print(f"[BrowserUse] PREFLIGHT FAIL: {msg}", flush=True)
             return {"success": False, "error": msg}
         self._chrome_path = chrome
-        print(f"[BrowserUse] preflight OK, chrome={chrome}", flush=True)
+        source = "bundled" if chrome == bundled_chrome else "system"
+        print(
+            f"[BrowserUse] preflight OK, chrome={chrome}, source={source}",
+            flush=True,
+        )
 
         from browser_use import Agent
 
@@ -893,6 +908,20 @@ class BrowserUseAdapter:
                     del self._agents[session_id]
                 return {"success": False, "error": f"timed out after {timeout_s}s"}
             except Exception as e:
+                if (
+                    launch_attempt == 0
+                    and browser_session is None
+                    and fallback_chrome
+                    and self._chrome_path != fallback_chrome
+                ):
+                    logger.warning(
+                        "[BrowserUse] Bundled browser launch failed, "
+                        "falling back to system browser: %s",
+                        e,
+                    )
+                    self._chrome_path = fallback_chrome
+                    await self._close_browser()
+                    continue
                 if browser_session:
                     await self._remove_overlay(browser_session)
                 if session_id and session_id in self._agents:

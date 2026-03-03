@@ -345,7 +345,10 @@ class ConfigManager:
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
+        self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
+        self._workshop_config_lock = threading.Lock()
+        self._workshop_config_cleanup_done = False
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -872,7 +875,28 @@ class ConfigManager:
             raise
 
     def get_voices_for_current_api(self):
-        """获取当前 AUDIO_API_KEY 对应的所有音色"""
+        """获取当前 TTS 配置对应的所有音色
+        
+        根据实际使用的 TTS 配置返回音色：
+        1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
+        2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
+        3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
+        """
+        voice_storage = self.load_voice_storage()
+        
+        tts_config = self.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url', '')
+        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        
+        if is_local_tts:
+            all_voices = voice_storage.get('__LOCAL_TTS__', {})
+            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+        
+        tts_api_key = tts_config.get('api_key', '')
+        if tts_api_key:
+            all_voices = voice_storage.get(tts_api_key, {})
+            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+        
         core_config = self.get_core_config()
         audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
@@ -880,9 +904,7 @@ class ConfigManager:
             logger.warning("未配置 AUDIO_API_KEY")
             return {}
 
-        voice_storage = self.load_voice_storage()
         all_voices = voice_storage.get(audio_api_key, {})
-        # 过滤掉以 "cosyvoice-v2" 开头的旧版音色ID
         return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
 
     def save_voice_for_current_api(self, voice_id, voice_data):
@@ -900,20 +922,42 @@ class ConfigManager:
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
-    def delete_voice_for_current_api(self, voice_id):
-        """删除当前 AUDIO_API_KEY 下的指定音色"""
-        core_config = self.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
-
-        if not audio_api_key:
-            raise ValueError("未配置 AUDIO_API_KEY")
+    def save_voice_for_api_key(self, api_key: str, voice_id: str, voice_data: dict):
+        """为指定的 API Key 保存音色（用于复刻时使用实际 API Key 而非 AUDIO_API_KEY）"""
+        if not api_key:
+            raise ValueError("API Key 不能为空")
 
         voice_storage = self.load_voice_storage()
-        if audio_api_key not in voice_storage:
+        if api_key not in voice_storage:
+            voice_storage[api_key] = {}
+
+        voice_storage[api_key][voice_id] = voice_data
+        self.save_voice_storage(voice_storage)
+
+    def delete_voice_for_current_api(self, voice_id):
+        """删除当前 TTS 配置下的指定音色"""
+        voice_storage = self.load_voice_storage()
+        
+        tts_config = self.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url', '')
+        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        
+        if is_local_tts:
+            api_key = '__LOCAL_TTS__'
+        else:
+            api_key = tts_config.get('api_key', '')
+            if not api_key:
+                core_config = self.get_core_config()
+                api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not api_key:
             return False
 
-        if voice_id in voice_storage[audio_api_key]:
-            del voice_storage[audio_api_key][voice_id]
+        if api_key not in voice_storage:
+            return False
+
+        if voice_id in voice_storage[api_key]:
+            del voice_storage[api_key][voice_id]
             self.save_voice_storage(voice_storage)
             return True
         return False
@@ -945,6 +989,30 @@ class ConfigManager:
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if voice_id in free_voices.values():
+            return True
+
+        return False
+
+    def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
+        """校验 voice_id 是否在指定 API Key 下有效"""
+        if not voice_id:
+            return True
+
+        if voice_id.startswith("cosyvoice-v2"):
+            return False
+
+        custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
+        if custom_tts_allowed is not None:
+            return custom_tts_allowed
+
+        voice_storage = self.load_voice_storage()
+        voices = voice_storage.get(api_key, {})
+        if voice_id in voices:
+            return True
+
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if voice_id in free_voices.values():
@@ -1777,24 +1845,36 @@ class ConfigManager:
         Returns:
             dict: workshop配置数据
         """
-        # 兼容历史错误配置：无论配置位于文档目录还是软件目录，先做一次自愈清理
-        self._cleanup_invalid_workshop_configs()
+        # 兼容历史错误配置：仅在进程内首次读取时自愈一次，避免高频读取重复触发清理逻辑
+        if not self._workshop_config_cleanup_done:
+            with self._workshop_config_lock:
+                if not self._workshop_config_cleanup_done:
+                    self._cleanup_invalid_workshop_configs()
+                    self._workshop_config_cleanup_done = True
 
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    logger.info(f"成功加载workshop配置: {config}")
+                    logger.debug(f"成功加载workshop配置: {config}")
                     return config
             else:
-                # 如果配置文件不存在，返回默认配置
-                default_config = {
-                    "default_workshop_folder": str(self.workshop_dir),
-                    "auto_create_folder": True
-                }
-                logger.info(f"创建默认workshop配置: {default_config}")
-                return default_config
+                # 配置不存在时进行一次带锁初始化，避免并发/密集调用下重复创建默认配置
+                with self._workshop_config_lock:
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            logger.debug(f"成功加载workshop配置: {config}")
+                            return config
+
+                    default_config = {
+                        "default_workshop_folder": str(self.workshop_dir),
+                        "auto_create_folder": True
+                    }
+                    self.save_workshop_config(default_config)
+                    logger.info(f"创建默认workshop配置: {default_config}")
+                    return default_config
         except Exception as e:
             error_msg = f"加载workshop配置失败: {e}"
             logger.error(error_msg)
@@ -1838,6 +1918,25 @@ class ConfigManager:
         self._steam_workshop_path = workshop_path
         logger.info(f"已设置Steam创意工坊路径（运行时）: {workshop_path}")
 
+    def persist_user_workshop_folder(self, workshop_path):
+        """
+        将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）。
+
+        仅在动态获取Steam工坊位置成功时调用，后续读取可在Steam未运行时作为回退。
+        """
+        if self._user_workshop_folder_persisted:
+            return
+        if not workshop_path or not os.path.isdir(workshop_path):
+            return
+        self._user_workshop_folder_persisted = True
+        try:
+            config = self.load_workshop_config()
+            config["user_workshop_folder"] = workshop_path
+            self.save_workshop_config(config)
+            logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
+        except Exception as e:
+            logger.error(f"持久化user_workshop_folder失败: {e}")
+
     def get_steam_workshop_path(self):
         """
         获取Steam创意工坊根目录路径（仅运行时，由启动流程设置）
@@ -1851,7 +1950,7 @@ class ConfigManager:
         """
         获取workshop根目录路径
         
-        优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > self.workshop_dir
+        优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > self.workshop_dir
         
         Returns:
             str: workshop根目录路径
@@ -1861,6 +1960,9 @@ class ConfigManager:
             return config["user_mod_folder"]
         if self._steam_workshop_path:
             return self._steam_workshop_path
+        cached = config.get("user_workshop_folder")
+        if cached and os.path.isdir(cached):
+            return cached
         return config.get("default_workshop_folder", str(self.workshop_dir))
 
 
@@ -1906,6 +2008,10 @@ def save_workshop_config(config_data):
 def save_workshop_path(workshop_path):
     """设置Steam创意工坊根目录路径（运行时）"""
     return get_config_manager().save_workshop_path(workshop_path)
+
+def persist_user_workshop_folder(workshop_path):
+    """将Steam创意工坊实际路径持久化到配置文件（每次启动仅首次写入）"""
+    return get_config_manager().persist_user_workshop_folder(workshop_path)
 
 def get_steam_workshop_path():
     """获取Steam创意工坊根目录路径（运行时）"""

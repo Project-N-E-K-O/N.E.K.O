@@ -1,6 +1,17 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
+function getVoiceDisplayName(voiceId, voiceData, voiceOwners) {
+    const owners = voiceOwners && voiceOwners[voiceId];
+    if (voiceData && voiceData.prefix) {
+        return voiceData.prefix;
+    } else if (owners && owners.length > 0) {
+        return owners.join(', ');
+    } else {
+        return voiceId;
+    }
+}
+
 // 自动调整textarea高度
 function autoResizeTextarea(textarea) {
     // 重置高度为auto以计算正确的高度
@@ -478,6 +489,16 @@ async function importWorkshopCharaFile(filePath, itemId) {
 // 加载角色数据
 // 跟踪当前展开的猫娘名称
 let expandedCatgirlName = null;
+let shouldScrollToExpandedCatgirl = false;
+
+function scrollToElementCentered(element, delay = 100) {
+    if (!element) return;
+    setTimeout(() => {
+        if (document.body.contains(element)) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }, delay);
+}
 
 async function loadCharacterData() {
     try {
@@ -490,13 +511,10 @@ async function loadCharacterData() {
         renderCatgirls();
         updateSwitchButtons();
 
-        // 如果有之前展开的猫娘，自动展开它
         if (expandedCatgirlName) {
             const catgirls = characterData['猫娘'] || {};
             if (catgirls[expandedCatgirlName]) {
-                // 使用 setTimeout 确保 DOM 已经渲染完成
                 setTimeout(() => {
-                    // 遍历所有猫娘块，找到匹配的
                     const blocks = document.querySelectorAll('.catgirl-block');
                     blocks.forEach(block => {
                         const titleSpan = block.querySelector('.catgirl-title');
@@ -504,17 +522,20 @@ async function loadCharacterData() {
                             const btn = block.querySelector('.catgirl-expand');
                             const details = block.querySelector('.catgirl-details');
                             if (btn && details && details.style.display === 'none') {
-                                // 展开这个猫娘
                                 details.style.display = 'block';
                                 btn.style.transform = 'rotate(180deg)';
                                 showCatgirlForm(expandedCatgirlName, details);
+                            }
+                            if (shouldScrollToExpandedCatgirl) {
+                                scrollToElementCentered(block);
+                                shouldScrollToExpandedCatgirl = false;
                             }
                         }
                     });
                 }, 0);
             } else {
-                // 如果猫娘不存在了，清除记录
                 expandedCatgirlName = null;
+                shouldScrollToExpandedCatgirl = false;
             }
         }
     } catch (error) {
@@ -1122,7 +1143,7 @@ function showCatgirlForm(key, container) {
     // 渲染进阶设定
     // 进阶设定（使用 DOM API）
     const fold = document.createElement('div');
-    fold.className = 'fold';
+    fold.className = 'fold open';
 
     const foldToggle = document.createElement('div');
     foldToggle.className = 'fold-toggle';
@@ -1134,7 +1155,7 @@ function showCatgirlForm(key, container) {
     arrowSpan.style.height = '32px';
     arrowSpan.style.verticalAlign = 'middle';
     arrowSpan.style.transition = 'transform 0.2s';
-    arrowSpan.style.transform = 'rotate(-90deg)';
+    arrowSpan.style.transform = 'rotate(0deg)';
     foldToggle.appendChild(arrowSpan);
     foldToggle.appendChild(document.createTextNode(' '));
     const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
@@ -1501,16 +1522,7 @@ function showCatgirlForm(key, container) {
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    // 显示优先级：使用该音色的角色名 > prefix > 截断的 voice_id
-                    const owners = voiceOwners[voiceId];
-                    let displayName = '';
-                    if (owners && owners.length > 0) {
-                        displayName = owners.join(', ');
-                    } else if (voiceData.prefix) {
-                        displayName = voiceData.prefix;
-                    }
-                    const shortId = voiceId.length > 20 ? voiceId.substring(0, 18) + '…' : voiceId;
-                    option.textContent = displayName ? displayName + ' (' + shortId + ')' : voiceId;
+                    option.textContent = getVoiceDisplayName(voiceId, voiceData, voiceOwners);
                     option.title = voiceId;
                     if (voiceId === String(cat['voice_id'] || '').trim()) option.selected = true;
                     select.appendChild(option);
@@ -1774,10 +1786,10 @@ function showCatgirlForm(key, container) {
             // 保存当前展开的猫娘名称，以便重新加载后自动展开
             let formCatgirlName = data['档案名'];
             if (formCatgirlName) {
-                // 验证并清理猫娘名称，避免特殊字符
                 formCatgirlName = formCatgirlName.trim();
                 if (formCatgirlName) {
                     expandedCatgirlName = formCatgirlName;
+                    shouldScrollToExpandedCatgirl = true;
                 }
             }
 
@@ -1807,17 +1819,17 @@ function showCatgirlForm(key, container) {
         container.innerHTML = '';
         container.appendChild(form);
 
-        // 如果是编辑现有猫娘，尝试恢复进阶设定的展开状态
+        // 恢复进阶设定的折叠状态（默认展开，仅当用户明确折叠过才收起）
         if (key) {
             setTimeout(() => {
                 const savedState = localStorage.getItem(`catgirl_advanced_${key}`);
-                if (savedState === 'true') {
+                if (savedState === 'false') {
                     const advancedSettingsFold = form.querySelector('.fold');
                     const toggle = advancedSettingsFold.querySelector('.fold-toggle');
                     if (advancedSettingsFold && toggle) {
-                        advancedSettingsFold.classList.add('open');
+                        advancedSettingsFold.classList.remove('open');
                         const arrow = toggle.querySelector('.arrow');
-                        if (arrow) arrow.style.transform = 'rotate(0deg)';
+                        if (arrow) arrow.style.transform = 'rotate(-90deg)';
                     }
                 }
             }, 0);
@@ -1845,6 +1857,8 @@ function showCatgirlForm(key, container) {
             block.className = 'catgirl-block';
             block.appendChild(form);
             list.prepend(block);
+
+            scrollToElementCentered(block);
         }
     }
 
@@ -2189,15 +2203,7 @@ window.addEventListener('message', function (event) {
                 Object.entries(data.voices).forEach(([id, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = id;
-                    const owners = voiceOwners2[id];
-                    let dn = '';
-                    if (owners && owners.length > 0) {
-                        dn = owners.join(', ');
-                    } else if (voiceData.prefix) {
-                        dn = voiceData.prefix;
-                    }
-                    const shortId = id.length > 20 ? id.substring(0, 18) + '…' : id;
-                    option.textContent = dn ? dn + ' (' + shortId + ')' : id;
+                    option.textContent = getVoiceDisplayName(id, voiceData, voiceOwners2);
                     option.title = id;
                     select.appendChild(option);
                 });

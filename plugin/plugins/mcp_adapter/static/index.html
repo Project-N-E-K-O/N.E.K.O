@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Adapter</title>
+  <link rel="stylesheet" href="style.css?v=5">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    <!-- 主内容区 -->
+    <main class="main-content">
+      <!-- 服务器管理视图（主视图） -->
+      <div id="view-servers" class="view active">
+        <section class="section">
+          <div class="section-header">
+            <h2>⚙️ 服务器管理</h2>
+            <div class="header-actions">
+              <button id="refresh-btn" class="btn btn-secondary">🔄 刷新</button>
+              <button id="import-json-btn" class="btn btn-secondary">📥 导入 JSON</button>
+              <button id="add-server-btn" class="btn btn-primary">➕ 添加服务器</button>
+              <button id="remove-selected-btn" class="btn btn-danger" disabled>🗑️ 移除选中</button>
+            </div>
+          </div>
+          
+          <!-- 导入 JSON 面板 -->
+          <div id="import-json-form" class="form-panel" style="display: none;">
+            <h3>导入 MCP 配置 JSON</h3>
+            <p class="form-hint">支持 Claude Desktop / Cursor 格式的 mcpServers 配置</p>
+            <div class="form-group">
+              <label for="json-input">JSON 配置</label>
+              <textarea id="json-input" rows="10" placeholder='{"mcpServers": {"server_name": {"command": "...", "args": [...]}}}'></textarea>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="import-auto-connect" checked />
+                导入后自动连接
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="cancel-import-btn" class="btn btn-secondary">取消</button>
+              <button id="confirm-import-btn" class="btn btn-primary">导入</button>
+            </div>
+          </div>
+          
+          <!-- 添加服务器表单 -->
+          <div id="add-server-form" class="form-panel" style="display: none;">
+            <h3>添加新服务器</h3>
+            <div class="form-group">
+              <label for="server-name">服务器名称 *</label>
+              <input type="text" id="server-name" placeholder="my_server" />
+            </div>
+            <div class="form-group">
+              <label for="server-transport">传输类型 *</label>
+              <select id="server-transport">
+                <option value="stdio">stdio (本地进程)</option>
+                <option value="sse">SSE (Server-Sent Events)</option>
+                <option value="streamable-http">HTTP (流式)</option>
+              </select>
+            </div>
+            <div class="form-group" id="command-group">
+              <label for="server-command">命令</label>
+              <input type="text" id="server-command" placeholder="npx -y @modelcontextprotocol/server-xxx" />
+            </div>
+            <div class="form-group" id="args-group">
+              <label for="server-args">参数 (逗号分隔)</label>
+              <input type="text" id="server-args" placeholder="--arg1, --arg2" />
+            </div>
+            <div class="form-group" id="url-group" style="display: none;">
+              <label for="server-url">服务器 URL</label>
+              <input type="text" id="server-url" placeholder="http://localhost:8080" />
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="server-auto-connect" checked />
+                添加后自动连接
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="cancel-add-btn" class="btn btn-secondary">取消</button>
+              <button id="confirm-add-btn" class="btn btn-primary">添加</button>
+            </div>
+          </div>
+          
+          <!-- 服务器列表 -->
+          <div id="manage-servers-list" class="servers-list selectable">
+            <div class="loading">加载中...</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- 右侧导航栏（隐藏，只有一个视图） -->
+    <nav class="sidebar" style="display: none;">
+    </nav>
+  </div>
+
+  <script src="main.js?v=17"></script>
+</body>
+</html>

@@ -239,12 +239,19 @@ def find_models():
                             # 同时更新display_name以区分
                             display_name = f"{display_name} ({source})"
                         
-                        found_models.append({
+                        model_entry = {
                             "name": final_name,
                             "display_name": display_name,
                             "path": f"{url_prefix}/{model_path}",
                             "source": source
-                        })
+                        }
+                        
+                        if source == 'workshop':
+                            path_parts = model_path.split('/')
+                            if path_parts and path_parts[0].isdigit():
+                                model_entry["item_id"] = path_parts[0]
+                        
+                        found_models.append(model_entry)
                         
                         # 优化：一旦在某个目录找到模型json，就无需再继续深入该目录的子目录
                         dirs[:] = []
@@ -347,7 +354,7 @@ def _resolve_workshop_search_dir() -> str:
     """
     获取创意工坊搜索目录
     
-    优先级: user_mod_folder(配置) > Steam运行时路径 > default_workshop_folder(配置) > 默认workshop目录
+    优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > 默认workshop目录
     """
     from utils.config_manager import get_workshop_path
     workshop_path = get_workshop_path()

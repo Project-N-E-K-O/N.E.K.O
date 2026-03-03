@@ -32,6 +32,31 @@ def _normalize_model_path(path: str) -> str:
     return encode_url_path(path.strip('"'))
 
 
+def _upsert_model(models: list, model_name: str, item_id: str, path: str, source: str = 'steam_workshop') -> None:
+    """
+    Update existing model with item_id if found, otherwise append new model.
+    
+    Args:
+        models: List of model dictionaries to update
+        model_name: Name of the model
+        item_id: Steam workshop item ID
+        path: Model path URL
+        source: Model source (default: 'steam_workshop')
+    """
+    existing_model = next((m for m in models if m['name'] == model_name), None)
+    if existing_model:
+        if not existing_model.get('item_id'):
+            existing_model['item_id'] = item_id
+            existing_model['source'] = source
+    else:
+        models.append({
+            'name': model_name,
+            'path': path,
+            'source': source,
+            'item_id': item_id
+        })
+
+
 def _locate_model_config(model_dir: str):
     """
     Probe *model_dir* (root) and its single-level subdirectories for a
@@ -91,17 +116,9 @@ async def get_live2d_models(simple: bool = False):
                         for filename in os.listdir(installed_folder):
                             if filename.endswith('.model3.json'):
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
-                                
-                                # 避免重复添加
-                                if model_name not in [m['name'] for m in models]:
-                                    path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
-                                    logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
-                                    models.append({
-                                        'name': model_name,
-                                        'path': path_value,
-                                        'source': 'steam_workshop',
-                                        'item_id': item_id
-                                    })
+                                path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
+                                logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
+                                _upsert_model(models, model_name, item_id, path_value)
                             
                         # 检查安装目录下的子目录
                         for subdir in os.listdir(installed_folder):
@@ -110,16 +127,9 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = subdir
                                 json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
                                 if os.path.exists(json_file):
-                                    # 避免重复添加
-                                    if model_name not in [m['name'] for m in models]:
-                                        path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
-                                        logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
-                                        models.append({
-                                            'name': model_name,
-                                            'path': path_value,
-                                            'source': 'steam_workshop',
-                                            'item_id': item_id
-                                        })
+                                    path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
+                                    logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
+                                    _upsert_model(models, model_name, item_id, path_value)
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
         

@@ -143,6 +143,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
         { id: 'goodbye', emoji: '💤', title: window.t ? window.t('buttons.leave') : '请她离开', titleKey: 'buttons.leave', hasPopup: false, iconOff: '/static/icons/rest_off.png' + iconVersion, iconOn: '/static/icons/rest_on.png' + iconVersion }
     ];
 
+    this._buttonConfigs = buttonConfigs;
+
     this._floatingButtons = this._floatingButtons || {};
 
     // 3. 创建按钮

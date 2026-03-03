@@ -1005,12 +1005,13 @@ class TranslationService:
             
             system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
 
-Rules:
+======以下为规则======
 1. Keep the meaning and tone exactly the same
 2. Maintain any special formatting (like commas, spaces)
 3. For character names or nicknames, translate naturally
 4. Return ONLY the translated text, no explanations or additional text
-5. If the text is already in {target_lang_name}, return it unchanged"""
+5. If the text is already in {target_lang_name}, return it unchanged
+======以上为规则======"""
 
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),

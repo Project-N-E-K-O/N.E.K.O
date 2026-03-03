@@ -455,10 +455,15 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                             return;
                         }
                         
-                        console.log('[Interaction] 点击效果持续时间结束，恢复到默认状态');
+                        console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
                         this._currentClickEffectId = null;
-                        // 清除表情，恢复到常驻表情或默认状态
-                        if (this.clearExpression) {
+                        // 使用平滑过渡恢复到常驻表情或默认状态（smoothReset 内部会在快照后停止 motion/expression）
+                        if (typeof this.smoothResetToInitialState === 'function') {
+                            this.smoothResetToInitialState().catch(e => {
+                                console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
+                                if (typeof this.clearExpression === 'function') this.clearExpression();
+                            });
+                        } else if (typeof this.clearExpression === 'function') {
                             this.clearExpression();
                         }
                     }, CLICK_EFFECT_DURATION);
@@ -1179,29 +1184,22 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 return;
             }
             
-            console.log('[ClickEffect] 临时效果结束，恢复到默认状态');
+            console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态');
             this._currentClickEffectId = null;
-            
-            const motionToStop = this._clickEffectMotion;
             this._clickEffectMotion = null;
-            if (motionToStop && typeof motionToStop.stop === 'function') {
-                try { motionToStop.stop(); } catch (e) {}
-            }
-            
-            try {
-                const expressionManager = this.currentModel &&
-                    this.currentModel.internalModel &&
-                    this.currentModel.internalModel.motionManager &&
-                    this.currentModel.internalModel.motionManager.expressionManager;
-                if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
-                    expressionManager.stopAllExpressions();
-                }
-            } catch (e) {
-                console.warn('[ClickEffect] Failed to stop expressions on currentModel:', e);
-            }
 
-            if (typeof this.applyPersistentExpressionsNative === 'function') {
-                try { this.applyPersistentExpressionsNative(true); } catch (e) {}
+            // 使用平滑过渡恢复到初始状态
+            // smoothResetToInitialState 会在第一帧 beforeModelUpdate 中捕获快照后，
+            // 再停止 motion/expression，确保过渡起点与屏幕一致，无视觉跳变。
+            if (typeof this.smoothResetToInitialState === 'function') {
+                this.smoothResetToInitialState().catch(e => {
+                    console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
+                    if (typeof this.clearExpression === 'function') {
+                        this.clearExpression();
+                    }
+                });
+            } else if (typeof this.clearExpression === 'function') {
+                this.clearExpression();
             }
         }, duration);
 

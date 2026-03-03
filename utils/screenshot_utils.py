@@ -45,6 +45,8 @@ def compress_screenshot(
         ratio = target_h / h
         img = img.resize((int(w * ratio), target_h), _LANCZOS)
     buf = BytesIO()
+    if img.mode == "RGBA":
+        img = img.convert("RGB")
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     return buf.getvalue()
 
