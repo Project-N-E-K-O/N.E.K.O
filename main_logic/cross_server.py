@@ -7,6 +7,7 @@
 """
 
 import ssl
+import uuid
 
 import asyncio
 import time
@@ -32,7 +33,7 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict]) -> bool:
+async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry."""
     try:
         sent = await publish_analyze_request_reliably(
@@ -41,6 +42,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             messages=messages,
             ack_timeout_s=0.5,
             retries=1,
+            conversation_id=conversation_id,
         )
         if sent:
             logger.debug(
@@ -303,7 +305,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
-                                # 检查是否正在关闭
+                                # 只在 recent 包含 user 消息时发送(过滤纯 assistant 的 proactive turn_end)
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要
@@ -317,11 +319,14 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 if txt == '':
                                                     continue
                                                 recent.append({'role': item.get('role'), 'content': txt})
-                                        if recent:
+                                        has_user = any(m.get('role') == 'user' for m in recent)
+                                        logger.info(f"[{lanlan_name}] turn_end analyze check: history={len(chat_history)} recent={len(recent)} has_user={has_user} had_input={had_user_input_this_turn}")
+                                        if recent and has_user and had_user_input_this_turn:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
                                                 messages=recent,
+                                                conversation_id=uuid.uuid4().hex,
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -390,11 +395,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 if txt == '':
                                                     continue
                                                 recent.append({'role': item.get('role'), 'content': txt})
-                                        if recent:
+                                        has_user = any(m.get('role') == 'user' for m in recent)
+                                        if recent and has_user:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="session_end",
                                                 messages=recent,
+                                                conversation_id=uuid.uuid4().hex,
                                             )
                                             if sent:
                                                 logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")

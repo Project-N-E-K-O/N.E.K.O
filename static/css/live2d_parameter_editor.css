@@ -48,7 +48,7 @@ pointer-events: auto;
 display: block;
 width: 100%;
 height: 100%;
-background: rgba(255, 255, 255, 0.7);
+background: transparent;
 cursor: grab;
 pointer-events: auto;
 }
@@ -833,11 +833,14 @@ filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgb
 #model-select-btn span {
 position: relative;
 z-index: 20;
-margin-left: 80px;
-margin-right: 80px;
+margin-left: 50px;
+margin-right: 30px;
 flex: 1;
 text-align: center;
 font-size: var(--button-text-size);
+white-space: nowrap;
+overflow: hidden;
+text-overflow: ellipsis;
 }
 
 #model-select-btn:hover:not(:disabled) {
@@ -853,7 +856,8 @@ box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
 position: absolute;
 top: 100%;
 left: 0;
-width: 270px;
+width: auto;
+min-width: 270px;
 max-height: 300px;
 overflow-y: auto;
 overflow-x: hidden;
@@ -881,6 +885,7 @@ background-repeat: no-repeat;
 min-height: 36px;
 display: flex;
 align-items: center;
+justify-content: flex-start;
 }
 
 .model-dropdown .dropdown-item:hover {

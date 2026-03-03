@@ -7,7 +7,7 @@ name = "N.E.K.O"
 version = "1.0.0"
 description = "N.E.K.O. Desktop"
 readme = "README.MD"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   "fastapi~=0.115.9",
   "websockets~=15.0.1",
@@ -39,7 +39,10 @@ dependencies = [
   "bilibili-api-python>=17.4.0",
   "googletrans>=4.0.2",
   "translatepy",
-  "pyzmq>=26.2.0",
+  "tomli>=2.3.0",
+  "tomli-w>=1.2.0",
+  "loguru>=0.7.0",
+  "pyzmq>=27.1.0",
   "browser-use>=0.11.0",
   "cryptography>=45.0.6",
   "python-dotenv>=1.2.1",
