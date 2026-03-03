@@ -639,12 +639,20 @@ class BrowserUseAdapter:
         """
         self._cancelled = False
 
-        country = self._get_ip_country()
-        if country:
-            instruction = (
-                f"[User IP country: {country}] "
-                f"Keep this in mind when choosing search engine or regional settings.\n\n"
-                f"{instruction}"
+        # [优化] 旧逻辑：同步获取 IP 国家，阻塞 Chrome 启动
+        # country = self._get_ip_country()
+        # if country:
+        #     instruction = (
+        #         f"[User IP country: {country}] "
+        #         f"Keep this in mind when choosing search engine or regional settings.\n\n"
+        #         f"{instruction}"
+        #     )
+        #
+        # [新逻辑] 后台异步获取 IP 国家（与 Chrome 启动并行），不阻塞
+        country_future: Optional[asyncio.Task] = None
+        if not BrowserUseAdapter._ip_country_cache:
+            country_future = asyncio.create_task(
+                asyncio.to_thread(self._get_ip_country)
             )
 
         status = self.is_available()
@@ -693,8 +701,29 @@ class BrowserUseAdapter:
                         llm = self._build_llm(mode=mode)
                         if session_id and session_id in self._agents:
                             del self._agents[session_id]
+
+                        # [优化] 等待 IP 国家查询结果（如正在进行）并注入到指令中
+                        if country_future is not None:
+                            try:
+                                country = await asyncio.wait_for(
+                                    country_future, timeout=2.0
+                                )
+                                if country:
+                                    enhanced_instruction = (
+                                        f"[User IP country: {country}] "
+                                        f"Keep this in mind when choosing search engine or regional settings.\n\n"
+                                        f"{instruction}"
+                                    )
+                                else:
+                                    enhanced_instruction = instruction
+                            except asyncio.TimeoutError:
+                                enhanced_instruction = instruction
+                            country_future = None
+                        else:
+                            enhanced_instruction = instruction
+
                         agent = Agent(
-                            task=instruction,
+                            task=enhanced_instruction,
                             llm=llm,
                             browser_session=browser_session,
                             max_failures=1 if mode == "schema" else 3,
