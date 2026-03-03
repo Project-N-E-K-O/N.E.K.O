@@ -1917,173 +1917,6 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
     return "\n".join(output_lines)
 
 # =======================================================
-# 自动搜索歌曲，弹出嵌入式浏览器播放
-# =======================================================
-async def search_and_play_song(song_name: str) -> Dict[str, Any]:
-    """
-    搜索歌曲并在嵌入式浏览器中播放
-    
-    根据区域自动选择平台：
-    - 中文区域：优先使用B站搜索并播放
-    - 非中文区域：优先使用YouTube搜索并播放
-    
-    Args:
-        song_name: 歌曲名称
-    
-    Returns:
-        包含播放结果的字典，结构：
-        {
-            'success': bool,
-            'error': str (可选),
-            'url': str (嵌入式播放URL),
-            'platform': str ('bilibili'/'youtube'),
-            'region': str ('china'/'non-china')
-        }
-    """
-    if not song_name or not song_name.strip():
-        logger.error("歌曲名称不能为空")
-        return {
-            'success': False,
-            'error': '歌曲名称不能为空',
-            'platform': '',
-            'region': ''
-        }
-    
-    # 检测用户区域
-    china_region = is_china_region()
-    region = 'china' if china_region else 'non-china'
-    platform = 'bilibili' if china_region else 'youtube'
-    
-    # 编码歌曲名称用于URL
-    encoded_song_name = quote(song_name.strip())
-    
-    headers = {
-        'User-Agent': get_random_user_agent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' if china_region else 'en-US,en;q=0.9',
-    }
-    
-    try:
-        # 添加随机延迟，避免请求过快被限制
-        await asyncio.sleep(random.uniform(0.2, 0.8))
-        
-        if china_region:
-            # 中文区域：B站搜索歌曲
-            search_url = f"https://search.bilibili.com/all?keyword={encoded_song_name}&order=click&duration=0&tids_1=0"
-            logger.info(f"B站搜索歌曲: {song_name}, URL: {search_url}")
-            
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(search_url, headers=headers)
-                response.raise_for_status()
-                
-                # 解析搜索结果，提取第一个视频的播放URL
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # 查找第一个视频链接（B站搜索结果的视频项）
-                video_item = soup.find('a', class_='video-item__title') or soup.find('a', attrs={'href': re.compile(r'/video/')})
-                
-                if not video_item:
-                    logger.warning(f"B站未找到歌曲相关视频: {song_name}")
-                    return {
-                        'success': False,
-                        'error': f'B站未找到"{song_name}"相关视频',
-                        'platform': platform,
-                        'region': region
-                    }
-                
-                # 提取视频链接并构造嵌入式播放URL
-                video_href = video_item.get('href', '')
-                if not video_href.startswith('http'):
-                    video_href = f"https:{video_href}" if video_href.startswith('//') else f"https://www.bilibili.com{video_href}"
-                
-                # B站嵌入式播放URL（支持iframe嵌入）
-                # 提取BV号用于构造embed URL
-                bv_match = re.search(r'(BV\w+)', video_href)
-                if bv_match:
-                    embed_url = f"https://player.bilibili.com/player.html?bvid={bv_match.group(1)}&page=1"
-                else:
-                    embed_url = video_href
-                
-                logger.info(f"成功找到B站歌曲播放链接: {embed_url}")
-                return {
-                    'success': True,
-                    'url': embed_url,
-                    'platform': platform,
-                    'region': region
-                }
-        
-        else:
-            # 非中文区域：YouTube搜索歌曲
-            search_url = f"https://www.youtube.com/results?search_query={encoded_song_name}"
-            logger.info(f"YouTube搜索歌曲: {song_name}, URL: {search_url}")
-            
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(search_url, headers=headers)
-                response.raise_for_status()
-                
-                # 解析YouTube搜索结果，提取第一个视频的ID
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # YouTube搜索结果的视频项匹配（适配不同页面结构）
-                video_script = soup.find('script', string=re.compile(r'"videoId":"[\w-]+"'))
-                video_id = None
-                
-                if video_script:
-                    # 从JSON数据中提取第一个视频ID
-                    vid_match = re.search(r'"videoId":"([\w-]+)"', video_script.string)
-                    if vid_match:
-                        video_id = vid_match.group(1)
-                else:
-                    # 备用解析方式：查找视频链接的a标签
-                    video_link = soup.find('a', attrs={'href': re.compile(r'/watch\?v=')})
-                    if video_link:
-                        vid_match = re.search(r'v=([\w-]+)', video_link.get('href', ''))
-                        if vid_match:
-                            video_id = vid_match.group(1)
-                
-                if not video_id:
-                    logger.warning(f"YouTube未找到歌曲相关视频: {song_name}")
-                    return {
-                        'success': False,
-                        'error': f'YouTube未找到"{song_name}"相关视频',
-                        'platform': platform,
-                        'region': region
-                    }
-                
-                # YouTube嵌入式播放URL
-                embed_url = f"https://www.youtube.com/embed/{video_id}"
-                logger.info(f"成功找到YouTube歌曲播放链接: {embed_url}")
-                return {
-                    'success': True,
-                    'url': embed_url,
-                    'platform': platform,
-                    'region': region
-                }
-    
-    except httpx.TimeoutException:
-        logger.error(f"{platform}搜索歌曲超时: {song_name}")
-        return {
-            'success': False,
-            'error': f'{platform}请求超时，请稍后重试',
-            'platform': platform,
-            'region': region
-        }
-    except httpx.HTTPStatusError as e:
-        logger.error(f"{platform}搜索歌曲HTTP错误: {song_name}, 状态码: {e.response.status_code}")
-        return {
-            'success': False,
-            'error': f'{platform}请求失败（状态码：{e.response.status_code}）',
-            'platform': platform,
-            'region': region
-        }
-    except Exception as e:
-        logger.error(f"搜索并播放歌曲失败: {song_name}, 错误: {e}", exc_info=True)
-        return {
-            'success': False,
-            'error': f'播放失败：{str(e)}',
-            'platform': platform,
-            'region': region
-        }
-
-# =======================================================
 # 个人动态（基于用户兴趣和区域）
 # =======================================================
 
@@ -2641,6 +2474,257 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         return "\n".join(output_lines).strip() or "No personal timeline available"
 
 # =======================================================
+# 音乐资源
+# =======================================================
+import requests
+from bs4 import BeautifulSoup
+import time
+import json
+from NeteaseCloudMusic import NeteaseCloudMusicApi,api_list,api_help  # 网易云原生 Python SDK
+
+class BaseMusicCrawler:
+    def __init__(self, platform_name):
+        self.platform_name = platform_name
+        self.headers = {
+            'User-Agent': get_random_user_agent()
+        }
+
+    def fetch_data(self):
+        """子类需实现，返回 APlayer 格式的字典列表"""
+        raise NotImplementedError
+
+    def format_item(self, name, url, artist="未知", cover=""):
+        """统一 APlayer 数据格式"""
+        return {
+            'name': name,
+            'artist': artist,
+            'url': url,
+            'cover': cover or f'https://dummyimage.com/150x150/000/fff&text={self.platform_name}',
+            'theme': '#ebd0c2'
+        }
+
+# 各平台独立抓取逻辑
+class FreePDCrawler(BaseMusicCrawler):
+    """
+    FreePD 音乐资源抓取器
+    """
+    def __init__(self):
+        super().__init__("FreePD")
+
+    def fetch_data(self):
+        print(f"[{self.platform_name}] 正在抓取...")
+        results = []
+        try:
+            response = requests.get('https://freepd.com/', headers=self.headers, timeout=10)
+            # --- 新增：终极案发现场排查 ---
+            print(f"-> HTTP 状态码: {response.status_code}")
+            print(f"-> 网页源码总长度: {len(response.text)}")
+            print(f"-> 源码前 200 个字符:\n{response.text[:200]}")
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # --- 新增排查代码 ---
+            # 找找看网页里有没有 audio 标签
+            audios = soup.find_all('audio')
+            print(f"-> 发现 <audio> 标签数量: {len(audios)}")
+            
+            # 打印前 5 个 a 标签，看看里面到底装了什么
+            print("-> 前5个 a 标签长这样:")
+            for a in soup.find_all('a')[:5]:
+                print(a)
+            # --------------------
+            for a in soup.find_all('a', href=True):
+                if a['href'].endswith('.mp3'):
+                    url = a['href'] if a['href'].startswith('http') else 'https://freepd.com' + a['href']
+                    name = a.text.strip() or "未命名曲目"
+                    results.append(self.format_item(name=name, url=url, artist="FreePD Artist"))
+        except Exception as e:
+            print(f"[{self.platform_name}] 抓取失败: {e}")
+        return results
+
+class MusopenCrawler(BaseMusicCrawler):
+    """
+    Musopen 古典音乐资源抓取器
+    """
+    def __init__(self):
+        super().__init__("Musopen")
+        # --- 小幅度修改：为 Musopen 追加更逼真的全套浏览器伪装 ---
+        self.headers.update({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://www.google.com/',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
+            'Upgrade-Insecure-Requests': '1'
+        })
+        # ----------------------------------------------------
+
+    def fetch_data(self):
+        print(f"[{self.platform_name}] 正在抓取 (获取免版权古典音乐)...")
+        results = []
+        try:
+            import re  # 引入正则库
+            url = 'https://musopen.org/music/43-nocturnes-op-9/'
+            response = requests.get(url, headers=self.headers, timeout=15)
+            
+            print(f"[{self.platform_name}] 状态码: {response.status_code} (伪装成功！)")
+            
+            # --- 终极绝招：正则无差别扫街 ---
+            print("-> 启动正则扫描，无视 HTML 标签，强行提取音频链接...")
+            
+            # 匹配所有 http 开头，且以 .mp3 或 .m4a 结尾的无空格字符串
+            # (网站现在的音频可能是高质量的 m4a 格式)
+            audio_links = re.findall(r'https?://[^\s"\'<>\[\]]+\.(?:mp3|m4a)', response.text)
+            
+            # 利用 set 去重（因为同一个链接网页里可能会出现多次）
+            unique_links = list(set(audio_links))
+            
+            print(f"-> 发现 {len(unique_links)} 个隐藏的音频链接！")
+            
+            for i, link in enumerate(unique_links[:5]):
+                print(f"✅ 提取到: {link}")
+                # 因为脱离了 HTML 标签，我们拿不到原始歌名了，这里先自动编号生成歌名
+                results.append(self.format_item(name=f"肖邦夜曲 Op.9 - 编号{i+1}", url=link, artist="Musopen 古典乐"))
+                
+            if not unique_links:
+                print("❌ 正则也没扫到，链接可能被深度加密或拆分了。")
+            # ------------------------------
+            
+        except Exception as e:
+            print(f"[{self.platform_name}] 抓取失败: {e}")
+        return results
+# =======================================================
+class FMACrawler(BaseMusicCrawler):
+    """
+    FMA 音乐资源抓取器
+    """
+    def __init__(self):
+        super().__init__("FMA")
+
+    def fetch_data(self):
+        print(f"[{self.platform_name}] 正在抓取...")
+        results = []
+        try:
+            url = 'https://freemusicarchive.org/featured'
+            response = requests.get(url, headers=self.headers, timeout=15)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            play_buttons = soup.find_all(attrs={"data-url": True})
+            for btn in play_buttons[:5]:
+                audio_url = btn['data-url']
+                title = btn.get('title', 'FMA 曲目')
+                if audio_url.endswith('.mp3'):
+                    results.append(self.format_item(name=title, url=audio_url, artist="FMA Artist"))
+        except Exception as e:
+            print(f"[{self.platform_name}] 抓取失败: {e}")
+        return results
+
+class NeteaseCrawler(BaseMusicCrawler):
+    def __init__(self):
+        super().__init__("网易云音乐")
+
+    def fetch_data(self, keyword="免版权轻音乐"):
+        print(f"[{self.platform_name}] 正在通过免加密 Web API 抓取...")
+        results = []
+        try:
+            # 1. 使用网易云原生免加密搜索接口
+            search_url = "http://music.163.com/api/search/get/web"
+            headers = {
+                'Referer': 'http://music.163.com/',
+                'User-Agent': self.headers['User-Agent']
+            }
+            # 构建搜索参数
+            data = {
+                's': keyword,
+                'type': 1,  # 1 表示单曲
+                'offset': 0,
+                'limit': 5
+            }
+            # 发起 POST 请求
+            res = requests.post(search_url, headers=headers, data=data, timeout=10)
+            songs = res.json().get('result', {}).get('songs', [])
+            
+            for song in songs:
+                song_id = song['id']
+                song_name = song['name']
+                artist_name = song['artists'][0]['name'] if song.get('artists') else "未知"
+                
+                # 2. 重点：直接利用网易云官方的 MP3 外链直链拼接
+                audio_url = f"http://music.163.com/song/media/outer/url?id={song_id}.mp3"
+                
+                results.append(self.format_item(name=song_name, url=audio_url, artist=artist_name))
+                
+        except Exception as e:
+            print(f"[{self.platform_name}] 抓取失败: {e}")
+            
+        return results
+# =======================================================
+class YouTubeCrawler(BaseMusicCrawler):
+    """
+    YouTube 音乐资源抓取器
+    """
+    def __init__(self, api_key="YOUR_YOUTUBE_API_KEY_HERE"):
+        super().__init__("YouTube")
+        self.api_key = api_key
+
+    def fetch_data(self, channel_id="UCht8qITGkBvXKsR1Byln-wA"): 
+        print(f"[{self.platform_name}] 正在通过 YouTube Data API 请求数据...")
+        results = []
+        if self.api_key == "YOUR_YOUTUBE_API_KEY_HERE":
+            print(f"[{self.platform_name}] ⚠️ 请先在代码中填入真实的 YouTube API Key。跳过抓取。")
+            return results
+            
+        try:
+            from googleapiclient.discovery import build
+            youtube = build('youtube', 'v3', developerKey=self.api_key)
+            
+            request = youtube.search().list(
+                part="snippet",
+                channelId=channel_id,
+                maxResults=5,
+                type="video"
+            )
+            response = request.execute()
+            
+            for item in response['items']:
+                video_id = item['id']['videoId']
+                title = item['snippet']['title']
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                results.append(self.format_item(name=title, url=video_url, artist="YouTube Audio Library"))
+                
+        except ImportError:
+            print(f"[{self.platform_name}] ❌ 缺少 google-api-python-client 库。")
+        except Exception as e:
+            print(f"[{self.platform_name}] API 请求失败: {e}")
+        return results
+
+# ==========================================
+# 3. 聚合调度器与主程序
+# ==========================================
+def run_all_crawlers():
+    # 实例化所有爬虫类
+    crawlers = [
+        FreePDCrawler(),
+        MusopenCrawler(),
+        FMACrawler(),
+        NeteaseCrawler(), 
+        # YouTubeCrawler(api_key="YOUR_YOUTUBE_API_KEY_HERE") # 填入你的真实 Key
+    ]
+    
+    all_music_data = []
+    
+    for crawler in crawlers:
+        data = crawler.fetch_data()
+        all_music_data.extend(data)
+        time.sleep(2) 
+        
+    return all_music_data
+
+
+# =======================================================
 # 测试用的主函数
 # =======================================================
 
@@ -2678,4 +2762,13 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    print("🚀 开始全平台音乐抓取任务...\n" + "="*40)
+    
+    final_playlist = run_all_crawlers()
+    
+    print("\n" + "="*40 + f"\n✅ 全部抓取完毕！共整合了 {len(final_playlist)} 首音乐。")
+    
+    print("最终的 APlayer JSON 数据格式如下：")
+    print(json.dumps(final_playlist, ensure_ascii=False, indent=4))
+    # asyncio.run(main())
