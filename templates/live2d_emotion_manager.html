@@ -912,7 +912,7 @@
                 item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
             });
 
-            loadModelFiles(modelName, modelInfo).then((success) => {
+            loadModelFiles(modelName, modelInfo, selectionId).then((success) => {
                 if (success && selectionId === currentSelectionId) {
                     loadEmotionMapping(modelName);
                 }
@@ -957,7 +957,7 @@
         });
 
         // 加载模型文件列表
-        async function loadModelFiles(modelName, modelInfo) {
+        async function loadModelFiles(modelName, modelInfo, selectionId) {
             try {
                 let apiUrl = '';
                 if (modelInfo.source === 'user_mods') {
@@ -974,6 +974,11 @@
                 }
                 const data = await response.json();
 
+                // 检查是否仍然是当前选择
+                if (selectionId !== currentSelectionId) {
+                    return false;
+                }
+
                 if (data.success) {
                     availableMotions = data.motion_files || [];
                     availableExpressions = data.expression_files || [];
@@ -986,6 +991,12 @@
                 }
             } catch (error) {
                 console.error('加载模型文件失败:', error);
+                
+                // 检查是否仍然是当前选择
+                if (selectionId !== currentSelectionId) {
+                    return false;
+                }
+                
                 showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + error.message, 'error');
                 return false;
             }

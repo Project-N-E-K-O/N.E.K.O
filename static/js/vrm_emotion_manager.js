@@ -124,8 +124,8 @@
             item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
 
-        loadModelExpressions(modelName, modelInfo).then(() => {
-            if (selectionId === currentSelectionId) {
+        loadModelExpressions(modelName, modelInfo, selectionId).then((success) => {
+            if (success && selectionId === currentSelectionId) {
                 loadEmotionMapping(modelName);
             }
         });
@@ -215,13 +215,18 @@
     }
 
     // 加载模型表情列表
-    async function loadModelExpressions(modelName, modelInfo) {
+    async function loadModelExpressions(modelName, modelInfo, selectionId) {
         // 优先从父窗口获取实际模型表情列表
         let expressionsFromParent = null;
         try {
             expressionsFromParent = await getExpressionsFromParentWindow();
         } catch (e) {
             console.warn('[VRM Emotion] 从父窗口获取表情列表失败:', e);
+        }
+
+        // 检查是否仍然是当前选择
+        if (selectionId !== currentSelectionId) {
+            return false;
         }
 
         if (expressionsFromParent && expressionsFromParent.length > 0) {
@@ -234,7 +239,7 @@
             populatePreviewButtons();
             emotionConfig.style.display = 'block';
             showStatus(t('vrmEmotionManager.expressionsLoadedFromModel', '已从当前模型加载表情列表'), 'success');
-            return;
+            return true;
         }
 
         // 回退到后端 API
@@ -246,17 +251,30 @@
             }
             const data = await response.json();
 
+            // 检查是否仍然是当前选择
+            if (selectionId !== currentSelectionId) {
+                return false;
+            }
+
             if (data.success) {
                 availableExpressions = data.expressions || [];
                 populateSelects();
                 populatePreviewButtons();
                 emotionConfig.style.display = 'block';
                 showStatus(t('vrmEmotionManager.useGenericExpressions', '使用通用表情列表（请先在主页面加载模型）'), 'info');
+                return true;
             } else {
                 showStatus(t('vrmEmotionManager.loadExpressionsFailed', '加载模型表情失败') + ': ' + (data.error || t('common.unknownError', '未知错误')), 'error');
+                return false;
             }
         } catch (error) {
             console.error('加载模型表情失败:', error);
+            
+            // 检查是否仍然是当前选择
+            if (selectionId !== currentSelectionId) {
+                return false;
+            }
+            
             // 如果API不可用，使用默认表情列表
             availableExpressions = [
                 'neutral', 'happy', 'joy', 'fun', 'relaxed',
@@ -266,6 +284,7 @@
             populatePreviewButtons();
             emotionConfig.style.display = 'block';
             showStatus(t('vrmEmotionManager.useDefaultExpressions', '使用默认表情列表（请先在主页面加载模型）'), 'info');
+            return true;
         }
     }
 
