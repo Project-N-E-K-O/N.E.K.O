@@ -948,8 +948,9 @@ class BrowserUseAdapter:
                     if not country_future.done():
                         country_future.cancel()
                         try:
-                            await country_future
-                        except asyncio.CancelledError:
+                            # 避免被底层阻塞网络卡死，短等待后直接放弃
+                            await asyncio.wait_for(country_future, timeout=0.05)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
                             pass
                     country_future = None
         return {"success": False, "error": "browser-use execution failed"}
