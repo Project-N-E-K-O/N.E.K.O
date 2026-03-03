@@ -13,6 +13,9 @@ const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
 
 let isTransitioning = false;
+let applyChatContainerSize = null;
+let restoreChatContainerSize = null;
+let getStoredChatContainerSize = null;
 
 // 移动端检测（与 live2d.js 的 isMobileWidth 一致：基于窗口宽度）
 function uiIsMobileWidth() {
@@ -169,8 +172,7 @@ function setupResizableChatContainer() {
             /* localStorage 不可用时静默跳过 */
         }
     };
-    // 从 localStorage 恢复容器尺寸
-    const restoreContainerSize = () => {
+    const readStoredSize = () => {
         let savedW = NaN;
         let savedH = NaN;
         try {
@@ -180,11 +182,24 @@ function setupResizableChatContainer() {
             /* localStorage 不可用时忽略 */
         }
         if (Number.isFinite(savedW) && Number.isFinite(savedH) && savedW > 0 && savedH > 0) {
-            applyContainerSize(savedW, savedH);
-        } else {
-            applyContainerSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+            return { width: savedW, height: savedH };
         }
+        return null;
     };
+    // 从 localStorage 恢复容器尺寸
+    const restoreContainerSize = () => {
+        const stored = readStoredSize();
+        if (stored) {
+            applyContainerSize(stored.width, stored.height);
+            return stored;
+        }
+        applyContainerSize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        return null;
+    };
+
+    applyChatContainerSize = applyContainerSize;
+    restoreChatContainerSize = restoreContainerSize;
+    getStoredChatContainerSize = readStoredSize;
 
     restoreContainerSize();
 
@@ -351,12 +366,65 @@ if (toggleBtn) {
                 return; // 移动端已处理，直接返回
             }
 
-            const isMinimized = chatContainer.classList.toggle('minimized');
-            
-            // 如果容器没有其他类，完全移除class属性以避免显示为class=""
-            if (!isMinimized && chatContainer.classList.length === 0) {
-                chatContainer.removeAttribute('class');
+            const wasMinimized = chatContainer.classList.contains('minimized');
+            const willMinimize = !wasMinimized;
+            if (wasMinimized && getStoredChatContainerSize && applyChatContainerSize) {
+                const stored = getStoredChatContainerSize();
+                if (stored) {
+                    applyChatContainerSize(stored.width, stored.height);
+                }
             }
+            if (willMinimize) {
+                const rect = chatContainer.getBoundingClientRect();
+                const targetSize = 50;
+                const scaleX = rect.width > 0 ? Math.min(1, targetSize / rect.width) : 1;
+                const scaleY = rect.height > 0 ? Math.min(1, targetSize / rect.height) : 1;
+                
+                chatContainer.style.setProperty('--chat-collapse-scale-x', '1');
+                chatContainer.style.setProperty('--chat-collapse-scale-y', '1');
+                chatContainer.classList.add('collapsing');
+                
+                void chatContainer.offsetHeight;
+                
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        chatContainer.style.setProperty('--chat-collapse-scale-x', String(scaleX));
+                        chatContainer.style.setProperty('--chat-collapse-scale-y', String(scaleY));
+                    });
+                });
+                
+                let handled = false;
+                const finishCollapse = () => {
+                    if (handled) return;
+                    handled = true;
+                    chatContainer.removeEventListener('transitionend', onCollapseEnd);
+                    chatContainer.classList.remove('collapsing');
+                    chatContainer.classList.add('minimized');
+                    chatContainer.style.removeProperty('--chat-collapse-scale-x');
+                    chatContainer.style.removeProperty('--chat-collapse-scale-y');
+                };
+                const onCollapseEnd = (e) => {
+                    if (e.target !== chatContainer) return;
+                    if (e.propertyName !== 'transform') return;
+                    finishCollapse();
+                };
+                chatContainer.addEventListener('transitionend', onCollapseEnd);
+                
+                const transitionDuration = 350;
+                setTimeout(() => {
+                    finishCollapse();
+                }, transitionDuration);
+            } else {
+                chatContainer.classList.remove('minimized');
+                chatContainer.classList.remove('collapsing');
+                chatContainer.style.removeProperty('--chat-collapse-scale-x');
+                chatContainer.style.removeProperty('--chat-collapse-scale-y');
+                if (chatContainer.classList.length === 0) {
+                    chatContainer.removeAttribute('class');
+                }
+            }
+            
+            const isMinimized = willMinimize;
             
             // 获取图标元素（HTML中应该已经有img标签）
             let iconImg = toggleBtn.querySelector('img');
