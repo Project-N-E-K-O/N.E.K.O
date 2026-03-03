@@ -773,6 +773,7 @@
         let currentModelInfo = null;
         let availableMotions = [];
         let availableExpressions = [];
+        let currentSelectionId = 0;
 
         // i18n 辅助函数
         function t(key, paramsOrFallback) {
@@ -896,6 +897,9 @@
 
         // 从下拉框选择模型
         function selectModelFromDropdown(modelName, modelInfo) {
+            currentSelectionId++;
+            const selectionId = currentSelectionId;
+            
             currentModelInfo = modelInfo;
             modelSelect.value = modelName;
             modelSingleselectText.textContent = modelName;
@@ -909,7 +913,7 @@
             });
 
             loadModelFiles(modelName, modelInfo).then((success) => {
-                if (success) {
+                if (success && selectionId === currentSelectionId) {
                     loadEmotionMapping(modelName);
                 }
             });
@@ -1070,12 +1074,14 @@
                     availableMotions.forEach(motion => {
                         const item = document.createElement('div');
                         item.className = 'multiselect-item';
+                        item.setAttribute('role', 'option');
                         const fileName = motion.split('/').pop();
                         const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
                         
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.value = motion;
+                        checkbox.setAttribute('aria-label', cleanFileName);
                         
                         const span = document.createElement('span');
                         span.textContent = cleanFileName;
@@ -1113,12 +1119,14 @@
                     availableExpressions.forEach(expression => {
                         const item = document.createElement('div');
                         item.className = 'multiselect-item';
+                        item.setAttribute('role', 'option');
                         const fileName = expression.split('/').pop();
                         const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
                         
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.value = expression;
+                        checkbox.setAttribute('aria-label', cleanFileName);
                         
                         const span = document.createElement('span');
                         span.textContent = cleanFileName;

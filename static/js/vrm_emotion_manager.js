@@ -21,6 +21,7 @@
     const emotions = ['neutral', 'happy', 'relaxed', 'sad', 'angry', 'surprised'];
     let currentModelInfo = null;
     let availableExpressions = [];
+    let currentSelectionId = 0;
 
     // i18n 辅助函数
     function t(key, paramsOrFallback, fallback) {
@@ -108,6 +109,9 @@
 
     // 从下拉框选择模型
     function selectModelFromDropdown(modelName, modelInfo) {
+        currentSelectionId++;
+        const selectionId = currentSelectionId;
+        
         currentModelInfo = modelInfo;
         modelSelect.value = modelName;
         modelSingleselectText.textContent = modelName;
@@ -121,7 +125,9 @@
         });
 
         loadModelExpressions(modelName, modelInfo).then(() => {
-            loadEmotionMapping(modelName);
+            if (selectionId === currentSelectionId) {
+                loadEmotionMapping(modelName);
+            }
         });
     }
 
@@ -389,10 +395,12 @@
                 availableExpressions.forEach(expression => {
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';
+                    item.setAttribute('role', 'option');
 
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.value = expression;
+                    checkbox.setAttribute('aria-label', expression);
 
                     const span = document.createElement('span');
                     span.textContent = expression;
