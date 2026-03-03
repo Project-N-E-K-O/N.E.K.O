@@ -109,6 +109,5 @@ tests/reports/
 latest_report.json
 sendText.js
 data/browser_use_prompts/*.md
-# 构建时需要预下载的扩展（保留目录但内容可重新生成）
-# data/browser_use_extensions/
+data/browser_use_extensions/
 .coverage

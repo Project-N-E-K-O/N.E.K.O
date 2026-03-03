@@ -148,7 +148,7 @@ def _seed_extension_cache() -> None:
     already extracted and skips the network download entirely.
 
     The bundled extensions live in ``data/browser_use_extensions/`` next to
-    the executable (populated at build time by ``scripts/prepare_extensions.py``).
+    the executable (populated at build time by ``build_nuitka.bat``).
     """
     try:
         from browser_use.config import CONFIG
