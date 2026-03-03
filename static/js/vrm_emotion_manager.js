@@ -77,16 +77,26 @@
 
                     const item = document.createElement('div');
                     item.className = 'singleselect-item';
+                    item.setAttribute('role', 'option');
+                    item.setAttribute('tabindex', '0');
+                    item.setAttribute('aria-selected', 'false');
                     item.dataset.value = model.name;
                     item.dataset.info = JSON.stringify(model);
                     item.textContent = model.name;
                     item.addEventListener('click', () => selectModelFromDropdown(model.name, model));
+                    item.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            selectModelFromDropdown(model.name, model);
+                        }
+                    });
                     modelSingleselectOptions.appendChild(item);
                 });
 
                 modelSingleselectText.textContent = t('vrmEmotionManager.pleaseSelectModel', '请选择模型');
             } else {
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型')}</option>`;
+                modelSingleselectOptions.innerHTML = '';
                 modelSingleselectText.textContent = t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型');
                 showStatus(t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型，请先上传模型'), 'warning');
             }
@@ -99,12 +109,15 @@
     // 从下拉框选择模型
     function selectModelFromDropdown(modelName, modelInfo) {
         currentModelInfo = modelInfo;
+        modelSelect.value = modelName;
         modelSingleselectText.textContent = modelName;
         modelSingleselect.classList.remove('active');
         modelSingleselectHeader.setAttribute('aria-expanded', 'false');
         
         modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
-            item.classList.toggle('selected', item.dataset.value === modelName);
+            const isSelected = item.dataset.value === modelName;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
 
         loadModelExpressions(modelName, modelInfo).then(() => {

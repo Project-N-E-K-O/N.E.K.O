@@ -865,15 +865,27 @@
 
                         const item = document.createElement('div');
                         item.className = 'singleselect-item';
+                        item.setAttribute('role', 'option');
+                        item.setAttribute('tabindex', '0');
+                        item.setAttribute('aria-selected', 'false');
                         item.dataset.value = model.name;
                         item.dataset.info = JSON.stringify(model);
                         item.textContent = model.name;
                         item.addEventListener('click', () => selectModelFromDropdown(model.name, model));
+                        item.addEventListener('keydown', (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                selectModelFromDropdown(model.name, model);
+                            }
+                        });
                         modelSingleselectOptions.appendChild(item);
                     });
 
                     modelSingleselectText.textContent = t('emotionManager.pleaseSelectModel');
                 } else {
+                    modelSelect.innerHTML = `<option value="">${t('emotionManager.noModelsFound')}</option>`;
+                    modelSingleselectOptions.innerHTML = '';
+                    modelSingleselectText.textContent = t('emotionManager.noModelsFound');
                     showStatus(t('emotionManager.noModelsFound'), 'error');
                 }
             } catch (error) {
@@ -885,16 +897,21 @@
         // 从下拉框选择模型
         function selectModelFromDropdown(modelName, modelInfo) {
             currentModelInfo = modelInfo;
+            modelSelect.value = modelName;
             modelSingleselectText.textContent = modelName;
             modelSingleselect.classList.remove('active');
             modelSingleselectHeader.setAttribute('aria-expanded', 'false');
             
             modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
-                item.classList.toggle('selected', item.dataset.value === modelName);
+                const isSelected = item.dataset.value === modelName;
+                item.classList.toggle('selected', isSelected);
+                item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
             });
 
-            loadModelFiles(modelName, modelInfo).then(() => {
-                loadEmotionMapping(modelName);
+            loadModelFiles(modelName, modelInfo).then((success) => {
+                if (success) {
+                    loadEmotionMapping(modelName);
+                }
             });
         }
 
@@ -958,12 +975,15 @@
                     availableExpressions = data.expression_files || [];
                     populateSelects();
                     emotionConfig.style.display = 'block';
+                    return true;
                 } else {
                     showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
+                    return false;
                 }
             } catch (error) {
                 console.error('加载模型文件失败:', error);
                 showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + error.message, 'error');
+                return false;
             }
         }
 

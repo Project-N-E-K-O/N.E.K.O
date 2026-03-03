@@ -299,16 +299,22 @@ class DropdownManager {
         this.dropdown.style.display = 'block';
         
         // 检测是否显示滚动条
-        requestAnimationFrame(() => {
-            if (this.dropdown.scrollHeight > this.dropdown.clientHeight) {
-                this.dropdown.classList.add('has-scrollbar');
-            } else {
-                this.dropdown.classList.remove('has-scrollbar');
+        this._scrollbarRafId = requestAnimationFrame(() => {
+            if (this.dropdown && this.dropdown.style.display === 'block') {
+                if (this.dropdown.scrollHeight > this.dropdown.clientHeight) {
+                    this.dropdown.classList.add('has-scrollbar');
+                } else {
+                    this.dropdown.classList.remove('has-scrollbar');
+                }
             }
         });
     }
 
     hideDropdown() {
+        if (this._scrollbarRafId) {
+            cancelAnimationFrame(this._scrollbarRafId);
+            this._scrollbarRafId = null;
+        }
         if (this.dropdown) {
             this.dropdown.style.display = 'none';
             this.dropdown.classList.remove('has-scrollbar');
