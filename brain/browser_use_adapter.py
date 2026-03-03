@@ -913,6 +913,16 @@ class BrowserUseAdapter:
                     continue
                 logger.error("[BrowserUse] Task failed: %s", e)
                 return {"success": False, "error": str(e)}
+            finally:
+                # [收口] 取消并等待未完成的 IP 国家查询任务，避免残留后台请求
+                if country_future is not None:
+                    if not country_future.done():
+                        country_future.cancel()
+                        try:
+                            await country_future
+                        except asyncio.CancelledError:
+                            pass
+                    country_future = None
         return {"success": False, "error": "browser-use execution failed"}
 
     async def close_session(self, session_id: str) -> None:
