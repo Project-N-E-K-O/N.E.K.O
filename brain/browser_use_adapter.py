@@ -649,11 +649,8 @@ class BrowserUseAdapter:
         #     )
         #
         # [新逻辑] 后台异步获取 IP 国家（与 Chrome 启动并行），不阻塞
+        # 注意：推迟到所有 pre-checks 通过后再创建，避免 pre-check 失败时浪费网络请求
         country_future: Optional[asyncio.Task] = None
-        if not BrowserUseAdapter._ip_country_cache:
-            country_future = asyncio.create_task(
-                asyncio.to_thread(self._get_ip_country)
-            )
 
         status = self.is_available()
         if not status.get("ready"):
@@ -684,6 +681,12 @@ class BrowserUseAdapter:
                     f"({info.get('used', 0)}/{info.get('limit', 300)})，请明日再试。"
                 ),
             }
+
+        # 所有 pre-checks 通过后才启动 IP 国家查询任务
+        if not BrowserUseAdapter._ip_country_cache:
+            country_future = asyncio.create_task(
+                asyncio.to_thread(self._get_ip_country)
+            )
 
         for launch_attempt in range(2):
             browser_session = None
