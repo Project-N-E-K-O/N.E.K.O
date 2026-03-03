@@ -7483,7 +7483,7 @@ function init_app() {
             const browserCheckbox = getEl(['live2d-agent-browser', 'vrm-agent-browser']);
             const userPluginCheckbox = getEl(['live2d-agent-user-plugin', 'vrm-agent-user-plugin']);
 
-            if (!keyboardCheckbox || !browserCheckbox) {
+            if (!keyboardCheckbox) {
                 // 如果还不存在，稍后再试（应对动态创建的情况，比如 VRM 模式下的懒加载 popup）
                 setTimeout(bindHUD, 500);
                 return;
@@ -7491,8 +7491,10 @@ function init_app() {
 
             keyboardCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
             keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-            browserCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
-            browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            if (browserCheckbox) {
+                browserCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
+                browserCheckbox.addEventListener('change', checkAndToggleTaskHUD);
+            }
             if (userPluginCheckbox) {
                 userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
