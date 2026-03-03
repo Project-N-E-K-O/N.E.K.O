@@ -6052,7 +6052,7 @@ function init_app() {
     const checkAgentCapabilities = async () => {
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-
+        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         // 【状态机控制】如果正在处理用户操作，跳过轮询
@@ -6555,7 +6555,7 @@ function init_app() {
 
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-
+        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
         const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
 
         if (!agentMasterCheckbox) {
