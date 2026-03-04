@@ -145,6 +145,7 @@ function init_app() {
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
+    let screenCaptureAutoPromptFailed = false; // 防止无用户手势时 getDisplayMedia 反复弹窗（刷新后保护）
 
     // 屏幕流闲置释放的统一 helper 函数
     function scheduleScreenCaptureIdleCheck() {
@@ -2904,6 +2905,8 @@ function init_app() {
             }
 
             if (screenCaptureStream) {
+                // 用户手势成功获取了流，重置自动弹窗失败标记
+                screenCaptureAutoPromptFailed = false;
                 // 正常流模式
                 screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
@@ -8884,7 +8887,8 @@ function init_app() {
 
         // 策略2: 前端 getDisplayMedia（远程服务器等后端不可用时的备选）
         // 复用缓存的 screenCaptureStream，仅在无有效流时才请求新流
-        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+        // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
+        if (!screenCaptureAutoPromptFailed && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
                 let captureStream = screenCaptureStream;
 
@@ -8928,6 +8932,8 @@ function init_app() {
                 return dataUrl;
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
+                screenCaptureAutoPromptFailed = true;
+                console.log('[主动搭话截图] 已标记 screenCaptureAutoPromptFailed，后续不再自动弹窗请求屏幕共享');
             }
         }
 
