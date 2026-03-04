@@ -3252,6 +3252,17 @@ async function scanModels() {
         // 存储可上传模型列表到全局变量（用于上传检查）
         availableModels = uploadableModels;
 
+        // 触发模型扫描完成事件，通知其他组件刷新 UI
+        window.dispatchEvent(new CustomEvent('modelsScanned', { detail: { models, uploadableModels } }));
+
+        // 如果存在 model_manager.js 中的更新函数，也尝试调用
+        if (typeof window.updateLive2DModelDropdown === 'function') {
+            window.updateLive2DModelDropdown();
+        }
+        if (typeof window.updateLive2DModelSelectButtonText === 'function') {
+            window.updateLive2DModelSelectButtonText();
+        }
+
 
     } catch (error) {
         console.error('扫描模型失败:', error);
