@@ -53,8 +53,12 @@
 <!-- 角色卡封面图展示区域 -->
 <div class="menu-section character-card-cover-section">
 <div id="character-card-cover" class="character-card-cover">
-<!-- 根据选择的角色动态展示角色卡封面图 -->
-<img id="character-card-cover-img" src="/static/icons/default_character_card.png" alt="角色卡封面" style="width: 100%; border-radius: 8px;">
+<!-- 三张图片组合模块 -->
+<div class="cover-image-stack">
+<img class="cover-bg-bottom" src="/static/icons/sidebar_logo2.png" alt="背景底层">
+<img id="character-card-cover-img" src="/static/icons/default_character_card.png" alt="角色卡封面">
+<img class="cover-bg-top" src="/static/icons/sidebar_logo1.png" alt="背景顶层">
+</div>
 <div id="character-card-cover-placeholder" class="cover-placeholder">
 <p data-i18n="steam.selectCharacterForCover">请选择角色查看封面</p>
 </div>
@@ -84,9 +88,8 @@
     <img src="/static/icons/search_icon.png" class="search-icon" alt="搜索">
 </div>
 </div>
-<div class="filter-group">
-<!--<div class="filter-label" data-i18n="steam.sort.title">排序：</div>-->
-<div class="select-input-wrapper">
+<div class="filter-group action-group">
+<div class="select-input-wrapper sort-wrapper">
 <select id="sort-subscription" class="control-select" onchange="applySort(this.value)">
 <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
 <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
@@ -99,8 +102,6 @@
 </select>
 <img src="/static/icons/drop_down_arrow_icon.png" class="select-arrow-icon" alt="下拉箭头">
 </div>
-</div>
-<div class="filter-group">
 <div class="refresh-button-wrapper">
 <button class="btn btn-primary" onclick="loadSubscriptions()" data-i18n="steam.refresh">刷新订阅内容</button>
 <img src="/static/icons/roload_icon.png" class="refresh-icon" alt="刷新">
@@ -119,9 +120,13 @@
 </div>
                     
 <div class="pagination">
-<button class="btn btn-secondary" onclick="goToPrevPage()" disabled data-i18n="common.prevPage">上一页</button>
+<div class="pagination-btn-wrapper">
+<button class="btn" onclick="goToPrevPage()" disabled data-i18n="common.prevPage">上一页</button>
+</div>
 <span data-i18n="steam.pagination" data-i18n-options='{"currentPage": 1, "totalPages": 1}'>第 1 页，共 1 页</span>
-<button class="btn btn-secondary" onclick="goToNextPage()" disabled data-i18n="common.nextPage">下一页</button>
+<div class="pagination-btn-wrapper">
+<button class="btn" onclick="goToNextPage()" disabled data-i18n="common.nextPage">下一页</button>
+</div>
 </div>
 </div>
 </div>
@@ -170,13 +175,15 @@
 
 <div class="section-card">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 15px;">
-<span data-i18n="steam.characterCardsList" style="white-space: nowrap; margin: 0; line-height: 1; font-size: 16px; font-weight: 500;">角色卡列表</span>
+<span data-i18n="steam.characterCardsList" style="white-space: nowrap; margin: 0; line-height: 1; font-size: 20px; font-weight: 600;">角色卡列表</span>
 <select id="character-card-select" class="control-input" style="flex: 1; font-size: 14px; padding: 8px 12px; min-width: 0;">
 <option value="" disabled selected data-i18n="steam.selectCharacterCard">请选择一个角色卡</option>
 </select>
-<button class="btn btn-secondary" onclick="window.location.href='/chara_manager'" style="display: flex; align-items: center; gap: 5px; white-space: nowrap;">
-✏️ <span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
+<div class="btn-chara-manager-wrapper">
+<button class="btn" onclick="window.location.href='/chara_manager'">
+<span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
 </button>
+</div>
 </div>
 </div>
 
@@ -187,16 +194,81 @@
 </div>
 
 <div class="character-card-layout" id="character-card-layout">
-                        
+
 <!-- 上方区域：角色卡信息 + Live2D预览 -->
 <div class="character-card-top-row">
 <!-- 左上：角色卡信息 -->
 <div class="character-card-info-section">
-<h3 data-i18n="steam.cardInfoPreview">角色卡信息</h3>
-<div id="card-info-preview" style="padding: 12px; border: 1px solid #eaeaea; border-radius: 4px; background-color: #f8f8f8;">
+<img src="static/icons/logo_show.png" class="card-info-logo" alt="">
+<div class="card-info-header-row">
+
+<!-- 标题区六边形装饰（被clip-path裁剪到可见白色区域） -->
+<svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <polygon id="hex-header-shape" points="25,5 75,5 100,48 75,91 25,91 0,48"
+                 fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round" />
+    </defs>
+    <use href="#hex-header-shape" x="120" y="0"   opacity="0.05" />
+    <use href="#hex-header-shape" x="240" y="50"  opacity="0.05" />
+    <use href="#hex-header-shape" x="0"   y="50"  opacity="0.05" />
+    <use href="#hex-header-shape" x="120" y="99"  opacity="0.05" />
+    <use href="#hex-header-shape" x="240" y="149" opacity="0.05" />
+    <use href="#hex-header-shape" x="0"   y="149" opacity="0.05" />
+    <use href="#hex-header-shape" x="120" y="198" opacity="0.05" />
+</svg>
+
+<div class="card-info-title-area">
+<div class="card-info-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<span data-i18n="steam.cardInfoPreview">角色卡信息</span>
+<img src="static/icons/paw_ui.png" class="card-info-paw" alt="">
+</div>
+</div>
+</div>
+<div class="card-info-body">
+
+<!-- 六边形背景装饰 -->
+<svg class="card-info-bg-hexagons" viewBox="-10 -10 370 310" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <polygon id="hex-body-shape" points="25,5 75,5 100,48 75,91 25,91 0,48"
+                 fill="#8cd5ff" stroke="#8cd5ff" stroke-width="8" stroke-linejoin="round" />
+    </defs>
+    <use href="#hex-body-shape" x="120" y="0"   opacity="0.05" />
+    <use href="#hex-body-shape" x="240" y="50"  opacity="0.05" />
+    <use href="#hex-body-shape" x="0"   y="50"  opacity="0.05" />
+    <use href="#hex-body-shape" x="120" y="99"  opacity="0.05" />
+    <use href="#hex-body-shape" x="240" y="149" opacity="0.05" />
+    <use href="#hex-body-shape" x="0"   y="149" opacity="0.05" />
+    <use href="#hex-body-shape" x="120" y="198" opacity="0.05" />
+</svg>
+
+<!-- 星星背景装饰 -->
+<svg class="card-info-bg-stars" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="card-star-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff" />
+            <stop offset="100%" stop-color="#8cd5ff" />
+        </linearGradient>
+        <symbol id="card-rounded-star" viewBox="0 0 24 24">
+            <path d="M 12 3 Q 12 12 21 12 Q 12 12 12 21 Q 12 12 3 12 Q 12 12 12 3 Z"
+                  fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round" />
+        </symbol>
+        <pattern id="card-star-pattern" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+            <use href="#card-rounded-star" x="5" y="5" width="15" height="15" />
+            <use href="#card-rounded-star" x="45" y="45" width="15" height="15" />
+        </pattern>
+        <mask id="card-stars-mask">
+            <rect width="100%" height="100%" fill="url(#card-star-pattern)" />
+        </mask>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#card-star-gradient)" mask="url(#card-stars-mask)" />
+</svg>
+
+<div id="card-info-preview">
 <!-- 角色卡属性将由JavaScript动态生成 -->
 <div id="card-info-dynamic-content">
 <p style="color: #999; text-align: center;" data-i18n="steam.selectCharacterCard">请选择一个角色卡</p>
+</div>
 </div>
 </div>
 </div>
@@ -204,33 +276,35 @@
 <!-- 右上：Live2D预览 -->
 <div class="character-card-live2d-section">
 <h3 data-i18n="steam.live2dPreview">Live2D</h3>
-<div id="live2d-preview-container" style="width: 100%; height: 400px; border: 1px solid #eaeaea; border-radius: 4px; overflow: hidden; background-color: #f8f8f8; display: flex; flex-direction: column; position: relative;">
+<div id="live2d-preview-container" style="width: 100%; height: 400px; border: none; border-radius: 4px; overflow: hidden; background-color: transparent; display: flex; flex-direction: column; position: relative;">
 <!-- Live2D预览内容区域 -->
-<div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none;">
+<div id="live2d-preview-content" style="flex: 1; position: relative; min-height: 0; pointer-events: none; background-color: transparent;">
 <!-- Live2D预览Canvas -->
 <canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
 <!-- 占位符 -->
-<div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; color: #666; position: relative; z-index: 1;">
+<div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; color: #666; position: relative; z-index: 1; background-color: transparent;">
 <span data-i18n="steam.selectCharaToPreview">请选择角色进行预览</span>
 </div>
 <!-- 防止点击的覆盖层 -->
 <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
 <!-- 刷新按钮 -->
-<button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: rgba(0, 0, 0, 0.5); color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" data-i18n-title="steam.refreshLive2DPreview" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
+<button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: transparent; color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" data-i18n-title="steam.refreshLive2DPreview" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
 ↻
 </button>
 </div>
 </div>
-<div id="live2d-preview-controls" style="padding: 10px; background-color: #f0f0f0; border-top: 1px solid #e0e0e0; margin-top: -1px; border-radius: 0 0 4px 4px;">
+<div id="live2d-preview-controls" style="padding: 10px; background-color: #f0f0f0; border-top: 1px solid #e0e0e0; margin: 10px 10px 10px 10px; border-radius: 16px;">
 <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
 <div style="flex: 1; min-width: 150px;">
 <select id="preview-motion-select" class="control-input" style="width: 100%;">
 <option value="" data-i18n="steam.selectMotion">选择动作</option>
 </select>
 </div>
-<button id="preview-play-motion-btn" class="btn btn-primary" style="padding: 5px 15px;" disabled>
+<div class="btn-play-wrapper">
+<button id="preview-play-motion-btn" class="btn" disabled>
 <span data-i18n="steam.playMotion">播放动作</span>
 </button>
+</div>
 </div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">
 <div style="flex: 1; min-width: 150px;">
@@ -238,9 +312,11 @@
 <option value="" data-i18n="steam.selectExpression">选择表情</option>
 </select>
 </div>
-<button id="preview-play-expression-btn" class="btn btn-primary" style="padding: 5px 15px;" disabled>
+<div class="btn-play-wrapper">
+<button id="preview-play-expression-btn" class="btn" disabled>
 <span data-i18n="steam.playExpression">播放表情</span>
 </button>
+</div>
 </div>
 </div>
 </div>
@@ -250,19 +326,30 @@
 <div class="character-card-bottom-row">
 <!-- 左侧：描述区域 -->
 <div class="character-card-description-section">
+<!-- 描述区域标题栏 -->
+<div class="description-header-row">
+<div class="description-title-area">
+<div class="description-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<span data-i18n="steam.characterCardDescription">描述</span>
+<img src="static/icons/paw_ui.png" class="description-paw" alt="">
+</div>
+</div>
+</div>
+
 <!-- 版权警告 -->
-<div id="copyright-warning" style="display: none; padding: 12px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin-bottom: 15px;">
+<div id="copyright-warning" style="display: none; padding: 8px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24; margin-bottom: 8px; margin-top: 8px;">
 <strong>⚠️</strong> <span data-i18n="steam.modelCopyrightIssue">您的角色形象存在版权问题，无法上传</span>
 </div>
-                                
+
 <!-- 可编辑字段：描述 -->
-<div class="control-group">
-<div class="control-label" data-i18n="steam.characterCardDescription">描述</div>
-<textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 150px; resize: none; overflow-y: auto;" placeholder="输入角色描述..." data-i18n-placeholder="steam.placeholderCharacterDescription"></textarea>
+<div class="control-group description-content">
+<div class="control-label" data-i18n="steam.characterCardDescription" style="display: none;">描述</div>
+<textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px; resize: none; overflow-y: auto;" placeholder="输入角色描述..." data-i18n-placeholder="steam.placeholderCharacterDescription"></textarea>
 </div>
                                 
 <!-- Workshop 状态区域 -->
-<div id="workshop-status-area" style="display: none; padding: 12px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 4px; margin-top: 15px;">
+<div id="workshop-status-area" style="display: none; padding: 8px; background-color: #e7f3ff; border: 1px solid #b3d7ff; border-radius: 4px; margin-top: 8px;">
 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
 <div>
 <strong style="color: #0066cc;">✅ <span data-i18n="steam.alreadyUploaded">已上传到创意工坊</span></strong>
@@ -284,10 +371,21 @@
 <div class="character-card-tags-buttons-section">
 <!-- 标签区域 -->
 <div class="character-card-tags-area">
-<div class="control-group" style="margin-bottom: 0;">
-<div class="control-label" data-i18n="steam.characterCardTags">角色卡标签</div>
+<img src="static/icons/logo_show.png" class="card-info-logo" alt="">
+<!-- 标签区域标题栏 -->
+<div class="tags-header-row">
+<div class="tags-title-area">
+<div class="tags-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
+<span data-i18n="steam.characterCardTags">角色卡标签</span>
+<img src="static/icons/paw_ui.png" class="tags-paw" alt="">
+</div>
+</div>
+</div>
+<div class="control-group tags-content">
+<div class="control-label" data-i18n="steam.characterCardTags" style="display: none;">角色卡标签</div>
 <input type="text" id="character-card-tag-input" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
-<div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; min-height: 40px; box-sizing: border-box; margin-top: 5px;">
+<div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 15px; border: 2px solid #b3e5fc; border-radius: 50px; background-color: #fff; min-height: 40px; box-sizing: border-box; margin-top: 5px;">
 <div class="tags-container" id="character-card-tags-container"></div>
 </div>
 </div>
@@ -298,22 +396,28 @@
 <span data-i18n="steam.noUploadableModels">没有可上传的模型，请先在角色管理页面创建自定义模型</span>
 </div>
                                 
-<!-- 按钮行：两个按钮并排 -->
+<!-- 按钮行：两个按钮并排 - 样式参考 workshop-card，各自独立包裹 -->
 <div class="character-card-buttons-row">
-<button id="upload-to-workshop-btn" class="btn btn-primary" onclick="handleUploadToWorkshop()" style="padding: 12px 0; font-size: 14px;">
-🚀 <span id="upload-btn-text" data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
+<div class="btn-wrapper">
+<button id="upload-to-workshop-btn" class="btn" onclick="handleUploadToWorkshop()" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+<img src="static/icons/upload_icon.png" style="width: 34px; height: 34px;">
+<span id="upload-btn-text" data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
 </button>
-<button class="btn btn-secondary" onclick="window.location.href='/chara_manager'" style="padding: 12px 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px;">
-✏️ <span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
+</div>
+<div class="btn-wrapper">
+<button class="btn" onclick="window.location.href='/chara_manager'" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+<img src="/static/icons/cat_icon.png" style="width: 34px; height: 34px;">
+<span data-i18n="steam.editInCharaManager">在角色管理中编辑</span>
 </button>
 </div>
 </div>
 </div>
-                        
+</div>
+
 </div>
 </div>
-                
-                
+
+
 
 </div>
             

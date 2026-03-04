@@ -30,8 +30,8 @@ body {
 }
 
 /* 标题栏 */
-.container-header {
-    background: #40C5F1;
+body .container-header {
+    background: linear-gradient(to right, #4BD4FD, #17A7FF);
     padding: 18px 24px;
     display: flex;
     justify-content: space-between;

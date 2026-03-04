@@ -11,8 +11,8 @@ overflow-x: hidden;
 }
 
 /* 页面标题栏 - 支持窗口拖动 */
-.page-title-bar {
-    background: #40C5F1;
+body .page-title-bar {
+    background: linear-gradient(to right, #4BD4FD, #17A7FF);
     padding: 18px 24px;
     display: flex;
     justify-content: space-between;
@@ -129,52 +129,98 @@ overflow-x: hidden;
 /* 布局容器 */
 .layout-container {
 display: flex;
-gap: 20px;
+gap: 0;
 max-width: 100%;
 margin: 0;
 padding: 0 20px;
+background-color: transparent;
+background-image: url('/static/icons/steam_shop_bg.png');
+background-position: top center;
+background-repeat: no-repeat;
+background-size: 100%;
 }
 
 #sidebar {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    flex: 0 0 20%;
+    flex: 0 0 25%;
     min-width: 200px;
-    padding: 15px;
+    padding: 3.5% 15px 15px 15px;
     background: transparent;
     border-radius: 12px;
     box-sizing: border-box;
 }
 
 /* 角色卡封面图展示区域 */
-.character-card-cover-section {
-    margin-top: 10px;
+.menu-section.character-card-cover-section {
+    margin-top: 30px;
+    width: 80%;
+    margin-left: 10%;
+    z-index: 0;
 }
 
 .character-card-cover {
     width: 100%;
-    aspect-ratio: 3/4;
+    aspect-ratio: 3/5;
     background: transparent;
     border-radius: 8px;
-    overflow: hidden;
+    overflow: visible;
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
 }
 
-.character-card-cover img {
+/* 三张图片组合模块 */
+.cover-image-stack {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 0;
+    transform: scale(1.2) translate(5%, 5%);
+}
+
+/* 堆叠图片基础样式 */
+.cover-image-stack img {
     width: 100%;
     height: 100%;
     object-fit: contain;
     display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
 }
 
-.character-card-cover img[src=""] {
+/* 底层：sidebar_logo2.png */
+.cover-image-stack .cover-bg-bottom {
+    z-index: 1;
+    transform: translateY(36%) translateX(-8%);
+}
+
+/* 中层：default_character_card.png */
+.cover-image-stack #character-card-cover-img {
+    z-index: 2;
+}
+
+/* 顶层：sidebar_logo1.png */
+.cover-image-stack .cover-bg-top {
+    z-index: 3;
+    width: 160%;
+    height: 80%;
+    transform: translateY(-43%);
+}
+
+/* 当中层图片为空时隐藏 */
+.cover-image-stack #character-card-cover-img[src=""] {
     display: none;
 }
 
-.character-card-cover img[src=""] + .cover-placeholder {
+.cover-image-stack #character-card-cover-img[src=""] ~ .cover-placeholder {
     display: flex;
 }
 
@@ -183,6 +229,11 @@ padding: 0 20px;
     color: #999;
     padding: 20px;
     display: none;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 4;
 }
 
 /* 当浏览器过窄时隐藏角色卡封面图 */
@@ -193,10 +244,10 @@ padding: 0 20px;
 }
 
 .main-content {
-flex: 0 0 80%;
+flex: 0 0 75%;
 background: transparent;
 border-radius: 12px;
-padding: 20px;
+padding: 3.5% 20px 20px 20px;
 min-width: 0;
 /* 防止flex子项溢出 */
 overflow: visible;
@@ -206,7 +257,23 @@ box-sizing: border-box;
 /* subscriptions-content 内部的 section-card 样式 */
 #subscriptions-content .section-card {
     margin: 0;
-    padding: 0;
+    padding: 10px 15px 15px 15px;
+    background: transparent;
+    border-radius: 12px;
+    border: none;
+}
+
+/* section-header 与 tab-contents 无空隙 */
+#subscriptions-content .section-card .section-header {
+    margin: -10px -15px 15px -15px;
+    padding: 15px;
+    border-radius: 12px 12px 0 0;
+    background: #fff;
+}
+
+/* section-card 顶部内边距与角色卡标签页一致 */
+#subscriptions-content .section-card {
+    padding-top: 10px;
 }
 
 /* subscriptions-content 内部的 filter-controls 样式：直角、左右无空隙、无阴影、透明背景 */
@@ -215,6 +282,19 @@ box-sizing: border-box;
     margin: 0;
     box-shadow: none;
     background: transparent;
+    position: relative;
+    padding-bottom: 30px;
+}
+
+/* filter-controls 底部线条，贯穿左右 */
+#subscriptions-content .section-card .filter-controls::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: -15px;
+    right: -15px;
+    height: 1px;
+    background: #9ce4ff;
 }
 
 /* 搜索框图标容器 */
@@ -258,34 +338,72 @@ box-sizing: border-box;
     pointer-events: none; /* 让点击穿透到下拉框 */
 }
 
-/* 刷新按钮图标容器 */
-.refresh-button-wrapper {
+/* 刷新按钮图标容器 - 样式参考取消订阅按钮 */
+.filter-group .refresh-button-wrapper {
     position: relative;
     display: inline-flex;
     align-items: center;
+    background-color: #bcf1ff;
+    padding: 4px;
+    border-radius: 50px;
+    flex-shrink: 0;
 }
 
-.refresh-button-wrapper .btn {
-    padding-right: 36px; /* 为图标留出空间 */
+.filter-group .refresh-button-wrapper .btn {
+    padding: 8px 32px 8px 16px;
+    background: #17A7FF;
+    border: none;
+    border-radius: 50px;
+    color: white;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+    white-space: nowrap;
+    width: 100%;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.refresh-icon {
+.filter-group .refresh-button-wrapper .btn:hover {
+    filter: brightness(1.05);
+}
+
+.filter-group .refresh-button-wrapper .refresh-icon {
     position: absolute;
-    right: 12px;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
     width: 16px;
     height: 16px;
-    pointer-events: none; /* 让点击穿透到按钮 */
+    pointer-events: none;
+    flex-shrink: 0;
+    display: block;
 }
 
-/* 排序下拉框向右移动，但保持在刷新按钮左侧 */
-.filter-group:has(#sort-subscription) {
-    margin-left: auto;
+/* 排序和刷新按钮组合区域 */
+.filter-group.action-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    width: 25%;
+    min-width: 280px;
+}
+
+.filter-group.action-group .sort-wrapper,
+.filter-group.action-group .refresh-button-wrapper {
+    flex: 1;
+    min-width: 0;
 }
 
 .control-group {
-display: flex;
+display:flex;
 flex-direction: column;
 gap: 8px;
+
 }
 
 .control-label {
@@ -433,50 +551,290 @@ flex-direction: column;
 gap: 20px;
 margin-top: 20px;
 }
-        
-/* 上方区域：角色卡信息 + Live2D预览（合并边框） */
+
+/* 上方区域：角色卡信息 + Live2D预览（各自独立卡片） */
 .character-card-top-row {
 display: flex;
-background-color: #fff;
-border-radius: 8px;
-box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-overflow: hidden;
+gap: 16px;
+background: linear-gradient(to bottom, #7FE3FF, #DDF2FF);
+border: 1px solid #a0d8f0;
+border-radius: 30px;
+padding: 12px;
 }
-        
+
 /* 左侧：角色卡信息 */
 .character-card-info-section {
 flex: 1;
-padding: 20px;
+padding: 0;
 box-sizing: border-box;
-border-right: 1px solid #eaeaea;
+border-radius: 0;
+overflow: visible;
+background-color: transparent;
+position: relative;
+display: flex;
+flex-direction: column;
 }
-        
-.character-card-info-section h3 {
-margin: 0 0 10px 0;
-font-size: 16px;
-font-weight: 500;
-color: #333;
+
+/* 不规则缺口标题区 — clip-path裁剪形成左高右低的异形顶部 */
+.card-info-header-row {
+margin: 0;
+background-color: #ffffff;
+height: 70px;
+position: relative;
+z-index: 2;
+-webkit-clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43.5% 22%, 45% 34%, 97% 34%, 98.5% 37%, 99.5% 42%, 100% 50%, 100% 100%, 0% 100%);
+clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43.5% 22%, 45% 34%, 97% 34%, 98.5% 37%, 99.5% 42%, 100% 50%, 100% 100%, 0% 100%);
 }
-        
+
+/* 凹槽区域logo — 位于section层，被header-row白色区域遮挡，仅在凹槽处可见 */
+.card-info-logo {
+position: absolute;
+top: 2px;
+right: 12px;
+height: 20px;
+width: auto;
+opacity: 0.4;
+z-index: 1;
+pointer-events: none;
+object-fit: contain;
+}
+
+.card-info-title-area {
+    position: relative;
+    width: 50%;
+    height: 46px;
+    margin: 3px;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(to right, #cce9ff 0%, #e8f7ff 40%, transparent 100%);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 36px 0 16px;
+    overflow: hidden;
+}
+
+.card-info-header-text {
+display: flex;
+align-items: center;
+gap: 6px;
+color: #fff;
+font-size: 18px;
+font-weight: 600;
+letter-spacing: 0.5px;
+}
+
+.card-info-paw {
+width: 55px;
+height: auto;
+opacity: 0.85;
+flex-shrink: 0;
+object-fit: contain;
+}
+
+/* 描述区域标题栏 - 与角色卡信息标题栏相同样式 */
+.description-header-row {
+margin: 4px 0 0 4px;
+background-color: transparent;
+border-radius: 0;
+overflow: hidden;
+}
+
+.description-title-area {
+position: relative;
+width: 25%;
+height: 46px;
+background: linear-gradient(to right, #e8f7ff 0%, #f5fbff 70%, transparent 100%);
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 0 16px 0 16px;
+overflow: hidden;
+border-radius: 16px 16px 0 0;
+}
+
+.description-header-text {
+display: flex;
+align-items: center;
+gap: 6px;
+color: #009dff;
+font-size: 18px;
+font-weight: 600;
+letter-spacing: 0.5px;
+}
+
+.description-paw {
+width: 55px;
+height: auto;
+opacity: 0.85;
+flex-shrink: 0;
+object-fit: contain;
+}
+
+.description-content {
+padding: 6px 12px 12px;
+}
+
+/* 标签区域标题栏 - 与角色卡信息标题栏相同的凹槽样式 */
+.tags-header-row {
+margin: 0;
+background-color: #ffffff;
+height: 70px;
+position: relative;
+z-index: 2;
+-webkit-clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43.5% 22%, 45% 34%, 97% 34%, 98.5% 37%, 99.5% 42%, 100% 50%, 100% 100%, 0% 100%);
+clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43.5% 22%, 45% 34%, 97% 34%, 98.5% 37%, 99.5% 42%, 100% 50%, 100% 100%, 0% 100%);
+}
+
+.tags-title-area {
+position: relative;
+z-index: 1;
+width: 40%;
+height: 46px;
+margin: 3px;
+border-radius: 16px 16px 0 0;
+background: linear-gradient(to right, #cce9ff 0%, #e8f7ff 40%, transparent 100%);
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 0 16px 0 16px;
+overflow: hidden;
+}
+
+.tags-header-text {
+display: flex;
+align-items: center;
+gap: 6px;
+color: #009dff;
+font-size: 18px;
+font-weight: 600;
+letter-spacing: 0.5px;
+}
+
+.tags-paw {
+width: 55px;
+height: auto;
+opacity: 0.85;
+flex-shrink: 0;
+object-fit: contain;
+}
+
+.control-group.tags-content {
+padding: 10px 16px 16px;
+background-color: #ffffff;
+border-radius: 0 0 22px 22px;
+flex: 1;
+position: relative;
+z-index: 2;
+margin: -1px 0 0 0;
+}
+
+.card-info-body {
+padding: 10px 16px 16px;
+background-color: #ffffff;
+border-radius: 0 0 22px 22px;
+flex: 1;
+position: relative;
+z-index: 2;
+overflow: hidden;
+margin-top: -1px;
+}
+
+/* 六边形背景装饰 */
+.card-info-bg-hexagons {
+position: absolute;
+width: 250px;
+z-index: 0;
+pointer-events: none;
+top: -40px;
+right: -60px;
+}
+
+/* 星星背景装饰 */
+.card-info-bg-stars {
+position: absolute;
+bottom: 0;
+left: 0;
+width: 100%;
+height: 100%;
+z-index: 0;
+pointer-events: none;
+opacity: 0.2;
+}
+
+#card-info-preview {
+padding: 0;
+position: relative;
+z-index: 1;
+}
+
+#card-info-dynamic-content {
+padding: 15px;
+word-wrap: break-word;
+overflow-wrap: break-word;
+}
+
+#card-info-dynamic-content > div {
+word-wrap: break-word;
+overflow-wrap: break-word;
+max-width: 100%;
+}
+
+#card-info-dynamic-content strong,
+#card-info-dynamic-content span {
+word-wrap: break-word;
+overflow-wrap: break-word;
+}
+
 /* 右侧：Live2D预览 */
 .character-card-live2d-section {
 flex: 1;
-padding: 20px;
+padding: 0;
 box-sizing: border-box;
+background: linear-gradient(to bottom, #D6F5FF 0%, #8AE3FF 78%, #40C5F1 100%);
+border-radius: 22px;
+display: flex;
+flex-direction: column;
+overflow: hidden;
 }
-        
+
 .character-card-live2d-section h3 {
-margin: 0 0 10px 0;
-font-size: 16px;
-font-weight: 500;
-color: #333;
+display: none;
+}
+
+/* Live2D预览占位符文字样式 */
+.preview-placeholder {
+color: #fff !important;
+font-size: 200%;
+}
+
+.preview-placeholder span {
+color: #fff;
+font-size: 1em;
+}
+
+/* Live2D预览容器：占据大部分空间 */
+#live2d-preview-container {
+flex: 3;
+height: auto !important;
+border: none !important;
+border-radius: 0 !important;
+background-color: transparent;
+min-height: 400px;
+}
+
+/* Live2D控制区域：自适应高度 */
+#live2d-preview-controls {
+flex: 0 0 auto;
 }
         
 /* 下方区域：描述 + 标签按钮（合并边框） */
 .character-card-bottom-row {
 display: flex;
-background-color: #fff;
-border-radius: 8px;
+gap: 16px;
+background: linear-gradient(to bottom, #7FE3FF, #DDF2FF);
+border: 1px solid #a0d8f0;
+border-radius: 30px;
+padding: 12px;
 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 overflow: hidden;
 }
@@ -484,34 +842,72 @@ overflow: hidden;
 /* 左侧：描述区域 */
 .character-card-description-section {
 flex: 1;
-padding: 20px;
+padding: 0;
 box-sizing: border-box;
 border-right: 1px solid #eaeaea;
+background-color: #fff;
+border-radius: 22px;
 }
         
 /* 右侧：标签和按钮区域 */
 .character-card-tags-buttons-section {
 flex: 1;
-padding: 20px;
+padding: 0;
 box-sizing: border-box;
+display: flex;
+flex-direction: column;
+background-color: transparent;
+}
+
+/* 标签区域 */
+.character-card-tags-area {
+flex: 1;
+background-color: transparent;
+padding: 0;
+box-sizing: border-box;
+border-radius: 0;
+overflow: visible;
+position: relative;
 display: flex;
 flex-direction: column;
 }
         
-/* 标签区域 */
-.character-card-tags-area {
-flex: 1;
-}
-        
-/* 按钮行：两个按钮并排 */
+/* 按钮行：两个按钮并排 - 样式参考 workshop-card，各自独立包裹 */
 .character-card-buttons-row {
-display: flex;
-gap: 10px;
-margin-top: 15px;
+    display: flex;
+    gap: 12px;
+    margin-top: 12px;
 }
-        
-.character-card-buttons-row .btn {
-flex: 1;
+
+/* 每个按钮的独立包裹层 - 照搬 workshop-card .card-actions 样式 */
+.character-card-buttons-row .btn-wrapper {
+    flex: 1;
+    background-color: #bcf1ff;
+    padding: 4px;
+    border-radius: 50px;
+    display: block;
+}
+
+/* 按钮样式 - 照搬 workshop-card 按钮 */
+.character-card-buttons-row .btn-wrapper .btn {
+    width: 100%;
+    background: linear-gradient(to right, #6ae0ff, #1ca5ff);
+    border: none;
+    border-radius: 50px;
+    color: white;
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    padding: 10px 0;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+}
+
+.character-card-buttons-row .btn-wrapper .btn:hover:not(:disabled) {
+    filter: brightness(1.05);
+    transform: none;
+    box-shadow: none;
 }
         
 /* 模型拖放区域样式 */
@@ -603,8 +999,7 @@ flex-direction: column;
 }
             
 .character-card-info-section {
-border-right: none;
-border-bottom: 1px solid #eaeaea;
+border-bottom: 1.5px solid #9dd7ff;
 }
             
 .character-card-description-section {
@@ -835,24 +1230,31 @@ color: white;
 
 .tab-content {
 padding: 20px;
-background: #fff;
 border-radius: 0 0 12px 12px;
 overflow: visible;
 width: 100%;
 box-sizing: border-box;
 }
-        
+
+/* subscriptions-content 和 character-cards-content 无内边距，使 section-header 与顶部无空隙 */
+#subscriptions-content.tab-content,
+#character-cards-content.tab-content {
+padding: 0;
+}
+
 .tab-contents {
-width: 100%;
+width: 94%;
 max-width: 100%;
+margin: 0 3%;
+height: 100%;
 background-image: url('/static/icons/subscriptions-content_bg.png');
 background-size: cover;
 background-position: center;
 background-repeat: no-repeat;
+border-radius: 12px;
 }
 
 /* tab-contents 内部元素透明背景、无边框（除 section-header 外） */
-.tab-contents .tab-content .section-card,
 .tab-contents .filter-controls,
 .tab-contents .cards-container,
 .tab-contents .card,
@@ -889,10 +1291,17 @@ margin-bottom: 5px;
 
 #sidebar .btn-secondary {
 margin-bottom: 2px;
+color: #17A7FF !important;
+}
+
+#sidebar .btn-secondary:hover:not(:disabled) {
+color: #17A7FF !important;
 }
 
 .menu-section {
 margin-bottom: 5px;
+position: relative;
+z-index: 2;
 }
 
 .info-text {
@@ -927,9 +1336,9 @@ border-bottom: 1px solid #f0f0f0;
 
 .section-header h2 {
 margin: 0;
-font-size: 20px;
+font-size: 24px;
 font-weight: 600;
-color: #333;
+color: #009EFF;
 }
 
 .config-section {
@@ -944,7 +1353,7 @@ margin-top: 0;
 margin-bottom: 15px;
 font-size: 18px;
 font-weight: 600;
-color: #333;
+color: #18A7FF;
 }
 
 .control-group {
@@ -1050,7 +1459,7 @@ background-color: #e74c3c;
 /* 过滤器控件 */
 .filter-controls {
 display: flex;
-justify-content: space-between;
+justify-content: flex-start;
 margin-bottom: 20px;
 flex-wrap: wrap;
 gap: 15px;
@@ -1064,6 +1473,12 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 display: flex;
 gap: 10px;
 align-items: center;
+}
+
+.filter-group.search-group {
+width: 25%;
+min-width: 200px;
+margin-right: auto;
 }
 
 .filter-label {
@@ -1135,11 +1550,41 @@ position: relative;
 cursor: pointer;
 }
 
+/* 新的角色订阅卡片样式 - 参考角色卡.html设计 */
 .workshop-card {
-    border-radius: 16px;
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
-    transition: all 0.3s ease;
-    min-height: 380px;
+    /* 外层淡蓝色渐变容器 */
+    background: linear-gradient(to bottom, #7EDBFF 0%, #E1F4FF 100%);
+    border: 2px solid #5bd2ff;
+    border-radius: 60px;
+    padding: 12px;
+    box-shadow: none;
+    transition: transform 0.3s ease;
+    min-height: 480px;
+    cursor: pointer;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.workshop-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(91, 210, 255, 0.3);
+}
+
+/* 装饰星星图标 - workshop-card专用 */
+.workshop-card::before {
+    content: '';
+    position: absolute;
+    right: 6px;
+    top: 31%;
+    width: 24px;
+    height: 24px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 0 C50 40 60 50 100 50 C60 50 50 60 50 100 C50 60 40 50 0 50 C40 50 50 40 50 0 Z' fill='%23ffffff' stroke='%235bd2ff' stroke-width='4'/%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
+    z-index: 5;
+    filter: drop-shadow(0px 1px 2px rgba(91, 210, 255, 0.3));
+    pointer-events: none;
 }
         
 /* Fluent Design 卡片悬停效果 */
@@ -1149,7 +1594,20 @@ box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
 border-color: rgba(0, 0, 0, 0.12);
 }
         
-/* 卡片头部样式 */
+/* 卡片头部样式 - 上半部分（空白封面区） */
+.workshop-card .card-header {
+    background-color: #ffffff;
+    height: 180px;
+    border-radius: 48px 48px 48px 12px;
+    border: 1px solid #9ce4ff;
+    position: relative;
+    overflow: visible;
+    padding: 0;
+    margin-bottom: 12px;
+    display: block;
+}
+
+/* 普通卡片头部样式保持不变 */
 .card-header {
 padding: 16px;
 border-bottom: 1px solid rgba(0, 0, 0, 0.04);
@@ -1169,7 +1627,20 @@ color: rgba(0, 0, 0, 0.9);
 line-height: 1.5;
 }
         
-/* 卡片内容样式 */
+/* 卡片内容样式 - workshop-card专用（下半部分信息区） */
+.workshop-card .card-content {
+    background-color: #ffffff;
+    border-radius: 12px 48px 48px 48px;
+    border: 1px solid #9ce4ff;
+    overflow: hidden;
+    padding: 16px 16px 25px 16px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 普通卡片内容样式 */
 .card-content {
 padding: 16px;
 flex: 1;
@@ -1178,7 +1649,18 @@ flex-direction: column;
 gap: 12px;
 }
         
-/* 卡片图片样式 */
+/* 卡片图片样式 - workshop-card专用 */
+.workshop-card .card-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    background-color: #ffffff;
+    border-radius: 48px 48px 48px 12px;
+    border: none;
+}
+
+/* 普通卡片图片样式 */
 .card-image {
 width: 100%;
 height: 180px;
@@ -1311,19 +1793,51 @@ opacity: 1;
 
 
         
+/* 卡片标题样式 - workshop-card专用（标题区域） */
+.workshop-card .card-title {
+    margin: 0 0 8px 0;
+    font-size: 24px;
+    color: #0ba7ff;
+    font-weight: 900;
+    letter-spacing: 2px;
+    background: linear-gradient(to right, #dff5ff 0%, #ffffff 100%);
+    padding: 4px 16px;
+    border-radius: 12px;
+    text-align: center;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 普通卡片标题样式 */
 .card-title {
-font-size: 18px;
+margin: 0;
+font-size: 16px;
 font-weight: 600;
-margin: 0 0 12px 0;
-color: #333;
-display: -webkit-box;
--webkit-line-clamp: 2;
--webkit-box-orient: vertical;
-overflow: hidden;
+color: rgba(0, 0, 0, 0.9);
+line-height: 1.5;
 }
 
 /* 删除重复的status-badge定义，只保留下方的统一样式 */
 
+/* 作者信息样式 - workshop-card专用 */
+.workshop-card .author-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 4px 12px 4px;
+    border-bottom: 1px solid #e1f4ff;
+    margin: 0 4px 10px 4px;
+    gap: 10px;
+}
+
+.workshop-card .author-info span {
+    font-size: 14px;
+    color: #555555;
+}
+
+/* 普通作者信息样式 */
 .author-info {
 display: flex;
 align-items: center;
@@ -1331,6 +1845,21 @@ gap: 10px;
 margin-bottom: 12px;
 }
 
+/* 作者头像样式 - workshop-card专用 */
+.workshop-card .author-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: #26b3ff;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* 普通作者头像样式 */
 .author-avatar {
 width: 24px;
 height: 24px;
@@ -1353,6 +1882,70 @@ flex-direction: column;
 gap: 4px;
 }
 
+/* 状态徽章 - workshop-card专用（SVG六边形风格） */
+.workshop-card .status-badge {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    width: 66px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 0 6px rgba(45, 185, 255, 0.6));
+    z-index: 10;
+    background: transparent;
+    border: none;
+}
+
+.workshop-card .status-badge .badge-bg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    background: transparent;
+    overflow: visible;
+}
+
+.workshop-card .status-badge .badge-text {
+    color: white;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+    z-index: 1;
+    text-align: center;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+/* SVG六边形状态颜色 - 通过CSS变量或直接设置fill */
+.workshop-card .status-badge.status-installed .badge-bg path {
+    fill: #21b8ff;
+}
+
+.workshop-card .status-badge.status-subscribed .badge-bg path {
+    fill: #44b7fe;
+}
+
+.workshop-card .status-badge.status-downloading .badge-bg path {
+    fill: #ff9800;
+}
+
+.workshop-card .status-badge.status-downloading {
+    animation: pulse 2s infinite;
+}
+
+.workshop-card .status-badge.status-needs-update .badge-bg path {
+    fill: #ff5722;
+}
+
+.workshop-card .status-badge.status-error .badge-bg path {
+    fill: #f44336;
+}
+
+/* 普通状态徽章 */
 .status-badge {
 display: inline-block;
 padding: 4px 10px;
@@ -1419,6 +2012,31 @@ font-size: 11px;
 border-radius: 12px;
 }
 
+/* 卡片信息网格布局 - workshop-card专用 */
+.workshop-card .card-info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 0 8px 20px 8px;
+}
+
+.workshop-card .card-info-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.workshop-card .card-info-item .info-label {
+    font-size: 13px;
+    color: #666;
+    margin-bottom: 4px;
+}
+
+.workshop-card .card-info-item .info-value {
+    font-size: 14px;
+    color: #333;
+    font-weight: 500;
+}
+
 /* 卡片信息网格布局 */
 .card-info-grid {
 display: grid;
@@ -1467,6 +2085,38 @@ word-break: break-all;
 display: inline-block;
 max-width: 100%;
 line-height: 1.4;
+}
+
+/* 卡片操作按钮 - workshop-card专用（按钮区域） */
+.workshop-card .card-actions {
+    background-color: #bcf1ff;
+    padding: 6px;
+    border-radius: 50px;
+    margin: auto 8px 0 8px;
+    display: block;
+}
+
+.workshop-card .card-actions button,
+.workshop-card .card-actions .button {
+    width: 100%;
+    background: linear-gradient(to right, #6ae0ff, #1ca5ff);
+    border: none;
+    border-radius: 50px;
+    color: white;
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    padding: 14px 0;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+}
+
+.workshop-card .card-actions button:hover,
+.workshop-card .card-actions .button:hover {
+    filter: brightness(1.05);
+    transform: none;
+    box-shadow: none;
 }
 
 /* 卡片操作按钮 */
@@ -1601,13 +2251,41 @@ margin-top: 30px;
 gap: 12px;
 }
 
-.pagination .btn {
-min-width: 80px;
-height: 36px;
-display: flex;
+.pagination-btn-wrapper {
+position: relative;
+display: inline-flex;
 align-items: center;
-justify-content: center;
-padding: 0 12px;
+background-color: #bcf1ff;
+padding: 4px;
+border-radius: 50px;
+flex-shrink: 0;
+}
+
+.pagination-btn-wrapper .btn {
+min-width: 80px;
+padding: 8px 16px;
+background: #17A7FF !important;
+border: none;
+border-radius: 50px;
+color: white !important;
+font-size: 14px;
+font-weight: 700;
+letter-spacing: 1px;
+cursor: pointer;
+text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+transition: filter 0.2s;
+white-space: nowrap;
+text-align: center;
+}
+
+.pagination-btn-wrapper .btn:hover:not(:disabled) {
+filter: brightness(1.05);
+}
+
+.pagination-btn-wrapper .btn:disabled {
+background: #17A7FF !important;
+cursor: not-allowed;
+opacity: 1;
 }
 
 .pagination span {
@@ -1617,6 +2295,8 @@ height: 36px;
 min-width: 120px;
 text-align: center;
 padding: 0 8px;
+color: #17A7FF;
+font-weight: 600;
 }
 
 /* 消息提示样式 */
@@ -1958,15 +2638,15 @@ border: 1px solid #f1f5f9;
 
 /* 浏览器通知样式 */
 .workshop-integration-info {
-background: #f8fafc;
-border: 1px solid #e2e8f0;
-border-radius: 8px;
+background: #fff;
+border: 1px solid #40C5F1;
+border-radius: 16px;
 padding: 16px;
 margin-bottom: 16px;
 }
 
 .workshop-integration-info h4 {
-color: #334155;
+color: #40C5F1;
 margin: 0 0 12px 0;
 font-size: 16px;
 font-weight: 600;
@@ -1974,12 +2654,14 @@ font-weight: 600;
 
 .workshop-integration-info .info-text {
 font-size: 14px;
-color: #64748b;
+color: #40C5F1;
+background: transparent;
 }
 
 .workshop-integration-info .info-text p {
 margin: 6px 0;
 line-height: 1.5;
+color: #40C5F1;
 }
 
 /* 响应式调整 */
@@ -2011,9 +2693,19 @@ align-items: stretch;
 gap: 15px;
 }
 
-.filter-group {
+.filter-group,
+.filter-group.search-group,
+.filter-group.action-group {
+width: 100%;
+min-width: auto;
 flex-direction: column;
 align-items: stretch;
+}
+
+.filter-group.action-group .sort-wrapper,
+.filter-group.action-group .refresh-button-wrapper {
+width: 100%;
+min-width: auto;
 }
 
 .item-info-grid {
@@ -2044,9 +2736,9 @@ grid-template-columns: 1fr;
 .tabs {
 display: flex;
 flex-wrap: nowrap;
-border-radius: 8px;
-background: #f0f4f8;
-padding: 2px;
+border-radius: 999px;
+background: #E9F9FF;
+padding: 4px;
 margin-bottom: 15px;
 justify-content: space-between;
 }
@@ -2054,12 +2746,12 @@ justify-content: space-between;
 .tab {
 padding: 10px 20px;
 border: none;
-background: transparent;
+background: #E9F9FF;
 cursor: pointer;
-font-size: 14px;
+font-size: 18px;
 font-weight: 500;
-color: #666;
-border-radius: 6px;
+color: #18A7FF !important;
+border-radius: 999px;
 transition: all 0.3s ease;
 text-align: center;
 white-space: nowrap;
@@ -2112,14 +2804,15 @@ justify-content: space-between;
 }
 
 .tab:hover {
-background: #e1e8ed;
-color: #333;
+background: #D4F4FF;
+color: #18A7FF !important;
 }
 
 .tab.active {
-background: #44b7fe;
-color: white;
-box-shadow: 0 2px 4px rgba(68, 183, 254, 0.3);
+background: linear-gradient(to right, #4BD4FF, #18A7FF);
+color: white !important;
+font-weight: 600;
+border: 1px solid #18A7FF;
 }
 
 /* 页面控制按钮 */
@@ -2164,6 +2857,29 @@ margin-top: 10px;
     font-weight: 700;
 }
 
+/* 角色卡标签页第一个 section-card 蓝色背景，与容器边缘无空隙 */
+#character-cards-content .section-card:first-child {
+    background:#4cd2ff;
+    border: none;
+    margin: 0;
+    padding: 10px 10px 10px 15px;
+    border-radius: 12px 12px 0 0;
+    color: white;
+}
+
+/* 角色卡标签页第二个 section-card 透明背景，与订阅内容一致 */
+#character-cards-content .section-card:nth-child(2) {
+    background: transparent;
+    border: none;
+}
+
+/* 角色卡标签页 section-header 背景透明，底部边框蓝色 */
+/* 角色卡标签页 section-header 背景透明，底部边框浅蓝色 */
+#character-cards-content .section-header {
+    background: transparent;
+    border-bottom: 1px solid rgba(64, 197, 241, 0.35);
+}
+
 /* 角色卡部分单行输入框和下拉框 */
 #character-cards-content .control-input:not(textarea) {
     border: 2px solid #b3e5fc;
@@ -2191,20 +2907,21 @@ margin-top: 10px;
     font-size: 1.1rem;
 }
 
-/* 角色卡描述文本框 - 胶囊样式（使用更高特异性选择器替代 !important） */
+/* 角色卡描述文本框 - 透明背景样式 */
 #character-cards-content #character-card-description {
-    border: 2px solid #b3e5fc;
-    border-radius: 16px;
-    color: #40C5F1;
-    background: #fff;
+    border: none;
+    border-radius: 8px;
+    color: #000;
+    background: transparent;
     box-shadow: none;
-    transition: border-color 0.2s;
+    font-size: 1.05rem;
 }
 
 #character-cards-content #character-card-description:focus {
     outline: none;
-    border-color: #40C5F1;
+    border: none;
     box-shadow: none;
+    background: transparent;
 }
 
 #character-card-description::placeholder {
@@ -2221,4 +2938,105 @@ margin-top: 10px;
     border: 2px solid #b3e5fc;
     border-radius: 16px;
     background: #fff;
+    margin-bottom: 15px;
+}
+
+/* ===== 角色卡标签页按钮样式（参照上一页按钮） ===== */
+
+/* 在角色管理中编辑按钮 - 外层包裹样式 */
+#character-cards-content .btn-chara-manager-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    background-color: #bcf1ff;
+    padding: 2px;
+    border-radius: 50px;
+    flex-shrink: 0;
+}
+
+#character-cards-content .btn-chara-manager-wrapper .btn {
+    min-width: 80px;
+    padding: 8px 16px;
+    background: #17A7FF !important;
+    border: none;
+    border-radius: 50px;
+    color: white !important;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+    white-space: nowrap;
+    text-align: center;
+}
+
+#character-cards-content .btn-chara-manager-wrapper .btn:hover {
+    filter: brightness(1.05);
+}
+
+/* Live2D控制按钮 - 播放动作/播放表情 */
+#live2d-preview-controls .btn-play-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    background-color: #bcf1ff;
+    padding: 3px;
+    border-radius: 50px;
+    flex-shrink: 0;
+}
+
+#live2d-preview-controls .btn-play-wrapper .btn {
+    min-width: 104px;
+    padding: 8px 18px;
+    background: #17A7FF !important;
+    border: none;
+    border-radius: 50px;
+    color: white !important;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+    white-space: nowrap;
+    text-align: center;
+}
+
+#live2d-preview-controls .btn-play-wrapper .btn:hover:not(:disabled) {
+    filter: brightness(1.05);
+}
+
+#live2d-preview-controls .btn-play-wrapper .btn:disabled {
+    background: #17A7FF !important;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* Live2D控制按钮样式（无包裹层） */
+#live2d-preview-controls .btn {
+    min-width: 104px;
+    padding: 8px 18px;
+    background: #17A7FF !important;
+    border: none;
+    border-radius: 50px;
+    color: white !important;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
+    transition: filter 0.2s;
+    white-space: nowrap;
+    text-align: center;
+}
+
+#live2d-preview-controls .btn:hover:not(:disabled) {
+    filter: brightness(1.05);
+}
+
+#live2d-preview-controls .btn:disabled {
+    background: #17A7FF !important;
+    cursor: not-allowed;
+    opacity: 0.6;
 }

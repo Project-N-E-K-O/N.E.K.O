@@ -1765,7 +1765,15 @@ function renderSubscriptionsPage() {
             <div class="workshop-card">
                 <div class="card-header">
                     <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="card-image" onerror="this.src='../static/icons/Steam_icon_logo.png'">
-                    <div class="status-badge ${statusClass}">${statusText}</div>
+                    <div class="status-badge ${statusClass}">
+                        <svg class="badge-bg" viewBox="-5 -5 115 115">
+                            <path d="M6.104,38.038 C1.841,45.421 1.841,54.579 6.104,61.962 L18.785,83.923 C23.048,91.306 30.979,95.885 39.505,95.885 L64.865,95.885 C73.391,95.885 81.322,91.306 85.585,83.923 L98.266,61.962 C102.529,54.579 102.529,45.421 98.266,38.038 L85.585,16.077 C81.322,8.694 73.391,4.115 64.865,4.115 L39.505,4.115 C30.979,4.115 23.048,8.694 18.785,16.077 Z"
+                                  fill="#21b8ff"
+                                  stroke="#dcf4ff"
+                                  stroke-width="8" />
+                        </svg>
+                        <div class="badge-text">${statusText}</div>
+                    </div>
                 </div>
                 <div class="card-content">
                     <h3 class="card-title">${formattedItem.name}</h3>
@@ -3781,7 +3789,7 @@ function updateCardPreview() {
 
         // 创建属性行
         const row = document.createElement('div');
-        row.style.cssText = `color: ${isDark ? '#e0e0e0' : '#000'}; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid ${isDark ? 'rgba(64, 197, 241, 0.25)' : 'rgba(64, 197, 241, 0.45)'};`;
+        row.style.cssText = `color: ${isDark ? '#e0e0e0' : '#000'}; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid ${isDark ? 'rgba(64, 197, 241, 0.5)' : '#d5efff'}; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%;`;
 
         // 格式化值
         let displayValue = '';
@@ -3799,8 +3807,8 @@ function updateCardPreview() {
             displayValue = String(value);
         }
 
-        // 构建HTML
-        row.innerHTML = '<strong>' + escapeHtml(key) + ':</strong> <span style="font-weight: normal;">' + escapeHtml(displayValue) + '</span>';
+        // 构建HTML - 使用黑色文字，添加自动换行
+        row.innerHTML = '<strong style="color: #000;">' + escapeHtml(key) + ':</strong> <span style="font-weight: normal; color: #000; word-wrap: break-word; overflow-wrap: break-word; display: inline-block; max-width: 100%;">' + escapeHtml(displayValue) + '</span>';
         container.appendChild(row);
     }
 
@@ -3904,22 +3912,38 @@ async function initLive2DPreview() {
             const containerWidth = container.clientWidth;
             const containerHeight = container.clientHeight;
 
-            // 对于预览模式，我们总是使用适合容器的缩放，忽略保存的偏好设置
-            // 计算适合预览区域的缩放值，减小最大缩放值以确保模型完全显示
-            const defaultScale = Math.min(
-                0.25,  // 减小最大缩放值，使模型整体更小
-                (containerHeight * 0.85) / 7000,  // 根据容器高度计算缩放，使用更合理的比例
-                (containerWidth * 0.85) / 7000    // 根据容器宽度计算缩放，使用更合理的比例
-            );
+            // 先设置临时缩放和锚点以便获取实际边界
+            model.anchor.set(0.5, 0.5);
+            model.scale.set(0.1); // 临时缩放值
+            model.x = 0;
+            model.y = 0;
+
+            // 获取模型的实际边界
+            const bounds = model.getBounds();
+            const modelWidth = bounds.width / 0.1; // 还原原始宽度
+            const modelHeight = bounds.height / 0.1; // 还原原始高度
+
+            // 计算适合容器的缩放比例
+            const padding = 30;
+            const availableWidth = Math.max(50, containerWidth - padding * 2);
+            const availableHeight = Math.max(50, containerHeight - padding * 2);
+
+            // 基于实际模型尺寸计算缩放
+            const scaleX = availableWidth / modelWidth;
+            const scaleY = availableHeight / modelHeight;
+
+            // 取较小值确保完整显示
+            let defaultScale = Math.min(scaleX, scaleY);
+            defaultScale = Math.max(0.01, Math.min(defaultScale, 0.5));
 
             model.scale.set(defaultScale);
 
-            // 设置模型位置，使其居中显示在预览区域，向下调整y轴位置
+            // 将模型居中显示在容器中央
             model.x = containerWidth * 0.5;
-            model.y = containerHeight * 0.78;  // 增加y轴位置，使模型向下移动
+            model.y = containerHeight * 0.5;
 
-            // 设置锚点，确保模型完全显示
-            model.anchor.set(0.5, 0.8);  // 调整锚点，使模型顶部不会超出预览区域
+            // 锚点保持中心，确保模型居中缩放
+            model.anchor.set(0.5, 0.5);
         };
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置

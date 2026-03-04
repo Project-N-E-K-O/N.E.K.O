@@ -1164,16 +1164,85 @@ html #chat-container {
 }
 
 /* ===== 子页面：Steam Workshop ===== */
-[data-theme="dark"] .workshop-item,
-[data-theme="dark"] .workshop-card {
+[data-theme="dark"] .workshop-item {
   background: #2d2d2d;
   border-color: #444;
   color: #e0e0e0;
 }
 
-[data-theme="dark"] .workshop-item:hover,
-[data-theme="dark"] .workshop-card:hover {
+[data-theme="dark"] .workshop-item:hover {
   background: #383838;
+}
+
+/* workshop-card 保持白天一样的渐变效果 */
+[data-theme="dark"] .workshop-card {
+  background: linear-gradient(to bottom, #7EDBFF 0%, #E1F4FF 100%);
+  border-color: #5bd2ff;
+  color: #333;
+}
+
+[data-theme="dark"] .workshop-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(91, 210, 255, 0.3);
+}
+
+/* workshop-card 内部元素保持白天样式 */
+[data-theme="dark"] .workshop-card .card-header,
+[data-theme="dark"] .workshop-card .card-content {
+  background-color: #ffffff;
+  border-color: #9ce4ff;
+}
+
+[data-theme="dark"] .workshop-card .card-title {
+  color: #0ba7ff;
+  background: linear-gradient(to right, #dff5ff 0%, #ffffff 100%);
+}
+
+[data-theme="dark"] .workshop-card .author-info span {
+  color: #555555;
+}
+
+[data-theme="dark"] .workshop-card .card-info-item .info-label {
+  color: #666;
+}
+
+[data-theme="dark"] .workshop-card .card-info-item .info-value {
+  color: #333;
+}
+
+[data-theme="dark"] .workshop-card .card-actions {
+  background-color: #bcf1ff;
+}
+
+[data-theme="dark"] .workshop-card .card-actions button,
+[data-theme="dark"] .workshop-card .card-actions .button {
+  background: linear-gradient(to right, #6ae0ff, #1ca5ff);
+  color: white;
+}
+
+/* workshop-card SVG六边形状态徽章 - 黑夜模式保持白天样式 */
+[data-theme="dark"] .workshop-card .status-badge.status-installed .badge-bg path {
+  fill: #21b8ff;
+}
+
+[data-theme="dark"] .workshop-card .status-badge.status-subscribed .badge-bg path {
+  fill: #44b7fe;
+}
+
+[data-theme="dark"] .workshop-card .status-badge.status-downloading .badge-bg path {
+  fill: #ff9800;
+}
+
+[data-theme="dark"] .workshop-card .status-badge.status-needs-update .badge-bg path {
+  fill: #ff5722;
+}
+
+[data-theme="dark"] .workshop-card .status-badge.status-error .badge-bg path {
+  fill: #f44336;
+}
+
+[data-theme="dark"] .workshop-card .status-badge .badge-text {
+  color: white;
 }
 
 /* Steam Workshop：ID 针对性暗色覆盖（内联样式需 !important） */
@@ -1182,12 +1251,40 @@ html #chat-container {
   background: transparent !important;
 }
 
+[data-theme="dark"] .character-card-top-row {
+  background: linear-gradient(to bottom, #7FE3FF, #DDF2FF) !important;
+}
+
+[data-theme="dark"] .character-card-info-section {
+  background-color: transparent !important;
+}
+
+[data-theme="dark"] .card-info-header-row {
+  background-color: #ffffff !important;
+}
+
+[data-theme="dark"] .card-info-body {
+  background-color: #ffffff !important;
+}
+
+[data-theme="dark"] .card-info-title-area {
+  background: linear-gradient(to right, #cce9ff, #ffffff 50%) !important;
+}
+
+[data-theme="dark"] .card-info-header-text {
+  color: #009dff !important;
+}
+
+[data-theme="dark"] .character-card-live2d-section {
+  background-color: #1a237e !important;
+}
+
 [data-theme="dark"] #live2d-preview-controls {
-  background: transparent !important;
+  background: #fff !important;
 }
 
 [data-theme="dark"] #character-card-description {
-  color: #e0e0e0 !important;
+  color: #000 !important;
 }
 
 [data-theme="dark"] #copyright-warning {
@@ -1354,4 +1451,21 @@ html #chat-container {
 [data-theme="dark"] .container-header img,
 [data-theme="dark"] .btn img {
   filter: brightness(0.85);
+}
+
+/* Steam Workshop 图标保持原样 */
+[data-theme="dark"] .steam-workshop-container img,
+[data-theme="dark"] .layout-container img,
+[data-theme="dark"] .search-icon,
+[data-theme="dark"] .refresh-icon,
+[data-theme="dark"] .select-arrow-icon,
+[data-theme="dark"] .cover-image-stack img,
+[data-theme="dark"] .card-info-paw,
+[data-theme="dark"] .description-paw,
+[data-theme="dark"] .tags-paw,
+[data-theme="dark"] #sidebar img,
+[data-theme="dark"] .menu-section img,
+[data-theme="dark"] .tag-locked-icon,
+[data-theme="dark"] .drop-icon {
+  filter: none !important;
 }
