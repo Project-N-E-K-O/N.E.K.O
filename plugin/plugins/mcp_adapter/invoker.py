@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Callable, Coroutine
+import inspect
+from typing import TYPE_CHECKING, Callable
 
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
@@ -31,7 +32,7 @@ class MCPPluginInvoker:
     def __init__(
         self,
         mcp_clients: dict[str, "MCPClient"],
-        plugin_call_fn: Callable[[str, str, dict[str, object]], object] | None,
+        plugin_call_fn: Callable[..., object] | None,
         logger: LoggerLike,
     ):
         """
@@ -45,6 +46,54 @@ class MCPPluginInvoker:
         self._mcp_clients = mcp_clients
         self._plugin_call_fn = plugin_call_fn
         self._logger = logger
+
+    def _call_plugin_fn(
+        self,
+        plugin_id: str,
+        entry_id: str,
+        params: dict[str, object],
+        timeout_s: float,
+    ) -> object:
+        """
+        调用注入的插件调用函数，兼容旧签名：
+        - 新签名: fn(plugin_id, entry_id, params, timeout_s)
+        - 旧签名: fn(plugin_id, entry_id, params)
+        """
+        fn = self._plugin_call_fn
+        if fn is None:
+            raise RuntimeError("plugin call function not configured")
+
+        try:
+            sig = inspect.signature(fn)
+            params_meta = list(sig.parameters.values())
+            has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params_meta)
+            positional_or_kw = [
+                p for p in params_meta
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            if has_varargs or len(positional_or_kw) >= 4:
+                return fn(plugin_id, entry_id, params, timeout_s)
+        except Exception:
+            # 反射失败时回退旧签名，避免影响现有调用
+            pass
+
+        return fn(plugin_id, entry_id, params)
+
+    def _resolve_tool_identity(self, entry_id: str) -> tuple[str | None, str]:
+        """
+        解析 tool 标识：
+        - canonical: mcp_{server_name}_{tool_name} -> (server_name, tool_name)
+        - raw: tool_name -> (None, tool_name)
+        """
+        if entry_id.startswith("mcp_"):
+            # 按已连接 server 前缀匹配，避免 server_name 含 "_" 时 split 误判
+            for server_name in self._mcp_clients.keys():
+                prefix = f"mcp_{server_name}_"
+                if entry_id.startswith(prefix):
+                    tool_name = entry_id[len(prefix):]
+                    if tool_name:
+                        return server_name, tool_name
+        return None, entry_id
 
     async def invoke(
         self,
@@ -117,36 +166,62 @@ class MCPPluginInvoker:
                 )
             )
 
-        # 查找包含该 tool 的 MCP client
+        server_hint, tool_name = self._resolve_tool_identity(entry_id)
         target_client: MCPClient | None = None
-        for client in self._mcp_clients.values():
-            for tool in client.tools:
-                if tool.name == entry_id:
-                    target_client = client
-                    break
-            if target_client:
-                break
+
+        if server_hint is not None:
+            target_client = self._mcp_clients.get(server_hint)
+            if target_client is None:
+                raise GatewayErrorException(
+                    GatewayError(
+                        code="MCP_SERVER_NOT_CONNECTED",
+                        message=f"MCP server '{server_hint}' not connected",
+                        details={"entry_id": entry_id, "server": server_hint},
+                        retryable=True,
+                    )
+                )
+        else:
+            # raw tool_name: 在所有已连接 server 中查找
+            candidates: list[MCPClient] = []
+            for client in self._mcp_clients.values():
+                for tool in client.tools:
+                    if tool.name == tool_name:
+                        candidates.append(client)
+                        break
+
+            if len(candidates) == 1:
+                target_client = candidates[0]
+            elif len(candidates) > 1:
+                servers = [client.config.name for client in candidates]
+                raise GatewayErrorException(
+                    GatewayError(
+                        code="MCP_TOOL_AMBIGUOUS",
+                        message=f"MCP tool '{tool_name}' exists on multiple servers",
+                        details={"tool_name": tool_name, "servers": servers},
+                        retryable=False,
+                    )
+                )
 
         if target_client is None:
             raise GatewayErrorException(
                 GatewayError(
                     code="MCP_TOOL_NOT_FOUND",
-                    message=f"MCP tool '{entry_id}' not found in any connected server",
-                    details={"tool_name": entry_id},
+                    message=f"MCP tool '{tool_name}' not found in any connected server",
+                    details={"tool_name": tool_name, "entry_id": entry_id},
                     retryable=False,
                 )
             )
 
         self._logger.debug(
             "Invoking MCP tool '{}' on server '{}', request_id={}",
-            entry_id,
+            tool_name,
             target_client.config.name,
             request.request_id,
         )
 
         # 调用 MCP tool
         result = await target_client.call_tool(
-            entry_id,
+            tool_name,
             dict(request.params),
             timeout=request.timeout_s,
         )
@@ -156,7 +231,7 @@ class MCPPluginInvoker:
                 GatewayError(
                     code="MCP_TOOL_ERROR",
                     message=str(result["error"]),
-                    details={"tool_name": entry_id, "server": target_client.config.name},
+                    details={"tool_name": tool_name, "server": target_client.config.name},
                     retryable=True,
                 )
             )
@@ -203,7 +278,12 @@ class MCPPluginInvoker:
         )
 
         try:
-            result = self._plugin_call_fn(plugin_id, entry_id, dict(request.params))
+            result = self._call_plugin_fn(
+                plugin_id,
+                entry_id,
+                dict(request.params),
+                float(request.timeout_s),
+            )
             # 如果是协程，等待它
             if asyncio.iscoroutine(result):
                 result = await result
