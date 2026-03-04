@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-"""Transitional BusList module.
-
-Phase 2 migration notes:
-- Move low-risk BusList helper logic here first.
-- Keep BusList/BusListWatcher/BusListDelta available via lazy compatibility exports.
-"""
+"""BusList core helper module."""
 
 import inspect
 import asyncio

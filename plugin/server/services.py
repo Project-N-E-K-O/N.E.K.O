@@ -15,10 +15,12 @@ from typing import Any, Dict, List, Optional
 import threading
 
 from fastapi import HTTPException
-from loguru import logger
 from pydantic import BaseModel, Field
 
 from plugin.core.state import state
+from plugin.logging_config import format_log_text as _format_log_text
+from plugin.logging_config import get_logger
+from plugin._types.errors import ErrorCode
 from plugin._types.exceptions import (
     PluginError,
     PluginTimeoutError,
@@ -27,15 +29,13 @@ from plugin._types.exceptions import (
 )
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.infrastructure.utils import now_iso
-from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
 )
-from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import ok, fail, is_envelope
 
-# logger 已在上方导入
+logger = get_logger("server.services")
 
 
 class TriggerResult(BaseModel):
@@ -1056,4 +1056,3 @@ def _enqueue_lifecycle(event: Dict[str, Any]) -> None:
         pass
     except Exception:
         pass
-

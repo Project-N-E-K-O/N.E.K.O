@@ -16,14 +16,13 @@ from typing import Any, Dict, Optional, Type
 from multiprocessing import Queue
 from queue import Empty
 
-from loguru import logger
-
 from plugin._types.events import EVENT_META_ATTR, EventHandler
 from plugin.sdk.decorators import WORKER_MODE_ATTR, PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin.core.worker import WorkerExecutor
+from plugin.logging_config import get_logger
 from plugin._types.models import HealthCheckResponse
 from plugin._types.exceptions import (
     PluginLifecycleError,
@@ -41,6 +40,8 @@ from plugin.settings import (
 )
 from plugin.sdk.router import PluginRouter
 from plugin.sdk.bus.types import dispatch_bus_change
+
+logger = get_logger("core.host")
 
 
 def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
@@ -226,9 +227,10 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     Returns:
         配置好的 logger 实例
     """
-    from loguru import logger
     import logging
-    from plugin.logging_config import get_plugin_format_console, get_plugin_format_file
+    from plugin.logging_config import _loguru_logger, get_plugin_format_console, get_plugin_format_file
+
+    logger = _loguru_logger
     
     # 移除默认 handler，绑定插件 ID
     logger.remove()
@@ -629,28 +631,17 @@ def _plugin_process_runner(
 
         # 获取 freezable 属性列表和持久化模式
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
-        persist_mode = getattr(instance, "__persist_mode__", None)
-        if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
+        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > 默认 "off"
+        persist_mode = getattr(instance, "__persist_mode__", "off")
         # 从 effective config 读取 persist_mode（包含 profile 覆写）
         try:
             effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
-            # 新配置项 [plugin_state]
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
                 cfg_persist_mode = state_cfg.get("persist_mode")
                 if cfg_persist_mode in ("auto", "manual", "off"):
                     persist_mode = cfg_persist_mode
                     logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
-            # 向后兼容：旧配置项 [plugin_checkpoint]
-            if persist_mode == "off":
-                checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
-                if isinstance(checkpoint_cfg, dict):
-                    cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in ("auto", "manual", "off"):
-                        persist_mode = cfg_freeze_mode
-                        logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
             logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
         # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
@@ -659,7 +650,7 @@ def _plugin_process_runner(
         if freezable_keys:
             logger.debug("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
             # 如果有保存的状态，尝试恢复
-            state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            state_persistence = getattr(instance, "_state_persistence", None)
             if state_persistence and state_persistence.has_saved_state():
                 logger.debug("[Plugin Process] Restoring saved state...")
                 state_persistence.load(instance)
@@ -762,7 +753,7 @@ def _plugin_process_runner(
         # 通过检查是否有状态被恢复来判断是否是从冻结恢复
         _restored_from_freeze = False
         if freezable_keys:
-            state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            state_persistence = getattr(instance, "_state_persistence", None)
             # 检查 ctx 中是否有恢复标记（由状态恢复逻辑设置）
             _restored_from_freeze = getattr(ctx, "_restored_from_freeze", False)
         
@@ -805,9 +796,9 @@ def _plugin_process_runner(
             meta = getattr(fn, EVENT_META_ATTR, None)
             if not meta or not getattr(meta, "auto_start", False):
                 continue
-            mode = getattr(meta, "extra", {}).get("mode")
+            mode = (getattr(meta, "metadata", None) or {}).get("mode")
             if mode == "interval":
-                seconds = getattr(meta, "extra", {}).get("seconds", 0)
+                seconds = (getattr(meta, "metadata", None) or {}).get("seconds", 0)
                 if seconds > 0:
                     timer_stop_event = threading.Event()
                     timer_stop_events.append(timer_stop_event)
@@ -847,7 +838,7 @@ def _plugin_process_runner(
                 
                 # 处理自动启动的自定义事件
                 if getattr(meta, "auto_start", False):
-                    trigger_method = getattr(meta, "extra", {}).get("trigger_method", "auto")
+                    trigger_method = (getattr(meta, "metadata", None) or {}).get("trigger_method", "auto")
                     if trigger_method == "auto":
                         # 在独立线程中启动
                         t = threading.Thread(
@@ -921,7 +912,7 @@ def _plugin_process_runner(
                     
                     # 保存冻结状态
                     if freezable_keys:
-                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                        sp = getattr(instance, "_state_persistence", None)
                         if sp:
                             sp.save(instance, freezable_keys, reason="freeze")
                             logger.info("[Plugin Process] Frozen state saved")
@@ -1335,7 +1326,7 @@ def _plugin_process_runner(
                                     # Save state after successful execution (if enabled)
                                     if ret_payload.get("success") and _should_persist(method):
                                         try:
-                                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                                            sp = getattr(instance, "_state_persistence", None)
                                             if sp:
                                                 sp.save(instance, freezable_keys, reason="auto")
                                         except Exception as persist_err:
@@ -1424,7 +1415,7 @@ def _plugin_process_runner(
                                 # Save state after successful execution (if enabled)
                                 if _should_persist(method):
                                     try:
-                                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                                        sp = getattr(instance, "_state_persistence", None)
                                         if sp:
                                             sp.save(instance, freezable_keys, reason="auto")
                                     except Exception:
@@ -1436,12 +1427,12 @@ def _plugin_process_runner(
                                 event.set()
 
                         # 等待异步方法完成（允许超时）
-                        # 从 EventMeta.extra 获取自定义超时，如果没有则使用默认值
+                        # 从 EventMeta.metadata 获取自定义超时，如果没有则使用默认值
                         entry_meta = entry_meta_map.get(entry_id)
                         custom_timeout = None
                         if entry_meta:
-                            extra = getattr(entry_meta, "extra", None) or {}
-                            custom_timeout = extra.get("timeout")
+                            meta_config = (getattr(entry_meta, "metadata", None) or {})
+                            custom_timeout = meta_config.get("timeout")
                         
                         # 确定实际超时时间
                         if custom_timeout is not None:
@@ -1539,7 +1530,7 @@ def _plugin_process_runner(
                     # Save state after successful sync execution (if enabled)
                     if _should_persist(method):
                         try:
-                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                            sp = getattr(instance, "_state_persistence", None)
                             if sp:
                                 sp.save(instance, freezable_keys, reason="auto")
                         except Exception as persist_err:
@@ -1625,7 +1616,7 @@ def _plugin_process_runner(
         raise  # 重新抛出，让进程退出
 
 
-class PluginHost:
+class PluginProcessHost:
     """
     插件进程宿主
     
@@ -2060,7 +2051,3 @@ class PluginHost:
         except Exception:
             self.logger.exception("Error while shutting down plugin {}", self.plugin_id)
             return False
-
-
-# Backwards-compatible alias
-PluginProcessHost = PluginHost

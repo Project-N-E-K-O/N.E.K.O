@@ -5,11 +5,11 @@ import asyncio
 
 from fastapi import APIRouter
 
+from plugin._types.version import SDK_VERSION
 from plugin.core.state import state
 from plugin.server.infrastructure.utils import now_iso
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.executor import _api_executor
-from plugin.sdk.version import SDK_VERSION
 
 router = APIRouter()
 

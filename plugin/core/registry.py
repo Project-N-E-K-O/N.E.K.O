@@ -17,12 +17,6 @@ _DEFAULT_LOGGER = logger
 _pending_async_shutdown_tasks: set = set()
 
 
-# _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
-# 为保持向后兼容，_wrap_logger 现在直接返回 logger
-def _wrap_logger(logger: Any) -> Any:
-    """向后兼容函数，现在统一返回 loguru logger"""
-    return logger
-
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
@@ -227,7 +221,6 @@ def _resolve_plugin_id_conflict(
     Returns:
         解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
-    logger = _wrap_logger(logger)
     _ = entry_point
     _ = plugin_data
 
@@ -343,7 +336,7 @@ def register_plugin(
     Returns:
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
-    logger_ = cast(Any, _wrap_logger(logger or _DEFAULT_LOGGER))
+    logger_ = cast(Any, logger or _DEFAULT_LOGGER)
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -1292,7 +1285,6 @@ def load_plugins_from_toml(
     2. 排序（Sort）：根据插件依赖关系进行拓扑排序，确保依赖先加载。
     3. 加载（Load）：按顺序执行实际加载。
     """
-    logger = _wrap_logger(logger)
     if not plugin_config_root.exists():
         logger.info("No plugin config directory {}, skipping", plugin_config_root)
         return

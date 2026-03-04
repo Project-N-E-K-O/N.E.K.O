@@ -494,8 +494,3 @@ class PluginStatePersistence:
             }
         except Exception:
             return None
-
-
-# 向后兼容别名
-StatePersistence = PluginStatePersistence
-FreezableCheckpoint = PluginStatePersistence

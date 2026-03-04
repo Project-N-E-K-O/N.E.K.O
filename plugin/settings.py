@@ -371,9 +371,6 @@ PLUGIN_STATE_BACKEND_DEFAULT = os.getenv("NEKO_PLUGIN_STATE_BACKEND", "off").str
 if PLUGIN_STATE_BACKEND_DEFAULT not in ("off", "memory", "file"):
     PLUGIN_STATE_BACKEND_DEFAULT = "off"
 
-# 向后兼容：旧的 PLUGIN_FREEZE_BACKEND_DEFAULT 映射到新配置
-PLUGIN_FREEZE_BACKEND_DEFAULT = PLUGIN_STATE_BACKEND_DEFAULT
-
 # ========== Store 配置 ==========
 # Store 默认后端：sqlite/memory/off (默认 off，需要开发者显式启用)
 PLUGIN_STORE_BACKEND_DEFAULT = os.getenv("NEKO_PLUGIN_STORE_BACKEND", "off")

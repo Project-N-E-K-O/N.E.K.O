@@ -5,7 +5,7 @@ Plugin Core 模块
 合并了原 runtime/ 模块的功能。
 """
 
-from plugin.core.state import state, PluginRuntimeState
+from plugin.core.state import GlobalState, state
 from plugin.core.context import PluginContext
 from plugin.core.status import status_manager, PluginStatusManager
 from plugin.core.registry import (
@@ -20,7 +20,7 @@ from plugin.core.communication import PluginCommunicationResourceManager
 __all__ = [
     # 状态管理
     "state",
-    "PluginRuntimeState",
+    "GlobalState",
     "PluginContext",
     # 状态管理器
     "status_manager",
@@ -34,4 +34,3 @@ __all__ = [
     "PluginProcessHost",
     "PluginCommunicationResourceManager",
 ]
-

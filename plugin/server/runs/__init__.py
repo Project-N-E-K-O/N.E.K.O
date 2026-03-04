@@ -17,7 +17,8 @@ from plugin.server.runs.manager import (
     list_export_for_run,
     list_runs,
 )
-from plugin.server.runs.websocket import ws_run_endpoint, issue_run_token
+from plugin.server.runs.tokens import issue_run_token
+from plugin.server.runs.websocket import ws_run_endpoint
 from plugin.server.runs.storage import blob_store
 
 __all__ = [
