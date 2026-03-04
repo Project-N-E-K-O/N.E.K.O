@@ -217,25 +217,6 @@ class PluginContext:
         except Exception:
             pass
 
-    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
-        """[DEPRECATED] Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."""
-        try:
-            self.logger.warning(
-                "PluginContext.get_user_context() is deprecated; "
-                "use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."
-            )
-        except Exception:
-            pass
-        from plugin.sdk.bus.memory import MemoryClient as BusMemoryClient
-        bus_client = BusMemoryClient(self)
-        if self._is_in_event_loop():
-            raise RuntimeError(
-                "get_user_context() cannot be called from within an event loop; "
-                "use await ctx.bus.memory.get_async(...) instead."
-            )
-        result = bus_client.get_sync(bucket_id=bucket_id, limit=limit, timeout=timeout)
-        return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
-
     def _get_sync_call_in_handler_policy(self) -> str:
         """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
 
@@ -480,7 +461,7 @@ class PluginContext:
             description=description, label=label, metadata=metadata, timeout=timeout,
         )
 
-    # ==================== Backward-compatible thin wrappers ====================
+    # ==================== Convenience export wrappers ====================
 
     async def _export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_async(export_type="text", run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
@@ -1552,4 +1533,3 @@ class PluginContext:
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
-

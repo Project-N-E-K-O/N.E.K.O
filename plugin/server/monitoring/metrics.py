@@ -188,10 +188,6 @@ class MetricsCollector:
                         if PLUGIN_LOG_SERVER_DEBUG:
                             logger.debug(f"Failed to get pending requests count for {plugin_id}: {e}")
                         pending_requests = 0
-                else:
-                    # 向后兼容：如果方法不存在，使用防御性访问
-                    pending_futures = getattr(comm_manager, "_pending_futures", None)
-                    pending_requests = len(pending_futures) if pending_futures else 0
             
             return PluginMetrics(
                 plugin_id=plugin_id,
@@ -284,4 +280,3 @@ class MetricsCollector:
 
 # 全局指标收集器实例
 metrics_collector = MetricsCollector()
-

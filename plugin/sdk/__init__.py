@@ -51,7 +51,6 @@ from .decorators import (
     replace_entry,
     # 类型常量（用于 IDE 识别）
     PERSIST_ATTR,
-    CHECKPOINT_ATTR,  # 向后兼容别名
     WORKER_MODE_ATTR,
     EntryKind,
 )
@@ -76,7 +75,7 @@ from .memory import MemoryClient
 from .types import PluginContextProtocol
 from .store import PluginStore
 from .database import PluginDatabase, PluginKVStore
-from .state import PluginStatePersistence, StatePersistence, EXTENDED_TYPES
+from .state import PluginStatePersistence, EXTENDED_TYPES
 
 # Adapter 模块（可选导入，避免循环依赖）
 try:
@@ -171,15 +170,13 @@ __all__ = [
     "MemoryClient",     # 记忆客户端
     
     # 状态持久化
-    "PluginStatePersistence", # 状态持久化管理器（推荐）
-    "StatePersistence", # 向后兼容别名
+    "PluginStatePersistence", # 状态持久化管理器
     "EXTENDED_TYPES",   # 支持的扩展类型 (datetime, Enum, set, Path 等)
     
     # 类型定义和常量
     "PluginContextProtocol",
     "EntryKind",        # 入口类型: "service", "action", "hook", "custom", "lifecycle", "consumer", "timer"
     "PERSIST_ATTR",     # 持久化属性名
-    "CHECKPOINT_ATTR",  # 向后兼容别名
     "WORKER_MODE_ATTR", # Worker 模式属性名
     "EVENT_META_ATTR",  # 事件元数据属性名
     
@@ -234,4 +231,4 @@ __all__ = [
 
 # 便捷导入示例:
 # from plugin.sdk import NekoPluginBase, neko_plugin, plugin_entry, lifecycle, ok
-# from plugin.sdk import StatePersistence, EXTENDED_TYPES
+# from plugin.sdk import PluginStatePersistence, EXTENDED_TYPES

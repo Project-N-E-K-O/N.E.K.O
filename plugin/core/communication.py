@@ -15,8 +15,8 @@ from plugin.utils.time_utils import now_iso
 from queue import Empty, Queue
 from typing import Any, ClassVar, Dict, Optional
 
-from loguru import logger
-
+from plugin.logging_config import format_log_text as _format_log_text
+from plugin.logging_config import get_logger
 from plugin.settings import (
     COMMUNICATION_THREAD_POOL_MAX_WORKERS,
     PLUGIN_TRIGGER_TIMEOUT,
@@ -28,7 +28,9 @@ from plugin.settings import (
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
 from plugin._types.exceptions import PluginExecutionError
-from plugin.utils.logging import format_log_text as _format_log_text
+
+
+logger = get_logger("core.communication")
 
 
 _SHUTDOWN_SENTINEL: Dict[str, Any] = {"_type": "__shutdown__"}
@@ -51,7 +53,7 @@ class PluginCommunicationResourceManager:
     res_queue: Queue
     status_queue: Queue
     message_queue: Queue
-    logger: Any = field(default_factory=lambda: logger.bind(component="communication"))
+    logger: Any = field(default_factory=lambda: get_logger("core.communication"))
     
     # 异步相关资源
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
@@ -437,7 +439,7 @@ class PluginCommunicationResourceManager:
         """
         try:
             from plugin.core.state import state
-            from plugin.sdk.events import EventMeta, EventHandler
+            from plugin._types.events import EventMeta, EventHandler
             
             action = msg.get("action")
             entry_id = msg.get("entry_id")
@@ -840,4 +842,3 @@ class PluginCommunicationResourceManager:
                     self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
-

@@ -4,7 +4,7 @@ Plugin 模块
 提供插件系统的核心功能和SDK。
 """
 
-from plugin.core.state import state, PluginRuntimeState
+from plugin.core.state import GlobalState, state
 from plugin.core.context import PluginContext
 from plugin.core.status import status_manager, PluginStatusManager
 from plugin.core.registry import (
@@ -64,7 +64,7 @@ from plugin.sdk.memory import MemoryClient
 __all__ = [
     # Core
     'state',
-    'PluginRuntimeState',
+    'GlobalState',
     'PluginContext',
     # Runtime
     'status_manager',
@@ -117,4 +117,3 @@ __all__ = [
     'enable_plugin_file_logging',
     'plugin_file_logger',
 ]
-
