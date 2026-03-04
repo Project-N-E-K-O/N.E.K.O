@@ -924,7 +924,9 @@
             "savingParameters": "Сохранение...",
             "parametersSaved": "Сохранено!",
             "parametersSavePartialFailed": "Ошибка сохранения: {{errors}}",
-            "parametersSaveFailed": "Ошибка сохранения: {{error}}"
+            "parametersSaveFailed": "Ошибка сохранения: {{error}}",
+            "emptyHint": "Здесь ничего нет!",
+            "foundYou": "Ты нашёл меня!"
         },
         "modelDirectorySaveFailed": "Ошибка сохранения файла",
         "userPreferencesSaveFailed": "Ошибка сохранения настроек",

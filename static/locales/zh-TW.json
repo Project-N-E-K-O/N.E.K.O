@@ -924,7 +924,9 @@
             "savingParameters": "正在保存參數...",
             "parametersSaved": "參數保存成功！",
             "parametersSavePartialFailed": "參數保存部分失敗: {{errors}}",
-            "parametersSaveFailed": "參數保存失敗: {{error}}"
+            "parametersSaveFailed": "參數保存失敗: {{error}}",
+            "emptyHint": "裡面什麼也沒有！",
+            "foundYou": "你找到我了！"
         },
         "modelDirectorySaveFailed": "模型目錄文件保存失敗",
         "userPreferencesSaveFailed": "用戶偏好設置保存失敗",

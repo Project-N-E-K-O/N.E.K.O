@@ -1,11 +1,11 @@
 // 等待i18next初始化完成并更新页面文本
 function updatePageTranslations() {
     // 先保护需要特殊处理的元素，临时移除data-i18n属性
-    const emptyDiv = document.querySelector('.parameters-list-empty');
-    const emptyI18nKey = emptyDiv ? emptyDiv.getAttribute('data-i18n') : null;
+    const emptyHeaderText = document.querySelector('.parameter-group-empty .group-header-text');
+    const emptyI18nKey = emptyHeaderText ? emptyHeaderText.getAttribute('data-i18n') : null;
 
-    if (emptyDiv && emptyI18nKey) {
-        emptyDiv.removeAttribute('data-i18n');
+    if (emptyHeaderText && emptyI18nKey) {
+        emptyHeaderText.removeAttribute('data-i18n');
     }
 
     // 更新所有带有data-i18n属性的元素（现在status-text有data-i18n，但status本身没有）
@@ -44,12 +44,12 @@ function updatePageTranslations() {
         }
     });
 
-    // 恢复emptyDiv的data-i18n属性
-    if (emptyDiv && emptyI18nKey) {
-        emptyDiv.setAttribute('data-i18n', emptyI18nKey);
+    // 恢复emptyHeaderText的data-i18n属性
+    if (emptyHeaderText && emptyI18nKey) {
+        emptyHeaderText.setAttribute('data-i18n', emptyI18nKey);
         const translated = window.t ? window.t(emptyI18nKey) : emptyI18nKey;
-        if (translated && translated !== emptyI18nKey && emptyDiv.textContent !== translated) {
-            emptyDiv.textContent = translated;
+        if (translated && translated !== emptyI18nKey && emptyHeaderText.textContent !== translated) {
+            emptyHeaderText.textContent = translated;
         }
     }
 }
@@ -58,6 +58,107 @@ function updatePageTranslations() {
 document.addEventListener('DOMContentLoaded', function () {
     // 立即尝试更新一次
     updatePageTranslations();
+
+    // 空状态下拉框展开/折叠事件
+    const emptyGroup = document.querySelector('.parameter-group-empty');
+    const emptyHeader = document.querySelector('.group-header-empty');
+    const emptyHintText = document.querySelector('.empty-hint-text');
+    const confettiContainer = document.querySelector('.confetti-container');
+    
+    let hintTextTimer = null;
+    let hintClassTimer = null;
+    
+    if (emptyGroup && emptyHeader) {
+        const toggleEmptyGroup = () => {
+            const wasExpanded = emptyGroup.classList.contains('expanded');
+            emptyGroup.classList.toggle('expanded');
+            emptyHeader.setAttribute('aria-expanded', !wasExpanded);
+            
+            if (emptyHintText) {
+                if (hintTextTimer) {
+                    clearTimeout(hintTextTimer);
+                    hintTextTimer = null;
+                }
+                if (hintClassTimer) {
+                    clearTimeout(hintClassTimer);
+                    hintClassTimer = null;
+                }
+                
+                if (!wasExpanded) {
+                    emptyHintText.classList.add('flash');
+                    hintTextTimer = setTimeout(() => {
+                        if (emptyGroup.classList.contains('expanded')) {
+                            emptyHintText.textContent = t('live2d.parameterEditor.foundYou', '你找到我了！');
+                        }
+                        hintTextTimer = null;
+                    }, 150);
+                    hintClassTimer = setTimeout(() => {
+                        emptyHintText.classList.remove('flash');
+                        hintClassTimer = null;
+                    }, 500);
+                    
+                    if (confettiContainer) {
+                        triggerConfetti(confettiContainer);
+                    }
+                } else {
+                    emptyHintText.classList.remove('flash');
+                    emptyHintText.textContent = t('live2d.parameterEditor.emptyHint', '里面什么也没有！');
+                }
+            }
+        };
+        
+        emptyHeader.addEventListener('click', toggleEmptyGroup);
+        
+        emptyHeader.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleEmptyGroup();
+            }
+        });
+    }
+
+    function triggerConfetti(container) {
+        const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3', '#f38181', '#aa96da', '#fcbad3'];
+        const shapes = ['circle', 'square', 'triangle'];
+        
+        for (let i = 0; i < 30; i++) {
+            setTimeout(() => {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                const shape = shapes[Math.floor(Math.random() * shapes.length)];
+                const size = Math.random() * 8 + 6;
+                
+                confetti.style.left = Math.random() * 100 + '%';
+                confetti.style.top = Math.random() * 30 + '%';
+                confetti.style.width = size + 'px';
+                confetti.style.height = size + 'px';
+                confetti.style.backgroundColor = color;
+                
+                if (shape === 'circle') {
+                    confetti.style.borderRadius = '50%';
+                } else if (shape === 'triangle') {
+                    confetti.style.width = '0';
+                    confetti.style.height = '0';
+                    confetti.style.backgroundColor = 'transparent';
+                    confetti.style.borderLeft = size/2 + 'px solid transparent';
+                    confetti.style.borderRight = size/2 + 'px solid transparent';
+                    confetti.style.borderBottom = size + 'px solid ' + color;
+                }
+                
+                container.appendChild(confetti);
+                
+                requestAnimationFrame(() => {
+                    confetti.classList.add('active');
+                });
+                
+                setTimeout(() => {
+                    confetti.remove();
+                }, 1000);
+            }, i * 30);
+        }
+    }
 
     // 监听语言变化事件
     window.addEventListener('localechange', function () {
@@ -841,6 +942,31 @@ function getParameterRange(coreModel, index) {
     return { min, max, default: defaultVal };
 }
 
+// 更新参数UI值（不重新渲染列表）
+function updateParameterUIValues() {
+    if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
+    
+    const coreModel = live2dModel.internalModel.coreModel;
+    const sliderInputs = parametersList.querySelectorAll('.parameter-slider');
+    const numberInputs = parametersList.querySelectorAll('.parameter-input');
+    
+    sliderInputs.forEach((slider, index) => {
+        const paramIndex = parseInt(slider.dataset.paramIndex);
+        if (!isNaN(paramIndex)) {
+            const value = coreModel.getParameterValueByIndex(paramIndex);
+            slider.value = value;
+        }
+    });
+    
+    numberInputs.forEach((input, index) => {
+        const paramIndex = parseInt(input.dataset.paramIndex);
+        if (!isNaN(paramIndex)) {
+            const value = coreModel.getParameterValueByIndex(paramIndex);
+            input.value = value;
+        }
+    });
+}
+
 // 显示参数列表（按分组，显示所有参数）
 function displayParameters() {
     if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
@@ -953,8 +1079,49 @@ function displayParameters() {
 
         const groupHeader = document.createElement('div');
         groupHeader.className = 'group-header';
-        groupHeader.textContent = groupName;
+        groupHeader.setAttribute('tabindex', '0');
+        groupHeader.setAttribute('role', 'button');
+        groupHeader.setAttribute('aria-expanded', 'false');
+
+        const groupHeaderText = document.createElement('span');
+        groupHeaderText.className = 'group-header-text';
+        groupHeaderText.textContent = groupName;
+
+        const groupRight = document.createElement('div');
+        groupRight.style.cssText = 'display: flex; align-items: center;';
+
+        const groupCount = document.createElement('span');
+        groupCount.className = 'group-header-count';
+        groupCount.textContent = groupedParams[groupName].length;
+
+        const groupArrow = document.createElement('span');
+        groupArrow.className = 'group-arrow';
+
+        groupRight.appendChild(groupCount);
+        groupRight.appendChild(groupArrow);
+
+        groupHeader.appendChild(groupHeaderText);
+        groupHeader.appendChild(groupRight);
+
+        const groupContent = document.createElement('div');
+        groupContent.className = 'group-content';
+
+        const toggleGroup = () => {
+            const isExpanded = groupDiv.classList.toggle('expanded');
+            groupHeader.setAttribute('aria-expanded', isExpanded);
+        };
+
+        groupHeader.addEventListener('click', toggleGroup);
+
+        groupHeader.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleGroup();
+            }
+        });
+
         groupDiv.appendChild(groupHeader);
+        groupDiv.appendChild(groupContent);
 
         for (const { id: paramId, name: paramName, index: i } of groupedParams[groupName]) {
             try {
@@ -1003,6 +1170,7 @@ function displayParameters() {
                 slider.max = maxValue;
                 slider.step = '0.01';
                 slider.value = currentValue;
+                slider.dataset.paramIndex = i;
 
                 sliderWrapper.appendChild(slider);
 
@@ -1017,6 +1185,7 @@ function displayParameters() {
                 input.max = maxValue;
                 input.step = '0.01';
                 input.value = currentValue;
+                input.dataset.paramIndex = i;
 
                 // 重置按钮 - 放在右侧
                 const resetBtn = document.createElement('button');
@@ -1076,7 +1245,7 @@ function displayParameters() {
                 paramItem.appendChild(header);
                 paramItem.appendChild(controls);
 
-                groupDiv.appendChild(paramItem);
+                groupContent.appendChild(paramItem);
             } catch (e) {
                 console.warn(`显示参数 ${paramId} 失败:`, e);
             }
@@ -1096,7 +1265,14 @@ if (modelSelectBtn) {
         e.stopPropagation();
         if (modelDropdown) {
             const isVisible = modelDropdown.style.display !== 'none';
-            modelDropdown.style.display = isVisible ? 'none' : 'block';
+            if (isVisible) {
+                modelDropdown.style.display = 'none';
+            } else {
+                const rect = modelSelectBtn.getBoundingClientRect();
+                modelDropdown.style.left = rect.left + 'px';
+                modelDropdown.style.top = (rect.bottom + 4) + 'px';
+                modelDropdown.style.display = 'block';
+            }
         }
     });
 }
@@ -1152,7 +1328,8 @@ if (resetAllBtn) {
             }
         }
 
-        displayParameters();
+        // 更新UI中的滑块和输入框值，不重新渲染整个列表
+        updateParameterUIValues();
         showStatus(t('live2d.parameterEditor.resetAllParameters', '已重置所有参数'), 2000);
     });
 }

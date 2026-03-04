@@ -924,7 +924,9 @@
             "savingParameters": "저장 중...",
             "parametersSaved": "저장되었습니다!",
             "parametersSavePartialFailed": "저장 실패: {{errors}}",
-            "parametersSaveFailed": "저장 실패: {{error}}"
+            "parametersSaveFailed": "저장 실패: {{error}}",
+            "emptyHint": "여기엔 아무것도 없어요!",
+            "foundYou": "찾았다!"
         },
         "modelDirectorySaveFailed": "파일 저장 실패",
         "userPreferencesSaveFailed": "기본 설정 저장 실패",

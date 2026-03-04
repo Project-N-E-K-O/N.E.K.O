@@ -924,7 +924,9 @@
             "savingParameters": "保存中...",
             "parametersSaved": "保存しました！",
             "parametersSavePartialFailed": "一部の保存に失敗: {{errors}}",
-            "parametersSaveFailed": "保存に失敗しました: {{error}}"
+            "parametersSaveFailed": "保存に失敗しました: {{error}}",
+            "emptyHint": "ここには何もありません！",
+            "foundYou": "見つけた！"
         },
         "modelDirectorySaveFailed": "ファイル保存失敗",
         "userPreferencesSaveFailed": "設定保存失敗",

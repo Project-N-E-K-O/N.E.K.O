@@ -56,9 +56,19 @@
                     <span class="parameters-list-header-text" data-i18n="live2d.parameterEditor.parameterList" data-text="参数列表">参数列表</span>
                 </div>
                 <div id="parameters-list" class="parameters-list">
-                    <div class="parameters-list-empty" data-i18n="live2d.parameterEditor.pleaseSelectAndLoadModel">
-                        请先选择并加载模型
+                    <div class="parameter-group parameter-group-empty">
+                        <div class="group-header group-header-empty" role="button" tabindex="0" aria-expanded="false" aria-controls="group-content-empty">
+                            <span class="group-header-text" data-i18n="live2d.parameterEditor.pleaseSelectAndLoadModel">请先选择并加载模型</span>
+                            <div style="display: flex; align-items: center;">
+                                <span class="group-arrow"></span>
+                            </div>
+                        </div>
+                        <div id="group-content-empty" class="group-content group-content-empty">
+                            <div class="confetti-container"></div>
+                            <img src="/static/icons/small_easter_egg.png" alt="" class="easter-egg-img">
+                        </div>
                     </div>
+                    <span class="empty-hint-text" data-i18n="live2d.parameterEditor.emptyHint">里面什么也没有！</span>
                 </div>
             </div>
         </div>

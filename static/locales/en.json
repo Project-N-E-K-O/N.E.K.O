@@ -924,7 +924,9 @@
             "savingParameters": "Saving...",
             "parametersSaved": "Saved!",
             "parametersSavePartialFailed": "Save failed: {{errors}}",
-            "parametersSaveFailed": "Save failed: {{error}}"
+            "parametersSaveFailed": "Save failed: {{error}}",
+            "emptyHint": "Nothing in here!",
+            "foundYou": "You found me!"
         },
         "modelDirectorySaveFailed": "File save failed",
         "userPreferencesSaveFailed": "Prefs save failed",
