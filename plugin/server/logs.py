@@ -708,7 +708,7 @@ class LogFileWatcher:
                 # 连接已断开或关闭，记录但不抛出异常
                 logger.debug(f"Failed to send logs to client (disconnected): {e}")
                 disconnected.append(client)
-            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+            except (ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
                 # 其他错误，记录并标记为断开
                 logger.debug(f"Failed to send logs to client: {e}")
                 disconnected.append(client)

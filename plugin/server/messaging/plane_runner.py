@@ -201,11 +201,11 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 pass
             try:
                 p.wait(timeout=1.0)
-            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
                 try:
                     if p.poll() is None:
                         p.kill()
-                except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+                except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
                     pass
             return
 
@@ -363,11 +363,11 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
             pass
         try:
             p.wait(timeout=1.0)
-        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
             try:
                 if p.poll() is None:
                     p.kill()
-            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
                 pass
 
     def health_check(self, *, timeout_s: float = 1.0) -> bool:

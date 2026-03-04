@@ -71,11 +71,13 @@ class MCPPluginInvoker:
                 p for p in params_meta
                 if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
             ]
-            if has_varargs or len(positional_or_kw) >= 4:
-                return fn(plugin_id, entry_id, params, timeout_s)
         except Exception:
             # 反射失败时回退旧签名，避免影响现有调用
-            pass
+            has_varargs = False
+            positional_or_kw = []
+
+        if has_varargs or len(positional_or_kw) >= 4:
+            return fn(plugin_id, entry_id, params, timeout_s)
 
         return fn(plugin_id, entry_id, params)
 

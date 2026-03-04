@@ -81,9 +81,10 @@ def _coerce_filter_data(value: object) -> dict[str, object] | None:
 def _resolve_plugin_id(*, request: Mapping[str, object], from_plugin: str) -> str | None:
     plugin_id_obj = request.get("plugin_id")
     if isinstance(plugin_id_obj, str) and plugin_id_obj.strip():
-        if plugin_id_obj.strip() == "*":
+        normalized = plugin_id_obj.strip()
+        if normalized == "*":
             return None
-        return plugin_id_obj
+        return normalized
     return from_plugin
 
 
@@ -103,13 +104,13 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
     request_id_obj = request.get("request_id")
     timeout = _coerce_timeout(request.get("timeout", 5.0))
 
-    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj.strip():
         return
-    if not isinstance(request_id_obj, str) or not request_id_obj:
+    if not isinstance(request_id_obj, str) or not request_id_obj.strip():
         return
 
-    from_plugin = from_plugin_obj
-    request_id = request_id_obj
+    from_plugin = from_plugin_obj.strip()
+    request_id = request_id_obj.strip()
     plugin_id = _resolve_plugin_id(request=request, from_plugin=from_plugin)
     max_count = _coerce_optional_int(request.get("max_count", request.get("limit")))
     since_ts = _coerce_optional_float(request.get("since_ts"))

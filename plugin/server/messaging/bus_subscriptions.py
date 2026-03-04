@@ -113,6 +113,8 @@ class BusSubscriptionManager:
                 until = 0.0
             if until > now_m:
                 return
+            if until > 0.0:
+                self._sub_paused_until.pop(key2, None)
 
             # 使用缓存快照避免锁竞争
             hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
@@ -145,14 +147,15 @@ class BusSubscriptionManager:
                         self._sub_failures[key2] = nfail
                         if nfail >= int(self._fail_threshold):
                             self._sub_paused_until[key2] = time.monotonic() + float(self._pause_seconds)
-                            self._sub_failures[key2] = 0
+                            self._sub_failures.pop(key2, None)
                     except _RUNTIME_ERRORS:
                         pass
                     return
 
             # Success -> reset failures
             try:
-                self._sub_failures[key2] = 0
+                self._sub_failures.pop(key2, None)
+                self._sub_paused_until.pop(key2, None)
             except _RUNTIME_ERRORS:
                 pass
 

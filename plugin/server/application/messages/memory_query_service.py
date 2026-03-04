@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from urllib.parse import quote
 
 import httpx
@@ -9,16 +10,19 @@ from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.messages.memory_query")
 
+DEFAULT_TIMEOUT_SECONDS = 5.0
+MAX_TIMEOUT_SECONDS = 60.0
+
 
 def _coerce_timeout(value: object) -> float:
     if isinstance(value, bool):
-        return 5.0
+        return DEFAULT_TIMEOUT_SECONDS
     if isinstance(value, (int, float)):
         timeout = float(value)
-        if timeout > 0:
-            return timeout
-        return 5.0
-    return 5.0
+        if math.isfinite(timeout) and timeout > 0:
+            return min(timeout, MAX_TIMEOUT_SECONDS)
+        return DEFAULT_TIMEOUT_SECONDS
+    return DEFAULT_TIMEOUT_SECONDS
 
 
 def _normalize_non_empty_str(value: object, *, field: str) -> str:
@@ -51,6 +55,7 @@ class MemoryQueryService:
         normalized_lanlan_name = _normalize_non_empty_str(lanlan_name, field="lanlan_name")
         normalized_query = _normalize_non_empty_str(query, field="query")
         normalized_timeout = _coerce_timeout(timeout)
+        query_len = len(normalized_query)
 
         try:
             url = _build_memory_search_url(
@@ -64,9 +69,9 @@ class MemoryQueryService:
             return {"result": result}
         except httpx.TimeoutException as exc:
             logger.warning(
-                "query_memory timeout: lanlan_name={}, query={}, timeout={}",
+                "query_memory timeout: lanlan_name={}, query_len={}, timeout={}",
                 normalized_lanlan_name,
-                normalized_query,
+                query_len,
                 normalized_timeout,
             )
             raise ServerDomainError(
@@ -78,10 +83,10 @@ class MemoryQueryService:
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             logger.warning(
-                "query_memory upstream status error: status_code={}, lanlan_name={}, query={}",
+                "query_memory upstream status error: status_code={}, lanlan_name={}, query_len={}",
                 status_code,
                 normalized_lanlan_name,
-                normalized_query,
+                query_len,
             )
             raise ServerDomainError(
                 code="MEMORY_QUERY_UPSTREAM_ERROR",
@@ -91,9 +96,9 @@ class MemoryQueryService:
             ) from exc
         except httpx.RequestError as exc:
             logger.warning(
-                "query_memory connection error: lanlan_name={}, query={}, err_type={}, err={}",
+                "query_memory connection error: lanlan_name={}, query_len={}, err_type={}, err={}",
                 normalized_lanlan_name,
-                normalized_query,
+                query_len,
                 type(exc).__name__,
                 str(exc),
             )
@@ -105,9 +110,9 @@ class MemoryQueryService:
             ) from exc
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError, ImportError) as exc:
             logger.error(
-                "query_memory failed: lanlan_name={}, query={}, err_type={}, err={}",
+                "query_memory failed: lanlan_name={}, query_len={}, err_type={}, err={}",
                 normalized_lanlan_name,
-                normalized_query,
+                query_len,
                 type(exc).__name__,
                 str(exc),
             )

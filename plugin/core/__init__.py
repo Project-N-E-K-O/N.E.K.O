@@ -14,7 +14,7 @@ from plugin.core.registry import (
     register_plugin,
     scan_static_metadata,
 )
-from plugin.core.host import PluginProcessHost
+from plugin.core.host import PluginHost, PluginProcessHost
 from plugin.core.communication import PluginCommunicationResourceManager
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "register_plugin",
     "scan_static_metadata",
     # 进程管理
+    "PluginHost",
     "PluginProcessHost",
     "PluginCommunicationResourceManager",
 ]

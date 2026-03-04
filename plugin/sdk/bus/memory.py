@@ -86,17 +86,27 @@ class MemoryList(BusList[MemoryRecord]):
         super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.bucket_id = bucket_id
 
+    def _clone_from(self, source: BusList[MemoryRecord]) -> "MemoryList":
+        return MemoryList(
+            source.dump_records(),
+            bucket_id=self.bucket_id,
+            ctx=getattr(source, "_ctx", None),
+            trace=getattr(source, "_trace", None),
+            plan=getattr(source, "_plan", None),
+            fast_mode=bool(getattr(source, "_fast_mode", False)),
+        )
+
     def filter(self, *args: Any, **kwargs: Any) -> "MemoryList":
         filtered = super().filter(*args, **kwargs)
-        return MemoryList(filtered.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(filtered)
 
     def where(self, predicate: Any) -> "MemoryList":
         filtered = super().where(predicate)
-        return MemoryList(filtered.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(filtered)
 
     def limit(self, n: int) -> "MemoryList":
         limited = super().limit(n)
-        return MemoryList(limited.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(limited)
 
 
 @dataclass

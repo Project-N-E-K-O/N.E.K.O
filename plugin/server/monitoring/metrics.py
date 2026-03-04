@@ -246,18 +246,30 @@ class MetricsCollector:
     ) -> list[dict[str, object]]:
         """获取性能指标历史"""
         with self._lock:
+            if limit <= 0:
+                return []
+
             history = self._metrics_history.get(plugin_id, [])
-            
-            # 时间过滤（简单实现）
+
+            # 时间过滤（基于 ISO 时间字符串）
             filtered = history
-            if start_time or end_time:
-                # TODO: 实现时间范围过滤
-                pass
-            
+            if start_time is not None:
+                filtered = [
+                    metrics
+                    for metrics in filtered
+                    if isinstance(metrics.timestamp, str) and metrics.timestamp >= start_time
+                ]
+            if end_time is not None:
+                filtered = [
+                    metrics
+                    for metrics in filtered
+                    if isinstance(metrics.timestamp, str) and metrics.timestamp <= end_time
+                ]
+
             # 限制数量
             if len(filtered) > limit:
                 filtered = filtered[-limit:]
-            
+
             return [self._metrics_to_dict(m) for m in filtered]
     
     def _metrics_to_dict(self, metrics: PluginMetrics) -> dict[str, object]:

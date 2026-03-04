@@ -1433,7 +1433,7 @@ def _plugin_process_runner(
                                 event.set()
 
                         # 等待异步方法完成（允许超时）
-                        # 从 EventMeta.metadata 获取自定义超时，如果没有则使用默认值
+                        # 从 EventMeta.metadata 获取自定义超时, 如果没有则使用默认值
                         entry_meta = entry_meta_map.get(entry_id)
                         custom_timeout = None
                         if entry_meta:
@@ -2061,3 +2061,7 @@ class PluginProcessHost:
         except Exception:
             self.logger.exception("Error while shutting down plugin {}", self.plugin_id)
             return False
+
+
+# Backward-compatibility alias for external imports migrated from PluginHost.
+PluginHost = PluginProcessHost

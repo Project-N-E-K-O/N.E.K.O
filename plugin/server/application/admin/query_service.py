@@ -113,7 +113,12 @@ def _build_system_config_sync() -> dict[str, object]:
             value = getattr(settings, key)
         except AttributeError:
             continue
-        except (RuntimeError, ValueError, TypeError, OSError):
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
+            logger.warning(
+                "skip system config key '{}': err_type={}",
+                key,
+                type(exc).__name__,
+            )
             continue
         if _is_sensitive_setting_key(key):
             config[key] = "***REDACTED***"

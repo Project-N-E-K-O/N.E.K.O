@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import math
 from collections.abc import Mapping
 
 from plugin.core.state import state
@@ -54,7 +55,12 @@ def _to_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        if not math.isfinite(value):
+            return None
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return None
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
@@ -80,6 +86,7 @@ def _serialize_message(record: Mapping[str, object]) -> dict[str, object]:
 
     message_type_value = record.get("message_type")
     fallback_type_value = record.get("type")
+    binary_url_value = record.get("binary_url")
     if isinstance(message_type_value, str) and message_type_value:
         message_type = message_type_value
     elif isinstance(fallback_type_value, str) and fallback_type_value:
@@ -98,7 +105,7 @@ def _serialize_message(record: Mapping[str, object]) -> dict[str, object]:
         "message_type": message_type,
         "content": record.get("content"),
         "binary_data": _b64_bytes(record.get("binary_data")),
-        "binary_url": record.get("binary_url"),
+        "binary_url": binary_url_value if isinstance(binary_url_value, str) else "",
         "metadata": metadata,
         "timestamp": timestamp_value if isinstance(timestamp_value, str) and timestamp_value else now_iso(),
         "message_id": str(record.get("message_id") or ""),

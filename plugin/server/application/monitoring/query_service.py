@@ -86,9 +86,12 @@ def _metrics_snapshot_for_plugin_sync(
 
     if plugin_running:
         host = hosts_snapshot.get(plugin_id)
-        if host is not None and hasattr(host, "process"):
-            process_obj = getattr(host, "process")
-            process_alive = process_obj is not None
+        process_obj = getattr(host, "process", None) if host is not None else None
+        if process_obj is not None and hasattr(process_obj, "is_alive"):
+            try:
+                process_alive = bool(process_obj.is_alive())
+            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+                process_alive = False
 
     running_plugin_ids = [str(pid) for pid in hosts_snapshot.keys()]
     return plugin_registered, plugin_running, process_alive, running_plugin_ids

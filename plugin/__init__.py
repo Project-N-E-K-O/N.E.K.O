@@ -13,7 +13,7 @@ from plugin.core.registry import (
     register_plugin,
     scan_static_metadata,
 )
-from plugin.core.host import PluginProcessHost
+from plugin.core.host import PluginHost, PluginProcessHost
 from plugin.core.communication import PluginCommunicationResourceManager
 from plugin._types.models import (
     PluginPushMessageRequest,
@@ -73,6 +73,7 @@ __all__ = [
     'get_plugins',
     'register_plugin',
     'scan_static_metadata',
+    'PluginHost',
     'PluginProcessHost',
     'PluginCommunicationResourceManager',
     # API

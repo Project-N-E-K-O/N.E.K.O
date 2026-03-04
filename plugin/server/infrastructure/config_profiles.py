@@ -109,26 +109,58 @@ def load_profiles_cfg_from_file(
     return _to_string_key_mapping(profiles_cfg_obj)
 
 
-def apply_user_config_profiles(
+def _extract_profiles_cfg_from_base_config(base_config: Mapping[object, object]) -> dict[str, object] | None:
+    plugin_section_obj = base_config.get("plugin")
+    if not isinstance(plugin_section_obj, Mapping):
+        return None
+    plugin_section = _to_string_key_mapping(plugin_section_obj)
+    config_profiles_obj = plugin_section.get("config_profiles")
+    if not isinstance(config_profiles_obj, Mapping):
+        return None
+    return _to_string_key_mapping(config_profiles_obj)
+
+
+def _load_base_config_from_file(config_path: Path) -> dict[str, object] | None:
+    if tomllib is None:
+        return None
+    try:
+        with config_path.open("rb") as file_obj:
+            base_obj = tomllib.load(file_obj)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Failed to load base config {} for profile fallback: err_type={}, err={}",
+            config_path,
+            type(exc).__name__,
+            str(exc),
+        )
+        return None
+    if not isinstance(base_obj, Mapping):
+        logger.warning(
+            "Base config {} is not a TOML table at root for profile fallback: got {!r}",
+            config_path,
+            type(base_obj).__name__,
+        )
+        return None
+    return _to_string_key_mapping(base_obj)
+
+
+def _resolve_profiles_cfg(
     *,
     plugin_id: str,
-    base_config: dict[str, object],
     config_path: Path,
-) -> dict[str, object]:
-    if not isinstance(base_config, Mapping):
-        return base_config
-
+    base_config: Mapping[object, object] | None = None,
+) -> dict[str, object] | None:
     profiles_cfg = load_profiles_cfg_from_file(plugin_id, config_path)
-    if profiles_cfg is None:
-        plugin_section_obj = base_config.get("plugin")
-        if not isinstance(plugin_section_obj, Mapping):
-            return base_config
-        plugin_section = _to_string_key_mapping(plugin_section_obj)
-        config_profiles_obj = plugin_section.get("config_profiles")
-        if not isinstance(config_profiles_obj, Mapping):
-            return base_config
-        profiles_cfg = _to_string_key_mapping(config_profiles_obj)
+    if profiles_cfg is not None:
+        return profiles_cfg
 
+    candidate_base = base_config if isinstance(base_config, Mapping) else _load_base_config_from_file(config_path)
+    if not isinstance(candidate_base, Mapping):
+        return None
+    return _extract_profiles_cfg_from_base_config(candidate_base)
+
+
+def _resolve_active_profile_name(plugin_id: str, profiles_cfg: Mapping[object, object]) -> str | None:
     active_name: str | None = None
     raw_active = profiles_cfg.get("active")
     if isinstance(raw_active, str):
@@ -138,6 +170,26 @@ def apply_user_config_profiles(
     env_override = os.getenv(env_key)
     if isinstance(env_override, str) and env_override.strip():
         active_name = env_override.strip()
+    return active_name
+
+
+def apply_user_config_profiles(
+    *,
+    plugin_id: str,
+    base_config: dict[str, object],
+    config_path: Path,
+) -> dict[str, object]:
+    if not isinstance(base_config, Mapping):
+        return base_config
+
+    profiles_cfg = _resolve_profiles_cfg(
+        plugin_id=plugin_id,
+        config_path=config_path,
+        base_config=base_config,
+    )
+    if profiles_cfg is None:
+        return base_config
+    active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
 
     if not active_name:
         return base_config
@@ -255,14 +307,12 @@ def get_profiles_state(
 
     base_dir = config_path.parent
     profiles_path = base_dir / "profiles.toml"
-    profiles_cfg = load_profiles_cfg_from_file(plugin_id, config_path)
+    profiles_cfg = _resolve_profiles_cfg(plugin_id=plugin_id, config_path=config_path)
 
     active_name: str | None = None
     files_info: dict[str, object] = {}
     if isinstance(profiles_cfg, Mapping):
-        raw_active = profiles_cfg.get("active")
-        if isinstance(raw_active, str):
-            active_name = raw_active.strip() or None
+        active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
 
         files_map_obj = profiles_cfg.get("files")
         if isinstance(files_map_obj, Mapping):
@@ -302,7 +352,7 @@ def get_profile_config(
         raise HTTPException(status_code=400, detail="profile_name is required")
 
     base_dir = config_path.parent
-    profiles_cfg = load_profiles_cfg_from_file(plugin_id, config_path)
+    profiles_cfg = _resolve_profiles_cfg(plugin_id=plugin_id, config_path=config_path)
 
     raw_path: str | None = None
     if isinstance(profiles_cfg, Mapping):

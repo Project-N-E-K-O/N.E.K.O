@@ -25,11 +25,11 @@ def resolve_common_fields(request: Mapping[str, object]) -> tuple[str, str, floa
     request_id_obj = request.get("request_id")
     timeout = coerce_timeout(request.get("timeout", DEFAULT_TIMEOUT_SECONDS))
 
-    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj.strip():
         return None
-    if not isinstance(request_id_obj, str) or not request_id_obj:
+    if not isinstance(request_id_obj, str) or not request_id_obj.strip():
         return None
-    return from_plugin_obj, request_id_obj, timeout
+    return from_plugin_obj.strip(), request_id_obj.strip(), timeout
 
 
 def domain_error_payload(error: ServerDomainError) -> dict[str, object]:
