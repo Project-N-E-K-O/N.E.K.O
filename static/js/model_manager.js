@@ -778,6 +778,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let vrmAnimationManager = null;
     let vrmExpressionManager = null;
 
+    // 防抖/合并刷新标志
+    let isRefreshScheduled = false;
+
     // 延迟初始化管理器（确保 DOM 已加载）
     function initDropdownManagers() {
         if (!modelTypeManager) {
@@ -991,17 +994,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
+    // 刷新模型下拉菜单和按钮文字（合并每帧多次调用）
+    function scheduleRefresh() {
+        if (isRefreshScheduled) {
+            return;
+        }
+        isRefreshScheduled = true;
+        requestAnimationFrame(() => {
+            try {
+                if (live2dModelManager) {
+                    live2dModelManager.updateDropdown();
+                    live2dModelManager.updateButtonText();
+                }
+            } catch (e) {
+                console.warn('[model_manager] 刷新模型列表失败:', e);
+            } finally {
+                isRefreshScheduled = false;
+            }
+        });
+    }
+
     // 监听模型扫描完成事件，刷新模型列表（具有容错能力）
     window.addEventListener('modelsScanned', function(event) {
         console.log('[model_manager] 收到模型扫描完成事件，刷新模型列表');
-        try {
-            if (live2dModelManager) {
-                live2dModelManager.updateDropdown();
-                live2dModelManager.updateButtonText();
-            }
-        } catch (e) {
-            console.warn('[model_manager] 刷新模型列表失败:', e);
-        }
+        scheduleRefresh();
     });
 
 
