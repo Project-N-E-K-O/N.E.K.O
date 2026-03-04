@@ -102,7 +102,7 @@ class LifecycleRecord(BusRecord):
         )
 
     def dump(self) -> Dict[str, Any]:
-        base = super().dump()
+        base = BusRecord.dump(self)
         base["lifecycle_id"] = self.lifecycle_id
         base["detail"] = dict(self.detail) if isinstance(self.detail, dict) else self.detail
         return base

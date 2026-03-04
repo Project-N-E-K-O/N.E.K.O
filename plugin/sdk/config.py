@@ -108,6 +108,11 @@ class PluginConfig:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
+        if hasattr(coro, "close"):
+            try:
+                coro.close()
+            except Exception:
+                pass
         raise PluginConfigError(
             f"{operation}_sync cannot be used inside a running event loop; use 'await {operation}(...)' instead",
             operation=operation,

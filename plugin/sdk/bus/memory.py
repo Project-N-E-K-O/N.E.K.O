@@ -73,8 +73,17 @@ class MemoryRecord(BusRecord):
 
 
 class MemoryList(BusList[MemoryRecord]):
-    def __init__(self, items: Sequence[MemoryRecord], *, bucket_id: str):
-        super().__init__(items)
+    def __init__(
+        self,
+        items: Sequence[MemoryRecord],
+        *,
+        bucket_id: str = "default",
+        ctx: Optional[Any] = None,
+        trace: Optional[Sequence[Any]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.bucket_id = bucket_id
 
     def filter(self, *args: Any, **kwargs: Any) -> "MemoryList":

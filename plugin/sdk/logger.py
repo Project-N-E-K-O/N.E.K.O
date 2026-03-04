@@ -129,7 +129,7 @@ class PluginFileLogger:
         except (OSError, PermissionError) as e:
             print(f"Warning: Failed to cleanup old logs: {e}", file=sys.stderr)
     
-    def setup(self, logger: Optional[Any] = None) -> Any:
+    def setup(self, logger_instance: Optional[Any] = None) -> Any:
         """
         设置文件日志handler和控制台handler（使用loguru）
         
@@ -138,7 +138,7 @@ class PluginFileLogger:
         - 控制台：标准输出（终端）
         
         Args:
-            logger: 要配置的logger实例，如果为None则创建新的logger
+            logger_instance: 要配置的logger实例，如果为None则创建新的logger
             
         Returns:
             配置好的loguru logger实例（已添加文件handler和控制台handler）
@@ -149,12 +149,12 @@ class PluginFileLogger:
         
         # 获取或创建logger
         should_add_console = False
-        if logger is None:
+        if logger_instance is None:
             # 创建新的loguru logger（绑定插件ID）
             self._logger = logger.bind(plugin_id=self.plugin_id)
             should_add_console = True
         else:
-            self._logger = logger
+            self._logger = logger_instance
             # 如果提供了外部 logger（通常来自 Host），假设它已经配置了控制台输出
             # 我们不再添加控制台 handler，以避免重复日志（Proc-xxx 和 Plugin-xxx 重复）
             should_add_console = False
@@ -285,7 +285,7 @@ def enable_plugin_file_logging(
         backup_count=backup_count,
         max_files=max_files,
     )
-    return file_logger.setup(logger=logger)
+    return file_logger.setup(logger_instance=logger)
 
 
 def plugin_file_logger(
@@ -367,4 +367,3 @@ __all__ = [
     'enable_plugin_file_logging',
     'plugin_file_logger',
 ]
-
