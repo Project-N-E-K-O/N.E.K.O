@@ -429,7 +429,7 @@ window.createChatModeToggle = function(options) {
                 }
             } else {
                 // 子模式关闭：如果没有其他子模式开启，停止调度
-                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
+                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled || window.proactivePersonalChatEnabled || window.proactiveMusicEnabled;
                 if (!hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
                     window.stopProactiveChatSchedule();
                 }
@@ -477,6 +477,18 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveVideoChat',
         tooltipKey: 'settings.toggles.proactiveVideoChatTooltip',
         globalVarName: 'proactiveVideoChatEnabled'
+    },
+    {
+        mode: 'personal',
+        labelKey: 'settings.toggles.proactivePersonalChat',
+        tooltipKey: 'settings.toggles.proactivePersonalChatTooltip',
+        globalVarName: 'proactivePersonalChatEnabled'
+    },
+    {
+        mode: 'music',
+        labelKey: 'settings.toggles.proactiveMusicChat',
+        tooltipKey: 'settings.toggles.proactiveMusicChatTooltip',
+        globalVarName: 'proactiveMusicEnabled'
     }
 ];
 

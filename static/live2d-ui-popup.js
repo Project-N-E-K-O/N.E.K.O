@@ -110,6 +110,7 @@ Live2DManager.prototype._createSettingsPopupContent = function (popup) {
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 30 },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 },
+        { id: 'proactive-music', label: window.t ? window.t('settings.toggles.proactiveMusic') : '音乐模式', labelKey: 'settings.toggles.proactiveMusic', storageKey: 'proactiveMusicEnabled' },
     ];
 
     settingsToggles.forEach(toggle => {
@@ -1148,6 +1149,8 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
         checkbox.checked = window.proactiveVisionEnabled;
+    } else if (toggle.id === 'proactive-music' && typeof window.proactiveMusicEnabled !== 'undefined') {
+        checkbox.checked = window.proactiveMusicEnabled;
     }
 
     // 使用辅助方法创建圆形指示器和对勾
@@ -1266,6 +1269,14 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                 }
             }
             console.log(`主动视觉已${isChecked ? '开启' : '关闭'}`);
+        } else if (toggle.id === 'proactive-music') {
+            window.proactiveMusicEnabled = isChecked;
+
+            // 保存到localStorage
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+            console.log(`音乐模式已${isChecked ? '开启' : '关闭'}`);
         }
     };
 

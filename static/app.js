@@ -267,6 +267,7 @@ function init_app() {
     let proactiveVideoChatEnabled = false;
     let mergeMessagesEnabled = false;
     let proactivePersonalChatEnabled = false;
+    let proactiveMusicEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
@@ -362,6 +363,7 @@ function init_app() {
     window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
     window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
     window.proactivePersonalChatEnabled = proactivePersonalChatEnabled;
+    window.proactiveMusicEnabled = proactiveMusicEnabled;
     window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
     window.proactiveChatInterval = proactiveChatInterval;
@@ -1158,6 +1160,39 @@ function init_app() {
                         syncFloatingMicButtonState(false);
                         showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
                     }
+                } else if (response.action === 'music') {
+                    const searchTerm = response.search_term;
+                    if (searchTerm) {
+                        console.log(`[Music] Received music action with search term: ${searchTerm}`);
+                        if (window.showStatusToast) {
+                            window.showStatusToast(`正在为您搜索: ${searchTerm}`, 2000);
+                        }
+                        
+                    fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
+                        .then(res => res.json())
+                        .then(result => {
+                            if (result.success && result.data && result.data.length > 0) {
+                                const track = result.data[0];
+                                if (window.sendMusicMessage) {
+                                    window.sendMusicMessage(track);
+                                    if (window.showStatusToast) {
+                                        window.showStatusToast(`为您播放: ${track.name}`, 3000);
+                                    }
+                                }
+                            } else {
+                                console.warn(`[Music] API did not find a song for: ${searchTerm}`);
+                                if (window.showStatusToast) {
+                                    window.showStatusToast(`找不到歌曲: ${searchTerm}`, 3000);
+                                }
+                            }
+                        })
+                        .catch(e => {
+                            console.error(`[Music] Music search API call failed:`, e);
+                            if (window.showStatusToast) {
+                                window.showStatusToast(`音乐搜索失败`, 3000);
+                            }
+                        });
+                }
                 } else if (response.type === 'repetition_warning') {
                     // 处理高重复度对话警告
                     console.log(window.t('console.repetitionWarningReceived'), response.name);
@@ -1165,7 +1200,8 @@ function init_app() {
                         ? window.t('app.repetitionDetected', { name: response.name })
                         : `检测到高重复度对话。建议您终止对话，让${response.name}休息片刻。`;
                     showStatusToast(warningMessage, 8000);
-                }
+                    }
+                
             } catch (error) {
                 console.error(window.t('console.messageProcessingFailed'), error);
             }
@@ -1291,7 +1327,6 @@ function init_app() {
         };
     }
 
-    // 初始化连接
     connectWebSocket();
 
     // 初始化 BroadcastChannel 用于跨页面通信（与 model_manager 通信）
@@ -1878,7 +1913,7 @@ function init_app() {
         }
     }
 
-    function processMusicCommands(text) {
+    window.processMusicCommands = async function(text) {
         if (!text) return;
         // 匹配完整的 [play_music: {"name":"...","artist":"..."}] 指令
         const musicRegex = /\[play_music:\s*({.*?})\]/g;
@@ -1886,13 +1921,41 @@ function init_app() {
         
         while ((match = musicRegex.exec(text)) !== null) {
             try {
-                const trackInfo = JSON.parse(match[1]);
-                // 调用你之前在 common_ui.js 中写好的气泡生成函数
-                if (window.sendMusicMessage) {
-                    window.sendMusicMessage(trackInfo);
+                // 1. 解析 AI 传来的意图信息（通常只有 name 和 artist）
+                const aiTrackInfo = JSON.parse(match[1]);
+                const query = `${aiTrackInfo.name} ${aiTrackInfo.artist || ''}`.trim();
+                
+                if (query) {
+                    // 2. 调用你的 FastAPI 路由，获取真实的 mp3 直链和封面
+                    const response = await fetch(`/api/music/search?query=${encodeURIComponent(query)}`);
+                    const result = await response.json();
+                    
+                    if (result.success && result.data && result.data.length > 0) {
+                        const realTrack = result.data[0];
+                        
+                        // 3. 合并 AI 的数据和后端的真实数据
+                        const finalTrackInfo = {
+                            name: realTrack.name || aiTrackInfo.name,
+                            artist: realTrack.artist || aiTrackInfo.artist,
+                            url: realTrack.url,          // 你的 FastAPI 返回的拼接好的直链
+                            cover: realTrack.cover,      // 你的 FastAPI 返回的专辑封面
+                            theme: aiTrackInfo.theme || '#44b7fe'
+                        };
+                        
+                        // 4. 调用你在 common_ui.js 中写好的高颜值气泡生成函数
+                        if (window.sendMusicMessage) {
+                            window.sendMusicMessage(finalTrackInfo);
+                            if (window.showStatusToast) {
+                                window.showStatusToast(`为您播放: ${finalTrackInfo.name}`, 3000);
+                            }
+                        }
+                    } else {
+                        console.warn('[Music] API 未找到歌曲:', query);
+                        if (window.showStatusToast) window.showStatusToast(`找不到歌曲: ${query}`, 3000);
+                    }
                 }
             } catch (e) {
-                console.error('[Music Parser] 解析音乐 JSON 指令失败:', e);
+                console.error('[Music Parser] 音乐指令解析或请求失败:', e);
             }
         }
     }
@@ -8583,39 +8646,43 @@ function init_app() {
         try {
             syncProactiveFlags();
 
-            // 收集所有启用的搭话方式
             let availableModes = [];
+                // 收集所有启用的搭话方式
+                // 视觉搭话：需要同时开启主动搭话和自主视觉
+                // 同时触发 vision 和 window 模式
+                if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                    availableModes.push('vision');
+                    availableModes.push('window');
+                }
 
-            // 视觉搭话：需要同时开启主动搭话和自主视觉
-            // 同时触发 vision 和 window 模式
-            if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
-                availableModes.push('vision');
-                availableModes.push('window');
-            }
+                // 新闻搭话：使用微博热议话题
+                if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                    availableModes.push('news');
+                }
 
-            // 新闻搭话：使用微博热议话题
-            if (proactiveNewsChatEnabled && proactiveChatEnabled) {
-                availableModes.push('news');
-            }
+                // 视频搭话：使用B站首页视频
+                if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                    availableModes.push('video');
+                }
 
-            // 视频搭话：使用B站首页视频
-            if (proactiveVideoChatEnabled && proactiveChatEnabled) {
-                availableModes.push('video');
-            }
-
-            // 个人动态搭话：使用B站和微博个人动态
-            if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                // 个人动态搭话：使用B站和微博个人动态
                 if (proactivePersonalChatEnabled && proactiveChatEnabled) {
-                // 检查是否有可用的 Cookie 凭证
-                const platforms = await getAvailablePersonalPlatforms();
-                    if (platforms.length > 0) {
-                        availableModes.push('personal');
-                        console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
-                    } else {
-                        // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
-                        console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
+                    if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                    // 检查是否有可用的 Cookie 凭证
+                    const platforms = await getAvailablePersonalPlatforms();
+                        if (platforms.length > 0) {
+                            availableModes.push('personal');
+                            console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
+                        } else {
+                            // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
+                            console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
+                        }
                     }
                 }
+
+                // 音乐搭话
+                if (proactiveMusicEnabled && proactiveChatEnabled) {
+                availableModes.push('music');
             }
 
             // 如果没有选择任何搭话方式，跳过本次搭话

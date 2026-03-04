@@ -985,7 +985,7 @@ window.sendMusicMessage = function(trackInfo) {
         return;
     }
 
-    const playerId = 'music-msg-' + Date.now();
+    const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
     const messageHTML = `
         <div class="chat-message bot-message" style="margin-bottom: 15px; display: flex; align-items: flex-start;">
             <div style="width: 32px; height: 32px; border-radius: 50%; background: #44b7fe; margin-right: 10px; flex-shrink: 0; display: flex; justify-content: center; align-items: center; color: white; font-size: 16px; box-shadow: 0 2px 6px rgba(68,183,254,0.4);">
