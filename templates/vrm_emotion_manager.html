@@ -35,9 +35,15 @@
 
             <div class="field-row">
                 <label for="model-select" data-i18n="vrmEmotionManager.selectModel">选择 VRM 模型</label>
-                <select id="model-select">
-                    <option value="" data-i18n="vrmEmotionManager.loading">加载中...</option>
+                <select id="model-select" style="display: none;">
+                    <option value="" data-i18n="vrmEmotionManager.pleaseSelectModel">请选择模型</option>
                 </select>
+                <div class="custom-singleselect" id="model-singleselect">
+                    <div class="singleselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-singleselect-options">
+                        <span class="selected-text" data-i18n="vrmEmotionManager.pleaseSelectModel">请选择模型</span>
+                    </div>
+                    <div class="singleselect-options" id="model-singleselect-options" role="listbox"></div>
+                </div>
             </div>
 
             <div id="emotion-config" style="display: none;">

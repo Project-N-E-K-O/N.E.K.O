@@ -2482,6 +2482,53 @@ body {
     background: #7dd3ff;
 }
 
+/* 有滚动条时右侧变为直角 */
+.model-type-dropdown.has-scrollbar,
+.live2d-model-dropdown.has-scrollbar,
+.motion-dropdown.has-scrollbar,
+.expression-dropdown.has-scrollbar,
+.persistent-expression-dropdown.has-scrollbar,
+.vrm-model-dropdown.has-scrollbar,
+.vrm-animation-dropdown.has-scrollbar,
+.vrm-expression-dropdown.has-scrollbar {
+    border-radius: 12px 0 0 12px;
+}
+
+/* 有滚动条时子项右侧圆角设为0 */
+.model-type-dropdown.has-scrollbar .dropdown-item,
+.live2d-model-dropdown.has-scrollbar .dropdown-item,
+.motion-dropdown.has-scrollbar .dropdown-item,
+.expression-dropdown.has-scrollbar .dropdown-item,
+.persistent-expression-dropdown.has-scrollbar .dropdown-item,
+.vrm-model-dropdown.has-scrollbar .dropdown-item,
+.vrm-animation-dropdown.has-scrollbar .dropdown-item,
+.vrm-expression-dropdown.has-scrollbar .dropdown-item {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.model-type-dropdown.has-scrollbar .dropdown-item:first-child,
+.live2d-model-dropdown.has-scrollbar .dropdown-item:first-child,
+.motion-dropdown.has-scrollbar .dropdown-item:first-child,
+.expression-dropdown.has-scrollbar .dropdown-item:first-child,
+.persistent-expression-dropdown.has-scrollbar .dropdown-item:first-child,
+.vrm-model-dropdown.has-scrollbar .dropdown-item:first-child,
+.vrm-animation-dropdown.has-scrollbar .dropdown-item:first-child,
+.vrm-expression-dropdown.has-scrollbar .dropdown-item:first-child {
+    border-top-right-radius: 0;
+}
+
+.model-type-dropdown.has-scrollbar .dropdown-item:last-child,
+.live2d-model-dropdown.has-scrollbar .dropdown-item:last-child,
+.motion-dropdown.has-scrollbar .dropdown-item:last-child,
+.expression-dropdown.has-scrollbar .dropdown-item:last-child,
+.persistent-expression-dropdown.has-scrollbar .dropdown-item:last-child,
+.vrm-model-dropdown.has-scrollbar .dropdown-item:last-child,
+.vrm-animation-dropdown.has-scrollbar .dropdown-item:last-child,
+.vrm-expression-dropdown.has-scrollbar .dropdown-item:last-child {
+    border-bottom-right-radius: 0;
+}
+
 /* Firefox 滚动条样式 */
 .model-type-dropdown,
 .live2d-model-dropdown,

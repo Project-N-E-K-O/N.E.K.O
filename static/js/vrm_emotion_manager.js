@@ -7,6 +7,10 @@
 
     // DOM 元素
     const modelSelect = document.getElementById('model-select');
+    const modelSingleselect = document.getElementById('model-singleselect');
+    const modelSingleselectHeader = modelSingleselect.querySelector('.singleselect-header');
+    const modelSingleselectText = modelSingleselect.querySelector('.selected-text');
+    const modelSingleselectOptions = modelSingleselect.querySelector('.singleselect-options');
     const emotionConfig = document.getElementById('emotion-config');
     const saveBtn = document.getElementById('save-btn');
     const resetBtn = document.getElementById('reset-btn');
@@ -17,6 +21,7 @@
     const emotions = ['neutral', 'happy', 'relaxed', 'sad', 'angry', 'surprised'];
     let currentModelInfo = null;
     let availableExpressions = [];
+    let currentSelectionId = 0;
 
     // i18n 辅助函数
     function t(key, paramsOrFallback, fallback) {
@@ -62,18 +67,38 @@
 
             if (data.success && Array.isArray(data.models) && data.models.length > 0) {
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.pleaseSelectModel', '请选择模型')}</option>`;
+                modelSingleselectOptions.innerHTML = '';
 
                 data.models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;
-                    const locationText = model.location === 'user' ?
-                        t('common.user', '用户') : t('common.project', '项目');
-                    option.textContent = `${model.name} (${locationText})`;
                     option.dataset.info = JSON.stringify(model);
+                    option.textContent = model.name;
                     modelSelect.appendChild(option);
+
+                    const item = document.createElement('div');
+                    item.className = 'singleselect-item';
+                    item.setAttribute('role', 'option');
+                    item.setAttribute('tabindex', '0');
+                    item.setAttribute('aria-selected', 'false');
+                    item.dataset.value = model.name;
+                    item.dataset.info = JSON.stringify(model);
+                    item.textContent = model.name;
+                    item.addEventListener('click', () => selectModelFromDropdown(model.name, model));
+                    item.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            selectModelFromDropdown(model.name, model);
+                        }
+                    });
+                    modelSingleselectOptions.appendChild(item);
                 });
+
+                modelSingleselectText.textContent = t('vrmEmotionManager.pleaseSelectModel', '请选择模型');
             } else {
                 modelSelect.innerHTML = `<option value="">${t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型')}</option>`;
+                modelSingleselectOptions.innerHTML = '';
+                modelSingleselectText.textContent = t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型');
                 showStatus(t('vrmEmotionManager.noModelsFound', '没有找到可用的VRM模型，请先上传模型'), 'warning');
             }
         } catch (error) {
@@ -81,6 +106,67 @@
             showStatus(t('vrmEmotionManager.loadModelListFailed', '加载模型列表失败') + ': ' + error.message, 'error');
         }
     }
+
+    // 从下拉框选择模型
+    function selectModelFromDropdown(modelName, modelInfo) {
+        currentSelectionId++;
+        const selectionId = currentSelectionId;
+        
+        currentModelInfo = modelInfo;
+        modelSelect.value = modelName;
+        modelSingleselectText.textContent = modelName;
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+        
+        modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
+            const isSelected = item.dataset.value === modelName;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+
+        loadModelExpressions(modelName, modelInfo, selectionId).then((success) => {
+            if (success && selectionId === currentSelectionId) {
+                loadEmotionMapping(modelName);
+            }
+        });
+    }
+
+    // 切换模型选择下拉框
+    function toggleModelDropdown(event) {
+        const wasActive = modelSingleselect.classList.contains('active');
+
+        document.querySelectorAll('.custom-multiselect').forEach(ms => {
+            ms.classList.remove('active');
+            const h = ms.querySelector('.multiselect-header');
+            if (h) h.setAttribute('aria-expanded', 'false');
+        });
+
+        if (wasActive) {
+            modelSingleselect.classList.remove('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
+        } else {
+            modelSingleselect.classList.add('active');
+            modelSingleselectHeader.setAttribute('aria-expanded', 'true');
+            
+            requestAnimationFrame(() => {
+                if (modelSingleselectOptions.scrollHeight > modelSingleselectOptions.clientHeight) {
+                    modelSingleselectOptions.classList.add('has-scrollbar');
+                } else {
+                    modelSingleselectOptions.classList.remove('has-scrollbar');
+                }
+            });
+        }
+
+        event.stopPropagation();
+    }
+
+    modelSingleselectHeader.addEventListener('click', toggleModelDropdown);
+    modelSingleselectHeader.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggleModelDropdown(e);
+        }
+    });
 
     // 从父窗口获取实际模型表情列表
     function getExpressionsFromParentWindow() {
@@ -129,13 +215,18 @@
     }
 
     // 加载模型表情列表
-    async function loadModelExpressions(modelName, modelInfo) {
+    async function loadModelExpressions(modelName, modelInfo, selectionId) {
         // 优先从父窗口获取实际模型表情列表
         let expressionsFromParent = null;
         try {
             expressionsFromParent = await getExpressionsFromParentWindow();
         } catch (e) {
             console.warn('[VRM Emotion] 从父窗口获取表情列表失败:', e);
+        }
+
+        // 检查是否仍然是当前选择
+        if (selectionId !== currentSelectionId) {
+            return false;
         }
 
         if (expressionsFromParent && expressionsFromParent.length > 0) {
@@ -148,7 +239,7 @@
             populatePreviewButtons();
             emotionConfig.style.display = 'block';
             showStatus(t('vrmEmotionManager.expressionsLoadedFromModel', '已从当前模型加载表情列表'), 'success');
-            return;
+            return true;
         }
 
         // 回退到后端 API
@@ -160,17 +251,30 @@
             }
             const data = await response.json();
 
+            // 检查是否仍然是当前选择
+            if (selectionId !== currentSelectionId) {
+                return false;
+            }
+
             if (data.success) {
                 availableExpressions = data.expressions || [];
                 populateSelects();
                 populatePreviewButtons();
                 emotionConfig.style.display = 'block';
                 showStatus(t('vrmEmotionManager.useGenericExpressions', '使用通用表情列表（请先在主页面加载模型）'), 'info');
+                return true;
             } else {
                 showStatus(t('vrmEmotionManager.loadExpressionsFailed', '加载模型表情失败') + ': ' + (data.error || t('common.unknownError', '未知错误')), 'error');
+                return false;
             }
         } catch (error) {
             console.error('加载模型表情失败:', error);
+            
+            // 检查是否仍然是当前选择
+            if (selectionId !== currentSelectionId) {
+                return false;
+            }
+            
             // 如果API不可用，使用默认表情列表
             availableExpressions = [
                 'neutral', 'happy', 'joy', 'fun', 'relaxed',
@@ -180,6 +284,7 @@
             populatePreviewButtons();
             emotionConfig.style.display = 'block';
             showStatus(t('vrmEmotionManager.useDefaultExpressions', '使用默认表情列表（请先在主页面加载模型）'), 'info');
+            return true;
         }
     }
 
@@ -235,6 +340,7 @@
     function toggleDropdown(event) {
         const multiselect = event.currentTarget.closest('.custom-multiselect');
         const header = multiselect.querySelector('.multiselect-header');
+        const options = multiselect.querySelector('.multiselect-options');
         const wasActive = multiselect.classList.contains('active');
 
         // 关闭所有其他下拉菜单
@@ -243,10 +349,23 @@
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
 
         if (!wasActive) {
             multiselect.classList.add('active');
             if (header) header.setAttribute('aria-expanded', 'true');
+            
+            // 检测是否显示滚动条
+            if (options) {
+                requestAnimationFrame(() => {
+                    if (options.scrollHeight > options.clientHeight) {
+                        options.classList.add('has-scrollbar');
+                    } else {
+                        options.classList.remove('has-scrollbar');
+                    }
+                });
+            }
         }
 
         event.stopPropagation();
@@ -259,6 +378,8 @@
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
+        modelSingleselect.classList.remove('active');
+        modelSingleselectHeader.setAttribute('aria-expanded', 'false');
     });
 
     // 更新头部显示
@@ -293,10 +414,12 @@
                 availableExpressions.forEach(expression => {
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';
+                    item.setAttribute('role', 'option');
 
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.value = expression;
+                    checkbox.setAttribute('aria-label', expression);
 
                     const span = document.createElement('span');
                     span.textContent = expression;
@@ -449,18 +572,6 @@
     }
 
     // 事件监听
-    modelSelect.addEventListener('change', async (e) => {
-        const selectedOption = e.target.options[e.target.selectedIndex];
-        if (selectedOption.value && selectedOption.dataset.info) {
-            currentModelInfo = JSON.parse(selectedOption.dataset.info);
-            await loadModelExpressions(currentModelInfo.name, currentModelInfo);
-            await loadEmotionMapping(currentModelInfo.name);
-        } else {
-            emotionConfig.style.display = 'none';
-            currentModelInfo = null;
-        }
-    });
-
     saveBtn.addEventListener('click', saveEmotionMapping);
     resetBtn.addEventListener('click', resetConfig);
 
