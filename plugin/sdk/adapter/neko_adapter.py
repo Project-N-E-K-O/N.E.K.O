@@ -315,12 +315,19 @@ class NekoAdapterPlugin(NekoPluginBase):
             if tool_name and tool_name in self._adapter_tools:
                 handler = self._adapter_tools[tool_name]
                 args = msg.payload.get("arguments", {}) if isinstance(msg.payload, dict) else {}
-                if isinstance(args, dict) and callable(handler):
+                try:
+                    if not callable(handler):
+                        return msg.error(f"Handler for tool '{tool_name}' is not callable")
+                    if not isinstance(args, dict):
+                        return msg.error(f"Invalid arguments for tool '{tool_name}': must be object")
                     result = handler(**args)
                     # 如果是协程，等待它
                     if asyncio.iscoroutine(result):
                         result = await result
                     return msg.reply(result)
+                except Exception as e:
+                    self.ctx.logger.exception("Adapter local tool execution failed: {}", tool_name)
+                    return msg.error(str(e))
         
         return None
     

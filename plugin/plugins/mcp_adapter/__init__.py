@@ -24,12 +24,34 @@ from plugin.sdk import (
     ok,
     fail,
 )
-from plugin.sdk.adapter import NekoAdapterPlugin
+from plugin.sdk.adapter import AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin
 from plugin.sdk.adapter.gateway_models import ExternalEnvelope
 from plugin.plugins.mcp_adapter.normalizer import MCPRequestNormalizer
 from plugin.plugins.mcp_adapter.serializer import MCPResponseSerializer
 from plugin.plugins.mcp_adapter.router import MCPRouteEngine
 from plugin.plugins.mcp_adapter.invoker import MCPPluginInvoker
+
+
+class _MCPInternalTransport:
+    """
+    内部直调 transport。
+
+    gateway_invoke 走 handle_envelope 直调，不依赖 recv/send 轮询。
+    """
+
+    protocol_name = "mcp_internal"
+
+    async def start(self) -> None:
+        return
+
+    async def stop(self) -> None:
+        return
+
+    async def recv(self) -> ExternalEnvelope:
+        raise RuntimeError("mcp_internal transport does not support recv()")
+
+    async def send(self, response: object) -> None:
+        return
 
 
 @dataclass
@@ -599,6 +621,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._invoker: Optional[MCPPluginInvoker] = None
         self._normalizer: Optional[MCPRequestNormalizer] = None
         self._serializer: Optional[MCPResponseSerializer] = None
+        self._policy: Optional[DefaultPolicyEngine] = None
+        self._gateway_core: Optional[AdapterGatewayCore] = None
     
     @lifecycle(id="startup")
     async def on_startup(self):
@@ -650,14 +674,26 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         schema: Optional[Dict[str, object]],
     ) -> bool:
         """Gateway Core 工具注册回调 - 注册为动态 entry。"""
+        def _parse_tool_id(value: str) -> tuple[str | None, str | None]:
+            # 优先按已连接 server 前缀解析，兼容 server 名含 "_"
+            for server_name in self._clients.keys():
+                prefix = f"mcp_{server_name}_"
+                if value.startswith(prefix):
+                    tool_name = value[len(prefix):]
+                    if tool_name:
+                        return server_name, tool_name
+            # 兜底兼容老解析逻辑
+            parts = value.split("_", 2)
+            if len(parts) >= 3 and parts[1] and parts[2]:
+                return parts[1], parts[2]
+            return None, None
+
         # 创建工具处理器
         async def tool_handler(**kwargs: object) -> Dict[str, object]:
             # 从 tool_id 解析 server_name 和 tool_name
-            parts = tool_id.split("_", 2)
-            if len(parts) < 3:
+            server_name, tool_name = _parse_tool_id(tool_id)
+            if not server_name or not tool_name:
                 return fail("INVALID_TOOL_ID", f"Invalid tool_id: {tool_id}")
-            server_name = parts[1]
-            tool_name = parts[2]
             
             # 移除 NEKO 注入的参数
             arguments = {k: v for k, v in kwargs.items() if not k.startswith("_")}
@@ -709,6 +745,20 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             plugin_call_fn=self._call_neko_plugin,
             logger=self.ctx.logger,  # type: ignore[arg-type]
         )
+
+        # 策略引擎
+        self._policy = DefaultPolicyEngine()
+
+        # 统一 Gateway Core 编排器（P0 收敛）
+        self._gateway_core = AdapterGatewayCore(
+            transport=_MCPInternalTransport(),  # gateway_invoke 走 handle_envelope，不依赖 transport 轮询
+            normalizer=self._normalizer,
+            policy=self._policy,
+            router=self._route_engine,
+            invoker=self._invoker,
+            serializer=self._serializer,
+            logger=self.ctx.logger,  # type: ignore[arg-type]
+        )
         
         self.ctx.logger.info("Gateway Core components initialized")
     
@@ -717,6 +767,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         plugin_id: str,
         entry_id: str,
         params: dict[str, object],
+        timeout_s: float = 30.0,
     ) -> object:
         """
         调用 NEKO 插件 entry。
@@ -731,7 +782,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             event_type="adapter_call",
             event_id=entry_id,
             params=dict(params),  # 转换为 Dict[str, Any]
-            timeout=30.0,
+            timeout=float(timeout_s),
         )
     
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
@@ -779,6 +830,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 self.ctx.logger.warning(f"Error disconnecting from {server_name}: {e}")
         
         self._clients.clear()
+        self._gateway_core = None
+        self._policy = None
         
         # 清理 Adapter 基类
         await self.adapter_shutdown()
@@ -1339,6 +1392,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "target_plugin_id": {
                     "type": "string",
                     "description": "Optional: route to NEKO plugin instead of MCP tool"
+                },
+                "timeout_s": {
+                    "type": "number",
+                    "description": "Optional timeout in seconds for downstream call"
                 }
             },
             "required": ["tool_name"]
@@ -1349,6 +1406,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         tool_name: str,
         arguments: Optional[Dict[str, object]] = None,
         target_plugin_id: Optional[str] = None,
+        timeout_s: Optional[float] = None,
         **_
     ):
         """
@@ -1357,12 +1415,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         这是新架构的统一入口，使用 Gateway Core 组件处理请求。
         """
         import uuid
-        import time
-        
-        if self._route_engine is None or self._invoker is None:
-            return fail("GATEWAY_NOT_INITIALIZED", "Gateway Core components not initialized")
-        
-        if self._normalizer is None or self._serializer is None:
+        if self._gateway_core is None:
             return fail("GATEWAY_NOT_INITIALIZED", "Gateway Core components not initialized")
         
         # 构造 ExternalEnvelope
@@ -1376,53 +1429,34 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 "name": tool_name,
                 "arguments": arguments or {},
                 "target_plugin_id": target_plugin_id,
+                "timeout": float(timeout_s) if isinstance(timeout_s, (int, float)) and timeout_s > 0 else None,
             },
             metadata={},
         )
         
-        started_at = time.perf_counter()
-        
         try:
-            # 规范化请求
-            request = await self._normalizer.normalize(envelope)
-            
-            # 路由决策
-            decision = await self._route_engine.decide(request)
-            
-            # 调用目标
-            result = await self._invoker.invoke(request, decision)
-            
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            
-            # 序列化响应
-            response = await self._serializer.ok(request, result, latency_ms)
-            
+            response = await self._gateway_core.handle_envelope(envelope)
+        except Exception as exc:
+            self.ctx.logger.exception(f"Gateway invoke raised unexpected exception: {exc}")
+            return fail("GATEWAY_ERROR", str(exc))
+
+        if response.success:
             return ok(data={
                 "request_id": response.request_id,
                 "result": response.data,
                 "latency_ms": response.latency_ms,
-                "route": {
-                    "mode": decision.mode.value,
-                    "plugin_id": decision.plugin_id,
-                    "entry_id": decision.entry_id,
-                    "reason": decision.reason,
-                },
             })
-            
-        except Exception as exc:
-            from plugin.sdk.adapter.gateway_models import GatewayErrorException
-            
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            
-            if isinstance(exc, GatewayErrorException):
-                error_code = exc.error.code
-                error_msg = exc.error.message
-            else:
-                error_code = "GATEWAY_ERROR"
-                error_msg = str(exc)
-            
-            self.ctx.logger.warning(
-                f"Gateway invoke failed: code={error_code}, msg={error_msg}, latency={latency_ms:.2f}ms"
-            )
-            
-            return fail(error_code, error_msg)
+
+        error_code = "GATEWAY_ERROR"
+        error_msg = "gateway invocation failed"
+        if response.error is not None:
+            error_code = response.error.code
+            error_msg = response.error.message
+        self.ctx.logger.warning(
+            "Gateway invoke failed: code={}, msg={}, request_id={}, latency_ms={}",
+            error_code,
+            error_msg,
+            response.request_id,
+            response.latency_ms,
+        )
+        return fail(error_code, error_msg)

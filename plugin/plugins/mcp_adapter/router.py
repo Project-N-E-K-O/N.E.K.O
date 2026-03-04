@@ -55,13 +55,24 @@ class MCPRouteEngine:
         # 缓存 tool 详情 {tool_id: {name, description, schema}}
         self._tool_details: dict[str, dict] = {}
 
+    @staticmethod
+    def _tool_id(server_name: str, tool_name: str) -> str:
+        return f"mcp_{server_name}_{tool_name}"
+
+    def _match_tool_ids_by_name(self, tool_name: str) -> list[str]:
+        matched: list[str] = []
+        for tid, detail in self._tool_details.items():
+            if detail.get("name") == tool_name:
+                matched.append(tid)
+        return matched
+
     def rebuild_tool_index(self) -> None:
         """重建 tool 索引（同步版本，不触发回调）。"""
         self._tool_index.clear()
         self._tool_details.clear()
         for server_name, client in self._mcp_clients.items():
             for tool in client.tools:
-                tool_id = f"mcp_{server_name}_{tool.name}"
+                tool_id = self._tool_id(server_name, tool.name)
                 self._tool_index[tool_id] = server_name
                 self._tool_details[tool_id] = {
                     "name": tool.name,
@@ -88,7 +99,7 @@ class MCPRouteEngine:
         """
         count = 0
         for tool in client.tools:
-            tool_id = f"mcp_{server_name}_{tool.name}"
+            tool_id = self._tool_id(server_name, tool.name)
             self._tool_index[tool_id] = server_name
             self._tool_details[tool_id] = {
                 "name": tool.name,
@@ -168,11 +179,32 @@ class MCPRouteEngine:
 
         # 如果只有 entry_id，检查是否是 MCP tool
         if request.target_entry_id is not None:
+            # 优先命中 canonical tool_id: mcp_{server}_{tool}
             if request.target_entry_id in self._tool_index:
                 return RouteDecision(
                     mode=RouteMode.SELF,
                     entry_id=request.target_entry_id,
                     reason=f"MCP tool on server '{self._tool_index[request.target_entry_id]}'",
+                )
+
+            # 兼容 raw tool_name（无 server 前缀）
+            matched_tool_ids = self._match_tool_ids_by_name(request.target_entry_id)
+            if len(matched_tool_ids) == 1:
+                tool_id = matched_tool_ids[0]
+                server_name = self._tool_index.get(tool_id, "")
+                return RouteDecision(
+                    mode=RouteMode.SELF,
+                    entry_id=tool_id,
+                    reason=f"MCP tool '{request.target_entry_id}' on server '{server_name}'",
+                )
+            if len(matched_tool_ids) > 1:
+                servers = [self._tool_index.get(tid, "") for tid in matched_tool_ids]
+                return RouteDecision(
+                    mode=RouteMode.DROP,
+                    reason=(
+                        f"ambiguous MCP tool name '{request.target_entry_id}', "
+                        f"matched servers={servers}; use canonical tool_id"
+                    ),
                 )
 
             # 对于 TOOL_CALL action，如果找不到 tool，返回 DROP
