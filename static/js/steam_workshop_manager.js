@@ -3252,15 +3252,28 @@ async function scanModels() {
         // 存储可上传模型列表到全局变量（用于上传检查）
         availableModels = uploadableModels;
 
-        // 触发模型扫描完成事件，通知其他组件刷新 UI
-        window.dispatchEvent(new CustomEvent('modelsScanned', { detail: { models, uploadableModels } }));
-
-        // 如果存在 model_manager.js 中的更新函数，也尝试调用
-        if (typeof window.updateLive2DModelDropdown === 'function') {
-            window.updateLive2DModelDropdown();
+        // 触发模型扫描完成事件，通知其他组件刷新 UI（具有容错能力）
+        try {
+            window.dispatchEvent(new CustomEvent('modelsScanned', { detail: { models, uploadableModels } }));
+        } catch (e) {
+            console.warn('触发 modelsScanned 事件失败:', e);
         }
-        if (typeof window.updateLive2DModelSelectButtonText === 'function') {
-            window.updateLive2DModelSelectButtonText();
+
+        // 如果存在 model_manager.js 中的更新函数，也尝试调用（具有容错能力）
+        try {
+            if (typeof window.updateLive2DModelDropdown === 'function') {
+                window.updateLive2DModelDropdown();
+            }
+        } catch (e) {
+            console.warn('更新 Live2D 模型下拉菜单失败:', e);
+        }
+
+        try {
+            if (typeof window.updateLive2DModelSelectButtonText === 'function') {
+                window.updateLive2DModelSelectButtonText();
+            }
+        } catch (e) {
+            console.warn('更新 Live2D 模型选择按钮文字失败:', e);
         }
 
 

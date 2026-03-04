@@ -991,12 +991,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    // 监听模型扫描完成事件，刷新模型列表
+    // 监听模型扫描完成事件，刷新模型列表（具有容错能力）
     window.addEventListener('modelsScanned', function(event) {
         console.log('[model_manager] 收到模型扫描完成事件，刷新模型列表');
-        if (live2dModelManager) {
-            live2dModelManager.updateDropdown();
-            live2dModelManager.updateButtonText();
+        try {
+            if (live2dModelManager) {
+                live2dModelManager.updateDropdown();
+                live2dModelManager.updateButtonText();
+            }
+        } catch (e) {
+            console.warn('[model_manager] 刷新模型列表失败:', e);
         }
     });
 
