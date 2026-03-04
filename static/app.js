@@ -145,6 +145,7 @@ function init_app() {
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
+    let screenCaptureAutoPromptFailed = false; // 防止无用户手势时 getDisplayMedia 反复弹窗（刷新后保护）
 
     // 屏幕流闲置释放的统一 helper 函数
     function scheduleScreenCaptureIdleCheck() {
@@ -2904,6 +2905,8 @@ function init_app() {
             }
 
             if (screenCaptureStream) {
+                // 用户手势成功获取了流，重置自动弹窗失败标记
+                screenCaptureAutoPromptFailed = false;
                 // 正常流模式
                 screenCaptureStreamLastUsed = Date.now();
                 scheduleScreenCaptureIdleCheck();
@@ -8966,15 +8969,38 @@ function init_app() {
             return backendDataUrl;
         }
 
-        // 策略2: 前端 getDisplayMedia（作为远程服务器等后端不可用情况下的次要备选方案）
-        // 该方法每次被调用都会强制弹出屏幕/窗口选择权限框，中断用户体验
-        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-            let captureStream = null;
+        // 策略2: 前端 getDisplayMedia（远程服务器等后端不可用时的备选）
+        // 复用缓存的 screenCaptureStream，仅在无有效流时才请求新流
+        // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
+        if (!screenCaptureAutoPromptFailed && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
-                captureStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: 'always' },
-                    audio: false,
-                });
+                let captureStream = screenCaptureStream;
+
+                if (!captureStream || !captureStream.active) {
+                    captureStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: 'always', frameRate: { max: 1 } },
+                        audio: false,
+                    });
+
+                    screenCaptureStream = captureStream;
+
+                    captureStream.getVideoTracks().forEach(track => {
+                        track.addEventListener('ended', () => {
+                            console.log('[ProactiveVision] 屏幕共享流被用户终止');
+                            if (screenCaptureStream === captureStream) {
+                                screenCaptureStream = null;
+                                screenCaptureStreamLastUsed = null;
+                                if (screenCaptureStreamIdleTimer) {
+                                    clearTimeout(screenCaptureStreamIdleTimer);
+                                    screenCaptureStreamIdleTimer = null;
+                                }
+                            }
+                        });
+                    });
+                }
+
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
 
                 const video = document.createElement('video');
                 video.srcObject = captureStream;
@@ -8986,14 +9012,12 @@ function init_app() {
                 video.srcObject = null;
                 video.remove();
 
-                console.log(`[主动搭话截图] 前端 getDisplayMedia 截图成功，尺寸: ${width}x${height}`);
+                console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
                 return dataUrl;
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
-            } finally {
-                if (captureStream) {
-                    captureStream.getTracks().forEach(track => track.stop());
-                }
+                screenCaptureAutoPromptFailed = true;
+                console.log('[主动搭话截图] 已标记 screenCaptureAutoPromptFailed，后续不再自动弹窗请求屏幕共享');
             }
         }
 
