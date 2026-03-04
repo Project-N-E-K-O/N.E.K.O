@@ -732,6 +732,95 @@ proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니
 
 정리된 내용만 반환하고 다른 설명은 하지 마세요."""
 
+# =====================================================================
+# ==================== 新增：音乐专属 Prompt ===================
+# =====================================================================
+
+proactive_chat_prompt_music = """你是{lanlan_name}，现在{master_name}可能想听音乐了。请根据与{master_name}的对话历史和当前的对话内容，判断是否要为{master_name}播放音乐。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是当前的对话======
+{current_chat}
+======以上为当前的对话======
+
+请根据以下原则决定是否播放音乐，以及播放什么：
+1.  当{master_name}明确提出听歌请求时（例如“来点音乐”、“放首歌”），你应该播放音乐。
+2.  分析{master_name}的请求，提取出歌曲、歌手或音乐风格作为搜索关键词。
+3.  如果{master_name}没有明确指定，你可以根据对话的氛围或{master_name}的喜好推荐音乐。例如，如果气氛很轻松，可以推荐一些轻音乐。
+4.  如果决定播放音乐，请生成一个最适合在音乐库中搜索的简洁关键词。
+
+请回复：
+-   如果决定播放音乐，直接返回你生成的搜索关键词（例如“周杰伦”、“轻松的纯音乐”）。
+-   如果认为现在不适合播放音乐，或者{master_name}没有表达听歌的意图，请只回复 "[PASS]"。
+"""
+
+proactive_chat_prompt_music_en = """You are {lanlan_name}, and {master_name} might want to listen to some music. Based on your chat history and the current conversation, decide if you should play music for {master_name}.
+
+======Chat History======
+{memory_context}
+======End of Chat History======
+
+======Current Conversation======
+{current_chat}
+======End of Current Conversation======
+
+Use these rules to decide whether to play music and what to play:
+1.  When {master_name} explicitly asks for music (e.g., "play some music," "put on a song"), you should play music.
+2.  Analyze {master_name}'s request to extract keywords like song title, artist, or genre for searching.
+3.  If {master_name} doesn't specify, you can recommend music based on the conversation's mood or {master_name}'s preferences. For example, if the mood is relaxed, suggest some light music.
+4.  If you decide to play music, generate a concise keyword that is best for searching in a music library.
+
+Reply:
+-   If you decide to play music, return only the search keyword you generated (e.g., "Jay Chou," "relaxing instrumental music").
+-   If you think it's not a good time for music or {master_name} hasn't shown any intent to listen, reply only with "[PASS]".
+"""
+
+proactive_chat_prompt_music_ja = """あなたは{lanlan_name}です。今、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
+
+======会話履歴======
+{memory_context}
+======会話履歴ここまで======
+
+======現在の会話======
+{current_chat}
+======現在の会話ここまで======
+
+以下の原則に基づいて、音楽を再生するか、何を再生するかを決定してください：
+1. {master_name}が明確に音楽をリクエストした場合（例：「音楽かけて」、「何か曲を再生して」）、音楽を再生すべきです。
+2. {master_name}のリクエストを分析し、曲名、アーティスト名、または音楽ジャンルを検索キーワードとして抽出します。
+3. {master_name}が何も指定しなかった場合、会話の雰囲気や{master_name}の好みに基づいて音楽をおすすめできます。例えば、リラックスした雰囲気なら、軽音楽をおすすめするなどです。
+4. 音楽を再生すると決めた場合、音楽ライブラリでの検索に最適な簡潔なキーワードを生成してください。
+
+返答：
+- 音楽を再生する場合、生成した検索キーワードのみを返してください（例：「ジェイ・チョウ」、「リラックスできるインストゥルメンタル」）。
+- 今は音楽を再生するのに適していない、または{master_name}が音楽を聴く意図を示していないと判断した場合は、「[PASS]」とのみ返してください。
+"""
+
+proactive_chat_prompt_music_ko = """당신은 {lanlan_name}이고, {master_name}이 음악을 듣고 싶어할지도 모릅니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을 위해 음악을 재생할지 결정하세요.
+
+======대화 기록======
+{memory_context}
+======대화 기록 끝======
+
+======현재 대화======
+{current_chat}
+======현재 대화 끝======
+
+다음 규칙에 따라 음악 재생 여부와 재생할 음악을 결정하세요:
+1. {master_name}이 명시적으로 음악을 요청할 때(예: "음악 좀 틀어줘", "노래 한 곡 재생해줘"), 음악을 재생해야 합니다.
+2. {master_name}의 요청을 분석하여 노래 제목, 아티스트 또는 장르와 같은 키워드를 검색용으로 추출합니다.
+3. {master_name}이 지정하지 않은 경우, 대화 분위기나 {master_name}의 취향에 따라 음악을 추천할 수 있습니다. 예를 들어, 편안한 분위기라면 가벼운 음악을 제안할 수 있습니다.
+4. 음악을 재생하기로 결정했다면, 음악 라이브러리에서 검색하기에 가장 적합한 간결한 키워드를 생성하세요.
+
+응답:
+- 음악을 재생하기로 결정한 경우, 생성한 검색 키워드만 반환하세요(예: "주걸륜", "편안한 연주곡").
+- 지금은 음악을 듣기에 적절하지 않거나 {master_name}이 음악을 들을 의사를 보이지 않았다고 생각되면 "[PASS]"라고만 응답하세요.
+"""
+
+
 
 # ==============================================
 # Phase 1: Screening Prompts — 筛选阶段 prompt（不生成搭话，只筛选话题）
@@ -1032,6 +1121,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'news': proactive_chat_prompt_news,
         'video': proactive_chat_prompt_video,
         'personal': proactive_chat_prompt_personal,
+        'music': proactive_chat_prompt_music,
     },
     'en': {
         'home': proactive_chat_prompt_en,
@@ -1040,6 +1130,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'news': proactive_chat_prompt_news_en,
         'video': proactive_chat_prompt_video_en,
         'personal': proactive_chat_prompt_personal_en,
+        'music': proactive_chat_prompt_music_en,
     },
     'ja': {
         'home': proactive_chat_prompt_ja,
@@ -1048,6 +1139,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'news': proactive_chat_prompt_news_ja,
         'video': proactive_chat_prompt_video_ja,
         'personal': proactive_chat_prompt_personal_ja,
+        'music': proactive_chat_prompt_music_ja,
     },
     'ko': {
         'home': proactive_chat_prompt_ko,
@@ -1056,6 +1148,7 @@ PROACTIVE_CHAT_PROMPTS = {
         'news': proactive_chat_prompt_news_ko,
         'video': proactive_chat_prompt_video_ko,
         'personal': proactive_chat_prompt_personal_ko,
+        'music': proactive_chat_prompt_music_ko,
     }
 }
 
