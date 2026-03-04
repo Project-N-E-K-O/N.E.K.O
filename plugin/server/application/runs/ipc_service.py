@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 import time
 import uuid
 from collections.abc import Mapping
@@ -167,7 +168,10 @@ def _normalize_patch(payload: Mapping[str, object]) -> dict[str, object]:
                 status_code=400,
             )
         try:
-            patch["progress"] = float(progress_obj)
+            progress = float(progress_obj)
+            if not math.isfinite(progress):
+                raise ValueError("progress must be finite")
+            patch["progress"] = progress
         except (TypeError, ValueError) as exc:
             raise _to_domain_error(
                 code="INVALID_ARGUMENT",
@@ -226,7 +230,10 @@ def _normalize_patch(payload: Mapping[str, object]) -> dict[str, object]:
                 status_code=400,
             )
         try:
-            patch["eta_seconds"] = float(eta_seconds_obj)
+            eta_seconds = float(eta_seconds_obj)
+            if not math.isfinite(eta_seconds):
+                raise ValueError("eta_seconds must be finite")
+            patch["eta_seconds"] = eta_seconds
         except (TypeError, ValueError) as exc:
             raise _to_domain_error(
                 code="INVALID_ARGUMENT",

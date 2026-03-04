@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from loguru import logger
+from plugin.logging_config import get_logger
+
+logger = get_logger("server.messaging.plane_runner")
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,7 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
     host = host.strip() or "127.0.0.1"
     try:
         port = int(port_s)
-    except Exception:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         return True
 
     deadline = time.time() + max(0.0, float(timeout_s))
@@ -50,10 +52,10 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
 
             with socket.create_connection((host, port), timeout=0.2):
                 return True
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             try:
                 time.sleep(0.05)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 pass
     return False
 
@@ -61,7 +63,7 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
 def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
     try:
         from plugin.sdk.message_plane_transport import MessagePlaneRpcClient
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         return False
 
     try:
@@ -72,7 +74,7 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
         if not resp.get("ok"):
             return False
         return True
-    except Exception:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         return False
 
 
@@ -90,7 +92,7 @@ def _resolve_rust_message_plane_bin(configured: str) -> str:
         p = str(get_binary_path() or "").strip()
         if p:
             return p
-    except Exception:
+    except (ImportError, ModuleNotFoundError):
         pass
     return cfg or "neko-message-plane"
 
@@ -140,7 +142,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 finally:
                     try:
                         rpc_srv.close()
-                    except Exception:
+                    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                         pass
 
             t = threading.Thread(target=_run_rpc, daemon=True, name="message-plane-rpc")
@@ -152,8 +154,8 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             self._ingest = ingest_srv
             self._pub = pub_srv
             logger.info("message_plane embedded started")
-        except Exception as e:
-            logger.warning("message_plane embedded start failed: {}", e)
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
+            logger.warning("message_plane embedded start failed: {}", err)
         return self._endpoints
 
     def _start_external(self) -> MessagePlaneEndpoints:
@@ -176,9 +178,9 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 env=env,
             )
             logger.info("message_plane external process started pid={}", int(self._proc.pid))
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
             self._proc = None
-            logger.warning("message_plane external process start failed: {}", e)
+            logger.warning("message_plane external process start failed: {}", err)
             return self._endpoints
 
         _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=3.0)
@@ -195,15 +197,15 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             try:
                 if p.poll() is None:
                     p.terminate()
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 pass
             try:
                 p.wait(timeout=1.0)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 try:
                     if p.poll() is None:
                         p.kill()
-                except Exception:
+                except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                     pass
             return
 
@@ -222,27 +224,27 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         try:
             if rpc_srv is not None:
                 rpc_srv.stop()
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             if ingest_srv is not None:
                 ingest_srv.stop()
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             if ingest_thread is not None and ingest_thread.is_alive():
                 ingest_thread.join(timeout=1.0)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             if rpc_thread is not None and rpc_thread.is_alive():
                 rpc_thread.join(timeout=1.0)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             if pub_srv is not None:
                 pub_srv.close()
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
 
     def health_check(self, *, timeout_s: float = 1.0) -> bool:
@@ -285,22 +287,22 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
             )
             workers_info = f"workers={self._workers or 'auto'}"
             logger.info("message_plane rust process started pid={} {}", int(self._proc.pid), workers_info)
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
             self._proc = None
-            logger.warning("message_plane rust process start failed: {}", e)
+            logger.warning("message_plane rust process start failed: {}", err)
             return self._endpoints
 
         # Don't block the main event loop (FastAPI lifespan). Do the readiness wait in background.
         try:
             time.sleep(0.05)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             if self._proc is not None and self._proc.poll() is not None:
                 rc = self._proc.returncode
                 logger.warning("message_plane rust process exited early (code={})", rc)
                 return self._endpoints
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
 
         def _bg_wait_ready() -> None:
@@ -317,7 +319,7 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
                                 self._proc.returncode,
                             )
                             return
-                    except Exception:
+                    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                         pass
 
                     if not _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=0.5):
@@ -335,17 +337,17 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
 
                     try:
                         time.sleep(0.2)
-                    except Exception:
+                    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                         pass
 
                 logger.warning("message_plane rust health_check failed (may still be starting): {}", last_err)
-            except Exception as e:
-                logger.warning("message_plane rust readiness wait failed: {}", e)
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
+                logger.warning("message_plane rust readiness wait failed: {}", err)
 
         try:
             t = threading.Thread(target=_bg_wait_ready, daemon=True, name="message-plane-rust-wait")
             t.start()
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         return self._endpoints
 
@@ -357,15 +359,15 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
         try:
             if p.poll() is None:
                 p.terminate()
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             pass
         try:
             p.wait(timeout=1.0)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             try:
                 if p.poll() is None:
                     p.kill()
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 pass
 
     def health_check(self, *, timeout_s: float = 1.0) -> bool:

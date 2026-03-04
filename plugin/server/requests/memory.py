@@ -8,6 +8,7 @@ from plugin.server.requests.typing import SendResponse
 
 logger = get_logger("server.requests.memory")
 memory_query_service = MemoryQueryService()
+_RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 
 async def handle_memory_query(request: dict[str, object], send_response: SendResponse) -> None:
     common_fields = resolve_common_fields(request)
@@ -29,3 +30,10 @@ async def handle_memory_query(request: dict[str, object], send_response: SendRes
             error.message,
         )
         send_response(from_plugin, request_id, None, error.message, timeout=timeout)
+    except _RUNTIME_ERRORS as error:
+        logger.error(
+            "MEMORY_QUERY unexpected failure: err_type={}, err={}",
+            type(error).__name__,
+            str(error),
+        )
+        send_response(from_plugin, request_id, None, "Internal server error", timeout=timeout)

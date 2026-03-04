@@ -1,25 +1,29 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from plugin.server.domain.errors import ServerDomainError
 
+DEFAULT_TIMEOUT_SECONDS = 5.0
+MAX_TIMEOUT_SECONDS = 60.0
+
 
 def coerce_timeout(value: object) -> float:
     if isinstance(value, bool):
-        return 5.0
+        return DEFAULT_TIMEOUT_SECONDS
     if isinstance(value, (int, float)):
         timeout = float(value)
-        if timeout > 0:
-            return timeout
-        return 5.0
-    return 5.0
+        if math.isfinite(timeout) and timeout > 0:
+            return min(timeout, MAX_TIMEOUT_SECONDS)
+        return DEFAULT_TIMEOUT_SECONDS
+    return DEFAULT_TIMEOUT_SECONDS
 
 
 def resolve_common_fields(request: Mapping[str, object]) -> tuple[str, str, float] | None:
     from_plugin_obj = request.get("from_plugin")
     request_id_obj = request.get("request_id")
-    timeout = coerce_timeout(request.get("timeout", 5.0))
+    timeout = coerce_timeout(request.get("timeout", DEFAULT_TIMEOUT_SECONDS))
 
     if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
         return None

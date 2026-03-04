@@ -49,8 +49,10 @@ def _check_forbidden_paths(value: object, *, path: str = "") -> None:
 
 def _validate_plugin_author(plugin_section: Mapping[object, object]) -> None:
     author_obj = plugin_section.get("author")
-    if not isinstance(author_obj, Mapping):
+    if author_obj is None:
         return
+    if not isinstance(author_obj, Mapping):
+        _raise_invalid_config("plugin.author must be an object")
 
     name_obj = author_obj.get("name")
     if name_obj is not None:
@@ -66,8 +68,10 @@ def _validate_plugin_author(plugin_section: Mapping[object, object]) -> None:
 
 def _validate_plugin_sdk(plugin_section: Mapping[object, object]) -> None:
     sdk_obj = plugin_section.get("sdk")
-    if not isinstance(sdk_obj, Mapping):
+    if sdk_obj is None:
         return
+    if not isinstance(sdk_obj, Mapping):
+        _raise_invalid_config("plugin.sdk must be an object")
 
     for key in ("recommended", "supported", "untested"):
         value = sdk_obj.get(key)
@@ -123,8 +127,10 @@ def validate_config_updates(*, updates: object) -> dict[str, object]:
     _check_forbidden_paths(normalized_updates)
 
     plugin_obj = normalized_updates.get("plugin")
-    if not isinstance(plugin_obj, Mapping):
+    if plugin_obj is None:
         return normalized_updates
+    if not isinstance(plugin_obj, Mapping):
+        _raise_invalid_config("plugin must be an object")
 
     name_obj = plugin_obj.get("name")
     if name_obj is not None:

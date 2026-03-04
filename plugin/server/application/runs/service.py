@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterable
 from pathlib import Path
 
@@ -232,7 +233,7 @@ class RunService:
                             status_code=413,
                             details={"upload_id": upload_id, "max_bytes": int(session.max_bytes)},
                         )
-                    file_obj.write(bytes(chunk))
+                    await asyncio.to_thread(file_obj.write, bytes(chunk))
 
             blob_store.finalize_upload(upload_id)
             return {

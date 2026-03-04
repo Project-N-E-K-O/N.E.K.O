@@ -86,9 +86,21 @@ def _normalize_payload(payload: object, *, context: str) -> dict[str, object]:
     return normalized
 
 
-def _normalize_config_mapping(value: object, *, field: str) -> dict[str, object]:
-    if not isinstance(value, Mapping):
+def _normalize_config_mapping(
+    value: object,
+    *,
+    field: str,
+    allow_none: bool = False,
+) -> dict[str, object]:
+    if value is None and allow_none:
         return {}
+    if not isinstance(value, Mapping):
+        raise ServerDomainError(
+            code="INVALID_DATA_SHAPE",
+            message=f"{field} is not an object",
+            status_code=500,
+            details={"field": field, "value_type": type(value).__name__},
+        )
     normalized: dict[str, object] = {}
     for key_obj, item in value.items():
         if not isinstance(key_obj, str):
@@ -326,7 +338,11 @@ class ConfigQueryService:
         )
 
         base_config = _normalize_config_mapping(base_payload.get("config"), field="base config")
-        overlay_config = _normalize_config_mapping(overlay_payload.get("config"), field="profile config")
+        overlay_config = _normalize_config_mapping(
+            overlay_payload.get("config"),
+            field="profile config",
+            allow_none=True,
+        )
 
         if "plugin" in overlay_config:
             raise ServerDomainError(

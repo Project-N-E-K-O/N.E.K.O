@@ -54,6 +54,20 @@ def _coerce_optional_float(value: object) -> float | None:
     return None
 
 
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _coerce_filter_data(value: object) -> dict[str, object] | None:
     if not isinstance(value, Mapping):
         return None
@@ -99,7 +113,7 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
     plugin_id = _resolve_plugin_id(request=request, from_plugin=from_plugin)
     max_count = _coerce_optional_int(request.get("max_count", request.get("limit")))
     since_ts = _coerce_optional_float(request.get("since_ts"))
-    strict = bool(request.get("strict", True))
+    strict = _coerce_bool(request.get("strict", True), default=True)
     filter_data = _coerce_filter_data(request.get("filter"))
 
     try:

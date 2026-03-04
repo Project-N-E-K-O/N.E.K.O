@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -41,6 +42,19 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
+
+    @staticmethod
+    def _persist_admin_code_for_non_tty(admin_code: str) -> Path | None:
+        code_file = (PLUGIN_CONFIG_ROOT.parent / ".plugin_server_admin_code").resolve()
+        try:
+            code_file.write_text(f"{admin_code}\n", encoding="utf-8")
+            try:
+                code_file.chmod(0o600)
+            except OSError:
+                logger.warning("failed to chmod admin code file: path={}", code_file)
+            return code_file
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            return None
 
     @staticmethod
     def _plugin_factory(
@@ -181,8 +195,6 @@ class ServerLifecycleService:
                 str(exc),
             )
 
-        emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
-
         await self._start_hosts()
 
         def _get_hosts() -> dict[str, object]:
@@ -193,13 +205,24 @@ class ServerLifecycleService:
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.info("metrics collector started")
+        emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
 
         admin_code = generate_admin_code()
         set_admin_code(admin_code)
-        print("\n" + "=" * 60, flush=True)
-        print(f"ADMIN CODE: {admin_code}", flush=True)
-        print("Add HTTP header: Authorization: Bearer <admin_code>", flush=True)
-        print("=" * 60 + "\n", flush=True)
+        if sys.stdout.isatty():
+            print("\n" + "=" * 60, flush=True)
+            print(f"ADMIN CODE: {admin_code}", flush=True)
+            print("Add HTTP header: Authorization: Bearer <admin_code>", flush=True)
+            print("=" * 60 + "\n", flush=True)
+        else:
+            code_file = self._persist_admin_code_for_non_tty(admin_code)
+            if code_file is not None:
+                logger.warning(
+                    "admin code generated and persisted for non-interactive stdout: path={}",
+                    code_file,
+                )
+            else:
+                logger.warning("admin code generated but not printed/persisted on non-interactive stdout")
         logger.info("admin authentication code generated")
 
     async def _shutdown_hosts(self) -> bool:
@@ -326,7 +349,12 @@ class ServerLifecycleService:
         except asyncio.TimeoutError:
             logger.error("server shutdown timed out after {}s", PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
             try:
-                state.close_plugin_resources()
+                await asyncio.wait_for(
+                    asyncio.to_thread(state.close_plugin_resources),
+                    timeout=1.5,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("forced cleanup after timeout also timed out")
             except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
                 logger.warning(
                     "forced cleanup after timeout failed: err_type={}, err={}",

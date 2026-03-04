@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
@@ -94,6 +95,18 @@ class PluginDispatchService:
             raise ServerDomainError(
                 code="INVALID_ARGUMENT",
                 message="event_id is required",
+                status_code=400,
+                details={},
+            )
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or float(timeout) <= 0
+        ):
+            raise ServerDomainError(
+                code="INVALID_ARGUMENT",
+                message="timeout must be a positive finite number",
                 status_code=400,
                 details={},
             )

@@ -6,7 +6,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 from plugin.settings import BLOB_STORE_DIR, BLOB_UPLOAD_MAX_BYTES
 
@@ -16,8 +15,8 @@ class UploadSession:
     upload_id: str
     run_id: str
     blob_id: str
-    filename: Optional[str]
-    mime: Optional[str]
+    filename: str | None
+    mime: str | None
     created_at: float
     max_bytes: int
     tmp_path: Path
@@ -27,15 +26,15 @@ class UploadSession:
 class BlobStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._uploads: Dict[str, UploadSession] = {}
-        self._blob_to_run: Dict[str, str] = {}
+        self._uploads: dict[str, UploadSession] = {}
+        self._blob_to_run: dict[str, str] = {}
 
     def _ensure_dirs(self) -> Path:
         p = Path(str(BLOB_STORE_DIR)).expanduser().resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    def create_upload(self, *, run_id: str, filename: Optional[str], mime: Optional[str], max_bytes: Optional[int]) -> UploadSession:
+    def create_upload(self, *, run_id: str, filename: str | None, mime: str | None, max_bytes: int | None) -> UploadSession:
         base = self._ensure_dirs()
         upload_id = str(uuid.uuid4())
         blob_id = upload_id
@@ -46,8 +45,8 @@ class BlobStore:
                 mb = int(max_bytes)
                 if mb > 0:
                     limit = min(limit, mb)
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                limit = int(BLOB_UPLOAD_MAX_BYTES)
 
         tmp_path = base / f"{blob_id}.upload"
         final_path = base / f"{blob_id}.blob"
@@ -68,11 +67,11 @@ class BlobStore:
             self._blob_to_run[blob_id] = str(run_id)
         return sess
 
-    def get_upload(self, upload_id: str) -> Optional[UploadSession]:
+    def get_upload(self, upload_id: str) -> UploadSession | None:
         with self._lock:
             return self._uploads.get(str(upload_id))
 
-    def finalize_upload(self, upload_id: str) -> Optional[UploadSession]:
+    def finalize_upload(self, upload_id: str) -> UploadSession | None:
         with self._lock:
             sess = self._uploads.get(str(upload_id))
             if sess is None:
@@ -83,11 +82,11 @@ class BlobStore:
                 return sess
             if sess.tmp_path.exists():
                 os.replace(str(sess.tmp_path), str(sess.final_path))
-        except Exception:
+        except OSError:
             return sess
         return sess
 
-    def get_blob_path(self, *, run_id: str, blob_id: str) -> Optional[Path]:
+    def get_blob_path(self, *, run_id: str, blob_id: str) -> Path | None:
         rid = str(run_id)
         bid = str(blob_id)
         with self._lock:

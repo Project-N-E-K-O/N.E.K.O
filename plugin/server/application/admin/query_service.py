@@ -11,6 +11,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.utils import now_iso
 
 logger = get_logger("server.application.admin.query")
+_RUNTIME_ERRORS = (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError)
 
 
 def _available_snapshot_sync() -> int:
@@ -36,8 +37,23 @@ def _build_server_info_sync() -> dict[str, object]:
             if isinstance(pid_obj, int):
                 pid = pid_obj
 
+        alive = False
+        host_is_alive = getattr(host_obj, "is_alive", None)
+        if callable(host_is_alive):
+            try:
+                alive = bool(host_is_alive())
+            except _RUNTIME_ERRORS:
+                alive = False
+        elif process_obj is not None:
+            process_is_alive = getattr(process_obj, "is_alive", None)
+            if callable(process_is_alive):
+                try:
+                    alive = bool(process_is_alive())
+                except _RUNTIME_ERRORS:
+                    alive = False
+
         running_plugins_status[plugin_id_obj] = {
-            "alive": True,
+            "alive": alive,
             "pid": pid,
         }
 
@@ -48,8 +64,8 @@ def _build_server_info_sync() -> dict[str, object]:
     ]
     running_plugins = [
         plugin_id
-        for plugin_id in hosts_snapshot.keys()
-        if isinstance(plugin_id, str)
+        for plugin_id, status in running_plugins_status.items()
+        if bool(status.get("alive"))
     ]
 
     return {
@@ -76,6 +92,12 @@ def _jsonify_setting_value(value: object) -> object:
     return str(value)
 
 
+def _is_sensitive_setting_key(key: str) -> bool:
+    upper_key = key.upper()
+    sensitive_markers = ("SECRET", "TOKEN", "PASSWORD", "API_KEY", "PRIVATE_KEY")
+    return any(marker in upper_key for marker in sensitive_markers)
+
+
 def _build_system_config_sync() -> dict[str, object]:
     import plugin.settings as settings
 
@@ -93,7 +115,10 @@ def _build_system_config_sync() -> dict[str, object]:
             continue
         except (RuntimeError, ValueError, TypeError, OSError):
             continue
-        config[key] = _jsonify_setting_value(value)
+        if _is_sensitive_setting_key(key):
+            config[key] = "***REDACTED***"
+        else:
+            config[key] = _jsonify_setting_value(value)
 
     return {"config": config}
 

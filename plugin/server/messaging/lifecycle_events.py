@@ -39,7 +39,7 @@ def emit_lifecycle_event(event: Mapping[str, object]) -> None:
         try:
             lifecycle_queue.get_nowait()
             lifecycle_queue.put_nowait(normalized_event)
-        except (asyncio.QueueEmpty, RuntimeError, AttributeError):
+        except (asyncio.QueueEmpty, asyncio.QueueFull, RuntimeError, AttributeError):
             logger.warning("lifecycle queue overflow; failed to enqueue latest event")
     except (RuntimeError, AttributeError):
         logger.warning("lifecycle queue unavailable during emit")

@@ -676,7 +676,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """Gateway Core 工具注册回调 - 注册为动态 entry。"""
         def _parse_tool_id(value: str) -> tuple[str | None, str | None]:
             # 优先按已连接 server 前缀解析，兼容 server 名含 "_"
-            for server_name in self._clients.keys():
+            for server_name in sorted(self._clients.keys(), key=len, reverse=True):
                 prefix = f"mcp_{server_name}_"
                 if value.startswith(prefix):
                     tool_name = value[len(prefix):]
@@ -688,10 +688,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 return parts[1], parts[2]
             return None, None
 
+        parsed_server_name, parsed_tool_name = _parse_tool_id(tool_id)
+
         # 创建工具处理器
         async def tool_handler(**kwargs: object) -> Dict[str, object]:
             # 从 tool_id 解析 server_name 和 tool_name
-            server_name, tool_name = _parse_tool_id(tool_id)
+            server_name, tool_name = parsed_server_name, parsed_tool_name
             if not server_name or not tool_name:
                 return fail("INVALID_TOOL_ID", f"Invalid tool_id: {tool_id}")
             

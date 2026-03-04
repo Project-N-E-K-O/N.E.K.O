@@ -108,6 +108,10 @@ def update_plugin_config(plugin_id: str, updates: dict[str, object]) -> dict[str
             with file_lock(file_obj):
                 current_config = load_toml_from_stream(file_obj, context=f"{plugin_id}.plugin.toml")
                 merged = deep_merge(current_config, normalized_updates)
+                validate_protected_fields_unchanged(
+                    current_config=current_config,
+                    new_config=merged,
+                )
                 payload = dump_toml_bytes(merged)
                 atomic_write_bytes(
                     target=config_path,

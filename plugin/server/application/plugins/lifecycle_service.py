@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import re
 import time as time_module
 import tomllib
 from collections.abc import Mapping
@@ -31,6 +32,7 @@ from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
+_PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 @runtime_checkable
@@ -151,7 +153,15 @@ def _set_plugin_runtime_enabled_sync(plugin_id: str, enabled: bool) -> None:
 
 
 def _get_plugin_config_path(plugin_id: str) -> Path | None:
-    config_file = PLUGIN_CONFIG_ROOT / plugin_id / "plugin.toml"
+    normalized_plugin_id = plugin_id.strip()
+    if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
+        return None
+
+    root = PLUGIN_CONFIG_ROOT.resolve()
+    config_file = (root / normalized_plugin_id / "plugin.toml").resolve()
+    if root not in config_file.parents:
+        return None
+
     if config_file.exists():
         return config_file
     return None
@@ -424,6 +434,19 @@ class PluginLifecycleService:
                 )
             host_obj = created_host
 
+            author = _resolve_plugin_author(pdata)
+            dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
+            for dep in dependencies:
+                satisfied, error_message = _check_plugin_dependency(dep, logger, current_plugin_id)
+                if not satisfied:
+                    raise _to_domain_error(
+                        code="PLUGIN_DEPENDENCY_CHECK_FAILED",
+                        message=f"Plugin dependency check failed for plugin '{current_plugin_id}': {error_message}",
+                        status_code=400,
+                        plugin_id=current_plugin_id,
+                        error_type="DependencyCheckFailed",
+                    )
+
             await host_obj.start(message_target_queue=state.message_queue)
 
             process_obj = getattr(created_host, "process", None)
@@ -455,19 +478,6 @@ class PluginLifecycleService:
                 )
 
             await asyncio.to_thread(scan_static_metadata, current_plugin_id, cls_obj, conf, pdata)
-
-            author = _resolve_plugin_author(pdata)
-            dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
-            for dep in dependencies:
-                satisfied, error_message = _check_plugin_dependency(dep, logger, current_plugin_id)
-                if not satisfied:
-                    raise _to_domain_error(
-                        code="PLUGIN_DEPENDENCY_CHECK_FAILED",
-                        message=f"Plugin dependency check failed for plugin '{current_plugin_id}': {error_message}",
-                        status_code=400,
-                        plugin_id=current_plugin_id,
-                        error_type="DependencyCheckFailed",
-                    )
 
             plugin_meta = PluginMeta(
                 id=current_plugin_id,

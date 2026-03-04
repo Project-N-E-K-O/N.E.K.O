@@ -8,7 +8,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.utils import now_iso
-from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT, MESSAGE_QUEUE_MAX
 
 logger = get_logger("server.application.messages.query")
 
@@ -112,7 +112,7 @@ def _query_messages_sync(
     priority_min: int | None,
 ) -> list[dict[str, object]]:
     requested_count = max_count if max_count > 0 else MESSAGE_QUEUE_DEFAULT_MAX_COUNT
-    target_count = max(1, requested_count)
+    target_count = max(1, min(requested_count, MESSAGE_QUEUE_MAX))
 
     try:
         state.refresh_messages_cache_from_message_plane(

@@ -6,9 +6,10 @@ import json
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
+from pydantic_core import ValidationError
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -19,19 +20,30 @@ from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
 logger = get_logger("server.runs.manager")
 
+_RUNTIME_ERRORS = (
+    RuntimeError,
+    ValueError,
+    TypeError,
+    KeyError,
+    AttributeError,
+    LookupError,
+    OSError,
+    ValidationError,
+)
+
 
 ExportType = Literal["text", "json", "url", "binary_url", "binary"]
 ExportCategory = Literal["system", "user"]
 
 
 class RunCancelRequest(BaseModel):
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class RunError(BaseModel):
     code: str
     message: str
-    details: Optional[Dict[str, Any]] = None
+    details: dict[str, object] | None = None
 
 
 class ExportItem(BaseModel):
@@ -42,20 +54,20 @@ class ExportItem(BaseModel):
     type: ExportType
     category: ExportCategory = "user"
     created_at: float
-    label: Optional[str] = None
-    description: Optional[str] = None
-    text: Optional[str] = None
-    json_data: Optional[Dict[str, Any]] = Field(default=None, alias="json")
-    url: Optional[str] = None
-    binary_url: Optional[str] = None
-    binary: Optional[str] = None
-    mime: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    label: str | None = None
+    description: str | None = None
+    text: str | None = None
+    json_data: dict[str, object] | None = Field(default=None, alias="json")
+    url: str | None = None
+    binary_url: str | None = None
+    binary: str | None = None
+    mime: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class ExportListResponse(BaseModel):
-    items: List[ExportItem]
-    next_after: Optional[str] = None
+    items: list[ExportItem]
+    next_after: str | None = None
 
 
 class RunRecord(BaseModel):
@@ -68,40 +80,40 @@ class RunRecord(BaseModel):
     updated_at: float
 
     # ── correlation ──
-    task_id: Optional[str] = None
-    trace_id: Optional[str] = None
-    idempotency_key: Optional[str] = None
+    task_id: str | None = None
+    trace_id: str | None = None
+    idempotency_key: str | None = None
 
     # ── lifecycle timestamps ──
-    started_at: Optional[float] = None
-    finished_at: Optional[float] = None
+    started_at: float | None = None
+    finished_at: float | None = None
 
     # ── progress (meaningful only while status in {running, cancel_requested}) ──
-    progress: Optional[float] = None
-    stage: Optional[str] = None
-    message: Optional[str] = None
-    step: Optional[int] = None
-    step_total: Optional[int] = None
-    eta_seconds: Optional[float] = None
-    metrics: Dict[str, Any] = Field(default_factory=dict)
+    progress: float | None = None
+    stage: str | None = None
+    message: str | None = None
+    step: int | None = None
+    step_total: int | None = None
+    eta_seconds: float | None = None
+    metrics: dict[str, object] = Field(default_factory=dict)
 
     # ── cancellation ──
     cancel_requested: bool = False
-    cancel_reason: Optional[str] = None
-    cancel_requested_at: Optional[float] = None
+    cancel_reason: str | None = None
+    cancel_requested_at: float | None = None
 
     # ── result ──
-    error: Optional[RunError] = None
-    result_refs: List[str] = Field(default_factory=list)
+    error: RunError | None = None
+    result_refs: list[str] = Field(default_factory=list)
 
 
 class ExportStore(Protocol):
     def append(self, item: ExportItem) -> None: ...
 
     def list_for_run(
-        self, *, run_id: str, after: Optional[str], limit: int,
-        category: Optional[ExportCategory] = None,
-    ) -> Tuple[List[ExportItem], Optional[str]]: ...
+        self, *, run_id: str, after: str | None, limit: int,
+        category: ExportCategory | None = None,
+    ) -> tuple[list[ExportItem], str | None]: ...
 
     def remove_for_run(self, run_id: str) -> None: ...
 
@@ -109,25 +121,25 @@ class ExportStore(Protocol):
 class RunStore(Protocol):
     def create(self, rec: RunRecord) -> None: ...
 
-    def get(self, run_id: str) -> Optional[RunRecord]: ...
+    def get(self, run_id: str) -> RunRecord | None: ...
 
-    def update(self, run_id: str, **patch: Any) -> Optional[RunRecord]: ...
+    def update(self, run_id: str, **patch: object) -> RunRecord | None: ...
 
     def commit_terminal(
         self,
         run_id: str,
         *,
         status: RunStatus,
-        error: Optional[RunError],
-        result_refs: List[str],
-    ) -> Optional[RunRecord]: ...
+        error: RunError | None,
+        result_refs: list[str],
+    ) -> RunRecord | None: ...
 
 
 class InMemoryExportStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_run: Dict[str, List[str]] = {}
-        self._items: Dict[str, ExportItem] = {}
+        self._by_run: dict[str, list[str]] = {}
+        self._items: dict[str, ExportItem] = {}
 
     def append(self, item: ExportItem) -> None:
         with self._lock:
@@ -135,9 +147,9 @@ class InMemoryExportStore:
             self._by_run.setdefault(item.run_id, []).append(item.export_item_id)
 
     def list_for_run(
-        self, *, run_id: str, after: Optional[str], limit: int,
-        category: Optional[ExportCategory] = None,
-    ) -> Tuple[List[ExportItem], Optional[str]]:
+        self, *, run_id: str, after: str | None, limit: int,
+        category: ExportCategory | None = None,
+    ) -> tuple[list[ExportItem], str | None]:
         with self._lock:
             ids = self._by_run.get(run_id, [])
             start = 0
@@ -176,7 +188,7 @@ class InvalidRunTransition(RuntimeError):
         super().__init__(f"invalid transition: {current} -> {target}")
 
 
-_ALLOWED_TRANSITIONS: Dict[str, frozenset] = {
+_ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued":           frozenset(("running", "canceled")),
     "running":          frozenset(("succeeded", "failed", "timeout", "cancel_requested")),
     "cancel_requested": frozenset(("succeeded", "failed", "canceled", "timeout")),
@@ -197,7 +209,7 @@ def validate_run_transition(current: str, target: str) -> None:
 class InMemoryRunStore:
     def __init__(self, max_completed: int = 0) -> None:
         self._lock = threading.Lock()
-        self._runs: Dict[str, RunRecord] = {}
+        self._runs: dict[str, RunRecord] = {}
         self._completed_order: collections.deque[str] = collections.deque()
         self._max_completed = max_completed if max_completed > 0 else int(RUN_STORE_MAX_COMPLETED)
 
@@ -205,12 +217,12 @@ class InMemoryRunStore:
         with self._lock:
             self._runs[rec.run_id] = rec
 
-    def get(self, run_id: str) -> Optional[RunRecord]:
+    def get(self, run_id: str) -> RunRecord | None:
         with self._lock:
             r = self._runs.get(run_id)
             return r.model_copy(deep=True) if r is not None else None
 
-    def update(self, run_id: str, **patch: Any) -> Optional[RunRecord]:
+    def update(self, run_id: str, **patch: object) -> RunRecord | None:
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -224,18 +236,18 @@ class InMemoryRunStore:
             self._runs[run_id] = nr
             return nr.model_copy(deep=True)
 
-    def list_runs(self) -> List[RunRecord]:
+    def list_runs(self) -> list[RunRecord]:
         with self._lock:
             items = list(self._runs.values())
-        out: List[RunRecord] = []
+        out: list[RunRecord] = []
         for r in items:
             try:
                 out.append(r.model_copy(deep=True))
-            except Exception:
-                pass
+            except _RUNTIME_ERRORS:
+                continue
         return out
 
-    def commit_terminal(self, run_id: str, *, status: RunStatus, error: Optional[RunError], result_refs: List[str]) -> Optional[RunRecord]:
+    def commit_terminal(self, run_id: str, *, status: RunStatus, error: RunError | None, result_refs: list[str]) -> RunRecord | None:
         with self._lock:
             r = self._runs.get(run_id)
             if r is None:
@@ -250,7 +262,7 @@ class InMemoryRunStore:
                     pv = data.get("progress")
                     if pv is None or float(pv) < 1.0:
                         data["progress"] = 1.0
-                except Exception:
+                except (TypeError, ValueError):
                     data["progress"] = 1.0
                 if not (isinstance(data.get("stage"), str) and str(data.get("stage") or "").strip()):
                     data["stage"] = "done"
@@ -287,32 +299,32 @@ class InMemoryRunStore:
                 self._runs.pop(rid, None)
                 try:
                     _export_store.remove_for_run(rid)
-                except Exception:
-                    pass
+                except _RUNTIME_ERRORS:
+                    logger.debug("Failed to remove exports for evicted run {}", rid, exc_info=True)
                 try:
                     with _runs_emit_lock:
                         _runs_last_emit_at.pop(rid, None)
-                except Exception:
-                    pass
+                except _RUNTIME_ERRORS:
+                    logger.debug("Failed to clear emit state for evicted run {}", rid, exc_info=True)
 
 
 _run_store: RunStore = InMemoryRunStore()
 _export_store: ExportStore = InMemoryExportStore()
 
-_active_run_tasks: Dict[str, asyncio.Task] = {}
+_active_run_tasks: dict[str, asyncio.Task[None]] = {}
 
 # NOTE: threading.Lock (not asyncio.Lock) because update_run_from_plugin is a
 # sync function called from both asyncio coroutines and IPC handler threads.
 _runs_emit_lock = threading.Lock()
-_runs_last_emit_at: Dict[str, float] = {}
+_runs_last_emit_at: dict[str, float] = {}
 _runs_emit_min_interval_s: float = 0.2
 
 
-def _publish_bus_record(*, store: str, record: Dict[str, Any]) -> None:
+def _publish_bus_record(*, store: str, record: dict[str, object]) -> None:
     try:
         _publish_record_impl(store=str(store), record=dict(record), topic="all")
-    except Exception:
-        pass
+    except _RUNTIME_ERRORS:
+        logger.debug("Failed to publish bus record for store {}", store, exc_info=True)
 
 
 def set_run_store(store: RunStore) -> None:
@@ -328,9 +340,9 @@ def set_export_store(store: ExportStore) -> None:
 def _emit_runs(op: str, rec: RunRecord) -> None:
     try:
         rev = state._bump_bus_rev("runs")
-    except Exception:
+    except _RUNTIME_ERRORS:
         rev = None
-    payload: Dict[str, Any] = {
+    payload: dict[str, object] = {
         "source": "runs",
         "kind": "runs",
         "type": str(op),
@@ -354,21 +366,21 @@ def _emit_runs(op: str, rec: RunRecord) -> None:
             payload["task_id"] = rec.task_id
         payload["plugin_id"] = rec.plugin_id
         payload["entry_id"] = rec.entry_id
-    except Exception:
-        pass
+    except _RUNTIME_ERRORS:
+        logger.debug("Failed to enrich runs payload for {}", rec.run_id, exc_info=True)
     try:
         _publish_bus_record(store="runs", record=payload)
-    except Exception:
-        pass
+    except _RUNTIME_ERRORS:
+        logger.debug("Failed to emit runs payload for {}", rec.run_id, exc_info=True)
     state.bus_change_hub.emit("runs", str(op), payload)
 
 
 def _emit_export(op: str, item: ExportItem) -> None:
     try:
         rev = state._bump_bus_rev("export")
-    except Exception:
+    except _RUNTIME_ERRORS:
         rev = None
-    payload: Dict[str, Any] = {
+    payload: dict[str, object] = {
         "source": "export",
         "kind": "export",
         "type": str(op),
@@ -385,45 +397,45 @@ def _emit_export(op: str, item: ExportItem) -> None:
         r = get_run(item.run_id)
         if r is not None:
             payload["plugin_id"] = r.plugin_id
-    except Exception:
-        pass
+    except _RUNTIME_ERRORS:
+        logger.debug("Failed to enrich export payload for {}", item.export_item_id, exc_info=True)
     try:
         _publish_bus_record(store="export", record=payload)
-    except Exception:
-        pass
+    except _RUNTIME_ERRORS:
+        logger.debug("Failed to emit export payload for {}", item.export_item_id, exc_info=True)
     state.bus_change_hub.emit("export", str(op), payload)
 
 
-def get_run(run_id: str) -> Optional[RunRecord]:
+def get_run(run_id: str) -> RunRecord | None:
     return _run_store.get(str(run_id))
 
 
-def list_runs(*, plugin_id: Optional[str] = None) -> List[RunRecord]:
+def list_runs(*, plugin_id: str | None = None) -> list[RunRecord]:
     fn = getattr(_run_store, "list_runs", None)
     if fn is None:
         return []
     try:
         items = fn()
-    except Exception:
+    except _RUNTIME_ERRORS:
         return []
     if plugin_id is None:
         return items
     pid = str(plugin_id)
     if not pid:
         return items
-    out: List[RunRecord] = []
+    out: list[RunRecord] = []
     for r in items:
         try:
             if r.plugin_id == pid:
                 out.append(r)
-        except Exception:
+        except _RUNTIME_ERRORS:
             continue
     return out
 
 
 def list_export_for_run(
-    *, run_id: str, after: Optional[str], limit: int,
-    category: Optional[ExportCategory] = None,
+    *, run_id: str, after: str | None, limit: int,
+    category: ExportCategory | None = None,
 ) -> ExportListResponse:
     items, next_after = _export_store.list_for_run(
         run_id=str(run_id), after=after, limit=int(limit), category=category,
@@ -436,7 +448,7 @@ def append_export_item(item: ExportItem) -> None:
     _emit_export("add", item)
 
 
-def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, Any]) -> Tuple[Optional[RunRecord], bool]:
+def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: dict[str, object]) -> tuple[RunRecord | None, bool]:
     rid = str(run_id).strip()
     rec = _run_store.get(rid)
     if rec is None:
@@ -446,7 +458,7 @@ def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, An
     if rec.status not in ("running", "cancel_requested"):
         return rec, False
 
-    patch2: Dict[str, Any] = {}
+    patch2: dict[str, object] = {}
 
     status = patch.get("status")
     if isinstance(status, str) and status.strip():
@@ -482,7 +494,7 @@ def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, An
             continue
         try:
             patch2[k] = int(vv)
-        except Exception:
+        except (TypeError, ValueError):
             raise RuntimeError(f"invalid {k}")
 
     step_v = patch2.get("step")
@@ -527,7 +539,7 @@ def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, An
                 should_emit = False
             if should_emit:
                 _runs_last_emit_at[rid] = now
-    except Exception:
+    except _RUNTIME_ERRORS:
         should_emit = True
 
     if should_emit:
@@ -535,7 +547,7 @@ def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, An
     return updated, True
 
 
-def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
+def cancel_run(run_id: str, *, reason: str | None) -> RunRecord | None:
     rid = str(run_id)
     now = float(time.time())
     rec = _run_store.get(rid)
@@ -577,7 +589,7 @@ def _propagate_cancel_to_plugin(plugin_id: str, run_id: str) -> None:
             return
         loop = asyncio.get_running_loop()
         loop.create_task(host.cancel_run(run_id), name=f"cancel_run:{run_id}")
-    except Exception:
+    except _RUNTIME_ERRORS:
         logger.debug("Failed to propagate cancel for run {} to plugin {}", run_id, plugin_id, exc_info=True)
 
 
@@ -601,9 +613,9 @@ async def _execute_run(
     *,
     plugin_id: str,
     entry_id: str,
-    args: Dict[str, Any],
-    task_id: Optional[str],
-    client_host: Optional[str],
+    args: dict[str, object],
+    task_id: str | None,
+    client_host: str | None,
 ) -> None:
     """Execute a single Run: transition to running, trigger plugin, commit result.
 
@@ -636,7 +648,7 @@ async def _execute_run(
             if "run_id" not in ctx_obj:
                 ctx_obj["run_id"] = run_id
             trigger_args["_ctx"] = ctx_obj
-        except Exception:
+        except _RUNTIME_ERRORS:
             logger.debug("Failed to inject run_id into _ctx for run {}", run_id, exc_info=True)
 
         resp = await trigger_plugin(
@@ -652,7 +664,7 @@ async def _execute_run(
         # redundant with the RunRecord; only the plugin_response
         # (the ok()/fail() envelope from the actual plugin) is stored as
         # the export payload.
-        pr: Any = resp.plugin_response
+        pr: object = resp.plugin_response
         if not isinstance(pr, dict):
             pr = resp.model_dump()
 
@@ -697,7 +709,7 @@ async def _execute_run(
             )
         if term is not None:
             _emit_runs("change", term)
-    except Exception as e:
+    except _RUNTIME_ERRORS as e:
         term = _run_store.commit_terminal(
             run_id,
             status="failed",
@@ -713,9 +725,9 @@ async def _execute_run_guarded(
     *,
     plugin_id: str,
     entry_id: str,
-    args: Dict[str, Any],
-    task_id: Optional[str],
-    client_host: Optional[str],
+    args: dict[str, object],
+    task_id: str | None,
+    client_host: str | None,
 ) -> None:
     """Wrap ``_execute_run`` with a timeout guard."""
     timeout = float(RUN_EXECUTION_TIMEOUT)
@@ -744,7 +756,7 @@ async def _execute_run_guarded(
             _emit_runs("change", term)
 
 
-async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:
+async def create_run(req: RunCreateRequest, *, client_host: str | None) -> RunCreateResponse:
     run_id = str(uuid.uuid4())
     now = float(time.time())
     rec = RunRecord(

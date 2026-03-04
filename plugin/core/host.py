@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import hashlib
+import math
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
@@ -796,9 +797,12 @@ def _plugin_process_runner(
             meta = getattr(fn, EVENT_META_ATTR, None)
             if not meta or not getattr(meta, "auto_start", False):
                 continue
-            mode = (getattr(meta, "metadata", None) or {}).get("mode")
+            meta_cfg_obj = getattr(meta, "metadata", None)
+            meta_cfg = meta_cfg_obj if isinstance(meta_cfg_obj, dict) else {}
+            mode = meta_cfg.get("mode")
             if mode == "interval":
-                seconds = (getattr(meta, "metadata", None) or {}).get("seconds", 0)
+                seconds_obj = meta_cfg.get("seconds", 0)
+                seconds = seconds_obj if isinstance(seconds_obj, (int, float)) else 0
                 if seconds > 0:
                     timer_stop_event = threading.Event()
                     timer_stop_events.append(timer_stop_event)
@@ -838,7 +842,9 @@ def _plugin_process_runner(
                 
                 # 处理自动启动的自定义事件
                 if getattr(meta, "auto_start", False):
-                    trigger_method = (getattr(meta, "metadata", None) or {}).get("trigger_method", "auto")
+                    meta_cfg_obj = getattr(meta, "metadata", None)
+                    meta_cfg = meta_cfg_obj if isinstance(meta_cfg_obj, dict) else {}
+                    trigger_method = meta_cfg.get("trigger_method", "auto")
                     if trigger_method == "auto":
                         # 在独立线程中启动
                         t = threading.Thread(
@@ -1431,8 +1437,12 @@ def _plugin_process_runner(
                         entry_meta = entry_meta_map.get(entry_id)
                         custom_timeout = None
                         if entry_meta:
-                            meta_config = (getattr(entry_meta, "metadata", None) or {})
-                            custom_timeout = meta_config.get("timeout")
+                            meta_config_obj = getattr(entry_meta, "metadata", None)
+                            meta_config = meta_config_obj if isinstance(meta_config_obj, dict) else {}
+                            timeout_obj = meta_config.get("timeout")
+                            if isinstance(timeout_obj, (int, float)) and not isinstance(timeout_obj, bool):
+                                timeout_value = float(timeout_obj)
+                                custom_timeout = timeout_value if math.isfinite(timeout_value) else None
                         
                         # 确定实际超时时间
                         if custom_timeout is not None:

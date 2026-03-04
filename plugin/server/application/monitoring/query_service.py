@@ -155,7 +155,7 @@ class MetricsQueryService:
                     details={"plugin_id": plugin_id},
                 )
 
-            raw_metrics = metrics_collector.get_current_metrics(plugin_id)
+            raw_metrics = await asyncio.to_thread(metrics_collector.get_current_metrics, plugin_id)
             if not isinstance(raw_metrics, list):
                 raise ServerDomainError(
                     code="INVALID_DATA_SHAPE",

@@ -51,12 +51,12 @@ class MemoryQueryService:
         normalized_lanlan_name = _normalize_non_empty_str(lanlan_name, field="lanlan_name")
         normalized_query = _normalize_non_empty_str(query, field="query")
         normalized_timeout = _coerce_timeout(timeout)
-        url = _build_memory_search_url(
-            lanlan_name=normalized_lanlan_name,
-            query=normalized_query,
-        )
 
         try:
+            url = _build_memory_search_url(
+                lanlan_name=normalized_lanlan_name,
+                query=normalized_query,
+            )
             async with httpx.AsyncClient(timeout=normalized_timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()

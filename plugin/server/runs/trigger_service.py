@@ -92,6 +92,20 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
             retriable=True,
             trace_id=trace_id,
         )
+    if not isinstance(plugins_snapshot, Mapping) or not isinstance(hosts_snapshot, Mapping):
+        logger.warning(
+            "invalid snapshot shape for plugin {}: plugins_type={}, hosts_type={}",
+            plugin_id,
+            type(plugins_snapshot).__name__,
+            type(hosts_snapshot).__name__,
+        )
+        return None, fail(
+            ErrorCode.NOT_READY,
+            "System is busy, please retry",
+            details={"hint": "State snapshots invalid"},
+            retriable=True,
+            trace_id=trace_id,
+        )
 
     host_obj = hosts_snapshot.get(plugin_id)
     if not isinstance(host_obj, TriggerHostContract):
@@ -141,14 +155,39 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
             trace_id=trace_id,
         )
 
-    if not bool(health.alive):
+    alive_obj = getattr(health, "alive", None)
+    status_obj = getattr(health, "status", None)
+    pid_obj = getattr(health, "pid", None)
+    exitcode_obj = getattr(health, "exitcode", None)
+
+    if alive_obj is None:
+        return None, fail(
+            ErrorCode.NOT_READY,
+            f"Plugin '{plugin_id}' health payload is invalid",
+            details={"hint": "health_check contract mismatch"},
+            retriable=True,
+            trace_id=trace_id,
+        )
+
+    try:
+        alive = bool(alive_obj)
+    except (RuntimeError, ValueError, TypeError):
+        return None, fail(
+            ErrorCode.NOT_READY,
+            f"Plugin '{plugin_id}' health payload is invalid",
+            details={"hint": "health_check contract mismatch"},
+            retriable=True,
+            trace_id=trace_id,
+        )
+
+    if not alive:
         return None, fail(
             ErrorCode.NOT_READY,
             f"Plugin '{plugin_id}' process is not alive",
             details={
-                "status": health.status,
-                "pid": health.pid,
-                "exitcode": health.exitcode,
+                "status": status_obj,
+                "pid": pid_obj,
+                "exitcode": exitcode_obj,
             },
             retriable=True,
             trace_id=trace_id,

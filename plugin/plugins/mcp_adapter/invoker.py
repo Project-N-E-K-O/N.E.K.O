@@ -87,7 +87,7 @@ class MCPPluginInvoker:
         """
         if entry_id.startswith("mcp_"):
             # 按已连接 server 前缀匹配，避免 server_name 含 "_" 时 split 误判
-            for server_name in self._mcp_clients.keys():
+            for server_name in sorted(self._mcp_clients.keys(), key=len, reverse=True):
                 prefix = f"mcp_{server_name}_"
                 if entry_id.startswith(prefix):
                     tool_name = entry_id[len(prefix):]

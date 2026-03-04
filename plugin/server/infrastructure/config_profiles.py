@@ -33,7 +33,18 @@ def resolve_profile_path(path_str: str, base_dir: Path) -> Path | None:
         path_obj = Path(expanded)
         if not path_obj.is_absolute():
             path_obj = base_dir / path_obj
-        return path_obj.resolve()
+        resolved_base = base_dir.resolve()
+        resolved_path = path_obj.resolve()
+        try:
+            resolved_path.relative_to(resolved_base)
+        except ValueError:
+            logger.warning(
+                "Rejected profile path outside base_dir: path={}, base_dir={}",
+                resolved_path,
+                resolved_base,
+            )
+            return None
+        return resolved_path
     except (OSError, RuntimeError, ValueError, TypeError):
         logger.warning(
             "Failed to resolve user profile path {!r} for base_dir {}",

@@ -254,7 +254,7 @@ def delete_profile_config(
 
         active_obj = profiles_cfg.get("active")
         if isinstance(active_obj, str) and active_obj == profile_name:
-            profiles_cfg["active"] = None
+            profiles_cfg.pop("active", None)
 
         data["config_profiles"] = profiles_cfg
         _atomic_dump_toml(

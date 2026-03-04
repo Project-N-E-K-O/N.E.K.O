@@ -67,7 +67,7 @@ async def runs_create_upload(run_id: str, request: Request) -> dict[str, object]
     try:
         return run_service.create_upload_session(
             run_id=run_id,
-            base_url=str(request.base_url),
+            base_url="",
             body=body,
         )
     except ServerDomainError as error:

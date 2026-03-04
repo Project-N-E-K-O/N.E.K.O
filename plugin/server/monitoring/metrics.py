@@ -5,9 +5,8 @@
 """
 import asyncio
 import threading
-from typing import Dict, Any, Optional, List, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
+from typing import Callable
+from dataclasses import dataclass
 
 try:
     import psutil
@@ -16,12 +15,14 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     psutil = None
 
-from loguru import logger
-
+from plugin.logging_config import get_logger
 from plugin.settings import PLUGIN_LOG_SERVER_DEBUG
 
 from plugin.core.state import state
 from plugin.server.infrastructure.utils import now_iso
+
+logger = get_logger("server.monitoring.metrics")
+_RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 
 
 @dataclass
@@ -31,7 +32,7 @@ class PluginMetrics:
     timestamp: str
     
     # 进程信息
-    pid: Optional[int] = None
+    pid: int | None = None
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
     memory_percent: float = 0.0
@@ -56,17 +57,17 @@ class MetricsCollector:
     
     def __init__(self, interval: float = 5.0):
         self.interval = interval
-        self._metrics_history: Dict[str, List[PluginMetrics]] = {}
+        self._metrics_history: dict[str, list[PluginMetrics]] = {}
         self._lock = threading.Lock()
-        self._task: Optional[asyncio.Task] = None
-        self._plugin_hosts_getter: Optional[Callable] = None
+        self._task: asyncio.Task[None] | None = None
+        self._plugin_hosts_getter: Callable[[], dict[str, object]] | None = None
         
         # 缓存机制：减少锁竞争
-        self._cache: List[Dict[str, Any]] = []
+        self._cache: list[dict[str, object]] = []
         self._cache_timestamp: float = 0.0
         self._cache_ttl: float = 0.5  # 500ms 缓存
     
-    async def start(self, plugin_hosts_getter: Callable):
+    async def start(self, plugin_hosts_getter: Callable[[], dict[str, object]]) -> None:
         """启动指标收集任务"""
         if not PSUTIL_AVAILABLE:
             logger.warning("psutil not available, metrics collection disabled")
@@ -129,17 +130,17 @@ class MetricsCollector:
                             else:
                                 if PLUGIN_LOG_SERVER_DEBUG:
                                     logger.debug(f"Failed to collect metrics for plugin {plugin_id} (process alive but collection returned None)")
-                    except Exception as e:
+                    except _RUNTIME_ERRORS as e:
                         logger.warning(f"Exception while collecting metrics for plugin {plugin_id}: {e}", exc_info=True)
                 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except _RUNTIME_ERRORS as e:
                 logger.exception(f"Error in metrics collection loop: {e}")
             
             await asyncio.sleep(self.interval)
     
-    async def _collect_plugin_metrics(self, plugin_id: str, host: Any) -> Optional[PluginMetrics]:
+    async def _collect_plugin_metrics(self, plugin_id: str, host: object) -> PluginMetrics | None:
         """收集单个插件的性能指标"""
         if not PSUTIL_AVAILABLE:
             if PLUGIN_LOG_SERVER_DEBUG:
@@ -184,7 +185,7 @@ class MetricsCollector:
                 if hasattr(comm_manager, "get_pending_requests_count"):
                     try:
                         pending_requests = comm_manager.get_pending_requests_count()
-                    except Exception as e:
+                    except _RUNTIME_ERRORS as e:
                         if PLUGIN_LOG_SERVER_DEBUG:
                             logger.debug(f"Failed to get pending requests count for {plugin_id}: {e}")
                         pending_requests = 0
@@ -199,11 +200,11 @@ class MetricsCollector:
                 num_threads=num_threads,
                 pending_requests=pending_requests,
             )
-        except Exception as e:
+        except _RUNTIME_ERRORS as e:
             logger.warning(f"Unexpected error collecting metrics for {plugin_id}: {e}", exc_info=True)
             return None
     
-    def get_current_metrics(self, plugin_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_current_metrics(self, plugin_id: str | None = None) -> list[dict[str, object]]:
         """获取当前性能指标（带缓存，减少锁竞争）"""
         import time
         now = time.time()
@@ -240,9 +241,9 @@ class MetricsCollector:
         self,
         plugin_id: str,
         limit: int = 100,
-        start_time: Optional[str] = None,
-        end_time: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        start_time: str | None = None,
+        end_time: str | None = None
+    ) -> list[dict[str, object]]:
         """获取性能指标历史"""
         with self._lock:
             history = self._metrics_history.get(plugin_id, [])
@@ -259,7 +260,7 @@ class MetricsCollector:
             
             return [self._metrics_to_dict(m) for m in filtered]
     
-    def _metrics_to_dict(self, metrics: PluginMetrics) -> Dict[str, Any]:
+    def _metrics_to_dict(self, metrics: PluginMetrics) -> dict[str, object]:
         """将指标对象转换为字典"""
         return {
             "plugin_id": metrics.plugin_id,
