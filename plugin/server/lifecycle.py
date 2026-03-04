@@ -15,11 +15,11 @@ from plugin.logging_config import get_logger
 from plugin.server.infrastructure.auth import generate_admin_code, set_admin_code
 from plugin.server.infrastructure.utils import now_iso
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
+from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.plugin_router import plugin_router
-from plugin.server.services import _enqueue_lifecycle
 from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
 
 logger = get_logger("server.lifecycle")
@@ -137,7 +137,7 @@ class ServerLifecycleService:
                 )
 
     async def startup(self) -> None:
-        _enqueue_lifecycle({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
+        emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
 
         try:
             _ = state.plugin_response_map
@@ -167,7 +167,7 @@ class ServerLifecycleService:
 
         with state.acquire_plugin_hosts_read_lock():
             for plugin_id in list(state.plugin_hosts.keys()):
-                _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": plugin_id, "time": now_iso()})
+                emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": plugin_id, "time": now_iso()})
 
         await bus_subscription_manager.start()
         logger.info("bus subscription manager started")
@@ -181,7 +181,7 @@ class ServerLifecycleService:
                 str(exc),
             )
 
-        _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+        emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
 
         await self._start_hosts()
 
@@ -209,7 +209,7 @@ class ServerLifecycleService:
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():
-            _enqueue_lifecycle({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
+            emit_lifecycle_event({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
             if not isinstance(host_obj, _PluginHostContract):
                 logger.warning(
                     "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
@@ -235,7 +235,7 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
-        _enqueue_lifecycle({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
+        emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
 
         had_errors = False
 
@@ -317,7 +317,7 @@ class ServerLifecycleService:
                 str(exc),
             )
 
-        _enqueue_lifecycle({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
+        emit_lifecycle_event({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
         return _ShutdownResult(timed_out=False, had_errors=had_errors)
 
     async def shutdown(self) -> None:

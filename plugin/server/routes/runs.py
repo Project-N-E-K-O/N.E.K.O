@@ -8,16 +8,21 @@ from typing import NoReturn, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest, RunCreateResponse
 from plugin.logging_config import get_logger
 from plugin.server.application.runs import RunService
+from plugin.server.application.runs.service import RunRecord
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.runs.manager import RunCancelRequest, RunRecord
 
 router = APIRouter()
 logger = get_logger("server.routes.runs")
 run_service = RunService()
+
+
+class RunCancelPayload(BaseModel):
+    reason: str | None = None
 
 
 def _raise_http_from_domain(error: ServerDomainError) -> NoReturn:
@@ -87,9 +92,13 @@ async def runs_get_blob(run_id: str, blob_id: str) -> FileResponse:
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRecord)
-async def runs_cancel(run_id: str, payload: RunCancelRequest = Body(default=RunCancelRequest())) -> RunRecord:
+async def runs_cancel(
+    run_id: str,
+    payload: RunCancelPayload | None = Body(default=None),
+) -> RunRecord:
+    reason = payload.reason if payload is not None else None
     try:
-        return run_service.cancel_run(run_id, reason=payload.reason)
+        return run_service.cancel_run(run_id, reason=reason)
     except ServerDomainError as error:
         _raise_http_from_domain(error)
 

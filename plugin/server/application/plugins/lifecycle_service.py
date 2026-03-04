@@ -24,9 +24,9 @@ from plugin.core.registry import (
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.config_service import _apply_user_config_profiles
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.utils import now_iso
+from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
+from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
@@ -245,7 +245,6 @@ def _emit_lifecycle_event(
 ) -> None:
     event: dict[str, object] = {
         "type": event_type,
-        "time": now_iso(),
     }
     if plugin_id is not None:
         event["plugin_id"] = plugin_id
@@ -253,23 +252,7 @@ def _emit_lifecycle_event(
         event["host_plugin_id"] = host_plugin_id
     if data is not None:
         event["data"] = dict(data)
-
-    lifecycle_queue = state.lifecycle_queue
-    try:
-        lifecycle_queue.put_nowait(event)
-    except asyncio.QueueFull:
-        try:
-            lifecycle_queue.get_nowait()
-            lifecycle_queue.put_nowait(event)
-        except (asyncio.QueueEmpty, RuntimeError, AttributeError):
-            logger.warning("lifecycle queue overflow; failed to enqueue latest event")
-    except (RuntimeError, AttributeError):
-        logger.warning("lifecycle queue unavailable during emit")
-
-    try:
-        state.append_lifecycle_record(event)
-    except (RuntimeError, TypeError, ValueError, AttributeError):
-        logger.warning("failed to append lifecycle record: event_type={}", event_type)
+    emit_lifecycle_event(event)
 
 
 class PluginLifecycleService:
@@ -319,7 +302,7 @@ class PluginLifecycleService:
 
             try:
                 conf = await asyncio.to_thread(
-                    _apply_user_config_profiles,
+                    apply_user_config_profiles,
                     plugin_id=str(current_plugin_id),
                     base_config=conf,
                     config_path=config_path,

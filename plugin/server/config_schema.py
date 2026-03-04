@@ -6,31 +6,32 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+import re
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from plugin._types.models import PluginType
 
 
 class PluginAuthorSchema(BaseModel):
     """插件作者信息 Schema"""
-    name: Optional[str] = None
-    email: Optional[str] = None
-    url: Optional[str] = None
+    name: str | None = None
+    email: str | None = None
+    url: str | None = None
 
 
 class PluginSdkSchema(BaseModel):
     """SDK 版本约束 Schema"""
-    recommended: Optional[str] = None
-    supported: Optional[str] = None
-    untested: Optional[str] = None
-    conflicts: Optional[List[str]] = None
+    recommended: str | None = None
+    supported: str | None = None
+    untested: str | None = None
+    conflicts: list[str] | None = None
 
 
 class PluginStoreSchema(BaseModel):
     """插件存储配置 Schema"""
     enabled: bool = False
-    backend: Optional[str] = None
+    backend: str | None = None
 
 
 class PluginConfigProfilesFilesSchema(BaseModel):
@@ -40,13 +41,13 @@ class PluginConfigProfilesFilesSchema(BaseModel):
 
 class PluginConfigProfilesSchema(BaseModel):
     """Profile 配置 Schema"""
-    active: Optional[str] = None
-    files: Optional[Dict[str, str]] = None
+    active: str | None = None
+    files: dict[str, str] | None = None
 
 
 class PluginSafetySchema(BaseModel):
     """插件安全配置 Schema"""
-    sync_call_in_handler: Optional[Literal["warn", "reject"]] = None
+    sync_call_in_handler: Literal["warn", "reject"] | None = None
 
 
 class PluginHostSchema(BaseModel):
@@ -60,14 +61,14 @@ class PluginHostSchema(BaseModel):
 
 class PluginDependencySchema(BaseModel):
     """插件依赖 Schema"""
-    id: Optional[str] = None
-    entry: Optional[str] = None
-    custom_event: Optional[str] = None
-    providers: Optional[List[str]] = None
-    recommended: Optional[str] = None
-    supported: Optional[str] = None
-    untested: Optional[str] = None
-    conflicts: Optional[Union[List[str], bool]] = None
+    id: str | None = None
+    entry: str | None = None
+    custom_event: str | None = None
+    providers: list[str] | None = None
+    recommended: str | None = None
+    supported: str | None = None
+    untested: str | None = None
+    conflicts: list[str] | bool | None = None
 
     @model_validator(mode="after")
     def validate_dependency(self) -> "PluginDependencySchema":
@@ -91,13 +92,13 @@ class PluginSectionSchema(BaseModel):
     version: str = Field(default="0.1.0", pattern=r'^\d+\.\d+\.\d+.*$')
     
     # 嵌套配置
-    author: Optional[PluginAuthorSchema] = None
-    host: Optional[PluginHostSchema] = None
-    sdk: Optional[PluginSdkSchema] = None
-    store: Optional[PluginStoreSchema] = None
-    config_profiles: Optional[PluginConfigProfilesSchema] = None
-    safety: Optional[PluginSafetySchema] = None
-    dependencies: Optional[List[PluginDependencySchema]] = None
+    author: PluginAuthorSchema | None = None
+    host: PluginHostSchema | None = None
+    sdk: PluginSdkSchema | None = None
+    store: PluginStoreSchema | None = None
+    config_profiles: PluginConfigProfilesSchema | None = None
+    safety: PluginSafetySchema | None = None
+    dependencies: list[PluginDependencySchema] | None = None
 
     @model_validator(mode="after")
     def validate_extension_host(self) -> "PluginSectionSchema":
@@ -133,8 +134,8 @@ class PluginRuntimeSchema(BaseModel):
     """[plugin_runtime] 段 Schema - 运行时控制"""
     enabled: bool = True
     auto_start: bool = False
-    priority: Optional[int] = None
-    timeout: Optional[float] = None
+    priority: int | None = None
+    timeout: float | None = None
 
 
 class PluginConfigSchema(BaseModel):
@@ -145,7 +146,7 @@ class PluginConfigSchema(BaseModel):
     [plugin] 段是必填的，其他段可选。
     """
     plugin: PluginSectionSchema
-    plugin_runtime: Optional[PluginRuntimeSchema] = None
+    plugin_runtime: PluginRuntimeSchema | None = None
     
     # 允许额外的自定义配置段
     model_config = {"extra": "allow"}
@@ -161,7 +162,7 @@ class ProfileConfigSchema(BaseModel):
     
     @model_validator(mode="before")
     @classmethod
-    def forbid_plugin_section(cls, data: Any) -> Any:
+    def forbid_plugin_section(cls, data: object) -> object:
         if isinstance(data, dict) and "plugin" in data:
             raise ValueError("用户 Profile 配置不允许包含 [plugin] 段，该段由主配置文件管理")
         return data
@@ -171,13 +172,18 @@ class ProfileConfigSchema(BaseModel):
 
 class ConfigValidationError(Exception):
     """配置验证错误"""
-    def __init__(self, message: str, field: Optional[str] = None, details: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        message: str,
+        field: str | None = None,
+        details: list[dict[str, object]] | None = None,
+    ) -> None:
         self.message = message
         self.field = field
         self.details = details or []
         super().__init__(message)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "error": "ConfigValidationError",
             "message": self.message,
@@ -186,7 +192,7 @@ class ConfigValidationError(Exception):
         }
 
 
-def validate_plugin_config(config: Dict[str, Any], *, strict: bool = True) -> PluginConfigSchema:
+def validate_plugin_config(config: dict[str, object], *, strict: bool = True) -> PluginConfigSchema:
     """
     验证插件配置
     
@@ -200,22 +206,23 @@ def validate_plugin_config(config: Dict[str, Any], *, strict: bool = True) -> Pl
     Raises:
         ConfigValidationError: 验证失败时抛出，包含详细错误信息
     """
+    _ = strict
     try:
         return PluginConfigSchema.model_validate(config)
-    except Exception as e:
+    except ValidationError as exc:
         # 解析 Pydantic 验证错误，生成友好的错误信息
-        errors = _parse_validation_errors(e)
+        errors = _parse_validation_errors(exc)
         if errors:
             first_error = errors[0]
             raise ConfigValidationError(
-                message=first_error.get("msg", str(e)),
-                field=first_error.get("loc"),
+                message=str(first_error.get("msg", str(exc))),
+                field=str(first_error.get("loc")) if first_error.get("loc") is not None else None,
                 details=errors,
-            ) from e
-        raise ConfigValidationError(message=str(e)) from e
+            ) from exc
+        raise ConfigValidationError(message=str(exc)) from exc
 
 
-def validate_profile_config(config: Dict[str, Any]) -> ProfileConfigSchema:
+def validate_profile_config(config: dict[str, object]) -> ProfileConfigSchema:
     """
     验证用户 Profile 配置
     
@@ -230,23 +237,23 @@ def validate_profile_config(config: Dict[str, Any]) -> ProfileConfigSchema:
     """
     try:
         return ProfileConfigSchema.model_validate(config)
-    except Exception as e:
-        errors = _parse_validation_errors(e)
+    except ValidationError as exc:
+        errors = _parse_validation_errors(exc)
         if errors:
             first_error = errors[0]
             raise ConfigValidationError(
-                message=first_error.get("msg", str(e)),
-                field=first_error.get("loc"),
+                message=str(first_error.get("msg", str(exc))),
+                field=str(first_error.get("loc")) if first_error.get("loc") is not None else None,
                 details=errors,
-            ) from e
-        raise ConfigValidationError(message=str(e)) from e
+            ) from exc
+        raise ConfigValidationError(message=str(exc)) from exc
 
 
 def validate_plugin_config_partial(
-    config: Dict[str, Any],
+    config: dict[str, object],
     *,
     require_plugin_section: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, object]:
     """
     部分验证插件配置（用于配置更新场景）
     
@@ -284,7 +291,6 @@ def validate_plugin_config_partial(
                     message="plugin.id 必须是非空字符串",
                     field="plugin.id",
                 )
-            import re
             if not re.match(r'^[a-zA-Z0-9_-]+$', plugin_id):
                 raise ConfigValidationError(
                     message="plugin.id 只能包含字母、数字、下划线和连字符",
@@ -327,39 +333,40 @@ def validate_plugin_config_partial(
     return config
 
 
-def _parse_validation_errors(exc: Exception) -> List[Dict[str, Any]]:
+def _parse_validation_errors(exc: ValidationError) -> list[dict[str, object]]:
     """解析 Pydantic 验证错误，返回友好的错误列表"""
-    from pydantic import ValidationError
-    
-    errors = []
-    
-    # 尝试获取 Pydantic ValidationError 的详细错误
-    if isinstance(exc, ValidationError):
-        try:
-            for err in exc.errors():
-                loc = err.get('loc', ())
-                loc_str = '.'.join(str(x) for x in loc) if loc else None
-                errors.append({
-                    "loc": loc_str,
-                    "msg": _translate_error_message(err.get('msg', ''), err.get('type', '')),
-                    "type": err.get('type', 'unknown'),
-                    "input": err.get('input'),
-                })
-        except Exception:
-            pass
-    
+    errors: list[dict[str, object]] = []
+    for err in exc.errors():
+        loc = err.get("loc", ())
+        loc_str = ".".join(str(x) for x in loc) if loc else None
+        raw_msg = err.get("msg")
+        raw_type = err.get("type")
+        msg = raw_msg if isinstance(raw_msg, str) else str(raw_msg)
+        error_type = raw_type if isinstance(raw_type, str) else "unknown"
+        errors.append(
+            {
+                "loc": loc_str,
+                "msg": _translate_error_message(msg, error_type),
+                "type": error_type,
+                "input": err.get("input"),
+            }
+        )
+
     if not errors:
-        errors.append({
-            "loc": None,
-            "msg": str(exc),
-            "type": "unknown",
-        })
-    
+        errors.append(
+            {
+                "loc": None,
+                "msg": str(exc),
+                "type": "unknown",
+            }
+        )
+
     return errors
 
 
 def _translate_error_message(msg: str, error_type: str) -> str:
     """将 Pydantic 错误消息翻译为中文"""
+    _ = error_type
     translations = {
         "Field required": "字段必填",
         "field required": "字段必填",
@@ -388,7 +395,6 @@ def _translate_error_message(msg: str, error_type: str) -> str:
 
 def is_valid_plugin_id(plugin_id: str) -> bool:
     """检查插件 ID 是否有效"""
-    import re
     if not plugin_id or not isinstance(plugin_id, str):
         return False
     return bool(re.match(r'^[a-zA-Z0-9_-]+$', plugin_id.strip()))

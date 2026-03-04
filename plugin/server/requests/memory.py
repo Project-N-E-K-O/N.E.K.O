@@ -1,39 +1,31 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from plugin.logging_config import get_logger
+from plugin.server.application.messages.memory_query_service import MemoryQueryService
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.requests.common import resolve_common_fields
+from plugin.server.requests.typing import SendResponse
 
+logger = get_logger("server.requests.memory")
+memory_query_service = MemoryQueryService()
 
-async def handle_memory_query(request: Dict[str, Any], send_response) -> None:
-    from_plugin = request.get("from_plugin")
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 5.0)
-
-    lanlan_name = request.get("lanlan_name")
-    query = request.get("query")
-
-    if not isinstance(lanlan_name, str) or not lanlan_name:
-        send_response(from_plugin, request_id, None, "Invalid lanlan_name", timeout=timeout)
+async def handle_memory_query(request: dict[str, object], send_response: SendResponse) -> None:
+    common_fields = resolve_common_fields(request)
+    if common_fields is None:
         return
 
-    if not isinstance(query, str) or not query:
-        send_response(from_plugin, request_id, None, "Invalid query", timeout=timeout)
-        return
-
+    from_plugin, request_id, timeout = common_fields
     try:
-        from urllib.parse import quote
-
-        import httpx
-
-        from config import MEMORY_SERVER_PORT
-
-        base_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
-        url = f"{base_url}/search_for_memory/{quote(lanlan_name, safe='')}/{quote(query, safe='')}"
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data: Any = resp.json()
-
-        send_response(from_plugin, request_id, {"result": data}, None, timeout=timeout)
-    except Exception as e:
-        send_response(from_plugin, request_id, None, str(e), timeout=timeout)
+        payload = await memory_query_service.query_memory(
+            lanlan_name=request.get("lanlan_name"),
+            query=request.get("query"),
+            timeout=timeout,
+        )
+        send_response(from_plugin, request_id, payload, None, timeout=timeout)
+    except ServerDomainError as error:
+        logger.warning(
+            "MEMORY_QUERY failed: code={}, message={}",
+            error.code,
+            error.message,
+        )
+        send_response(from_plugin, request_id, None, error.message, timeout=timeout)
