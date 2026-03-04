@@ -1,48 +1,133 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Dict
+from collections.abc import Mapping
 
-from loguru import logger
-
+from plugin.logging_config import get_logger
+from plugin.server.application.bus.query_service import BusQueryService
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.requests.typing import SendResponse
-from plugin.server.services import get_events_from_queue
+
+logger = get_logger("server.requests.events")
+bus_query_service = BusQueryService()
 
 
-logger = logger.bind(component="router")
+def _coerce_timeout(value: object) -> float:
+    if isinstance(value, bool):
+        return 5.0
+    if isinstance(value, (int, float)):
+        timeout = float(value)
+        return timeout if timeout > 0 else 5.0
+    return 5.0
 
 
-async def handle_event_get(request: Dict[str, Any], send_response: SendResponse) -> None:
-    from_plugin = request.get("from_plugin")
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 5.0)
+def _coerce_optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
 
-    if not isinstance(from_plugin, str) or not from_plugin:
+
+def _coerce_optional_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_filter_data(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if isinstance(key, str):
+            normalized[key] = item
+    return normalized
+
+
+def _resolve_plugin_id(*, request: Mapping[str, object], from_plugin: str) -> str | None:
+    plugin_id_obj = request.get("plugin_id")
+    if isinstance(plugin_id_obj, str) and plugin_id_obj.strip():
+        if plugin_id_obj.strip() == "*":
+            return None
+        return plugin_id_obj
+    return from_plugin
+
+
+def _send_error(
+    *,
+    send_response: SendResponse,
+    from_plugin: str,
+    request_id: str,
+    timeout: float,
+    message: str,
+) -> None:
+    send_response(from_plugin, request_id, None, message, timeout=timeout)
+
+
+async def handle_event_get(request: dict[str, object], send_response: SendResponse) -> None:
+    from_plugin_obj = request.get("from_plugin")
+    request_id_obj = request.get("request_id")
+    timeout = _coerce_timeout(request.get("timeout", 5.0))
+
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
         return
-    if not isinstance(request_id, str) or not request_id:
+    if not isinstance(request_id_obj, str) or not request_id_obj:
         return
 
-    plugin_id = request.get("plugin_id")
-    if not isinstance(plugin_id, str) or not plugin_id:
-        plugin_id = from_plugin
-    if isinstance(plugin_id, str) and plugin_id.strip() == "*":
-        plugin_id = None
-
-    max_count = request.get("max_count", request.get("limit", None))
-    since_ts = request.get("since_ts", None)
-    flt = request.get("filter", None)
-    strict = request.get("strict", True)
+    from_plugin = from_plugin_obj
+    request_id = request_id_obj
+    plugin_id = _resolve_plugin_id(request=request, from_plugin=from_plugin)
+    max_count = _coerce_optional_int(request.get("max_count", request.get("limit")))
+    since_ts = _coerce_optional_float(request.get("since_ts"))
+    strict = bool(request.get("strict", True))
+    filter_data = _coerce_filter_data(request.get("filter"))
 
     try:
-        events = await asyncio.to_thread(
-            get_events_from_queue,
+        events = await bus_query_service.get_events(
             plugin_id=plugin_id,
-            max_count=int(max_count) if max_count is not None else None,
-            filter=dict(flt) if isinstance(flt, dict) else None,
-            strict=bool(strict),
-            since_ts=float(since_ts) if since_ts is not None else None,
+            max_count=max_count,
+            filter_data=filter_data,
+            strict=strict,
+            since_ts=since_ts,
         )
-        send_response(from_plugin, request_id, {"plugin_id": plugin_id or "*", "events": events}, None, timeout=timeout)
-    except Exception as e:
-        logger.exception("[PluginRouter] Error handling EVENT_GET: %s", e)
-        send_response(from_plugin, request_id, None, str(e), timeout=timeout)
+        send_response(
+            from_plugin,
+            request_id,
+            {"plugin_id": plugin_id or "*", "events": events},
+            None,
+            timeout=timeout,
+        )
+    except ServerDomainError as exc:
+        logger.warning(
+            "EVENT_GET failed: plugin_id={}, code={}, message={}",
+            plugin_id,
+            exc.code,
+            exc.message,
+        )
+        _send_error(
+            send_response=send_response,
+            from_plugin=from_plugin,
+            request_id=request_id,
+            timeout=timeout,
+            message=exc.message,
+        )

@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 
+from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.utils import now_iso
-from plugin.server.services import build_plugin_list
 
 logger = get_logger("server.application.plugins.query")
 
@@ -42,6 +42,227 @@ def _normalize_plugin_entries(raw_items: list[object]) -> list[dict[str, object]
             )
         normalized_items.append(_normalize_mapping(item, context=f"plugin_list[{index}]"))
     return normalized_items
+
+
+def _to_bool(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _resolve_plugin_status(
+    *,
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+    running_plugin_ids: set[str],
+) -> str:
+    plugin_type = plugin_meta.get("type")
+    if plugin_type == "extension":
+        runtime_enabled = _to_bool(plugin_meta.get("runtime_enabled"), default=True)
+        if not runtime_enabled:
+            return "disabled"
+
+        host_plugin_id = plugin_meta.get("host_plugin_id")
+        if isinstance(host_plugin_id, str) and host_plugin_id in running_plugin_ids:
+            return "injected"
+        return "pending"
+
+    return "running" if plugin_id in running_plugin_ids else "stopped"
+
+
+def _build_entries_from_handlers(
+    *,
+    plugin_id: str,
+    handlers_snapshot: Mapping[object, object],
+) -> tuple[list[dict[str, object]], set[tuple[str, str]]]:
+    entries: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    prefix_dot = f"{plugin_id}."
+    prefix_colon = f"{plugin_id}:plugin_entry:"
+
+    for event_key_obj, handler_obj in handlers_snapshot.items():
+        if not isinstance(event_key_obj, str):
+            continue
+        if not (event_key_obj.startswith(prefix_dot) or event_key_obj.startswith(prefix_colon)):
+            continue
+
+        meta = getattr(handler_obj, "meta", None)
+        event_type_obj = getattr(meta, "event_type", None)
+        if event_type_obj != "plugin_entry":
+            continue
+
+        raw_entry_id = getattr(meta, "id", None)
+        entry_id = raw_entry_id if isinstance(raw_entry_id, str) and raw_entry_id else event_key_obj
+        dedup_key = ("plugin_entry", entry_id)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        raw_input_schema = getattr(meta, "input_schema", {})
+        input_schema: dict[str, object]
+        if isinstance(raw_input_schema, Mapping):
+            input_schema = _normalize_mapping(raw_input_schema, context=f"plugin_entry[{entry_id}].input_schema")
+        else:
+            input_schema = {}
+
+        name_obj = getattr(meta, "name", "")
+        description_obj = getattr(meta, "description", "")
+        return_message_obj = getattr(meta, "return_message", "")
+
+        entries.append(
+            {
+                "id": entry_id,
+                "name": name_obj if isinstance(name_obj, str) else "",
+                "description": description_obj if isinstance(description_obj, str) else "",
+                "event_key": event_key_obj,
+                "input_schema": input_schema,
+                "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            }
+        )
+
+    return entries, seen
+
+
+def _append_entries_from_preview(
+    *,
+    plugin_id: str,
+    plugin_meta: Mapping[str, object],
+    entries: list[dict[str, object]],
+    seen: set[tuple[str, str]],
+) -> None:
+    preview_obj = plugin_meta.get("entries_preview")
+    if not isinstance(preview_obj, list):
+        return
+
+    for index, preview_item in enumerate(preview_obj):
+        if not isinstance(preview_item, Mapping):
+            continue
+        normalized_preview = _normalize_mapping(
+            preview_item,
+            context=f"plugins[{plugin_id}].entries_preview[{index}]",
+        )
+
+        entry_id_obj = normalized_preview.get("id")
+        if not isinstance(entry_id_obj, str) or not entry_id_obj:
+            continue
+
+        dedup_key = ("plugin_entry", entry_id_obj)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        input_schema_obj = normalized_preview.get("input_schema")
+        input_schema: dict[str, object]
+        if isinstance(input_schema_obj, Mapping):
+            input_schema = _normalize_mapping(
+                input_schema_obj,
+                context=f"plugins[{plugin_id}].entries_preview[{index}].input_schema",
+            )
+        else:
+            input_schema = {}
+
+        event_key_obj = normalized_preview.get("event_key")
+        return_message_obj = normalized_preview.get("return_message")
+        name_obj = normalized_preview.get("name")
+        description_obj = normalized_preview.get("description")
+
+        entries.append(
+            {
+                "id": entry_id_obj,
+                "name": name_obj if isinstance(name_obj, str) else "",
+                "description": description_obj if isinstance(description_obj, str) else "",
+                "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
+                "input_schema": input_schema,
+                "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+            }
+        )
+
+
+def _build_plugin_list_sync() -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    try:
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
+        if not plugins_snapshot:
+            return result
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
+        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        logger.warning(
+            "failed to get state snapshots for plugin list: err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
+        return result
+
+    running_plugin_ids = {
+        plugin_id
+        for plugin_id in hosts_snapshot.keys()
+        if isinstance(plugin_id, str)
+    }
+
+    for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
+        if not isinstance(plugin_id_obj, str):
+            continue
+        plugin_id = plugin_id_obj
+        try:
+            if not isinstance(plugin_meta_obj, Mapping):
+                raise TypeError("plugin metadata is not a mapping")
+
+            plugin_meta = _normalize_mapping(plugin_meta_obj, context=f"plugins[{plugin_id}]")
+            plugin_info = dict(plugin_meta)
+            plugin_info["status"] = _resolve_plugin_status(
+                plugin_id=plugin_id,
+                plugin_meta=plugin_meta,
+                running_plugin_ids=running_plugin_ids,
+            )
+
+            entries, seen = _build_entries_from_handlers(
+                plugin_id=plugin_id,
+                handlers_snapshot=handlers_snapshot,
+            )
+            if not entries:
+                _append_entries_from_preview(
+                    plugin_id=plugin_id,
+                    plugin_meta=plugin_meta,
+                    entries=entries,
+                    seen=seen,
+                )
+
+            plugin_info["entries"] = entries
+            result.append(plugin_info)
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, ServerDomainError) as exc:
+            fallback_name = plugin_id
+            fallback_description = ""
+            if isinstance(plugin_meta_obj, Mapping):
+                name_obj = plugin_meta_obj.get("name")
+                description_obj = plugin_meta_obj.get("description")
+                if isinstance(name_obj, str) and name_obj:
+                    fallback_name = name_obj
+                if isinstance(description_obj, str):
+                    fallback_description = description_obj
+
+            logger.warning(
+                "error processing plugin metadata: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            result.append(
+                {
+                    "id": plugin_id,
+                    "name": fallback_name,
+                    "description": fallback_description,
+                    "entries": [],
+                }
+            )
+
+    return result
 
 
 class PluginQueryService:
@@ -94,7 +315,7 @@ class PluginQueryService:
 
     async def list_plugins(self) -> dict[str, object]:
         try:
-            raw_plugins = await asyncio.to_thread(build_plugin_list)
+            raw_plugins = await asyncio.to_thread(_build_plugin_list_sync)
             if not isinstance(raw_plugins, list):
                 raise ServerDomainError(
                     code="INVALID_DATA_SHAPE",
@@ -122,4 +343,3 @@ class PluginQueryService:
                 status_code=500,
                 details={"error_type": type(exc).__name__},
             ) from exc
-

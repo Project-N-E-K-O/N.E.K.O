@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, cast
 
-from loguru import logger
+from plugin.logging_config import get_logger
+
+logger = get_logger("core.registry")
 
 _DEFAULT_LOGGER = logger
 
@@ -718,17 +720,20 @@ def _parse_single_plugin_config(
     
     # 应用用户配置覆盖
     try:
-        from plugin.server.config_service import _apply_user_config_profiles
+        from fastapi import HTTPException
+        from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
+
         if isinstance(conf, dict):
-            conf = _apply_user_config_profiles(
+            conf = apply_user_config_profiles(
                 plugin_id=str(pid),
                 base_config=conf,
                 config_path=toml_path,
             )
-    except Exception as e:
+    except (HTTPException, RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as e:
         logger.warning(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
-            pid, e,
+            pid,
+            e,
         )
     
     logger.debug("Plugin ID: {}", pid)
@@ -1582,9 +1587,14 @@ def load_plugins_from_toml(
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
         try:
-            from plugin.server.services import _enqueue_lifecycle
+            from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
             from plugin.server.infrastructure.utils import now_iso
 
-            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
-        except Exception:
-            logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)
+            emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, ImportError) as exc:
+            logger.debug(
+                "Failed to enqueue lifecycle event for plugin {}: err_type={}, err={}",
+                pid,
+                type(exc).__name__,
+                str(exc),
+            )

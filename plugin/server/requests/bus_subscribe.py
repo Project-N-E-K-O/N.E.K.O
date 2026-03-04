@@ -1,114 +1,80 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Dict, Optional
-
-from loguru import logger
-
-from plugin.core.state import state
-from plugin.server.messaging.bus_subscriptions import new_sub_id
-from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS
+from plugin.logging_config import get_logger
+from plugin.server.application.bus.subscription_service import BusSubscriptionService
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.requests.typing import SendResponse
 
-
-logger = logger.bind(component="router")
-
-
-def _norm_bus(v: Any) -> Optional[str]:
-    s = str(v).strip() if v is not None else ""
-    return s if s in ("messages", "events", "lifecycle", "runs", "export") else None
+logger = get_logger("server.requests.bus_subscribe")
+bus_subscription_service = BusSubscriptionService()
 
 
-async def handle_bus_subscribe(request: Dict[str, Any], send_response: SendResponse) -> None:
-    from_plugin = request.get("from_plugin")
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 5.0)
+def _coerce_timeout(value: object) -> float:
+    if isinstance(value, bool):
+        return 5.0
+    if isinstance(value, (int, float)):
+        timeout = float(value)
+        return timeout if timeout > 0 else 5.0
+    return 5.0
 
-    if not isinstance(from_plugin, str) or not from_plugin:
+
+async def handle_bus_subscribe(request: dict[str, object], send_response: SendResponse) -> None:
+    from_plugin_obj = request.get("from_plugin")
+    request_id_obj = request.get("request_id")
+    timeout = _coerce_timeout(request.get("timeout", 5.0))
+
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
         return
-    if not isinstance(request_id, str) or not request_id:
-        return
-
-    bus = _norm_bus(request.get("bus"))
-    if bus is None:
-        send_response(from_plugin, request_id, None, "bus is required", timeout=float(timeout))
-        return
-
-    deliver = str(request.get("deliver") or "delta").strip()
-    if deliver != "delta":
-        send_response(from_plugin, request_id, None, "Only deliver=delta is supported", timeout=float(timeout))
+    if not isinstance(request_id_obj, str) or not request_id_obj:
         return
 
-    rules = request.get("rules")
-    if isinstance(rules, str):
-        rules_list = [rules]
-    elif isinstance(rules, list):
-        rules_list = [str(x) for x in rules]
-    else:
-        rules_list = ["add"]
-
-    plan = request.get("plan")
-    debounce_ms = request.get("debounce_ms")
-
-    sub_id = new_sub_id()
-    info: Dict[str, Any] = {
-        "from_plugin": from_plugin,
-        "bus": bus,
-        "rules": rules_list,
-        "deliver": "delta",
-        "plan": plan,
-        "debounce_ms": debounce_ms,
-        "timeout": float(timeout),
-    }
-
+    from_plugin = from_plugin_obj
+    request_id = request_id_obj
     try:
-        state.add_bus_subscription(bus, sub_id, info)
-        if PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS:
-            logger.info("[PluginRouter] BUS_SUBSCRIBE ok: from_plugin=%s bus=%s sub_id=%s", from_plugin, bus, sub_id)
-        cur_rev = None
-        try:
-            cur_rev = int(state.get_bus_rev(bus))
-        except Exception:
-            cur_rev = None
-        send_response(
-            from_plugin,
-            request_id,
-            {"ok": True, "sub_id": sub_id, "bus": bus, "rev": cur_rev},
-            None,
-            timeout=float(timeout),
+        result = bus_subscription_service.subscribe(
+            from_plugin=from_plugin,
+            bus=request.get("bus"),
+            deliver=request.get("deliver"),
+            rules=request.get("rules"),
+            plan=request.get("plan"),
+            debounce_ms=request.get("debounce_ms"),
+            timeout=request.get("timeout", 5.0),
         )
-    except Exception as e:
-        logger.exception("[PluginRouter] Error handling BUS_SUBSCRIBE: %s", e)
-        send_response(from_plugin, request_id, None, str(e), timeout=float(timeout))
+        send_response(from_plugin, request_id, result, None, timeout=timeout)
+    except ServerDomainError as exc:
+        logger.warning(
+            "BUS_SUBSCRIBE failed: from_plugin={}, code={}, message={}",
+            from_plugin,
+            exc.code,
+            exc.message,
+        )
+        send_response(from_plugin, request_id, None, exc.message, timeout=timeout)
 
 
-async def handle_bus_unsubscribe(request: Dict[str, Any], send_response: SendResponse) -> None:
-    from_plugin = request.get("from_plugin")
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 5.0)
+async def handle_bus_unsubscribe(request: dict[str, object], send_response: SendResponse) -> None:
+    from_plugin_obj = request.get("from_plugin")
+    request_id_obj = request.get("request_id")
+    timeout = _coerce_timeout(request.get("timeout", 5.0))
 
-    if not isinstance(from_plugin, str) or not from_plugin:
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
         return
-    if not isinstance(request_id, str) or not request_id:
+    if not isinstance(request_id_obj, str) or not request_id_obj:
         return
 
-    bus = _norm_bus(request.get("bus"))
-    sub_id = request.get("sub_id")
-    if bus is None or not isinstance(sub_id, str) or not sub_id:
-        send_response(from_plugin, request_id, None, "bus and sub_id are required", timeout=float(timeout))
-        return
-
+    from_plugin = from_plugin_obj
+    request_id = request_id_obj
     try:
-        ok = state.remove_bus_subscription(bus, sub_id)
-        if PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS:
-            logger.info(
-                "[PluginRouter] BUS_UNSUBSCRIBE: from_plugin=%s bus=%s sub_id=%s ok=%s",
-                from_plugin,
-                bus,
-                sub_id,
-                bool(ok),
-            )
-        send_response(from_plugin, request_id, {"ok": bool(ok), "sub_id": sub_id, "bus": bus}, None, timeout=float(timeout))
-    except Exception as e:
-        logger.exception("[PluginRouter] Error handling BUS_UNSUBSCRIBE: %s", e)
-        send_response(from_plugin, request_id, None, str(e), timeout=float(timeout))
+        result = bus_subscription_service.unsubscribe(
+            from_plugin=from_plugin,
+            bus=request.get("bus"),
+            sub_id=request.get("sub_id"),
+        )
+        send_response(from_plugin, request_id, result, None, timeout=timeout)
+    except ServerDomainError as exc:
+        logger.warning(
+            "BUS_UNSUBSCRIBE failed: from_plugin={}, code={}, message={}",
+            from_plugin,
+            exc.code,
+            exc.message,
+        )
+        send_response(from_plugin, request_id, None, exc.message, timeout=timeout)

@@ -1,53 +1,27 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from plugin.logging_config import get_logger
+from plugin.server.application.admin import AdminQueryService
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.requests.common import resolve_common_fields
+from plugin.server.requests.typing import SendResponse
 
+logger = get_logger("server.requests.system_config")
+admin_query_service = AdminQueryService()
 
-def _jsonify_value(v: Any) -> Any:
+async def handle_plugin_system_config_get(request: dict[str, object], send_response: SendResponse) -> None:
+    common_fields = resolve_common_fields(request)
+    if common_fields is None:
+        return
+
+    from_plugin, request_id, timeout = common_fields
     try:
-        from pathlib import Path
-
-        if isinstance(v, Path):
-            return str(v)
-    except Exception:
-        pass
-
-    if isinstance(v, (str, int, float, bool)) or v is None:
-        return v
-
-    if isinstance(v, (list, tuple)):
-        return [_jsonify_value(x) for x in v]
-
-    if isinstance(v, dict):
-        return {str(k): _jsonify_value(val) for k, val in v.items()}
-
-    return str(v)
-
-
-async def handle_plugin_system_config_get(request: Dict[str, Any], send_response) -> None:
-    from_plugin = request.get("from_plugin")
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 5.0)
-
-    try:
-        import plugin.settings as settings
-
-        payload: Dict[str, Any] = {
-            "config": {},
-        }
-
-        keys = getattr(settings, "__all__", None)
-        if not isinstance(keys, (list, tuple)):
-            keys = [k for k in dir(settings) if isinstance(k, str) and k.isupper()]
-
-        for k in keys:
-            if not isinstance(k, str):
-                continue
-            try:
-                payload["config"][k] = _jsonify_value(getattr(settings, k))
-            except Exception:
-                continue
-
+        payload = await admin_query_service.get_system_config()
         send_response(from_plugin, request_id, payload, None, timeout=timeout)
-    except Exception as e:
-        send_response(from_plugin, request_id, None, str(e), timeout=timeout)
+    except ServerDomainError as error:
+        logger.warning(
+            "PLUGIN_SYSTEM_CONFIG_GET failed: code={}, message={}",
+            error.code,
+            error.message,
+        )
+        send_response(from_plugin, request_id, None, error.message, timeout=timeout)

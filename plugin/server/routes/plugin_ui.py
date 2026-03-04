@@ -19,18 +19,31 @@
 """
 import mimetypes
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from plugin.core.state import state
-from plugin.settings import PLUGIN_CONFIG_ROOT
+from plugin.logging_config import get_logger
+from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
+from plugin.server.domain.errors import ServerDomainError
 
 router = APIRouter(tags=["plugin-ui"])
+logger = get_logger("server.routes.plugin_ui")
+plugin_ui_query_service = PluginUiQueryService()
 
 
-def _get_plugin_static_dir(plugin_id: str) -> Optional[Path]:
+def _raise_http_from_domain(error: ServerDomainError) -> NoReturn:
+    logger.warning(
+        "Domain error: code={}, status_code={}, message={}",
+        error.code,
+        error.status_code,
+        error.message,
+    )
+    raise HTTPException(status_code=error.status_code, detail=error.message)
+
+
+async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
     """获取插件的静态文件目录
     
     只有插件显式调用 register_static_ui() 后才会返回静态目录。
@@ -41,36 +54,12 @@ def _get_plugin_static_dir(plugin_id: str) -> Optional[Path]:
     Returns:
         静态文件目录路径，如果未注册或不存在则返回 None
     """
-    # 从 state.plugins 获取插件元数据
-    with state.acquire_plugins_read_lock():
-        plugin_meta = state.plugins.get(plugin_id)
-    
-    if not plugin_meta:
-        return None
-    
-    # 检查是否显式注册了静态 UI
-    static_ui_config = plugin_meta.get("static_ui_config")
-    if static_ui_config and static_ui_config.get("enabled"):
-        # 使用显式注册的目录
-        directory = static_ui_config.get("directory")
-        if directory:
-            static_dir = Path(directory)
-            if static_dir.exists() and static_dir.is_dir():
-                return static_dir
-    
-    # 未显式注册，不自动挂载
-    return None
+    return await plugin_ui_query_service.get_static_dir(plugin_id)
 
 
-def _get_static_ui_config(plugin_id: str) -> Optional[dict]:
+async def _get_static_ui_config(plugin_id: str) -> dict[str, object] | None:
     """获取插件的静态 UI 配置"""
-    with state.acquire_plugins_read_lock():
-        plugin_meta = state.plugins.get(plugin_id)
-    
-    if not plugin_meta:
-        return None
-    
-    return plugin_meta.get("static_ui_config")
+    return await plugin_ui_query_service.get_static_ui_config(plugin_id)
 
 
 def _get_mime_type(file_path: Path) -> str:
@@ -106,7 +95,10 @@ def _get_mime_type(file_path: Path) -> str:
 @router.get("/plugin/{plugin_id}/ui/")
 async def plugin_ui_index(plugin_id: str):
     """获取插件 UI 入口页面"""
-    static_dir = _get_plugin_static_dir(plugin_id)
+    try:
+        static_dir = await _get_plugin_static_dir(plugin_id)
+    except ServerDomainError as error:
+        _raise_http_from_domain(error)
     
     if not static_dir:
         raise HTTPException(
@@ -140,7 +132,10 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
         # 重定向到 index
         return await plugin_ui_index(plugin_id)
     
-    static_dir = _get_plugin_static_dir(plugin_id)
+    try:
+        static_dir = await _get_plugin_static_dir(plugin_id)
+    except ServerDomainError as error:
+        _raise_http_from_domain(error)
     
     if not static_dir:
         raise HTTPException(
@@ -175,10 +170,15 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
     mime_type = _get_mime_type(target_file)
     
     # 获取缓存控制配置
-    ui_config = _get_static_ui_config(plugin_id)
+    try:
+        ui_config = await _get_static_ui_config(plugin_id)
+    except ServerDomainError as error:
+        _raise_http_from_domain(error)
     cache_control = "public, max-age=3600"
-    if ui_config:
-        cache_control = ui_config.get("cache_control", cache_control)
+    if ui_config is not None:
+        cache_control_obj = ui_config.get("cache_control")
+        if isinstance(cache_control_obj, str) and cache_control_obj:
+            cache_control = cache_control_obj
     
     return FileResponse(
         str(target_file),
@@ -196,37 +196,8 @@ async def plugin_ui_info(plugin_id: str):
     
     返回插件是否有 UI、UI 入口路径等信息。
     """
-    static_dir = _get_plugin_static_dir(plugin_id)
-    
-    has_ui = static_dir is not None and (static_dir / "index.html").exists()
-    
-    # 获取插件元数据
-    with state.acquire_plugins_read_lock():
-        plugin_meta = state.plugins.get(plugin_id)
-    
-    if not plugin_meta:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_id}' not found"
-        )
-    
-    # 列出静态文件（如果有）
-    static_files = []
-    if static_dir and static_dir.exists():
-        for f in static_dir.rglob("*"):
-            if f.is_file():
-                rel_path = f.relative_to(static_dir)
-                static_files.append(str(rel_path))
-    
-    # 获取静态 UI 配置
-    ui_config = _get_static_ui_config(plugin_id)
-    
-    return JSONResponse({
-        "plugin_id": plugin_id,
-        "has_ui": has_ui,
-        "explicitly_registered": ui_config is not None and ui_config.get("enabled", False),
-        "ui_path": f"/plugin/{plugin_id}/ui/" if has_ui else None,
-        "static_dir": str(static_dir) if static_dir else None,
-        "static_files": static_files[:50],  # 限制返回数量
-        "static_files_count": len(static_files),
-    })
+    try:
+        ui_info = await plugin_ui_query_service.get_ui_info(plugin_id)
+    except ServerDomainError as error:
+        _raise_http_from_domain(error)
+    return JSONResponse(ui_info)

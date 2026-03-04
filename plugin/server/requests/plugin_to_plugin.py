@@ -1,60 +1,89 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from collections.abc import Mapping
 
-from loguru import logger
+from plugin.logging_config import get_logger
+from plugin.server.application.plugins.dispatch_service import PluginDispatchService
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.requests.typing import SendResponse
 
-from plugin.core.state import state
+logger = get_logger("server.requests.plugin_to_plugin")
+plugin_dispatch_service = PluginDispatchService()
 
 
-logger = logger.bind(component="router")
+def _coerce_timeout(value: object) -> float:
+    if isinstance(value, bool):
+        return 10.0
+    if isinstance(value, (int, float)):
+        timeout = float(value)
+        return timeout if timeout > 0 else 10.0
+    return 10.0
 
 
-async def handle_plugin_to_plugin(request: Dict[str, Any], send_response) -> None:
+def _coerce_args(value: object) -> object:
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if isinstance(key, str):
+                normalized[key] = item
+        return normalized
+    return {}
 
-    from_plugin = request.get("from_plugin")
-    to_plugin = request.get("to_plugin")
-    event_type = request.get("event_type")
-    event_id = request.get("event_id")
-    args = request.get("args", {})
-    request_id = request.get("request_id")
-    timeout = request.get("timeout", 10.0)
+
+async def handle_plugin_to_plugin(request: dict[str, object], send_response: SendResponse) -> None:
+    from_plugin_obj = request.get("from_plugin")
+    to_plugin_obj = request.get("to_plugin")
+    event_type_obj = request.get("event_type")
+    event_id_obj = request.get("event_id")
+    request_id_obj = request.get("request_id")
+    timeout = _coerce_timeout(request.get("timeout", 10.0))
+    args = _coerce_args(request.get("args", {}))
+
+    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
+        return
+    if not isinstance(request_id_obj, str) or not request_id_obj:
+        return
+
+    from_plugin = from_plugin_obj
+    request_id = request_id_obj
+    to_plugin = to_plugin_obj.strip() if isinstance(to_plugin_obj, str) else ""
+    event_type = event_type_obj.strip() if isinstance(event_type_obj, str) else ""
+    event_id = event_id_obj.strip() if isinstance(event_id_obj, str) else ""
+
+    if not to_plugin:
+        send_response(from_plugin, request_id, None, "to_plugin is required", timeout=timeout)
+        return
+    if not event_type:
+        send_response(from_plugin, request_id, None, "event_type is required", timeout=timeout)
+        return
+    if not event_id:
+        send_response(from_plugin, request_id, None, "event_id is required", timeout=timeout)
+        return
 
     logger.info(
-        f"[PluginRouter] Routing request: {from_plugin} -> {to_plugin}, "
-        f"event={event_type}.{event_id}, req_id={request_id}"
+        "routing plugin event: from_plugin={}, to_plugin={}, event_type={}, event_id={}, request_id={}",
+        from_plugin,
+        to_plugin,
+        event_type,
+        event_id,
+        request_id,
     )
-    # 使用缓存快照避免锁竞争
-    hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
-    host = hosts_snapshot.get(to_plugin)
-    if not host:
-        error_msg = f"Plugin '{to_plugin}' not found"
-        logger.error(f"[PluginRouter] {error_msg}")
-        send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-        return
-
     try:
-        health = host.health_check()
-        if not health.alive:
-            error_msg = f"Plugin '{to_plugin}' process is not alive"
-            logger.error(f"[PluginRouter] {error_msg}")
-            send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-            return
-    except Exception as e:
-        error_msg = f"Health check failed for plugin '{to_plugin}': {e}"
-        logger.error(f"[PluginRouter] {error_msg}")
-        send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-        return
-
-    try:
-        result = await host.trigger_custom_event(
+        result = await plugin_dispatch_service.trigger_custom_event(
+            to_plugin=to_plugin,
             event_type=event_type,
             event_id=event_id,
             args=args,
             timeout=timeout,
         )
         send_response(from_plugin, request_id, result, None, timeout=timeout)
-    except Exception as e:
-        error_msg = str(e)
-        logger.exception(f"[PluginRouter] Error triggering custom event: {e}")
-        send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
+    except ServerDomainError as exc:
+        logger.warning(
+            "PLUGIN_TO_PLUGIN failed: to_plugin={}, event_type={}, event_id={}, code={}, message={}",
+            to_plugin,
+            event_type,
+            event_id,
+            exc.code,
+            exc.message,
+        )
+        send_response(from_plugin, request_id, None, exc.message, timeout=timeout)
