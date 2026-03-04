@@ -633,7 +633,7 @@ class LLMSessionManager:
     async def _init_renew_status(self):
         await self._reset_preparation_state(True)
         self.session_start_time = None
-        self.pending_session = None
+        await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
 
     async def _flush_tts_pending_chunks(self):

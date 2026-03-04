@@ -374,8 +374,8 @@ function init_app() {
     /**
      * 等待 WebSocket 连接就绪（OPEN 状态）。
      * - 已 OPEN → 立即返回
-     * - CONNECTING → 等待 onopen
-     * - CLOSED/CLOSING 或 socket 不存在 → 触发 connectWebSocket() 后等待 onopen
+     * - CONNECTING → 通过 addEventListener('open') 等待（不覆盖 onopen）
+     * - CLOSED/CLOSING 或 socket 不存在 → 取消排队的自动重连，触发 connectWebSocket() 后等待
      * @param {number} timeoutMs 超时毫秒数，默认 5000
      * @returns {Promise<void>}
      */
@@ -386,58 +386,66 @@ function init_app() {
                 return resolve();
             }
 
-            let resolved = false;
+            let settled = false;
             let timer = null;
 
-            const cleanup = () => {
-                resolved = true;
+            const settle = (fn, arg) => {
+                if (settled) return;
+                settled = true;
                 if (timer) { clearTimeout(timer); timer = null; }
+                fn(arg);
             };
 
             // 超时处理
             timer = setTimeout(() => {
-                if (!resolved) {
-                    cleanup();
-                    reject(new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接'));
-                }
+                settle(reject, new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接'));
             }, timeoutMs);
 
-            // 如果 socket 处于 CONNECTING，等它 onopen 即可
+            // 监听当前或即将创建的 socket 的 open 事件
+            const attachOpenListener = (ws) => {
+                if (!ws || settled) return;
+                if (ws.readyState === WebSocket.OPEN) {
+                    settle(resolve); return;
+                }
+                if (ws.readyState === WebSocket.CONNECTING) {
+                    // 用 addEventListener 而非覆写 onopen，不干扰 connectWebSocket 的 onopen handler
+                    ws.addEventListener('open', () => settle(resolve), { once: true });
+                    ws.addEventListener('error', () => {
+                        // socket 连接失败，等新的 connectWebSocket 重建
+                    }, { once: true });
+                    return;
+                }
+                // CLOSING/CLOSED — 等待新 socket 被创建后重新挂载
+            };
+
+            // 如果当前 socket 已处于 CONNECTING，直接挂载 listener
             if (socket && socket.readyState === WebSocket.CONNECTING) {
-                const origOnOpen = socket.onopen;
-                socket.onopen = function (evt) {
-                    // 恢复原始 onopen 并调用
-                    socket.onopen = origOnOpen;
-                    if (typeof origOnOpen === 'function') origOnOpen.call(socket, evt);
-                    if (!resolved) { cleanup(); resolve(); }
-                };
+                attachOpenListener(socket);
                 return;
             }
 
             // socket 不存在或已 CLOSED/CLOSING → 触发重建
-            // connectWebSocket() 内部会重新赋值 socket 并设置 onopen
-            // 我们通过 MutationObserver-like 方式等待：轮询 socket 变为新实例后挂载 onopen
-            const waitForNewSocket = () => {
-                if (resolved) return;
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    cleanup(); resolve(); return;
-                }
-                if (socket && socket.readyState === WebSocket.CONNECTING) {
-                    const origOnOpen = socket.onopen;
-                    socket.onopen = function (evt) {
-                        socket.onopen = origOnOpen;
-                        if (typeof origOnOpen === 'function') origOnOpen.call(socket, evt);
-                        if (!resolved) { cleanup(); resolve(); }
-                    };
-                    return;
-                }
-                // socket 仍然不可用，短暂等待后重试（connectWebSocket 是异步创建的）
-                setTimeout(waitForNewSocket, 50);
-            };
+            // ★ 先取消排队的自动重连定时器，避免 3 秒后再多建一个重复连接
+            if (autoReconnectTimeoutId) {
+                clearTimeout(autoReconnectTimeoutId);
+                autoReconnectTimeoutId = null;
+            }
 
-            // 先触发重建，再等待
             connectWebSocket();
-            // connectWebSocket 是同步的（直到 new WebSocket），给它一个 tick 后再检查
+
+            // connectWebSocket 是同步完成到 new WebSocket() 的，给一个 microtask 后挂载 listener
+            const waitForNewSocket = () => {
+                if (settled) return;
+                if (socket) {
+                    attachOpenListener(socket);
+                    // 如果 attachOpenListener 没有 settle（说明 socket 又 CLOSED 了），轮询重试
+                    if (!settled && socket.readyState !== WebSocket.CONNECTING && socket.readyState !== WebSocket.OPEN) {
+                        setTimeout(waitForNewSocket, 50);
+                    }
+                } else {
+                    setTimeout(waitForNewSocket, 50);
+                }
+            };
             setTimeout(waitForNewSocket, 10);
         });
     }
