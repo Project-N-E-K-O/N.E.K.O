@@ -824,7 +824,7 @@ function init_app() {
                                     console.error(window.t('console.restartError'), error);
 
                                     // 重启失败时向后端发送 end_session 消息
-                                    if (socket.readyState === WebSocket.OPEN) {
+                                    if (socket && socket.readyState === WebSocket.OPEN) {
                                         socket.send(JSON.stringify({
                                             action: 'end_session'
                                         }));
@@ -3549,7 +3549,7 @@ function init_app() {
             }
 
             // 确保后端清理资源，避免前后端状态不一致
-            if (socket.readyState === WebSocket.OPEN) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({
                     action: 'end_session'
                 }));
