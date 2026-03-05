@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from plugin.server.requests.common import (
+from plugin.server.messaging.handlers.common import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_TIMEOUT_SECONDS,
     coerce_timeout,
@@ -37,4 +37,3 @@ def test_coerce_timeout_clamps_upper_bound() -> None:
 @pytest.mark.parametrize("raw", [math.inf, -math.inf, math.nan])
 def test_coerce_timeout_rejects_non_finite(raw: float) -> None:
     assert coerce_timeout(raw) == DEFAULT_TIMEOUT_SECONDS
-

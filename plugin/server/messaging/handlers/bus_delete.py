@@ -5,10 +5,10 @@ from collections.abc import Callable
 from plugin.logging_config import get_logger
 from plugin.server.application.bus.mutation_service import BusMutationService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import normalize_non_empty_str, resolve_common_fields
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.common import normalize_non_empty_str, resolve_common_fields
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.bus_delete")
+logger = get_logger("server.messaging.handlers.bus_delete")
 bus_mutation_service = BusMutationService()
 
 

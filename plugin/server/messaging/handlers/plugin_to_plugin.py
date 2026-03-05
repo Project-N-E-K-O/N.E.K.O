@@ -3,14 +3,14 @@ from __future__ import annotations
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import (
+from plugin.server.messaging.handlers.common import (
     coerce_string_key_mapping,
     normalize_non_empty_str,
     resolve_common_fields,
 )
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.plugin_to_plugin")
+logger = get_logger("server.messaging.handlers.plugin_to_plugin")
 plugin_dispatch_service = PluginDispatchService()
 
 

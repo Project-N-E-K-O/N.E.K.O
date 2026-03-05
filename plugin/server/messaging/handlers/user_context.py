@@ -3,10 +3,10 @@ from __future__ import annotations
 from plugin.logging_config import get_logger
 from plugin.server.application.messages.context_query_service import UserContextQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import normalize_non_empty_str, resolve_common_fields
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.common import normalize_non_empty_str, resolve_common_fields
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.user_context")
+logger = get_logger("server.messaging.handlers.user_context")
 user_context_query_service = UserContextQueryService()
 
 

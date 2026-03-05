@@ -3,10 +3,10 @@ from __future__ import annotations
 from plugin.logging_config import get_logger
 from plugin.server.application.runs.ipc_service import RunIpcService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import domain_error_payload, resolve_common_fields
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.common import domain_error_payload, resolve_common_fields
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.run_update")
+logger = get_logger("server.messaging.handlers.run_update")
 run_ipc_service = RunIpcService()
 
 async def handle_run_update(request: dict[str, object], send_response: SendResponse) -> None:

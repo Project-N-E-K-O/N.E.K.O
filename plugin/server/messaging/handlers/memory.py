@@ -3,10 +3,10 @@ from __future__ import annotations
 from plugin.logging_config import get_logger
 from plugin.server.application.messages.memory_query_service import MemoryQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import resolve_common_fields
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.common import resolve_common_fields
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.memory")
+logger = get_logger("server.messaging.handlers.memory")
 memory_query_service = MemoryQueryService()
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 

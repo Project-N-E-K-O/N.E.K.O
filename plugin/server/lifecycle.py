@@ -20,7 +20,7 @@ from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
-from plugin.server.plugin_router import plugin_router
+from plugin.server.messaging.request_router import plugin_router
 from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
 
 logger = get_logger("server.lifecycle")

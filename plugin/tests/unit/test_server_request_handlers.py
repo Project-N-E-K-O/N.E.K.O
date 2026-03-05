@@ -4,16 +4,16 @@ from __future__ import annotations
 import pytest
 
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests import events as events_module
-from plugin.server.requests import export as export_module
-from plugin.server.requests import lifecycle as lifecycle_module
-from plugin.server.requests import memory as memory_module
-from plugin.server.requests import plugin_query as plugin_query_module
-from plugin.server.requests import plugin_to_plugin as p2p_module
-from plugin.server.requests import registry as registry_module
-from plugin.server.requests import run_update as run_update_module
-from plugin.server.requests import system_config as system_config_module
-from plugin.server.requests import user_context as user_context_module
+from plugin.server.messaging.handlers import events as events_module
+from plugin.server.messaging.handlers import export as export_module
+from plugin.server.messaging.handlers import lifecycle as lifecycle_module
+from plugin.server.messaging.handlers import memory as memory_module
+from plugin.server.messaging.handlers import plugin_query as plugin_query_module
+from plugin.server.messaging.handlers import plugin_to_plugin as p2p_module
+from plugin.server.messaging.handlers import registry as registry_module
+from plugin.server.messaging.handlers import run_update as run_update_module
+from plugin.server.messaging.handlers import system_config as system_config_module
+from plugin.server.messaging.handlers import user_context as user_context_module
 
 
 class _Recorder:
@@ -184,6 +184,6 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
     }
     assert required.issubset(set(handlers.keys()))
 
-    import plugin.server.requests.messages as messages_module
+    import plugin.server.messaging.handlers.messages as messages_module
 
     assert messages_module is not None

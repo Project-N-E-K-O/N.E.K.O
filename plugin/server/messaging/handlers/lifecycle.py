@@ -3,7 +3,7 @@ from __future__ import annotations
 from plugin.logging_config import get_logger
 from plugin.server.application.bus.query_service import BusQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import (
+from plugin.server.messaging.handlers.common import (
     coerce_bool,
     coerce_optional_float,
     coerce_optional_int,
@@ -11,9 +11,9 @@ from plugin.server.requests.common import (
     resolve_common_fields,
     resolve_wildcard_scope_id,
 )
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.events")
+logger = get_logger("server.messaging.handlers.lifecycle")
 bus_query_service = BusQueryService()
 
 
@@ -28,7 +28,7 @@ def _send_error(
     send_response(from_plugin, request_id, None, message, timeout=timeout)
 
 
-async def handle_event_get(request: dict[str, object], send_response: SendResponse) -> None:
+async def handle_lifecycle_get(request: dict[str, object], send_response: SendResponse) -> None:
     context = resolve_common_fields(request)
     if context is None:
         return
@@ -44,7 +44,7 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
     filter_data = coerce_string_key_mapping(request.get("filter"))
 
     try:
-        events = await bus_query_service.get_events(
+        lifecycle_records = await bus_query_service.get_lifecycle(
             plugin_id=plugin_id,
             max_count=max_count,
             filter_data=filter_data,
@@ -54,13 +54,13 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
         send_response(
             from_plugin,
             request_id,
-            {"plugin_id": plugin_id or "*", "events": events},
+            {"plugin_id": plugin_id or "*", "events": lifecycle_records},
             None,
             timeout=timeout,
         )
     except ServerDomainError as exc:
         logger.warning(
-            "EVENT_GET failed: plugin_id={}, code={}, message={}",
+            "LIFECYCLE_GET failed: plugin_id={}, code={}, message={}",
             plugin_id,
             exc.code,
             exc.message,
@@ -71,18 +71,4 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
             request_id=request_id,
             timeout=timeout,
             message=exc.message,
-        )
-    except Exception as exc:
-        logger.error(
-            "EVENT_GET unexpected failure: plugin_id={}, err_type={}, err={}",
-            plugin_id,
-            type(exc).__name__,
-            str(exc),
-        )
-        _send_error(
-            send_response=send_response,
-            from_plugin=from_plugin,
-            request_id=request_id,
-            timeout=timeout,
-            message="Internal server error",
         )

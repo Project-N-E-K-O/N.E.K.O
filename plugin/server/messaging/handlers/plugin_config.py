@@ -5,10 +5,10 @@ from collections.abc import Mapping
 from plugin.logging_config import get_logger
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.requests.common import resolve_common_fields
-from plugin.server.requests.typing import SendResponse
+from plugin.server.messaging.handlers.common import resolve_common_fields
+from plugin.server.messaging.handlers.typing import SendResponse
 
-logger = get_logger("server.requests.plugin_config")
+logger = get_logger("server.messaging.handlers.plugin_config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
 

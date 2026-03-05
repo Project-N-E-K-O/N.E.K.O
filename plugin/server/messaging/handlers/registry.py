@@ -1,32 +1,32 @@
 from __future__ import annotations
 
-from plugin.server.requests.typing import RequestHandler
+from plugin.server.messaging.handlers.typing import RequestHandler
 
 
 def build_request_handlers() -> dict[str, RequestHandler]:
-    from plugin.server.requests.plugin_to_plugin import handle_plugin_to_plugin
-    from plugin.server.requests.plugin_query import handle_plugin_query
-    from plugin.server.requests.plugin_config import (
-        handle_plugin_config_get,
+    from plugin.server.messaging.handlers.plugin_to_plugin import handle_plugin_to_plugin
+    from plugin.server.messaging.handlers.plugin_query import handle_plugin_query
+    from plugin.server.messaging.handlers.plugin_config import (
         handle_plugin_config_base_get,
-        handle_plugin_config_profiles_get,
-        handle_plugin_config_profile_get,
         handle_plugin_config_effective_get,
+        handle_plugin_config_get,
+        handle_plugin_config_profile_get,
+        handle_plugin_config_profiles_get,
         handle_plugin_config_update,
     )
-    from plugin.server.requests.system_config import handle_plugin_system_config_get
-    from plugin.server.requests.memory import handle_memory_query
-    from plugin.server.requests.user_context import handle_user_context_get
-    from plugin.server.requests.export import handle_export_push
-    from plugin.server.requests.run_update import handle_run_update
-    from plugin.server.requests.events import handle_event_get
-    from plugin.server.requests.lifecycle import handle_lifecycle_get
-    from plugin.server.requests.bus_delete import (
+    from plugin.server.messaging.handlers.system_config import handle_plugin_system_config_get
+    from plugin.server.messaging.handlers.memory import handle_memory_query
+    from plugin.server.messaging.handlers.user_context import handle_user_context_get
+    from plugin.server.messaging.handlers.export import handle_export_push
+    from plugin.server.messaging.handlers.run_update import handle_run_update
+    from plugin.server.messaging.handlers.events import handle_event_get
+    from plugin.server.messaging.handlers.lifecycle import handle_lifecycle_get
+    from plugin.server.messaging.handlers.bus_delete import (
         handle_event_del,
         handle_lifecycle_del,
         handle_message_del,
     )
-    from plugin.server.requests.bus_subscribe import (
+    from plugin.server.messaging.handlers.bus_subscribe import (
         handle_bus_subscribe,
         handle_bus_unsubscribe,
     )
