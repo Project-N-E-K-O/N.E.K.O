@@ -868,14 +868,17 @@ document.addEventListener('DOMContentLoaded', () => {
             /* 1. 容器悬浮与毛玻璃质感 */
             .music-msg-container .aplayer {
                 border-radius: 12px !important;
-                background: rgba(30, 30, 30, 0.65) !important;
+                background: rgba(55, 53, 53, 0.65) !important;
                 backdrop-filter: blur(15px);
                 -webkit-backdrop-filter: blur(15px);
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                box-shadow: 0 10px 30px rgba(70, 64, 64, 0.2);
                 border: 1px solid rgba(255, 255, 255, 0.1);
                 font-family: inherit !important;
                 overflow: hidden;
                 margin-bottom: 5px;
+                min-height: 158px !important;
+                max-height: 158px !important;
+                height: 158px !important;
             }
 
             /* 适配浅色主题 */
@@ -893,6 +896,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 height: calc(100% - 12px) !important;
                 width: 60px !important;
                 box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+                min-height: 134px !important;
+                max-height: 134px !important;
+            }
+
+            /* 3. 封面区域固定 */
+            .music-msg-container .aplayer .aplayer-pic .aplayer-pic-icon-wrap {
+                width: 100% !important;
+                height: 100% !important;
+            }
+
+            /* 4. 信息区域高度限制，防止文字过长影响整体高度 */
+            .music-msg-container .aplayer .aplayer-info {
+                height: 100% !important;
+                min-height: 134px !important;
             }
 
             /* 3. 进度条主题色：呼应你聊天框的专属蓝色 (#44b7fe) */
@@ -909,6 +926,16 @@ document.addEventListener('DOMContentLoaded', () => {
             .music-msg-container .aplayer .aplayer-info .aplayer-music .aplayer-title {
                 font-weight: 600;
                 font-size: 15px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 160px;
+            }
+            .music-msg-container .aplayer .aplayer-info .aplayer-music .aplayer-author {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 120px;
             }
             .music-msg-container .aplayer .aplayer-lrc p {
                 color: #fff;
@@ -1046,51 +1073,247 @@ window.triggerScreenshot = function() {
 };
 
 // ========== 音乐聊天气泡功能 ==========
+// 记录当前正在播放的音乐信息，用于去重
+let currentPlayingTrack = null;
+
 window.sendMusicMessage = function(trackInfo) {
-    // 【新增】依赖项安全检查
-    if (typeof APlayer === 'undefined') {
-        console.error('[Common UI] APlayer 库未加载，无法渲染音乐气泡');
+    const trackName = trackInfo.name || '未知曲目';
+    const artistName = trackInfo.artist || '未知艺术家';
+    
+    // 检查是否需要创建新播放器
+    const shouldCreateNewPlayer = () => {
+        // 没有当前播放信息，需要创建
+        if (!currentPlayingTrack) return true;
+        
+        // 检查全局 APlayer 实例
+        if (window.aplayer) {
+            // 如果正在播放，不创建新的
+            if (!window.aplayer.paused) {
+                console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
+                return false;
+            }
+            // 如果已暂停但不是停止状态，销毁后重建
+            window.aplayer = null;
+        }
+        
+        // 检查注入的 APlayer 实例
+        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+            if (!window.aplayerInjected.aplayer.paused) {
+                console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
+                return false;
+            }
+            window.aplayerInjected = null;
+        }
+        
+        // 移除之前的所有音乐气泡
+        document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
+        
+        return true;
+    };
+    
+    // 停止之前可能正在播放的音乐
+    const stopExistingMusic = () => {
+        // 检查全局 APlayer 实例
+        if (window.aplayer && typeof window.aplayer.pause === 'function') {
+            window.aplayer.pause();
+            window.aplayer = null;
+        }
+        // 检查注入的 APlayer 实例
+        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+            window.aplayerInjected.aplayer.pause();
+            window.aplayerInjected = null;
+        }
+        // 移除之前的所有音乐气泡
+        document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
+        currentPlayingTrack = null;
+    };
+    
+    // 检查是否已有相同歌曲在播放
+    const isSameTrack = (info) => {
+        return currentPlayingTrack && 
+               currentPlayingTrack.name === info.name && 
+               currentPlayingTrack.artist === info.artist;
+    };
+    
+    // 如果是同一首歌且正在播放，不做任何操作
+    if (isSameTrack(trackInfo) && window.aplayer && !window.aplayer.paused) {
+        console.log('[Common UI] 相同歌曲正在播放中，跳过');
         return;
     }
-
-    const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-    const messageHTML = `
-        <div class="chat-message bot-message" style="margin-bottom: 15px; display: flex; align-items: flex-start;">
-            <div style="width: 32px; height: 32px; border-radius: 50%; background: #44b7fe; margin-right: 10px; flex-shrink: 0; display: flex; justify-content: center; align-items: center; color: white; font-size: 16px; box-shadow: 0 2px 6px rgba(68,183,254,0.4);">
-                🎵
-            </div>
-            <div class="message-bubble" style="background: var(--bg-color, #f4f6f8); border-radius: 4px 18px 18px 18px; padding: 10px; width: 280px; max-width: 80%; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
-                <div id="${playerId}" class="music-msg-container" style="margin: 0; width: 100%;"></div>
-            </div>
-        </div>
-    `;
-
-    addNewMessage(messageHTML);
-
-    // 【修改】使用双重 requestAnimationFrame 确保 DOM 绝对已经渲染在页面上
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            const container = document.getElementById(playerId);
-            if (container) {
-                new APlayer({
-                    container: container,
-                    theme: '#44b7fe', 
-                    loop: 'none',
-                    preload: 'none',
-                    mutex: true,      
-                    listFolded: true,
-                    audio: [trackInfo]
-                });
-
-                const apElement = container.querySelector('.aplayer');
-                if (apElement) {
-                    apElement.style.boxShadow = 'none';
-                    apElement.style.background = 'transparent';
-                    apElement.style.border = 'none';
-                }
-            } else {
-                console.error('[Common UI] 找不到音乐气泡挂载点 ID:', playerId);
+    
+    // 如果播放器正在播放其他歌曲，先停止
+    if (!shouldCreateNewPlayer()) {
+        // 尝试添加到当前播放列表
+        if (window.aplayer && window.aplayer.list) {
+            window.aplayer.list.add([{
+                name: trackName,
+                artist: artistName,
+                url: trackInfo.url,
+                cover: trackInfo.cover || ''
+            }]);
+            window.aplayer.play();
+            currentPlayingTrack = trackInfo;
+            console.log('[Common UI] 已添加到播放列表');
+        }
+        return;
+    }
+    
+    // 更新当前播放信息
+    currentPlayingTrack = trackInfo;
+    // 动态加载 APlayer 库
+    const loadAPlayerLibrary = () => {
+        return new Promise((resolve, reject) => {
+            if (typeof APlayer !== 'undefined') {
+                resolve();
+                return;
             }
+            
+            // 加载 CSS
+            const cssLink = document.createElement('link');
+            cssLink.rel = 'stylesheet';
+            cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.css';
+            cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
+            document.head.appendChild(cssLink);
+            
+            // 加载 JS
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.js';
+            script.onload = () => {
+                console.log('[Common UI] APlayer 库加载成功');
+                resolve();
+            };
+            script.onerror = () => {
+                console.error('[Common UI] APlayer JS 加载失败');
+                reject(new Error('APlayer 库加载失败'));
+            };
+            document.head.appendChild(script);
         });
-    });
+    };
+    
+    const showMusicPlayer = () => {
+        const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+        
+        const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'];
+        const randomColor = colors[Math.floor(Math.random() * colors.length)];
+        
+        console.log('[Music] trackInfo:', trackInfo);
+        console.log('[Music] cover value:', trackInfo.cover);
+        
+        const hasCover = trackInfo.cover && trackInfo.cover.length > 0;
+        console.log('[Music] hasCover:', hasCover);
+        
+        const coverHtml = hasCover 
+            ? `<img src="${trackInfo.cover}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 10px;" onerror="this.parentElement.style.background='linear-gradient(135deg, ${randomColor}, #667eea)'; this.style.display='none'; this.nextElementSibling.style.display='flex';"><span style="display: none;">🎵</span>`
+            : `<span>🎵</span>`;
+        
+        const messageHTML = `
+            <div class="chat-message bot-message music-bubble" style="display: inline-flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);">
+                <div class="music-cover" style="width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, ${randomColor}, #667eea); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;">
+                    ${coverHtml}
+                </div>
+                <div class="music-info" style="flex: 1; min-width: 0; overflow: hidden;">
+                    <div class="music-title" style="color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;">${trackName}</div>
+                    <div class="music-artist" style="color: rgba(255,255,255,0.6); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${artistName}</div>
+                </div>
+                <button class="music-play-btn" id="${playerId}-play" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4); transition: transform 0.2s;">▶</button>
+                <div id="${playerId}" class="music-msg-container" style="display: none;"></div>
+            </div>
+            <style>
+                .music-bubble {
+                    margin-top: 8px !important;
+                }
+                .music-bubble + .music-bubble {
+                    margin-top: 2px !important;
+                }
+                .music-bubble button.music-play-btn:hover {
+                    transform: scale(1.1);
+                }
+                .music-bubble button.music-play-btn:active {
+                    transform: scale(0.95);
+                }
+            </style>
+        `;
+    
+        addNewMessage(messageHTML);
+        
+        let aplayerInstance = null;
+        
+        // 使用双重 requestAnimationFrame 确保 DOM 已渲染
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                const container = document.getElementById(playerId);
+                const playBtn = document.getElementById(playerId + '-play');
+                
+                if (container && typeof APlayer !== 'undefined') {
+                    aplayerInstance = new APlayer({
+                        container: container,
+                        theme: '#667eea',
+                        loop: 'none',
+                        preload: 'none',
+                        mutex: true,
+                        volume: 0.7,
+                        listFolded: true,
+                        order: 'normal',
+                        audio: [{
+                            name: trackName,
+                            artist: artistName,
+                            url: trackInfo.url,
+                            cover: trackInfo.cover || ''
+                        }]
+                    });
+                    
+                    // 绑定播放按钮事件
+                    if (playBtn) {
+                        playBtn.addEventListener('click', () => {
+                            if (aplayerInstance) {
+                                if (aplayerInstance.paused) {
+                                    aplayerInstance.play();
+                                    playBtn.textContent = '⏸';
+                                } else {
+                                    aplayerInstance.pause();
+                                    playBtn.textContent = '▶';
+                                }
+                            }
+                        });
+                    }
+                    
+                    // 监听播放状态变化
+                    aplayerInstance.on('play', () => {
+                        if (playBtn) playBtn.textContent = '⏸';
+                    });
+                    aplayerInstance.on('pause', () => {
+                        if (playBtn) playBtn.textContent = '▶';
+                    });
+                    // 播放结束时重置当前播放信息，允许创建新的播放器
+                    aplayerInstance.on('ended', () => {
+                        console.log('[Common UI] 音乐播放结束');
+                        if (playBtn) playBtn.textContent = '▶';
+                        currentPlayingTrack = null;
+                    });
+                    
+                    // 美化 APlayer 样式（隐藏起来）
+                    const apElement = container.querySelector('.aplayer');
+                    if (apElement) {
+                        apElement.style.display = 'none';
+                    }
+                } else {
+                    console.error('[Common UI] 找不到音乐气泡挂载点或 APlayer 未定义');
+                }
+            });
+        });
+    };
+    
+    // 检查 APlayer 是否已加载
+    if (typeof APlayer === 'undefined') {
+        console.log('[Common UI] APlayer 库未加载，正在动态加载...');
+        loadAPlayerLibrary().then(() => {
+            stopExistingMusic();
+            showMusicPlayer();
+        }).catch(err => {
+            console.error('[Common UI] APlayer 库加载失败:', err);
+        });
+    } else {
+        stopExistingMusic();
+        showMusicPlayer();
+    }
 };

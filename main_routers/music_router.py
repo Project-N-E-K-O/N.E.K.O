@@ -23,5 +23,11 @@ async def search_music(query: str):
     # 直接调用重构后的主函数
     results = await fetch_music_content(keyword=query, limit=1)
     
+    if results.get('success'):
+        track_count = len(results.get('data', []))
+        logger.info(f"[音乐API] 搜索成功，返回 {track_count} 首音乐")
+    else:
+        logger.warning(f"[音乐API] 搜索失败: {results.get('error', '未知错误')}")
+    
     # fetch_music_content 已经返回了所需的格式
     return results

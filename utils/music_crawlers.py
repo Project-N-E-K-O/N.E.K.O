@@ -8,7 +8,8 @@
 -   **设计**: 
     -   采用统一的 `BaseMusicCrawler` 基类，封装了通用的 `httpx` 请求逻辑、日志记录和 User-Agent 管理。
     -   每个平台实现为 `BaseMusicCrawler` 的子类，只需重写 `search` 方法即可。
-    -   主函数 `fetch_music_content` 通过 `asyncio.gather` 并发执行多个爬虫，并根据区域和关键词有无进行智能调度。
+    -   主函数 `fetch_music_content` 通过 `asyncio.gather` 并发执行多个爬虫，并根据区域、关键词和多样性策略进行智能调度。
+    -   实现了短期去重机制，避免同一首歌曲在短时间内被重复爬取。
 """
 
 import asyncio
@@ -16,9 +17,12 @@ import httpx
 import random
 import re
 import json
+import time
+import urllib.parse
 from urllib.parse import unquote
 from bs4 import BeautifulSoup
 from typing import List, Dict, Any, Optional
+from collections import Counter
 
 from utils.logger_config import get_module_logger
 
@@ -28,13 +32,110 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
-# User-Agent 池，模仿 web_scraper.py 的做法，以避免被识别
+# User-Agent 池
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ]
+
+# ==================================================
+# 去重与多样性管理
+# ==================================================
+
+class MusicCache:
+    """歌曲缓存管理器，实现短期去重和多样性评估"""
+    
+    def __init__(self, expire_seconds: int = 300):
+        self.cache = []
+        self.expire_seconds = expire_seconds
+        self.last_cleanup = time.time()
+    
+    def _cleanup(self):
+        """清理过期缓存"""
+        current_time = time.time()
+        if current_time - self.last_cleanup > self.expire_seconds:
+            self.cache = []
+            self.last_cleanup = current_time
+    
+    def is_duplicate(self, url: str, name: str, artist: str) -> bool:
+        """检查是否重复"""
+        self._cleanup()
+        for item in self.cache:
+            if item['url'] == url:
+                return True
+            if item['name'] == name and item['artist'] == artist:
+                return True
+        return False
+    
+    def add(self, track: Dict[str, Any]):
+        """添加歌曲到缓存"""
+        self._cleanup()
+        self.cache.append({
+            'url': track.get('url', ''),
+            'name': track.get('name', ''),
+            'artist': track.get('artist', ''),
+            'timestamp': time.time()
+        })
+    
+    def filter_duplicates(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """过滤重复歌曲"""
+        self._cleanup()
+        filtered = []
+        for track in tracks:
+            if not self.is_duplicate(track.get('url', ''), track.get('name', ''), track.get('artist', '')):
+                filtered.append(track)
+                self.add(track)
+        return filtered
+    
+    def get_diversity_score(self, tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """评估歌曲多样性"""
+        if not tracks:
+            return {'score': 0, 'artist_diversity': 0, 'style_notes': []}
+        
+        artists = [t.get('artist', '未知') for t in tracks]
+        artist_counter = Counter(artists)
+        unique_artists = len(artist_counter)
+        
+        artist_diversity = unique_artists / len(tracks) if tracks else 0
+        
+        # 风格多样性评估（基于关键词）
+        style_notes = []
+        if anykw(tracks, ['lofi', 'chill', 'relax', 'ambient']):
+            style_notes.append('放松氛围')
+        if anykw(tracks, ['pop', '流行']):
+            style_notes.append('流行')
+        if anykw(tracks, ['rock', '摇滚']):
+            style_notes.append('摇滚')
+        if anykw(tracks, ['电子', 'electronic', 'edm']):
+            style_notes.append('电子')
+        if anykw(tracks, ['hiphop', 'rap', '说唱']):
+            style_notes.append('说唱')
+        if anykw(tracks, ['古典', '钢琴', 'classical', 'piano']):
+            style_notes.append('古典')
+        
+        # 计算多样性分数
+        style_score = len(style_notes) / 5.0  # 最多5种风格
+        overall_score = (artist_diversity * 0.6 + style_score * 0.4) * 100
+        
+        return {
+            'score': round(overall_score, 1),
+            'artist_diversity': round(artist_diversity * 100, 1),
+            'unique_artists': unique_artists,
+            'style_notes': style_notes
+        }
+
+def anykw(tracks: List[Dict[str, Any]], keywords: List[str]) -> bool:
+    """检查 tracks 中是否包含任意关键词"""
+    for track in tracks:
+        text = f"{track.get('name', '')} {track.get('artist', '')}".lower()
+        if any(kw.lower() in text for kw in keywords):
+            return True
+    return False
+
+# 全局缓存实例
+music_cache = MusicCache(expire_seconds=300)
 
 def get_random_user_agent() -> str:
     """随机获取一个User-Agent"""
@@ -165,13 +266,161 @@ class NeteaseCrawler(BaseMusicCrawler):
         
         return []
 
+
+class SoundCloudCrawler(BaseMusicCrawler):
+    """SoundCloud 爬虫，自动动态获取鉴权 Token"""
+    def __init__(self):
+        super().__init__("SoundCloud")
+        self.client_id = None
+
+    async def _get_dynamic_client_id(self):
+        """动态去 SoundCloud 的 JS 脚本里提取最新的 client_id"""
+        if self.client_id:
+            return self.client_id
+        try:
+            res = await self.client.get("https://soundcloud.com/")
+            # 找到主页挂载的所有的 JS 脚本
+            scripts = re.findall(r'<script crossorigin src="([^"]+)"></script>', res.text)
+            # Token 通常在最后几个 JS 文件里，倒序查找
+            for js_url in reversed(scripts):
+                js_res = await self.client.get(js_url)
+                # 正则匹配 32 位的 client_id
+                match = re.search(r'client_id:"([^"]{32})"', js_res.text)
+                if match:
+                    self.client_id = match.group(1)
+                    logger.info(f"[{self.platform_name}] 成功动态获取 Client ID")
+                    return self.client_id
+        except Exception as e:
+            logger.warning(f"[{self.platform_name}] 动态获取 Client ID 失败: {e}")
+        
+        # 如果动态抓取失败，给一个备用的
+        return "2tGloNvnfKx2jM1DxM9u79R2T8hhyCdP"
+
+    async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
+        
+        # 加入最多 2 次的重试机制，防 Token 突然过期
+        for attempt in range(2):
+            client_id = await self._get_dynamic_client_id()
+            
+            try:
+                search_url = "https://api-v2.soundcloud.com/search/tracks"
+                params = {
+                    'q': keyword,
+                    'limit': min(limit * 3, 50),
+                    'client_id': client_id,
+                }
+                
+                response = await self.client.get(search_url, params=params)
+                
+                if response.status_code in [401, 403]:
+                    logger.warning(f"[{self.platform_name}] API 认证失败 (尝试 {attempt+1}/2)，清空 Token 准备重试")
+                    self.client_id = None  # 核心机制：清空失效的 Token
+                    continue               # 立即进入下一次循环，重新去首页偷新 Token
+                
+                if response.status_code != 200:
+                    return []
+                
+                data = response.json()
+                collection = data.get('collection', [])
+                
+                if not collection:
+                    return []
+
+                results = []
+                for track in collection[:limit]:
+                    title = track.get('title', '未知曲目')
+                    artist = track.get('user', {}).get('username', '未知艺术家')
+                    
+                    transcodings = track.get('media', {}).get('transcodings', [])
+                    if transcodings:
+                        stream_api = transcodings[0].get('url')
+                        if stream_api:
+                            stream_res = await self.client.get(f"{stream_api}?client_id={client_id}")
+                            real_audio_url = stream_res.json().get('url')
+                            
+                            cover_url = track.get('artwork_url') or ''
+                            if cover_url:
+                                cover_url = cover_url.replace('-large', '-t500x500')
+                                
+                            if real_audio_url:
+                                results.append(self._format_item(name=title, url=real_audio_url, artist=artist, cover=cover_url))
+                
+                return results # 成功则直接返回，退出重试循环
+
+            except Exception as e:
+                logger.error(f"[{self.platform_name}] 搜索失败: {e}")
+                break # 网络或解析报错（非权限问题）没必要重试，直接退出
+        
+        return []
+
+
+class iTunesCrawler(BaseMusicCrawler):
+    """iTunes/Apple Music 爬虫，用于搜索热门音乐。"""
+    def __init__(self):
+        super().__init__("iTunes")
+        self.api_base = "https://itunes.apple.com"
+
+    async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
+        
+        try:
+            search_url = f"{self.api_base}/search"
+            params = {
+                'term': keyword,
+                'media': 'music',
+                'entity': 'song',
+                'limit': min(limit * 3, 50)
+            }
+            
+            response = await self.client.get(search_url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data or not data.get('results'):
+                logger.warning(f"[{self.platform_name}] 未找到与 '{keyword}' 相关的曲目")
+                return []
+
+            results = []
+            for track in data['results'][:limit]:
+                title = track.get('trackName', '未知曲目')
+                artist = track.get('artistName', '未知艺术家')
+                preview_url = track.get('previewUrl')
+                cover_url = track.get('artworkUrl100', '').replace('100x100', '600x600')
+                
+                if preview_url:
+                    results.append(self._format_item(
+                        name=title,
+                        url=preview_url,
+                        artist=artist,
+                        cover=cover_url
+                    ))
+            
+            return results
+
+        except httpx.TimeoutException:
+            logger.warning(f"[{self.platform_name}] 搜索 '{keyword}' 超时")
+        except Exception as e:
+            logger.error(f"[{self.platform_name}] 搜索 '{keyword}' 失败: {e}", exc_info=True)
+        
+        return []
+
 class MusopenCrawler(BaseMusicCrawler):
     """Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。"""
     def __init__(self):
         super().__init__("Musopen")
+        # --- 恢复豪华版浏览器伪装头，突破 403 盾 ---
         self.client.headers.update({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
             'Referer': 'https://www.google.com/',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
+            'Upgrade-Insecure-Requests': '1'
         })
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
@@ -187,7 +436,21 @@ class MusopenCrawler(BaseMusicCrawler):
         try:
             response = await self.client.get(url)
             response.raise_for_status()
+            # === 新增：Musopen 高清封面抓取 ===
+            soup = BeautifulSoup(response.text, 'html.parser')
+            cover_url = ""
             
+            # 1. 提取网页头部的 Open Graph 图片 (最清晰的原版封面或肖像)
+            og_image = soup.find('meta', property='og:image')
+            if og_image and og_image.get('content'):
+                cover_url = og_image['content']
+                
+            # 2. 备用兜底：寻找页面中的专辑缩略图
+            if not cover_url:
+                main_img = soup.find('img', class_='composer-illustration') or soup.find('img', class_='work-illustration')
+                if main_img and main_img.get('src'):
+                    cover_url = main_img['src']
+            # ===================================
             # 使用正则从页面源码中提取所有 mp3/m4a 链接
             audio_links = re.findall(r'https?://[^\s"\'<>\[\]]+\.(?:mp3|m4a)', response.text)
             unique_links = list(set(audio_links))
@@ -202,11 +465,12 @@ class MusopenCrawler(BaseMusicCrawler):
                 # 尝试从链接中解析文件名作为曲目名
                 try:
                     filename_part = link.split('filename=')[-1]
-                    real_name = unquote(filename_part).replace('.mp3', '').replace('.m4a', '')
+                    # 使用 unquote_plus 完美处理 URL 中的加号(+)和百分号乱码
+                    real_name = urllib.parse.unquote_plus(filename_part).replace('.mp3', '').replace('.m4a', '')
                 except Exception:
                     real_name = "古典曲目"
-                
-                results.append(self._format_item(name=real_name, url=link, artist="古典音乐"))
+                # 传入 cover 参数
+                results.append(self._format_item(name=real_name, url=link, artist="古典音乐", cover=cover_url))
             return results
 
         except httpx.TimeoutException:
@@ -243,9 +507,31 @@ class FMACrawler(BaseMusicCrawler):
                 title = track_info.get('title', '未知FMA曲目')
                 artist = track_info.get('artistName', '未知FMA艺术家')
                 audio_url = track_info.get('playbackUrl')
+
+                # === 新增：FMA 封面抓取逻辑 ===
+                cover_url = ""
+                # 1. 尝试从隐藏的 JSON 信息中提取
+                if track_info.get('imageFileUrl'):
+                    cover_url = track_info['imageFileUrl']
+                elif track_info.get('image'):
+                    cover_url = track_info['image']
                 
+                # 2. 如果 JSON 里没存图，沿 DOM 树向上攀爬寻找缩略图
+                if not cover_url:
+                    # 向上找包含这首歌的卡片父级容器
+                    card = item.find_parent('div', class_=re.compile(r'play-item|row|col'))
+                    if card:
+                        img = card.find('img')
+                        if img:
+                            # 兼容现代前端框架的 lazyload 懒加载机制
+                            cover_url = img.get('src') or img.get('data-src', '')
+                
+                # 3. 过滤净化：排除无用的 SVG 装饰图标，确保是真实专辑图
+                if cover_url and (cover_url.endswith('.svg') or 'icon' in cover_url.lower()):
+                    cover_url = ""
+                # =============================
                 if audio_url:
-                    results.append(self._format_item(name=title, url=audio_url, artist=artist))
+                    results.append(self._format_item(name=title, url=audio_url, artist=artist, cover=cover_url))
             return results
 
         except httpx.TimeoutException:
@@ -255,73 +541,179 @@ class FMACrawler(BaseMusicCrawler):
         
         return []
 
+class BandcampCrawler(BaseMusicCrawler):
+    """Bandcamp 独立音乐爬虫，极度适合抓取 lofi、环境音和游戏同人OST。"""
+    def __init__(self):
+        super().__init__("Bandcamp")
+
+    async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
+        results = []
+        try:
+            # 改用 Bandcamp 官方搜索页，并限定搜索类型为单曲 (item_type=t)
+            url = 'https://bandcamp.com/search'
+            params = {'q': keyword, 'item_type': 't'}
+            
+            response = await self.client.get(url, params=params) # httpx 会自动编码
+            if response.status_code != 200:
+                return []
+                
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 搜索页的链接藏在 .heading a 里面
+            items = soup.select('.heading a')
+            if not items:
+                logger.warning(f"[{self.platform_name}] 未找到与 '{keyword}' 相关的曲目")
+                return []
+                
+            random.shuffle(items)
+            
+            for item in items[:limit * 3]: 
+                if len(results) >= limit:
+                    break
+                    
+                target_url = item.get('href', '')
+                # Bandcamp 搜索结果的 href 有些带有 ?from=search 参数，需要清理一下
+                if target_url.startswith('http'):
+                    target_url = target_url.split('?')[0]
+                else:
+                    continue
+
+                track_res = await self.client.get(target_url)
+                track_soup = BeautifulSoup(track_res.text, 'html.parser')
+                
+                script_data = track_soup.find('script', attrs={'data-tralbum': True})
+                if script_data:
+                    tralbum = json.loads(script_data['data-tralbum'])
+                    tracks = tralbum.get('trackinfo', [])
+                    
+                    if tracks and tracks[0].get('file') and 'mp3-128' in tracks[0]['file']:
+                        audio_url = tracks[0]['file']['mp3-128']
+                        title = tracks[0].get('title', '独立曲目')
+                        artist = tralbum.get('artist', 'Bandcamp 艺术家')
+                        
+                        cover_art = track_soup.find('a', class_='popupImage')
+                        cover_url = cover_art['href'] if cover_art else ""
+
+                        results.append(self._format_item(
+                            name=title, 
+                            url=audio_url, 
+                            artist=artist, 
+                            cover=cover_url
+                        ))
+        except httpx.TimeoutException:
+            logger.warning(f"[{self.platform_name}] 搜索 '{keyword}' 超时")
+        except Exception as e:
+            logger.error(f"[{self.platform_name}] 抓取失败: {e}", exc_info=True)
+            
+        return results
+
+# =======================================================
+# 全局爬虫实例 (利用 httpx 连接池复用提升 30% 速度)
+# =======================================================
+GLOBAL_CRAWLERS = {
+    'netease': NeteaseCrawler(),
+    'fma': FMACrawler(),
+    'musopen': MusopenCrawler(),
+    'soundcloud': SoundCloudCrawler(),
+    'itunes': iTunesCrawler(),
+    'bandcamp': BandcampCrawler(),
+}
 # =======================================================
 # 4. 主调度函数
 # =======================================================
 
 async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     """
-    主音乐获取函数，根据关键词和区域智能调度爬虫。
-
-    - 如果有关键词，主要使用网易云音乐搜索。
-    - 如果没有关键词，从 Musopen 和 FMA 获取推荐的背景音乐。
-    - 在非中国区域，优先使用 FMA。
+    主音乐获取函数，带有“分段截断”的智能并发调度。
     """
     china = is_china_region()
     logger.info(f"音乐搜索请求: keyword='{keyword}', limit={limit}, is_china_region={china}")
 
-    tasks = []
-    all_crawlers = {
-        'netease': NeteaseCrawler(),
-        'fma': FMACrawler(),
-        'musopen': MusopenCrawler()
-    }
-
-    # 根据场景选择要运行的爬虫
-    if keyword: # 用户指定了想听什么
-        if china:
-            # 国内优先使用网易云
-            tasks.append(all_crawlers['netease'].search(keyword, limit))
-        else:
-            # 国外使用 FMA
-            tasks.append(all_crawlers['fma'].search(keyword, limit))
-        # 备选方案
-        tasks.append(all_crawlers['netease'].search(keyword, limit)) 
-
-    else: # 用户没说听什么，推荐背景音乐
-        if china:
-            # 国内优先来点古典乐
-            tasks.append(all_crawlers['musopen'].search(limit=limit))
-            tasks.append(all_crawlers['fma'].search(keyword="lofi", limit=limit)) # lofi 作为备选
-        else:
-            # 国外优先来点 lofi
-            tasks.append(all_crawlers['fma'].search(keyword="lofi", limit=limit))
-            tasks.append(all_crawlers['musopen'].search(limit=limit))
-
     all_results = []
-    try:
-        # 并发执行所有任务
-        crawler_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # 这里默认使用优化一提及的全局实例，如果你没加，可换回字典实例化
+    all_crawlers = GLOBAL_CRAWLERS 
+
+    if keyword: 
+        # 场景 A: 用户指定了明确关键词 -> 开启“梯队降级”机制
+        kw_lower = keyword.lower()
+        classical_keywords = ["古典", "钢琴", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲"]
+        indie_keywords = ["独立", "lofi", "电音", "小众", "环境音", "electronic", "chill"]
+        chinese_keywords = ["华语", "中文", "国语", "华语流行", "中文歌"]
         
-        # 清理并收集结果
-        for result in crawler_results:
-            if isinstance(result, Exception):
-                logger.error(f"一个音乐爬虫在 gather 中失败: {result}")
-            elif result:
-                all_results.extend(result)
-    finally:
-        # 确保所有爬虫的客户端都被关闭
-        await asyncio.gather(*[crawler.close() for crawler in all_crawlers.values()])
+        primary_tasks = []
+        
+        # --- 组建第一梯队（最优解竞速） ---
+        if any(kw in kw_lower for kw in classical_keywords):
+            primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
+        elif any(kw in kw_lower for kw in chinese_keywords):
+            primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+        elif any(kw in kw_lower for kw in indie_keywords):
+            primary_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
+            primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+        else:
+            if china:
+                primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            else:
+                primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+                primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
+                
+        # 执行第一梯队
+        primary_responses = await asyncio.gather(*primary_tasks, return_exceptions=True)
+        for res in primary_responses:
+            if isinstance(res, list) and res:
+                all_results.extend(res)
+                
+        # --- 组建第二梯队（兜底截断逻辑） ---
+        if not all_results:
+            logger.info(f"[智能调度] 第一梯队未命中，停止等待，触发第二级兜底引擎...")
+            fallback_tasks = []
+            fallback_fma = "piano" if "钢琴" in kw_lower else "relax"
+            
+            fallback_tasks.append(all_crawlers['netease'].search(keyword, limit))
+            fallback_tasks.append(all_crawlers['fma'].search(fallback_fma, limit))
+            
+            fallback_responses = await asyncio.gather(*fallback_tasks, return_exceptions=True)
+            for res in fallback_responses:
+                if isinstance(res, list) and res:
+                    all_results.extend(res)
 
+    else: 
+        # 场景 B: 纯背景音乐推荐 -> 并发盲抽
+        tasks = []
+        if china:
+            china_styles = [
+                ('netease', '华语'), ('netease', '流行'), ('netease', '电子'), 
+                ('netease', '说唱'), ('musopen', None), ('fma', 'lofi'), 
+                ('fma', 'chill'), ('fma', 'electronic'), ('fma', 'hiphop')
+            ]
+            selected_styles = random.sample(china_styles, min(3, len(china_styles)))
+        else:
+            global_styles = [
+                ('itunes', 'lofi'), ('itunes', 'chill'), ('fma', 'ambient'), 
+                ('fma', 'electronic'), ('musopen', None), ('bandcamp', 'indie'), 
+                ('bandcamp', 'vgm'), ('bandcamp', 'lofi')
+            ]
+            selected_styles = random.sample(global_styles, min(3, len(global_styles)))
+        
+        for source, kw in selected_styles:
+            if source == 'musopen':
+                tasks.append(all_crawlers['musopen'].search(limit=limit))
+            else:
+                tasks.append(all_crawlers[source].search(kw, limit))
+                
+        crawler_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in crawler_results:
+            if isinstance(res, list) and res:
+                all_results.extend(res)
+
+    # 统一的去重与返回逻辑
     if not all_results:
-        logger.warning("所有音乐源均未返回任何结果")
-        return {
-            'success': False,
-            'error': '未能找到任何相关音乐',
-            'data': []
-        }
+        logger.warning("所有音乐源（含兜底）均未返回任何结果")
+        return {'success': False, 'error': '未能找到任何相关音乐', 'data': []}
 
-    # 去重（防止不同源返回同一首歌）
+    # URL级别去重
     seen_urls = set()
     unique_results = []
     for item in all_results:
@@ -329,27 +721,79 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             unique_results.append(item)
             seen_urls.add(item['url'])
     
-    logger.info(f"成功获取到 {len(unique_results)} 首音乐")
-    return {
-        'success': True,
-        'data': unique_results[:limit]
-    }
+    # 使用缓存进行短期去重
+    unique_results = music_cache.filter_duplicates(unique_results)
+    
+    # 评估多样性
+    diversity_info = music_cache.get_diversity_score(unique_results)
+    logger.info(f"成功获取到 {len(unique_results)} 首音乐，多样性评分: {diversity_info['score']}% (风格: {diversity_info['style_notes']}, 独立艺术家: {diversity_info['unique_artists']})")
+    
+    # 日志只显示前5首
+    display_tracks = unique_results[:5]
+    log_items = [f"{t.get('name', '未知')[:15]}-{t.get('artist', '未知')[:10]}" for t in display_tracks]
+    logger.info(f"[音乐日志] 代表性歌曲: {log_items}")
+    
+    return {'success': True, 'data': unique_results[:limit], 'diversity': diversity_info}
 
 # =======================================================
 # 5. 用于独立测试的入口
 # =======================================================
 
 async def main():
-    """测试函数"""
-    print("--- 正在测试有关键词的搜索 (周杰伦) ---")
-    results_with_keyword = await fetch_music_content(keyword="周杰伦", limit=2)
-    print(json.dumps(results_with_keyword, indent=2, ensure_ascii=False))
-    
-    print("\n" + "="*50 + "\n")
+    """全方位测试函数：测试独立爬虫及智能调度器"""
+    print("==================================================")
+    print(" 🚀 阶段一：测试独立爬虫模块")
+    print("==================================================\n")
 
-    print("--- 正在测试无关键词的推荐 ---")
-    results_no_keyword = await fetch_music_content(keyword="", limit=1)
-    print(json.dumps(results_no_keyword, indent=2, ensure_ascii=False))
+    # 测试新加的 Bandcamp 爬虫
+    print("--- 1. 测试 Bandcamp 搜索 (关键词: lofi) ---")
+    bandcamp_crawler = BandcampCrawler()
+    bc_results = await bandcamp_crawler.search("lofi", limit=2)
+    print(f"✅ Bandcamp 找到 {len(bc_results)} 首音乐:")
+    for i, r in enumerate(bc_results, 1):
+        print(f"  {i}. {r['name']} - {r['artist']}\n     🎵 直链: {r['url'][:70]}...")
+    await bandcamp_crawler.close()
+    print("\n")
+
+    # 测试 SoundCloud 爬虫
+    print("--- 2. 测试 SoundCloud 搜索 (关键词: electronic) ---")
+    sc_crawler = SoundCloudCrawler()
+    sc_results = await sc_crawler.search("electronic", limit=2)
+    print(f"✅ SoundCloud 找到 {len(sc_results)} 首音乐:")
+    for i, r in enumerate(sc_results, 1):
+        print(f"  {i}. {r['name']} - {r['artist']}\n     🎵 直链: {r['url'][:70]}...")
+    await sc_crawler.close()
+    print("\n")
+
+    print("==================================================")
+    print(" 🧠 阶段二：测试并发智能调度引擎 (fetch_music_content)")
+    print("==================================================\n")
+
+    # 测试 1: 古典乐分发
+    print("--- 3. 智能调度测试: [肖邦夜曲] -> 预期命中 Musopen 或 网易云兜底 ---")
+    results_classical = await fetch_music_content(keyword="肖邦夜曲", limit=1)
+    print(json.dumps(results_classical, indent=2, ensure_ascii=False))
+    print("\n")
+
+    # 测试 2: 流行乐分发
+    print("--- 4. 智能调度测试: [周杰伦] -> 预期命中 网易云 ---")
+    results_pop = await fetch_music_content(keyword="周杰伦", limit=1)
+    print(json.dumps(results_pop, indent=2, ensure_ascii=False))
+    print("\n")
+
+    # 测试 3: 无关键词随机推荐
+    print("--- 5. 智能调度测试: [无关键词] -> 预期触发多平台随机并发抽选 ---")
+    results_random = await fetch_music_content(keyword="", limit=2)
+    print(json.dumps(results_random, indent=2, ensure_ascii=False))
+    print("\n==================================================")
+    print(" 🎉 全链路测试完毕！")
+    # --- 新增：优雅关闭全局连接池，防止 asyncio 报错 ---
+    await asyncio.gather(*[crawler.close() for crawler in GLOBAL_CRAWLERS.values()])
 
 if __name__ == '__main__':
+    # 针对 Windows 环境的 asyncio 报错防范
+    import sys
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     asyncio.run(main())

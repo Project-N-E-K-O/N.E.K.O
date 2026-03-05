@@ -354,6 +354,7 @@ window.createChatModeToggle = function(options) {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = checkboxId;
+    console.log(`[ChatModeToggle] 初始化 checkbox: ${checkboxId}, globalVarName=${globalVarName}, window值=${window[globalVarName]}`);
     if (typeof window[globalVarName] !== 'undefined') {
         checkbox.checked = window[globalVarName];
     }
