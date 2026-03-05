@@ -124,6 +124,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
             if region == 'china':
+
                 b_dyn = raw_data.get('bilibili_dynamic', {})
                 for d in (b_dyn.get('dynamics', []) or []):
                     title = d.get('content', '')
@@ -137,6 +138,20 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                     url = d.get('url', '')
                     if title and url:
                         links.append({'title': title, 'url': url, 'source': '微博'})
+                        
+                d_dyn = raw_data.get('douyin_dynamic', {})
+                for d in (d_dyn.get('dynamics', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': '抖音'})
+
+                k_dyn = raw_data.get('kuaishou_dynamic', {})
+                for d in (k_dyn.get('dynamics', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': '快手'})
             else:
                 r_dyn = raw_data.get('reddit_dynamic', {})
                 for d in (r_dyn.get('posts', []) or []):
@@ -1323,68 +1338,6 @@ async def proactive_chat(request: Request):
                 enabled_modes = ['home']
         
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
-
-        # ========== 新增：音乐模式处理 ==========
-        if 'music' in enabled_modes:
-            # 从 session manager 获取最近的对话
-            last_message = ""
-            if mgr and hasattr(mgr.session, '_conversation_history') and mgr.session._conversation_history:
-                # _conversation_history is a list of BaseMessage
-                # find the last HumanMessage
-                for msg in reversed(mgr.session._conversation_history):
-                    if isinstance(msg, HumanMessage):
-                        last_message = msg.content
-                        break
-            
-            # 简单的关键词检测
-            music_keywords = ['听歌', '放歌', '音乐', 'music', 'song']
-            if any(keyword in last_message.lower() for keyword in music_keywords):
-                logger.info(f"[{lanlan_name}] 检测到音乐请求: {last_message}")
-
-                # 获取记忆上下文
-                raw_memory_context = ""
-                try:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
-                        resp.raise_for_status()
-                        if resp.status_code == 200:
-                            raw_memory_context = resp.text
-                except Exception as e:
-                    logger.warning(f"[{lanlan_name}] 获取音乐模式的记忆上下文失败: {e}")
-
-                # 获取语言
-                try:
-                    request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
-                    if request_lang:
-                        proactive_lang = normalize_language_code(request_lang, format='short')
-                    else:
-                        proactive_lang = get_global_language()
-                except Exception:
-                    proactive_lang = 'zh'
-
-                # 构建 prompt
-                music_prompt = get_proactive_chat_prompt('music', proactive_lang).format(
-                    lanlan_name=lanlan_name,
-                    master_name=master_name_current,
-                    memory_context=raw_memory_context,
-                    current_chat=last_message
-                )
-
-                # 调用 LLM
-                try:
-                    search_term = await _llm_call_with_retry(music_prompt, "music_suggestion")
-                    if search_term and "[PASS]" not in search_term:
-                        logger.info(f"[{lanlan_name}] 音乐搜索建议: {search_term}")
-                        return JSONResponse({
-                            "success": True,
-                            "action": "music",
-                            "search_term": search_term.strip()
-                        })
-                    else:
-                        logger.info(f"[{lanlan_name}] 音乐模式 LLM 返回 [PASS]")
-
-                except Exception as e:
-                    logger.error(f"[{lanlan_name}] 音乐模式 LLM 调用失败: {e}")
         
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
         screenshot_data = data.get('screenshot_data')
@@ -1465,14 +1418,14 @@ async def proactive_chat(request: Request):
                 return (mode, {'formatted_content': formatted, 'raw_data': personal_dynamics, 'links': links})
             
             elif mode == 'music':
-                # 主动搭话时，不带关键词获取推荐音乐
+                # AI根据气氛自动推荐音乐，无需关键词触发
                 music_content = await fetch_music_content(keyword="", limit=5)
                 if not music_content.get('success'):
                     raise ValueError(f"获取音乐失败: {music_content.get('error')}")
                 formatted = _format_music_content(music_content)
                 _log_music_content(lanlan_name, music_content)
                 links = _extract_links_from_raw(mode, music_content)
-                return (mode, {'formatted_content': formatted, 'raw_data': music_content, 'links': links})
+                return (mode, {'formatted_content': formatted, 'raw_data': music_content, 'links': []})
 
             else:
                 raise ValueError(f"未知模式: {mode}")
@@ -1735,6 +1688,8 @@ async def proactive_chat(request: Request):
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
         selected_web_topic_key = ''
+        
+        # --- 音乐模式：让AI根据气氛判断是否推荐音乐（无需关键词） ---
         
         # --- Web 通道: 1 次 LLM 筛选 ---
         if merged_web_content:
@@ -2042,20 +1997,22 @@ async def proactive_chat(request: Request):
         elif source_tag in ('WEB', 'BOTH'):
             primary_channel = 'web' if source_tag == 'WEB' else primary_channel
         
-        # 如果是音乐模式被选中（source_tag 为 WEB 但 active_channels 包含 music），返回音乐链接
-        if 'music' in active_channels and source_tag == 'WEB':
-            # 从 music_content 中获取链接
+        # 如果音乐通道参与且 source_tag 为 WEB 或 BOTH，返回音乐链接
+        # 避免覆盖已有链接
+        if 'music' in active_channels and source_tag in ('WEB', 'BOTH'):
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
-                source_links = []
-                for track in music_raw.get('data', [])[:3]:
-                    source_links.append({
-                        'title': track.get('name', '未知曲目'),
-                        'artist': track.get('artist', '未知艺术家'),
-                        'url': track.get('url', ''),
-                        'source': '音乐推荐'
-                    })
-                primary_channel = 'music'
+                # 只有当 source_links 为空时才添加音乐链接
+                if not source_links:
+                    source_links = []
+                    for track in music_raw.get('data', [])[:3]:
+                        source_links.append({
+                            'title': track.get('name', '未知曲目'),
+                            'artist': track.get('artist', '未知艺术家'),
+                            'url': track.get('url', ''),
+                            'source': '音乐推荐'
+                        })
+                    primary_channel = 'music'
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)

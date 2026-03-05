@@ -838,6 +838,13 @@ async def on_shutdown():
             except Exception as e:
                 logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
         
+        # 关闭音乐爬虫连接池
+        try:
+            from utils.music_crawlers import close_all_crawlers
+            await close_all_crawlers()
+        except Exception as e:
+            logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
+        
         logger.info("✅ 资源清理完成")
 
 # 使用 FastAPI 的 app.state 来管理启动配置

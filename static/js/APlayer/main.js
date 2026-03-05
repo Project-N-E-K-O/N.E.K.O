@@ -13,7 +13,7 @@ import {
     setMusicVolume,
     getCurrentTrackInfo,
     getMusicSources 
-} from './APlayer/aplayer_controls.js';
+} from './aplayer_controls.js';
 
 import { 
     initializeAPlayerUI, 
@@ -23,13 +23,13 @@ import {
     hideMiniPlayer,
     setPlayerTheme,
     setPlayerPosition
-} from './APlayer/ui_updates.js';
+} from './ui_updates.js';
 
 import { 
     initEventListeners, 
     setupKeyboardShortcuts,
     formatTime 
-} from './APlayer/event_listeners.js';
+} from './event_listeners.js';
 
 /**
  * APlayer 配置对象

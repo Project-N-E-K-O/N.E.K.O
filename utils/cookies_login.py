@@ -192,6 +192,10 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                     if not content:
                         logger.warning(f"{platform} Cookie 文件内容为空或只有空白字符: {cookie_file}")
                         return {}
+                cookies = json.loads(content)
+                if not isinstance(cookies, dict):
+                    logger.warning(f"{platform} Cookie 明文内容不是对象: {cookie_file}")
+                    return {}
 
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return cookies if isinstance(cookies, dict) else {}

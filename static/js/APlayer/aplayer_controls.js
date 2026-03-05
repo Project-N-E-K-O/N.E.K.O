@@ -20,13 +20,13 @@ const musicSources = {
 };
 
 /**
- * 确保 APlayer 已初始化
+ * 校验 APlayer 实例是否存在
  * @param {APlayer} aplayer - APlayer 实例
- * @returns {boolean} - 如果 APlayer 已初始化则返回 true，否则返回 false
+ * @returns {boolean} - 如果 APlayer 存在则返回 true，否则返回 false
  */
 function ensureAPlayerInitialized(aplayer) {
-    if (!aplayer || !aplayer.playing) {
-        console.warn('[APlayer] APlayer not initialized or not playing');
+    if (!aplayer) {
+        console.warn('[APlayer] APlayer not initialized');
         return false;
     }
     return true;

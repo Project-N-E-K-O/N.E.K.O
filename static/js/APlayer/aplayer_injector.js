@@ -6,7 +6,7 @@
  *  - 支持主题和位置配置
  */
 
-import { initializeAPlayer } from './APlayer/main.js';
+import { initializeAPlayer } from './main.js';
 
 const APLAYER_CONFIG = {
     containerId: 'aplayer-container',
@@ -125,9 +125,10 @@ function setupInjectedControls(aplayer, config) {
         toggle: () => {
             const isVisible = container.style.display !== 'none';
             if (isVisible) {
-                hide();
+                container.style.display = 'none';
             } else {
-                show();
+                container.style.display = 'block';
+                if (config.defaultMiniPlayer) toggleBtn.style.display = 'flex';
             }
         },
         setMiniPlayer: (enabled) => {
@@ -155,6 +156,10 @@ export function removeAPlayerFromChatContainer() {
 
     if (window.aplayerInjected) {
         delete window.aplayerInjected;
+    }
+    
+    if (window.aplayer) {
+        window.aplayer = null;
     }
 }
 

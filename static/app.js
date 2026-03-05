@@ -8599,6 +8599,7 @@ function init_app() {
         proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
         proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
         proactivePersonalChatEnabled = typeof window.proactivePersonalChatEnabled !== 'undefined' ? window.proactivePersonalChatEnabled : proactivePersonalChatEnabled;
+        proactiveMusicEnabled = typeof window.proactiveMusicEnabled !== 'undefined' ? window.proactiveMusicEnabled : proactiveMusicEnabled;
     }
 
     // 检查是否有任何搭话方式被选中
@@ -8752,7 +8753,7 @@ function init_app() {
                     // 检查是否有可用的 Cookie 凭证
                     const platforms = await getAvailablePersonalPlatforms();
                     if (platforms.length > 0) {
-                        availableModes.push('personal');
+                        availableModes.push('personal');  
                         console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
                     } else {
                         // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
@@ -8822,7 +8823,10 @@ function init_app() {
                 if (proactivePersonalChatEnabled && proactiveChatEnabled) {
                     latestModes.push('personal');
                 }
-                
+                // 音乐搭话
+                 if (proactiveMusicEnabled && proactiveChatEnabled) {
+                    latestModes.push('music');
+                }
                 availableModes = availableModes.filter(m => latestModes.includes(m));
                 requestBody.enabled_modes = availableModes;
                 if (availableModes.length === 0) {

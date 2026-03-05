@@ -1076,7 +1076,48 @@ window.triggerScreenshot = function() {
 // 记录当前正在播放的音乐信息，用于去重
 let currentPlayingTrack = null;
 
+// 统一的 APlayer 实例获取函数
+const getMusicPlayerInstance = () => {
+    // 优先使用 window.aplayerInjected（推荐方式）
+    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+        return window.aplayerInjected.aplayer;
+    }
+    // 回退到 window.aplayer（旧方式）
+    if (window.aplayer) {
+        return window.aplayer;
+    }
+    return null;
+};
+
+// 统一的停止音乐函数
+const stopMusicPlayer = () => {
+    const player = getMusicPlayerInstance();
+    if (player && typeof player.pause === 'function') {
+        player.pause();
+    }
+    // 清理所有实例引用
+    if (window.aplayer) {
+        window.aplayer = null;
+    }
+    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+        window.aplayerInjected.aplayer = null;
+    }
+    // 移除音乐气泡
+    document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
+    currentPlayingTrack = null;
+};
+
 window.sendMusicMessage = function(trackInfo) {
+    // 安全处理：对外部输入进行 HTML 转义
+    const escapeHtml = (str) => {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    };
+    // 转义用于 innerHTML 的部分
+    const trackNameEscaped = escapeHtml(trackInfo.name || '未知曲目');
+    const artistNameEscaped = escapeHtml(trackInfo.artist || '未知艺术家');
+    // 用于 textContent 的原始值（自动防 XSS）
     const trackName = trackInfo.name || '未知曲目';
     const artistName = trackInfo.artist || '未知艺术家';
     
@@ -1085,47 +1126,21 @@ window.sendMusicMessage = function(trackInfo) {
         // 没有当前播放信息，需要创建
         if (!currentPlayingTrack) return true;
         
-        // 检查全局 APlayer 实例
-        if (window.aplayer) {
+        const player = getMusicPlayerInstance();
+        if (player) {
             // 如果正在播放，不创建新的
-            if (!window.aplayer.paused) {
+            if (!player.paused) {
                 console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
                 return false;
             }
-            // 如果已暂停但不是停止状态，销毁后重建
-            window.aplayer = null;
         }
-        
-        // 检查注入的 APlayer 实例
-        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-            if (!window.aplayerInjected.aplayer.paused) {
-                console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
-                return false;
-            }
-            window.aplayerInjected = null;
-        }
-        
-        // 移除之前的所有音乐气泡
-        document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
         
         return true;
     };
     
     // 停止之前可能正在播放的音乐
     const stopExistingMusic = () => {
-        // 检查全局 APlayer 实例
-        if (window.aplayer && typeof window.aplayer.pause === 'function') {
-            window.aplayer.pause();
-            window.aplayer = null;
-        }
-        // 检查注入的 APlayer 实例
-        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-            window.aplayerInjected.aplayer.pause();
-            window.aplayerInjected = null;
-        }
-        // 移除之前的所有音乐气泡
-        document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
-        currentPlayingTrack = null;
+        stopMusicPlayer();
     };
     
     // 检查是否已有相同歌曲在播放
@@ -1136,7 +1151,8 @@ window.sendMusicMessage = function(trackInfo) {
     };
     
     // 如果是同一首歌且正在播放，不做任何操作
-    if (isSameTrack(trackInfo) && window.aplayer && !window.aplayer.paused) {
+    const player = getMusicPlayerInstance();
+    if (isSameTrack(trackInfo) && player && !player.paused) {
         console.log('[Common UI] 相同歌曲正在播放中，跳过');
         return;
     }
@@ -1144,14 +1160,14 @@ window.sendMusicMessage = function(trackInfo) {
     // 如果播放器正在播放其他歌曲，先停止
     if (!shouldCreateNewPlayer()) {
         // 尝试添加到当前播放列表
-        if (window.aplayer && window.aplayer.list) {
-            window.aplayer.list.add([{
+        if (player && player.list) {
+            player.list.add([{
                 name: trackName,
                 artist: artistName,
                 url: trackInfo.url,
                 cover: trackInfo.cover || ''
             }]);
-            window.aplayer.play();
+            player.play();
             currentPlayingTrack = trackInfo;
             console.log('[Common UI] 已添加到播放列表');
         }
@@ -1199,42 +1215,109 @@ window.sendMusicMessage = function(trackInfo) {
         console.log('[Music] trackInfo:', trackInfo);
         console.log('[Music] cover value:', trackInfo.cover);
         
-        const hasCover = trackInfo.cover && trackInfo.cover.length > 0;
-        console.log('[Music] hasCover:', hasCover);
+        // 安全校验：URL 白名单
+        const isSafeUrl = (url) => {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url);
+                // 仅允许 http/https 协议
+                if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+                // 允许常见的音乐/图片 CDN 域名
+                const allowedDomains = [
+                    'y.qq.com', 'music.126.net', 'music.163.com', 'imgcache.qq.com',
+                    'i.y.qq.com', 'thirdqq.qlogo.cn', 'p1.music.126.net', 'p2.music.126.net',
+                    'p3.music.126.net', 'p4.music.126.net', 'p5.music.126.net',
+                    'cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'fastly.jsdelivr.net'
+                ];
+                const hostname = parsed.hostname.toLowerCase();
+                return allowedDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
+            } catch {
+                return false;
+            }
+        };
         
-        const coverHtml = hasCover 
-            ? `<img src="${trackInfo.cover}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 10px;" onerror="this.parentElement.style.background='linear-gradient(135deg, ${randomColor}, #667eea)'; this.style.display='none'; this.nextElementSibling.style.display='flex';"><span style="display: none;">🎵</span>`
-            : `<span>🎵</span>`;
+        const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
         
-        const messageHTML = `
-            <div class="chat-message bot-message music-bubble" style="display: inline-flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);">
-                <div class="music-cover" style="width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, ${randomColor}, #667eea); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;">
-                    ${coverHtml}
-                </div>
-                <div class="music-info" style="flex: 1; min-width: 0; overflow: hidden;">
-                    <div class="music-title" style="color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;">${trackName}</div>
-                    <div class="music-artist" style="color: rgba(255,255,255,0.6); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${artistName}</div>
-                </div>
-                <button class="music-play-btn" id="${playerId}-play" style="width: 36px; height: 36px; border-radius: 50%; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4); transition: transform 0.2s;">▶</button>
-                <div id="${playerId}" class="music-msg-container" style="display: none;"></div>
-            </div>
-            <style>
-                .music-bubble {
-                    margin-top: 8px !important;
-                }
-                .music-bubble + .music-bubble {
-                    margin-top: 2px !important;
-                }
-                .music-bubble button.music-play-btn:hover {
-                    transform: scale(1.1);
-                }
-                .music-bubble button.music-play-btn:active {
-                    transform: scale(0.95);
-                }
-            </style>
+        // 创建 DOM 元素（避免 innerHTML XSS）
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'chat-message bot-message music-bubble';
+        messageDiv.style.cssText = 'display: inline-flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); margin-top: 8px;';
+        
+        // 封面容器
+        const coverDiv = document.createElement('div');
+        coverDiv.className = 'music-cover';
+        coverDiv.style.cssText = 'width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, ' + randomColor + ', #667eea); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;';
+        
+        if (hasCover) {
+            const coverImg = document.createElement('img');
+            coverImg.src = trackInfo.cover;
+            coverImg.style.cssText = 'width: 100%; height: 100%; object-fit: cover; border-radius: 10px;';
+            coverImg.onerror = function() {
+                this.parentElement.style.background = 'linear-gradient(135deg, ' + randomColor + ', #667eea)';
+                this.style.display = 'none';
+                this.nextElementSibling.style.display = 'flex';
+            };
+            const coverSpan = document.createElement('span');
+            coverSpan.textContent = '🎵';
+            coverSpan.style.display = 'none';
+            coverDiv.appendChild(coverImg);
+            coverDiv.appendChild(coverSpan);
+        } else {
+            const coverSpan = document.createElement('span');
+            coverSpan.textContent = '🎵';
+            coverDiv.appendChild(coverSpan);
+        }
+        
+        // 音乐信息容器
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'music-info';
+        infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
+        
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'music-title';
+        titleDiv.style.cssText = 'color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;';
+        titleDiv.textContent = trackName; // 使用 textContent 避免 XSS
+        
+        const artistDiv = document.createElement('div');
+        artistDiv.className = 'music-artist';
+        artistDiv.style.cssText = 'color: rgba(255,255,255,0.6); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+        artistDiv.textContent = artistName; // 使用 textContent 避免 XSS
+        
+        infoDiv.appendChild(titleDiv);
+        infoDiv.appendChild(artistDiv);
+        
+        // 播放按钮
+        const playBtn = document.createElement('button');
+        playBtn.className = 'music-play-btn';
+        playBtn.id = playerId + '-play';
+        playBtn.textContent = '▶';
+        playBtn.style.cssText = 'width: 36px; height: 36px; border-radius: 50%; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4); transition: transform 0.2s;';
+        
+        // 隐藏的 APlayer 容器
+        const playerContainer = document.createElement('div');
+        playerContainer.id = playerId;
+        playerContainer.className = 'music-msg-container';
+        playerContainer.style.display = 'none';
+        
+        // 组装所有元素
+        messageDiv.appendChild(coverDiv);
+        messageDiv.appendChild(infoDiv);
+        messageDiv.appendChild(playBtn);
+        messageDiv.appendChild(playerContainer);
+        
+        // 插入样式
+        const styleEl = document.createElement('style');
+        styleEl.textContent = `
+            .music-bubble + .music-bubble { margin-top: 2px !important; }
+            .music-bubble button.music-play-btn:hover { transform: scale(1.1); }
+            .music-bubble button.music-play-btn:active { transform: scale(0.95); }
         `;
-    
-        addNewMessage(messageHTML);
+        
+        // 使用 addNewMessage 添加消息
+        const tempDiv = document.createElement('div');
+        tempDiv.appendChild(styleEl);
+        tempDiv.appendChild(messageDiv);
+        addNewMessage(tempDiv.innerHTML);
         
         let aplayerInstance = null;
         

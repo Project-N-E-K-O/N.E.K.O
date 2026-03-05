@@ -2156,7 +2156,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
             for item in aweme_list[:limit]:
                 author = item.get("author", {}).get("nickname", "未知博主")
-                desc = item.get("desc", "[分享了视频]")
+                desc = item.get("desc") or "[分享了视频]"
                 aweme_id = item.get("aweme_id", "")
                 
                 # 清理换行符，保持排版整洁
@@ -2224,7 +2224,7 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             for item in feeds[:limit]:
                 author = item.get("author", {}).get("name", "未知老铁")
                 photo = item.get("photo", {})
-                caption = photo.get("caption", "[分享了作品]")
+                caption = photo.get("caption") or "[分享了作品]"
                 photo_id = photo.get("id", "")
                 
                 # 清理描述文本

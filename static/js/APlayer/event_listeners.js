@@ -227,7 +227,7 @@ function getCurrentTrackInfo(aplayer) {
  * @param {number} seconds - 秒数
  * @returns {string} 格式化的时间字符串 (MM:SS)
  */
-function formatTime(seconds) {
+export function formatTime(seconds) {
     if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
     
     const minutes = Math.floor(seconds / 60);
@@ -276,8 +276,15 @@ function showNotification(message, type = 'info') {
  * 设置键盘快捷键
  * @param {APlayer} aplayer - APlayer实例
  */
+let keyboardHandlerBound = false;
+
 export function setupKeyboardShortcuts(aplayer) {
-    document.addEventListener('keydown', (e) => {
+    if (keyboardHandlerBound) {
+        console.log('[APlayer] Keyboard shortcuts already bound, skipping');
+        return;
+    }
+    
+    const keyboardHandler = (e) => {
         // 只在非输入状态下响应快捷键
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
         
@@ -313,5 +320,12 @@ export function setupKeyboardShortcuts(aplayer) {
                 }
                 break;
         }
-    });
+    };
+    
+    document.addEventListener('keydown', keyboardHandler);
+    keyboardHandlerBound = true;
+}
+
+export function removeKeyboardShortcuts() {
+    keyboardHandlerBound = false;
 }

@@ -227,7 +227,7 @@ class NeteaseCrawler(BaseMusicCrawler):
     def __init__(self):
         super().__init__("网易云音乐")
         self.client.headers.update({
-            'Referer': 'http://music.163.com/',
+            'Referer': 'https://music.163.com/',
             'Content-Type': 'application/x-www-form-urlencoded'
         })
 
@@ -237,7 +237,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             return []
 
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
-        search_url = "http://music.163.com/api/search/get/web"
+        search_url = "https://music.163.com/api/search/get/web"
         data = {'s': keyword, 'type': 1, 'offset': 0, 'limit': 20} # 多获取一些用于筛选
         
         try:
@@ -274,7 +274,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 artist_name = artists[0].get("name", "未知") if artists else "未知"
                 cover_url = song.get("album", {}).get("picUrl", "")
                 # 使用外链地址，无需付费即可播放
-                audio_url = f"http://music.163.com/song/media/outer/url?id={song_id}.mp3"
+                audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
                 final_results.append(self._format_item(name=song_name, url=audio_url, artist=artist_name, cover=cover_url))
             
             return final_results
@@ -651,6 +651,16 @@ GLOBAL_CRAWLERS = {
     'itunes': iTunesCrawler(),
     'bandcamp': BandcampCrawler(),
 }
+
+async def close_all_crawlers():
+    """
+    统一关闭所有全局爬虫实例，释放连接池资源。
+    建议在服务关闭时调用（如 main_server.py 的 on_shutdown）。
+    """
+    logger.info("正在关闭所有音乐爬虫实例...")
+    await asyncio.gather(*[crawler.close() for crawler in GLOBAL_CRAWLERS.values()])
+    logger.info("所有音乐爬虫实例已关闭")
+
 # =======================================================
 # 4. 主调度函数
 # =======================================================
@@ -756,6 +766,11 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 使用缓存进行短期去重
     unique_results = music_cache.filter_duplicates(unique_results)
     
+    # 去重后可能为空，需要修正返回语义
+    if not unique_results:
+        logger.warning("去重后无可用音乐")
+        return {'success': False, 'error': '去重后无可用音乐', 'data': []}
+    
     # 评估多样性
     diversity_info = music_cache.get_diversity_score(unique_results)
     logger.info(f"成功获取到 {len(unique_results)} 首音乐，多样性评分: {diversity_info['score']}% (风格: {diversity_info['style_notes']}, 独立艺术家: {diversity_info['unique_artists']})")
@@ -821,8 +836,7 @@ async def main():
     print(json.dumps(results_random, indent=2, ensure_ascii=False))
     print("\n==================================================")
     print(" 🎉 全链路测试完毕！")
-    # --- 新增：优雅关闭全局连接池，防止 asyncio 报错 ---
-    await asyncio.gather(*[crawler.close() for crawler in GLOBAL_CRAWLERS.values()])
+    await close_all_crawlers()
 
 if __name__ == '__main__':
     # 针对 Windows 环境的 asyncio 报错防范

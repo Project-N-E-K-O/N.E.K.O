@@ -1,8 +1,8 @@
 # 音乐路由
 import re
 from typing import Dict, Optional
-from fastapi import APIRouter, Request, HTTPException, status, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Request, HTTPException, status, Depends, Query
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
@@ -14,20 +14,48 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Music")
 
 @router.get("/api/music/search")
-async def search_music(query: str):
+async def search_music(query: str = Query(default="", min_length=0, max_length=200)):
     """
     智能音乐分发路由，统一调用 music_crawlers 中的 fetch_music_content。
     """
+    query = query.strip()
+    
     logger.info(f"[音乐API] 收到搜索请求: '{query}'")
     
-    # 直接调用重构后的主函数
-    results = await fetch_music_content(keyword=query, limit=1)
+    # 空白输入校验
+    if not query:
+        logger.warning("[音乐API] 搜索关键词为空，返回空结果")
+        return {
+            "success": True,
+            "data": [],
+            "error": None,
+            "message": "搜索关键词不能为空"
+        }
     
-    if results.get('success'):
-        track_count = len(results.get('data', []))
-        logger.info(f"[音乐API] 搜索成功，返回 {track_count} 首音乐")
-    else:
-        logger.warning(f"[音乐API] 搜索失败: {results.get('error', '未知错误')}")
-    
-    # fetch_music_content 已经返回了所需的格式
-    return results
+    # 异常保护
+    try:
+        results = await fetch_music_content(keyword=query, limit=1)
+        
+        if results.get('success'):
+            track_count = len(results.get('data', []))
+            logger.info(f"[音乐API] 搜索成功，返回 {track_count} 首音乐")
+        else:
+            logger.warning(f"[音乐API] 搜索失败: {results.get('error', '未知错误')}")
+            # 统一失败返回结构
+            return {
+                "success": False,
+                "data": [],
+                "error": results.get('error', '未知错误'),
+                "message": "音乐搜索失败"
+            }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"[音乐API] 搜索异常: {type(e).__name__}: {e}")
+        return {
+            "success": False,
+            "data": [],
+            "error": str(e),
+            "message": "音乐搜索服务异常"
+        }
