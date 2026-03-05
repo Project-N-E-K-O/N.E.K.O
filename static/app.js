@@ -2070,7 +2070,9 @@ function init_app() {
                         window.dispatchMusicPlay(finalTrackInfo);
                     } else {
                         console.warn('[Music] API 未找到歌曲:', query);
-                        if (window.showStatusToast) window.showStatusToast(`找不到歌曲: ${query}`, 3000);
+                        if (window.showStatusToast) {
+                            window.showStatusToast(`找不到歌曲: ${query}`, 3000);
+                        }
                     }
                 }
             } catch (e) {

@@ -140,7 +140,9 @@ function setupInjectedControls(aplayer, config) {
         toggleBtn,
         show: () => {
             container.style.display = 'block';
-            if (config.defaultMiniPlayer) toggleBtn.style.display = 'flex';
+            if (config.defaultMiniPlayer) {
+                toggleBtn.style.display = 'flex';
+            }
         },
         hide: () => {
             container.style.display = 'none';
@@ -151,7 +153,9 @@ function setupInjectedControls(aplayer, config) {
                 container.style.display = 'none';
             } else {
                 container.style.display = 'block';
-                if (config.defaultMiniPlayer) toggleBtn.style.display = 'flex';
+                if (config.defaultMiniPlayer) {
+                    toggleBtn.style.display = 'flex';
+                }
             }
         },
         setMiniPlayer: (enabled) => {
@@ -174,8 +178,12 @@ export function removeAPlayerFromChatContainer() {
     // 先销毁播放器实例
     if (window.aplayerInjected && window.aplayerInjected.aplayer) {
         const player = window.aplayerInjected.aplayer;
-        if (typeof player.pause === 'function') player.pause();
-        if (typeof player.destroy === 'function') player.destroy();
+        if (typeof player.pause === 'function') {
+            player.pause();
+        }
+        if (typeof player.destroy === 'function') {
+            player.destroy();
+        }
     }
     
     // 使用存储的容器引用，而非硬编码 ID

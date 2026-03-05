@@ -1133,8 +1133,12 @@ const shouldCleanupOldMusicPlayer = () => {
 const destroyMusicPlayer = () => {
     const player = getMusicPlayerInstance();
     if (player) {
-        if (typeof player.pause === 'function') player.pause();
-        if (typeof player.destroy === 'function') player.destroy();
+        if (typeof player.pause === 'function') {
+            player.pause();
+        }
+        if (typeof player.destroy === 'function') {
+            player.destroy();
+        }
     }
     // 清理所有实例引用
     if (window.aplayer) {
