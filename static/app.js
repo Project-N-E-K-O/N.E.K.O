@@ -2033,10 +2033,27 @@ function init_app() {
         }
     };
 
+    /**
+     * 解析并处理 AI 文本中的音乐播放指令
+     * 
+     * 【当前状态 - 预留功能】
+     * 此函数目前未被调用。当前主动搭话音乐功能走的是另一条路径：
+     *   后端 proactive_chat_prompt_music → 返回搜索关键词 → 后端搜索 → source_links → 前端播放
+     * 
+     * 【未来用途】
+     * 当需要在普通对话中让 AI 主动触发音乐播放时，需要在角色系统提示词中添加指令说明，
+     * 让 AI 输出 [play_music: {"name": "歌曲名", "artist": "歌手名"}] 格式的指令。
+     * 届时在消息处理流程中调用此函数即可解析并播放音乐。
+     * 
+     * 【指令格式】
+     * [play_music: {"name": "歌曲名", "artist": "歌手名"}]
+     * - name: 必填，歌曲名称
+     * - artist: 可选，歌手名称
+     * 
+     * @param {string} text - 可能包含音乐指令的文本
+     */
     window.processMusicCommands = async function(text) {
         if (!text) return;
-        // 匹配完整的 [play_music: {"name":"...","artist":"..."}] 指令
-        // 使用 [\s\S] 匹配包括换行符在内的所有字符，支持多行 JSON
         const musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
         let match;
         
