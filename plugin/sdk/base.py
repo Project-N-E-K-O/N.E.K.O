@@ -8,15 +8,16 @@ from pathlib import Path
 import asyncio
 import inspect
 from typing import TYPE_CHECKING, Optional, Dict, Any, List, Union, Callable
-from functools import wraps
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
 from .hook_executor import HookExecutorMixin
 from .config import PluginConfig
 from .plugins import Plugins
 from .version import SDK_VERSION
+from .state import PluginStatePersistence
+from .store import PluginStore
+from .database import PluginDatabase
 from plugin.settings import (
-    NEKO_PLUGIN_META_ATTR, 
+    NEKO_PLUGIN_META_ATTR,
     NEKO_PLUGIN_TAG,
     PLUGIN_LOG_LEVEL,
     PLUGIN_LOG_MAX_BYTES,
@@ -27,9 +28,13 @@ from plugin.settings import (
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
     from .router import PluginRouter
-    from .state import PluginStatePersistence as StatePersistence
-    from .store import PluginStore
-    from .database import PluginDatabase
+
+__all__ = [
+    "PluginMeta",
+    "NekoPluginBase",
+    "NEKO_PLUGIN_TAG",
+    "NEKO_PLUGIN_META_ATTR",
+]
 
 
 @dataclass
@@ -44,30 +49,6 @@ class PluginMeta:
     sdk_untested: Optional[str] = None
     sdk_conflicts: List[str] = field(default_factory=list)
     description: str = ""
-
-
-class _LazyDescriptor:
-    """Descriptor that lazily initialises a NekoPluginBase sub-component on first access."""
-
-    def __init__(self, attr_name: str):
-        self._attr = attr_name
-        self._private = f"_lazy_{attr_name}"
-
-    def __set_name__(self, owner, name):
-        self._attr = name
-        self._private = f"_lazy_{name}"
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        val = obj.__dict__.get(self._private)
-        if val is not None:
-            return val
-        obj._ensure_lazy_subsystems()
-        return obj.__dict__.get(self._private)
-
-    def __set__(self, obj, value):
-        obj.__dict__[self._private] = value
 
 
 class NekoPluginBase(HookExecutorMixin):
@@ -88,10 +69,6 @@ class NekoPluginBase(HookExecutorMixin):
     __freezable__: List[str] = []
     # 子类可以覆盖这个值，控制持久化模式（默认 off，需在 toml 中启用）
     __persist_mode__: str = "off"  # "auto" | "manual" | "off"
-
-    store = _LazyDescriptor("store")
-    db = _LazyDescriptor("db")
-    _state_persistence = _LazyDescriptor("_state_persistence")
     
     def __init__(self, ctx: "PluginContext"):
         self.ctx: "PluginContext" = ctx
@@ -107,33 +84,22 @@ class NekoPluginBase(HookExecutorMixin):
         self.__init_hook_executor__()
         # 静态 UI 配置（实例属性，避免类属性共享问题）
         self._static_ui_config: Optional[Dict[str, Any]] = None
-        # 标记延迟子系统尚未初始化
-        self._lazy_subsystems_ready = False
-
-    @property
-    def _freeze_checkpoint(self):
-        """向后兼容别名（已弃用，将在 v2.0 移除，请使用 _state_persistence）"""
-        return self._state_persistence
-
-    def _ensure_lazy_subsystems(self) -> None:
-        """首次访问 store / db / _state_persistence 时一次性初始化"""
-        if self._lazy_subsystems_ready:
-            return
-        self._lazy_subsystems_ready = True
-
-        config_path = getattr(self.ctx, "config_path", None)
+        
+        # 初始化状态持久化管理器
+        config_path = getattr(ctx, "config_path", None)
         plugin_dir = config_path.parent if config_path else Path.cwd()
-        _logger = getattr(self.ctx, "logger", None)
-
+        
+        # 一次性读取有效配置（避免多次同步 IPC 调用拖慢启动）
         _effective_cfg: Dict[str, Any] = {}
         try:
-            _effective_cfg = self.config.dump_effective_sync(timeout=1.0)
-            if not isinstance(_effective_cfg, dict):
-                _effective_cfg = {}
+            if hasattr(self, 'config'):
+                _effective_cfg = self.config.dump_effective_sync(timeout=1.0)
+                if not isinstance(_effective_cfg, dict):
+                    _effective_cfg = {}
         except Exception:
             pass
-
-        # --- state persistence ---
+        
+        # 读取 state_backend 配置（默认 off，需要开发者显式启用）
         state_backend = "off"
         try:
             from plugin.settings import PLUGIN_STATE_BACKEND_DEFAULT
@@ -145,16 +111,15 @@ class NekoPluginBase(HookExecutorMixin):
                     state_backend = cfg_backend
         except Exception:
             pass
-
-        from .state import PluginStatePersistence
+        
         self._state_persistence = PluginStatePersistence(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
-            logger=_logger,
+            logger=getattr(ctx, "logger", None),
             backend=state_backend,
         )
-
-        # --- store ---
+        
+        # 读取 store 配置（默认禁用，需要在 plugin.toml 中显式启用）
         store_enabled = False
         try:
             store_cfg = _effective_cfg.get("plugin", {}).get("store", {})
@@ -162,16 +127,15 @@ class NekoPluginBase(HookExecutorMixin):
                 store_enabled = store_cfg.get("enabled", False)
         except Exception:
             pass
-
-        from .store import PluginStore as _PluginStore
-        self.store = _PluginStore(
+        
+        self.store = PluginStore(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
-            logger=_logger,
+            logger=getattr(ctx, "logger", None),
             enabled=store_enabled,
         )
-
-        # --- database ---
+        
+        # 读取 database 配置（默认禁用，需要在 plugin.toml 中显式启用）
         db_enabled = False
         db_name = None
         try:
@@ -181,12 +145,11 @@ class NekoPluginBase(HookExecutorMixin):
                 db_name = db_cfg.get("name")
         except Exception:
             pass
-
-        from .database import PluginDatabase as _PluginDatabase
-        self.db = _PluginDatabase(
+        
+        self.db = PluginDatabase(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
-            logger=_logger,
+            logger=getattr(ctx, "logger", None),
             enabled=db_enabled,
             db_name=db_name,
         )
@@ -771,13 +734,25 @@ class NekoPluginBase(HookExecutorMixin):
         entries: Dict[str, EventHandler] = {}
         logger = getattr(self.ctx, "logger", None)
         
-        # Single dir() scan: collect hooks AND entries simultaneously
+        # 先收集 hooks（如果还没收集）
         if wrap_with_hooks:
-            hooks: Dict[str, List] = {}
-            owner_name = self._get_hook_owner_name()
+            self.collect_hooks()
+            # 同时收集所有 Router 的 hooks
             for router in self._routers:
                 router.collect_hooks()
         
+        # 检查是否有任何 Hook（包括插件自身和所有 Router）
+        has_any_hooks = bool(self._hooks)
+        if not has_any_hooks:
+            for router in self._routers:
+                if router._hooks:
+                    has_any_hooks = True
+                    break
+        
+        # 如果没有任何 Hook，跳过包装
+        should_wrap = wrap_with_hooks and has_any_hooks
+        
+        # 1. 收集插件自身的入口点
         for attr_name in dir(self):
             if attr_name.startswith("_"):
                 continue
@@ -787,58 +762,28 @@ class NekoPluginBase(HookExecutorMixin):
                 continue
             if not callable(value):
                 continue
-            
-            # Collect hooks from this callable
-            if wrap_with_hooks:
-                hook_meta: "HookMeta | None" = getattr(value, HOOK_META_ATTR, None)
-                if hook_meta is not None:
-                    handler_obj = HookHandler(
-                        meta=hook_meta, handler=value, router_name=owner_name
-                    )
-                    target = hook_meta.target_entry
-                    if target not in hooks:
-                        hooks[target] = []
-                    hooks[target].append(handler_obj)
-            
-            # Collect entries from this callable
-            meta: "EventMeta | None" = getattr(value, EVENT_META_ATTR, None)
+            meta: EventMeta | None = getattr(value, EVENT_META_ATTR, None)
             if meta:
                 if meta.id in entries:
                     if logger:
                         logger.warning(f"Duplicate entry id '{meta.id}' in plugin {self._plugin_id}")
-                entries[meta.id] = EventHandler(meta=meta, handler=value)
-        
-        # Finalise hooks and determine whether wrapping is needed
-        if wrap_with_hooks:
-            for target in hooks:
-                hooks[target].sort(key=lambda h: h.meta.priority, reverse=True)
-            self._hooks = hooks
-            
-            has_any_hooks = bool(self._hooks)
-            if not has_any_hooks:
-                for router in self._routers:
-                    if router._hooks:
-                        has_any_hooks = True
-                        break
-            
-            if has_any_hooks:
-                for eid, eh in entries.items():
-                    entries[eid] = EventHandler(
-                        meta=eh.meta,
-                        handler=self._wrap_handler_with_hooks(eid, eh.handler),
-                    )
+                
+                # 包装 handler（仅当有 Hook 时）
+                handler = value
+                if should_wrap:
+                    handler = self._wrap_handler_with_hooks(meta.id, value)
+                
+                entries[meta.id] = EventHandler(meta=meta, handler=handler)
         
         # 2. 合并 Router 的入口点
-        should_wrap_routers = wrap_with_hooks and (
-            bool(self._hooks) or any(r._hooks for r in self._routers)
-        )
         for entry_id, event_handler in self._router_entries.items():
             if entry_id in entries:
                 if logger:
                     logger.warning(f"Router entry '{entry_id}' conflicts with plugin entry")
             
+            # Router 的 handler 也需要包装（仅当有 Hook 时）
             handler = event_handler.handler
-            if should_wrap_routers:
+            if should_wrap:
                 handler = self._wrap_handler_with_hooks(entry_id, event_handler.handler)
             
             entries[entry_id] = EventHandler(meta=event_handler.meta, handler=handler)
