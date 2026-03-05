@@ -788,7 +788,7 @@ function init_app() {
                                             window.sessionTimeoutId = null;
 
                                             // 超时时向后端发送 end_session 消息
-                                            if (socket.readyState === WebSocket.OPEN) {
+                                            if (socket && socket.readyState === WebSocket.OPEN) {
                                                 socket.send(JSON.stringify({
                                                     action: 'end_session'
                                                 }));
@@ -3464,7 +3464,7 @@ function init_app() {
                     window.sessionTimeoutId = null; // 清除全局定时器ID
 
                     // 超时时向后端发送 end_session 消息
-                    if (socket.readyState === WebSocket.OPEN) {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify({
                             action: 'end_session'
                         }));
@@ -3760,7 +3760,7 @@ function init_app() {
                         window.sessionTimeoutId = null; // 清除全局定时器ID
 
                         // 超时时向后端发送 end_session 消息
-                        if (socket.readyState === WebSocket.OPEN) {
+                        if (socket && socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({
                                 action: 'end_session'
                             }));
