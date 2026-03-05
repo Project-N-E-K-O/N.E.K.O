@@ -1960,6 +1960,9 @@ class LLMSessionManager:
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and not self.is_starting_session:
             if not self.session or not self.is_active:
+                # Memory Server 专属冷却检查
+                if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                    return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type == 'text' else 'audio'
