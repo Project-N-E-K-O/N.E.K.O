@@ -416,9 +416,8 @@ class PluginStatePersistence:
             
             state_data = self._deserialize(data_bytes)
             
-            # 版本检查（支持 v1 和 v2）
             version = state_data.get("version", 0)
-            if version not in (1, 2):
+            if version not in (1, 2, self.STATE_VERSION):
                 if self.logger:
                     self.logger.warning(
                         f"[State] Unknown state version: {version}"

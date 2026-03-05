@@ -6,8 +6,8 @@ import time
 from typing import Any, Dict
 
 from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, worker
-from plugin.sdk import ok, SystemInfo
+from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event
+from plugin.sdk import ok, SystemInfo,hook
 from plugin.sdk.memory import MemoryClient
 
 
@@ -802,16 +802,12 @@ class HelloPlugin(NekoPluginBase):
         return ok(data=result)
 
     @plugin_entry(description="HelloWorld demo for new Run protocol: progress updates + export items")
-    @worker(timeout=30.0)
-    def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
+    async def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
         s = 0.1
         try:
             s = max(0.0, float(sleep_seconds))
         except Exception:
             s = 0.1
-
-        # run_id is auto-propagated via contextvars into @worker threads,
-        # so ctx.run_update / ctx.export_push can resolve it automatically.
 
         self.ctx.run_update(
             progress=0.0,
@@ -820,7 +816,7 @@ class HelloPlugin(NekoPluginBase):
             step=0,
             step_total=3,
         )
-        time.sleep(s)
+        await asyncio.sleep(s)
 
         self.ctx.run_update(
             progress=0.33,
@@ -836,7 +832,7 @@ class HelloPlugin(NekoPluginBase):
             description="hello message",
             metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
         )
-        time.sleep(s)
+        await asyncio.sleep(s)
 
         self.ctx.run_update(
             progress=0.66,
@@ -845,7 +841,7 @@ class HelloPlugin(NekoPluginBase):
             step=2,
             step_total=3,
         )
-        time.sleep(s)
+        await asyncio.sleep(s)
 
         self.ctx.export_push(
             export_type="text",
@@ -862,3 +858,4 @@ class HelloPlugin(NekoPluginBase):
             step_total=3,
         )
         return {"greeted": name}
+

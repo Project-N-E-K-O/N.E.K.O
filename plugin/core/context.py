@@ -20,7 +20,6 @@ import itertools
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 try:
@@ -60,8 +59,6 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
-
-_IN_WORKER: contextvars.ContextVar[bool] = contextvars.ContextVar("plugin_in_worker", default=False)
 
 
 class _BusHub:
@@ -249,14 +246,18 @@ class PluginContext:
         handler_ctx = _IN_HANDLER.get()
         if handler_ctx is None:
             return
-        # @worker threads run in a separate thread pool — sync IPC calls
-        # are safe there (they don't block the command loop).
-        if _IN_WORKER.get():
+        # If no event loop is running on the current thread, we are in a
+        # thread-pool thread (e.g. asyncio.to_thread).  Sync IPC calls are
+        # safe there — they only block that worker thread, not the loop.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
             return
         policy = self._get_sync_call_in_handler_policy()
         msg = (
             f"Sync call '{method_name}' invoked inside handler ({handler_ctx}). "
-            "This may block the command loop and cause deadlocks/timeouts."
+            "This may block the event loop and cause deadlocks/timeouts. "
+            "Use the async variant or wrap in asyncio.to_thread()."
         )
         if policy == "reject":
             raise RuntimeError(msg)
@@ -293,7 +294,7 @@ class PluginContext:
         """检测当前是否在事件循环中运行。
         
         Returns:
-            True 如果当前在事件循环中，False 如果在 worker 线程或无事件循环环境
+            True 如果当前在事件循环中，False 如果在无事件循环环境
         """
         try:
             asyncio.get_running_loop()
@@ -308,10 +309,9 @@ class PluginContext:
         strict: it refuses to run when an event loop is already running.
 
         NOTE: ``asyncio.run()`` creates a **new** Context, which does NOT inherit
-        the calling thread's contextvars.  To preserve values like
-        ``_CURRENT_RUN_ID`` that were propagated into a @worker thread, we
-        capture a snapshot of the current context and re-apply it inside the
-        new event loop via a thin wrapper coroutine.
+        the calling thread's contextvars.  We capture a snapshot of the current
+        context and re-apply it inside the new event loop via a thin wrapper
+        coroutine.
         """
 
         self._enforce_sync_call_policy(operation)
@@ -1150,17 +1150,15 @@ class PluginContext:
             return result
 
         if response_queue is not None:
-            loop = asyncio.get_running_loop()
             while time.time() < deadline:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     break
                 try:
-                    msg = await loop.run_in_executor(
-                        None,
-                        lambda r=remaining: response_queue.get(timeout=min(0.05, r)),
+                    msg = await asyncio.wait_for(
+                        response_queue.get(), timeout=min(0.05, remaining),
                     )
-                except Empty:
+                except asyncio.TimeoutError:
                     continue
                 except Exception:
                     break

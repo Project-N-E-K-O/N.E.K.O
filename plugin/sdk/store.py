@@ -6,6 +6,7 @@
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -144,8 +145,6 @@ class PluginStore:
             if self.logger:
                 self.logger.warning(f"[Store] Attempted to set key '{key}' but store is disabled")
             return
-        import time
-        
         conn = self._get_conn()
         now = time.time()
         data = self._serialize(value)

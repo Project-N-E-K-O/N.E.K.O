@@ -1,20 +1,13 @@
-"""
-Conversation Bus SDK - 独立的对话上下文存储
-
-与 messages bus 分离，专门用于存储和查询对话上下文。
-支持通过 conversation_id 查询触发插件的对话历史。
-"""
+"""Conversation Bus SDK - 独立的对话上下文存储"""
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, Coroutine
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Union
 
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusRecord
-
-from plugin.sdk.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
-from plugin.sdk.message_plane_transport import format_rpc_error
+from ._client_base import _is_in_event_loop, _ensure_rpc, _validate_rpc_response, _parse_bus_items
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -22,15 +15,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ConversationRecord(BusRecord):
-    """对话记录"""
     conversation_id: Optional[str] = None
-    turn_type: Optional[str] = None  # "turn_end" | "session_end" | "renew_session"
+    turn_type: Optional[str] = None
     lanlan_name: Optional[str] = None
     message_count: int = 0
 
     @staticmethod
     def from_raw(raw: Dict[str, Any]) -> "ConversationRecord":
-        """从原始 payload 创建 ConversationRecord"""
         payload = raw if isinstance(raw, dict) else {"raw": raw}
 
         ts_raw = payload.get("timestamp")
@@ -48,7 +39,6 @@ class ConversationRecord(BusRecord):
         if not isinstance(metadata, dict):
             metadata = {}
 
-        # 从 metadata 提取对话相关字段
         conversation_id = metadata.get("conversation_id")
         turn_type = metadata.get("turn_type")
         lanlan_name = metadata.get("lanlan_name")
@@ -72,7 +62,6 @@ class ConversationRecord(BusRecord):
 
     @staticmethod
     def from_index(index: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> "ConversationRecord":
-        """从 index 快速创建 ConversationRecord"""
         ts = index.get("timestamp")
         timestamp: Optional[float] = float(ts) if isinstance(ts, (int, float)) else None
         priority = index.get("priority")
@@ -114,47 +103,15 @@ class ConversationRecord(BusRecord):
 
 
 class ConversationList(BusList[ConversationRecord]):
-    """对话列表"""
     pass
 
 
-@dataclass
 class ConversationClient:
-    """对话 Bus 客户端
-    
-    用于查询独立的 conversations store 中的对话上下文。
-    
-    Example:
-        # 通过 conversation_id 获取对话
-        conversations = await ctx.bus.conversations.get_by_id(conversation_id)
-        for conv in conversations:
-            print(f"[{conv.turn_type}] {conv.content}")
-    """
-    ctx: "PluginContext"
+    """对话 Bus 客户端"""
+    def __init__(self, ctx: "PluginContext"):
+        self.ctx = ctx
 
-    def _is_in_event_loop(self) -> bool:
-        """检测当前是否在事件循环中运行"""
-        try:
-            asyncio.get_running_loop()
-            return True
-        except RuntimeError:
-            return False
-
-    def _get_rpc_client(self) -> _MessagePlaneRpcClient:
-        """获取或创建 RPC 客户端"""
-        rpc = getattr(self.ctx, "_conv_rpc_client", None)
-        if rpc is None:
-            rpc = _MessagePlaneRpcClient(
-                plugin_id=getattr(self.ctx, "plugin_id", ""),
-                endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)
-            )
-            try:
-                self.ctx._conv_rpc_client = rpc  # type: ignore
-            except Exception:
-                pass
-        return rpc
-
-    def get_sync(
+    def _get_impl(
         self,
         *,
         conversation_id: Optional[str] = None,
@@ -162,14 +119,6 @@ class ConversationClient:
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> ConversationList:
-        """同步获取对话列表
-        
-        Args:
-            conversation_id: 对话ID，用于过滤特定对话
-            max_count: 最大返回数量
-            since_ts: 时间戳过滤
-            timeout: 超时时间
-        """
         args: Dict[str, Any] = {
             "store": "conversations",
             "topic": "all",
@@ -180,65 +129,22 @@ class ConversationClient:
         if since_ts is not None:
             args["since_ts"] = float(since_ts)
 
-        rpc = self._get_rpc_client()
-        
-        # 如果有过滤条件，使用 bus.query
+        rpc = _ensure_rpc(self.ctx)
+
         if conversation_id or since_ts:
             resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
+            op_name = "bus.query"
         else:
             resp = rpc.request(
                 op="bus.get_recent",
                 args={"store": "conversations", "topic": "all", "limit": int(max_count)},
                 timeout=float(timeout),
             )
+            op_name = "bus.get_recent"
 
-        if not isinstance(resp, dict):
-            raise TimeoutError(f"conversations bus request timed out after {timeout}s")
-        if not resp.get("ok"):
-            raise RuntimeError(format_rpc_error(resp.get("error")))
-
-        result = resp.get("result")
-        items: List[Any] = []
-        if isinstance(result, dict):
-            got = result.get("items")
-            if isinstance(got, list):
-                items = got
-        elif isinstance(result, list):
-            items = result
-
-        records: List[ConversationRecord] = []
-        for ev in items:
-            if not isinstance(ev, dict):
-                continue
-            idx = ev.get("index")
-            p = ev.get("payload")
-            if isinstance(idx, dict):
-                records.append(ConversationRecord.from_index(idx, p if isinstance(p, dict) else None))
-            elif isinstance(p, dict):
-                records.append(ConversationRecord.from_raw(p))
-
+        raw_items = _validate_rpc_response(resp, op_name=op_name, timeout=timeout)
+        records = _parse_bus_items(raw_items, ConversationRecord)
         return ConversationList(records, ctx=self.ctx)
-
-    async def get_async(
-        self,
-        *,
-        conversation_id: Optional[str] = None,
-        max_count: int = 50,
-        since_ts: Optional[float] = None,
-        timeout: float = 5.0,
-    ) -> ConversationList:
-        """异步获取对话列表"""
-        # 在线程池中执行同步调用
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: self.get_sync(
-                conversation_id=conversation_id,
-                max_count=max_count,
-                since_ts=since_ts,
-                timeout=timeout,
-            )
-        )
 
     def get(
         self,
@@ -248,19 +154,31 @@ class ConversationClient:
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> Union[ConversationList, Coroutine[Any, Any, ConversationList]]:
-        """智能获取对话列表（自动检测同步/异步环境）"""
-        if self._is_in_event_loop():
+        if _is_in_event_loop():
             return self.get_async(
-                conversation_id=conversation_id,
-                max_count=max_count,
-                since_ts=since_ts,
-                timeout=timeout,
+                conversation_id=conversation_id, max_count=max_count,
+                since_ts=since_ts, timeout=timeout,
             )
-        return self.get_sync(
-            conversation_id=conversation_id,
-            max_count=max_count,
-            since_ts=since_ts,
-            timeout=timeout,
+        return self._get_impl(
+            conversation_id=conversation_id, max_count=max_count,
+            since_ts=since_ts, timeout=timeout,
+        )
+
+    async def get_async(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        max_count: int = 50,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+    ) -> ConversationList:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._get_impl(
+                conversation_id=conversation_id, max_count=max_count,
+                since_ts=since_ts, timeout=timeout,
+            ),
         )
 
     def get_by_id(
@@ -270,26 +188,6 @@ class ConversationClient:
         max_count: int = 50,
         timeout: float = 5.0,
     ) -> Union[ConversationList, Coroutine[Any, Any, ConversationList]]:
-        """通过 conversation_id 获取对话
-        
-        Args:
-            conversation_id: 对话ID（由 cross_server 生成）
-            max_count: 最大返回数量
-            timeout: 超时时间
-            
-        Example:
-            # 在插件 entry 中使用
-            ctx = args.get("_ctx", {})
-            conversation_id = ctx.get("conversation_id")
-            if conversation_id:
-                conversations = await self.ctx.bus.conversations.get_by_id(conversation_id)
-                for conv in conversations:
-                    # conv.content 是 JSON 格式的对话消息列表
-                    import json
-                    messages = json.loads(conv.content or "[]")
-                    for msg in messages:
-                        print(f"[{msg['role']}] {msg['text']}")
-        """
         return self.get(
             conversation_id=conversation_id,
             max_count=max_count,

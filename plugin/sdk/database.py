@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Any, Union, Coroutine, overload
 from contextlib import contextmanager, asynccontextmanager
@@ -527,7 +528,6 @@ class PluginKVStore:
             return
         self._ensure_table()
         
-        import time
         now = time.time()
         data = self._serialize(value)
         

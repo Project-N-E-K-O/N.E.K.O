@@ -4,25 +4,17 @@
 提供插件开发所需的装饰器。
 """
 import inspect
-from dataclasses import dataclass
-from typing import Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, TypeVar, cast, get_type_hints
-from .base import NEKO_PLUGIN_TAG
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, cast, runtime_checkable, get_type_hints
+from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookTiming, HOOK_META_ATTR
-
-# Worker 装饰器的属性名
-WORKER_MODE_ATTR = "_neko_worker_mode"
-
-
-@dataclass
-class WorkerConfig:
-    """Worker 配置"""
-    timeout: float = 30.0
-    priority: int = 0
-
+from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
 
 # 状态持久化配置的属性名
 PERSIST_ATTR = "_neko_persist"
+
+# 向后兼容别名（已弃用，将在 v2.0 移除）
+CHECKPOINT_ATTR = PERSIST_ATTR
 
 
 def neko_plugin(cls):
@@ -82,6 +74,7 @@ def _infer_schema_from_func(fn: Callable) -> Dict[str, Any]:
         hint = hints.get(name, param.annotation)
 
         # Unwrap Annotated[X, "desc", ...]
+        origin = getattr(hint, "__class__", None)
         type_args = getattr(hint, "__args__", None)
         metadata_items = getattr(hint, "__metadata__", None)
         if metadata_items is not None and type_args:
@@ -132,7 +125,9 @@ def on_event(
     kind: EntryKind = "action",
     auto_start: bool = False,
     persist: bool | None = None,
+    checkpoint: bool | None = None,  # 向后兼容别名
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     通用事件装饰器。
@@ -142,10 +137,14 @@ def on_event(
     - input_schema: JSON Schema dict。
            None 时从被装饰函数的签名 + type hints 自动推断。
     - persist: 执行后是否保存状态（None=遵循 __persist_mode__）
+    - checkpoint: persist 的向后兼容别名
     - metadata: 额外的元数据字典
+    - extra: metadata 的向后兼容别名（已弃用）
     """
-    effective_persist = persist
-    effective_metadata = metadata
+    # 向后兼容：checkpoint 参数映射到 persist
+    effective_persist = persist if persist is not None else checkpoint
+    # 向后兼容：extra 参数映射到 metadata
+    effective_metadata = metadata if metadata is not None else extra
     
     def decorator(fn: Callable):
         effective_id = id if id is not None else fn.__name__
@@ -168,41 +167,9 @@ def on_event(
     return decorator
 
 
-def worker(timeout: float = 30.0, priority: int = 0):
-    """
-    Worker 模式装饰器
-    
-    标记函数应该在 worker 线程池中执行，而不是在命令循环线程中执行。
-    可以叠加在 @plugin_entry、@lifecycle、@bus_subscribe 等装饰器上。
-    
-    Args:
-        timeout: 超时时间（秒），默认 30.0
-        priority: 优先级（数字越大优先级越高），默认 0
-    
-    Example:
-        @worker(timeout=30.0)
-        @plugin_entry(id="sync_task")
-        def sync_task(self, param: str):
-            # 同步代码，会在 worker 线程池中执行
-            return ok(data={"result": param})
-    """
-    def decorator(func: Callable) -> Callable:
-        # 附加 worker 配置到函数
-        config = WorkerConfig(timeout=timeout, priority=priority)
-        setattr(func, WORKER_MODE_ATTR, config)
-        # 返回原函数（不包装）
-        return func
-    return decorator
-
-
 class PluginDecorators:
-    """插件装饰器命名空间，支持 @plugin.worker 等语法"""
-    
-    @staticmethod
-    def worker(timeout: float = 30.0, priority: int = 0):
-        """Worker 模式装饰器"""
-        return worker(timeout=timeout, priority=priority)
-    
+    """插件装饰器命名空间"""
+
     @staticmethod
     def entry(**kwargs):
         """Plugin entry 装饰器（别名）"""
@@ -225,8 +192,10 @@ def plugin_entry(
     kind: EntryKind = "action",
     auto_start: bool = False,
     persist: bool | None = None,
+    checkpoint: bool | None = None,  # 向后兼容别名
     timeout: float | None = None,  # 自定义超时时间（秒），None 表示使用默认值
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     语法糖：专门用来声明"对外可调用入口"的装饰器。
@@ -245,11 +214,13 @@ def plugin_entry(
             - None: 遵循类级别 __persist_mode__ 配置
             - True: 强制启用状态保存
             - False: 强制禁用状态保存
+        checkpoint: persist 的向后兼容别名
         timeout: 自定义超时时间（秒）
             - None: 使用默认超时（PLUGIN_TRIGGER_TIMEOUT，默认 10 秒）
             - 0 或负数: 禁用超时检测（无限等待）
             - 正数: 使用指定的超时时间
         metadata: 额外的元数据字典
+        extra: metadata 的向后兼容别名（已弃用）
     """
     # Pydantic model → extract JSON Schema
     effective_schema = input_schema
@@ -260,7 +231,8 @@ def plugin_entry(
         else:
             raise TypeError(f"params must be a Pydantic BaseModel subclass, got {params!r}")
 
-    effective_metadata = dict(metadata) if metadata else {}
+    # 向后兼容：extra 参数映射到 metadata
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if timeout is not None:
         effective_metadata["timeout"] = timeout
 
@@ -273,6 +245,7 @@ def plugin_entry(
         kind=kind,
         auto_start=auto_start,
         persist=persist,
+        checkpoint=checkpoint,
         metadata=effective_metadata if effective_metadata else None,
     )
 
@@ -293,6 +266,7 @@ def lifecycle(
     name: str | None = None,
     description: str = "",
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """生命周期事件装饰器
     
@@ -304,6 +278,7 @@ def lifecycle(
     - unfreeze: 插件从冻结状态恢复后调用（可用于重新初始化资源）
     - config_change: 配置热更新时调用（接收 old_config, new_config, mode 参数）
     """
+    effective_metadata = metadata if metadata is not None else extra
     return on_event(
         event_type="lifecycle",
         id=id,
@@ -312,7 +287,7 @@ def lifecycle(
         input_schema={},   # 一般不需要参数
         kind="lifecycle",
         auto_start=False,
-        metadata=metadata or {},
+        metadata=effective_metadata or {},
     )
 
 
@@ -324,11 +299,12 @@ def message(
     input_schema: dict | None = None,
     source: str | None = None,
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     消息事件：比如处理聊天消息、总线事件等。
     """
-    effective_metadata = dict(metadata) if metadata else {}
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if source:
         effective_metadata.setdefault("source", source)
 
@@ -359,6 +335,7 @@ def timer_interval(
     description: str = "",
     auto_start: bool = True,
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     固定间隔定时任务：每 N 秒执行一次。
@@ -366,6 +343,8 @@ def timer_interval(
     effective_metadata = {"mode": "interval", "seconds": seconds}
     if metadata:
         effective_metadata.update(metadata)
+    elif extra:
+        effective_metadata.update(extra)
 
     return on_event(
         event_type="timer",
@@ -390,6 +369,7 @@ def custom_event(
     auto_start: bool = False,
     trigger_method: str = "message",  # "message" | "command" | "auto"
     metadata: dict | None = None,
+    extra: dict | None = None,  # 向后兼容别名，已弃用
 ) -> Callable:
     """
     自定义事件装饰器：允许插件定义全新的事件类型。
@@ -407,6 +387,7 @@ def custom_event(
             - "command": 通过命令队列触发（同步，类似 plugin_entry）
             - "auto": 自动启动（类似 timer auto_start）
         metadata: 额外配置信息
+        extra: metadata 的向后兼容别名（已弃用）
     
     Returns:
         装饰器函数
@@ -430,7 +411,7 @@ def custom_event(
             f"Use the corresponding decorator (@plugin_entry, @lifecycle, etc.) instead."
         )
     
-    effective_metadata = dict(metadata) if metadata else {}
+    effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     effective_metadata["trigger_method"] = trigger_method
     
     return on_event(
@@ -632,17 +613,8 @@ def hook(
 
 
 # 便捷别名
-def before_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
-    return hook(target, "before", priority, condition)
+before_entry = lambda target="*", priority=0, condition=None: hook(target, "before", priority, condition)
+after_entry = lambda target="*", priority=0, condition=None: hook(target, "after", priority, condition)
+around_entry = lambda target="*", priority=0, condition=None: hook(target, "around", priority, condition)
+replace_entry = lambda target, priority=0, condition=None: hook(target, "replace", priority, condition)
 
-
-def after_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
-    return hook(target, "after", priority, condition)
-
-
-def around_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
-    return hook(target, "around", priority, condition)
-
-
-def replace_entry(target: str, priority: int = 0, condition: Optional[Callable[..., bool]] = None):
-    return hook(target, "replace", priority, condition)

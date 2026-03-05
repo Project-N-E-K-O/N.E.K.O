@@ -1,98 +1,156 @@
 """
 Run Protocol 路由
 """
-from __future__ import annotations
-
-import json
 from typing import Optional
 
-from fastapi import APIRouter, Body, Query, Request
+from fastapi import APIRouter, HTTPException, Request, Query, Body
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from loguru import logger
 
 from plugin._types.models import RunCreateRequest, RunCreateResponse
-from plugin.logging_config import get_logger
-from plugin.server.application.contracts import UploadBlobResponse, UploadSessionResponse
-from plugin.server.application.runs import RunService
-from plugin.server.application.runs.service import RunRecord
-from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_handler import handle_plugin_error
+from plugin.runs.manager import (
+    RunCancelRequest,
+    RunRecord,
+    ExportListResponse,
+    create_run,
+    get_run,
+    cancel_run,
+    list_export_for_run,
+)
+from plugin.runs.websocket import issue_run_token
+from plugin.runs.storage import blob_store
 
 router = APIRouter()
-logger = get_logger("server.routes.runs")
-run_service = RunService()
-
-
-class RunCancelPayload(BaseModel):
-    reason: str | None = None
 
 
 @router.post("/runs", response_model=RunCreateResponse)
-async def runs_create(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
+async def runs_create(payload: RunCreateRequest, request: Request):
     try:
-        client_host = request.client.host if request.client is not None else None
-        return await run_service.create_run(payload, client_host=client_host)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        client_host = request.client.host if request.client else None
+        base = await create_run(payload, client_host=client_host)
+        token, exp = issue_run_token(run_id=base.run_id, perm="read")
+        return RunCreateResponse(run_id=base.run_id, status=base.status, run_token=token, expires_at=exp)
+    except Exception as e:
+        logger.error(f"Error creating run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/runs/{run_id}", response_model=RunRecord)
-async def runs_get(run_id: str) -> RunRecord:
+async def runs_get(run_id: str):
     try:
-        return run_service.get_run(run_id)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        rec = get_run(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return rec
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get run")
+        raise handle_plugin_error(e, "Failed to get run", 500) from e
 
 
 @router.post("/runs/{run_id}/uploads")
-async def runs_create_upload(run_id: str, request: Request) -> UploadSessionResponse:
-    raw_body: object | None
+async def runs_create_upload(run_id: str, request: Request):
     try:
-        raw_body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError, RuntimeError):
-        raw_body = None
+        rec = get_run(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
 
-    body: dict[str, object] | None = None
-    if isinstance(raw_body, dict):
-        body = {str(key): value for key, value in raw_body.items()}
+        body = None
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        filename = None
+        mime = None
+        max_bytes = None
+        if isinstance(body, dict):
+            filename = body.get("filename")
+            mime = body.get("mime")
+            max_bytes = body.get("max_bytes")
 
-    try:
-        return run_service.create_upload_session(
-            run_id=run_id,
-            base_url="",
-            body=body,
-        )
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        sess = blob_store.create_upload(run_id=run_id, filename=filename, mime=mime, max_bytes=max_bytes)
+        base = str(request.base_url).rstrip("/")
+        upload_url = f"{base}/uploads/{sess.upload_id}"
+        blob_url = f"{base}/runs/{run_id}/blobs/{sess.blob_id}"
+        return {"upload_id": sess.upload_id, "blob_id": sess.blob_id, "upload_url": upload_url, "blob_url": blob_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create upload")
+        raise handle_plugin_error(e, "Failed to create upload", 500) from e
 
 
 @router.put("/uploads/{upload_id}")
-async def uploads_put(upload_id: str, request: Request) -> UploadBlobResponse:
+async def uploads_put(upload_id: str, request: Request):
+    sess = blob_store.get_upload(upload_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="upload not found")
+
+    rec = get_run(sess.run_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if rec.status not in ("running", "cancel_requested"):
+        raise HTTPException(status_code=409, detail="run not running")
+
     try:
-        return await run_service.upload_blob(upload_id=upload_id, chunks=request.stream())
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        total = 0
+        with sess.tmp_path.open("wb") as f:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                if not isinstance(chunk, (bytes, bytearray)):
+                    continue
+                total += len(chunk)
+                if total > int(sess.max_bytes):
+                    raise HTTPException(status_code=413, detail="upload too large")
+                f.write(chunk)
+        blob_store.finalize_upload(upload_id)
+        return {"ok": True, "upload_id": sess.upload_id, "blob_id": sess.blob_id, "size": total}
+    except HTTPException:
+        try:
+            if sess.tmp_path.exists():
+                sess.tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            if sess.tmp_path.exists():
+                sess.tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        logger.exception("Failed to upload blob")
+        raise handle_plugin_error(e, "Failed to upload blob", 500) from e
 
 
 @router.get("/runs/{run_id}/blobs/{blob_id}")
-async def runs_get_blob(run_id: str, blob_id: str) -> FileResponse:
+async def runs_get_blob(run_id: str, blob_id: str):
     try:
-        path = run_service.get_blob_path(run_id=run_id, blob_id=blob_id)
-        return FileResponse(str(path), filename=f"{blob_id}.bin")
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        p = blob_store.get_blob_path(run_id=run_id, blob_id=blob_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="blob not found")
+        return FileResponse(str(p), filename=f"{blob_id}.bin")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to download blob")
+        raise handle_plugin_error(e, "Failed to download blob", 500) from e
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRecord)
-async def runs_cancel(
-    run_id: str,
-    payload: RunCancelPayload | None = Body(default=None),
-) -> RunRecord:
-    reason = payload.reason if payload is not None else None
+async def runs_cancel(run_id: str, payload: RunCancelRequest = Body(default=RunCancelRequest())):
     try:
-        return run_service.cancel_run(run_id, reason=reason)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        rec = cancel_run(run_id, reason=payload.reason)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return rec
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to cancel run")
+        raise handle_plugin_error(e, "Failed to cancel run", 500) from e
 
 
 @router.get("/runs/{run_id}/export")
@@ -100,13 +158,15 @@ async def runs_export(
     run_id: str,
     after: Optional[str] = Query(default=None),
     limit: int = Query(default=200, ge=1, le=2000),
-) -> dict[str, object]:
+):
     try:
-        response = run_service.list_export_for_run(
-            run_id=run_id,
-            after=after,
-            limit=int(limit),
-        )
-        return response.model_dump(by_alias=True)
-    except ServerDomainError as error:
-        raise_http_from_domain(error, logger=logger)
+        rec = get_run(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        resp = list_export_for_run(run_id=run_id, after=after, limit=int(limit))
+        return resp.model_dump(by_alias=True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list export items")
+        raise handle_plugin_error(e, "Failed to list export items", 500) from e

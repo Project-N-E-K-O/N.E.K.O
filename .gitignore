@@ -119,11 +119,4 @@ sendText.js
 data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage
-
-# Plugin test generated artifacts
-plugin/tests/reports/
-plugin/tests/.pytest_cache/
-plugin/tests/**/__pycache__/
-plugin/tests/.coverage
-plugin/tests/.coverage.*
-htmlcov/
+.VSCodeCounter

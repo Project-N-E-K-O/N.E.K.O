@@ -232,16 +232,16 @@ class GlobalState:
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
         self._message_queue: Optional[asyncio.Queue] = None
-        self._plugin_comm_queue: Optional[Any] = None
+        self._plugin_comm_queue: Optional[asyncio.Queue] = None
         self._plugin_response_map: Optional[Any] = None
         self._plugin_response_map_manager: Optional[Any] = None
         self._plugin_response_event_map: Optional[Any] = None
         self._plugin_response_notify_event: Optional[Any] = None
-        # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
 
-        self._plugin_response_queues: Dict[str, Any] = {}
-        self._plugin_response_queues_lock = threading.Lock()
+        # Per-plugin downlink senders for routing plugin-to-plugin responses
+        self._plugin_downlink_senders: Dict[str, Any] = {}
+        self._plugin_downlink_senders_lock = threading.Lock()
 
         self._bus_store_lock = threading.Lock()
         self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
@@ -578,35 +578,35 @@ class GlobalState:
         return self._message_queue
     
     @property
-    def plugin_comm_queue(self):
-        """插件间通信队列（用于插件调用其他插件的 custom_event）"""
+    def plugin_comm_queue(self) -> asyncio.Queue:
+        """Central in-process queue for plugin-to-plugin requests (asyncio.Queue)."""
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
                 if self._plugin_comm_queue is None:
-                    # 使用 multiprocessing.Queue 因为需要跨进程
-                    self._plugin_comm_queue = multiprocessing.Queue()
+                    self._plugin_comm_queue = asyncio.Queue()
         return self._plugin_comm_queue
 
-    def set_plugin_response_queue(self, plugin_id: str, q: Any) -> None:
+    def register_downlink_sender(self, plugin_id: str, sender: Any) -> None:
+        """Register a comm_manager's ``send_plugin_response`` coroutine for routing."""
         pid = str(plugin_id).strip()
         if not pid:
             return
-        with self._plugin_response_queues_lock:
-            self._plugin_response_queues[pid] = q
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders[pid] = sender
 
-    def get_plugin_response_queue(self, plugin_id: str) -> Any:
+    def get_downlink_sender(self, plugin_id: str) -> Any:
         pid = str(plugin_id).strip()
         if not pid:
             return None
-        with self._plugin_response_queues_lock:
-            return self._plugin_response_queues.get(pid)
+        with self._plugin_downlink_senders_lock:
+            return self._plugin_downlink_senders.get(pid)
 
-    def remove_plugin_response_queue(self, plugin_id: str) -> None:
+    def remove_downlink_sender(self, plugin_id: str) -> None:
         pid = str(plugin_id).strip()
         if not pid:
             return
-        with self._plugin_response_queues_lock:
-            self._plugin_response_queues.pop(pid, None)
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders.pop(pid, None)
     
     @property
     def plugin_response_map(self) -> Any:
@@ -1637,17 +1637,10 @@ class GlobalState:
         - 清理响应映射
         - 关闭 Manager（如果存在）
         """
-        # 清理插件间通信队列
-        if self._plugin_comm_queue is not None:
-            try:
-                self._plugin_comm_queue.cancel_join_thread()  # 防止卡住
-                self._plugin_comm_queue.close()
-                # self._plugin_comm_queue.join_thread() # 不需要 join，已经 cancel 了
-                logger.bind(component="server").debug("Plugin communication queue closed")
-            except Exception as e:
-                logger.bind(component="server").warning(f"Error closing plugin communication queue: {e}")
-            finally:
-                self._plugin_comm_queue = None
+        # Reset the in-process comm queue
+        self._plugin_comm_queue = None
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders.clear()
         
         # 清理响应映射和 Manager
         if self._plugin_response_map_manager is not None:

@@ -245,26 +245,6 @@ PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS = _get_float_env(
 
 # ========== Message Plane (High-Frequency Bus) ==========
 
-# Message plane 后端实现选择
-# - python: 使用当前 Python message_plane 实现（默认）
-# - rust: 使用外部 Rust message_plane 可执行文件
-# Env: NEKO_MESSAGE_PLANE_BACKEND, default="python"
-MESSAGE_PLANE_BACKEND = os.getenv("NEKO_MESSAGE_PLANE_BACKEND", "python").strip().lower()
-if MESSAGE_PLANE_BACKEND in ("wheel", "rust-wheel", "rust_wheel"):
-    MESSAGE_PLANE_BACKEND = "rust"
-if MESSAGE_PLANE_BACKEND not in ("python", "rust"):
-    MESSAGE_PLANE_BACKEND = "python"
-
-# Rust message_plane 可执行文件路径（当 MESSAGE_PLANE_BACKEND=rust 时使用）
-# Env: NEKO_MESSAGE_PLANE_RUST_BIN, default="neko-message-plane"
-MESSAGE_PLANE_RUST_BIN = os.getenv("NEKO_MESSAGE_PLANE_RUST_BIN", "neko-message-plane").strip()
-
-# Rust message_plane 工作线程数（当 MESSAGE_PLANE_BACKEND=rust 时使用）
-# - 0: 自动检测 CPU 核心数（默认，最少 4 个）
-# - >0: 手动指定工作线程数
-# Env: NEKO_MESSAGE_PLANE_WORKERS, default=0
-MESSAGE_PLANE_WORKERS = _get_int_env("NEKO_MESSAGE_PLANE_WORKERS", 0)
-
 # Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
 # 使用 TCP 回环（127.0.0.1），在某些系统上比 IPC 更快
 # Env: NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT, default="tcp://127.0.0.1:38865"
@@ -554,10 +534,7 @@ __all__ = [
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
     "SYNC_CALL_IN_HANDLER_POLICY",
 
-    # Message plane backend
-    "MESSAGE_PLANE_BACKEND",
-    "MESSAGE_PLANE_RUST_BIN",
-    "MESSAGE_PLANE_WORKERS",
+    # Message plane
     "MESSAGE_PLANE_RUN_MODE",
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",

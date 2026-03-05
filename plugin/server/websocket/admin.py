@@ -3,141 +3,96 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import WebSocket
-from starlette.websockets import WebSocketDisconnect
 
 from plugin.core.state import state
-from plugin.logging_config import get_logger
-from plugin.server.application.admin import AdminCommandService
-from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import get_admin_code
-
-logger = get_logger("server.websocket.admin")
-
-JsonObject = dict[str, object]
+from plugin.server.management import stop_plugin
+from plugin.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
 
 
 @dataclass(frozen=True)
 class _Conn:
     ws: WebSocket
-    plugin_id: str | None
-    queue: asyncio.Queue[JsonObject]
-
-
-def _normalize_mapping(raw: object) -> JsonObject | None:
-    if not isinstance(raw, Mapping):
-        return None
-
-    normalized: JsonObject = {}
-    for key, value in raw.items():
-        if isinstance(key, str):
-            normalized[key] = value
-    return normalized
-
-
-def _normalize_plugin_id(raw: object) -> str | None:
-    if not isinstance(raw, str):
-        return None
-    value = raw.strip()
-    if not value:
-        return None
-    return value
+    plugin_id: Optional[str]
+    queue: "asyncio.Queue[Dict[str, Any]]"
 
 
 class WsAdminHub:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._conns: set[_Conn] = set()
-        self._unsubs: list[Callable[[], None]] = []
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._dispatch_q: asyncio.Queue[JsonObject] = asyncio.Queue(maxsize=2000)
-        self._dispatch_task: asyncio.Task[None] | None = None
+        self._conns: Set[_Conn] = set()
+        self._unsubs: list[Any] = []
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._dispatch_q: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue(maxsize=2000)
+        self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._started = False
 
     async def start(self) -> None:
         if self._started:
             return
-
         self._started = True
         self._loop = asyncio.get_running_loop()
 
-        def _cb_factory(bus: str) -> Callable[[str, dict[str, object]], None]:
-            def _cb(op: str, payload: dict[str, object]) -> None:
-                evt: JsonObject = {
-                    "bus": bus,
-                    "op": str(op),
-                    "payload": _normalize_mapping(payload) or {},
-                }
-                event_loop = self._loop
-                if event_loop is None:
-                    return
+        def _cb_factory(bus: str):
+            def _cb(op: str, payload: Dict[str, Any]) -> None:
+                evt = {"bus": bus, "op": str(op), "payload": dict(payload or {})}
                 try:
-                    event_loop.call_soon_threadsafe(self._try_enqueue, evt)
-                except RuntimeError as exc:
-                    logger.debug("failed to enqueue admin hub event: err_type={}, err={}", type(exc).__name__, str(exc))
+                    if self._loop is None:
+                        return
+                    self._loop.call_soon_threadsafe(self._try_enqueue, evt)
+                except Exception:
+                    return
 
             return _cb
 
         try:
             self._unsubs.append(state.bus_change_hub.subscribe("runs", _cb_factory("runs")))
             self._unsubs.append(state.bus_change_hub.subscribe("export", _cb_factory("export")))
-        except (RuntimeError, ValueError, TypeError) as exc:
-            logger.warning(
-                "failed to subscribe admin hub events: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-            self._unsubs.clear()
+        except Exception:
+            self._unsubs = []
 
         if self._dispatch_task is None:
             self._dispatch_task = asyncio.create_task(self._dispatch_loop(), name="ws-admin-hub-dispatch")
 
     async def stop(self) -> None:
-        for unsub in list(self._unsubs):
+        for u in list(self._unsubs):
             try:
-                unsub()
-            except (RuntimeError, ValueError, TypeError) as exc:
-                logger.debug(
-                    "failed to unsubscribe admin hub callback: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+                u()
+            except Exception:
+                pass
         self._unsubs.clear()
-
-        if self._dispatch_task is not None:
-            self._dispatch_task.cancel()
-            try:
+        try:
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+        except Exception:
+            pass
+        try:
+            if self._dispatch_task is not None:
                 await self._dispatch_task
-            except asyncio.CancelledError:
-                logger.debug("admin hub dispatch task cancelled")
+        except Exception:
+            pass
         self._dispatch_task = None
-
         async with self._lock:
             self._conns.clear()
         self._started = False
 
-    def _try_enqueue(self, evt: JsonObject) -> None:
+    def _try_enqueue(self, evt: Dict[str, Any]) -> None:
         try:
             self._dispatch_q.put_nowait(evt)
-        except asyncio.QueueFull:
-            logger.warning("admin hub dispatch queue is full; dropping event")
+        except Exception:
+            return
 
     async def _dispatch_loop(self) -> None:
         while True:
             evt = await self._dispatch_q.get()
             try:
                 await self._broadcast(evt)
-            except asyncio.CancelledError:
-                raise
-            except (RuntimeError, ValueError, TypeError, ConnectionError) as exc:
-                logger.debug(
-                    "admin hub broadcast failed: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+            except Exception:
+                continue
 
     async def register(self, conn: _Conn) -> None:
         async with self._lock:
@@ -145,32 +100,54 @@ class WsAdminHub:
 
     async def unregister(self, conn: _Conn) -> None:
         async with self._lock:
-            self._conns.discard(conn)
+            try:
+                self._conns.discard(conn)
+            except Exception:
+                pass
 
-    async def _broadcast(self, evt: JsonObject) -> None:
-        payload = _normalize_mapping(evt.get("payload"))
-        plugin_id = _normalize_plugin_id(payload.get("plugin_id")) if payload is not None else None
+    async def _broadcast(self, evt: Dict[str, Any]) -> None:
+        bus = evt.get("bus")
+        payload = evt.get("payload")
+        plugin_id: Optional[str] = None
+
+        if bus == "runs":
+            if isinstance(payload, dict):
+                pid = payload.get("plugin_id")
+                if isinstance(pid, str) and pid:
+                    plugin_id = pid
+        elif bus == "export":
+            rid = None
+            if isinstance(payload, dict):
+                rid = payload.get("run_id")
+            if isinstance(rid, str) and rid:
+                r = get_run(rid)
+                if r is not None:
+                    try:
+                        plugin_id = r.plugin_id
+                    except Exception:
+                        plugin_id = None
 
         async with self._lock:
             targets = list(self._conns)
 
-        for conn in targets:
-            if conn.plugin_id is not None and plugin_id is not None and conn.plugin_id != plugin_id:
-                continue
-
-            out: JsonObject = {"type": "event", "event": "bus.change", "data": evt}
+        for c in targets:
+            if c.plugin_id is not None and plugin_id is not None:
+                if c.plugin_id != plugin_id:
+                    continue
             try:
-                conn.queue.put_nowait(out)
-            except asyncio.QueueFull:
-                await self.unregister(conn)
+                c.queue.put_nowait({"type": "event", "event": "bus.change", "data": evt})
+            except Exception:
                 try:
-                    await asyncio.wait_for(conn.ws.close(code=1013, reason="slow client"), timeout=1.0)
-                except (WebSocketDisconnect, TimeoutError, RuntimeError, ConnectionError):
-                    logger.debug("failed to close slow admin websocket client")
+                    await self.unregister(c)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(c.ws.close(code=1013, reason="slow client"), timeout=1.0)
+                except Exception:
+                    pass
 
 
 ws_admin_hub = WsAdminHub()
-admin_command_service = AdminCommandService()
 
 
 async def ws_admin_endpoint(ws: WebSocket) -> None:
@@ -179,57 +156,27 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
     async def _close(code: int = 1008, reason: str = "") -> None:
         try:
             await ws.close(code=code, reason=reason)
-        except (WebSocketDisconnect, RuntimeError, ConnectionError):
-            logger.debug("admin websocket already closed")
-
-    async def _send_json(payload: JsonObject) -> bool:
-        try:
-            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError) as exc:
-            logger.error(
-                "failed to serialize admin websocket payload: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-            return False
-
-        try:
-            await ws.send_text(raw)
-            return True
-        except (WebSocketDisconnect, RuntimeError, ConnectionError):
-            return False
+        except Exception:
+            pass
 
     try:
         auth_raw = await asyncio.wait_for(ws.receive_text(), timeout=5.0)
-    except asyncio.TimeoutError:
+    except Exception:
         await _close(1008, "auth required")
-        return
-    except (WebSocketDisconnect, RuntimeError, ConnectionError):
-        await _close(1008, "auth required")
-        return
-
-    if not isinstance(auth_raw, str) or len(auth_raw) > 16384:
-        await _close(1008, "invalid auth")
         return
 
     try:
-        auth_obj = json.loads(auth_raw)
-    except json.JSONDecodeError:
+        auth = json.loads(auth_raw)
+    except Exception:
         await _close(1008, "invalid auth")
         return
 
-    auth = _normalize_mapping(auth_obj)
-    if auth is None or auth.get("type") != "auth":
+    if not isinstance(auth, dict) or auth.get("type") != "auth":
         await _close(1008, "auth required")
         return
 
-    code_obj = auth.get("code")
-    if not isinstance(code_obj, str):
-        await _close(1008, "invalid code")
-        return
-
-    code = code_obj.strip()
-    if not code:
+    code = auth.get("code")
+    if not isinstance(code, str) or not code:
         await _close(1008, "invalid code")
         return
 
@@ -238,14 +185,14 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
         await _close(1011, "auth not initialized")
         return
 
-    if code.upper() != str(server_code).strip().upper():
+    if code.strip().upper() != str(server_code).strip().upper():
         await _close(1008, "forbidden")
         return
 
     await ws_admin_hub.start()
 
-    queue: asyncio.Queue[JsonObject] = asyncio.Queue(maxsize=512)
-    conn = _Conn(ws=ws, plugin_id=None, queue=queue)
+    q: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=512)
+    conn = _Conn(ws=ws, plugin_id=None, queue=q)
     await ws_admin_hub.register(conn)
 
     last_pong = float(time.time())
@@ -257,121 +204,194 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
             if (time.time() - last_pong) > 45.0:
                 await _close(1011, "heartbeat timeout")
                 return
-
-            ping_payload: JsonObject = {"type": "ping"}
-            sent = await _send_json(ping_payload)
-            if not sent:
+            try:
+                await ws.send_text(json.dumps({"type": "ping"}, ensure_ascii=False, separators=(",", ":")))
+            except Exception:
                 return
 
     async def _send_loop() -> None:
         while True:
-            msg = await queue.get()
-            sent = await _send_json(msg)
-            if not sent:
-                return
+            msg = await q.get()
+            await ws.send_text(json.dumps(msg, ensure_ascii=False, separators=(",", ":")))
 
     send_task = asyncio.create_task(_send_loop(), name="ws-admin-send")
     hb_task = asyncio.create_task(_heartbeat_loop(), name="ws-admin-heartbeat")
 
-    async def _send_resp(req_id: str, ok: bool, result: object | None = None, error: str | None = None) -> bool:
-        out: JsonObject = {"type": "resp", "id": req_id, "ok": bool(ok)}
+    async def _send_resp(req_id: str, ok: bool, result: Any = None, error: Optional[str] = None) -> None:
+        out = {"type": "resp", "id": req_id, "ok": bool(ok)}
         if ok:
             out["result"] = result
         else:
             out["error"] = str(error or "error")
-        return await _send_json(out)
+        await ws.send_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
 
     try:
-        hello: JsonObject = {"type": "event", "event": "session.ready", "data": {"role": "admin"}}
-        if not await _send_json(hello):
-            return
+        hello = {"type": "event", "event": "session.ready", "data": {"role": "admin"}}
+        await ws.send_text(json.dumps(hello, ensure_ascii=False, separators=(",", ":")))
 
         while True:
-            try:
-                raw = await ws.receive_text()
-            except WebSocketDisconnect:
-                return
-            except (RuntimeError, ConnectionError):
-                return
-
-            if len(raw) > 262144:
+            raw = await ws.receive_text()
+            if not isinstance(raw, str) or len(raw) > 262144:
                 await _close(1009, "message too large")
                 return
-
             try:
-                msg_obj = json.loads(raw)
-            except json.JSONDecodeError:
+                msg = json.loads(raw)
+            except Exception:
                 continue
-
-            msg = _normalize_mapping(msg_obj)
-            if msg is None:
+            if not isinstance(msg, dict):
                 continue
 
             if msg.get("type") == "pong":
                 last_pong = float(time.time())
                 continue
 
-            msg_type = msg.get("type")
-            if msg_type == "subscribe":
-                new_plugin_id = _normalize_plugin_id(msg.get("plugin_id"))
-                new_conn = _Conn(ws=ws, plugin_id=new_plugin_id, queue=queue)
+            mtype = msg.get("type")
+            if mtype == "subscribe":
+                pid = msg.get("plugin_id")
+                if pid is None:
+                    new_conn = _Conn(ws=ws, plugin_id=None, queue=q)
+                elif isinstance(pid, str) and pid.strip():
+                    new_conn = _Conn(ws=ws, plugin_id=pid.strip(), queue=q)
+                else:
+                    new_conn = _Conn(ws=ws, plugin_id=None, queue=q)
                 await ws_admin_hub.unregister(conn)
                 conn = new_conn
                 await ws_admin_hub.register(conn)
-                subscribed_payload: JsonObject = {
-                    "type": "event",
-                    "event": "subscribed",
-                    "data": {"plugin_id": conn.plugin_id},
-                }
-                sent = await _send_json(subscribed_payload)
-                if not sent:
-                    return
+                await ws.send_text(json.dumps({"type": "event", "event": "subscribed", "data": {"plugin_id": conn.plugin_id}}, ensure_ascii=False, separators=(",", ":")))
                 continue
 
-            if msg_type != "req":
+            if mtype != "req":
                 continue
 
-            req_id_obj = msg.get("id")
-            if not isinstance(req_id_obj, str) or not req_id_obj:
+            req_id = msg.get("id")
+            method = msg.get("method")
+            params = msg.get("params")
+            if not isinstance(req_id, str) or not req_id:
                 continue
-            req_id = req_id_obj
-
-            method_obj = msg.get("method")
-            if not isinstance(method_obj, str):
-                if not await _send_resp(req_id, False, error="missing method"):
-                    return
+            if not isinstance(method, str) or not method:
+                await _send_resp(req_id, False, error="missing method")
                 continue
-
-            method = method_obj.strip()
-            if not method:
-                if not await _send_resp(req_id, False, error="missing method"):
-                    return
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                await _send_resp(req_id, False, error="invalid params")
                 continue
 
-            params_obj = msg.get("params")
             try:
-                result = await admin_command_service.execute(method=method, raw_params=params_obj)
-            except ServerDomainError as error:
-                if not await _send_resp(req_id, False, error=error.message):
-                    return
-                continue
+                if method == "runs.list":
+                    pid = params.get("plugin_id")
+                    plugin_id = pid.strip() if isinstance(pid, str) and pid.strip() else None
+                    items = list_runs(plugin_id=plugin_id)
+                    await _send_resp(req_id, True, result=[r.model_dump() for r in items])
+                    continue
 
-            if not await _send_resp(req_id, True, result=result):
-                return
+                if method == "run.get":
+                    rid = params.get("run_id")
+                    if not isinstance(rid, str) or not rid.strip():
+                        await _send_resp(req_id, False, error="run_id required")
+                        continue
+                    r = get_run(rid.strip())
+                    if r is None:
+                        await _send_resp(req_id, False, error="run not found")
+                    else:
+                        await _send_resp(req_id, True, result=r.model_dump())
+                    continue
+
+                if method == "export.list":
+                    rid = params.get("run_id")
+                    if not isinstance(rid, str) or not rid.strip():
+                        await _send_resp(req_id, False, error="run_id required")
+                        continue
+                    after = params.get("after")
+                    limit = params.get("limit", 200)
+                    if after is not None and not isinstance(after, str):
+                        after = None
+                    try:
+                        limit_i = int(limit)
+                    except Exception:
+                        limit_i = 200
+                    if limit_i <= 0:
+                        limit_i = 200
+                    if limit_i > 500:
+                        limit_i = 500
+                    resp = list_export_for_run(run_id=rid.strip(), after=after, limit=limit_i)
+                    await _send_resp(req_id, True, result=resp.model_dump(by_alias=True))
+                    continue
+
+                if method == "run.create":
+                    pid = params.get("plugin_id")
+                    eid = params.get("entry_id")
+                    args = params.get("args")
+                    if not isinstance(pid, str) or not pid.strip():
+                        await _send_resp(req_id, False, error="plugin_id required")
+                        continue
+                    if not isinstance(eid, str) or not eid.strip():
+                        await _send_resp(req_id, False, error="entry_id required")
+                        continue
+                    if args is None:
+                        args = {}
+                    if not isinstance(args, dict):
+                        await _send_resp(req_id, False, error="args must be object")
+                        continue
+                    req = RunCreateRequest(plugin_id=pid.strip(), entry_id=eid.strip(), args=args)
+                    created = await create_run(req, client_host=None)
+                    await _send_resp(req_id, True, result=created.model_dump())
+                    continue
+
+                if method == "run.cancel":
+                    rid = params.get("run_id")
+                    reason = params.get("reason")
+                    if not isinstance(rid, str) or not rid.strip():
+                        await _send_resp(req_id, False, error="run_id required")
+                        continue
+                    rec = cancel_run(rid.strip(), reason=str(reason) if isinstance(reason, str) else None)
+                    if rec is None:
+                        await _send_resp(req_id, False, error="run not found")
+                    else:
+                        await _send_resp(req_id, True, result=rec.model_dump())
+                    continue
+
+                if method == "plugin.stop":
+                    pid = params.get("plugin_id")
+                    if not isinstance(pid, str) or not pid.strip():
+                        await _send_resp(req_id, False, error="plugin_id required")
+                        continue
+                    out = await stop_plugin(pid.strip())
+                    await _send_resp(req_id, True, result=out)
+                    continue
+
+                await _send_resp(req_id, False, error="unknown method")
+            except Exception as e:
+                await _send_resp(req_id, False, error=str(e))
+
+    except Exception:
+        pass
     finally:
-        await ws_admin_hub.unregister(conn)
-
-        send_task.cancel()
-        hb_task.cancel()
-
+        try:
+            await ws_admin_hub.unregister(conn)
+        except Exception:
+            pass
+        try:
+            send_task.cancel()
+        except Exception:
+            pass
+        try:
+            hb_task.cancel()
+        except Exception:
+            pass
         try:
             await send_task
         except asyncio.CancelledError:
-            logger.debug("admin websocket send task cancelled")
-
+            pass
+        except Exception:
+            pass
         try:
             await hb_task
         except asyncio.CancelledError:
-            logger.debug("admin websocket heartbeat task cancelled")
-
-        await _close(1000, "")
+            pass
+        except Exception:
+            pass
+        try:
+            await _close(1000, "")
+        except Exception:
+            pass

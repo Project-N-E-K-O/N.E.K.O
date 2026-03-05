@@ -9,9 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional, cast
 
-from plugin.logging_config import get_logger
-
-logger = get_logger("core.registry")
+from loguru import logger
 
 _DEFAULT_LOGGER = logger
 
@@ -19,24 +17,39 @@ _DEFAULT_LOGGER = logger
 _pending_async_shutdown_tasks: set = set()
 
 
+# _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
+# 为保持向后兼容，_wrap_logger 现在直接返回 logger
+def _wrap_logger(logger: Any) -> Any:
+    """向后兼容函数，现在统一返回 loguru logger"""
+    return logger
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR  # noqa: E402
-from plugin._types.version import SDK_VERSION  # noqa: E402
-from plugin.core.state import state  # noqa: E402
-from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency  # noqa: E402
-from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK  # noqa: E402
-from plugin.utils import parse_bool_config  # noqa: E402
+from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
+from plugin._types.version import SDK_VERSION
+from plugin.core.state import state
+from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
+from plugin._types.exceptions import (
+    PluginImportError,
+    PluginLoadError,
+    PluginMetadataError,
+)
+from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
+from plugin.utils import parse_bool_config
 
 # 从 dependency.py 导入依赖相关函数
-from plugin.core.dependency import (  # noqa: E402
+from plugin.core.dependency import (
     _parse_specifier,
     _version_matches,
+    _find_plugins_by_entry,
+    _find_plugins_by_custom_event,
     _check_plugin_dependency,
+    _check_single_plugin_version,
     _parse_plugin_dependencies,
+    _get_dependency_plugin_ids,
     _topological_sort_plugins,
 )
 
@@ -214,6 +227,7 @@ def _resolve_plugin_id_conflict(
     Returns:
         解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
+    logger = _wrap_logger(logger)
     _ = entry_point
     _ = plugin_data
 
@@ -329,7 +343,7 @@ def register_plugin(
     Returns:
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
-    logger_ = cast(Any, logger or _DEFAULT_LOGGER)
+    logger_ = cast(Any, _wrap_logger(logger or _DEFAULT_LOGGER))
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -711,20 +725,17 @@ def _parse_single_plugin_config(
     
     # 应用用户配置覆盖
     try:
-        from fastapi import HTTPException
-        from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
-
+        from plugin.config.service import _apply_user_config_profiles
         if isinstance(conf, dict):
-            conf = apply_user_config_profiles(
+            conf = _apply_user_config_profiles(
                 plugin_id=str(pid),
                 base_config=conf,
                 config_path=toml_path,
             )
-    except (HTTPException, RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as e:
+    except Exception as e:
         logger.warning(
             "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
-            pid,
-            e,
+            pid, e,
         )
     
     logger.debug("Plugin ID: {}", pid)
@@ -960,12 +971,12 @@ def _migrate_plugin_id(
             else:
                 logger.warning("Plugin host for '{}' not found during migration and passed-in host is None; skipping host registration for '{}'", old_pid, new_pid)
     
-    # 迁移 response queue
-    with state._plugin_response_queues_lock:
-        if old_pid in state._plugin_response_queues:
-            q = state._plugin_response_queues.pop(old_pid)
-            state._plugin_response_queues[new_pid] = q
-    
+    # Migrate downlink sender
+    with state._plugin_downlink_senders_lock:
+        sender = state._plugin_downlink_senders.pop(old_pid, None)
+        if sender is not None:
+            state._plugin_downlink_senders[new_pid] = sender
+
     # 迁移 event handlers
     with state.acquire_event_handlers_write_lock():
         handlers_to_migrate = [
@@ -1281,6 +1292,7 @@ def load_plugins_from_toml(
     2. 排序（Sort）：根据插件依赖关系进行拓扑排序，确保依赖先加载。
     3. 加载（Load）：按顺序执行实际加载。
     """
+    logger = _wrap_logger(logger)
     if not plugin_config_root.exists():
         logger.info("No plugin config directory {}, skipping", plugin_config_root)
         return
@@ -1578,14 +1590,9 @@ def load_plugins_from_toml(
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
         try:
-            from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-            from plugin.utils.time_utils import now_iso
+            from plugin.server.services import _enqueue_lifecycle
+            from plugin.server.infrastructure.utils import now_iso
 
-            emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, ImportError) as exc:
-            logger.debug(
-                "Failed to enqueue lifecycle event for plugin {}: err_type={}, err={}",
-                pid,
-                type(exc).__name__,
-                str(exc),
-            )
+            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+        except Exception:
+            logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)
