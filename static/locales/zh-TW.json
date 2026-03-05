@@ -2203,5 +2203,11 @@
             "active": "● 已就緒",
             "inactive": "○ 未配置"
         }
+    },
+    "music": {
+        "unknownTrack": "未知曲目",
+        "unknownArtist": "未知藝術家",
+        "playing": "播放中",
+        "paused": "已暫停"
     }
 }

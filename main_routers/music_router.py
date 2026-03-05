@@ -56,6 +56,6 @@ async def search_music(query: str = Query(default="", min_length=0, max_length=2
         return {
             "success": False,
             "data": [],
-            "error": str(e),
-            "message": "音乐搜索服务异常"
+            "error": "MUSIC_SEARCH_ERROR",
+            "message": "音乐搜索服务异常，请稍后重试"
         }

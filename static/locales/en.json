@@ -2203,5 +2203,11 @@
             "active": "● Ready",
             "inactive": "○ Not configured"
         }
-    }   
+    },
+    "music": {
+        "unknownTrack": "Unknown Track",
+        "unknownArtist": "Unknown Artist",
+        "playing": "Playing",
+        "paused": "Paused"
+    }
 }

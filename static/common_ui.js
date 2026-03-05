@@ -1089,11 +1089,52 @@ const getMusicPlayerInstance = () => {
     return null;
 };
 
-// 统一的停止音乐函数
+// 统一的停止音乐函数（只暂停，保留实例）
 const stopMusicPlayer = () => {
     const player = getMusicPlayerInstance();
     if (player && typeof player.pause === 'function') {
         player.pause();
+    }
+};
+
+// 检查是否需要清理旧音乐实例
+// 条件：音乐气泡之前的消息数 > 10 且播放器未播放
+const shouldCleanupOldMusicPlayer = () => {
+    const player = getMusicPlayerInstance();
+    if (!player) return false;
+    
+    // 播放器正在播放，不清理
+    if (!player.paused) return false;
+    
+    // 查找音乐气泡
+    const musicBubble = document.querySelector('.music-bubble');
+    if (!musicBubble) return false;
+    
+    // 统计音乐气泡之前的消息数量
+    const allMessages = chatContentWrapper ? chatContentWrapper.children : [];
+    let messageCountBeforeMusic = 0;
+    
+    for (let i = 0; i < allMessages.length; i++) {
+        const msg = allMessages[i];
+        // 检查是否是音乐气泡或其父元素
+        if (msg.contains(musicBubble) || msg === musicBubble) {
+            break;
+        }
+        // 只计算实际的消息元素
+        if (msg.querySelector && (msg.querySelector('.chat-message') || msg.classList?.contains('chat-message'))) {
+            messageCountBeforeMusic++;
+        }
+    }
+    
+    return messageCountBeforeMusic > 10;
+};
+
+// 统一的销毁音乐函数（完全销毁实例，释放资源）
+const destroyMusicPlayer = () => {
+    const player = getMusicPlayerInstance();
+    if (player) {
+        if (typeof player.pause === 'function') player.pause();
+        if (typeof player.destroy === 'function') player.destroy();
     }
     // 清理所有实例引用
     if (window.aplayer) {
@@ -1108,6 +1149,13 @@ const stopMusicPlayer = () => {
 };
 
 window.sendMusicMessage = function(trackInfo) {
+    // 检查是否需要清理旧的音乐播放器实例
+    // 条件：音乐气泡之前的消息数 > 10 且播放器未播放
+    if (shouldCleanupOldMusicPlayer()) {
+        console.log('[Common UI] 音乐气泡之前消息数超过10条且播放器未播放，销毁旧实例');
+        destroyMusicPlayer();
+    }
+    
     // 安全处理：对外部输入进行 HTML 转义
     const escapeHtml = (str) => {
         const div = document.createElement('div');

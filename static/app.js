@@ -1265,12 +1265,7 @@ function init_app() {
                         .then(result => {
                             if (result.success && result.data && result.data.length > 0) {
                                 const track = result.data[0];
-                                if (window.sendMusicMessage) {
-                                    window.sendMusicMessage(track);
-                                    if (window.showStatusToast) {
-                                        window.showStatusToast(`为您播放: ${track.name}`, 3000);
-                                    }
-                                }
+                                window.dispatchMusicPlay(track );
                             } else {
                                 console.warn(`[Music] API did not find a song for: ${searchTerm}`);
                                 if (window.showStatusToast) {
@@ -2005,6 +2000,36 @@ function init_app() {
         }
     }
 
+    let _lastPlayedMusicUrl = null;
+    let _lastMusicPlayTime = 0;
+    
+    window.dispatchMusicPlay = function(trackInfo) {
+        if (!trackInfo || !trackInfo.url) {
+            console.warn('[MusicDispatch] 无效的音乐信息，跳过播放');
+            return;
+        }
+        
+        const now = Date.now();
+        const musicUrl = trackInfo.url;
+        
+        if (_lastPlayedMusicUrl === musicUrl && (now - _lastMusicPlayTime) < 5000) {
+            console.log('[MusicDispatch] 5秒内相同音乐，跳过播放:', trackInfo.name);
+            return;
+        }
+        
+        _lastPlayedMusicUrl = musicUrl;
+        _lastMusicPlayTime = now;
+        
+        if (window.sendMusicMessage && trackInfo?.url) {
+            window.sendMusicMessage(trackInfo);
+            if (window.showStatusToast) {
+                window.showStatusToast(`为您播放: ${trackInfo.name}`, 3000);
+            }
+        } else {
+            console.warn('[MusicDispatch] track.url 缺失，跳过播放');
+        }
+    };
+
     window.processMusicCommands = async function(text) {
         if (!text) return;
         // 匹配完整的 [play_music: {"name":"...","artist":"..."}] 指令
@@ -2034,13 +2059,7 @@ function init_app() {
                             theme: aiTrackInfo.theme || '#44b7fe'
                         };
                         
-                        // 4. 调用你在 common_ui.js 中写好的高颜值气泡生成函数
-                        if (window.sendMusicMessage) {
-                            window.sendMusicMessage(finalTrackInfo);
-                            if (window.showStatusToast) {
-                                window.showStatusToast(`为您播放: ${finalTrackInfo.name}`, 3000);
-                            }
-                        }
+                        window.dispatchMusicPlay(finalTrackInfo);
                     } else {
                         console.warn('[Music] API 未找到歌曲:', query);
                         if (window.showStatusToast) window.showStatusToast(`找不到歌曲: ${query}`, 3000);
@@ -8908,18 +8927,14 @@ function init_app() {
                     if (result.source_mode === 'music' && result.source_links && result.source_links.length > 0) {
                         const musicLink = result.source_links[0];
                         console.log('[ProactiveChat] 收到音乐链接:', musicLink);
-                        if (musicLink.url && window.sendMusicMessage) {
-                            // 音乐链接格式: {name, artist, url}
+                        if (musicLink.url) {
                             const track = {
                                 name: musicLink.title || '未知曲目',
                                 artist: musicLink.artist || '未知艺术家',
                                 url: musicLink.url
                             };
                             console.log('[ProactiveChat] 发送音乐消息:', track);
-                            window.sendMusicMessage(track);
-                            if (window.showStatusToast) {
-                                window.showStatusToast(`为您播放: ${track.name}`, 3000);
-                            }
+                            window.dispatchMusicPlay(track);
                         } else {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
                         }
@@ -9536,7 +9551,7 @@ function init_app() {
         console.log(`[自检] localStorage设置: ${localStorage.getItem('project_neko_settings') ? '已存在' : '不存在'}`);
         
         // 检查WebSocket连接状态
-        const wsStatus = window.ws && window.ws.readyState;
+        const wsStatus = socket ? socket.readyState : undefined;
         console.log(`[自检] WebSocket状态: ${wsStatus} (1=OPEN, 0=CONNECTING, 2=CLOSING, 3=CLOSED)`);
         
         scheduleProactiveChat();

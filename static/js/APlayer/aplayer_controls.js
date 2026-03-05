@@ -132,7 +132,11 @@ export function setMusicVolume(aplayer, volume) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) return { success: false, error: 'APlayer not initialized' };
         
-        const normalizedVolume = Math.max(0, Math.min(1, volume));
+        const parsed = Number(volume);
+        if (!Number.isFinite(parsed)) {
+            return { success: false, error: 'Invalid volume' };
+        }
+        const normalizedVolume = Math.max(0, Math.min(1, parsed));
         aplayer.volume(normalizedVolume);
         console.log('[APlayer] setMusicVolume:', normalizedVolume);
         

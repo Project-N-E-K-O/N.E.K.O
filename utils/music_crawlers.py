@@ -709,7 +709,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                 
         # --- 组建第二梯队（兜底截断逻辑） ---
         if not all_results:
-            logger.info(f"[智能调度] 第一梯队未命中，停止等待，触发第二级兜底引擎...")
+            logger.info("[智能调度] 第一梯队未命中，停止等待，触发第二级兜底引擎...")
             fallback_tasks = []
             fallback_fma = "piano" if "钢琴" in kw_lower else "relax"
             

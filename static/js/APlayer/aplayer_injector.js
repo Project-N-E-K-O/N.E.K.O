@@ -114,6 +114,7 @@ function setupInjectedControls(aplayer, config) {
     window.aplayerInjected = {
         aplayer,
         container,
+        containerId: config.containerId,
         toggleBtn,
         show: () => {
             container.style.display = 'block';
@@ -148,7 +149,15 @@ function setupInjectedControls(aplayer, config) {
 }
 
 export function removeAPlayerFromChatContainer() {
-    const container = document.getElementById('aplayer-container');
+    // 先销毁播放器实例
+    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+        const player = window.aplayerInjected.aplayer;
+        if (typeof player.pause === 'function') player.pause();
+        if (typeof player.destroy === 'function') player.destroy();
+    }
+    
+    // 使用存储的容器引用，而非硬编码 ID
+    const container = window.aplayerInjected?.container || document.getElementById('aplayer-container');
     if (container) {
         container.remove();
         console.log('[APlayer] Removed from chat-container');
@@ -168,7 +177,8 @@ export function getAPlayerInstance() {
 }
 
 export function getAPlayerContainer() {
-    return document.getElementById('aplayer-container');
+    // 优先使用存储的容器引用，回退到默认 ID
+    return window.aplayerInjected?.container || document.getElementById('aplayer-container');
 }
 
 export function setupAPlayerInChat(options = {}) {
