@@ -1263,6 +1263,10 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
                 window.saveNEKOSettings();
             }
             if (isChecked) {
+                // 开启：立即获取屏幕流（当前处于用户手势上下文，getDisplayMedia 可正常调用）
+                if (typeof window.acquireProactiveVisionStream === 'function') {
+                    window.acquireProactiveVisionStream();
+                }
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
@@ -1272,6 +1276,10 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
                     }
                 }
             } else {
+                // 关闭：释放屏幕流
+                if (typeof window.releaseProactiveVisionStream === 'function') {
+                    window.releaseProactiveVisionStream();
+                }
                 if (typeof window.stopProactiveChatSchedule === 'function') {
                     if (!window.proactiveChatEnabled) {
                         window.stopProactiveChatSchedule();
