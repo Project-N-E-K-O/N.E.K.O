@@ -385,6 +385,89 @@ function init_app() {
         );
     }
 
+    /**
+     * 等待 WebSocket 连接就绪（OPEN 状态）。
+     * - 已 OPEN → 立即返回
+     * - CONNECTING → 通过 addEventListener('open') 等待（不覆盖 onopen）
+     * - CLOSED/CLOSING 或 socket 不存在 → 取消排队的自动重连，触发 connectWebSocket() 后等待
+     * @param {number} timeoutMs 超时毫秒数，默认 5000
+     * @returns {Promise<void>}
+     */
+    function ensureWebSocketOpen(timeoutMs = 5000) {
+        return new Promise((resolve, reject) => {
+            // 已 OPEN，直接返回
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                return resolve();
+            }
+
+            let settled = false;
+            let timer = null;
+
+            const settle = (fn, arg) => {
+                if (settled) return;
+                settled = true;
+                if (timer) { clearTimeout(timer); timer = null; }
+                fn(arg);
+            };
+
+            // 超时处理
+            timer = setTimeout(() => {
+                settle(reject, new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接'));
+            }, timeoutMs);
+
+            // 监听当前或即将创建的 socket 的 open 事件
+            const attachOpenListener = (ws) => {
+                if (!ws || settled) return;
+                if (ws.readyState === WebSocket.OPEN) {
+                    settle(resolve); return;
+                }
+                if (ws.readyState === WebSocket.CONNECTING) {
+                    // 用 addEventListener 而非覆写 onopen，不干扰 connectWebSocket 的 onopen handler
+                    ws.addEventListener('open', () => settle(resolve), { once: true });
+                    ws.addEventListener('error', () => {
+                        // socket 连接失败，等新的 connectWebSocket 重建
+                    }, { once: true });
+                    return;
+                }
+                // CLOSING/CLOSED — 等待新 socket 被创建后重新挂载
+            };
+
+            if (socket && socket.readyState === WebSocket.CONNECTING) {
+                // 乐观路径：直接挂 listener，不触发重连
+                attachOpenListener(socket);
+                // 不 return — 下方轮询兜底：若此 socket 失败被替换，轮询自动挂到新 socket
+            } else {
+                // socket 不存在或已 CLOSED/CLOSING → 触发重建
+                // ★ 先取消排队的自动重连定时器，避免 3 秒后再多建一个重复连接
+                if (autoReconnectTimeoutId) {
+                    clearTimeout(autoReconnectTimeoutId);
+                    autoReconnectTimeoutId = null;
+                }
+                connectWebSocket();
+            }
+
+            // 轮询兜底：追踪 socket 引用，在 socket 被替换后自动重挂 listener
+            // 初始化为 null：确保首次轮询时一定会对当前 socket 调用 attachOpenListener
+            // （若初始化为 socket，connectWebSocket() 刚创建的 socket 会被跳过）
+            let lastAttachedWs = null;
+            const waitForNewSocket = () => {
+                if (settled) return;
+                if (socket) {
+                    if (socket !== lastAttachedWs) {
+                        lastAttachedWs = socket;
+                        attachOpenListener(socket);
+                    }
+                    if (!settled) {
+                        setTimeout(waitForNewSocket, socket.readyState === WebSocket.CONNECTING ? 200 : 50);
+                    }
+                } else {
+                    setTimeout(waitForNewSocket, 50);
+                }
+            };
+            setTimeout(waitForNewSocket, 10);
+        });
+    }
+
     // 建立WebSocket连接
     function connectWebSocket() {
         const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name)
@@ -703,7 +786,8 @@ function init_app() {
                                         }
                                     });
 
-                                    // 发送start session事件
+                                    // 发送start session事件（确保 WebSocket 已连接）
+                                    await ensureWebSocketOpen();
                                     socket.send(JSON.stringify({
                                         action: 'start_session',
                                         input_type: 'audio'
@@ -718,7 +802,7 @@ function init_app() {
                                             window.sessionTimeoutId = null;
 
                                             // 超时时向后端发送 end_session 消息
-                                            if (socket.readyState === WebSocket.OPEN) {
+                                            if (socket && socket.readyState === WebSocket.OPEN) {
                                                 socket.send(JSON.stringify({
                                                     action: 'end_session'
                                                 }));
@@ -753,8 +837,16 @@ function init_app() {
                                 } catch (error) {
                                     console.error(window.t('console.restartError'), error);
 
+                                    // 清除超时定时器和 Promise 状态（与 mic button catch 对齐）
+                                    if (window.sessionTimeoutId) {
+                                        clearTimeout(window.sessionTimeoutId);
+                                        window.sessionTimeoutId = null;
+                                    }
+                                    sessionStartedResolver = null;
+                                    sessionStartedRejecter = null;
+
                                     // 重启失败时向后端发送 end_session 消息
-                                    if (socket.readyState === WebSocket.OPEN) {
+                                    if (socket && socket.readyState === WebSocket.OPEN) {
                                         socket.send(JSON.stringify({
                                             action: 'end_session'
                                         }));
@@ -3474,50 +3566,36 @@ function init_app() {
                 }
             });
 
-            // 发送start session事件
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    action: 'start_session',
-                    input_type: 'audio'
-                }));
+            // 发送start session事件（确保 WebSocket 已连接）
+            await ensureWebSocketOpen();
+            socket.send(JSON.stringify({
+                action: 'start_session',
+                input_type: 'audio'
+            }));
 
-                // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
-                window.sessionTimeoutId = setTimeout(() => {
-                    if (sessionStartedRejecter) {
-                        const rejecter = sessionStartedRejecter;
-                        sessionStartedResolver = null; // 先清除，防止重复触发
-                        sessionStartedRejecter = null; // 同时清理 rejecter
-                        window.sessionTimeoutId = null; // 清除全局定时器ID
-
-                        // 超时时向后端发送 end_session 消息
-                        if (socket.readyState === WebSocket.OPEN) {
-                            socket.send(JSON.stringify({
-                                action: 'end_session'
-                            }));
-                            console.log(window.t('console.sessionTimeoutEndSession'));
-                        }
-
-                        // 更新提示信息，显示超时
-                        showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '连接超时' : '连接超时，请检查网络连接');
-                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
-                    } else {
-                        window.sessionTimeoutId = null; // 即使 rejecter 不存在也清除
-                    }
-                }, 15000);
-            } else {
-                // WebSocket未连接，清除超时定时器和状态
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
-                }
-                if (sessionStartedResolver) {
-                    sessionStartedResolver = null;
-                }
+            // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
+            window.sessionTimeoutId = setTimeout(() => {
                 if (sessionStartedRejecter) {
-                    sessionStartedRejecter = null; //  同时清理 rejecter
+                    const rejecter = sessionStartedRejecter;
+                    sessionStartedResolver = null; // 先清除，防止重复触发
+                    sessionStartedRejecter = null; // 同时清理 rejecter
+                    window.sessionTimeoutId = null; // 清除全局定时器ID
+
+                    // 超时时向后端发送 end_session 消息
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            action: 'end_session'
+                        }));
+                        console.log(window.t('console.sessionTimeoutEndSession'));
+                    }
+
+                    // 更新提示信息，显示超时
+                    showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '连接超时' : '连接超时，请检查网络连接');
+                    rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                } else {
+                    window.sessionTimeoutId = null; // 即使 rejecter 不存在也清除
                 }
-                throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
-            }
+            }, 15000);
 
             // 等待session真正启动成功 AND 麦克风初始化完成（并行执行以减少等待时间）
             // 并行执行：
@@ -3589,7 +3667,7 @@ function init_app() {
             }
 
             // 确保后端清理资源，避免前后端状态不一致
-            if (socket.readyState === WebSocket.OPEN) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({
                     action: 'end_session'
                 }));
@@ -3800,7 +3878,7 @@ function init_app() {
                         window.sessionTimeoutId = null; // 清除全局定时器ID
 
                         // 超时时向后端发送 end_session 消息
-                        if (socket.readyState === WebSocket.OPEN) {
+                        if (socket && socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({
                                 action: 'end_session'
                             }));
@@ -3812,28 +3890,13 @@ function init_app() {
                 }, 15000);
             });
 
-            // 启动文本session
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    action: 'start_session',
-                    input_type: 'text',
-                    new_session: true
-                }));
-            } else {
-                // WebSocket未连接，清除超时定时器和状态
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
-                }
-                if (sessionStartedResolver) {
-                    sessionStartedResolver = null;
-                }
-                if (sessionStartedRejecter) {
-                    sessionStartedRejecter = null; // 同时清理 rejecter
-                }
-                hideVoicePreparingToast();
-                throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
-            }
+            // 启动文本session（确保 WebSocket 已连接）
+            await ensureWebSocketOpen();
+            socket.send(JSON.stringify({
+                action: 'start_session',
+                input_type: 'text',
+                new_session: true
+            }));
 
             // 等待session真正启动成功
             await sessionStartPromise;
@@ -3953,29 +4016,39 @@ function init_app() {
                 // 创建一个 Promise 来等待 session_started 消息
                 const sessionStartPromise = new Promise((resolve, reject) => {
                     sessionStartedResolver = resolve;
-                    sessionStartedRejecter = reject; // 保存 reject 函数
+                    sessionStartedRejecter = reject;
 
-                    // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
-                    setTimeout(() => {
-                        if (sessionStartedRejecter) {
-                            const rejecter = sessionStartedRejecter;
-                            sessionStartedResolver = null;
-                            sessionStartedRejecter = null; // 同时清理 rejecter
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
-                        }
-                    }, 15000);
+                    // 清除之前的超时定时器（如果存在），防止旧 attempt 的 rejecter 影响新 attempt
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
                 });
 
-                // 启动文本session
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({
-                        action: 'start_session',
-                        input_type: 'text',
-                        new_session: false
-                    }));
-                } else {
-                    throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
-                }
+                // 启动文本session（确保 WebSocket 已连接）
+                await ensureWebSocketOpen();
+                socket.send(JSON.stringify({
+                    action: 'start_session',
+                    input_type: 'text',
+                    new_session: false
+                }));
+
+                // 在 WebSocket 确认连接后才开始超时计时（与 mic button 流程对齐）
+                window.sessionTimeoutId = setTimeout(() => {
+                    if (sessionStartedRejecter) {
+                        const rejecter = sessionStartedRejecter;
+                        sessionStartedResolver = null;
+                        sessionStartedRejecter = null;
+                        window.sessionTimeoutId = null;
+
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({ action: 'end_session' }));
+                            console.log('[TextSession] timeout → sent end_session');
+                        }
+
+                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                    }
+                }, 15000);
 
                 // 等待session真正启动成功
                 await sessionStartPromise;
@@ -3993,6 +4066,14 @@ function init_app() {
                 console.error(window.t('console.startTextSessionFailed'), error);
                 hideVoicePreparingToast(); // 确保失败时隐藏准备提示
                 showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : `启动失败: ${error.message}`, 5000);
+
+                // 清除超时定时器和 Promise 状态，防止跨 attempt 污染
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
+                }
+                sessionStartedResolver = null;
+                sessionStartedRejecter = null;
 
                 // 重新启用按钮，允许用户重试
                 textSendButton.disabled = false;
