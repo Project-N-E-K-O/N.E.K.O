@@ -1,3 +1,8 @@
+/**
+ * 角色管理模块
+ * 负责管理角色的加载、显示和交互
+ * 包含角色列表、当前角色、角色状态等
+ */
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 

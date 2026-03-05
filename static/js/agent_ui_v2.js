@@ -1,3 +1,8 @@
+/**
+ * 状态管理模块
+ * 负责管理代理的状态和变更通知
+ * 包含状态快照、变更通知、繁忙状态等
+ */
 (function () {
     const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
 
