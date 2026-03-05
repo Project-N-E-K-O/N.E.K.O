@@ -636,16 +636,22 @@ function init_app() {
                     console.log(window.t('console.currentFrontendCatgirl'), lanlan_config.lanlan_name);
                     handleCatgirlSwitch(newCatgirl, oldCatgirl);
                 } else if (response.type === 'status') {
+                    // 尝试解析结构化消息
+                    let statusCode = null;
+                    try {
+                        const parsed = JSON.parse(response.message);
+                        if (parsed && parsed.code) statusCode = parsed.code;
+                    } catch (_) {}
+
                     // 如果正在切换模式且收到"已离开"消息，则忽略
-                    if (isSwitchingMode && response.message.includes('已离开')) {
+                    if (isSwitchingMode && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
                         return;
                     }
 
                     // 检测严重错误，自动隐藏准备提示（兜底机制）
-                    const criticalErrorKeywords = ['连续失败', '已停止', '自动重试', '崩溃', '欠费', 'API Key被', '限额', '耗尽', '额度', '429', '1008', 'time limit', '超时'];
-                    const responseMessageLower = String(response.message || '').toLowerCase();
-                    if (criticalErrorKeywords.some(keyword => responseMessageLower.includes(keyword.toLowerCase()))) {
+                    const criticalErrorCodes = ['SESSION_START_CRITICAL', 'MEMORY_SERVER_CRASHED', 'API_KEY_REJECTED', 'API_RATE_LIMIT_SESSION', 'ERROR_1007_ARREARS', 'AGENT_QUOTA_EXCEEDED', 'RESPONSE_TIMEOUT', 'CONNECTION_TIMEOUT'];
+                    if (statusCode && criticalErrorCodes.includes(statusCode)) {
                         console.log(window.t('console.seriousErrorHidePreparing'));
                         hideVoicePreparingToast();
                     }
@@ -653,7 +659,7 @@ function init_app() {
                     // 翻译后端发送的状态消息
                     const translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     showStatusToast(translatedMessage, 4000);
-                    if (response.message === `${lanlan_config.lanlan_name}失联了，即将重启！`) {
+                    if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (isRecording === false && !isTextSessionActive) {
                             showStatusToast(window.t ? window.t('app.catgirlResting', { name: lanlan_config.lanlan_name }) : `${lanlan_config.lanlan_name}正在打盹...`, 5000);
                         } else if (isTextSessionActive) {
@@ -1111,7 +1117,8 @@ function init_app() {
                 } else if (response.type === 'reload_page') {
                     console.log(window.t('console.reloadPageReceived'), response.message);
                     // 显示提示信息
-                    showStatusToast(response.message || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
+                    const reloadMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
+                    showStatusToast(reloadMsg || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
 
                     // 延迟2.5秒后刷新页面，让后端有足够时间完成session关闭和配置重新加载
                     setTimeout(() => {
