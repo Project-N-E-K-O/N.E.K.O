@@ -587,15 +587,27 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"处理重复度检测时出错: {e}")
 
-    def _reset_preparation_state(self, clear_main_cache=False, from_final_swap=False):
-        """[热切换相关] Helper to reset flags and pending components related to new session prep."""
+    async def _reset_preparation_state(self, clear_main_cache=False, from_final_swap=False):
+        """[热切换相关] Helper to reset flags and pending components related to new session prep.
+        
+        async because we await cancelled tasks to guarantee they have exited
+        before clearing references — prevents >2 concurrent OmniRealtimeClient.
+        """
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
-        if self.background_preparation_task and not self.background_preparation_task.done():  # If bg prep was running
+        tasks_to_await = []
+        if self.background_preparation_task and not self.background_preparation_task.done():
             self.background_preparation_task.cancel()
-        if self.final_swap_task and not self.final_swap_task.done() and not from_final_swap:  # If final swap was running
+            tasks_to_await.append(self.background_preparation_task)
+        if self.final_swap_task and not self.final_swap_task.done() and not from_final_swap:
             self.final_swap_task.cancel()
+            tasks_to_await.append(self.final_swap_task)
+        for task in tasks_to_await:
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
         self.background_preparation_task = None
         self.final_swap_task = None
         self.pending_session_warmed_up_event = None
@@ -618,10 +630,10 @@ class LLMSessionManager:
             finally:
                 self.pending_session = None  # 即使close失败也要清除引用
 
-    def _init_renew_status(self):
-        self._reset_preparation_state(True)
-        self.session_start_time = None  # 记录当前 session 开始时间
-        self.pending_session = None  # Managed by connector's __aexit__
+    async def _init_renew_status(self):
+        await self._reset_preparation_state(True)
+        self.session_start_time = None
+        await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
         self.is_hot_swap_imminent = False
 
     async def _flush_tts_pending_chunks(self):
@@ -787,6 +799,10 @@ class LLMSessionManager:
         
         # 标记正在启动
         self.is_starting_session = True
+        
+        # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
+        await self._cleanup_pending_session_resources()
+        await self._reset_preparation_state(clear_main_cache=False)
         
         _diag_start = time.time()
         logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
@@ -1389,6 +1405,11 @@ class LLMSessionManager:
     async def _background_prepare_pending_session(self):
         """[热切换相关] 后台预热pending session"""
 
+        # 确保旧的 pending session 已释放，防止泄漏到第 3 个实例
+        if self.pending_session:
+            logger.info("🧹 BG Prep: 清理残留的 pending session 后再创建新的")
+            await self._cleanup_pending_session_resources()
+
         # 2. Create PENDING session components (as before, store in self.pending_connector, self.pending_session)
         try:
             # 重新读取配置以支持热重载
@@ -1865,7 +1886,7 @@ class LLMSessionManager:
         logger.info("Final Swap Sequence: Starting...")
         if not self.pending_session:
             logger.error("💥 Final Swap Sequence: Pending session not found. Aborting swap.")
-            self._reset_preparation_state(clear_main_cache=True)  # Reset all flags and cache for clean restart
+            await self._reset_preparation_state(clear_main_cache=True)  # Reset all flags and cache for clean restart
             self.is_hot_swap_imminent = False
             return
         
@@ -1874,7 +1895,7 @@ class LLMSessionManager:
             if not hasattr(self.pending_session, 'ws') or not self.pending_session.ws:
                 logger.error("💥 Final Swap Sequence: Pending session的WebSocket已关闭，放弃swap操作")
                 await self._cleanup_pending_session_resources()
-                self._reset_preparation_state(clear_main_cache=True)
+                await self._reset_preparation_state(clear_main_cache=True)
                 self.is_hot_swap_imminent = False
                 return
             
@@ -1882,7 +1903,7 @@ class LLMSessionManager:
             if hasattr(self.pending_session, '_fatal_error_occurred') and self.pending_session._fatal_error_occurred:
                 logger.error("💥 Final Swap Sequence: Pending session已发生致命错误，放弃swap操作")
                 await self._cleanup_pending_session_resources()
-                self._reset_preparation_state(clear_main_cache=True)
+                await self._reset_preparation_state(clear_main_cache=True)
                 self.is_hot_swap_imminent = False
                 return
 
@@ -1915,7 +1936,7 @@ class LLMSessionManager:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
-                    self._reset_preparation_state(clear_main_cache=True)
+                    await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
             else:
@@ -1927,7 +1948,7 @@ class LLMSessionManager:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
-                    self._reset_preparation_state(clear_main_cache=True)
+                    await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
 
@@ -1990,7 +2011,7 @@ class LLMSessionManager:
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
-            self._reset_preparation_state(
+            await self._reset_preparation_state(
                 clear_main_cache=True, from_final_swap=True)  # This will clear pending_*, is_preparing_new_session, etc. and self.message_cache_for_new_session
             logger.info("✅ 热切换完成")
             
@@ -2000,7 +2021,7 @@ class LLMSessionManager:
             # If cancelled mid-swap, state could be inconsistent. Prioritize cleaning pending.
             self.is_hot_swap_imminent = False  # Reset flag immediately
             await self._cleanup_pending_session_resources()
-            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
+            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
             # The old main session listener might have been cancelled, needs robust restart if still active
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
@@ -2010,7 +2031,7 @@ class LLMSessionManager:
             self.is_hot_swap_imminent = False  # Reset flag immediately
             await self.send_status(f"内部更新切换失败: {e}.")
             await self._cleanup_pending_session_resources()
-            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
+            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
@@ -2332,7 +2353,7 @@ class LLMSessionManager:
             await self.send_status(error_message)
 
     async def end_session(self, by_server=False):  # 与Core API断开连接
-        self._init_renew_status()
+        await self._init_renew_status()
 
         async with self.lock:
             if not self.is_active:
@@ -2342,8 +2363,8 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
         async with self.lock:
             self.is_active = False
-            # 重置启动标志，防止断网重连后 start_session 被忽略
-            self.is_starting_session = False
+            # is_starting_session 仅由 start_session 的 finally 块管理，
+            # 不在此处复位，防止并发 start_session 重入导致 >2 session。
 
         if self.message_handler_task:
             self.message_handler_task.cancel()
