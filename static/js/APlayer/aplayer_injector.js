@@ -83,29 +83,51 @@ function setupInjectedControls(aplayer, config) {
     });
 
     toggleBtn.addEventListener('mouseenter', () => {
-        toggleBtn.style.transform = 'translateX(-50%) scale(1.1)';
+        const isMini = container.style.width === '300px';
+        if (isMini) {
+            toggleBtn.style.transform = 'translateX(-50%) scale(1.1)';
+        } else {
+            toggleBtn.style.transform = 'scale(1.1)';
+        }
         toggleBtn.style.background = 'rgba(255, 255, 255, 1)';
     });
 
     toggleBtn.addEventListener('mouseleave', () => {
-        toggleBtn.style.transform = 'translateX(-50%) scale(1)';
+        const isMini = container.style.width === '300px';
+        if (isMini) {
+            toggleBtn.style.transform = 'translateX(-50%) scale(1)';
+        } else {
+            toggleBtn.style.transform = 'scale(1)';
+        }
         toggleBtn.style.background = 'rgba(255, 255, 255, 0.9)';
     });
 
     toggleBtn.addEventListener('click', () => {
         const isMini = container.style.width === '300px';
         if (isMini) {
+            // 展开模式
             container.style.width = '100%';
             container.style.left = '0';
             container.style.bottom = '0';
             container.style.borderRadius = '8px 8px 0 0';
-            toggleBtn.style.display = 'none';
+            // 按钮移到右上角，显示折叠图标
+            toggleBtn.style.top = '10px';
+            toggleBtn.style.left = 'auto';
+            toggleBtn.style.right = '10px';
+            toggleBtn.style.transform = 'none';
+            toggleBtn.innerHTML = '✕';
         } else {
+            // 迷你模式
             container.style.width = '300px';
             container.style.left = '10px';
             container.style.bottom = '10px';
             container.style.borderRadius = '8px';
-            toggleBtn.style.display = 'flex';
+            // 按钮恢复到顶部居中
+            toggleBtn.style.top = '-40px';
+            toggleBtn.style.left = '50%';
+            toggleBtn.style.right = 'auto';
+            toggleBtn.style.transform = 'translateX(-50%)';
+            toggleBtn.innerHTML = '🎵';
         }
     });
 

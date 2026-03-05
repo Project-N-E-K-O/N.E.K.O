@@ -4,18 +4,24 @@
 /**
  * 音乐源配置
  * 包含中国和国际两个区域的音乐源列表
- * 每个区域包含多个音乐源，每个源包含名称和 URL
+ * 与后端 GLOBAL_CRAWLERS 保持一致
  */
 const musicSources = {
     china: [
-        { name: 'Musopen', url: 'https://musopen.org' },
-        { name: 'FMA', url: 'https://freemusicarchive.org' },
-        { name: '网易云音乐', url: 'https://music.163.com' }
+        { name: '网易云音乐', url: 'https://music.163.com', id: 'netease' },
+        { name: 'FMA', url: 'https://freemusicarchive.org', id: 'fma' },
+        { name: 'Musopen', url: 'https://musopen.org', id: 'musopen' },
+        { name: 'SoundCloud', url: 'https://soundcloud.com', id: 'soundcloud' },
+        { name: 'iTunes', url: 'https://music.apple.com', id: 'itunes' },
+        { name: 'Bandcamp', url: 'https://bandcamp.com', id: 'bandcamp' }
     ],
     international: [
-        { name: 'Musopen', url: 'https://musopen.org' },
-        { name: 'FMA', url: 'https://freemusicarchive.org' },
-        { name: 'FreePD', url: 'https://freepd.com' },
+        { name: 'Musopen', url: 'https://musopen.org', id: 'musopen' },
+        { name: 'FMA', url: 'https://freemusicarchive.org', id: 'fma' },
+        { name: 'SoundCloud', url: 'https://soundcloud.com', id: 'soundcloud' },
+        { name: 'iTunes', url: 'https://music.apple.com', id: 'itunes' },
+        { name: 'Bandcamp', url: 'https://bandcamp.com', id: 'bandcamp' },
+        { name: '网易云音乐', url: 'https://music.163.com', id: 'netease' }
     ]
 };
 

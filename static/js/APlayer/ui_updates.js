@@ -70,7 +70,9 @@ export function showMiniPlayer(aplayer) {
  */
 export function hideMiniPlayer() {
     const miniPlayers = document.querySelectorAll('.aplayer-mini');
-    miniPlayers.forEach(player => player.classList.remove('aplayer-mini'));
+    miniPlayers.forEach(player => {
+        player.classList.remove('aplayer-mini');
+    });
 }
 
 /**
@@ -121,6 +123,10 @@ export function updateUI(aplayer) {
         if (currentTrack) {
             trackNameEl.textContent = currentTrack.name || t('music.unknownTrack', '未知曲目');
             trackArtistEl.textContent = currentTrack.artist || t('music.unknownArtist', '未知艺术家');
+        } else {
+            // 无当前曲目时重置文案，避免残留上一首信息
+            trackNameEl.textContent = t('music.unknownTrack', '未知曲目');
+            trackArtistEl.textContent = t('music.unknownArtist', '未知艺术家');
         }
 
         const isPlaying = aplayer.playing;

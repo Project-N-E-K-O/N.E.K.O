@@ -1043,8 +1043,8 @@ function init_app() {
 
                         let fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
                         // 1. 触发音乐气泡生成
-                        if (typeof processMusicCommands === 'function' && bufferedFullText) {
-                            processMusicCommands(bufferedFullText);
+                        if (typeof processMusicCommands === 'function' && fullText) {
+                            processMusicCommands(fullText);
                         }
                         
                         // 2. 剔除音乐指令，避免影响后续的情感分析和字幕翻译
@@ -2020,26 +2020,34 @@ function init_app() {
         _lastPlayedMusicUrl = musicUrl;
         _lastMusicPlayTime = now;
         
-        if (window.sendMusicMessage && trackInfo?.url) {
+        if (window.sendMusicMessage) {
             window.sendMusicMessage(trackInfo);
             if (window.showStatusToast) {
                 window.showStatusToast(`为您播放: ${trackInfo.name}`, 3000);
             }
         } else {
-            console.warn('[MusicDispatch] track.url 缺失，跳过播放');
+            console.warn('[MusicDispatch] sendMusicMessage 未定义');
         }
     };
 
     window.processMusicCommands = async function(text) {
         if (!text) return;
         // 匹配完整的 [play_music: {"name":"...","artist":"..."}] 指令
-        const musicRegex = /\[play_music:\s*({.*?})\]/g;
+        // 使用 [\s\S] 匹配包括换行符在内的所有字符，支持多行 JSON
+        const musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
         let match;
         
         while ((match = musicRegex.exec(text)) !== null) {
             try {
                 // 1. 解析 AI 传来的意图信息（通常只有 name 和 artist）
                 const aiTrackInfo = JSON.parse(match[1]);
+                
+                // 校验 name 字段是否存在
+                if (!aiTrackInfo.name) {
+                    console.warn('[Music Parser] 缺少 name 字段，跳过:', match[1]);
+                    continue;
+                }
+                
                 const query = `${aiTrackInfo.name} ${aiTrackInfo.artist || ''}`.trim();
                 
                 if (query) {

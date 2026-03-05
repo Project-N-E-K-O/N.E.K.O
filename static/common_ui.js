@@ -1144,7 +1144,9 @@ const destroyMusicPlayer = () => {
         window.aplayerInjected.aplayer = null;
     }
     // 移除音乐气泡
-    document.querySelectorAll('.music-bubble').forEach(bubble => bubble.remove());
+    document.querySelectorAll('.music-bubble').forEach(bubble => {
+        bubble.remove();
+    });
     currentPlayingTrack = null;
 };
 
