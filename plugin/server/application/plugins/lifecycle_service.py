@@ -25,6 +25,7 @@ from plugin.core.registry import (
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
@@ -219,7 +220,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
             type(exc).__name__,
             str(exc),
         )
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError) as exc:
+    except RUNTIME_ERRORS as exc:
         logger.warning(
             "cleanup shutdown failed: plugin_id={}, err_type={}, err={}",
             plugin_id,
@@ -325,7 +326,7 @@ class PluginLifecycleService:
                     plugin_id=current_plugin_id,
                     error_type="HTTPException",
                 ) from exc
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            except IO_RUNTIME_ERRORS as exc:
                 logger.warning(
                     "apply user config profiles failed: plugin_id={}, err_type={}, err={}",
                     current_plugin_id,
@@ -563,7 +564,7 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 error_type=type(exc).__name__,
             ) from exc
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError) as exc:
+        except RUNTIME_ERRORS as exc:
             if host_obj is not None:
                 cleanup_plugin_id = registered_plugin_id if registered_plugin_id is not None else current_plugin_id
                 await _cleanup_started_host(cleanup_plugin_id, host_obj)
@@ -620,7 +621,7 @@ class PluginLifecycleService:
                 plugin_id=plugin_id,
                 error_type=type(exc).__name__,
             ) from exc
-        except (RuntimeError, OSError, TimeoutError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "stop_plugin failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -741,7 +742,7 @@ class PluginLifecycleService:
                     plugin_id=ext_id,
                     error_type=type(exc).__name__,
                 ) from exc
-            except (RuntimeError, OSError, TimeoutError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            except RUNTIME_ERRORS as exc:
                 logger.error(
                     "disable_extension host command failed: ext_id={}, host_plugin_id={}, err_type={}, err={}",
                     ext_id,
@@ -831,7 +832,7 @@ class PluginLifecycleService:
                     plugin_id=ext_id,
                     error_type=type(exc).__name__,
                 ) from exc
-            except (RuntimeError, OSError, TimeoutError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            except RUNTIME_ERRORS as exc:
                 logger.error(
                     "enable_extension host command failed: ext_id={}, host_plugin_id={}, err_type={}, err={}",
                     ext_id,

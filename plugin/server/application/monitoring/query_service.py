@@ -10,6 +10,7 @@ from plugin.server.application.contracts import (
     PluginMetricsHistoryResponse,
     PluginMetricsResponse,
 )
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import (
     coerce_optional_float,
@@ -17,7 +18,7 @@ from plugin.server.domain.normalization import (
     normalize_mapping_list,
     normalize_optional_iso_datetime,
 )
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 from plugin.server.monitoring.metrics import metrics_collector
 
 logger = get_logger("server.application.monitoring.query")
@@ -49,7 +50,7 @@ def _metrics_snapshot_for_plugin_sync(
         if process_obj is not None and hasattr(process_obj, "is_alive"):
             try:
                 process_alive = bool(process_obj.is_alive())
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+            except IO_RUNTIME_ERRORS:
                 process_alive = False
 
     running_plugin_ids = [str(pid) for pid in hosts_snapshot.keys()]
@@ -89,7 +90,7 @@ class MetricsQueryService:
             }
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_all_plugin_metrics failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -161,7 +162,7 @@ class MetricsQueryService:
             }
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_metrics failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -216,7 +217,7 @@ class MetricsQueryService:
             }
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_metrics_history failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,

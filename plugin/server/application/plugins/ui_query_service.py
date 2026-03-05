@@ -6,6 +6,7 @@ from pathlib import Path
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.plugins.ui_query")
@@ -89,7 +90,7 @@ class PluginUiQueryService:
             return _resolve_static_dir(static_ui_config)
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_static_dir failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -111,7 +112,7 @@ class PluginUiQueryService:
             return _get_static_ui_config_from_meta(plugin_meta)
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_static_ui_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -160,7 +161,7 @@ class PluginUiQueryService:
             }
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_ui_info failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,

@@ -117,4 +117,6 @@ __all__ = [
     'PluginFileLogger',
     'enable_plugin_file_logging',
     'plugin_file_logger',
+    'EVENT_QUEUE_MAX',
+    'MESSAGE_QUEUE_MAX',
 ]

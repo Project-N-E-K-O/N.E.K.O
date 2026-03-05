@@ -106,9 +106,9 @@ _configure_uvicorn_logging_bridge()
 _configure_server_log_sink()
 _configure_python_logging_root()
 
-from plugin.server.infrastructure.exceptions import register_exception_handlers
-from plugin.server.lifecycle import shutdown, startup
-from plugin.server.routes import (
+from plugin.server.infrastructure.exceptions import register_exception_handlers  # noqa: E402
+from plugin.server.lifecycle import shutdown, startup  # noqa: E402
+from plugin.server.routes import (  # noqa: E402
     config_router,
     frontend_router,
     health_router,
@@ -120,7 +120,7 @@ from plugin.server.routes import (
     runs_router,
     websocket_router,
 )
-from plugin.server.routes.frontend import mount_static_files
+from plugin.server.routes.frontend import mount_static_files  # noqa: E402
 
 
 @asynccontextmanager

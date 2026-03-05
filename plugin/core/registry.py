@@ -24,15 +24,15 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
-from plugin._types.version import SDK_VERSION
-from plugin.core.state import state
-from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
-from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
-from plugin.utils import parse_bool_config
+from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR  # noqa: E402
+from plugin._types.version import SDK_VERSION  # noqa: E402
+from plugin.core.state import state  # noqa: E402
+from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency  # noqa: E402
+from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK  # noqa: E402
+from plugin.utils import parse_bool_config  # noqa: E402
 
 # 从 dependency.py 导入依赖相关函数
-from plugin.core.dependency import (
+from plugin.core.dependency import (  # noqa: E402
     _parse_specifier,
     _version_matches,
     _check_plugin_dependency,
@@ -1579,7 +1579,7 @@ def load_plugins_from_toml(
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
         try:
             from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-            from plugin.server.infrastructure.utils import now_iso
+            from plugin.utils.time_utils import now_iso
 
             emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
         except (RuntimeError, OSError, ValueError, TypeError, AttributeError, ImportError) as exc:

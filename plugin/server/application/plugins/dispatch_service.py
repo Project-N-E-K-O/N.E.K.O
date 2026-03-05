@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.plugins.dispatch")
@@ -130,7 +131,7 @@ class PluginDispatchService:
             )
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError) as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "trigger_custom_event failed: to_plugin={}, event_type={}, event_id={}, err_type={}, err={}",
                 to_plugin,

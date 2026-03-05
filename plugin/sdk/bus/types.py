@@ -1669,7 +1669,6 @@ class BusList(BusListCore, Generic[TRecord]):
                             pass
 
                     # Replay full plan locally using base snapshot as the GetNode seed.
-                    seed_bus_now = seed_bus
                     items_any = list(self._incremental_base_items or [])
 
                     def _make_seed_buslist() -> Any:
@@ -1874,7 +1873,7 @@ class BusList(BusListCore, Generic[TRecord]):
         return BusListWatcher(self, ctx, bus=bus, debounce_ms=debounce_ms)
 
 
-from plugin.sdk.bus.watchers import BusListDelta, BusListWatcher, list_Subscription, list_subscription
+from plugin.sdk.bus.watchers import BusListDelta, BusListWatcher, list_Subscription, list_subscription  # noqa: E402
 
 __all__ = [
     "BusChange",

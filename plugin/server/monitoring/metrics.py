@@ -19,7 +19,7 @@ except ImportError:
 from plugin.logging_config import get_logger
 from plugin.settings import PLUGIN_LOG_SERVER_DEBUG
 
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.monitoring.metrics")
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)

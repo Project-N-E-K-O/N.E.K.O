@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
+from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_merge import deep_merge
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
@@ -32,17 +33,6 @@ from plugin.server.infrastructure.config_queries import (
 )
 
 logger = get_logger("server.application.config.query")
-
-_KNOWN_RUNTIME_ERRORS = (
-    RuntimeError,
-    OSError,
-    ValueError,
-    TypeError,
-    AttributeError,
-    KeyError,
-    TimeoutError,
-)
-
 
 def _to_message(detail: object, *, fallback: str) -> str:
     if isinstance(detail, str) and detail:
@@ -136,7 +126,7 @@ class ConfigQueryService:
                 code="PLUGIN_CONFIG_QUERY_FAILED",
                 fallback_message="Failed to load plugin config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -160,7 +150,7 @@ class ConfigQueryService:
                 code="PLUGIN_CONFIG_TOML_QUERY_FAILED",
                 fallback_message="Failed to load plugin config toml",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_config_toml failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -184,7 +174,7 @@ class ConfigQueryService:
                 code="PLUGIN_BASE_CONFIG_QUERY_FAILED",
                 fallback_message="Failed to load plugin base config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_base_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -208,7 +198,7 @@ class ConfigQueryService:
                 code="PLUGIN_CONFIG_PARSE_FAILED",
                 fallback_message="Failed to parse toml",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "parse_toml_to_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -237,7 +227,7 @@ class ConfigQueryService:
                 code="PLUGIN_CONFIG_RENDER_FAILED",
                 fallback_message="Failed to render toml",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "render_config_to_toml failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -266,7 +256,7 @@ class ConfigQueryService:
                 code="PLUGIN_PROFILE_STATE_QUERY_FAILED",
                 fallback_message="Failed to query plugin profile state",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_profiles_state failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -302,7 +292,7 @@ class ConfigQueryService:
                 code="PLUGIN_PROFILE_QUERY_FAILED",
                 fallback_message="Failed to query plugin profile config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_profile_config failed: plugin_id={}, profile_name={}, err_type={}, err={}",
                 plugin_id,

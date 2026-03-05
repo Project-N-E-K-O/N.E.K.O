@@ -11,7 +11,7 @@ from plugin.logging_config import get_logger
 from plugin.server.application.messages import MessageQueryService
 from plugin.server.application.contracts import MessageQueryResponse
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
 router = APIRouter()

@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter(tags=["plugin-ui"])
 logger = get_logger("server.routes.plugin_ui")

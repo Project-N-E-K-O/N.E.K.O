@@ -10,22 +10,13 @@ from collections.abc import Mapping
 from pydantic import ValidationError
 
 from plugin.logging_config import get_logger
+from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.runs.manager import ExportItem, get_run, update_run_from_plugin
 from plugin.server.runs.manager import append_export_item as manager_append_export_item
 from plugin.settings import EXPORT_INLINE_BINARY_MAX_BYTES
 
 logger = get_logger("server.application.runs.ipc")
-
-_KNOWN_RUNTIME_ERRORS = (
-    RuntimeError,
-    OSError,
-    ValueError,
-    TypeError,
-    AttributeError,
-    KeyError,
-    TimeoutError,
-)
 
 _SUPPORTED_EXPORT_TYPES = ("text", "json", "url", "binary", "binary_url")
 
@@ -356,7 +347,7 @@ class RunIpcService:
                 status_code=400,
                 details={"error_type": type(exc).__name__},
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "push_export failed: plugin_id={}, run_id={}, err_type={}, err={}",
                 from_plugin,
@@ -387,7 +378,7 @@ class RunIpcService:
             )
         except RuntimeError as exc:
             raise _map_run_update_runtime_error(exc, run_id=run_id) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "update_run failed: plugin_id={}, run_id={}, err_type={}, err={}",
                 from_plugin,

@@ -5,21 +5,12 @@ from collections.abc import Mapping
 from typing import Protocol, cast
 
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
 logger = get_logger("server.application.config.hot_update")
-
-_KNOWN_RUNTIME_ERRORS = (
-    RuntimeError,
-    OSError,
-    ValueError,
-    TypeError,
-    AttributeError,
-    KeyError,
-)
-
 
 class _SupportsConfigUpdate(Protocol):
     async def send_config_update(
@@ -130,7 +121,7 @@ async def hot_update_plugin_config(
             "requires_reload": False,
             "message": "Config update sent (response timeout, may have been applied)",
         }
-    except _KNOWN_RUNTIME_ERRORS as exc:
+    except IO_RUNTIME_ERRORS as exc:
         logger.warning(
             "CONFIG_UPDATE command failed for plugin {}: err_type={}, err={}",
             plugin_id,

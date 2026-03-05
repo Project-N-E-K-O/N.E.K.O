@@ -168,6 +168,9 @@ __all__ = [
     "EventHandler",     # 事件处理器
     "SystemInfo",       # 系统信息
     "MemoryClient",     # 记忆客户端
+    "PluginStore",      # 轻量存储抽象
+    "PluginDatabase",   # 数据库访问封装
+    "PluginKVStore",    # KV 存储封装
     
     # 状态持久化
     "PluginStatePersistence", # 状态持久化管理器

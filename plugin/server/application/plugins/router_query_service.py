@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.plugins.router_query")
@@ -244,7 +245,7 @@ class PluginRouterQueryService:
             return await asyncio.to_thread(_query_plugins_sync, filters)
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "query_plugins failed: err_type={}, err={}",
                 type(exc).__name__,

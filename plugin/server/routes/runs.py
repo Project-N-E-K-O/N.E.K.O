@@ -16,7 +16,7 @@ from plugin.server.application.contracts import UploadBlobResponse, UploadSessio
 from plugin.server.application.runs import RunService
 from plugin.server.application.runs.service import RunRecord
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.runs")

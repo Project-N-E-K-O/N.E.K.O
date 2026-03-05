@@ -17,6 +17,8 @@ from .state import PluginStatePersistence
 from .store import PluginStore
 from .database import PluginDatabase
 from plugin.settings import (
+    NEKO_PLUGIN_META_ATTR,
+    NEKO_PLUGIN_TAG,
     PLUGIN_LOG_LEVEL,
     PLUGIN_LOG_MAX_BYTES,
     PLUGIN_LOG_BACKUP_COUNT,
@@ -26,6 +28,13 @@ from plugin.settings import (
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
     from .router import PluginRouter
+
+__all__ = [
+    "PluginMeta",
+    "NekoPluginBase",
+    "NEKO_PLUGIN_TAG",
+    "NEKO_PLUGIN_META_ATTR",
+]
 
 
 @dataclass

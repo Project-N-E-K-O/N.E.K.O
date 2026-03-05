@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.messaging.lifecycle_events")
 

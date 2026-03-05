@@ -10,7 +10,7 @@ from plugin.logging_config import get_logger
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.config")

@@ -6,8 +6,8 @@ import time
 from typing import Any, Dict
 
 from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event, worker
-from plugin.sdk import ok, SystemInfo,hook
+from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, worker
+from plugin.sdk import ok, SystemInfo
 from plugin.sdk.memory import MemoryClient
 
 
@@ -862,4 +862,3 @@ class HelloPlugin(NekoPluginBase):
             step_total=3,
         )
         return {"greeted": name}
-

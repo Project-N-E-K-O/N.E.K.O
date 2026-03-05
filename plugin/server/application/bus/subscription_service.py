@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.bus_subscriptions import new_sub_id
 from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS
@@ -104,7 +105,7 @@ class BusSubscriptionService:
         try:
             state.add_bus_subscription(normalized_bus, sub_id, info)
             current_rev = int(state.get_bus_rev(normalized_bus))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "subscribe failed: from_plugin={}, bus={}, err_type={}, err={}",
                 from_plugin,
@@ -154,7 +155,7 @@ class BusSubscriptionService:
 
         try:
             removed = bool(state.remove_bus_subscription(normalized_bus, sub_id))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "unsubscribe failed: from_plugin={}, bus={}, sub_id={}, err_type={}, err={}",
                 from_plugin,

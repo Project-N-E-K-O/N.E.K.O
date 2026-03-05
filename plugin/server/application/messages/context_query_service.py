@@ -4,6 +4,7 @@ import asyncio
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.messages.context_query")
@@ -67,7 +68,7 @@ class UserContextQueryService:
             return {"bucket_id": bucket_id, "history": history}
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_user_context failed: bucket_id={}, err_type={}, err={}",
                 bucket_id,

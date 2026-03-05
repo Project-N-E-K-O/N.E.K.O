@@ -15,6 +15,25 @@ from plugin.server.domain.normalization import (
     resolve_wildcard_scope_id,
 )
 
+RUNTIME_ERRORS = (
+    RuntimeError,
+    OSError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    TimeoutError,
+)
+
+IO_RUNTIME_ERRORS = (
+    RuntimeError,
+    OSError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+)
+
 __all__ = [
     "ServerDomainError",
     "DEFAULT_TIMEOUT_SECONDS",
@@ -30,4 +49,6 @@ __all__ = [
     "normalize_mapping",
     "normalize_mapping_list",
     "normalize_optional_iso_datetime",
+    "RUNTIME_ERRORS",
+    "IO_RUNTIME_ERRORS",
 ]

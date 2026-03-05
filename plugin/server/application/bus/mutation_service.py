@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
 logger = get_logger("server.application.bus.mutation")
@@ -18,7 +19,7 @@ class BusMutationService:
             )
         try:
             return bool(state.delete_message(message_id))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "delete_message failed: message_id={}, err_type={}, err={}",
                 message_id,
@@ -42,7 +43,7 @@ class BusMutationService:
             )
         try:
             return bool(state.delete_event(event_id))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "delete_event failed: event_id={}, err_type={}, err={}",
                 event_id,
@@ -66,7 +67,7 @@ class BusMutationService:
             )
         try:
             return bool(state.delete_lifecycle(lifecycle_id))
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "delete_lifecycle failed: lifecycle_id={}, err_type={}, err={}",
                 lifecycle_id,

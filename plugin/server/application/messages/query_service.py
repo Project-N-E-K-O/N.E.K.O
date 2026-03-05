@@ -14,7 +14,7 @@ from plugin.server.domain.normalization import (
     normalize_mapping,
     normalize_mapping_list,
 )
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT, MESSAGE_QUEUE_MAX
 
 logger = get_logger("server.application.messages.query")

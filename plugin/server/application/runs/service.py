@@ -7,6 +7,7 @@ from pathlib import Path
 from plugin._types.models import RunCreateRequest, RunCreateResponse
 from plugin.logging_config import get_logger
 from plugin.server.application.contracts import UploadBlobResponse, UploadSessionResponse
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import coerce_optional_int, normalize_non_empty_str
 from plugin.server.runs.manager import (
@@ -64,7 +65,7 @@ class RunService:
 
         try:
             return manager_list_runs(plugin_id=normalized_plugin_id)
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "list_runs failed: plugin_id={}, err_type={}, err={}",
                 normalized_plugin_id,
@@ -88,7 +89,7 @@ class RunService:
                 run_token=token,
                 expires_at=exp,
             )
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "create_run failed: plugin_id={}, entry_id={}, err_type={}, err={}",
                 payload.plugin_id,
@@ -145,7 +146,7 @@ class RunService:
                 mime=mime,
                 max_bytes=max_bytes,
             )
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "create_upload_session failed: run_id={}, err_type={}, err={}",
                 run_id,
@@ -221,7 +222,7 @@ class RunService:
         except ServerDomainError:
             _cleanup_tmp_upload_file(upload_id, session.tmp_path)
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             _cleanup_tmp_upload_file(upload_id, session.tmp_path)
             logger.error(
                 "upload_blob failed: upload_id={}, run_id={}, err_type={}, err={}",
@@ -281,7 +282,7 @@ class RunService:
 
         try:
             return manager_list_export_for_run(run_id=run_id, after=after, limit=limit)
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "list_export_for_run failed: run_id={}, err_type={}, err={}",
                 run_id,

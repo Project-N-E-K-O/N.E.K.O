@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
@@ -213,13 +214,13 @@ def _query_records_sync(
     store_size = 0
     try:
         store_size = int(store_len_getter())
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+    except IO_RUNTIME_ERRORS:
         store_size = 0
     scan_limit = _compute_scan_limit(target_count=target_count, store_size=store_size)
 
     try:
         snapshot = list_tail_getter(scan_limit)
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
+    except IO_RUNTIME_ERRORS:
         snapshot = list_all_getter()
 
     picked_reversed: list[dict[str, object]] = []
@@ -276,7 +277,7 @@ class BusQueryService:
             )
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_events failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -315,7 +316,7 @@ class BusQueryService:
             )
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_lifecycle failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,

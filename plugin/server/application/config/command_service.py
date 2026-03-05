@@ -9,6 +9,7 @@ from plugin.server.application.config.hot_update_service import (
     hot_update_plugin_config as application_hot_update_plugin_config,
 )
 from plugin.server.application.config.validation import validate_config_updates
+from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_updates import (
     replace_plugin_config as infrastructure_replace_plugin_config,
@@ -30,17 +31,6 @@ from plugin.server.infrastructure.config_profiles_write import (
 )
 
 logger = get_logger("server.application.config.command")
-
-_KNOWN_RUNTIME_ERRORS = (
-    RuntimeError,
-    OSError,
-    ValueError,
-    TypeError,
-    AttributeError,
-    KeyError,
-    TimeoutError,
-)
-
 
 def _to_message(detail: object, *, fallback: str) -> str:
     if isinstance(detail, str) and detail:
@@ -148,7 +138,7 @@ class ConfigCommandService:
                 code="PLUGIN_CONFIG_REPLACE_FAILED",
                 fallback_message="Failed to replace plugin config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "replace_plugin_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -177,7 +167,7 @@ class ConfigCommandService:
                 code="PLUGIN_CONFIG_UPDATE_FAILED",
                 fallback_message="Failed to update plugin config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "update_plugin_config failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -205,7 +195,7 @@ class ConfigCommandService:
                 code="PLUGIN_CONFIG_TOML_UPDATE_FAILED",
                 fallback_message="Failed to update plugin toml config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "update_plugin_config_toml failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -245,7 +235,7 @@ class ConfigCommandService:
                 code="PLUGIN_PROFILE_UPSERT_FAILED",
                 fallback_message="Failed to upsert plugin profile config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "upsert_plugin_profile_config failed: plugin_id={}, profile_name={}, err_type={}, err={}",
                 plugin_id,
@@ -284,7 +274,7 @@ class ConfigCommandService:
                 code="PLUGIN_PROFILE_DELETE_FAILED",
                 fallback_message="Failed to delete plugin profile config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "delete_plugin_profile_config failed: plugin_id={}, profile_name={}, err_type={}, err={}",
                 plugin_id,
@@ -323,7 +313,7 @@ class ConfigCommandService:
                 code="PLUGIN_PROFILE_ACTIVATE_FAILED",
                 fallback_message="Failed to set active profile",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "set_plugin_active_profile failed: plugin_id={}, profile_name={}, err_type={}, err={}",
                 plugin_id,
@@ -374,7 +364,7 @@ class ConfigCommandService:
                 code="PLUGIN_CONFIG_HOT_UPDATE_FAILED",
                 fallback_message="Failed to hot update plugin config",
             ) from exc
-        except _KNOWN_RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "hot_update_plugin_config failed: plugin_id={}, mode={}, err_type={}, err={}",
                 plugin_id,

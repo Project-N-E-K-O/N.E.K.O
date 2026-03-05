@@ -16,7 +16,7 @@ from plugin.server.application.contracts import (
 from plugin.server.application.monitoring import MetricsQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.metrics")

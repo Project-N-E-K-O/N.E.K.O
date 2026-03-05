@@ -5,8 +5,9 @@ from collections.abc import Mapping
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 from plugin.server.logs import get_plugin_log_files, get_plugin_logs
 
 logger = get_logger("server.application.logs.query")
@@ -97,7 +98,7 @@ class LogQueryService:
                 status_code=exc.status_code,
                 details={"plugin_id": plugin_id, "error_type": "HTTPException"},
             ) from exc
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_logs failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -150,7 +151,7 @@ class LogQueryService:
                 status_code=exc.status_code,
                 details={"plugin_id": plugin_id, "error_type": "HTTPException"},
             ) from exc
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_log_files failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,

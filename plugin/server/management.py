@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import PluginLifecycleService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.routes.error_mapping import raise_http_from_domain
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 logger = get_logger("server.management")
 _service = PluginLifecycleService()

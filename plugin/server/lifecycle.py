@@ -14,7 +14,7 @@ from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.auth import generate_admin_code, set_admin_code
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge

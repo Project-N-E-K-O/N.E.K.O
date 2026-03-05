@@ -17,8 +17,6 @@ import threading
 import functools
 import itertools
 
-# 模块级初始化锁，用于 _push_lock 的双检初始化
-_PUSH_LOCK_INIT = threading.Lock()
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +43,9 @@ from plugin.settings import (
     PLUGIN_LOG_SYNC_CALL_WARNINGS,
     SYNC_CALL_IN_HANDLER_POLICY,
 )
+
+# 模块级初始化锁，用于 _push_lock 的双检初始化
+_PUSH_LOCK_INIT = threading.Lock()
 
 if TYPE_CHECKING:
     from plugin.sdk.bus.types import BusHubProtocol

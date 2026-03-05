@@ -6,8 +6,9 @@ from collections.abc import Mapping
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
+from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.plugins.query")
 
@@ -184,6 +185,39 @@ def _append_entries_from_preview(
         )
 
 
+def _append_plugin_fallback(
+    *,
+    result: list[dict[str, object]],
+    plugin_id: str,
+    plugin_meta_obj: object,
+    exc: Exception,
+) -> None:
+    fallback_name = plugin_id
+    fallback_description = ""
+    if isinstance(plugin_meta_obj, Mapping):
+        name_obj = plugin_meta_obj.get("name")
+        description_obj = plugin_meta_obj.get("description")
+        if isinstance(name_obj, str) and name_obj:
+            fallback_name = name_obj
+        if isinstance(description_obj, str):
+            fallback_description = description_obj
+
+    logger.warning(
+        "error processing plugin metadata: plugin_id={}, err_type={}, err={}",
+        plugin_id,
+        type(exc).__name__,
+        str(exc),
+    )
+    result.append(
+        {
+            "id": plugin_id,
+            "name": fallback_name,
+            "description": fallback_description,
+            "entries": [],
+        }
+    )
+
+
 def _build_plugin_list_sync() -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     try:
@@ -192,7 +226,7 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
             return result
         hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
         handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+    except IO_RUNTIME_ERRORS as exc:
         logger.warning(
             "failed to get state snapshots for plugin list: err_type={}, err={}",
             type(exc).__name__,
@@ -236,30 +270,19 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
 
             plugin_info["entries"] = entries
             result.append(plugin_info)
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, ServerDomainError) as exc:
-            fallback_name = plugin_id
-            fallback_description = ""
-            if isinstance(plugin_meta_obj, Mapping):
-                name_obj = plugin_meta_obj.get("name")
-                description_obj = plugin_meta_obj.get("description")
-                if isinstance(name_obj, str) and name_obj:
-                    fallback_name = name_obj
-                if isinstance(description_obj, str):
-                    fallback_description = description_obj
-
-            logger.warning(
-                "error processing plugin metadata: plugin_id={}, err_type={}, err={}",
-                plugin_id,
-                type(exc).__name__,
-                str(exc),
+        except ServerDomainError as exc:
+            _append_plugin_fallback(
+                result=result,
+                plugin_id=plugin_id,
+                plugin_meta_obj=plugin_meta_obj,
+                exc=exc,
             )
-            result.append(
-                {
-                    "id": plugin_id,
-                    "name": fallback_name,
-                    "description": fallback_description,
-                    "entries": [],
-                }
+        except IO_RUNTIME_ERRORS as exc:
+            _append_plugin_fallback(
+                result=result,
+                plugin_id=plugin_id,
+                plugin_meta_obj=plugin_meta_obj,
+                exc=exc,
             )
 
     return result
@@ -296,7 +319,7 @@ class PluginQueryService:
             return normalized
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "get_plugin_status failed: plugin_id={}, err_type={}, err={}",
                 plugin_id,
@@ -331,7 +354,7 @@ class PluginQueryService:
             }
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except IO_RUNTIME_ERRORS as exc:
             logger.error(
                 "list_plugins failed: err_type={}, err={}",
                 type(exc).__name__,

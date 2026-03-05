@@ -14,11 +14,11 @@ from plugin.server.application.contracts import (
     ServerInfoSnapshot,
     SystemConfigResponse,
 )
+from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.utils import now_iso
+from plugin.utils.time_utils import now_iso
 
 logger = get_logger("server.application.admin.query")
-_RUNTIME_ERRORS = (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, TimeoutError)
 
 
 def _available_snapshot_sync() -> int:
@@ -49,14 +49,14 @@ def _build_server_info_sync() -> ServerInfoSnapshot:
         if callable(host_is_alive):
             try:
                 alive = bool(host_is_alive())
-            except _RUNTIME_ERRORS:
+            except RUNTIME_ERRORS:
                 alive = False
         elif process_obj is not None:
             process_is_alive = getattr(process_obj, "is_alive", None)
             if callable(process_is_alive):
                 try:
                     alive = bool(process_is_alive())
-                except _RUNTIME_ERRORS:
+                except RUNTIME_ERRORS:
                     alive = False
 
         running_plugins_status[plugin_id_obj] = {
@@ -137,7 +137,7 @@ class AdminQueryService:
                 "plugins_count": plugins_count,
                 "time": now_iso(),
             }
-        except _RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_available failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -167,7 +167,7 @@ class AdminQueryService:
             }
         except ServerDomainError:
             raise
-        except _RUNTIME_ERRORS as exc:
+        except RUNTIME_ERRORS as exc:
             logger.error(
                 "get_server_info failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -211,7 +211,7 @@ class AdminQueryService:
             return {"config": config_value}
         except ServerDomainError:
             raise
-        except (_RUNTIME_ERRORS + (ImportError,)) as exc:
+        except (RUNTIME_ERRORS + (ImportError,)) as exc:
             logger.error(
                 "get_system_config failed: err_type={}, err={}",
                 type(exc).__name__,

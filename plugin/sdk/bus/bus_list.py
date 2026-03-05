@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-"""BusList core helper module."""
-
 import inspect
 import asyncio
 from contextlib import suppress

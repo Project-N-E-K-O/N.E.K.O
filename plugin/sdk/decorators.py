@@ -82,7 +82,6 @@ def _infer_schema_from_func(fn: Callable) -> Dict[str, Any]:
         hint = hints.get(name, param.annotation)
 
         # Unwrap Annotated[X, "desc", ...]
-        origin = getattr(hint, "__class__", None)
         type_args = getattr(hint, "__args__", None)
         metadata_items = getattr(hint, "__metadata__", None)
         if metadata_items is not None and type_args:
@@ -633,7 +632,17 @@ def hook(
 
 
 # 便捷别名
-before_entry = lambda target="*", priority=0, condition=None: hook(target, "before", priority, condition)
-after_entry = lambda target="*", priority=0, condition=None: hook(target, "after", priority, condition)
-around_entry = lambda target="*", priority=0, condition=None: hook(target, "around", priority, condition)
-replace_entry = lambda target, priority=0, condition=None: hook(target, "replace", priority, condition)
+def before_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
+    return hook(target, "before", priority, condition)
+
+
+def after_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
+    return hook(target, "after", priority, condition)
+
+
+def around_entry(target: str = "*", priority: int = 0, condition: Optional[Callable[..., bool]] = None):
+    return hook(target, "around", priority, condition)
+
+
+def replace_entry(target: str, priority: int = 0, condition: Optional[Callable[..., bool]] = None):
+    return hook(target, "replace", priority, condition)

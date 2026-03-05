@@ -62,8 +62,8 @@ def test_record_converters_dump() -> None:
     e = EventRecord.from_raw({"plugin_id": "p", "event_id": "e1", "timestamp": 1, "args": {"x": 1}})
     assert e.dump()["event_id"] in {"e1", None}
 
-    l = LifecycleRecord.from_raw({"plugin_id": "p", "lifecycle_id": "l1", "timestamp": 1})
-    assert l.dump()["lifecycle_id"] in {"l1", None}
+    lifecycle_record = LifecycleRecord.from_raw({"plugin_id": "p", "lifecycle_id": "l1", "timestamp": 1})
+    assert lifecycle_record.dump()["lifecycle_id"] in {"l1", None}
 
     mr = MemoryRecord.from_raw({"plugin_id": "p", "type": "t", "_ts": 1}, bucket_id="b1")
     assert mr.dump()["bucket_id"] == "b1"
