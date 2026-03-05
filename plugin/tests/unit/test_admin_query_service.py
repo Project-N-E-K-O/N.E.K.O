@@ -58,10 +58,10 @@ def test_build_server_info_sync_uses_real_alive_state(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.plugin_unit
-def test_build_system_config_sync_redacts_sensitive_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_system_config_sync_uses_explicit_public_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     import plugin.settings as settings
 
-    monkeypatch.setattr(settings, "__all__", ["OPEN_VALUE", "API_TOKEN", "PRIVATE_KEY_PATH"], raising=False)
+    monkeypatch.setattr(settings, "PUBLIC_SYSTEM_CONFIG_KEYS", ("OPEN_VALUE",), raising=False)
     monkeypatch.setattr(settings, "OPEN_VALUE", 123, raising=False)
     monkeypatch.setattr(settings, "API_TOKEN", "secret-token", raising=False)
     monkeypatch.setattr(settings, "PRIVATE_KEY_PATH", Path("/tmp/key.pem"), raising=False)
@@ -70,8 +70,8 @@ def test_build_system_config_sync_redacts_sensitive_keys(monkeypatch: pytest.Mon
     config = payload["config"]
 
     assert config["OPEN_VALUE"] == 123
-    assert config["API_TOKEN"] == "***REDACTED***"
-    assert config["PRIVATE_KEY_PATH"] == "***REDACTED***"
+    assert "API_TOKEN" not in config
+    assert "PRIVATE_KEY_PATH" not in config
 
 
 @pytest.mark.plugin_unit

@@ -6,9 +6,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from plugin.server.infrastructure.auth import require_admin
+from plugin.server.infrastructure.auth import verify_admin_code
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.health import router as health_router
+from plugin.server.routes.metrics import router as metrics_router
 from plugin.server.routes.runs import router as runs_router
 
 
@@ -35,8 +36,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def plugin_test_app() -> FastAPI:
     app = FastAPI(title="plugin-test-app")
     register_exception_handlers(app)
-    app.dependency_overrides[require_admin] = lambda: "test-authenticated"
+    app.dependency_overrides[verify_admin_code] = lambda: "test-authenticated"
     app.include_router(health_router)
+    app.include_router(metrics_router)
     app.include_router(runs_router)
     return app
 
@@ -46,4 +48,3 @@ async def plugin_async_client(plugin_test_app: FastAPI) -> AsyncIterator[AsyncCl
     transport = ASGITransport(app=plugin_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
-

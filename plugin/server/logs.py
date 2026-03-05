@@ -7,6 +7,7 @@
 import re
 import asyncio
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from collections import deque
 
@@ -22,6 +23,29 @@ _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError
 
 # 服务器日志的特殊 ID
 SERVER_LOG_ID = "_server"
+
+
+def _parse_log_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    candidates = (stripped, stripped.replace("T", " "))
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            continue
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(stripped, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _validate_plugin_id(plugin_id: str) -> None:
@@ -446,10 +470,22 @@ def filter_logs(
         level_upper = level.upper()
         filtered = [log for log in filtered if log.get("level") == level_upper]
     
-    # 按时间过滤（简单实现，可以改进）
+    # 按时间过滤
     if start_time or end_time:
-        # TODO: 实现时间范围过滤
-        pass
+        start_dt = _parse_log_time(start_time) if isinstance(start_time, str) else None
+        end_dt = _parse_log_time(end_time) if isinstance(end_time, str) else None
+        if start_dt is not None or end_dt is not None:
+            time_filtered: list[dict[str, object]] = []
+            for log in filtered:
+                ts = _parse_log_time(log.get("timestamp"))
+                if ts is None:
+                    continue
+                if start_dt is not None and ts < start_dt:
+                    continue
+                if end_dt is not None and ts > end_dt:
+                    continue
+                time_filtered.append(log)
+            filtered = time_filtered
     
     # 关键词搜索
     if search:

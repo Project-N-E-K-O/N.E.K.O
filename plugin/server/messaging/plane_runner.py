@@ -42,6 +42,8 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
     host = host.strip() or "127.0.0.1"
     try:
         port = int(port_s)
+        if port <= 0 or port > 65535:
+            return False
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         return False
 
@@ -157,7 +159,17 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             self._ingest = ingest_srv
             self._pub = pub_srv
             logger.info("message_plane embedded started")
-        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
+        except (
+            ImportError,
+            ModuleNotFoundError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            KeyError,
+            OSError,
+            TimeoutError,
+        ) as err:
             try:
                 if rpc_srv is not None:
                     rpc_srv.stop()

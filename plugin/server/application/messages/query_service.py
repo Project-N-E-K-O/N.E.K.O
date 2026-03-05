@@ -124,10 +124,15 @@ def _query_messages_sync(
 ) -> list[dict[str, object]]:
     requested_count = max_count if max_count > 0 else MESSAGE_QUEUE_DEFAULT_MAX_COUNT
     target_count = max(1, min(requested_count, MESSAGE_QUEUE_MAX))
+    refresh_limit = (
+        MESSAGE_QUEUE_MAX
+        if (plugin_id is not None or priority_min is not None)
+        else target_count
+    )
 
     try:
         state.refresh_messages_cache_from_message_plane(
-            limit=target_count,
+            limit=refresh_limit,
             timeout=1.0,
             ttl_seconds=0.5,
             force=False,

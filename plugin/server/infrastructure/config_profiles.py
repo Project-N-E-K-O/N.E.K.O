@@ -384,7 +384,7 @@ def get_profile_config(
             try:
                 with profile_path.open("rb") as profile_file:
                     data = tomllib.load(profile_file)
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            except (ValueError, TypeError) as exc:
                 logger.warning(
                     "Plugin {}: failed to load profile {} at {}: {}",
                     plugin_id,
@@ -394,7 +394,19 @@ def get_profile_config(
                 )
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Failed to load profile '{profile_name}': {str(exc)}",
+                    detail=f"Failed to parse profile '{profile_name}'",
+                ) from exc
+            except (OSError, RuntimeError) as exc:
+                logger.warning(
+                    "Plugin {}: failed to read profile {} at {}: {}",
+                    plugin_id,
+                    profile_name,
+                    profile_path,
+                    exc,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read profile '{profile_name}'",
                 ) from exc
             if isinstance(data, Mapping):
                 config = _to_string_key_mapping(data)

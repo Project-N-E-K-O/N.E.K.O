@@ -106,6 +106,7 @@ def _build_system_config_sync() -> dict[str, object]:
         try:
             value = getattr(settings, key)
         except AttributeError:
+            logger.warning("skip missing system config key '{}'", key)
             continue
         except (RuntimeError, ValueError, TypeError, OSError) as exc:
             logger.warning(

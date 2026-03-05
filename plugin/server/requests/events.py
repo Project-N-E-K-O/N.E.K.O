@@ -16,8 +16,13 @@ def _coerce_timeout(value: object) -> float:
     if isinstance(value, bool):
         return 5.0
     if isinstance(value, (int, float)):
-        timeout = float(value)
-        return timeout if timeout > 0 else 5.0
+        try:
+            timeout = float(value)
+        except (OverflowError, ValueError):
+            return 5.0
+        if math.isfinite(timeout) and timeout > 0:
+            return timeout
+        return 5.0
     return 5.0
 
 
@@ -156,4 +161,18 @@ async def handle_event_get(request: dict[str, object], send_response: SendRespon
             request_id=request_id,
             timeout=timeout,
             message=exc.message,
+        )
+    except Exception as exc:
+        logger.error(
+            "EVENT_GET unexpected failure: plugin_id={}, err_type={}, err={}",
+            plugin_id,
+            type(exc).__name__,
+            str(exc),
+        )
+        _send_error(
+            send_response=send_response,
+            from_plugin=from_plugin,
+            request_id=request_id,
+            timeout=timeout,
+            message="Internal server error",
         )

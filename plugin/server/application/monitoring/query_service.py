@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from collections.abc import Mapping
 
 from plugin.core.state import state
@@ -10,6 +11,24 @@ from plugin.server.infrastructure.utils import now_iso
 from plugin.server.monitoring.metrics import metrics_collector
 
 logger = get_logger("server.application.monitoring.query")
+
+
+def _normalize_optional_iso_time(value: str | None, *, field: str) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ServerDomainError(
+            code="INVALID_ARGUMENT",
+            message=f"{field} must be a valid ISO datetime string",
+            status_code=400,
+            details={"field": field},
+        ) from exc
+    return stripped
 
 
 def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
@@ -228,12 +247,14 @@ class MetricsQueryService:
         end_time: str | None,
     ) -> dict[str, object]:
         try:
+            normalized_start_time = _normalize_optional_iso_time(start_time, field="start_time")
+            normalized_end_time = _normalize_optional_iso_time(end_time, field="end_time")
             raw_history = await asyncio.to_thread(
                 metrics_collector.get_metrics_history,
                 plugin_id,
                 limit,
-                start_time,
-                end_time,
+                normalized_start_time,
+                normalized_end_time,
             )
             if not isinstance(raw_history, list):
                 raise ServerDomainError(

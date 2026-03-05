@@ -157,8 +157,8 @@ class MetricsCollector:
                 
             except asyncio.CancelledError:
                 break
-            except _RUNTIME_ERRORS as e:
-                logger.exception(f"Error in metrics collection loop: {e}")
+            except Exception:
+                logger.exception("Error in metrics collection loop")
             
             await asyncio.sleep(self.interval)
     
