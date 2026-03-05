@@ -2581,7 +2581,6 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         platforms = [
             ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
             ('weibo_dynamic', '微博个人关注动态', 'statuses'),
-            # 下面是新增的抖音和快手配置
             ('douyin_dynamic', '抖音关注动态', 'dynamics'),
             ('kuaishou_dynamic', '快手关注动态', 'dynamics')
         ]
@@ -2667,13 +2666,4 @@ async def main():
 
 if __name__ == "__main__":
 
-    print("🚀 开始全平台音乐抓取任务...\n" + "="*40)
-    
-    final_playlist = run_all_crawlers()
-    
-    print("\n" + "="*40 + f"\n✅ 全部抓取完毕！共整合了 {len(final_playlist)} 首音乐。")
-    
-    print("最终的 APlayer JSON 数据格式如下：")
-    print(json.dumps(final_playlist, ensure_ascii=False, indent=4))
-
-    # asyncio.run(main())
+    asyncio.run(main())

@@ -45,7 +45,9 @@ USER_AGENTS = [
 # ==================================================
 
 class MusicCache:
-    """歌曲缓存管理器，实现短期去重和多样性评估"""
+    """
+    歌曲缓存管理器，实现短期去重和多样性评估
+    """
     
     def __init__(self, expire_seconds: int = 300):
         self.cache = []
@@ -53,14 +55,18 @@ class MusicCache:
         self.last_cleanup = time.time()
     
     def _cleanup(self):
-        """清理过期缓存"""
+        """
+        清理过期缓存
+        """
         current_time = time.time()
         if current_time - self.last_cleanup > self.expire_seconds:
             self.cache = []
             self.last_cleanup = current_time
     
     def is_duplicate(self, url: str, name: str, artist: str) -> bool:
-        """检查是否重复"""
+        """
+        检查是否重复
+        """
         self._cleanup()
         for item in self.cache:
             if item['url'] == url:
@@ -70,7 +76,9 @@ class MusicCache:
         return False
     
     def add(self, track: Dict[str, Any]):
-        """添加歌曲到缓存"""
+        """
+        添加歌曲到缓存
+        """
         self._cleanup()
         self.cache.append({
             'url': track.get('url', ''),
@@ -80,7 +88,9 @@ class MusicCache:
         })
     
     def filter_duplicates(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """过滤重复歌曲"""
+        """
+        过滤重复歌曲
+        """
         self._cleanup()
         filtered = []
         for track in tracks:
@@ -90,7 +100,9 @@ class MusicCache:
         return filtered
     
     def get_diversity_score(self, tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """评估歌曲多样性"""
+        """
+        评估歌曲多样性
+        """
         if not tracks:
             return {'score': 0, 'artist_diversity': 0, 'style_notes': []}
         
@@ -127,7 +139,9 @@ class MusicCache:
         }
 
 def anykw(tracks: List[Dict[str, Any]], keywords: List[str]) -> bool:
-    """检查 tracks 中是否包含任意关键词"""
+    """
+    检查 tracks 中是否包含任意关键词
+    """
     for track in tracks:
         text = f"{track.get('name', '')} {track.get('artist', '')}".lower()
         if any(kw.lower() in text for kw in keywords):
@@ -138,7 +152,9 @@ def anykw(tracks: List[Dict[str, Any]], keywords: List[str]) -> bool:
 music_cache = MusicCache(expire_seconds=300)
 
 def get_random_user_agent() -> str:
-    """随机获取一个User-Agent"""
+    """
+    随机获取一个User-Agent
+    """
     return random.choice(USER_AGENTS)
 
 # 区域检测，与 web_scraper.py 保持一致
@@ -195,7 +211,9 @@ class BaseMusicCrawler:
         }
 
     async def close(self):
-        """关闭 httpx 客户端"""
+        """
+        关闭 httpx 客户端
+        """
         await self.client.aclose()
 
 # =======================================================
@@ -203,7 +221,9 @@ class BaseMusicCrawler:
 # =======================================================
 
 class NeteaseCrawler(BaseMusicCrawler):
-    """网易云音乐爬虫，支持搜索并过滤 VIP/付费歌曲。"""
+    """
+    网易云音乐爬虫，支持搜索并过滤 VIP/付费歌曲。
+    """
     def __init__(self):
         super().__init__("网易云音乐")
         self.client.headers.update({
@@ -268,13 +288,17 @@ class NeteaseCrawler(BaseMusicCrawler):
 
 
 class SoundCloudCrawler(BaseMusicCrawler):
-    """SoundCloud 爬虫，自动动态获取鉴权 Token"""
+    """
+    SoundCloud 爬虫，自动动态获取鉴权 Token
+    """
     def __init__(self):
         super().__init__("SoundCloud")
         self.client_id = None
 
     async def _get_dynamic_client_id(self):
-        """动态去 SoundCloud 的 JS 脚本里提取最新的 client_id"""
+        """
+        动态去 SoundCloud 的 JS 脚本里提取最新的 client_id
+        """
         if self.client_id:
             return self.client_id
         try:
@@ -356,7 +380,9 @@ class SoundCloudCrawler(BaseMusicCrawler):
 
 
 class iTunesCrawler(BaseMusicCrawler):
-    """iTunes/Apple Music 爬虫，用于搜索热门音乐。"""
+    """
+    iTunes/Apple Music 爬虫，用于搜索热门音乐。
+    """
     def __init__(self):
         super().__init__("iTunes")
         self.api_base = "https://itunes.apple.com"
@@ -406,7 +432,9 @@ class iTunesCrawler(BaseMusicCrawler):
         return []
 
 class MusopenCrawler(BaseMusicCrawler):
-    """Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。"""
+    """
+    Musopen 古典音乐爬虫，用于在无明确关键词时提供背景音乐。
+    """
     def __init__(self):
         super().__init__("Musopen")
         # --- 恢复豪华版浏览器伪装头，突破 403 盾 ---
@@ -436,7 +464,7 @@ class MusopenCrawler(BaseMusicCrawler):
         try:
             response = await self.client.get(url)
             response.raise_for_status()
-            # === 新增：Musopen 高清封面抓取 ===
+            # === Musopen 封面抓取 ===
             soup = BeautifulSoup(response.text, 'html.parser')
             cover_url = ""
             
@@ -481,7 +509,9 @@ class MusopenCrawler(BaseMusicCrawler):
         return []
 
 class FMACrawler(BaseMusicCrawler):
-    """FMA (Free Music Archive) 爬虫，用于搜索免版权音乐。"""
+    """
+    FMA (Free Music Archive) 爬虫，用于搜索免版权音乐。
+    """
     def __init__(self):
         super().__init__("FMA")
 
@@ -508,7 +538,7 @@ class FMACrawler(BaseMusicCrawler):
                 artist = track_info.get('artistName', '未知FMA艺术家')
                 audio_url = track_info.get('playbackUrl')
 
-                # === 新增：FMA 封面抓取逻辑 ===
+                # === FMA 封面抓取 ===
                 cover_url = ""
                 # 1. 尝试从隐藏的 JSON 信息中提取
                 if track_info.get('imageFileUrl'):
@@ -542,7 +572,9 @@ class FMACrawler(BaseMusicCrawler):
         return []
 
 class BandcampCrawler(BaseMusicCrawler):
-    """Bandcamp 独立音乐爬虫，极度适合抓取 lofi、环境音和游戏同人OST。"""
+    """
+    Bandcamp 独立音乐爬虫，极度适合抓取 lofi、环境音和游戏同人OST。
+    """
     def __init__(self):
         super().__init__("Bandcamp")
 
@@ -740,7 +772,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
 # =======================================================
 
 async def main():
-    """全方位测试函数：测试独立爬虫及智能调度器"""
+    """
+    全方位测试函数：测试独立爬虫及智能调度器
+    """
     print("==================================================")
     print(" 🚀 阶段一：测试独立爬虫模块")
     print("==================================================\n")

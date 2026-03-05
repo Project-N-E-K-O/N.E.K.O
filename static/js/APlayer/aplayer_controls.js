@@ -3,6 +3,8 @@
 
 /**
  * 音乐源配置
+ * 包含中国和国际两个区域的音乐源列表
+ * 每个区域包含多个音乐源，每个源包含名称和 URL
  */
 const musicSources = {
     china: [
@@ -14,7 +16,6 @@ const musicSources = {
         { name: 'Musopen', url: 'https://musopen.org' },
         { name: 'FMA', url: 'https://freemusicarchive.org' },
         { name: 'FreePD', url: 'https://freepd.com' },
-        { name: 'YouTube Audio Library', url: 'https://www.youtube.com/audiolibrary' }
     ]
 };
 

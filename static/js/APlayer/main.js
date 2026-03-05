@@ -1,5 +1,10 @@
-// APlayer 主模块
-// 整合所有APlayer功能的主入口
+/** 
+ * APlayer 主模块
+ * 整合所有APlayer功能的主入口
+ * 包含音乐播放控制、UI更新、事件监听等功能
+ * 负责初始化APlayer实例、配置UI、设置事件监听器等
+ * 包含音乐播放控制、UI更新、事件监听等功能
+ */
 
 import { 
     toggleMusicPlayback, 

@@ -1,6 +1,8 @@
-// APlayer 事件监听器模块
-// 处理所有APlayer相关的事件和用户交互
-
+/** 
+ * APlayer事件监听器模块
+ * 负责处理所有APlayer相关的事件和用户交互
+ * 包含播放状态变化、音量变化、时间更新、错误处理等事件的监听
+ */
 /**
  * 初始化APlayer事件监听器
  * @param {APlayer} aplayer - APlayer实例
