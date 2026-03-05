@@ -1488,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            const modelDisplayName = currentModelType === 'vrm' ? `VRM: ${modelName}` : modelName;
+            let modelDisplayName = currentModelType === 'vrm' ? modelName.replace(/\.vrm$/i, '') : modelName;
             let saveMessage;
             const lightingFailed = currentModelType === 'vrm' && ambient && main && (!lightingResult || !lightingResult.success);
 
