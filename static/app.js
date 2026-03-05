@@ -433,7 +433,9 @@ function init_app() {
             }
 
             // 轮询兜底：追踪 socket 引用，在 socket 被替换后自动重挂 listener
-            let lastAttachedWs = socket;
+            // 初始化为 null：确保首次轮询时一定会对当前 socket 调用 attachOpenListener
+            // （若初始化为 socket，connectWebSocket() 刚创建的 socket 会被跳过）
+            let lastAttachedWs = null;
             const waitForNewSocket = () => {
                 if (settled) return;
                 if (socket) {
