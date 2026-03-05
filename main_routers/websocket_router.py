@@ -136,7 +136,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.error(f"💥 {error_message}")
         try:
             if lanlan_name in session_manager:
-                await session_manager[lanlan_name].send_status(json.dumps({"code": "SERVER_ERROR", "details": {"error": str(e)}}))
+                await session_manager[lanlan_name].send_status(json.dumps({"code": "SERVER_ERROR"}))
         except: # noqa
             pass
     finally:

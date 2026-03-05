@@ -174,10 +174,10 @@ async def _fire_agent_llm_connectivity_check() -> None:
                 logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
                 if Modules.agent_flags.get("computer_use_enabled"):
                     Modules.agent_flags["computer_use_enabled"] = False
-                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason": reason}})
+                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
                 if Modules.agent_flags.get("browser_use_enabled"):
                     Modules.agent_flags["browser_use_enabled"] = False
-                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason": reason}})
+                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
 
             _bump_state_revision()
             await _emit_agent_status_update()
