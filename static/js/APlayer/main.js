@@ -31,14 +31,14 @@ import {
  */
 const APLAYER_CONFIG = {
     // 默认配置
-    defaultVolume: 0.7,
-    theme: 'dark',
+    defaultVolume: 0.6,
+    theme: '#44b7fe',
     position: 'bottom-right',
     
     // UI配置
     ui: {
         theme: 'dark',
-        showPlaylist: true,
+        showPlaylist: false,
         showVolume: true,
         showProgress: true,
         showTime: true,
@@ -51,33 +51,18 @@ const APLAYER_CONFIG = {
     player: {
         mini: false,
         autoplay: false,
-        loop: 'all',
-        order: 'list',
-        preload: 'auto',
-        volume: 0.7,
+        loop: 'none',
+        order: 'random',
+        preload: 'metadata',
+        volume: 0.6,
         mutex: true,
-        listFolded: false,
-        listMaxHeight: 90,
+        listFolded: true,
+        listMaxHeight: 200,
         lrcType: 0
     },
     
-    // 示例播放列表
-    defaultPlaylist: [
-        {
-            name: '示例歌曲1',
-            artist: '艺术家1',
-            url: 'https://music.163.com/song/media/outer/url?id=186860.mp3',
-            cover: '/static/images/default-cover.jpg',
-            lrc: ''
-        },
-        {
-            name: '示例歌曲2',
-            artist: '艺术家2',
-            url: 'https://music.163.com/song/media/outer/url?id=186861.mp3',
-            cover: '/static/images/default-cover.jpg',
-            lrc: ''
-        }
-    ]
+    // 播放列表配置
+    defaultPlaylist: []
 };
 
 /**
