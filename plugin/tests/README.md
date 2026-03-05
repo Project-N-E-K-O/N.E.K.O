@@ -39,3 +39,4 @@ PLUGIN_E2E_BASE_URL=http://127.0.0.1:48911/ui uv run pytest -c plugin/tests/pyte
 
 See also: `plugin/tests/COVERAGE_MATRIX.md` for SDK/config scenario coverage.
 See also: `plugin/tests/SDK_METHOD_COVERAGE.md` for full SDK public method inventory and surface checks.
+See also: `plugin/tests/TEST_CLASSIFICATION.md` for detailed test taxonomy and placement rules.

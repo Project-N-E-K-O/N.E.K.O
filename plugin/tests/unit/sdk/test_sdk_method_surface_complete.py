@@ -7,11 +7,18 @@ from pathlib import Path
 import pytest
 
 
-SDK_ROOT = Path(__file__).resolve().parents[2] / "sdk"
+def _plugin_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if parent.name == "plugin":
+            return parent
+    raise RuntimeError("plugin root not found")
+
+
+SDK_ROOT = _plugin_root() / "sdk"
 
 
 def _module_name_from_path(path: Path) -> str:
-    rel = path.relative_to(Path(__file__).resolve().parents[2])
+    rel = path.relative_to(_plugin_root())
     return "plugin." + ".".join(rel.with_suffix("").parts)
 
 
