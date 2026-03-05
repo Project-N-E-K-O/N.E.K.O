@@ -2113,11 +2113,139 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         return {'success': False, 'error': str(e)}
         
 async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
-    pass
+    """
+    获取抖音个人关注动态
+    依赖: 需在配置中提供含有真实有效会话的 Cookie (douyin_cookies.json)
+    注意: 抖音接口通常需要 X-Bogus 等签名参数，这里主要依赖有效 Cookie 和基础参数尝试获取
+    """
+    try:
+        # 调用你框架底层的 Cookie 获取方法
+        cookies = _get_platform_cookies('douyin')
+        if not cookies:
+            return {'success': False, 'error': '未找到抖音 Cookie 配置'}
+
+        # 抖音 Web 端关注流接口
+        url = "https://www.douyin.com/aweme/v1/web/aweme/following/request/"
+        headers = {
+            "User-Agent": get_random_user_agent(),
+            "Referer": "https://www.douyin.com/",
+            "Accept": "application/json, text/plain, */*"
+        }
+
+        # 基础参数，实际环境中如果触发风控，可能需要在 URL 中追加抓包获取的 X-Bogus 和 a_bogus
+        params = {
+            "count": limit,
+            "device_platform": "webapp",
+            "aid": "6383"
+        }
+
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, params=params, headers=headers, cookies=cookies)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("status_code") != 0:
+                logger.error(f"抖音API返回异常，可能触发风控: {data}")
+                return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
+
+            dynamic_list = []
+            # 兼容不同的数据返回结构
+            aweme_list = data.get("data", []) or data.get("aweme_list", [])
+
+            for item in aweme_list[:limit]:
+                author = item.get("author", {}).get("nickname", "未知博主")
+                desc = item.get("desc", "[分享了视频]")
+                aweme_id = item.get("aweme_id", "")
+                
+                # 清理换行符，保持排版整洁
+                clean_desc = desc.replace('\n', ' ').strip()
+                final_content = f"博主【{author}】: {clean_desc}"
+
+                dynamic_list.append({
+                    'author': author,
+                    'content': final_content,
+                    'timestamp': item.get("create_time", "刚刚"),
+                    'url': f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "https://www.douyin.com/"
+                })
+
+            if dynamic_list:
+                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条抖音关注动态")
+                return {'success': True, 'dynamics': dynamic_list}
+            return {'success': False, 'error': '未解析到抖音动态数据'}
+
+    except Exception as e:
+        logger.error(f"获取抖音动态失败: {e}")
+        return {'success': False, 'error': str(e)}
+
 
 async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
-    """获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)"""
-    pass
+    """
+    获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)
+    依赖: 需在配置中提供含有真实有效会话的 Cookie (kuaishou_cookies.json)
+    """
+    try:
+        cookies = _get_platform_cookies('kuaishou')
+        if not cookies:
+            return {'success': False, 'error': '未找到快手 Cookie 配置'}
+
+        url = "https://www.kuaishou.com/graphql"
+        headers = {
+            "User-Agent": get_random_user_agent(),
+            "Referer": "https://www.kuaishou.com/",
+            "Content-Type": "application/json",
+            "Accept": "*/*"
+        }
+
+        # 快手 GraphQL 查询 Payload: visionFollowFeed (关注流)
+        payload = {
+            "operationName": "visionFollowFeed",
+            "variables": {
+                "limit": limit
+            },
+            "query": "fragment photoContent on PhotoEntity {\n  id\n  caption\n  timestamp\n  __typename\n}\n\nfragment feedContent on Feed {\n  type\n  author {\n    id\n    name\n    __typename\n  }\n  photo {\n    ...photoContent\n    __typename\n  }\n  __typename\n}\n\nquery visionFollowFeed($pcursor: String, $limit: Int) {\n  visionFollowFeed(pcursor: $pcursor, limit: $limit) {\n    pcursor\n    feeds {\n      ...feedContent\n      __typename\n    }\n    __typename\n  }\n}\n"
+        }
+
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.post(url, headers=headers, json=payload, cookies=cookies)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("errors"):
+                logger.error(f"快手GraphQL返回异常: {data['errors']}")
+                return {'success': False, 'error': "GraphQL查询报错，可能是 Cookie 失效"}
+
+            feeds = data.get("data", {}).get("visionFollowFeed", {}).get("feeds", [])
+            dynamic_list = []
+
+            for item in feeds[:limit]:
+                author = item.get("author", {}).get("name", "未知老铁")
+                photo = item.get("photo", {})
+                caption = photo.get("caption", "[分享了作品]")
+                photo_id = photo.get("id", "")
+                
+                # 清理描述文本
+                clean_caption = caption.replace('\n', ' ').strip()
+                final_content = f"老铁【{author}】: {clean_caption}"
+
+                dynamic_list.append({
+                    'author': author,
+                    'content': final_content,
+                    'timestamp': photo.get("timestamp", "刚刚"),
+                    'url': f"https://www.kuaishou.com/short-video/{photo_id}" if photo_id else "https://www.kuaishou.com/"
+                })
+
+            if dynamic_list:
+                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条快手关注动态")
+                return {'success': True, 'dynamics': dynamic_list}
+            return {'success': False, 'error': '未解析到快手动态数据'}
+
+    except Exception as e:
+        logger.error(f"获取快手动态失败: {e}")
+        return {'success': False, 'error': str(e)}
 
 async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
@@ -2390,19 +2518,40 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
     try:
         china_region = is_china_region()
         if china_region:
-            logger.info("检测到中文区域，获取B站和微博个人动态")
-            b_dyn, w_dyn = await asyncio.gather(
+            logger.info("检测到中文区域，获取B站、微博、抖音和快手个人动态")
+            
+            # 1. 将抖音和快手加入并发任务列表
+            b_dyn, w_dyn, d_dyn, k_dyn = await asyncio.gather(
                 fetch_bilibili_personal_dynamic(limit),
                 fetch_weibo_personal_dynamic(limit),
+                fetch_douyin_personal_dynamic(limit),
+                fetch_kuaishou_personal_dynamic(limit),
                 return_exceptions=True
             )
-            # 异常隔离与安全降级
+            
+            # 2. 增加对抖音和快手的异常隔离与安全降级
             b_dyn = {'success': False, 'error': str(b_dyn)} if isinstance(b_dyn, Exception) else b_dyn
             w_dyn = {'success': False, 'error': str(w_dyn)} if isinstance(w_dyn, Exception) else w_dyn
+            d_dyn = {'success': False, 'error': str(d_dyn)} if isinstance(d_dyn, Exception) else d_dyn
+            k_dyn = {'success': False, 'error': str(k_dyn)} if isinstance(k_dyn, Exception) else k_dyn
 
-            top_success = b_dyn.get('success', False) or w_dyn.get('success', False)
-            return {'success': top_success, 'region': 'china', 
-                    'bilibili_dynamic': b_dyn, 'weibo_dynamic': w_dyn}
+            # 3. 只要有一个平台成功，就判定为总体成功
+            top_success = any([
+                b_dyn.get('success', False), 
+                w_dyn.get('success', False),
+                d_dyn.get('success', False),
+                k_dyn.get('success', False)
+            ])
+            
+            # 4. 在返回的字典中追加 douyin_dynamic 和 kuaishou_dynamic
+            return {
+                'success': top_success, 
+                'region': 'china', 
+                'bilibili_dynamic': b_dyn, 
+                'weibo_dynamic': w_dyn,
+                'douyin_dynamic': d_dyn,
+                'kuaishou_dynamic': k_dyn
+            }
         else:
             logger.info("检测到非中文区域，获取Reddit和Twitter个人动态")
             r_dyn, t_dyn = await asyncio.gather(
@@ -2415,12 +2564,15 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             
             top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
             return {'success': top_success, 'region': 'non-china', 'reddit_dynamic': r_dyn, 'twitter_dynamic': t_dyn}
+            
     except Exception as e:
         logger.error(f"获取个人动态内容失败: {e}")
         return {'success': False, 'error': str(e)}
 
 def format_personal_dynamics(data: Dict[str, Any]) -> str:
-    """格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)"""
+    """
+    格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)
+    """
     output_lines = []
     region = data.get('region', 'china')
     
@@ -2428,7 +2580,10 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         # 配置表：(数据字典键名, 展示标题, 列表的键名)
         platforms = [
             ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
-            ('weibo_dynamic', '微博个人关注动态', 'statuses')
+            ('weibo_dynamic', '微博个人关注动态', 'statuses'),
+            # 下面是新增的抖音和快手配置
+            ('douyin_dynamic', '抖音关注动态', 'dynamics'),
+            ('kuaishou_dynamic', '快手关注动态', 'dynamics')
         ]
         
         for key, title, list_key in platforms:
