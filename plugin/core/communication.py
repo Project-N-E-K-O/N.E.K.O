@@ -23,7 +23,7 @@ from plugin.settings import (
     PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
 from plugin._types.exceptions import PluginExecutionError
-from plugin.utils.logging import format_log_text as _format_log_text
+from plugin.logging_config import format_log_text as _format_log_text
 from plugin.core.zmq_transport import (
     HostTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
 )

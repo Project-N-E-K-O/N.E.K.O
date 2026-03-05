@@ -14,7 +14,7 @@ from loguru import logger
 
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
-from plugin.server.services import trigger_plugin
+from plugin.server.runs.trigger_service import trigger_plugin
 from plugin.server.messaging.plane_bridge import publish_record as _publish_record_impl
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 

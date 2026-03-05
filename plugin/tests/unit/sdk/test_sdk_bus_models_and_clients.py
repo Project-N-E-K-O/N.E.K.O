@@ -114,9 +114,9 @@ def test_conversation_client_get_sync_and_by_id(monkeypatch: pytest.MonkeyPatch)
 
     ctx = SimpleNamespace(plugin_id="demo")
     client = ConversationClient(ctx=ctx)
-    monkeypatch.setattr(client, "_get_rpc_client", lambda: _Rpc())
+    monkeypatch.setattr("plugin.sdk.bus.conversations._ensure_rpc", lambda _: _Rpc())
 
-    lst = client.get_sync(conversation_id="c1", max_count=10)
+    lst = client.get(conversation_id="c1", max_count=10)
     assert lst.count() == 1
 
     one = client.get_by_id("c1", max_count=10)

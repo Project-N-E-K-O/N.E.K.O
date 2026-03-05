@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import functools
+
 from plugin.logging_config import get_logger
 from plugin.server.application.runs.ipc_service import RunIpcService
 from plugin.server.domain.errors import ServerDomainError
@@ -17,7 +20,9 @@ async def handle_export_push(request: dict[str, object], send_response: SendResp
     from_plugin, request_id, timeout = common_fields
 
     try:
-        result = run_ipc_service.push_export(from_plugin=from_plugin, payload=request)
+        result = await asyncio.to_thread(
+            functools.partial(run_ipc_service.push_export, from_plugin=from_plugin, payload=request)
+        )
         send_response(from_plugin, request_id, result, None, timeout=timeout)
     except ServerDomainError as error:
         logger.warning(

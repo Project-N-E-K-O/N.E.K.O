@@ -72,7 +72,7 @@ class PluginRouter:
         self._zmq_task: asyncio.Task[None] | None = None
         self._zmq_server: _ZmqIpcServerContract | None = None
         self._shutdown_event: asyncio.Event | None = None
-        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
+        self._executor: ThreadPoolExecutor | None = None
         self._handlers: dict[str, _RequestHandler] = cast(dict[str, _RequestHandler], build_request_handlers())
 
     def _ensure_shutdown_event(self) -> asyncio.Event:

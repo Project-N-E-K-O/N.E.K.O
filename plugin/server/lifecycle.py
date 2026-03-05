@@ -35,7 +35,6 @@ class _PluginHostContract(Protocol):
 
 @dataclass(slots=True)
 class _ShutdownResult:
-    timed_out: bool
     had_errors: bool
 
 
@@ -93,7 +92,6 @@ class ServerLifecycleService:
                 try:
                     process_obj.terminate()
                     process_obj.join(timeout=1.0)
-                    logger.debug("cleaned stale plugin process: plugin_id={}", plugin_id)
                 except (AttributeError, RuntimeError, OSError, TypeError, ValueError) as exc:
                     logger.warning(
                         "failed to terminate stale plugin process: plugin_id={}, err_type={}, err={}",
@@ -101,6 +99,26 @@ class ServerLifecycleService:
                         type(exc).__name__,
                         str(exc),
                     )
+                    continue
+                try:
+                    still_alive = bool(process_obj.is_alive())
+                except (AttributeError, RuntimeError, OSError, TypeError, ValueError):
+                    still_alive = False
+                if still_alive:
+                    try:
+                        process_obj.kill()
+                        process_obj.join(timeout=0.5)
+                    except (AttributeError, RuntimeError, OSError, TypeError, ValueError) as exc:
+                        logger.warning(
+                            "failed to kill stale plugin process: plugin_id={}, err_type={}, err={}",
+                            plugin_id,
+                            type(exc).__name__,
+                            str(exc),
+                        )
+                    else:
+                        logger.debug("killed stale plugin process after terminate timeout: plugin_id={}", plugin_id)
+                else:
+                    logger.debug("cleaned stale plugin process: plugin_id={}", plugin_id)
             state.plugin_hosts.clear()
 
         with state.acquire_plugins_write_lock():
@@ -151,7 +169,10 @@ class ServerLifecycleService:
                 )
 
     async def startup(self) -> None:
-        emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
+        try:
+            emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_startup_begin event: {}", exc)
 
         try:
             _ = state.plugin_response_map
@@ -179,10 +200,6 @@ class ServerLifecycleService:
 
         load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, self._plugin_factory)
 
-        with state.acquire_plugin_hosts_read_lock():
-            for plugin_id in list(state.plugin_hosts.keys()):
-                emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": plugin_id, "time": now_iso()})
-
         await bus_subscription_manager.start()
         logger.info("bus subscription manager started")
 
@@ -205,7 +222,10 @@ class ServerLifecycleService:
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.info("metrics collector started")
-        emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+        try:
+            emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_startup_ready event: {}", exc)
 
         admin_code = generate_admin_code()
         set_admin_code(admin_code)
@@ -232,7 +252,10 @@ class ServerLifecycleService:
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():
-            emit_lifecycle_event({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
+            try:
+                emit_lifecycle_event({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
+            except Exception as exc:
+                logger.warning("failed to emit plugin_shutdown_requested event: plugin_id={}, err={}", plugin_id, exc)
             if not isinstance(host_obj, _PluginHostContract):
                 logger.warning(
                     "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
@@ -258,7 +281,10 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
-        emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
+        try:
+            emit_lifecycle_event({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
 
@@ -340,8 +366,11 @@ class ServerLifecycleService:
                 str(exc),
             )
 
-        emit_lifecycle_event({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
-        return _ShutdownResult(timed_out=False, had_errors=had_errors)
+        try:
+            emit_lifecycle_event({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_shutdown_complete event: {}", exc)
+        return _ShutdownResult(had_errors=had_errors)
 
     async def shutdown(self) -> None:
         try:

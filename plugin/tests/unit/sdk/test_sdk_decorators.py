@@ -7,11 +7,9 @@ from pydantic import BaseModel
 
 from plugin.sdk.decorators import (
     PERSIST_ATTR,
-    WORKER_MODE_ATTR,
     _PARAMS_MODEL_ATTR,
     on_event,
     plugin_entry,
-    worker,
 )
 from plugin.sdk.events import EVENT_META_ATTR
 
@@ -59,11 +57,10 @@ def test_on_event_sets_persist_attribute() -> None:
 
 
 @pytest.mark.plugin_unit
-def test_worker_sets_worker_config_attribute() -> None:
+def test_plugin_entry_timeout_is_written_to_metadata() -> None:
     def handler(self, **kwargs):
         return {"ok": True}
 
-    decorated = worker(timeout=9.5, priority=3)(handler)
-    config = getattr(decorated, WORKER_MODE_ATTR)
-    assert config.timeout == 9.5
-    assert config.priority == 3
+    decorated = plugin_entry(timeout=9.5)(handler)
+    meta = getattr(decorated, EVENT_META_ATTR)
+    assert meta.metadata["timeout"] == 9.5

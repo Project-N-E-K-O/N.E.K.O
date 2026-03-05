@@ -1590,9 +1590,9 @@ def load_plugins_from_toml(
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
         try:
-            from plugin.server.services import _enqueue_lifecycle
+            from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
             from plugin.server.infrastructure.utils import now_iso
 
-            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+            emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
         except Exception:
             logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)

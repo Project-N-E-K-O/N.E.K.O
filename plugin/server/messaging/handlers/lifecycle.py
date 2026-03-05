@@ -72,3 +72,17 @@ async def handle_lifecycle_get(request: dict[str, object], send_response: SendRe
             timeout=timeout,
             message=exc.message,
         )
+    except Exception as exc:
+        logger.warning(
+            "LIFECYCLE_GET unexpected error: plugin_id={}, err_type={}, err={}",
+            plugin_id,
+            type(exc).__name__,
+            str(exc),
+        )
+        _send_error(
+            send_response=send_response,
+            from_plugin=from_plugin,
+            request_id=request_id,
+            timeout=timeout,
+            message="Internal server error",
+        )

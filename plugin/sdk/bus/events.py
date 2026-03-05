@@ -95,7 +95,7 @@ class EventRecord(BusRecord):
         )
 
     def dump(self) -> Dict[str, Any]:
-        base = super().dump()
+        base = BusRecord.dump(self)
         base["event_id"] = self.event_id
         base["entry_id"] = self.entry_id
         base["args"] = dict(self.args) if isinstance(self.args, dict) else self.args

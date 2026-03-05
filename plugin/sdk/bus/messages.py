@@ -101,7 +101,7 @@ class MessageRecord(BusRecord):
         )
 
     def dump(self) -> Dict[str, Any]:
-        base = super().dump()
+        base = BusRecord.dump(self)
         base["message_id"] = self.message_id
         base["message_type"] = self.message_type
         base["description"] = self.description

@@ -65,7 +65,7 @@ def test_send_response_prefers_queue_then_fallback(monkeypatch: pytest.MonkeyPat
             self.items.append(item)
 
     q = _Queue()
-    monkeypatch.setattr(request_router_module.state, "get_plugin_response_queue", lambda _: q)
+    monkeypatch.setattr(request_router_module.state, "get_plugin_response_queue", lambda _: q, raising=False)
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         request_router_module.state,
@@ -79,7 +79,7 @@ def test_send_response_prefers_queue_then_fallback(monkeypatch: pytest.MonkeyPat
     assert len(q.items) == 1
     assert captured == {}
 
-    monkeypatch.setattr(request_router_module.state, "get_plugin_response_queue", lambda _: None)
+    monkeypatch.setattr(request_router_module.state, "get_plugin_response_queue", lambda _: None, raising=False)
     router._send_response("p1", "r2", {"x": 2}, "err", timeout=3.0)
     assert captured["request_id"] == "r2"
     assert captured["timeout"] == 3.0

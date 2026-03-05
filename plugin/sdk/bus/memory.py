@@ -67,7 +67,7 @@ class MemoryRecord(BusRecord):
         )
 
     def dump(self) -> Dict[str, Any]:
-        base = super().dump()
+        base = BusRecord.dump(self)
         base["bucket_id"] = self.bucket_id
         return base
 

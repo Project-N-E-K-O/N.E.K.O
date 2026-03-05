@@ -25,7 +25,7 @@ def test_core_public_entries_are_callable_or_types() -> None:
         "fail",
         "plugin_entry",
         "lifecycle",
-        "worker",
+        "hook",
         "CallChain",
         "AsyncCallChain",
         "PluginRouter",

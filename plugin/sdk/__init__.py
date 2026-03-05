@@ -81,7 +81,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "PluginDatabase":      (".database", "PluginDatabase"),
     "PluginKVStore":       (".database", "PluginKVStore"),
     "PluginStatePersistence": (".state", "PluginStatePersistence"),
-    "StatePersistence":    (".state", "StatePersistence"),
+    "StatePersistence":    (".state", "PluginStatePersistence"),
     "EXTENDED_TYPES":      (".state", "EXTENDED_TYPES"),
     # adapter
     "AdapterBase":         (".adapter", "AdapterBase"),
