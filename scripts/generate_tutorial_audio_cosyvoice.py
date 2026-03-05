@@ -147,9 +147,14 @@ def generate(lang, out_dir, cosyvoice_dir, force=False):
         print(f"[错误] 暂不支持语言: {lang}")
         sys.exit(1)
 
-    os.makedirs(out_dir, exist_ok=True)
+    # 在 os.chdir 之前将路径转为绝对路径，避免 chdir 后相对路径失效
+    out_dir_abs = os.path.abspath(out_dir)
+    os.makedirs(out_dir_abs, exist_ok=True)
 
     cosyvoice_abs = os.path.abspath(cosyvoice_dir)
+    if not os.path.isdir(cosyvoice_abs):
+        print(f"[错误] CosyVoice 目录不存在: {cosyvoice_abs}")
+        sys.exit(1)
     os.chdir(cosyvoice_abs)
     if cosyvoice_abs not in sys.path:
         sys.path.insert(0, os.path.join(cosyvoice_abs, 'third_party', 'Matcha-TTS'))
@@ -166,13 +171,13 @@ def generate(lang, out_dir, cosyvoice_dir, force=False):
 
     ok = skip = fail = 0
     total = len(steps)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     for i, (name, text) in enumerate(steps, 1):
-        out_path = os.path.join(project_root, out_dir, f"{name}.wav")
+        out_path = os.path.join(out_dir_abs, f"{name}.wav")
         if os.path.exists(out_path) and not force:
             print(f"[{i:02d}/{total}] 跳过（已存在）: {name}.wav")
-            skip += 1; ok += 1
+            skip += 1
+            ok += 1
             continue
 
         text_processed = preprocess_text(text)
@@ -181,11 +186,16 @@ def generate(lang, out_dir, cosyvoice_dir, force=False):
             for j in model.inference_instruct(text_processed, SPEAKER, INSTRUCT, stream=False, speed=SPEED):
                 chunks.append(j['tts_speech'])
             audio = torch.cat(chunks, dim=1).numpy().T
-            sf.write(out_path, audio, model.sample_rate)
+            tmp_path = out_path + '.tmp'
+            sf.write(tmp_path, audio, model.sample_rate)
+            os.replace(tmp_path, out_path)
             print(f"[{i:02d}/{total}] OK  {name}.wav")
             ok += 1
         except Exception as e:
             print(f"[{i:02d}/{total}] FAIL {name}  错误: {e}")
+            tmp_path = out_path + '.tmp'
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             fail += 1
 
     print(f"\n完成：{ok} 成功（其中 {skip} 个跳过），{fail} 失败。输出目录：{out_dir}")

@@ -12,6 +12,8 @@
  * 即可解锁后续所有播放，且在 Electron 中通常无需用户手势。
  */
 
+const TUTORIAL_TTS_ENDPOINT = '/api/tutorial-tts/synthesize';
+
 class TutorialAutoVoice {
     constructor() {
         // 播放状态
@@ -27,13 +29,11 @@ class TutorialAutoVoice {
         // 配置
         this.enabled = true;
         this.rate = 1.0;
-        this.pitch = 1.0;
         this.volume = 1.0;
 
         // 事件回调
         this.onStart = null;
         this.onEnd = null;
-        this.onError = null;
 
         // 语言
         this._lang = this._detectLanguage();
@@ -195,7 +195,7 @@ class TutorialAutoVoice {
             }
 
             try {
-                const response = await fetch('/api/tutorial-tts/synthesize', {
+                const response = await fetch(TUTORIAL_TTS_ENDPOINT, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text: cleanText, lang })
@@ -253,7 +253,6 @@ class TutorialAutoVoice {
     }
 
     setRate(rate) { this.rate = Math.max(0.5, Math.min(2.0, rate)); }
-    setPitch(pitch) { this.pitch = Math.max(0, Math.min(2, pitch)); }
 
     setVolume(volume) {
         this.volume = Math.max(0, Math.min(1, volume));
@@ -272,7 +271,7 @@ class TutorialAutoVoice {
             language: this._lang,
             cacheSize: this._audioCache.size,
             audioContextState: this._audioContext ? this._audioContext.state : 'not created',
-            rate: this.rate, pitch: this.pitch, volume: this.volume
+            rate: this.rate, volume: this.volume
         };
     }
 
@@ -305,7 +304,7 @@ class TutorialAutoVoice {
 
     async _fetchAndPlayEdgeTTS(text, lang, cacheKey, speakId) {
         try {
-            const response = await fetch('/api/tutorial-tts/synthesize', {
+            const response = await fetch(TUTORIAL_TTS_ENDPOINT, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text, lang })
@@ -468,7 +467,7 @@ window.testTutorialVoice = async function() {
     if (voice) console.log('2. 状态:', JSON.stringify(voice.getStatus(), null, 2));
 
     try {
-        const resp = await fetch('/api/tutorial-tts/synthesize', {
+        const resp = await fetch(TUTORIAL_TTS_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: '你好，欢迎使用新手引导', lang: 'zh-CN' })
