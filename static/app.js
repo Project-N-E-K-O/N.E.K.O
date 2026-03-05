@@ -6300,10 +6300,23 @@ function init_app() {
                         const notification = data.notification;
                         if (notification) {
                             console.log('[App] 收到后端通知:', notification);
-                            setFloatingAgentStatus(notification);
+                            // notification 是 JSON 字符串，通过 translateStatusMessage 解析并翻译
+                            const translatedNotification = window.translateStatusMessage ? window.translateStatusMessage(notification) : notification;
+                            setFloatingAgentStatus(translatedNotification);
                             maybeShowContentFilterModal(notification);
-                            if (notification.includes('失败') || notification.includes('断开') || notification.includes('错误')) {
-                                showStatusToast(notification, 3000);
+                            // 检查是否包含错误/失败类通知（基于结构化 code 或回退到文本匹配）
+                            let isErrorNotification = false;
+                            try {
+                                const parsed = JSON.parse(notification);
+                                if (parsed && parsed.code) {
+                                    const errorCodes = ['AGENT_AUTO_DISABLED_COMPUTER', 'AGENT_AUTO_DISABLED_BROWSER', 'AGENT_LLM_CHECK_ERROR', 'AGENT_CU_UNAVAILABLE', 'AGENT_CU_ENABLE_FAILED', 'AGENT_CU_CAPABILITY_LOST'];
+                                    isErrorNotification = errorCodes.includes(parsed.code);
+                                }
+                            } catch (_) {
+                                isErrorNotification = notification.includes('失败') || notification.includes('断开') || notification.includes('错误');
+                            }
+                            if (isErrorNotification) {
+                                showStatusToast(translatedNotification, 3000);
                             }
                         }
 
