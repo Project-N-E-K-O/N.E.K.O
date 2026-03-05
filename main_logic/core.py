@@ -145,6 +145,7 @@ class LLMSessionManager:
         self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
         self.session_start_max_failures = 3  # 最大连续失败次数
         self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
+        self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
         
         # 防止并发启动的标志
         self.is_starting_session = False
@@ -1195,7 +1196,7 @@ class LLMSessionManager:
                 # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
                 self.session_start_failure_count -= 1
                 # 设置 Memory 专属冷却，避免高频重试刷日志
-                self._memory_error_retry_after = time.time() + 10
+                self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
             else:
                 error_message = f"Error starting session: {e}"
                 logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
