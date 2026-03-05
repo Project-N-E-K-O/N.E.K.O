@@ -58,6 +58,15 @@ LAUNCH_ID = uuid.uuid4().hex
 INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
 
+# 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
+# httpx 优先读小写 no_proxy，因此大小写都需要设置
+for _key in ("NO_PROXY", "no_proxy"):
+    _no_proxy = os.environ.get(_key, "")
+    for _host in ("127.0.0.1", "localhost"):
+        if _host not in _no_proxy:
+            _no_proxy = f"{_no_proxy},{_host}" if _no_proxy else _host
+    os.environ[_key] = _no_proxy
+
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()
 _cleanup_done = False
