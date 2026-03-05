@@ -481,13 +481,13 @@
         "SERVER_ERROR": "Internal server error",
         "AGENT_CU_MODULE_NOT_LOADED": "Cannot enable Computer Use: module not loaded",
         "AGENT_CU_ENABLED_CHECKING": "Keyboard/mouse control enabled, checking Agent LLM connectivity...",
-        "AGENT_CU_UNAVAILABLE": "Cannot enable Computer Use: {{reason}}",
+        "AGENT_CU_UNAVAILABLE": "Cannot enable Computer Use: $t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Failed to enable Computer Use: {{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Cannot enable Browser Use: module not loaded",
         "AGENT_BU_NOT_INSTALLED": "Cannot enable Browser Use: {{error}}",
         "AGENT_BU_ENABLED_CHECKING": "Browser control enabled, checking Agent LLM connectivity...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use module not loaded, auto-disabled",
-        "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: {{reason}}",
+        "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}"
     },
     "camera": {

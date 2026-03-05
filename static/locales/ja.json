@@ -481,13 +481,13 @@
         "SERVER_ERROR": "サーバー内部エラー",
         "AGENT_CU_MODULE_NOT_LOADED": "Computer Use を有効にできません：モジュール未ロード",
         "AGENT_CU_ENABLED_CHECKING": "キーボード/マウス制御が有効化されました。Agent LLM 接続確認中...",
-        "AGENT_CU_UNAVAILABLE": "Computer Use を有効にできません：{{reason}}",
+        "AGENT_CU_UNAVAILABLE": "Computer Use を有効にできません：$t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Computer Use の有効化に失敗しました：{{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Browser Use を有効にできません：モジュール未ロード",
         "AGENT_BU_NOT_INSTALLED": "Browser Use を有効にできません：{{error}}",
         "AGENT_BU_ENABLED_CHECKING": "ブラウザ制御が有効化されました。Agent LLM 接続確認中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use モジュール未ロード、自動無効化されました",
-        "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：{{reason}}",
+        "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}"
     },
     "camera": {

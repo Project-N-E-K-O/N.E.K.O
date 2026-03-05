@@ -481,13 +481,13 @@
         "SERVER_ERROR": "服务器内部错误",
         "AGENT_CU_MODULE_NOT_LOADED": "无法开启 Computer Use：模块未加载",
         "AGENT_CU_ENABLED_CHECKING": "键鼠控制已开启，Agent LLM 连接确认中...",
-        "AGENT_CU_UNAVAILABLE": "无法开启 Computer Use：{{reason}}",
+        "AGENT_CU_UNAVAILABLE": "无法开启 Computer Use：$t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "开启 Computer Use 失败：{{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "无法开启 Browser Use：模块未加载",
         "AGENT_BU_NOT_INSTALLED": "无法开启 Browser Use：{{error}}",
         "AGENT_BU_ENABLED_CHECKING": "浏览器控制已开启，Agent LLM 连接确认中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
-        "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：{{reason}}",
+        "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}"
     },
     "camera": {

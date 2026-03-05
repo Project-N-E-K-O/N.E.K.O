@@ -481,13 +481,13 @@
         "SERVER_ERROR": "서버 내부 오류",
         "AGENT_CU_MODULE_NOT_LOADED": "Computer Use를 활성화할 수 없습니다: 모듈이 로드되지 않았습니다",
         "AGENT_CU_ENABLED_CHECKING": "키보드/마우스 제어가 활성화되었습니다. Agent LLM 연결 확인 중...",
-        "AGENT_CU_UNAVAILABLE": "Computer Use를 활성화할 수 없습니다: {{reason}}",
+        "AGENT_CU_UNAVAILABLE": "Computer Use를 활성화할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Computer Use 활성화 실패: {{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Browser Use를 활성화할 수 없습니다: 모듈이 로드되지 않았습니다",
         "AGENT_BU_NOT_INSTALLED": "Browser Use를 활성화할 수 없습니다: {{error}}",
         "AGENT_BU_ENABLED_CHECKING": "브라우저 제어가 활성화되었습니다. Agent LLM 연결 확인 중...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 모듈이 로드되지 않아 자동 비활성화되었습니다",
-        "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: {{reason}}",
+        "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}"
     },
     "camera": {

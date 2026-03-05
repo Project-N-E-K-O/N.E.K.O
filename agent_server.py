@@ -1565,7 +1565,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     else:
                         Modules.agent_flags["computer_use_enabled"] = False
                         reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
-                        Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason": reason}})
+                        Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
                         logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
                 except Exception as e:
                     Modules.agent_flags["computer_use_enabled"] = False
@@ -1704,7 +1704,7 @@ async def computer_use_availability():
     if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
         Modules.agent_flags["computer_use_enabled"] = False
-        Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
+        Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
         
     return status
 

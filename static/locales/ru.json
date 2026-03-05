@@ -481,13 +481,13 @@
         "SERVER_ERROR": "Внутренняя ошибка сервера",
         "AGENT_CU_MODULE_NOT_LOADED": "Невозможно включить Computer Use: модуль не загружен",
         "AGENT_CU_ENABLED_CHECKING": "Управление клавиатурой/мышью включено, проверка подключения Agent LLM...",
-        "AGENT_CU_UNAVAILABLE": "Невозможно включить Computer Use: {{reason}}",
+        "AGENT_CU_UNAVAILABLE": "Невозможно включить Computer Use: $t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Не удалось включить Computer Use: {{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Невозможно включить Browser Use: модуль не загружен",
         "AGENT_BU_NOT_INSTALLED": "Невозможно включить Browser Use: {{error}}",
         "AGENT_BU_ENABLED_CHECKING": "Управление браузером включено, проверка подключения Agent LLM...",
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
-        "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: {{reason}}",
+        "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}"
     },
     "camera": {
