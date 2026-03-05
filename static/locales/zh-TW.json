@@ -2208,6 +2208,10 @@
         "unknownTrack": "未知曲目",
         "unknownArtist": "未知藝術家",
         "playing": "播放中",
-        "paused": "已暫停"
+        "paused": "已暫停",
+        "searching": "正在為您搜尋: {query}",
+        "notFound": "找不到歌曲: {query}",
+        "nowPlaying": "為您播放: {name}",
+        "searchFailed": "音樂搜尋失敗"
     }
 }

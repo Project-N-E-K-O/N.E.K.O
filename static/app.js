@@ -1257,7 +1257,8 @@ function init_app() {
                     if (searchTerm) {
                         console.log(`[Music] Received music action with search term: ${searchTerm}`);
                         if (window.showStatusToast) {
-                            window.showStatusToast(`正在为您搜索: ${searchTerm}`, 2000);
+                            const searchMsg = window.t ? window.t('music.searching', { query: searchTerm }) : `正在为您搜索: ${searchTerm}`;
+                            window.showStatusToast(searchMsg, 2000);
                         }
                         
                     fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
@@ -1265,11 +1266,12 @@ function init_app() {
                         .then(result => {
                             if (result.success && result.data && result.data.length > 0) {
                                 const track = result.data[0];
-                                window.dispatchMusicPlay(track );
+                                window.dispatchMusicPlay(track);
                             } else {
                                 console.warn(`[Music] API did not find a song for: ${searchTerm}`);
                                 if (window.showStatusToast) {
-                                    window.showStatusToast(`找不到歌曲: ${searchTerm}`, 3000);
+                                    const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
+                                    window.showStatusToast(notFoundMsg, 3000);
                                 }
                             }
                         })
@@ -2023,7 +2025,8 @@ function init_app() {
         if (window.sendMusicMessage) {
             window.sendMusicMessage(trackInfo);
             if (window.showStatusToast) {
-                window.showStatusToast(`为您播放: ${trackInfo.name}`, 3000);
+                const playMsg = window.t ? window.t('music.nowPlaying', { name: trackInfo.name }) : `为您播放: ${trackInfo.name}`;
+                window.showStatusToast(playMsg, 3000);
             }
         } else {
             console.warn('[MusicDispatch] sendMusicMessage 未定义');
@@ -2071,7 +2074,8 @@ function init_app() {
                     } else {
                         console.warn('[Music] API 未找到歌曲:', query);
                         if (window.showStatusToast) {
-                            window.showStatusToast(`找不到歌曲: ${query}`, 3000);
+                            const notFoundMsg = window.t ? window.t('music.notFound', { query: query }) : `找不到歌曲: ${query}`;
+                            window.showStatusToast(notFoundMsg, 3000);
                         }
                     }
                 }
