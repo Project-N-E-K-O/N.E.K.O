@@ -418,29 +418,31 @@ function init_app() {
                 // CLOSING/CLOSED — 等待新 socket 被创建后重新挂载
             };
 
-            // 如果当前 socket 已处于 CONNECTING，直接挂载 listener
             if (socket && socket.readyState === WebSocket.CONNECTING) {
+                // 乐观路径：直接挂 listener，不触发重连
                 attachOpenListener(socket);
-                return;
+                // 不 return — 下方轮询兜底：若此 socket 失败被替换，轮询自动挂到新 socket
+            } else {
+                // socket 不存在或已 CLOSED/CLOSING → 触发重建
+                // ★ 先取消排队的自动重连定时器，避免 3 秒后再多建一个重复连接
+                if (autoReconnectTimeoutId) {
+                    clearTimeout(autoReconnectTimeoutId);
+                    autoReconnectTimeoutId = null;
+                }
+                connectWebSocket();
             }
 
-            // socket 不存在或已 CLOSED/CLOSING → 触发重建
-            // ★ 先取消排队的自动重连定时器，避免 3 秒后再多建一个重复连接
-            if (autoReconnectTimeoutId) {
-                clearTimeout(autoReconnectTimeoutId);
-                autoReconnectTimeoutId = null;
-            }
-
-            connectWebSocket();
-
-            // connectWebSocket 是同步完成到 new WebSocket() 的，给一个 microtask 后挂载 listener
+            // 轮询兜底：追踪 socket 引用，在 socket 被替换后自动重挂 listener
+            let lastAttachedWs = socket;
             const waitForNewSocket = () => {
                 if (settled) return;
                 if (socket) {
-                    attachOpenListener(socket);
-                    // 如果 attachOpenListener 没有 settle（说明 socket 又 CLOSED 了），轮询重试
-                    if (!settled && socket.readyState !== WebSocket.CONNECTING && socket.readyState !== WebSocket.OPEN) {
-                        setTimeout(waitForNewSocket, 50);
+                    if (socket !== lastAttachedWs) {
+                        lastAttachedWs = socket;
+                        attachOpenListener(socket);
+                    }
+                    if (!settled) {
+                        setTimeout(waitForNewSocket, socket.readyState === WebSocket.CONNECTING ? 200 : 50);
                     }
                 } else {
                     setTimeout(waitForNewSocket, 50);
