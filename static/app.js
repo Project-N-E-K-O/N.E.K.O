@@ -823,6 +823,14 @@ function init_app() {
                                 } catch (error) {
                                     console.error(window.t('console.restartError'), error);
 
+                                    // 清除超时定时器和 Promise 状态（与 mic button catch 对齐）
+                                    if (window.sessionTimeoutId) {
+                                        clearTimeout(window.sessionTimeoutId);
+                                        window.sessionTimeoutId = null;
+                                    }
+                                    sessionStartedResolver = null;
+                                    sessionStartedRejecter = null;
+
                                     // 重启失败时向后端发送 end_session 消息
                                     if (socket && socket.readyState === WebSocket.OPEN) {
                                         socket.send(JSON.stringify({
