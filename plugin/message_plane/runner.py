@@ -141,9 +141,9 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             return self._endpoints
 
         env = dict(os.environ)
-        env.setdefault("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", str(self._endpoints.rpc))
-        env.setdefault("NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT", str(self._endpoints.pub))
-        env.setdefault("NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT", str(self._endpoints.ingest))
+        env["NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT"] = str(self._endpoints.rpc)
+        env["NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT"] = str(self._endpoints.pub)
+        env["NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT"] = str(self._endpoints.ingest)
 
         try:
             cmd = [sys.executable, "-m", "plugin.message_plane.main"]

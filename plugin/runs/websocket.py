@@ -127,6 +127,11 @@ class WsRunHub:
             self._unsubs.append(state.bus_change_hub.subscribe("runs", _enqueue_factory("runs")))
             self._unsubs.append(state.bus_change_hub.subscribe("export", _enqueue_factory("export")))
         except Exception:
+            for u in self._unsubs:
+                try:
+                    u()
+                except Exception:
+                    pass
             self._unsubs = []
 
         if self._dispatch_task is None:
@@ -147,7 +152,7 @@ class WsRunHub:
         try:
             if self._dispatch_task is not None:
                 await self._dispatch_task
-        except Exception:
+        except (asyncio.CancelledError, Exception):
             pass
         self._dispatch_task = None
         async with self._lock:

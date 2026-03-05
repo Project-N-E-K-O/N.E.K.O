@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     from .router import PluginRouter
 
 __all__ = [
-    "PluginMeta",
-    "NekoPluginBase",
-    "NEKO_PLUGIN_TAG",
     "NEKO_PLUGIN_META_ATTR",
+    "NEKO_PLUGIN_TAG",
+    "NekoPluginBase",
+    "PluginMeta",
 ]
 
 

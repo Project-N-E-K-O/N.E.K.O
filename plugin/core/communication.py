@@ -261,7 +261,7 @@ class PluginCommunicationResourceManager:
             return
 
         poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
-        self._status_buffer: asyncio.Queue = asyncio.Queue()
+        self._status_buffer: asyncio.Queue = asyncio.Queue(maxsize=512)
 
         while not se.is_set():
             try:
@@ -273,7 +273,17 @@ class PluginCommunicationResourceManager:
                 if ch == CH_RES:
                     self._dispatch_result(payload)
                 elif ch == CH_STS:
-                    await self._status_buffer.put(payload)
+                    try:
+                        self._status_buffer.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        try:
+                            self._status_buffer.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        try:
+                            self._status_buffer.put_nowait(payload)
+                        except asyncio.QueueFull:
+                            pass
                 elif ch == CH_MSG:
                     await self._route_message(payload)
                 elif ch == CH_COMM:

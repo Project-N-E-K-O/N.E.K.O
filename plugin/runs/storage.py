@@ -77,12 +77,15 @@ class BlobStore:
             sess = self._uploads.get(str(upload_id))
             if sess is None:
                 return None
-            self._uploads.pop(str(upload_id), None)
         try:
             if sess.final_path.exists():
+                with self._lock:
+                    self._uploads.pop(str(upload_id), None)
                 return sess
             if sess.tmp_path.exists():
                 os.replace(str(sess.tmp_path), str(sess.final_path))
+                with self._lock:
+                    self._uploads.pop(str(upload_id), None)
         except Exception:
             return sess
         return sess

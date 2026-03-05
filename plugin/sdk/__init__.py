@@ -126,7 +126,7 @@ def __getattr__(name: str):
         try:
             mod = importlib.import_module(module_path, __package__)
         except ImportError:
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
         val = getattr(mod, attr)
         globals()[name] = val
         return val

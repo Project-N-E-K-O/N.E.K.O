@@ -266,8 +266,10 @@ class BusDeletableClientBase(BusRpcClientBase):
             resp = zmq_client.request(request, timeout=float(timeout))
             if isinstance(resp, dict):
                 return resp
-        except Exception:
-            pass
+        except Exception as exc:
+            raise TimeoutError(
+                f"{self._del_type} over ZeroMQ timed out or failed after {timeout}s: {exc}"
+            ) from exc
         raise TimeoutError(f"{self._del_type} over ZeroMQ timed out or failed after {timeout}s")
 
     def _check_delete_response(self, response: Any) -> bool:
@@ -303,9 +305,10 @@ class BusDeletableClientBase(BusRpcClientBase):
                 self.ctx._plugin_comm_queue.put(request, timeout=timeout)
             except Exception as e:
                 raise RuntimeError(f"Failed to send {self._del_type}: {e}") from e
-            start = asyncio.get_event_loop().time()
+            loop = asyncio.get_running_loop()
+            start = loop.time()
             resp = None
-            while asyncio.get_event_loop().time() - start < timeout:
+            while loop.time() - start < timeout:
                 resp = state.get_plugin_response(req_id)
                 if resp is not None:
                     break

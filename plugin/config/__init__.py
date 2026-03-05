@@ -19,6 +19,5 @@ from plugin.config.service import (
     set_plugin_active_profile,
     hot_update_plugin_config,
     deep_merge,
-    _apply_user_config_profiles,
 )
 from plugin.config.schema import validate_plugin_config, ConfigValidationError

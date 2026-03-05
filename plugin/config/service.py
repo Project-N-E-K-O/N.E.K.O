@@ -1581,11 +1581,12 @@ async def hot_update_plugin_config(
         else:
             # 回退：直接发送命令（不等待响应）
             import uuid
+            update_mode = "temporary" if mode == "permanent" else mode
             req_id = str(uuid.uuid4())
             cmd = {
                 "type": "CONFIG_UPDATE",
                 "config": full_config,
-                "mode": mode,
+                "mode": update_mode,
                 "profile": profile,
                 "req_id": req_id,
             }
@@ -1603,7 +1604,7 @@ async def hot_update_plugin_config(
             else:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Plugin {plugin_id} does not have a command queue"
+                    detail=f"Plugin {plugin_id} does not have a transport to send commands"
                 )
         
     except HTTPException:

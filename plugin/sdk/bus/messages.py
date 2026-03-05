@@ -348,12 +348,13 @@ class MessageClient:
                 source=source, filter=filter, strict=strict, since_ts=since_ts,
                 timeout=timeout, raw=raw, no_fallback=no_fallback,
             )
-        cached = self._try_local_cache(
-            plugin_id=plugin_id, max_count=max_count, priority_min=priority_min,
-            source=source, filter=filter, since_ts=since_ts, raw=raw,
-        )
-        if cached is not None:
-            return cached
+        if not no_fallback:
+            cached = self._try_local_cache(
+                plugin_id=plugin_id, max_count=max_count, priority_min=priority_min,
+                source=source, filter=filter, since_ts=since_ts, raw=raw,
+            )
+            if cached is not None:
+                return cached
 
         light = bool(raw)
         op, rpc_args, pid_norm = self._build_mp_args(
@@ -382,12 +383,13 @@ class MessageClient:
         raw: bool = False,
         no_fallback: bool = False,
     ) -> MessageList:
-        cached = self._try_local_cache(
-            plugin_id=plugin_id, max_count=max_count, priority_min=priority_min,
-            source=source, filter=filter, since_ts=since_ts, raw=raw,
-        )
-        if cached is not None:
-            return cached
+        if not no_fallback:
+            cached = self._try_local_cache(
+                plugin_id=plugin_id, max_count=max_count, priority_min=priority_min,
+                source=source, filter=filter, since_ts=since_ts, raw=raw,
+            )
+            if cached is not None:
+                return cached
 
         light = bool(raw)
         op, rpc_args, pid_norm = self._build_mp_args(

@@ -583,7 +583,7 @@ class GlobalState:
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
                 if self._plugin_comm_queue is None:
-                    self._plugin_comm_queue = asyncio.Queue()
+                    self._plugin_comm_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
         return self._plugin_comm_queue
 
     def register_downlink_sender(self, plugin_id: str, sender: Any) -> None:

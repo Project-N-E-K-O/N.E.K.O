@@ -1518,6 +1518,7 @@ class PluginHost:
         if result.get("success"):
             await asyncio.to_thread(self._shutdown_process, timeout)
             await self.comm_manager.shutdown(timeout=timeout)
+            state.remove_downlink_sender(self.plugin_id)
             self.transport.close()
             self.logger.info(f"[PluginHost] Plugin {self.plugin_id} frozen successfully")
         else:

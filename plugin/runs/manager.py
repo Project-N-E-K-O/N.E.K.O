@@ -591,7 +591,12 @@ async def shutdown_runs(*, timeout: float = 5.0) -> None:
     logger.info("Shutting down {} active run task(s)", len(tasks))
     for t in tasks.values():
         t.cancel()
-    await asyncio.gather(*tasks.values(), return_exceptions=True)
+    done, pending = await asyncio.wait(tasks.values(), timeout=timeout)
+    if pending:
+        logger.warning("shutdown_runs: {} task(s) still pending after {}s timeout", len(pending), timeout)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
     _active_run_tasks.clear()
 
 
@@ -732,6 +737,15 @@ async def _execute_run_guarded(
             ),
             timeout=timeout,
         )
+    except asyncio.CancelledError:
+        term = _run_store.commit_terminal(
+            run_id,
+            status="cancelled",
+            error=RunError(code="CANCELLED", message="Run was cancelled"),
+            result_refs=[],
+        )
+        if term is not None:
+            _emit_runs("change", term)
     except asyncio.TimeoutError:
         term = _run_store.commit_terminal(
             run_id,
