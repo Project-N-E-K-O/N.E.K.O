@@ -5,6 +5,7 @@
 """
 import asyncio
 import threading
+from datetime import datetime, timezone
 from typing import Callable
 from dataclasses import dataclass
 
@@ -23,6 +24,23 @@ from plugin.server.infrastructure.utils import now_iso
 
 logger = get_logger("server.monitoring.metrics")
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
+
+
+def _parse_iso_to_utc(value: str, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"invalid {field}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _safe_metric_timestamp_utc(value: str) -> datetime | None:
+    try:
+        return _parse_iso_to_utc(value, field="timestamp")
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -107,7 +125,11 @@ class MetricsCollector:
                     logger.debug(f"Collecting metrics for {len(plugin_hosts)} plugins: {list(plugin_hosts.keys())}")
                 for plugin_id, host in plugin_hosts.items():
                     try:
-                        metrics = await self._collect_plugin_metrics(plugin_id, host)
+                        metrics = await asyncio.to_thread(
+                            self._collect_plugin_metrics_sync,
+                            plugin_id,
+                            host,
+                        )
                         if metrics:
                             with self._lock:
                                 if plugin_id not in self._metrics_history:
@@ -140,7 +162,7 @@ class MetricsCollector:
             
             await asyncio.sleep(self.interval)
     
-    async def _collect_plugin_metrics(self, plugin_id: str, host: object) -> PluginMetrics | None:
+    def _collect_plugin_metrics_sync(self, plugin_id: str, host: object) -> PluginMetrics | None:
         """收集单个插件的性能指标"""
         if not PSUTIL_AVAILABLE:
             if PLUGIN_LOG_SERVER_DEBUG:
@@ -251,20 +273,33 @@ class MetricsCollector:
 
             history = self._metrics_history.get(plugin_id, [])
 
-            # 时间过滤（基于 ISO 时间字符串）
+            start_dt = _parse_iso_to_utc(start_time, field="start_time") if isinstance(start_time, str) else None
+            end_dt = _parse_iso_to_utc(end_time, field="end_time") if isinstance(end_time, str) else None
+
+            # 时间过滤（基于 UTC datetime 比较）
             filtered = history
-            if start_time is not None:
-                filtered = [
-                    metrics
-                    for metrics in filtered
-                    if isinstance(metrics.timestamp, str) and metrics.timestamp >= start_time
-                ]
-            if end_time is not None:
-                filtered = [
-                    metrics
-                    for metrics in filtered
-                    if isinstance(metrics.timestamp, str) and metrics.timestamp <= end_time
-                ]
+            if start_dt is not None:
+                next_filtered: list[PluginMetrics] = []
+                for metrics in filtered:
+                    if not isinstance(metrics.timestamp, str):
+                        continue
+                    metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
+                    if metric_dt is None:
+                        continue
+                    if metric_dt >= start_dt:
+                        next_filtered.append(metrics)
+                filtered = next_filtered
+            if end_dt is not None:
+                next_filtered: list[PluginMetrics] = []
+                for metrics in filtered:
+                    if not isinstance(metrics.timestamp, str):
+                        continue
+                    metric_dt = _safe_metric_timestamp_utc(metrics.timestamp)
+                    if metric_dt is None:
+                        continue
+                    if metric_dt <= end_dt:
+                        next_filtered.append(metrics)
+                filtered = next_filtered
 
             # 限制数量
             if len(filtered) > limit:

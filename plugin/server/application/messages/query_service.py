@@ -108,7 +108,11 @@ def _serialize_message(record: Mapping[str, object]) -> dict[str, object]:
         "binary_url": binary_url_value if isinstance(binary_url_value, str) else "",
         "metadata": metadata,
         "timestamp": timestamp_value if isinstance(timestamp_value, str) and timestamp_value else now_iso(),
-        "message_id": str(record.get("message_id") or ""),
+        "message_id": (
+            ""
+            if record.get("message_id") is None
+            else str(record.get("message_id"))
+        ),
     }
 
 
@@ -144,8 +148,16 @@ def _query_messages_sync(
             if priority_value is None or priority_value < priority_min:
                 continue
 
-        normalized_record = _normalize_mapping(item, context="message_record")
-        serialized_messages_reversed.append(_serialize_message(normalized_record))
+        try:
+            normalized_record = _normalize_mapping(item, context="message_record")
+            serialized_messages_reversed.append(_serialize_message(normalized_record))
+        except ServerDomainError as exc:
+            logger.debug(
+                "skip malformed message record: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            continue
         if len(serialized_messages_reversed) >= target_count:
             break
 

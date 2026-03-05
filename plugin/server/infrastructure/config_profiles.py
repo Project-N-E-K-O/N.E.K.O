@@ -364,6 +364,12 @@ def get_profile_config(
                 raw_path = value
 
     if raw_path is None:
+        if (
+            "/" in profile_name
+            or "\\" in profile_name
+            or profile_name in {".", ".."}
+        ):
+            raise HTTPException(status_code=400, detail="Invalid profile_name")
         raw_path = f"profiles/{profile_name}.toml"
 
     profile_path = resolve_profile_path(raw_path, base_dir)

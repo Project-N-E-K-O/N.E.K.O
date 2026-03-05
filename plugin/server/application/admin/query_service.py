@@ -92,20 +92,14 @@ def _jsonify_setting_value(value: object) -> object:
     return str(value)
 
 
-def _is_sensitive_setting_key(key: str) -> bool:
-    upper_key = key.upper()
-    sensitive_markers = ("SECRET", "TOKEN", "PASSWORD", "API_KEY", "PRIVATE_KEY")
-    return any(marker in upper_key for marker in sensitive_markers)
-
-
 def _build_system_config_sync() -> dict[str, object]:
     import plugin.settings as settings
 
-    keys_obj = getattr(settings, "__all__", None)
-    if isinstance(keys_obj, (list, tuple)):
-        keys = [key for key in keys_obj if isinstance(key, str)]
+    public_keys_obj = getattr(settings, "PUBLIC_SYSTEM_CONFIG_KEYS", ())
+    if isinstance(public_keys_obj, (list, tuple, set, frozenset)):
+        keys = [key for key in public_keys_obj if isinstance(key, str)]
     else:
-        keys = [key for key in dir(settings) if isinstance(key, str) and key.isupper()]
+        keys = []
 
     config: dict[str, object] = {}
     for key in keys:
@@ -120,10 +114,7 @@ def _build_system_config_sync() -> dict[str, object]:
                 type(exc).__name__,
             )
             continue
-        if _is_sensitive_setting_key(key):
-            config[key] = "***REDACTED***"
-        else:
-            config[key] = _jsonify_setting_value(value)
+        config[key] = _jsonify_setting_value(value)
 
     return {"config": config}
 
@@ -138,7 +129,7 @@ class AdminQueryService:
                 "plugins_count": plugins_count,
                 "time": now_iso(),
             }
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except _RUNTIME_ERRORS as exc:
             logger.error(
                 "get_available failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -167,7 +158,7 @@ class AdminQueryService:
             return normalized_info
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        except _RUNTIME_ERRORS as exc:
             logger.error(
                 "get_server_info failed: err_type={}, err={}",
                 type(exc).__name__,
@@ -203,7 +194,7 @@ class AdminQueryService:
             return normalized_payload
         except ServerDomainError:
             raise
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError, ImportError) as exc:
+        except (_RUNTIME_ERRORS + (ImportError,)) as exc:
             logger.error(
                 "get_system_config failed: err_type={}, err={}",
                 type(exc).__name__,

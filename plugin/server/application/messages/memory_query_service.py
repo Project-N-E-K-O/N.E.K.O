@@ -33,7 +33,7 @@ def _normalize_non_empty_str(value: object, *, field: str) -> str:
             status_code=400,
             details={},
         )
-    return value
+    return value.strip()
 
 
 def _build_memory_search_url(*, lanlan_name: str, query: str) -> str:

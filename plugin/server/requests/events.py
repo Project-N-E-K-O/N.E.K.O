@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from plugin.logging_config import get_logger
@@ -26,7 +27,12 @@ def _coerce_optional_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        if not math.isfinite(value):
+            return None
+        try:
+            return int(value)
+        except (OverflowError, ValueError):
+            return None
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
@@ -42,15 +48,20 @@ def _coerce_optional_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError):
+            return None
+        return converted if math.isfinite(converted) else None
     if isinstance(value, str):
         stripped = value.strip()
         if not stripped:
             return None
         try:
-            return float(stripped)
+            converted = float(stripped)
         except ValueError:
             return None
+        return converted if math.isfinite(converted) else None
     return None
 
 

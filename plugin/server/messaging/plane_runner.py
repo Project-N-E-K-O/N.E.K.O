@@ -37,13 +37,13 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
         return True
     rest = ep[len("tcp://") :]
     if ":" not in rest:
-        return True
+        return False
     host, port_s = rest.rsplit(":", 1)
     host = host.strip() or "127.0.0.1"
     try:
         port = int(port_s)
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
-        return True
+        return False
 
     deadline = time.time() + max(0.0, float(timeout_s))
     while time.time() < deadline:
@@ -117,6 +117,9 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
     def _start_embedded(self) -> MessagePlaneEndpoints:
         if self._thread is not None and self._thread.is_alive():
             return self._endpoints
+        pub_srv = None
+        ingest_srv = None
+        rpc_srv = None
         try:
             from plugin.message_plane.ingest_server import MessagePlaneIngestServer
             from plugin.message_plane.pub_server import MessagePlanePubServer
@@ -155,6 +158,21 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             self._pub = pub_srv
             logger.info("message_plane embedded started")
         except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as err:
+            try:
+                if rpc_srv is not None:
+                    rpc_srv.stop()
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+                pass
+            try:
+                if ingest_srv is not None:
+                    ingest_srv.stop()
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+                pass
+            try:
+                if pub_srv is not None:
+                    pub_srv.close()
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
+                pass
             logger.warning("message_plane embedded start failed: {}", err)
         return self._endpoints
 
@@ -205,6 +223,18 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 try:
                     if p.poll() is None:
                         p.kill()
+                        try:
+                            p.wait(timeout=1.0)
+                        except (
+                            RuntimeError,
+                            ValueError,
+                            TypeError,
+                            AttributeError,
+                            KeyError,
+                            OSError,
+                            subprocess.TimeoutExpired,
+                        ):
+                            pass
                 except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
                     pass
             return
@@ -367,6 +397,18 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
             try:
                 if p.poll() is None:
                     p.kill()
+                    try:
+                        p.wait(timeout=1.0)
+                    except (
+                        RuntimeError,
+                        ValueError,
+                        TypeError,
+                        AttributeError,
+                        KeyError,
+                        OSError,
+                        subprocess.TimeoutExpired,
+                    ):
+                        pass
             except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.TimeoutExpired):
                 pass
 

@@ -414,7 +414,7 @@ def read_log_file_tail(log_file: Path, lines: int = 100) -> list[dict[str, objec
                     parsed_logs.append(log_entry)
             
             return parsed_logs
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read log file {log_file}")
         return []
 
@@ -509,7 +509,7 @@ def get_plugin_logs(
             key=lambda f: f.stat().st_mtime,
             reverse=True
         )
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to find log files in {log_dir} with pattern {pattern}")
         return {
             "plugin_id": plugin_id,
@@ -533,7 +533,7 @@ def get_plugin_logs(
     # 读取日志
     try:
         logs = read_log_file_tail(latest_log, lines)
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read log file {latest_log}")
         return {
             "plugin_id": plugin_id,
@@ -594,7 +594,7 @@ def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[list[
                     new_logs.append(log_entry)
             
             return new_logs, new_position
-    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read incremental log from {log_file}")
         return [], last_position
 
@@ -681,7 +681,7 @@ class LogFileWatcher:
                 
             except asyncio.CancelledError:
                 break
-            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 logger.exception(f"Error in log watcher loop for {self.plugin_id}")
                 await asyncio.sleep(1)
     
@@ -691,7 +691,7 @@ class LogFileWatcher:
             return
         
         disconnected = []
-        for client in self.clients:
+        for client in list(self.clients):
             try:
                 # 检查连接状态
                 if hasattr(client, 'client_state'):
@@ -745,7 +745,7 @@ class LogFileWatcher:
                 self.current_log_file = log_files[0]
                 # 获取文件当前大小作为起始位置
                 self.last_position = self.current_log_file.stat().st_size
-        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             logger.exception("Failed to send initial logs")
 
 
