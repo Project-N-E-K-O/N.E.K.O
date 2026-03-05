@@ -1300,7 +1300,7 @@
             "proactiveVideoChat": "Video Website",
             "proactiveVideoChatTooltip": "Use video content for proactive chat",
             "proactivePersonalChat": "Personal Updates",
-            "proactivePersonalChatTooltip": "Use Bilibili and Weibo personal updates for proactive chat",
+            "proactivePersonalChatTooltip": "Use Bilibili and Twitter personal updates for proactive chat",
             "proactiveMusicChat": "Music Recommendation",
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
             "agentMaster": "Agent Master Switch",

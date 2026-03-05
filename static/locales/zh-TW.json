@@ -1300,7 +1300,7 @@
             "proactiveVideoChat": "影片網站",
             "proactiveVideoChatTooltip": "使用視頻內容進行搭話",
             "proactivePersonalChat": "個人動態",
-            "proactivePersonalChatTooltip": "使用B站和微博的個人動態進行搭話",
+            "proactivePersonalChatTooltip": "使用B站和Twitter的個人動態進行搭話",
             "proactiveMusicChat": "音樂推薦",
             "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
             "agentMaster": "Agent總開關",

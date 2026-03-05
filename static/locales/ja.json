@@ -1300,7 +1300,7 @@
             "proactiveVideoChat": "動画サイト",
             "proactiveVideoChatTooltip": "動画コンテンツを使用してチャット",
             "proactivePersonalChat": "個人更新情報",
-            "proactivePersonalChatTooltip": "BilibiliとWeiboの個人更新情報を使用してチャット",
+            "proactivePersonalChatTooltip": "BilibiliとTwitterの個人更新情報を使用してチャット",
             "proactiveMusicChat": "音楽推薦",
             "proactiveMusicChatTooltip": "推薦音楽を使用してチャット",
             "agentMaster": "Agentマスタースイッチ",
