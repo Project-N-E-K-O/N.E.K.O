@@ -3,12 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union, Coroutine
 
-from plugin.core.state import state
-from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
-from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 

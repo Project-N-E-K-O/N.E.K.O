@@ -19,7 +19,6 @@
 """
 import mimetypes
 from pathlib import Path
-from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -27,21 +26,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.routes.error_mapping import raise_http_from_domain
 
 router = APIRouter(tags=["plugin-ui"])
 logger = get_logger("server.routes.plugin_ui")
 plugin_ui_query_service = PluginUiQueryService()
-
-
-def _raise_http_from_domain(error: ServerDomainError) -> NoReturn:
-    logger.warning(
-        "Domain error: code={}, status_code={}, message={}",
-        error.code,
-        error.status_code,
-        error.message,
-    )
-    raise HTTPException(status_code=error.status_code, detail=error.message)
-
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
     """获取插件的静态文件目录
@@ -98,7 +87,7 @@ async def plugin_ui_index(plugin_id: str):
     try:
         static_dir = await _get_plugin_static_dir(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
     
     if not static_dir:
         raise HTTPException(
@@ -135,7 +124,7 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
     try:
         static_dir = await _get_plugin_static_dir(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
     
     if not static_dir:
         raise HTTPException(
@@ -173,7 +162,7 @@ async def plugin_ui_file(plugin_id: str, file_path: str):
     try:
         ui_config = await _get_static_ui_config(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
     cache_control = "public, max-age=3600"
     if ui_config is not None:
         cache_control_obj = ui_config.get("cache_control")
@@ -199,5 +188,5 @@ async def plugin_ui_info(plugin_id: str):
     try:
         ui_info = await plugin_ui_query_service.get_ui_info(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
     return JSONResponse(ui_info)

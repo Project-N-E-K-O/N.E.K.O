@@ -71,3 +71,32 @@ async def test_get_plugin_messages_wraps_runtime_errors(monkeypatch: pytest.Monk
         await service.get_plugin_messages(plugin_id="demo", max_count=5, priority_min=None)
 
     assert exc_info.value.code == "MESSAGE_QUERY_FAILED"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_get_plugin_messages_keeps_serialized_binary_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = module.MessageQueryService()
+    expected = [
+        {
+            "plugin_id": "a",
+            "source": "",
+            "description": "",
+            "priority": 1,
+            "message_type": "binary",
+            "content": "ok",
+            "binary_data": "YWJj",
+            "binary_url": "",
+            "metadata": {},
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message_id": "m1",
+        }
+    ]
+
+    def _fake_query(*, plugin_id: str | None, max_count: int, priority_min: int | None):
+        return expected
+
+    monkeypatch.setattr(module, "_query_messages_sync", _fake_query)
+
+    payload = await service.get_plugin_messages(plugin_id="a", max_count=1, priority_min=None)
+    assert payload["messages"][0]["binary_data"] == "YWJj"

@@ -1,96 +1,36 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from collections.abc import Mapping
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.contracts import (
+    AllPluginMetricsResponse,
+    MetricRecord,
+    PluginMetricsHistoryResponse,
+    PluginMetricsResponse,
+)
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import (
+    coerce_optional_float,
+    coerce_optional_int,
+    normalize_mapping_list,
+    normalize_optional_iso_datetime,
+)
 from plugin.server.infrastructure.utils import now_iso
 from plugin.server.monitoring.metrics import metrics_collector
 
 logger = get_logger("server.application.monitoring.query")
 
 
-def _normalize_optional_iso_time(value: str | None, *, field: str) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    if not stripped:
-        return None
-    try:
-        datetime.fromisoformat(stripped.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ServerDomainError(
-            code="INVALID_ARGUMENT",
-            message=f"{field} must be a valid ISO datetime string",
-            status_code=400,
-            details={"field": field},
-        ) from exc
-    return stripped
-
-
-def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
-    normalized: dict[str, object] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str):
-            raise ServerDomainError(
-                code="INVALID_DATA_SHAPE",
-                message=f"{context} contains non-string key",
-                status_code=500,
-                details={"key_type": type(key).__name__},
-            )
-        normalized[key] = value
-    return normalized
-
-
-def _normalize_mapping_list(raw_items: list[object], *, context: str) -> list[dict[str, object]]:
-    normalized_items: list[dict[str, object]] = []
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, Mapping):
-            raise ServerDomainError(
-                code="INVALID_DATA_SHAPE",
-                message=f"{context} item is not an object",
-                status_code=500,
-                details={"index": index, "item_type": type(item).__name__},
-            )
-        normalized_items.append(_normalize_mapping(item, context=f"{context}[{index}]"))
-    return normalized_items
-
-
 def _to_float(value: object, *, default: float = 0.0) -> float:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return default
-        try:
-            return float(stripped)
-        except ValueError:
-            return default
-    return default
+    parsed = coerce_optional_float(value)
+    return parsed if parsed is not None else default
 
 
 def _to_int(value: object, *, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return default
-        try:
-            return int(stripped)
-        except ValueError:
-            return default
-    return default
+    parsed = coerce_optional_int(value)
+    return parsed if parsed is not None else default
 
 
 def _metrics_snapshot_for_plugin_sync(
@@ -117,7 +57,7 @@ def _metrics_snapshot_for_plugin_sync(
 
 
 class MetricsQueryService:
-    async def get_all_plugin_metrics(self) -> dict[str, object]:
+    async def get_all_plugin_metrics(self) -> AllPluginMetricsResponse:
         try:
             raw_metrics = await asyncio.to_thread(metrics_collector.get_current_metrics)
             if not isinstance(raw_metrics, list):
@@ -127,7 +67,7 @@ class MetricsQueryService:
                     status_code=500,
                     details={"result_type": type(raw_metrics).__name__},
                 )
-            metrics = _normalize_mapping_list(raw_metrics, context="plugin_metrics")
+            metrics: list[MetricRecord] = normalize_mapping_list(raw_metrics, context="plugin_metrics")
 
             total_cpu = sum(_to_float(metric.get("cpu_percent")) for metric in metrics)
             total_memory_mb = sum(_to_float(metric.get("memory_mb")) for metric in metrics)
@@ -162,7 +102,7 @@ class MetricsQueryService:
                 details={"error_type": type(exc).__name__},
             ) from exc
 
-    async def get_plugin_metrics(self, plugin_id: str) -> dict[str, object]:
+    async def get_plugin_metrics(self, plugin_id: str) -> PluginMetricsResponse:
         try:
             plugin_registered, plugin_running, process_alive, running_plugin_ids = await asyncio.to_thread(
                 _metrics_snapshot_for_plugin_sync,
@@ -188,7 +128,7 @@ class MetricsQueryService:
                         "result_type": type(raw_metrics).__name__,
                     },
                 )
-            metrics = _normalize_mapping_list(raw_metrics, context=f"plugin_metrics[{plugin_id}]")
+            metrics: list[MetricRecord] = normalize_mapping_list(raw_metrics, context=f"plugin_metrics[{plugin_id}]")
 
             if not metrics:
                 logger.info(
@@ -245,10 +185,10 @@ class MetricsQueryService:
         limit: int,
         start_time: str | None,
         end_time: str | None,
-    ) -> dict[str, object]:
+    ) -> PluginMetricsHistoryResponse:
         try:
-            normalized_start_time = _normalize_optional_iso_time(start_time, field="start_time")
-            normalized_end_time = _normalize_optional_iso_time(end_time, field="end_time")
+            normalized_start_time = normalize_optional_iso_datetime(start_time, field="start_time")
+            normalized_end_time = normalize_optional_iso_datetime(end_time, field="end_time")
             raw_history = await asyncio.to_thread(
                 metrics_collector.get_metrics_history,
                 plugin_id,
@@ -267,7 +207,7 @@ class MetricsQueryService:
                     },
                 )
 
-            history = _normalize_mapping_list(raw_history, context=f"metrics_history[{plugin_id}]")
+            history: list[MetricRecord] = normalize_mapping_list(raw_history, context=f"metrics_history[{plugin_id}]")
             return {
                 "plugin_id": plugin_id,
                 "history": history,

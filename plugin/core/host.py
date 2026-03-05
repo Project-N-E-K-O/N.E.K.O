@@ -5,7 +5,6 @@ import copy
 import importlib
 import inspect
 import multiprocessing
-import os
 import sys
 import threading
 import time
@@ -17,7 +16,7 @@ from typing import Any, Dict, Optional, Type
 from multiprocessing import Queue
 from queue import Empty
 
-from plugin._types.events import EVENT_META_ATTR, EventHandler
+from plugin._types.events import EVENT_META_ATTR
 from plugin.sdk.decorators import WORKER_MODE_ATTR, PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
@@ -27,9 +26,7 @@ from plugin.logging_config import get_logger
 from plugin._types.models import HealthCheckResponse
 from plugin._types.exceptions import (
     PluginLifecycleError,
-    PluginTimerError,
     PluginEntryNotFoundError,
-    PluginExecutionError,
     PluginError,
 )
 from plugin.settings import (
@@ -228,7 +225,6 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     Returns:
         配置好的 logger 实例
     """
-    import logging
     from plugin.logging_config import _loguru_logger, get_plugin_format_console, get_plugin_format_file
 
     logger = _loguru_logger

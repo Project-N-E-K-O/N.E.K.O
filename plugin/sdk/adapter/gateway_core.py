@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-from loguru import logger
 
 from plugin.sdk.adapter.gateway_contracts import (
     LoggerLike,

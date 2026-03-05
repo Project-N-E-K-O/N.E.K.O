@@ -10,12 +10,11 @@ import time
 import uuid
 from collections import deque
 import multiprocessing
-from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from plugin._types.events import EventHandler
 from plugin.logging_config import get_logger
 from plugin.settings import (
-    BUS_SDK_POLL_INTERVAL_SECONDS,
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
     MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,

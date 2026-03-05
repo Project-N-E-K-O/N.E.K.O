@@ -19,7 +19,6 @@ except ImportError:
 from plugin.logging_config import get_logger
 from plugin.settings import PLUGIN_LOG_SERVER_DEBUG
 
-from plugin.core.state import state
 from plugin.server.infrastructure.utils import now_iso
 
 logger = get_logger("server.monitoring.metrics")

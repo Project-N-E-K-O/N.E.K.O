@@ -3,15 +3,14 @@
 """
 from __future__ import annotations
 
-from typing import NoReturn
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from plugin.logging_config import get_logger
 from plugin.server.application.config import ConfigCommandService, ConfigQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import require_admin
+from plugin.server.routes.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.config")
@@ -46,22 +45,12 @@ class HotUpdateConfigRequest(BaseModel):
     profile: str | None = None
 
 
-def _raise_http_from_domain(error: ServerDomainError) -> NoReturn:
-    logger.warning(
-        "Domain error: code={}, status_code={}, message={}",
-        error.code,
-        error.status_code,
-        error.message,
-    )
-    raise HTTPException(status_code=error.status_code, detail=error.message)
-
-
 @router.get("/plugin/{plugin_id}/config")
 async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await config_query_service.get_plugin_config(plugin_id=plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/toml")
@@ -69,7 +58,7 @@ async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin
     try:
         return await config_query_service.get_plugin_config_toml(plugin_id=plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.put("/plugin/{plugin_id}/config")
@@ -84,7 +73,7 @@ async def update_plugin_config_endpoint(
             config=payload.config,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin/{plugin_id}/config/parse_toml")
@@ -99,7 +88,7 @@ async def parse_toml_to_config_endpoint(
             toml=payload.toml,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin/{plugin_id}/config/render_toml")
@@ -114,7 +103,7 @@ async def render_config_to_toml_endpoint(
             config=payload.config,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.put("/plugin/{plugin_id}/config/toml")
@@ -129,7 +118,7 @@ async def update_plugin_config_toml_endpoint(
             toml=payload.toml,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/base")
@@ -137,7 +126,7 @@ async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin
     try:
         return await config_query_service.get_plugin_base_config(plugin_id=plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/profiles")
@@ -145,7 +134,7 @@ async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_ad
     try:
         return await config_query_service.get_plugin_profiles_state(plugin_id=plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/config/profiles/{profile_name}")
@@ -160,7 +149,7 @@ async def get_plugin_profile_config_endpoint(
             profile_name=profile_name,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.put("/plugin/{plugin_id}/config/profiles/{profile_name}")
@@ -178,7 +167,7 @@ async def upsert_plugin_profile_config_endpoint(
             make_active=payload.make_active,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.delete("/plugin/{plugin_id}/config/profiles/{profile_name}")
@@ -193,7 +182,7 @@ async def delete_plugin_profile_config_endpoint(
             profile_name=profile_name,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin/{plugin_id}/config/profiles/{profile_name}/activate")
@@ -208,7 +197,7 @@ async def set_plugin_active_profile_endpoint(
             profile_name=profile_name,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin/{plugin_id}/config/hot-update")
@@ -225,4 +214,4 @@ async def hot_update_plugin_config_endpoint(
             profile=payload.profile,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)

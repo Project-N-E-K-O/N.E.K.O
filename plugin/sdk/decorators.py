@@ -4,11 +4,11 @@
 提供插件开发所需的装饰器。
 """
 import inspect
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, cast, runtime_checkable, get_type_hints
-from .base import PluginMeta, NEKO_PLUGIN_TAG
+from dataclasses import dataclass
+from typing import Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, TypeVar, cast, get_type_hints
+from .base import NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
+from .hooks import HookMeta, HookTiming, HOOK_META_ATTR
 
 # Worker 装饰器的属性名
 WORKER_MODE_ATTR = "_neko_worker_mode"

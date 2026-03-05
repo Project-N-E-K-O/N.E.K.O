@@ -7,7 +7,6 @@ Worker 执行器模块
 import asyncio
 import contextvars
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, Future, wait as futures_wait
 from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass

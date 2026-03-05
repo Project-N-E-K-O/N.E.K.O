@@ -10,61 +10,51 @@ from fastapi import HTTPException
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import PluginLifecycleService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.routes.error_mapping import raise_http_from_domain
 
 logger = get_logger("server.management")
 _service = PluginLifecycleService()
-
-
-def _raise_http_from_domain(error: ServerDomainError) -> None:
-    logger.warning(
-        "management domain error: code={}, status_code={}, message={}",
-        error.code,
-        error.status_code,
-        error.message,
-    )
-    raise HTTPException(status_code=error.status_code, detail=error.message)
-
 
 async def start_plugin(plugin_id: str, restore_state: bool = False) -> dict[str, object]:
     try:
         return await _service.start_plugin(plugin_id, restore_state=restore_state)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def stop_plugin(plugin_id: str) -> dict[str, object]:
     try:
         return await _service.stop_plugin(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def reload_plugin(plugin_id: str) -> dict[str, object]:
     try:
         return await _service.reload_plugin(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def reload_all_plugins() -> dict[str, object]:
     try:
         return await _service.reload_all_plugins()
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def disable_extension(ext_id: str) -> dict[str, object]:
     try:
         return await _service.disable_extension(ext_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def enable_extension(ext_id: str) -> dict[str, object]:
     try:
         return await _service.enable_extension(ext_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 async def freeze_plugin(plugin_id: str) -> dict[str, object]:

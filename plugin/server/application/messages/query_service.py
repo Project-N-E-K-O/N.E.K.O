@@ -2,44 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import math
 from collections.abc import Mapping
+from typing import cast
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.contracts import MessageQueryResponse, SerializedMessage
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import (
+    coerce_optional_int,
+    normalize_mapping,
+    normalize_mapping_list,
+)
 from plugin.server.infrastructure.utils import now_iso
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT, MESSAGE_QUEUE_MAX
 
 logger = get_logger("server.application.messages.query")
 
 
-def _normalize_mapping(raw: Mapping[object, object], *, context: str) -> dict[str, object]:
-    normalized: dict[str, object] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str):
-            raise ServerDomainError(
-                code="INVALID_DATA_SHAPE",
-                message=f"{context} contains non-string key",
-                status_code=500,
-                details={"key_type": type(key).__name__},
-            )
-        normalized[key] = value
-    return normalized
-
-
-def _normalize_messages(raw_messages: list[object]) -> list[dict[str, object]]:
-    normalized_messages: list[dict[str, object]] = []
-    for index, item in enumerate(raw_messages):
-        if not isinstance(item, Mapping):
-            raise ServerDomainError(
-                code="INVALID_DATA_SHAPE",
-                message="message item is not an object",
-                status_code=500,
-                details={"index": index, "item_type": type(item).__name__},
-            )
-        normalized_messages.append(_normalize_mapping(item, context=f"messages[{index}]"))
-    return normalized_messages
+def _normalize_messages(raw_messages: list[object]) -> list[SerializedMessage]:
+    normalized_messages = normalize_mapping_list(raw_messages, context="messages")
+    return [cast(SerializedMessage, item) for item in normalized_messages]
 
 
 def _b64_bytes(value: object) -> str | None:
@@ -49,34 +32,11 @@ def _b64_bytes(value: object) -> str | None:
     return encoded.decode("utf-8")
 
 
-def _to_int(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return None
-        try:
-            return int(value)
-        except (OverflowError, ValueError):
-            return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return int(stripped)
-        except ValueError:
-            return None
-    return None
-
-
-def _serialize_message(record: Mapping[str, object]) -> dict[str, object]:
+def _serialize_message(record: Mapping[str, object]) -> SerializedMessage:
     metadata_obj = record.get("metadata")
     metadata: dict[str, object]
     if isinstance(metadata_obj, Mapping):
-        metadata = _normalize_mapping(metadata_obj, context="message.metadata")
+        metadata = normalize_mapping(metadata_obj, context="message.metadata")
     else:
         metadata = {}
 
@@ -94,7 +54,7 @@ def _serialize_message(record: Mapping[str, object]) -> dict[str, object]:
     else:
         message_type = "text"
 
-    priority_value = _to_int(record.get("priority"))
+    priority_value = coerce_optional_int(record.get("priority"))
     timestamp_value = record.get("time")
 
     return {
@@ -121,7 +81,7 @@ def _query_messages_sync(
     plugin_id: str | None,
     max_count: int,
     priority_min: int | None,
-) -> list[dict[str, object]]:
+) -> list[SerializedMessage]:
     requested_count = max_count if max_count > 0 else MESSAGE_QUEUE_DEFAULT_MAX_COUNT
     target_count = max(1, min(requested_count, MESSAGE_QUEUE_MAX))
     refresh_limit = (
@@ -140,7 +100,7 @@ def _query_messages_sync(
     except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError):
         logger.debug("message cache refresh skipped due to transient sync error")
 
-    serialized_messages_reversed: list[dict[str, object]] = []
+    serialized_messages_reversed: list[SerializedMessage] = []
     for item in state.iter_message_records_reverse():
         if not isinstance(item, Mapping):
             continue
@@ -149,12 +109,12 @@ def _query_messages_sync(
             continue
 
         if priority_min is not None:
-            priority_value = _to_int(item.get("priority"))
+            priority_value = coerce_optional_int(item.get("priority"))
             if priority_value is None or priority_value < priority_min:
                 continue
 
         try:
-            normalized_record = _normalize_mapping(item, context="message_record")
+            normalized_record = normalize_mapping(item, context="message_record")
             serialized_messages_reversed.append(_serialize_message(normalized_record))
         except ServerDomainError as exc:
             logger.debug(
@@ -177,7 +137,7 @@ class MessageQueryService:
         plugin_id: str | None,
         max_count: int,
         priority_min: int | None,
-    ) -> dict[str, object]:
+    ) -> MessageQueryResponse:
         try:
             raw_messages = await asyncio.to_thread(
                 _query_messages_sync,

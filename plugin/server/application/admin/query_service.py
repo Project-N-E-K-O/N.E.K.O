@@ -7,6 +7,13 @@ from pathlib import Path
 from plugin._types.version import SDK_VERSION
 from plugin.core.state import state
 from plugin.logging_config import get_logger
+from plugin.server.application.contracts import (
+    AvailableResponse,
+    RunningPluginStatus,
+    ServerInfoResponse,
+    ServerInfoSnapshot,
+    SystemConfigResponse,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.utils import now_iso
 
@@ -19,11 +26,11 @@ def _available_snapshot_sync() -> int:
     return len(plugins_snapshot)
 
 
-def _build_server_info_sync() -> dict[str, object]:
+def _build_server_info_sync() -> ServerInfoSnapshot:
     plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
     hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
 
-    running_plugins_status: dict[str, dict[str, object]] = {}
+    running_plugins_status: dict[str, RunningPluginStatus] = {}
     for plugin_id_obj, host_obj in hosts_snapshot.items():
         if not isinstance(plugin_id_obj, str):
             continue
@@ -92,7 +99,7 @@ def _jsonify_setting_value(value: object) -> object:
     return str(value)
 
 
-def _build_system_config_sync() -> dict[str, object]:
+def _build_system_config_sync() -> SystemConfigResponse:
     import plugin.settings as settings
 
     public_keys_obj = getattr(settings, "PUBLIC_SYSTEM_CONFIG_KEYS", ())
@@ -121,7 +128,7 @@ def _build_system_config_sync() -> dict[str, object]:
 
 
 class AdminQueryService:
-    async def get_available(self) -> dict[str, object]:
+    async def get_available(self) -> AvailableResponse:
         try:
             plugins_count = await asyncio.to_thread(_available_snapshot_sync)
             return {
@@ -143,7 +150,7 @@ class AdminQueryService:
                 details={"error_type": type(exc).__name__},
             ) from exc
 
-    async def get_server_info(self) -> dict[str, object]:
+    async def get_server_info(self) -> ServerInfoResponse:
         try:
             info = await asyncio.to_thread(_build_server_info_sync)
             if not isinstance(info, Mapping):
@@ -153,10 +160,11 @@ class AdminQueryService:
                     status_code=500,
                     details={"result_type": type(info).__name__},
                 )
-            normalized_info = dict(info)
-            normalized_info["sdk_version"] = SDK_VERSION
-            normalized_info["time"] = now_iso()
-            return normalized_info
+            return {
+                **info,
+                "sdk_version": SDK_VERSION,
+                "time": now_iso(),
+            }
         except ServerDomainError:
             raise
         except _RUNTIME_ERRORS as exc:
@@ -172,7 +180,7 @@ class AdminQueryService:
                 details={"error_type": type(exc).__name__},
             ) from exc
 
-    async def get_system_config(self) -> dict[str, object]:
+    async def get_system_config(self) -> SystemConfigResponse:
         try:
             payload = await asyncio.to_thread(_build_system_config_sync)
             if not isinstance(payload, Mapping):
@@ -192,7 +200,15 @@ class AdminQueryService:
                         details={"key_type": type(key_obj).__name__},
                     )
                 normalized_payload[key_obj] = value
-            return normalized_payload
+            config_value = normalized_payload.get("config")
+            if not isinstance(config_value, dict):
+                raise ServerDomainError(
+                    code="INVALID_DATA_SHAPE",
+                    message="system config result contains invalid config field",
+                    status_code=500,
+                    details={"config_type": type(config_value).__name__},
+                )
+            return {"config": config_value}
         except ServerDomainError:
             raise
         except (_RUNTIME_ERRORS + (ImportError,)) as exc:

@@ -366,6 +366,8 @@ class ConfigCommandService:
                 profile=normalized_profile,
             )
             return _normalize_payload(payload, context="hot_update_plugin_config")
+        except ServerDomainError:
+            raise
         except HTTPException as exc:
             raise _from_http_exception(
                 exc,

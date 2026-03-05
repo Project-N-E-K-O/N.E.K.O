@@ -552,7 +552,7 @@ def get_plugin_logs(
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to find log files"
+            "error": "Failed to find log files"
         }
     
     if not log_files:
@@ -576,7 +576,7 @@ def get_plugin_logs(
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to read log file"
+            "error": "Failed to read log file"
         }
     
     # 过滤

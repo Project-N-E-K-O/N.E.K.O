@@ -3,29 +3,20 @@
 """
 from __future__ import annotations
 
-from typing import NoReturn, Optional
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket
+from fastapi import APIRouter, Query, WebSocket
 
 from plugin.logging_config import get_logger
 from plugin.server.application.logs import LogQueryService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.auth import get_admin_code, require_admin
 from plugin.server.logs import log_stream_endpoint
+from plugin.server.routes.error_mapping import raise_http_from_domain
 
 router = APIRouter()
 logger = get_logger("server.routes.logs")
 log_query_service = LogQueryService()
-
-
-def _raise_http_from_domain(error: ServerDomainError) -> NoReturn:
-    logger.warning(
-        "Domain error: code={}, status_code={}, message={}",
-        error.code,
-        error.status_code,
-        error.message,
-    )
-    raise HTTPException(status_code=error.status_code, detail=error.message)
 
 
 @router.get("/plugin/{plugin_id}/logs")
@@ -48,7 +39,7 @@ async def get_plugin_logs_endpoint(
             search=search,
         )
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/logs/files")
@@ -56,7 +47,7 @@ async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin) 
     try:
         return log_query_service.get_plugin_log_files(plugin_id)
     except ServerDomainError as error:
-        _raise_http_from_domain(error)
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.websocket("/ws/logs/{plugin_id}")

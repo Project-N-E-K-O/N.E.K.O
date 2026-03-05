@@ -4,9 +4,8 @@ import asyncio
 from collections.abc import Mapping
 from typing import Protocol, cast
 
-from fastapi import HTTPException
-
 from plugin.logging_config import get_logger
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
@@ -35,11 +34,21 @@ class _SupportsConfigUpdate(Protocol):
 
 def _ensure_mapping(value: object, *, field: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
-        raise HTTPException(status_code=400, detail=f"{field} must be an object")
+        raise ServerDomainError(
+            code="INVALID_ARGUMENT",
+            message=f"{field} must be an object",
+            status_code=400,
+            details={"field": field},
+        )
     normalized: dict[str, object] = {}
     for key_obj, item in value.items():
         if not isinstance(key_obj, str):
-            raise HTTPException(status_code=400, detail=f"{field} keys must be strings")
+            raise ServerDomainError(
+                code="INVALID_ARGUMENT",
+                message=f"{field} keys must be strings",
+                status_code=400,
+                details={"field": field, "key_type": type(key_obj).__name__},
+            )
         normalized[key_obj] = item
     return normalized
 
@@ -65,9 +74,11 @@ async def hot_update_plugin_config(
 
     if host is None:
         if mode == "temporary":
-            raise HTTPException(
+            raise ServerDomainError(
+                code="PLUGIN_NOT_RUNNING",
+                message=f"Plugin {plugin_id} is not running. Cannot apply temporary config update.",
                 status_code=400,
-                detail=f"Plugin {plugin_id} is not running. Cannot apply temporary config update.",
+                details={"plugin_id": plugin_id, "mode": mode},
             )
         persisted = await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
         persisted["hot_reloaded"] = False
@@ -78,18 +89,22 @@ async def hot_update_plugin_config(
         await loop.run_in_executor(None, update_plugin_config, plugin_id, normalized_updates)
 
     if not hasattr(host, "send_config_update"):
-        raise HTTPException(
+        raise ServerDomainError(
+            code="CONFIG_HOT_UPDATE_UNSUPPORTED",
+            message=f"Plugin {plugin_id} host does not support config hot update",
             status_code=500,
-            detail=f"Plugin {plugin_id} host does not support config hot update",
+            details={"plugin_id": plugin_id},
         )
 
     if mode == "permanent":
         config_payload = await loop.run_in_executor(None, load_plugin_config, plugin_id)
         full_config_obj = config_payload.get("config")
         if not isinstance(full_config_obj, Mapping):
-            raise HTTPException(
+            raise ServerDomainError(
+                code="INVALID_DATA_SHAPE",
+                message=f"Plugin {plugin_id} config payload has invalid shape",
                 status_code=500,
-                detail=f"Plugin {plugin_id} config payload has invalid shape",
+                details={"plugin_id": plugin_id, "payload_type": type(full_config_obj).__name__},
             )
         full_config = _ensure_mapping(full_config_obj, field="config")
         update_mode = "temporary"
@@ -122,9 +137,11 @@ async def hot_update_plugin_config(
             type(exc).__name__,
             str(exc),
         )
-        raise HTTPException(
+        raise ServerDomainError(
+            code="PLUGIN_CONFIG_HOT_UPDATE_FAILED",
+            message="Plugin config update failed",
             status_code=500,
-            detail=f"Plugin config update failed: {str(exc)}",
+            details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
         ) from exc
 
     handler_called = False

@@ -8,9 +8,7 @@ from pathlib import Path
 import asyncio
 import inspect
 from typing import TYPE_CHECKING, Optional, Dict, Any, List, Union, Callable
-from functools import wraps
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
 from .hook_executor import HookExecutorMixin
 from .config import PluginConfig
 from .plugins import Plugins
@@ -19,8 +17,6 @@ from .state import PluginStatePersistence
 from .store import PluginStore
 from .database import PluginDatabase
 from plugin.settings import (
-    NEKO_PLUGIN_META_ATTR, 
-    NEKO_PLUGIN_TAG,
     PLUGIN_LOG_LEVEL,
     PLUGIN_LOG_MAX_BYTES,
     PLUGIN_LOG_BACKUP_COUNT,

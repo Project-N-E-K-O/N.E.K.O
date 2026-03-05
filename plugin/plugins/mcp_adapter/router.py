@@ -13,7 +13,7 @@ from plugin.sdk.adapter.gateway_models import (
 )
 
 if TYPE_CHECKING:
-    from plugin.plugins.mcp_adapter import MCPClient, MCPTool
+    from plugin.plugins.mcp_adapter import MCPClient
 
 # 工具注册回调类型
 ToolRegisterCallback = Callable[[str, str, str, Optional[dict]], Awaitable[bool]]

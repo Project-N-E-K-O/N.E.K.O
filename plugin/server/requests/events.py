@@ -1,107 +1,20 @@
 from __future__ import annotations
 
-import math
-from collections.abc import Mapping
-
 from plugin.logging_config import get_logger
 from plugin.server.application.bus.query_service import BusQueryService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.requests.common import (
+    coerce_bool,
+    coerce_optional_float,
+    coerce_optional_int,
+    coerce_string_key_mapping,
+    resolve_common_fields,
+    resolve_wildcard_scope_id,
+)
 from plugin.server.requests.typing import SendResponse
 
 logger = get_logger("server.requests.events")
 bus_query_service = BusQueryService()
-
-
-def _coerce_timeout(value: object) -> float:
-    if isinstance(value, bool):
-        return 5.0
-    if isinstance(value, (int, float)):
-        try:
-            timeout = float(value)
-        except (OverflowError, ValueError):
-            return 5.0
-        if math.isfinite(timeout) and timeout > 0:
-            return timeout
-        return 5.0
-    return 5.0
-
-
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return None
-        try:
-            return int(value)
-        except (OverflowError, ValueError):
-            return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return int(stripped)
-        except ValueError:
-            return None
-    return None
-
-
-def _coerce_optional_float(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            converted = float(value)
-        except (OverflowError, ValueError):
-            return None
-        return converted if math.isfinite(converted) else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            converted = float(stripped)
-        except ValueError:
-            return None
-        return converted if math.isfinite(converted) else None
-    return None
-
-
-def _coerce_bool(value: object, *, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
-def _coerce_filter_data(value: object) -> dict[str, object] | None:
-    if not isinstance(value, Mapping):
-        return None
-    normalized: dict[str, object] = {}
-    for key, item in value.items():
-        if isinstance(key, str):
-            normalized[key] = item
-    return normalized
-
-
-def _resolve_plugin_id(*, request: Mapping[str, object], from_plugin: str) -> str | None:
-    plugin_id_obj = request.get("plugin_id")
-    if isinstance(plugin_id_obj, str) and plugin_id_obj.strip():
-        normalized = plugin_id_obj.strip()
-        if normalized == "*":
-            return None
-        return normalized
-    return from_plugin
 
 
 def _send_error(
@@ -116,22 +29,19 @@ def _send_error(
 
 
 async def handle_event_get(request: dict[str, object], send_response: SendResponse) -> None:
-    from_plugin_obj = request.get("from_plugin")
-    request_id_obj = request.get("request_id")
-    timeout = _coerce_timeout(request.get("timeout", 5.0))
-
-    if not isinstance(from_plugin_obj, str) or not from_plugin_obj.strip():
-        return
-    if not isinstance(request_id_obj, str) or not request_id_obj.strip():
+    context = resolve_common_fields(request)
+    if context is None:
         return
 
-    from_plugin = from_plugin_obj.strip()
-    request_id = request_id_obj.strip()
-    plugin_id = _resolve_plugin_id(request=request, from_plugin=from_plugin)
-    max_count = _coerce_optional_int(request.get("max_count", request.get("limit")))
-    since_ts = _coerce_optional_float(request.get("since_ts"))
-    strict = _coerce_bool(request.get("strict", True), default=True)
-    filter_data = _coerce_filter_data(request.get("filter"))
+    from_plugin, request_id, timeout = context
+    plugin_id = resolve_wildcard_scope_id(
+        value=request.get("plugin_id"),
+        fallback=from_plugin,
+    )
+    max_count = coerce_optional_int(request.get("max_count", request.get("limit")))
+    since_ts = coerce_optional_float(request.get("since_ts"))
+    strict = coerce_bool(request.get("strict", True), default=True)
+    filter_data = coerce_string_key_mapping(request.get("filter"))
 
     try:
         events = await bus_query_service.get_events(

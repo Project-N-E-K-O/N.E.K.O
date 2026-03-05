@@ -5,31 +5,11 @@ from collections.abc import Callable
 from plugin.logging_config import get_logger
 from plugin.server.application.bus.mutation_service import BusMutationService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.requests.common import normalize_non_empty_str, resolve_common_fields
 from plugin.server.requests.typing import SendResponse
 
 logger = get_logger("server.requests.bus_delete")
 bus_mutation_service = BusMutationService()
-
-
-def _coerce_timeout(value: object) -> float:
-    if isinstance(value, bool):
-        return 5.0
-    if isinstance(value, (int, float)):
-        timeout = float(value)
-        return timeout if timeout > 0 else 5.0
-    return 5.0
-
-
-def _resolve_common_context(request: dict[str, object]) -> tuple[str, str, float] | None:
-    from_plugin_obj = request.get("from_plugin")
-    request_id_obj = request.get("request_id")
-    timeout = _coerce_timeout(request.get("timeout", 5.0))
-
-    if not isinstance(from_plugin_obj, str) or not from_plugin_obj:
-        return None
-    if not isinstance(request_id_obj, str) or not request_id_obj:
-        return None
-    return from_plugin_obj, request_id_obj, timeout
 
 
 def _send_error(
@@ -70,13 +50,13 @@ def _handle_delete(
     delete_fn: Callable[[str], bool],
     op_name: str,
 ) -> None:
-    context = _resolve_common_context(request)
+    context = resolve_common_fields(request)
     if context is None:
         return
     from_plugin, request_id, timeout = context
 
-    identifier_obj = request.get(field_name)
-    if not isinstance(identifier_obj, str) or not identifier_obj:
+    identifier = normalize_non_empty_str(request.get(field_name))
+    if identifier is None:
         _send_error(
             send_response=send_response,
             from_plugin=from_plugin,
@@ -87,7 +67,7 @@ def _handle_delete(
         return
 
     try:
-        deleted = delete_fn(identifier_obj)
+        deleted = delete_fn(identifier)
     except ServerDomainError as exc:
         logger.warning(
             "{} failed: code={}, message={}, {}={}",
@@ -95,7 +75,7 @@ def _handle_delete(
             exc.code,
             exc.message,
             field_name,
-            identifier_obj,
+            identifier,
         )
         _send_error(
             send_response=send_response,
@@ -112,7 +92,7 @@ def _handle_delete(
         request_id=request_id,
         timeout=timeout,
         field_name=field_name,
-        field_value=identifier_obj,
+        field_value=identifier,
         deleted=deleted,
     )
 

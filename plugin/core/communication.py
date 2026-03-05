@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field

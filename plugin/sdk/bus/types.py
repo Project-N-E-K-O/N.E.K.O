@@ -52,7 +52,6 @@ if TYPE_CHECKING:
     from plugin.sdk.bus.conversations import ConversationList
 
 from plugin.sdk.bus.rev import (
-    _BUS_LATEST_REV,
     _ensure_bus_rev_subscription,
     _get_bus_rev,
     _get_recent_deltas,

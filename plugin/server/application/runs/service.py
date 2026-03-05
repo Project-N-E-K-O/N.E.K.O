@@ -6,7 +6,9 @@ from pathlib import Path
 
 from plugin._types.models import RunCreateRequest, RunCreateResponse
 from plugin.logging_config import get_logger
+from plugin.server.application.contracts import UploadBlobResponse, UploadSessionResponse
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import coerce_optional_int, normalize_non_empty_str
 from plugin.server.runs.manager import (
     ExportListResponse,
     RunRecord,
@@ -50,32 +52,6 @@ def _cleanup_tmp_upload_file(upload_id: str, file_path: Path) -> None:
             type(exc).__name__,
             str(exc),
         )
-
-
-def _coerce_optional_str(value: object) -> str | None:
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped:
-            return stripped
-    return None
-
-
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return int(stripped)
-        except ValueError:
-            return None
-    return None
 
 
 class RunService:
@@ -144,7 +120,7 @@ class RunService:
         run_id: str,
         base_url: str,
         body: dict[str, object] | None,
-    ) -> dict[str, object]:
+    ) -> UploadSessionResponse:
         rec = manager_get_run(run_id)
         if rec is None:
             raise _to_domain_error(
@@ -158,9 +134,9 @@ class RunService:
         mime: str | None = None
         max_bytes: int | None = None
         if body is not None:
-            filename = _coerce_optional_str(body.get("filename"))
-            mime = _coerce_optional_str(body.get("mime"))
-            max_bytes = _coerce_optional_int(body.get("max_bytes"))
+            filename = normalize_non_empty_str(body.get("filename"))
+            mime = normalize_non_empty_str(body.get("mime"))
+            max_bytes = coerce_optional_int(body.get("max_bytes"))
 
         try:
             session = blob_store.create_upload(
@@ -191,7 +167,7 @@ class RunService:
             "blob_url": f"{normalized_base}/runs/{run_id}/blobs/{session.blob_id}",
         }
 
-    async def upload_blob(self, *, upload_id: str, chunks: AsyncIterable[bytes]) -> dict[str, object]:
+    async def upload_blob(self, *, upload_id: str, chunks: AsyncIterable[bytes]) -> UploadBlobResponse:
         session = blob_store.get_upload(upload_id)
         if session is None:
             raise _to_domain_error(

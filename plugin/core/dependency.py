@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from loguru import logger
 
 from plugin.core.state import state
 from plugin._types.models import PluginDependency

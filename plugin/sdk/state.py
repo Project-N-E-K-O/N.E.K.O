@@ -10,7 +10,7 @@
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Callable
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime, date, timedelta
 from enum import Enum
 import time

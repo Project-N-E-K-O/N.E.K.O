@@ -29,7 +29,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Awaitable, ClassVar, Dict, List, Optional, TypeVar, Union, Callable
 
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
 from .hook_executor import HookExecutorMixin
 
 if TYPE_CHECKING:

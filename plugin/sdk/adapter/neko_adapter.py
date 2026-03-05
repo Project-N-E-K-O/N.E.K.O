@@ -6,7 +6,6 @@ NekoAdapterPlugin 基类
 
 from __future__ import annotations
 
-from abc import abstractmethod
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from plugin.sdk.base import NekoPluginBase

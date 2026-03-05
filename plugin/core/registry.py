@@ -28,11 +28,6 @@ from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
-from plugin._types.exceptions import (
-    PluginImportError,
-    PluginLoadError,
-    PluginMetadataError,
-)
 from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
 from plugin.utils import parse_bool_config
 
@@ -40,12 +35,8 @@ from plugin.utils import parse_bool_config
 from plugin.core.dependency import (
     _parse_specifier,
     _version_matches,
-    _find_plugins_by_entry,
-    _find_plugins_by_custom_event,
     _check_plugin_dependency,
-    _check_single_plugin_version,
     _parse_plugin_dependencies,
-    _get_dependency_plugin_ids,
     _topological_sort_plugins,
 )
 

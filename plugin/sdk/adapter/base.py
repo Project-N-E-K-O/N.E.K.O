@@ -10,7 +10,6 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from plugin.sdk.adapter.gateway_contracts import LoggerLike

@@ -1,35 +1,42 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_TIMEOUT_SECONDS,
+    coerce_bool,
+    coerce_optional_float,
+    coerce_optional_int,
+    coerce_string_key_mapping,
+    coerce_timeout,
+    normalize_non_empty_str,
+    normalize_pagination_limit,
+    resolve_wildcard_scope_id,
+)
 
-DEFAULT_TIMEOUT_SECONDS = 5.0
-MAX_TIMEOUT_SECONDS = 60.0
-
-
-def coerce_timeout(value: object) -> float:
-    if isinstance(value, bool):
-        return DEFAULT_TIMEOUT_SECONDS
-    if isinstance(value, (int, float)):
-        timeout = float(value)
-        if math.isfinite(timeout) and timeout > 0:
-            return min(timeout, MAX_TIMEOUT_SECONDS)
-        return DEFAULT_TIMEOUT_SECONDS
-    return DEFAULT_TIMEOUT_SECONDS
-
-
-def resolve_common_fields(request: Mapping[str, object]) -> tuple[str, str, float] | None:
+def resolve_common_fields(
+    request: Mapping[str, object],
+    *,
+    timeout_default: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_max: float = MAX_TIMEOUT_SECONDS,
+) -> tuple[str, str, float] | None:
     from_plugin_obj = request.get("from_plugin")
     request_id_obj = request.get("request_id")
-    timeout = coerce_timeout(request.get("timeout", DEFAULT_TIMEOUT_SECONDS))
+    timeout = coerce_timeout(
+        request.get("timeout", timeout_default),
+        default=timeout_default,
+        max_seconds=timeout_max,
+    )
 
-    if not isinstance(from_plugin_obj, str) or not from_plugin_obj.strip():
+    from_plugin = normalize_non_empty_str(from_plugin_obj)
+    if from_plugin is None:
         return None
-    if not isinstance(request_id_obj, str) or not request_id_obj.strip():
+    request_id = normalize_non_empty_str(request_id_obj)
+    if request_id is None:
         return None
-    return from_plugin_obj.strip(), request_id_obj.strip(), timeout
+    return from_plugin, request_id, timeout
 
 
 def domain_error_payload(error: ServerDomainError) -> dict[str, object]:
@@ -40,3 +47,19 @@ def domain_error_payload(error: ServerDomainError) -> dict[str, object]:
     if error.details:
         payload["details"] = error.details
     return payload
+
+
+__all__ = [
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_TIMEOUT_SECONDS",
+    "coerce_timeout",
+    "coerce_optional_int",
+    "coerce_optional_float",
+    "coerce_bool",
+    "coerce_string_key_mapping",
+    "normalize_non_empty_str",
+    "resolve_wildcard_scope_id",
+    "normalize_pagination_limit",
+    "resolve_common_fields",
+    "domain_error_payload",
+]
