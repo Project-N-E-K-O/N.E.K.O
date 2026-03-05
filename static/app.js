@@ -3898,17 +3898,13 @@ function init_app() {
                 // 创建一个 Promise 来等待 session_started 消息
                 const sessionStartPromise = new Promise((resolve, reject) => {
                     sessionStartedResolver = resolve;
-                    sessionStartedRejecter = reject; // 保存 reject 函数
+                    sessionStartedRejecter = reject;
 
-                    // 设置超时（15秒，略大于后端12秒以对冲网络延迟）
-                    setTimeout(() => {
-                        if (sessionStartedRejecter) {
-                            const rejecter = sessionStartedRejecter;
-                            sessionStartedResolver = null;
-                            sessionStartedRejecter = null; // 同时清理 rejecter
-                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
-                        }
-                    }, 15000);
+                    // 清除之前的超时定时器（如果存在），防止旧 attempt 的 rejecter 影响新 attempt
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
                 });
 
                 // 启动文本session（确保 WebSocket 已连接）
@@ -3918,6 +3914,23 @@ function init_app() {
                     input_type: 'text',
                     new_session: false
                 }));
+
+                // 在 WebSocket 确认连接后才开始超时计时（与 mic button 流程对齐）
+                window.sessionTimeoutId = setTimeout(() => {
+                    if (sessionStartedRejecter) {
+                        const rejecter = sessionStartedRejecter;
+                        sessionStartedResolver = null;
+                        sessionStartedRejecter = null;
+                        window.sessionTimeoutId = null;
+
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({ action: 'end_session' }));
+                            console.log('[TextSession] timeout → sent end_session');
+                        }
+
+                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                    }
+                }, 15000);
 
                 // 等待session真正启动成功
                 await sessionStartPromise;
@@ -3935,6 +3948,14 @@ function init_app() {
                 console.error(window.t('console.startTextSessionFailed'), error);
                 hideVoicePreparingToast(); // 确保失败时隐藏准备提示
                 showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : `启动失败: ${error.message}`, 5000);
+
+                // 清除超时定时器和 Promise 状态，防止跨 attempt 污染
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
+                }
+                sessionStartedResolver = null;
+                sessionStartedRejecter = null;
 
                 // 重新启用按钮，允许用户重试
                 textSendButton.disabled = false;
