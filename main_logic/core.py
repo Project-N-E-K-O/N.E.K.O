@@ -1208,7 +1208,7 @@ class LLMSessionManager:
             error_str = str(e)
             
             # 🔴 优先检查 Memory Server 错误（最常见的启动问题）
-            is_memory_server_error = isinstance(e, ConnectionError) and "Memory Server" in error_str
+            is_memory_server_error = isinstance(e, ConnectionError) and any(kw in error_str.lower() for kw in ["memory server", "记忆服务"])
             
             if is_memory_server_error:
                 # Memory Server 错误使用专门的日志格式

@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     mode = 'text' if input_type == 'text' else 'audio'
                     asyncio.create_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
-                    await session_manager[lanlan_name].send_status(f"Invalid input type: {input_type}")
+                    await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
             elif action == "stream_data":
                 asyncio.create_task(session_manager[lanlan_name].stream_data(message))
@@ -127,7 +127,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             else:
                 logger.warning(f"Unknown action received: {action}")
-                await session_manager[lanlan_name].send_status(f"Unknown action: {action}")
+                await session_manager[lanlan_name].send_status(json.dumps({"code": "UNKNOWN_ACTION", "details": {"action": action}}))
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {websocket.client}")
@@ -136,7 +136,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.error(f"💥 {error_message}")
         try:
             if lanlan_name in session_manager:
-                await session_manager[lanlan_name].send_status(f"Server error: {e}")
+                await session_manager[lanlan_name].send_status(json.dumps({"code": "SERVER_ERROR", "details": {"error": str(e)}}))
         except: # noqa
             pass
     finally:

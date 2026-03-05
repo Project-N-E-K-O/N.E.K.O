@@ -213,11 +213,11 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_PRECHECK_PENDING"
         if "模型未配置" in text or "model not configured" in lower:
             return "AGENT_MODEL_NOT_CONFIGURED"
-        if "api url 未配置" in text or "url not configured" in lower:
+        if "api url 未配置" in lower or "url not configured" in lower:
             return "AGENT_URL_NOT_CONFIGURED"
-        if "api key 未配置" in text or "key not configured" in lower:
+        if "api key 未配置" in lower or "key not configured" in lower:
             return "AGENT_KEY_NOT_CONFIGURED"
-        if "endpoint not configured" in lower or "api 未配置" in text:
+        if "endpoint not configured" in lower or "api 未配置" in lower:
             return "AGENT_ENDPOINT_NOT_CONFIGURED"
         if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
             return "AGENT_PYAUTOGUI_NOT_INSTALLED"

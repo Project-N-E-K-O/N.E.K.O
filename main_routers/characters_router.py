@@ -96,7 +96,7 @@ async def send_reload_page_notice(session, message_text: str = "语音已更新�
     try:
         await session.websocket.send_text(json.dumps({
             "type": "reload_page",
-            "message": json.dumps({"code": "RELOAD_PAGE"})
+            "message": json.dumps({"code": "RELOAD_PAGE", "details": {"message": message_text}})
         }))
         logger.info("已通知前端刷新页面")
         return True

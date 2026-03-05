@@ -874,8 +874,8 @@ class ComputerUseAdapter:
                     return {
                         "thought": "",
                         "action": "",
-                        "code": f'computer.terminate(status="failure", answer={json.dumps(json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get("used", 0), "limit": info.get("limit", 300)}}))})',
-                        "raw": "",
+                        "code": 'computer.terminate(status="failure", answer="AGENT_QUOTA_EXCEEDED")',
+                        "raw": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get("used", 0), "limit": info.get("limit", 300)}}),
                     }
                 resp = self._llm_client.chat.completions.create(
                     model=model,
