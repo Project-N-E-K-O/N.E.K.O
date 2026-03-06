@@ -511,9 +511,17 @@ async function loadCharacterData() {
         }
         characterData = await resp.json();
         
-        const currentResp = await fetch('/api/characters/current_catgirl');
-        const currentData = await currentResp.json();
-        window._currentCatgirl = currentData.current_catgirl || '';
+        try {
+            const currentResp = await fetch('/api/characters/current_catgirl');
+            if (currentResp.ok) {
+                const currentData = await currentResp.json();
+                window._currentCatgirl = currentData.current_catgirl || '';
+            } else {
+                window._currentCatgirl = '';
+            }
+        } catch (e) {
+            window._currentCatgirl = '';
+        }
         
         renderMaster();
         renderCatgirls();
@@ -1075,8 +1083,9 @@ function renderHiddenCatgirls(forceExpand = false) {
                     hiddenHeader.setAttribute('aria-expanded', 'false');
                 } else {
                     hiddenList.innerHTML = '';
+                    const freshHiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
                     const catgirls = characterData['猫娘'] || {};
-                    hiddenKeys.forEach(k => {
+                    freshHiddenKeys.forEach(k => {
                         if (!catgirls[k]) return;
                         hiddenList.appendChild(createHiddenCatgirlItem(k));
                     });
