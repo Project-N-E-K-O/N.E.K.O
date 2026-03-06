@@ -391,10 +391,12 @@ class SoundCloudCrawler(BaseMusicCrawler):
                     except Exception:
                         return None
 
-                stream_tasks = [fetch_stream_url(track, client_id) for track in collection[:limit]]
+                stream_tasks = [fetch_stream_url(track, client_id) for track in collection[:limit * 3]]
                 stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
                 
-                results = [r for r in stream_results if r]
+                # 过滤出有效结果，取前 limit 个
+                valid_results = [r for r in stream_results if r]
+                results = valid_results[:limit]
                 return results # 成功则直接返回，退出重试循环
 
             except Exception as e:
@@ -433,7 +435,8 @@ class iTunesCrawler(BaseMusicCrawler):
                 return []
 
             results = []
-            for track in data['results'][:limit]:
+            # 使用扩大的候选窗口来提高成功率
+            for track in data['results'][:limit * 3]:
                 title = track.get('trackName', '未知曲目')
                 artist = track.get('artistName', '未知艺术家')
                 preview_url = track.get('previewUrl')
@@ -446,6 +449,8 @@ class iTunesCrawler(BaseMusicCrawler):
                         artist=artist,
                         cover=cover_url
                     ))
+                    if len(results) >= limit:
+                        break
             
             return results
 
