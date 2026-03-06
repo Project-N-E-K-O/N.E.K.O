@@ -2119,10 +2119,14 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     注意: 抖音接口通常需要 X-Bogus 等签名参数，这里主要依赖有效 Cookie 和基础参数尝试获取
     """
     try:
-        # 调用你框架底层的 Cookie 获取方法
-        cookies = _get_platform_cookies('douyin')
+        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        
+        cookies = load_cookies_from_file('douyin')
         if not cookies:
             return {'success': False, 'error': '未找到抖音 Cookie 配置'}
+        
+        if not validate_cookies('douyin', cookies):
+            return {'success': False, 'error': '抖音 Cookie 核心字段缺失，请检查配置'}
 
         # 抖音 Web 端关注流接口
         url = "https://www.douyin.com/aweme/v1/web/aweme/following/request/"
@@ -2192,9 +2196,14 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     依赖: 需在配置中提供含有真实有效会话的 Cookie (kuaishou_cookies.json)
     """
     try:
-        cookies = _get_platform_cookies('kuaishou')
+        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        
+        cookies = load_cookies_from_file('kuaishou')
         if not cookies:
             return {'success': False, 'error': '未找到快手 Cookie 配置'}
+        
+        if not validate_cookies('kuaishou', cookies):
+            return {'success': False, 'error': '快手 Cookie 核心字段缺失，请检查配置'}
 
         url = "https://www.kuaishou.com/graphql"
         headers = {
@@ -2268,9 +2277,14 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     import httpx
     
     try:
-        weibo_cookies = _get_platform_cookies('weibo')
+        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        
+        weibo_cookies = load_cookies_from_file('weibo')
         if not weibo_cookies:
             return {'success': False, 'error': '未找到 config/weibo_cookies.json'}
+        
+        if not validate_cookies('weibo', weibo_cookies):
+            return {'success': False, 'error': '微博 Cookie 核心字段缺失，请检查配置'}
         
         # 1. 只需要最核心的 SUB，其他全都不需要！
         sub = weibo_cookies.get('SUB') or weibo_cookies.get('sub')
@@ -2440,9 +2454,14 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     
     try:
-        twitter_cookies = _get_platform_cookies('twitter')
+        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        
+        twitter_cookies = load_cookies_from_file('twitter')
         if not twitter_cookies:
              return {'success': False, 'error': '未配置 config/twitter_cookies.json'}
+        
+        if not validate_cookies('twitter', twitter_cookies):
+            return {'success': False, 'error': 'Twitter Cookie 核心字段缺失，请检查配置'}
              
         # 提取防伪 CSRF Token。Twitter 必须，否则哪怕有合法 Cookie 也会立刻 401/403
         ct0 = twitter_cookies.get('ct0') or twitter_cookies.get('CT0', '')
