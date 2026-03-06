@@ -810,13 +810,21 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             # zh
             "华语", "中文", "国语", "华语流行", "中文歌",
             # en
-            "mandarin", "c-pop",
+            "mandarin", "c-pop", "chinese pop",
             # ja
             "中国語", "中文", "華語", "J-POP", "日本流行",
             # ko
             "한글", "가요", "한국 대중음악", "k-pop", "kpop",
             # ru
             "китайская музыка", "китайский поп",
+            # 华语歌手 (常见中文歌手名)
+            "周杰伦", "Jay Chou", "蔡依林", "Jolin Tsai", "林俊杰", "JJ Lin",
+            "王心凌", "Cyndi Wang", "五月天", "Mayday", "告五人", "告五人",
+            "邓紫棋", "G.E.M.", "陈奕迅", "Eason Chan", "张学友", "Jacky Cheung",
+            "刘德华", "Andy Lau", "周杰伦", "王菲", "Faye Wong", "梁静茹", "Fish Leong",
+            "李荣浩", "毛不易", "薛之谦", "赵雷", "许嵩", "徐佳莹",
+            # 台流
+            "台式", "台客", "闽南语", "台语",
         ]
         
         primary_tasks = []
@@ -833,6 +841,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             if china:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
             else:
+                # 非中文区但检测到华语关键词时，也加入网易云
+                if any(kw in kw_lower for kw in chinese_keywords):
+                    primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
         
