@@ -8,7 +8,7 @@ import json
 import struct  # For packing audio data
 import re
 import time
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -494,9 +494,12 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 WS Send Lanlan Response Error: {e}")
         
-    async def handle_silence_timeout(self):
+    async def handle_silence_timeout(self, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""
         try:
+            if expected_session is not None and self.session is not expected_session:
+                logger.info("⏭️ handle_silence_timeout 跳过：session 已被新实例替换")
+                return
             logger.warning(f"[{self.lanlan_name}] 检测到长时间无语音输入，自动关闭session")
             
             # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
@@ -545,13 +548,16 @@ class LLMSessionManager:
                 })
             
             # 关闭当前session
-            await self.end_session(by_server=True)
+            await self.end_session(by_server=True, expected_session=expected_session)
             
         except Exception as e:
             logger.error(f"处理静默超时时出错: {e}")
     
-    async def handle_connection_error(self, message=None):
+    async def handle_connection_error(self, message=None, expected_session=None):
         # 标记session已被服务器关闭，停止接收音频输入
+        if expected_session is not None and self.session is not expected_session:
+            logger.info("⏭️ handle_connection_error 跳过：session 已被新实例替换")
+            return
         self.session_closed_by_server = True
         
         if message:
@@ -570,7 +576,7 @@ class LLMSessionManager:
             else:
                 await self.send_status(message_text)
         logger.info("💥 Session closed by API Server.")
-        await self.disconnected_by_server()
+        await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):
         """处理重复度检测回调：通知前端"""
@@ -1099,11 +1105,27 @@ class LLMSessionManager:
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
 
-            self.session = new_session
+            async def on_connection_error(message=None, session_ref=new_session):
+                await self.handle_connection_error(message, expected_session=session_ref)
+
+            cast(Any, new_session).on_connection_error = on_connection_error
+            if isinstance(new_session, OmniRealtimeClient):
+                async def on_silence_timeout(session_ref=new_session):
+                    await self.handle_silence_timeout(expected_session=session_ref)
+
+                new_session.on_silence_timeout = on_silence_timeout
 
             # 连接 session
             if new_session:
-                await new_session.connect(initial_prompt, native_audio = not self.use_tts)
+                try:
+                    await new_session.connect(initial_prompt, native_audio = not self.use_tts)
+                except Exception:
+                    try:
+                        await new_session.close()
+                    except Exception as close_error:
+                        logger.warning(f"⚠️ LLM Session connect 失败后的关闭清理出错: {close_error}")
+                    raise
+                self.session = new_session
                 logger.info("✅ LLM Session 已连接")
                 logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
                 print(initial_prompt)  #只在控制台显示，不输出到日志文件
@@ -1489,6 +1511,16 @@ class LLMSessionManager:
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
+            
+            async def on_pending_connection_error(message=None, session_ref=self.pending_session):
+                await self.handle_connection_error(message, expected_session=session_ref)
+
+            cast(Any, self.pending_session).on_connection_error = on_pending_connection_error
+            if isinstance(self.pending_session, OmniRealtimeClient):
+                async def on_pending_silence_timeout(session_ref=self.pending_session):
+                    await self.handle_silence_timeout(expected_session=session_ref)
+
+                self.pending_session.on_silence_timeout = on_pending_silence_timeout
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
@@ -2042,12 +2074,15 @@ class LLMSessionManager:
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
 
-    async def disconnected_by_server(self):
+    async def disconnected_by_server(self, expected_session=None):
+        if expected_session is not None and self.session is not expected_session:
+            logger.info("⏭️ disconnected_by_server 跳过：session 已被新实例替换")
+            return
         await self.send_status(f"{self.lanlan_name}失联了，即将重启！")
         # 通知前端 session 已被服务器终止，让前端重置状态
         await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
-        await self.cleanup()
+        await self.cleanup(expected_session=expected_session)
     
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
         input_type = message.get("input_type")
@@ -2362,7 +2397,11 @@ class LLMSessionManager:
             if expected_session is not None and self.session is not expected_session:
                 logger.info("⏭️ end_session 跳过：session 已被新实例替换")
                 return
-            if not self.is_active and not self.session:
+            has_tts_resources = (
+                self.tts_handler_task is not None or
+                (self.tts_thread is not None and self.tts_thread.is_alive())
+            )
+            if not self.is_active and not self.session and not has_tts_resources:
                 return
             session_ref = self.session
             message_handler_task_ref = self.message_handler_task
@@ -2453,7 +2492,7 @@ class LLMSessionManager:
             await self.send_status(f"{self.lanlan_name}已离开。")
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self, expected_websocket=None):
+    async def cleanup(self, expected_websocket=None, expected_session=None):
         """
         清理 session 资源。
         
@@ -2468,8 +2507,11 @@ class LLMSessionManager:
                 logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
                 return
         
-        session_ref = self.session
-        await self.end_session(by_server=True, expected_session=session_ref)
+        if expected_session is not None and self.session is not expected_session:
+            logger.info("⏭️ cleanup 跳过：session 已被新实例替换")
+            return
+
+        await self.end_session(by_server=True, expected_session=expected_session)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:
