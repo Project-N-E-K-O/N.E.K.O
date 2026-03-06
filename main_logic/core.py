@@ -593,27 +593,15 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"处理重复度检测时出错: {e}")
 
-    async def _reset_preparation_state(self, clear_main_cache=False, from_final_swap=False):
-        """[热切换相关] Helper to reset flags and pending components related to new session prep.
-        
-        async because we await cancelled tasks to guarantee they have exited
-        before clearing references — prevents >2 concurrent OmniRealtimeClient.
-        """
+    def _reset_preparation_state(self, clear_main_cache=False, from_final_swap=False):
+        """[热切换相关] Helper to reset flags and pending components related to new session prep."""
         self.is_preparing_new_session = False
         self.summary_triggered_time = None
         self.initial_cache_snapshot_len = 0
-        tasks_to_await = []
-        if self.background_preparation_task and not self.background_preparation_task.done():
+        if self.background_preparation_task and not self.background_preparation_task.done():  # If bg prep was running
             self.background_preparation_task.cancel()
-            tasks_to_await.append(self.background_preparation_task)
-        if self.final_swap_task and not self.final_swap_task.done() and not from_final_swap:
+        if self.final_swap_task and not self.final_swap_task.done() and not from_final_swap:  # If final swap was running
             self.final_swap_task.cancel()
-            tasks_to_await.append(self.final_swap_task)
-        for task in tasks_to_await:
-            try:
-                await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
         self.background_preparation_task = None
         self.final_swap_task = None
         self.pending_session_warmed_up_event = None
@@ -636,10 +624,10 @@ class LLMSessionManager:
             finally:
                 self.pending_session = None  # 即使close失败也要清除引用
 
-    async def _init_renew_status(self):
-        await self._reset_preparation_state(True)
-        self.session_start_time = None
-        await self._cleanup_pending_session_resources()  # close()后再置None，避免泄漏
+    def _init_renew_status(self):
+        self._reset_preparation_state(True)
+        self.session_start_time = None  # 记录当前 session 开始时间
+        self.pending_session = None  # Managed by connector's __aexit__
         self.is_hot_swap_imminent = False
 
     async def _flush_tts_pending_chunks(self):
@@ -805,10 +793,6 @@ class LLMSessionManager:
         
         # 标记正在启动
         self.is_starting_session = True
-        
-        # 回收残留的热切换资源，防止 main + pending + new-main 叠到 >2 个 session
-        await self._cleanup_pending_session_resources()
-        await self._reset_preparation_state(clear_main_cache=False)
         
         _diag_start = time.time()
         logger.info(f"[语音会话诊断] 开始 start_session: input_mode={input_mode}, new={new}")
@@ -1058,6 +1042,7 @@ class LLMSessionManager:
             logger.info(f"🤖 开始创建 LLM Session (input_mode={input_mode})")
             logger.info("[语音会话诊断] 开始创建 LLM 连接 (realtime/text)...")
             _llm_create_start = time.time()
+            new_session = None
             # 根据input_mode创建不同的session
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
@@ -1129,7 +1114,7 @@ class LLMSessionManager:
                 logger.info("✅ LLM Session 已连接")
                 logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
                 print(initial_prompt)  #只在控制台显示，不输出到日志文件
-                return new_session
+                return True
             else:
                 raise Exception("Session not initialized")
         
@@ -1162,17 +1147,16 @@ class LLMSessionManager:
                 logger.error(f"TTS 启动失败: {tts_result}")
             if isinstance(llm_result, Exception):
                 raise llm_result  # LLM Session 失败是致命的
-            started_session = cast(OmniRealtimeClient | OmniOfflineClient | None, llm_result if llm_result else None)
             
             # 标记 session 激活
-            if started_session and self.session is started_session:
+            if self.session:
                 async with self.lock:
                     self.is_active = True
                     
                 self.session_start_time = datetime.now()
                 
                 # 启动消息处理任务
-                self.message_handler_task = asyncio.create_task(started_session.handle_messages())
+                self.message_handler_task = asyncio.create_task(self.session.handle_messages())
                 
                 # 🔥 预热逻辑：对于语音模式，立即触发一次 skipped response 来 prefill instructions
                 # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
@@ -1180,8 +1164,8 @@ class LLMSessionManager:
                 #   - Gemini: prefill 本身足够快，发送空内容会污染对话历史
                 #   - Free: 底层使用 Gemini，同样会导致首轮对话被吞
                 skip_warmup_api_types = ['gemini', 'free']
-                session_api_type = getattr(started_session, '_api_type', '').lower()
-                should_warmup = isinstance(started_session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
+                session_api_type = getattr(self.session, '_api_type', '').lower()
+                should_warmup = isinstance(self.session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
                 if should_warmup:
                     try:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
@@ -1192,15 +1176,15 @@ class LLMSessionManager:
                         
                         # 创建一个事件来等待预热完成
                         warmup_done_event = asyncio.Event()
-                        original_callback = started_session.on_response_done
+                        original_callback = self.session.on_response_done
                         
                         # 临时替换回调，只用于等待预热完成
                         async def warmup_callback():
                             warmup_done_event.set()
                         
-                        started_session.on_response_done = warmup_callback
+                        self.session.on_response_done = warmup_callback
                         
-                        await started_session.create_response("", skipped=True)
+                        await self.session.create_response("", skipped=True)
                         
                         # 等待预热完成（最多12秒）
                         try:
@@ -1212,7 +1196,7 @@ class LLMSessionManager:
                             logger.warning("[语音会话诊断] 预热在 12 秒内未完成，可能为 realtime API 响应慢")
                         
                         # 恢复原始回调
-                        started_session.on_response_done = original_callback
+                        self.session.on_response_done = original_callback
                         
                     except Exception as e:
                         logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
@@ -1430,11 +1414,6 @@ class LLMSessionManager:
     async def _background_prepare_pending_session(self):
         """[热切换相关] 后台预热pending session"""
 
-        # 确保旧的 pending session 已释放，防止泄漏到第 3 个实例
-        if self.pending_session:
-            logger.info("🧹 BG Prep: 清理残留的 pending session 后再创建新的")
-            await self._cleanup_pending_session_resources()
-
         # 2. Create PENDING session components (as before, store in self.pending_connector, self.pending_session)
         try:
             # 重新读取配置以支持热重载
@@ -1511,7 +1490,7 @@ class LLMSessionManager:
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
-            
+
             async def on_pending_connection_error(message=None, session_ref=self.pending_session):
                 await self.handle_connection_error(message, expected_session=session_ref)
 
@@ -1921,7 +1900,7 @@ class LLMSessionManager:
         logger.info("Final Swap Sequence: Starting...")
         if not self.pending_session:
             logger.error("💥 Final Swap Sequence: Pending session not found. Aborting swap.")
-            await self._reset_preparation_state(clear_main_cache=True)  # Reset all flags and cache for clean restart
+            self._reset_preparation_state(clear_main_cache=True)  # Reset all flags and cache for clean restart
             self.is_hot_swap_imminent = False
             return
         
@@ -1930,7 +1909,7 @@ class LLMSessionManager:
             if not hasattr(self.pending_session, 'ws') or not self.pending_session.ws:
                 logger.error("💥 Final Swap Sequence: Pending session的WebSocket已关闭，放弃swap操作")
                 await self._cleanup_pending_session_resources()
-                await self._reset_preparation_state(clear_main_cache=True)
+                self._reset_preparation_state(clear_main_cache=True)
                 self.is_hot_swap_imminent = False
                 return
             
@@ -1938,7 +1917,7 @@ class LLMSessionManager:
             if hasattr(self.pending_session, '_fatal_error_occurred') and self.pending_session._fatal_error_occurred:
                 logger.error("💥 Final Swap Sequence: Pending session已发生致命错误，放弃swap操作")
                 await self._cleanup_pending_session_resources()
-                await self._reset_preparation_state(clear_main_cache=True)
+                self._reset_preparation_state(clear_main_cache=True)
                 self.is_hot_swap_imminent = False
                 return
 
@@ -1971,7 +1950,7 @@ class LLMSessionManager:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
-                    await self._reset_preparation_state(clear_main_cache=True)
+                    self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
             else:
@@ -1983,7 +1962,7 @@ class LLMSessionManager:
                     # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
-                    await self._reset_preparation_state(clear_main_cache=True)
+                    self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
 
@@ -2046,7 +2025,7 @@ class LLMSessionManager:
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
             # pending_session已在swap后立即清除，这里只需要重置其他状态
-            await self._reset_preparation_state(
+            self._reset_preparation_state(
                 clear_main_cache=True, from_final_swap=True)  # This will clear pending_*, is_preparing_new_session, etc. and self.message_cache_for_new_session
             logger.info("✅ 热切换完成")
             
@@ -2056,7 +2035,7 @@ class LLMSessionManager:
             # If cancelled mid-swap, state could be inconsistent. Prioritize cleaning pending.
             self.is_hot_swap_imminent = False  # Reset flag immediately
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
+            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
             # The old main session listener might have been cancelled, needs robust restart if still active
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
@@ -2066,7 +2045,7 @@ class LLMSessionManager:
             self.is_hot_swap_imminent = False  # Reset flag immediately
             await self.send_status(f"内部更新切换失败: {e}.")
             await self._cleanup_pending_session_resources()
-            await self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
+            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
@@ -2391,101 +2370,86 @@ class LLMSessionManager:
             await self.send_status(error_message)
 
     async def end_session(self, by_server=False, expected_session=None):  # 与Core API断开连接
-        await self._init_renew_status()
-
         async with self.lock:
             if expected_session is not None and self.session is not expected_session:
                 logger.info("⏭️ end_session 跳过：session 已被新实例替换")
                 return
+            self._init_renew_status()
             has_tts_resources = (
                 self.tts_handler_task is not None or
                 (self.tts_thread is not None and self.tts_thread.is_alive())
             )
             if not self.is_active and not self.session and not has_tts_resources:
                 return
-            session_ref = self.session
-            message_handler_task_ref = self.message_handler_task
-            tts_handler_task_ref = self.tts_handler_task
-            tts_thread_ref = self.tts_thread
-            tts_request_queue_ref = self.tts_request_queue
-            tts_response_queue_ref = self.tts_response_queue
-            if self.session is session_ref:
-                self.is_active = False
 
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
-        # is_starting_session 仅由 start_session 的 finally 块管理，
-        # 不在此处复位，防止并发 start_session 重入导致 >2 session。
+        async with self.lock:
+            self.is_active = False
+            # 重置启动标志，防止断网重连后 start_session 被忽略
+            self.is_starting_session = False
 
-        if message_handler_task_ref:
-            message_handler_task_ref.cancel()
+        if self.message_handler_task:
+            self.message_handler_task.cancel()
             try:
-                await asyncio.wait_for(message_handler_task_ref, timeout=3.0)
+                await asyncio.wait_for(self.message_handler_task, timeout=3.0)
             except asyncio.CancelledError:
                 pass
             except asyncio.TimeoutError:
                 logger.warning("End Session: Warning: Listener task cancellation timeout.")
             except Exception as e:
                 logger.error(f"💥 End Session: Error during listener task cancellation: {e}")
-            finally:
-                if self.message_handler_task is message_handler_task_ref:
-                    self.message_handler_task = None
+            self.message_handler_task = None
 
-        if session_ref:
+        if self.session:
             try:
                 logger.info("End Session: Closing connection...")
-                await session_ref.close()
+                await self.session.close()
                 logger.info("End Session: Qwen connection closed.")
             except Exception as e:
                 logger.error(f"💥 End Session: Error during cleanup: {e}")
             finally:
                 # 清空 session 引用，防止后续使用错误的 session 类型
-                if self.session is session_ref:
-                    self.session = None
+                self.session = None
         # 关闭TTS子进程和相关任务
-        if tts_handler_task_ref and not tts_handler_task_ref.done():
-            tts_handler_task_ref.cancel()
+        if self.tts_handler_task and not self.tts_handler_task.done():
+            self.tts_handler_task.cancel()
             try:
-                await asyncio.wait_for(tts_handler_task_ref, timeout=2.0)
+                await asyncio.wait_for(self.tts_handler_task, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            finally:
-                if self.tts_handler_task is tts_handler_task_ref:
-                    self.tts_handler_task = None
+            self.tts_handler_task = None
             
-        if tts_thread_ref and tts_thread_ref.is_alive():
+        if self.tts_thread and self.tts_thread.is_alive():
             try:
-                tts_request_queue_ref.put((None, None))  # 通知线程退出
-                tts_thread_ref.join(timeout=2.0)  # 等待线程结束
+                self.tts_request_queue.put((None, None))  # 通知线程退出
+                self.tts_thread.join(timeout=2.0)  # 等待线程结束
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
             finally:
-                if self.tts_thread is tts_thread_ref:
-                    self.tts_thread = None
+                self.tts_thread = None
                 
         # 清理TTS队列和缓存状态
         try:
-            while not tts_request_queue_ref.empty():
-                tts_request_queue_ref.get_nowait()
+            while not self.tts_request_queue.empty():
+                self.tts_request_queue.get_nowait()
         except: # noqa
             pass
         try:
-            while not tts_response_queue_ref.empty():
-                tts_response_queue_ref.get_nowait()
+            while not self.tts_response_queue.empty():
+                self.tts_response_queue.get_nowait()
         except: # noqa
             pass
         
         # 重置TTS缓存状态
-        if self.tts_response_queue is tts_response_queue_ref:
-            async with self.tts_cache_lock:
-                self.tts_ready = False
-                self.tts_pending_chunks.clear()
+        async with self.tts_cache_lock:
+            self.tts_ready = False
+            self.tts_pending_chunks.clear()
         
         # 重置输入缓存状态
-        if self.session is None or self.session is session_ref:
-            async with self.input_cache_lock:
-                self.session_ready = False
-                self.pending_input_data.clear()
+        async with self.input_cache_lock:
+            self.session_ready = False
+            self.pending_input_data.clear()
 
         self.last_time = None
         if not by_server:
