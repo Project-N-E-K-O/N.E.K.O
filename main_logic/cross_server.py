@@ -160,6 +160,31 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
         last_screen = None
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
+        # memory 服务断开后，cross_server 的主循环仍会继续高速运行。
+        # 这里为不同接口分别维护一个最小退避状态，避免 /cache 和 /process 在失败后被无限高频重试。
+        memory_retry_state = {
+            'cache': {'retry_at': 0.0, 'delay': 0.5},
+            'process': {'retry_at': 0.0, 'delay': 0.5},
+        }
+
+        def can_request_memory(endpoint: str) -> bool:
+            # 只有到达冷却结束时间后，才允许再次请求对应的 memory 接口。
+            return time.monotonic() >= memory_retry_state[endpoint]['retry_at']
+
+        def mark_memory_success(endpoint: str):
+            # 一旦请求成功，立即清空退避状态，恢复正常频率。
+            memory_retry_state[endpoint]['retry_at'] = 0.0
+            memory_retry_state[endpoint]['delay'] = 0.5
+
+        def mark_memory_failure(endpoint: str, error):
+            # 请求失败后进入冷却期，并逐步拉长下次可重试时间。
+            # 这样 memory 服务短暂断连时，不会被 turn end / session end 持续猛打。
+            state = memory_retry_state[endpoint]
+            state['retry_at'] = time.monotonic() + state['delay']
+            logger.warning(
+                f"[{lanlan_name}] memory {endpoint} 请求失败，{state['delay']:.1f} 秒内暂停重试: {error}"
+            )
+            state['delay'] = min(state['delay'] * 2, 5.0)
 
         while not shutdown_event.is_set():
             try:
@@ -346,18 +371,22 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
                                     new_messages = chat_history[last_synced_index:]
-                                    try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-                                                json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=10.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') != 'error':
-                                                    last_synced_index = len(chat_history)
-                                    except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] turn end cache 失败: {e}")
+                                    if can_request_memory('cache'):
+                                        try:
+                                            async with aiohttp.ClientSession() as session:
+                                                async with session.post(
+                                                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
+                                                    json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
+                                                    timeout=aiohttp.ClientTimeout(total=10.0)
+                                                ) as response:
+                                                    result = await response.json()
+                                                    if result.get('status') != 'error':
+                                                        mark_memory_success('cache')
+                                                        last_synced_index = len(chat_history)
+                                                    else:
+                                                        mark_memory_failure('cache', result.get('message', 'unknown error'))
+                                        except Exception as e:
+                                            mark_memory_failure('cache', e)
 
                             elif message["data"] == 'session end': # 当前session结束了
                                 # 检查是否正在关闭，如果是则跳过网络操作
@@ -428,20 +457,22 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 if not shutdown_event.is_set() and remaining:
-                                    try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
-                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=30.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') == 'error':
-                                                    logger.debug(f"[{lanlan_name}] session end 记忆结算失败: {result.get('message')}")
-                                                else:
-                                                    logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
-                                    except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] session end 记忆结算失败: {e}")
+                                    if can_request_memory('process'):
+                                        try:
+                                            async with aiohttp.ClientSession() as session:
+                                                async with session.post(
+                                                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                    json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                    timeout=aiohttp.ClientTimeout(total=30.0)
+                                                ) as response:
+                                                    result = await response.json()
+                                                    if result.get('status') == 'error':
+                                                        mark_memory_failure('process', result.get('message', 'unknown error'))
+                                                    else:
+                                                        mark_memory_success('process')
+                                                        logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
+                                        except Exception as e:
+                                            mark_memory_failure('process', e)
                                 chat_history.clear()
                                 last_synced_index = 0
                         except Exception as e:
