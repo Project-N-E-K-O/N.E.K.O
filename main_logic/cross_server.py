@@ -160,6 +160,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
         last_screen = None
         last_synced_index = 0  # 用于 turn end 时仅同步新增消息到 memory，避免 memory_browser 不更新
+        # 当 session end 的 /process 因冷却或失败未完成时，不能再仅靠 last_synced_index 追踪这批消息。
+        # 否则后续 turn end 的 /cache 成功后，会把游标推进到末尾，导致这批本该进入 /process 的消息被“吃掉”。
+        # 因此这里单独冻结一份待 /process 的快照；/cache 只处理快照之后新增的消息。
+        pending_process_messages = None
+        pending_process_boundary = None
         # memory 服务断开后，cross_server 的主循环仍会继续高速运行。
         # 这里为不同接口分别维护一个最小退避状态，避免 /cache 和 /process 在失败后被无限高频重试。
         memory_retry_state = {
@@ -369,8 +374,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 
                                 # Turn end 轻量缓存：仅写入 recent history，不触发 LLM 摘要/整理
                                 # 主动搭话不写缓存——等用户回应后随下一轮正常 turn 一起入库
-                                if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
-                                    new_messages = chat_history[last_synced_index:]
+                                cache_start_index = last_synced_index
+                                if pending_process_boundary is not None:
+                                    # 如果已有一批消息被冻结等待 /process，则 /cache 只能从冻结边界之后开始，
+                                    # 不能再次触碰那批待结算消息。
+                                    cache_start_index = max(cache_start_index, pending_process_boundary)
+                                if had_user_input_this_turn and not shutdown_event.is_set() and cache_start_index < len(chat_history):
+                                    new_messages = chat_history[cache_start_index:]
                                     if can_request_memory('cache'):
                                         try:
                                             async with aiohttp.ClientSession() as session:
@@ -451,10 +461,23 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")
                                     chat_history.clear()
                                     last_synced_index = 0
+                                    pending_process_messages = None
+                                    pending_process_boundary = None
                                     break
                                 
-                                # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
-                                remaining = chat_history[last_synced_index:]
+                                # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算。
+                                # 如果之前已有一批消息因 /process 失败而被冻结，则本次优先继续投递这份冻结快照，
+                                # 并把冻结之后新增的消息并入其中，保证 /process 最终拿到完整连续的会话片段。
+                                if pending_process_messages is None:
+                                    remaining = chat_history[last_synced_index:]
+                                    if remaining:
+                                        pending_process_messages = list(remaining)
+                                        pending_process_boundary = len(chat_history)
+                                else:
+                                    if pending_process_boundary is not None and pending_process_boundary < len(chat_history):
+                                        pending_process_messages.extend(chat_history[pending_process_boundary:])
+                                        pending_process_boundary = len(chat_history)
+                                    remaining = pending_process_messages
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 # 只有 remaining 为空，或者 /process 真正成功写入 memory 后，才能安全清空本地缓存。
                                 # 如果因为冷却或请求失败而跳过 /process，这里必须保留消息，避免记忆数据丢失。
@@ -484,6 +507,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if process_completed:
                                     chat_history.clear()
                                     last_synced_index = 0
+                                    pending_process_messages = None
+                                    pending_process_boundary = None
                                 else:
                                     # 只要 /process 没成功，就绝不能清空；否则 remaining 会永久丢失。
                                     logger.warning(f"[{lanlan_name}] session end 记忆结算未完成，保留 {len(remaining)} 条消息等待后续重试")
