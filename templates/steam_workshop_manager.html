@@ -84,13 +84,13 @@
 <div class="filter-group search-group">
 <!--<div class="filter-label" data-i18n="steam.search">搜索：</div>-->
 <div class="search-input-wrapper">
-    <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder" aria-label="搜索订阅内容">
+    <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder" aria-label="搜索订阅内容" data-i18n-aria="steam.searchAriaLabel">
     <img src="/static/icons/search_icon.png" class="search-icon" alt="搜索">
 </div>
 </div>
 <div class="filter-group action-group">
 <div class="select-input-wrapper sort-wrapper">
-<select id="sort-subscription" class="control-select" onchange="applySort(this.value)" aria-label="排序方式">
+<select id="sort-subscription" class="control-select" onchange="applySort(this.value)" aria-label="排序方式" data-i18n-aria="steam.sortAriaLabel">
 <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
 <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
 <option value="date_asc" data-i18n="steam.sort.dateAsc">订阅日期（升序）</option>

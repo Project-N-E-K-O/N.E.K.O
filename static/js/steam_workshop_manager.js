@@ -2450,12 +2450,10 @@ window.addEventListener('load', function () {
     autoScanAndAddWorkshopCharacterCards();
 
     // 监听语言变化事件，刷新当前页面显示
+    // 仅使用 localechange，因为 i18next languageChanged 已会触发 localechange
     function updateLocaleDependent() {
         loadSubscriptions();
         syncTitleDataText();
-    }
-    if (window.i18n) {
-        window.i18n.on('languageChanged', updateLocaleDependent);
     }
     window.addEventListener('localechange', updateLocaleDependent);
 
