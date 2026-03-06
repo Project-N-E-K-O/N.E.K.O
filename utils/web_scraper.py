@@ -2151,8 +2151,14 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
 
             dynamic_list = []
-            # 兼容不同的数据返回结构
-            aweme_list = data.get("data", []) or data.get("aweme_list", [])
+            # 兼容不同的数据返回结构，归一化为 list
+            raw_data = data.get("data") or data.get("aweme_list") or []
+            if isinstance(raw_data, list):
+                aweme_list = raw_data
+            elif isinstance(raw_data, dict):
+                aweme_list = raw_data.get("list", [])
+            else:
+                aweme_list = []
 
             for item in aweme_list[:limit]:
                 author = item.get("author", {}).get("nickname", "未知博主")

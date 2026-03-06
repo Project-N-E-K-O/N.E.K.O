@@ -2042,21 +2042,21 @@ async def proactive_chat(request: Request):
             primary_channel = 'web' if source_tag == 'WEB' else primary_channel
         
         # 如果音乐通道参与且 source_tag 为 WEB 或 BOTH，返回音乐链接
-        # 避免覆盖已有链接
+        # 避免覆盖已有链接，混合通道时合并链接
         if 'music' in active_channels and source_tag in ('WEB', 'BOTH'):
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
-                # 只有当 source_links 为空时才添加音乐链接
+                # 初始化或扩展 source_links
                 if not source_links:
                     source_links = []
-                    for track in music_raw.get('data', [])[:3]:
-                        source_links.append({
-                            'title': track.get('name', '未知曲目'),
-                            'artist': track.get('artist', '未知艺术家'),
-                            'url': track.get('url', ''),
-                            'source': '音乐推荐'
-                        })
-                    primary_channel = 'music'
+                for track in music_raw.get('data', [])[:3]:
+                    source_links.append({
+                        'title': track.get('name', '未知曲目'),
+                        'artist': track.get('artist', '未知艺术家'),
+                        'url': track.get('url', ''),
+                        'source': '音乐推荐'
+                    })
+                primary_channel = 'music'
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)

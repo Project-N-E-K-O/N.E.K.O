@@ -1947,7 +1947,8 @@ function init_app() {
     function createGeminiBubble(sentence) {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', 'gemini');
-        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
+        const cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanSentence;
         chatContainer.appendChild(messageDiv);
         window.currentGeminiMessage = messageDiv;
 
@@ -1956,7 +1957,7 @@ function init_app() {
         // ========== 追踪结束 ==========
 
         // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-        checkAndShowSubtitlePrompt(sentence);
+        checkAndShowSubtitlePrompt(cleanSentence);
 
         // 如果是AI第一次回复，更新状态并检查成就
         if (isFirstAIResponse) {
@@ -2201,7 +2202,7 @@ function init_app() {
             window.currentTurnGeminiBubbles.push(messageDiv);
             // ========== 追踪结束 ==========
 
-            checkAndShowSubtitlePrompt(text);
+            checkAndShowSubtitlePrompt(cleanNewText);
 
             if (isFirstAIResponse) {
                 isFirstAIResponse = false;
@@ -2263,7 +2264,8 @@ function init_app() {
 
             // 根据sender设置不同的图标
             const icon = sender === 'user' ? '💬' : '🎀';
-            messageDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + text;
+            const cleanText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + cleanText;
             chatContainer.appendChild(messageDiv);
 
             // 如果是Gemini消息，更新当前消息引用
@@ -2274,7 +2276,7 @@ function init_app() {
                 // ========== 追踪结束 ==========
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-                checkAndShowSubtitlePrompt(text);
+                checkAndShowSubtitlePrompt(cleanText);
 
                 // 注意：翻译现在在消息完成时（turn end事件）立即执行，不再使用延迟机制
 

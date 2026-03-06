@@ -92,15 +92,21 @@ class MusicCache:
     
     def filter_duplicates(self, tracks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        过滤重复歌曲
+        过滤重复歌曲（只过滤，不写入缓存）
         """
         self._cleanup()
         filtered = []
         for track in tracks:
             if not self.is_duplicate(track.get('url', ''), track.get('name', ''), track.get('artist', '')):
                 filtered.append(track)
-                self.add(track)
         return filtered
+    
+    def mark_as_played(self, tracks: List[Dict[str, Any]]):
+        """
+        将实际返回的歌曲标记为已播放（写入缓存）
+        """
+        for track in tracks:
+            self.add(track)
     
     def get_diversity_score(self, tracks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -458,7 +464,7 @@ class MusopenCrawler(BaseMusicCrawler):
         logger.info(f"[{self.platform_name}] 正在获取免版权古典音乐... 关键词: {keyword}")
         
         # 关键词到页面的映射
-        keyword_map = {
+        raw_keyword_map = {
             'chopin': 'https://musopen.org/music/43-nocturnes-op-9/',
             'nocturne': 'https://musopen.org/music/43-nocturnes-op-9/',
             '夜曲': 'https://musopen.org/music/43-nocturnes-op-9/',
@@ -487,6 +493,7 @@ class MusopenCrawler(BaseMusicCrawler):
             'piano': 'https://musopen.org/music/43-nocturnes-op-9/',
             '钢琴': 'https://musopen.org/music/43-nocturnes-op-9/',
         }
+        keyword_map = {k.lower(): v for k, v in raw_keyword_map.items()}
         
         # 随机备用页面列表
         music_pages = [
@@ -731,11 +738,17 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     all_crawlers = GLOBAL_CRAWLERS 
 
     if keyword: 
-        # 场景 A: 用户指定了明确关键词 -> 开启“梯队降级”机制
+        # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        classical_keywords = ["古典", "钢琴", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲"]
-        indie_keywords = ["独立", "lofi", "电音", "小众", "环境音", "electronic", "chill"]
-        chinese_keywords = ["华语", "中文", "国语", "华语流行", "中文歌"]
+        classical_keywords = [
+            "古典", "钢琴", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲",
+            "classical", "piano", "chopin", "beethoven", "mozart", "symphony", "nocturne",
+            "クラシック", "ピアノ", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
+            "클래식", "피아노", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
+            "классика", "пианино", "симфония", "ноктюрн", "соната", "концерт",
+        ]
+        indie_keywords = ["独立", "lofi", "电音", "小众", "环境音", "electronic", "chill", "ambient", "indie", "experimental"]
+        chinese_keywords = ["华语", "中文", "国语", "华语流行", "中文歌", "mandarin"]
         
         primary_tasks = []
         
@@ -782,7 +795,8 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         if not all_results:
             logger.info("[智能调度] 第一梯队未命中，触发第二级兜底引擎...")
             fallback_tasks = []
-            fallback_fma = "piano" if "钢琴" in kw_lower else "relax"
+            # 支持多语言古典乐关键词
+            fallback_fma = "piano" if any(kw in kw_lower for kw in ["钢琴", "piano", "ピアノ", "피아но", "пианино"]) else "relax"
             
             fallback_tasks.append(all_crawlers['netease'].search(keyword, limit))
             fallback_tasks.append(all_crawlers['fma'].search(fallback_fma, limit))
@@ -850,7 +864,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             unique_results.append(item)
             seen_urls.add(item['url'])
     
-    # 使用缓存进行短期去重
+    # 使用缓存进行短期去重（只过滤，不写入缓存）
     unique_results = music_cache.filter_duplicates(unique_results)
     
     # 去重后可能为空，需要修正返回语义
@@ -866,6 +880,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     display_tracks = unique_results[:5]
     log_items = [f"{t.get('name', '未知')[:15]}-{t.get('artist', '未知')[:10]}" for t in display_tracks]
     logger.info(f"[音乐日志] 代表性歌曲: {log_items}")
+    
+    # 标记实际返回的歌曲为已播放（写入缓存）
+    music_cache.mark_as_played(unique_results[:limit])
     
     return {'success': True, 'data': unique_results[:limit], 'diversity': diversity_info}
 

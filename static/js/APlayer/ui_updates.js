@@ -11,7 +11,8 @@
  */
 function t(key, fallback) {
     if (window.t && typeof window.t === 'function') {
-        return window.t(key) || fallback;
+        const translated = window.t(key);
+        return translated && translated !== key ? translated : fallback;
     }
     return fallback;
 }

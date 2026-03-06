@@ -46,12 +46,12 @@ export function injectAPlayerToChatContainer(options = {}) {
     const aplayer = initializeAPlayer({
         container: aplayerContainer,
         ...options
+    }, (aplayerInstance) => {
+        if (aplayerInstance) {
+            console.log('[APlayer] Successfully injected to chat-container');
+            setupInjectedControls(aplayerInstance, config);
+        }
     });
-
-    if (aplayer) {
-        console.log('[APlayer] Successfully injected to chat-container');
-        setupInjectedControls(aplayer, config);
-    }
 
     return aplayer;
 }

@@ -73,9 +73,10 @@ const APLAYER_CONFIG = {
 /**
  * 初始化APlayer
  * @param {Object} options - 配置选项
+ * @param {Function} [onReady] - 实例创建完成后的回调函数
  * @returns {APlayer|null} APlayer实例
  */
-export function initializeAPlayer(options = {}) {
+export function initializeAPlayer(options = {}, onReady = null) {
     // 合并配置
     const config = {
         ...APLAYER_CONFIG,
@@ -87,7 +88,9 @@ export function initializeAPlayer(options = {}) {
     // 检查APlayer库是否已加载
     if (typeof APlayer === 'undefined') {
         console.warn('[APlayer] Library not found, attempting to load...');
-        loadAPlayerLibrary(() => initializeAPlayer(options));
+        loadAPlayerLibrary(() => {
+            initializeAPlayer(options, onReady);
+        });
         return null;
     }
 
@@ -95,6 +98,7 @@ export function initializeAPlayer(options = {}) {
     if (window.aplayer) {
         console.log('[APlayer] Already initialized, updating configuration...');
         updateAPlayerConfig(window.aplayer, config);
+        if (onReady) onReady(window.aplayer);
         return window.aplayer;
     }
 
@@ -129,6 +133,9 @@ export function initializeAPlayer(options = {}) {
 
         // 初始化事件监听器
         initEventListeners(ap);
+
+        // 调用回调（如果有）
+        if (onReady) onReady(ap);
 
         // 返回播放器实例
         return ap;
@@ -346,28 +353,4 @@ function loadAPlayerLibrary(callback) {
     } catch (e) {
         console.error('[APlayer] Error while setting up library loading:', e);
     }
-}
-
-/**
- * 延迟初始化APlayer
- * @param {Object} options - 配置选项
- */
-export function delayedInitializeAPlayer(options = {}) {
-    // 延迟初始化，确保其他JavaScript代码已加载
-    setTimeout(() => {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => initializeAPlayer(options));
-        } else {
-            initializeAPlayer(options);
-        }
-    }, 500);
-}
-
-/**
- * 获取音乐源列表
- * @param {string} region - 用户区域（"china" 或 "international"）
- * @returns {Array} - 音乐源列表
- */
-export function getAPlayerMusicSources(region) {
-    return getMusicSources(region);
 }

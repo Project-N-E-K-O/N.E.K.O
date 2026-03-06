@@ -34,11 +34,18 @@ function scrollToBottom() {
 }
 
 // --- 添加新消息函数 (修正) ---
-function addNewMessage(messageHTML) {
+function addNewMessage(message) {
     if (!chatContentWrapper) return; // 安全检查
 
     const newMessageElement = document.createElement('div');
-    newMessageElement.innerHTML = messageHTML;
+    if (typeof message === 'string') {
+        newMessageElement.innerHTML = message;
+    } else if (message instanceof Node) {
+        newMessageElement.appendChild(message);
+    } else {
+        console.warn('[addNewMessage] Invalid message type:', typeof message);
+        return;
+    }
     chatContentWrapper.appendChild(newMessageElement);
 
     // 确保在添加消息后立即滚动到底部
@@ -1367,11 +1374,11 @@ window.sendMusicMessage = function(trackInfo) {
             .music-bubble button.music-play-btn:active { transform: scale(0.95); }
         `;
         
-        // 使用 addNewMessage 添加消息
+        // 使用 addNewMessage 添加消息（传入 Node 以保留事件监听器）
         const tempDiv = document.createElement('div');
         tempDiv.appendChild(styleEl);
         tempDiv.appendChild(messageDiv);
-        addNewMessage(tempDiv.innerHTML);
+        addNewMessage(tempDiv);
         
         let aplayerInstance = null;
         

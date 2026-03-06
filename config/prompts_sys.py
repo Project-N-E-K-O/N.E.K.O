@@ -1305,7 +1305,12 @@ Return only your answer with no explanation or other content.""",
 
 
 def get_proactive_music_keyword_prompt(lang: str = 'zh') -> str:
-    """获取音乐关键词生成的 prompt"""
+    """
+    获取音乐关键词生成的 prompt
+    """
+    lang_lower = (lang or 'zh').lower()
+    if lang_lower.startswith('ru'):
+        return PROACTIVE_MUSIC_KEYWORD_PROMPTS['ru']
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(lang_key, PROACTIVE_MUSIC_KEYWORD_PROMPTS['zh'])
 
@@ -1316,7 +1321,9 @@ def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
 
 
 def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
-    """获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。"""
+    """
+    获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。
+    """
     lang_key = _normalize_prompt_language(lang)
     prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS['zh'])
     if channel not in prompt_set:
@@ -1325,13 +1332,17 @@ def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
 
 
 def get_proactive_generate_prompt(lang: str = 'zh') -> str:
-    """获取 Phase 2 生成阶段 prompt"""
+    """
+    获取 Phase 2 生成阶段 prompt
+    """
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
 
 
 def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = 'zh') -> tuple:
-    """根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签"""
+    """
+    根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签
+    """
     lang = _normalize_prompt_language(lang)
 
     if has_screen and has_web:
