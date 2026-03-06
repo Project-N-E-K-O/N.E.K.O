@@ -2165,20 +2165,26 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 aweme_list = []
 
             for item in aweme_list[:limit]:
-                author = item.get("author", {}).get("nickname", "未知博主")
-                desc = item.get("desc") or "[分享了视频]"
-                aweme_id = item.get("aweme_id", "")
-                
-                # 清理换行符，保持排版整洁
-                clean_desc = desc.replace('\n', ' ').strip()
-                final_content = f"博主【{author}】: {clean_desc}"
+                try:
+                    if not isinstance(item, dict):
+                        logger.warning(f"抖音动态数据项类型异常: {type(item).__name__}，跳过")
+                        continue
+                    author = item.get("author", {}).get("nickname", "未知博主")
+                    desc = item.get("desc") or "[分享了视频]"
+                    aweme_id = item.get("aweme_id", "")
+                    
+                    clean_desc = desc.replace('\n', ' ').strip()
+                    final_content = f"博主【{author}】: {clean_desc}"
 
-                dynamic_list.append({
-                    'author': author,
-                    'content': final_content,
-                    'timestamp': item.get("create_time", "刚刚"),
-                    'url': f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "https://www.douyin.com/"
-                })
+                    dynamic_list.append({
+                        'author': author,
+                        'content': final_content,
+                        'timestamp': item.get("create_time", "刚刚"),
+                        'url': f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "https://www.douyin.com/"
+                    })
+                except Exception as item_err:
+                    logger.warning(f"解析抖音动态项失败，跳过: {item_err}")
+                    continue
 
             if dynamic_list:
                 logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条抖音关注动态")
@@ -2237,21 +2243,27 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             dynamic_list = []
 
             for item in feeds[:limit]:
-                author = item.get("author", {}).get("name", "未知老铁")
-                photo = item.get("photo", {})
-                caption = photo.get("caption") or "[分享了作品]"
-                photo_id = photo.get("id", "")
-                
-                # 清理描述文本
-                clean_caption = caption.replace('\n', ' ').strip()
-                final_content = f"老铁【{author}】: {clean_caption}"
+                try:
+                    if not isinstance(item, dict):
+                        logger.warning(f"快手动态数据项类型异常: {type(item).__name__}，跳过")
+                        continue
+                    author = item.get("author", {}).get("name", "未知老铁")
+                    photo = item.get("photo", {})
+                    caption = photo.get("caption") or "[分享了作品]"
+                    photo_id = photo.get("id", "")
+                    
+                    clean_caption = caption.replace('\n', ' ').strip()
+                    final_content = f"老铁【{author}】: {clean_caption}"
 
-                dynamic_list.append({
-                    'author': author,
-                    'content': final_content,
-                    'timestamp': photo.get("timestamp", "刚刚"),
-                    'url': f"https://www.kuaishou.com/short-video/{photo_id}" if photo_id else "https://www.kuaishou.com/"
-                })
+                    dynamic_list.append({
+                        'author': author,
+                        'content': final_content,
+                        'timestamp': photo.get("timestamp", "刚刚"),
+                        'url': f"https://www.kuaishou.com/short-video/{photo_id}" if photo_id else "https://www.kuaishou.com/"
+                    })
+                except Exception as item_err:
+                    logger.warning(f"解析快手动态项失败，跳过: {item_err}")
+                    continue
 
             if dynamic_list:
                 logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条快手关注动态")

@@ -139,6 +139,33 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
         logger.error(f"❌ 保存 Cookie 失败: {e}")
         return False
 
+def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]:
+    """
+    规范化 Cookie 结构：
+    - 键必须是 str 类型
+    - 值只能是 str 或 primitive (int/float/bool)，dict/list/None 直接判坏
+    """
+    valid_cookies: Dict[str, str] = {}
+    
+    for k, v in cookies.items():
+        if not isinstance(k, str):
+            logger.warning(f"{platform} Cookie 键类型不合法: {type(k).__name__}")
+            return {}
+        
+        if isinstance(v, (dict, list)) or v is None:
+            logger.warning(f"{platform} Cookie 值类型不合法: key={k}, value_type={type(v).__name__}")
+            return {}
+        
+        if isinstance(v, str):
+            valid_cookies[k] = v
+        elif isinstance(v, (int, float, bool)):
+            valid_cookies[k] = str(v)
+        else:
+            logger.warning(f"{platform} Cookie 值类型不支持: key={k}, value_type={type(v).__name__}")
+            return {}
+    
+    return valid_cookies
+
 def load_cookies_from_file(platform: str) -> Dict[str, str]:
     """从文件加载Cookie，自动检测是否加密"""
     try:
@@ -169,14 +196,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 
                 # 校验 Cookie 结构：确保所有值都是字符串
                 if isinstance(cookies, dict):
-                    valid_cookies = {}
-                    for k, v in cookies.items():
-                        if not isinstance(k, str):
-                            continue
-                        if not isinstance(v, str):
-                            valid_cookies[str(k)] = str(v)
-                        else:
-                            valid_cookies[k] = v
+                    valid_cookies = _normalize_cookies(cookies, platform)
                     logger.info(f"✅ 已解密加载 {platform} 凭证")
                     return valid_cookies
                 else:
@@ -211,16 +231,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                     return {}
                 
                 # 校验 Cookie 结构：确保所有值都是字符串
-                valid_cookies = {}
-                for k, v in cookies.items():
-                    if not isinstance(k, str):
-                        logger.warning(f"{platform} Cookie 键类型不合法: {type(k).__name__}, 跳过")
-                        continue
-                    if not isinstance(v, str):
-                        logger.warning(f"{platform} Cookie 值类型不合法: key={k}, value_type={type(v).__name__}, 尝试转换为字符串")
-                        valid_cookies[str(k)] = str(v)
-                    else:
-                        valid_cookies[k] = v
+                valid_cookies = _normalize_cookies(cookies, platform)
                 
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return valid_cookies

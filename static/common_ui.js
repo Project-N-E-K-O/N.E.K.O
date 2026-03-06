@@ -1287,6 +1287,30 @@ window.sendMusicMessage = function(trackInfo) {
     };
     
     const showMusicPlayer = () => {
+        // 安全校验：URL 白名单
+        const isSafeUrl = (url) => {
+            if (!url) return false;
+            try {
+                const parsed = new URL(url);
+                const allowedProtocols = ['http:', 'https:'];
+                const allowedDomains = [
+                    'cdn.jsdelivr.net', 'i.scdn.co', 'p.scdn.co', 'a.scdn.co',
+                    'via.placeholder.com', 'i.imgur.com', 'piccdn', 'y.qq.com',
+                    'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+                    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+                    'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
+                    'fma-fma.net', 'musopen.org', 'bandcamp.com', 'soundcloud.com',
+                    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+                    'updates.broadcastify.com'
+                ];
+                if (!allowedProtocols.includes(parsed.protocol)) return false;
+                if (!allowedDomains.some(d => parsed.hostname.endsWith(d))) return false;
+                return true;
+            } catch {
+                return false;
+            }
+        };
+        
         // 安全校验：音频 URL 白名单检查
         if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
             console.warn('[Common UI] 音频 URL 未通过安全校验:', trackInfo.url);
@@ -1300,37 +1324,6 @@ window.sendMusicMessage = function(trackInfo) {
         
         console.log('[Music] trackInfo:', trackInfo);
         console.log('[Music] cover value:', trackInfo.cover);
-        
-        // 安全校验：URL 白名单
-        const isSafeUrl = (url) => {
-            if (!url) return false;
-            try {
-                const parsed = new URL(url);
-                // 仅允许 http/https 协议
-                if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-                // 允许常见的音乐/图片 CDN 域名
-                const allowedDomains = [
-                    // 国内音乐平台
-                    'y.qq.com', 'music.126.net', 'music.163.com', 'imgcache.qq.com',
-                    'i.y.qq.com', 'thirdqq.qlogo.cn', 'p1.music.126.net', 'p2.music.126.net',
-                    'p3.music.126.net', 'p4.music.126.net', 'p5.music.126.net',
-                    // CDN
-                    'cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'fastly.jsdelivr.net',
-                    // 国外音乐平台
-                    'soundcloud.com', 'sccdn.co',
-                    'itunes.apple.com', 'mzstatic.com',
-                    'bandcamp.com', 'bcbits.com',
-                    'freemusicarchive.org',
-                    'musopen.org',
-                    // 通用图片托管
-                    'imgix.net', 'images.unsplash.com'
-                ];
-                const hostname = parsed.hostname.toLowerCase();
-                return allowedDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
-            } catch {
-                return false;
-            }
-        };
         
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
         

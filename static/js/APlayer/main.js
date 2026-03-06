@@ -28,6 +28,7 @@ import {
 import { 
     initEventListeners, 
     setupKeyboardShortcuts,
+    removeKeyboardShortcuts,
     formatTime 
 } from './event_listeners.js';
 
@@ -96,10 +97,18 @@ export function initializeAPlayer(options = {}, onReady = null) {
 
     // 检查是否已有播放器实例，避免重复创建
     if (window.aplayer) {
-        console.log('[APlayer] Already initialized, updating configuration...');
-        updateAPlayerConfig(window.aplayer, config);
-        if (onReady) onReady(window.aplayer);
-        return window.aplayer;
+        const existingContainer = window.aplayer.container;
+        const newContainer = options.container || document.getElementById('aplayer-container');
+        
+        if (newContainer && newContainer !== existingContainer) {
+            console.log('[APlayer] Container changed, recreating player...');
+            destroyAPlayer();
+        } else {
+            console.log('[APlayer] Already initialized, updating configuration...');
+            updateAPlayerConfig(window.aplayer, config);
+            if (onReady) onReady(window.aplayer);
+            return window.aplayer;
+        }
     }
 
     // 使用自定义容器或创建新容器
@@ -142,6 +151,41 @@ export function initializeAPlayer(options = {}, onReady = null) {
     } catch (e) {
         console.error('[APlayer] Failed to create instance:', e);
         return null;
+    }
+}
+
+/**
+ * 销毁APlayer实例
+ * @returns {boolean} 是否成功销毁
+ */
+export function destroyAPlayer() {
+    if (!window.aplayer) {
+        return true;
+    }
+    
+    try {
+        if (typeof window.aplayer.pause === 'function') {
+            window.aplayer.pause();
+        }
+        if (typeof window.aplayer.destroy === 'function') {
+            window.aplayer.destroy();
+        }
+        
+        const container = window.aplayer.container;
+        if (container && container.parentNode) {
+            container.parentNode.removeChild(container);
+        }
+        
+        window.aplayer = null;
+        
+        removeKeyboardShortcuts();
+        
+        console.log('[APlayer] Destroyed successfully');
+        return true;
+    } catch (e) {
+        console.error('[APlayer] Failed to destroy:', e);
+        window.aplayer = null;
+        return false;
     }
 }
 

@@ -137,7 +137,7 @@ class MusicCache:
             style_notes.append('古典')
         
         # 计算多样性分数
-        style_score = len(style_notes) / 5.0  # 最多5种风格
+        style_score = min(len(style_notes) / 6.0, 1.0)  # 最多6种风格
         overall_score = (artist_diversity * 0.6 + style_score * 0.4) * 100
         
         return {
@@ -760,11 +760,15 @@ async def close_all_crawlers():
     统一关闭所有全局爬虫实例，释放连接池资源。
     建议在服务关闭时调用（如 main_server.py 的 on_shutdown）。
     """
+    global _crawlers_cache
+    if _crawlers_cache is None:
+        logger.info("音乐爬虫未初始化，无需关闭")
+        return
+    
     logger.info("正在关闭所有音乐爬虫实例...")
-    crawlers = get_crawlers()
+    crawlers = _crawlers_cache
     if crawlers:
         await asyncio.gather(*[crawler.close() for crawler in crawlers.values()])
-    global _crawlers_cache
     _crawlers_cache = None
     logger.info("所有音乐爬虫实例已关闭")
 
@@ -812,16 +816,16 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             # en
             "mandarin", "c-pop", "chinese pop",
             # ja
-            "中国語", "中文", "華語", "J-POP", "日本流行",
+            "中国語", "中文", "華語", "j-pop", "日本流行",
             # ko
             "한글", "가요", "한국 대중음악", "k-pop", "kpop",
             # ru
             "китайская музыка", "китайский поп",
             # 华语歌手 (常见中文歌手名)
-            "周杰伦", "Jay Chou", "蔡依林", "Jolin Tsai", "林俊杰", "JJ Lin",
-            "王心凌", "Cyndi Wang", "五月天", "Mayday", "告五人", "告五人",
-            "邓紫棋", "G.E.M.", "陈奕迅", "Eason Chan", "张学友", "Jacky Cheung",
-            "刘德华", "Andy Lau", "周杰伦", "王菲", "Faye Wong", "梁静茹", "Fish Leong",
+            "周杰伦", "jay chou", "蔡依林", "jolin tsai", "林俊杰", "jj lin",
+            "王心凌", "cyndi wang", "五月天", "mayday", "告五人",
+            "邓紫棋", "g.e.m.", "陈奕迅", "eason chan", "张学友", "jacky cheung",
+            "刘德华", "andy lau", "王菲", "faye wong", "梁静茹", "fish leong",
             "李荣浩", "毛不易", "薛之谦", "赵雷", "许嵩", "徐佳莹",
             # 台流
             "台式", "台客", "闽南语", "台语",

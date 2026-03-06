@@ -563,6 +563,7 @@ function init_app() {
 
                     window._realisticGeminiQueue = [];
                     window._realisticGeminiBuffer = '';
+                    window._pendingMusicCommand = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
 
                     if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
@@ -593,6 +594,7 @@ function init_app() {
                     }
 
                     window._geminiTurnFullText = '';
+                    window._pendingMusicCommand = '';
 
                     (async () => { await clearAudioQueue(); })();
 
@@ -1016,9 +1018,20 @@ function init_app() {
                     console.log(window.t('console.turnEndReceived'));
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
                     try {
-                        const rest = typeof window._realisticGeminiBuffer === 'string'
+                        // 先把未闭合的音乐指令 flush 掉（不显示，保留指令完整性）
+                        const pendingCmd = window._pendingMusicCommand || '';
+                        window._pendingMusicCommand = '';
+                        
+                        let rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer
                             : '';
+                        
+                        // 合并 pending 命令后统一清理
+                        if (pendingCmd) {
+                            rest = rest + pendingCmd;
+                        }
+                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        
                         const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
@@ -2160,6 +2173,7 @@ function init_app() {
             if (isNewMessage) {
                 window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
+                window._pendingMusicCommand = '';
                 // ========== 新增：重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
                 // ========== 重置结束 ==========
@@ -2174,9 +2188,33 @@ function init_app() {
                 window._realisticGeminiBuffer = '';
                 window._realisticGeminiQueue = []; // 新一轮开始时，清空队列
                 window._lastBubbleTime = 0; // 重置时间戳，第一句立即显示
+                window._pendingMusicCommand = ''; // 新一轮开始时，清空待闭合的音乐指令
             }
+            
+            let incoming = normalizeGeminiText(text);
+            
+            // 处理未闭合的音乐指令片段
+            if (window._pendingMusicCommand) {
+                incoming = window._pendingMusicCommand + incoming;
+                window._pendingMusicCommand = '';
+            }
+            
+            // 检查是否有未闭合的 [play_music:，如果有则提取并暂存
+            const pendingMatch = incoming.match(/\[play_music:\s*$/);
+            if (pendingMatch) {
+                window._pendingMusicCommand = pendingMatch[0];
+                incoming = incoming.slice(0, pendingMatch.index);
+            }
+            
+            // 继续检查 JSON 体的未闭合情况：如果有 {"name": 但没有 }]，则暂存
+            const jsonStartMatch = incoming.match(/\[play_music:\s*(\{[^}]*)$/);
+            if (jsonStartMatch) {
+                window._pendingMusicCommand = '[play_music: ' + jsonStartMatch[1];
+                incoming = incoming.slice(0, jsonStartMatch.index);
+            }
+            
             const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
-            let combined = prev + normalizeGeminiText(text);
+            let combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
             const { sentences, rest } = splitIntoSentences(combined);
@@ -2192,6 +2230,7 @@ function init_app() {
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
+            window._pendingMusicCommand = '';
             const messageDiv = document.createElement('div');
             messageDiv.classList.add('message', 'gemini');
             const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -4646,6 +4685,7 @@ function init_app() {
         window._realisticGeminiQueue = [];
         window._realisticGeminiBuffer = '';
         window._geminiTurnFullText = '';
+        window._pendingMusicCommand = '';
         window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
         window.currentTurnGeminiBubbles = [];
         window._isProcessingRealisticQueue = false;
@@ -9804,6 +9844,7 @@ function init_app() {
             // 清空realistic synthesis队列和缓冲区，防止旧角色的语音继续播放
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
+            window._pendingMusicCommand = '';
             window._realisticGeminiTimestamp = null;
             window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
             // 重置语音模式用户转录合并追踪

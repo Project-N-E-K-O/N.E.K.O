@@ -323,6 +323,7 @@ function showNotification(message, type = 'info') {
  * @param {APlayer} aplayer - APlayer实例
  */
 let keyboardHandlerBound = false;
+let keyboardHandler = null;
 
 export function setupKeyboardShortcuts(aplayer) {
     if (keyboardHandlerBound) {
@@ -330,7 +331,7 @@ export function setupKeyboardShortcuts(aplayer) {
         return;
     }
     
-    const keyboardHandler = (e) => {
+    keyboardHandler = (e) => {
         // 只在非输入状态下响应快捷键
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
         
@@ -373,5 +374,10 @@ export function setupKeyboardShortcuts(aplayer) {
 }
 
 export function removeKeyboardShortcuts() {
-    keyboardHandlerBound = false;
+    if (keyboardHandler && keyboardHandlerBound) {
+        document.removeEventListener('keydown', keyboardHandler);
+        keyboardHandler = null;
+        keyboardHandlerBound = false;
+        console.log('[APlayer] Keyboard shortcuts removed');
+    }
 }
