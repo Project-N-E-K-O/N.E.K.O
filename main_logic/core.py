@@ -574,7 +574,7 @@ class LLMSessionManager:
             elif '1008' in message_text_lower:
                 await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
             else:
-                await self.send_status(message_text)
+                await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
         logger.info("💥 Session closed by API Server.")
         await self.disconnected_by_server(expected_session=expected_session)
 
@@ -1235,12 +1235,12 @@ class LLMSessionManager:
             error_str = str(e)
             
             # 🔴 优先检查 Memory Server 错误（最常见的启动问题）
-            is_memory_server_error = isinstance(e, ConnectionError) and "Memory Server" in error_str
+            is_memory_server_error = isinstance(e, ConnectionError) and any(kw in error_str.lower() for kw in ["memory server", "记忆服务"])
             
             if is_memory_server_error:
                 # Memory Server 错误使用专门的日志格式
                 logger.error(f"🧠 {error_str}")
-                await self.send_status("🧠 记忆服务器未启动！请先运行 memory_server.py")
+                await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
                 # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
                 self.session_start_failure_count -= 1
             else:
@@ -1251,25 +1251,25 @@ class LLMSessionManager:
                 if self.session_start_failure_count >= self.session_start_max_failures:
                     critical_message = f"⛔ Session启动连续失败{self.session_start_failure_count}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。"
                     logger.critical(critical_message)
-                    await self.send_status(critical_message)
+                    await self.send_status(json.dumps({"code": "SESSION_START_CRITICAL", "details": {"count": self.session_start_failure_count}}))
                 else:
-                    await self.send_status(f"{error_message} (失败{self.session_start_failure_count}次)")
+                    await self.send_status(json.dumps({"code": "SESSION_START_FAILED", "details": {"error": str(e), "count": self.session_start_failure_count}}))
                 
                 # 检查其他类型的连接错误
                 if 'WinError 10061' in error_str or 'WinError 10054' in error_str:
                     # 检查端口号是否为memory_server端口
                     if str(self.memory_server_port) in error_str or '48912' in error_str:
-                        await self.send_status(f"🧠 记忆服务器(端口{self.memory_server_port})已崩溃。请重启 memory_server.py")
+                        await self.send_status(json.dumps({"code": "MEMORY_SERVER_CRASHED", "details": {"port": self.memory_server_port}}))
                     else:
-                        await self.send_status("💥 服务器连接被拒绝。请检查API Key和网络连接。")
+                        await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
                 elif '401' in error_str:
-                    await self.send_status("💥 API Key被服务器拒绝。请检查API Key是否与所选模型匹配。")
+                    await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
                 elif '429' in error_str:
-                    await self.send_status("💥 API请求频率过高，请稍后再试。")
+                    await self.send_status(json.dumps({"code": "API_RATE_LIMIT_SESSION"}))
                 elif 'All connection attempts failed' in error_str:
-                    await self.send_status("💥 LLM API 连接失败。请检查网络连接和API配置。")
+                    await self.send_status(json.dumps({"code": "LLM_CONNECTION_FAILED"}))
                 else:
-                    await self.send_status(f"💥 连接异常关闭: {error_str}")
+                    await self.send_status(json.dumps({"code": "CONNECTION_CLOSED_ABNORMAL", "details": {"error": error_str}}))
             
             # 通知前端 session 启动失败，让前端重置状态
             # 必须在 cleanup 之前发送，因为 cleanup 会清空 websocket 引用
@@ -2036,7 +2036,7 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
             self.is_hot_swap_imminent = False  # Reset flag immediately
-            await self.send_status(f"内部更新切换失败: {e}.")
+            await self.send_status(json.dumps({"code": "INTERNAL_UPDATE_FAILED", "details": {"error": str(e)}}))
             await self._cleanup_pending_session_resources()
             self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
@@ -2050,7 +2050,7 @@ class LLMSessionManager:
         if expected_session is not None and self.session is not expected_session:
             logger.info("⏭️ disconnected_by_server 跳过：session 已被新实例替换")
             return
-        await self.send_status(f"{self.lanlan_name}失联了，即将重启！")
+        await self.send_status(json.dumps({"code": "CHARACTER_DISCONNECTED", "details": {"name": self.lanlan_name}}))
         # 通知前端 session 已被服务器终止，让前端重置状态
         await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
@@ -2352,15 +2352,15 @@ class LLMSessionManager:
         except web_exceptions.ConnectionClosedError as e:
             logger.error(f"💥 Stream: Error sending data to session: {e}")
             if '1011' in str(e):
-                self.send_status("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
+                await self.send_status(json.dumps({"code": "ERROR_1011_MIC_CHECK"}))
             if '1007' in str(e):
-                self.send_status("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
+                await self.send_status(json.dumps({"code": "ERROR_1007_ARREARS"}))
             await self.disconnected_by_server()
             return
         except Exception as e:
             error_message = f"Stream: Error sending data to session: {e}"
             logger.error(f"💥 {error_message}")
-            await self.send_status(error_message)
+            await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, expected_session=None):  # 与Core API断开连接
         async with self.lock:
@@ -2446,7 +2446,7 @@ class LLMSessionManager:
 
         self.last_time = None
         if not by_server:
-            await self.send_status(f"{self.lanlan_name}已离开。")
+            await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")
 
     async def cleanup(self, expected_websocket=None, expected_session=None):
@@ -2513,48 +2513,15 @@ class LLMSessionManager:
 
         # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
     
-    async def translate_if_needed(self, text: str) -> str:
-        """
-        如果需要，翻译文本（公开方法，供外部模块使用）
-        
-        Args:
-            text: 要翻译的文本
-            
-        Returns:
-            str: 翻译后的文本（如果不需要翻译则返回原文）
-        """
-        if not text or not self.user_language or self.user_language.startswith('zh'):
-            # 中文或语言未知，不需要翻译
-            return text
-        
+    async def send_status(self, message: str):
+        """发送状态消息到前端。message 应为 JSON 字符串 {"code": "XXX", "details": {...}}，前端通过 i18next 翻译。"""
         try:
-            translation_service = self._get_translation_service()
-            translated = await translation_service.translate_text_robust(text, self.user_language)
-            return translated
-        except Exception as e:
-            logger.error(f"翻译失败: {e}，返回原文")
-            return text
-    
-    async def send_status(self, message: str): # 向前端发送status message
-        """
-        发送状态消息。
-
-        TODO: status 翻译已禁用。原因：翻译走与主对话相同的 LLM API，当 API 返回 400（如 "you are not using Lanlan"）
-        时，handle_connection_error 会 send_status(error_msg)，触发翻译请求，导致二次 400 与重复报错。
-        若需恢复：取消下方注释，将 message_to_send 改为 translated_message。
-        若下游监控依赖中文关键字，建议改为基于 type/code 等机器字段判断。
-        """
-        try:
-            # 根据用户语言翻译消息（已禁用，避免 API 关会话时翻译请求二次触发 400）
-            # translated_message = await self.translate_if_needed(message)
-            message_to_send = message  # 原样发送，不翻译
-
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "status", "message": message_to_send})
+                data = json.dumps({"type": "status", "message": message})
                 await self.websocket.send_text(data)
 
                 # 同步到同步服务器
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message_to_send}})
+                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -2662,7 +2629,7 @@ class LLMSessionManager:
                         elif '1008' in error_msg_lower:
                             user_msg = json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": error_msg_text}})
                         else:
-                            user_msg = f"TTS服务连接失败: {error_msg_text}"
+                            user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                         asyncio.create_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

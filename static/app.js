@@ -719,16 +719,22 @@ function init_app() {
                     console.log(window.t('console.currentFrontendCatgirl'), lanlan_config.lanlan_name);
                     handleCatgirlSwitch(newCatgirl, oldCatgirl);
                 } else if (response.type === 'status') {
+                    // 尝试解析结构化消息
+                    let statusCode = null;
+                    try {
+                        const parsed = JSON.parse(response.message);
+                        if (parsed && parsed.code) statusCode = parsed.code;
+                    } catch (_) {}
+
                     // 如果正在切换模式且收到"已离开"消息，则忽略
-                    if (isSwitchingMode && response.message.includes('已离开')) {
+                    if (isSwitchingMode && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
                         console.log(window.t('console.modeSwitchingIgnoreLeft'));
                         return;
                     }
 
                     // 检测严重错误，自动隐藏准备提示（兜底机制）
-                    const criticalErrorKeywords = ['连续失败', '已停止', '自动重试', '崩溃', '欠费', 'API Key被', '限额', '耗尽', '额度', '429', '1008', 'time limit', '超时'];
-                    const responseMessageLower = String(response.message || '').toLowerCase();
-                    if (criticalErrorKeywords.some(keyword => responseMessageLower.includes(keyword.toLowerCase()))) {
+                    const criticalErrorCodes = ['SESSION_START_CRITICAL', 'MEMORY_SERVER_CRASHED', 'API_KEY_REJECTED', 'API_RATE_LIMIT_SESSION', 'ERROR_1007_ARREARS', 'AGENT_QUOTA_EXCEEDED', 'RESPONSE_TIMEOUT', 'CONNECTION_TIMEOUT'];
+                    if (statusCode && criticalErrorCodes.includes(statusCode)) {
                         console.log(window.t('console.seriousErrorHidePreparing'));
                         hideVoicePreparingToast();
                     }
@@ -736,7 +742,7 @@ function init_app() {
                     // 翻译后端发送的状态消息
                     const translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     showStatusToast(translatedMessage, 4000);
-                    if (response.message === `${lanlan_config.lanlan_name}失联了，即将重启！`) {
+                    if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (isRecording === false && !isTextSessionActive) {
                             showStatusToast(window.t ? window.t('app.catgirlResting', { name: lanlan_config.lanlan_name }) : `${lanlan_config.lanlan_name}正在打盹...`, 5000);
                         } else if (isTextSessionActive) {
@@ -1203,7 +1209,8 @@ function init_app() {
                 } else if (response.type === 'reload_page') {
                     console.log(window.t('console.reloadPageReceived'), response.message);
                     // 显示提示信息
-                    showStatusToast(response.message || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
+                    const reloadMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
+                    showStatusToast(reloadMsg || (window.t ? window.t('app.configUpdated') : '配置已更新，页面即将刷新'), 3000);
 
                     // 延迟2.5秒后刷新页面，让后端有足够时间完成session关闭和配置重新加载
                     setTimeout(() => {
@@ -4979,10 +4986,30 @@ function init_app() {
         const container = document.getElementById('live2d-container');
         console.log('[App] hideLive2d调用前，容器类列表:', container.classList.toString());
 
-        // 首先清除任何可能干扰动画的强制显示样式
+        // 首先清除任何可能干扰动画的强制显示样式（包括 showLive2d 设置的内联 transform）
         container.style.removeProperty('visibility');
         container.style.removeProperty('display');
         container.style.removeProperty('opacity');
+        container.style.removeProperty('transform');
+
+        // 取消 return 渐入的清理定时器（防止与退出动画冲突）
+        if (window._returnFadeTimer) {
+            clearTimeout(window._returnFadeTimer);
+            window._returnFadeTimer = null;
+        }
+        // 重置 PIXI model alpha 到 1（确保退出动画时模型不透明）
+        if (window.live2dManager) {
+            const fadeModel = window.live2dManager.getCurrentModel();
+            if (fadeModel && !fadeModel.destroyed) {
+                fadeModel.alpha = 1;
+            }
+        }
+        // 清除 canvas 上的渐入动画残留样式
+        const live2dCanvasForHide = document.getElementById('live2d-canvas');
+        if (live2dCanvasForHide) {
+            live2dCanvasForHide.style.transition = '';
+            live2dCanvasForHide.style.opacity = '';
+        }
 
         // 添加minimized类，触发CSS过渡动画
         container.classList.add('minimized');
@@ -5071,15 +5098,93 @@ function init_app() {
             statusElement.style.setProperty('opacity', '0', 'important');
         }
 
-        // 强制显示live2d容器
-        container.classList.remove('hidden'); // 先移除hidden类
-        container.classList.remove('minimized'); // 移除minimized类
+        // 取消"请她离开"的延迟隐藏定时器（如果正在倒计时中）
+        if (window._goodbyeHideTimerId) {
+            clearTimeout(window._goodbyeHideTimerId);
+            window._goodbyeHideTimerId = null;
+            console.log('[App] showLive2d: 已取消 goodbye 延迟隐藏定时器');
+        }
+
+        // 取消上一次 return 渐入的清理定时器
+        if (window._returnFadeTimer) {
+            clearTimeout(window._returnFadeTimer);
+            window._returnFadeTimer = null;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 【渐入动画 - 完全复刻 _configureLoadedModel 的 CSS 揭示机制】
+        //
+        // 这套机制在模型首次加载时已被证明有效。核心原理：
+        // 1. 先用 CSS opacity:0 隐藏画布（canvas 可 visibility:visible 但不可见）
+        // 2. PIXI 在 opacity:0 的画布中正常渲染（framebuffer 内容正确）
+        // 3. 通过 CSS transition 将 opacity 从 0 过渡到 1 → 用户看到平滑淡入
+        //
+        // 之前失败的原因：
+        // - 尝试1-3: 动画作用在 container 而非 canvas（被 container 的退出 transition 干扰）
+        // - 尝试4: setInterval 在 canvas 上改 opacity，但没有 forced reflow 锁定初始 0 状态
+        // - 尝试5-6: model.alpha 方式，但 canvas 可见一瞬间旧帧就被合成到屏幕
+        // ═══════════════════════════════════════════════════════════════
+
+        // 确保 model.alpha = 1（WebGL 层面完全不透明，与加载代码一致）
+        const fadeModel = window.live2dManager ? window.live2dManager.getCurrentModel() : null;
+        if (fadeModel && !fadeModel.destroyed) {
+            fadeModel.alpha = 1;
+        }
+
+        // 第一步：在 canvas 变得可见之前，先将 CSS opacity 设为近 0
+        // 用 '0.001' 而非 '0' 可避免 loadModel finally 安全网干扰（它只检查 === '0'）
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (live2dCanvas) {
+            live2dCanvas.style.transition = 'none';   // 禁止过渡，确保立即生效
+            live2dCanvas.style.opacity = '0.001';      // CSS 层面隐藏
+        }
+
+        // 第二步：让容器立即可见（禁用 CSS 过渡，避免"离开动画倒放"）
+        container.style.transition = 'none';
+        container.classList.remove('hidden');
+        container.classList.remove('minimized');
         container.style.visibility = 'visible';
         container.style.display = 'block';
         container.style.opacity = '1';
+        container.style.transform = 'none';
 
-        // 强制浏览器重新计算样式，确保过渡效果正常
-        void container.offsetWidth;
+        // 第三步：让 canvas 的 visibility 恢复（用 !important 覆盖 goodbye 定时器的 hidden）
+        // 此时 canvas 虽然 visibility:visible，但 CSS opacity:0.001 使其对用户不可见
+        if (live2dCanvas) {
+            live2dCanvas.style.setProperty('visibility', 'visible', 'important');
+            live2dCanvas.style.setProperty('pointer-events', 'auto', 'important');
+        }
+
+        // 第四步：强制浏览器刷新布局 —— 确保浏览器已经"看到"了 opacity:0.001 状态
+        // 这是让 CSS transition 能正确从 0 开始到 1 的关键!!!
+        // 如果不做 reflow，浏览器可能把 opacity:0.001 和后续的 opacity:1 合并，跳过动画
+        if (live2dCanvas) {
+            void live2dCanvas.offsetWidth;
+        }
+
+        // 第五步：恢复容器的 CSS 过渡（为后续"请她离开"做准备）
+        container.style.transition = '';
+
+        // 确保 PIXI ticker 在运行（长时间 hidden 后 rAF 可能被 Chromium 暂停）
+        const pixiApp = window.live2dManager ? window.live2dManager.pixi_app : null;
+        if (pixiApp && pixiApp.ticker && !pixiApp.ticker.started) {
+            pixiApp.ticker.start();
+        }
+
+        // 第六步：触发 CSS transition 淡入（与 _configureLoadedModel 相同的机制）
+        if (live2dCanvas) {
+            live2dCanvas.style.transition = 'opacity 0.5s ease-out';
+            live2dCanvas.style.opacity = '1';
+
+            // 过渡完成后清除内联样式，避免干扰后续功能
+            window._returnFadeTimer = setTimeout(() => {
+                if (live2dCanvas) {
+                    live2dCanvas.style.transition = '';
+                    live2dCanvas.style.opacity = '';
+                }
+                window._returnFadeTimer = null;
+            }, 550);
+        }
 
         // 如果容器没有其他类，完全移除class属性以避免显示为class=""
         if (container.classList.length === 0) {
@@ -5137,21 +5242,68 @@ function init_app() {
                 const vrmContainer = document.getElementById('vrm-container');
                 console.log('[showCurrentModel] vrmContainer存在:', !!vrmContainer);
                 if (vrmContainer) {
+                    // 取消"请她离开"的延迟隐藏定时器
+                    if (window._goodbyeHideTimerId) {
+                        clearTimeout(window._goodbyeHideTimerId);
+                        window._goodbyeHideTimerId = null;
+                    }
+                    // 取消上一次 VRM canvas 渐入动画
+                    if (window._vrmCanvasFadeInId) {
+                        clearInterval(window._vrmCanvasFadeInId);
+                        window._vrmCanvasFadeInId = null;
+                    }
+
+                    // 【第一步】在容器可见之前，先将 VRM canvas opacity 设为 0（防止旧帧闪烁）
+                    const vrmCanvasInner = document.getElementById('vrm-canvas');
+                    if (vrmCanvasInner) {
+                        vrmCanvasInner.style.opacity = '0';
+                    }
+
+                    // 禁用过渡，避免出现"离开动画倒放"效果
+                    vrmContainer.style.transition = 'none';
                     vrmContainer.classList.remove('hidden');
+                    vrmContainer.classList.remove('minimized');
                     vrmContainer.style.display = 'block';
                     vrmContainer.style.visibility = 'visible';
+                    vrmContainer.style.transform = 'none';
+                    vrmContainer.style.opacity = '1'; // 容器直接完全可见
                     vrmContainer.style.removeProperty('pointer-events');
-                    console.log('[showCurrentModel] 已设置vrmContainer可见');
+
+                    // 强制浏览器刷新样式
+                    void vrmContainer.offsetWidth;
+                    // 立即恢复 CSS 过渡（以便后续退出动画正常播放）
+                    vrmContainer.style.transition = '';
+
+                    // 【第二步】恢复 VRM canvas 可见性并启动渐入动画
+                    if (vrmCanvasInner) {
+                        vrmCanvasInner.style.setProperty('visibility', 'visible', 'important');
+                        vrmCanvasInner.style.setProperty('pointer-events', 'auto', 'important');
+
+                        // 使用 setInterval 渐入动画（VRM 使用 Three.js，无 model.alpha，用 CSS opacity）
+                        let vrmFadeStep = 0;
+                        const vrmFadeSteps = 30;
+                        const vrmFadeInterval = 16;
+                        window._vrmCanvasFadeInId = setInterval(() => {
+                            vrmFadeStep++;
+                            const progress = Math.min(vrmFadeStep / vrmFadeSteps, 1);
+                            const eased = 1 - Math.pow(1 - progress, 2.5);
+                            vrmCanvasInner.style.opacity = String(eased);
+                            if (vrmFadeStep >= vrmFadeSteps) {
+                                clearInterval(window._vrmCanvasFadeInId);
+                                window._vrmCanvasFadeInId = null;
+                                vrmCanvasInner.style.opacity = '';
+                            }
+                        }, vrmFadeInterval);
+                    }
+                    console.log('[showCurrentModel] 已设置vrmContainer可见（带canvas渐入动画）');
                 }
 
-                // 恢复 VRM canvas 的可见性
+                // 恢复 VRM canvas 的可见性（确保 handleReturnClick 后续不会再干扰）
                 const vrmCanvas = document.getElementById('vrm-canvas');
                 console.log('[showCurrentModel] vrmCanvas存在:', !!vrmCanvas);
                 if (vrmCanvas) {
-                    vrmCanvas.style.removeProperty('visibility');
-                    vrmCanvas.style.removeProperty('pointer-events');
-                    vrmCanvas.style.visibility = 'visible';
-                    vrmCanvas.style.pointerEvents = 'auto';
+                    vrmCanvas.style.setProperty('visibility', 'visible', 'important');
+                    vrmCanvas.style.setProperty('pointer-events', 'auto', 'important');
                     console.log('[showCurrentModel] 已设置vrmCanvas可见');
                 }
 
@@ -5378,14 +5530,12 @@ function init_app() {
             window.vrmManager.core.setLocked(true);
         }
 
-        // 隐藏 Live2D canvas，使 Electron 的 alpha 检测认为该区域完全透明
-        // 仅设置 pointer-events: none 不够，因为 Electron 根据像素 alpha 值来决定事件转发
-        // 必须设置 visibility: hidden 来确保 canvas 不渲染任何像素
+        // 【修复】不立即隐藏 canvas，而是先仅禁用交互，让 CSS 过渡动画（slide + fade）完成后再隐藏
+        // 之前的做法是立即设置 visibility: hidden，导致模型瞬间消失而非平滑退场
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
-            live2dCanvas.style.setProperty('visibility', 'hidden', 'important');
             live2dCanvas.style.setProperty('pointer-events', 'none', 'important');
-            console.log('[App] 已隐藏 live2d-canvas（visibility: hidden），Electron 将认为该区域透明');
+            console.log('[App] 已禁用 live2d-canvas 交互（pointer-events: none），等待过渡动画完成后再隐藏');
         }
 
         // 【关键修复】在隐藏按钮之前，先判断当前激活的模型类型
@@ -5397,19 +5547,57 @@ function init_app() {
             !vrmContainer.classList.contains('hidden');
         console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive);
 
-        // 隐藏 VRM 容器和 canvas
-        if (vrmContainer) {
-            vrmContainer.style.setProperty('visibility', 'hidden', 'important');
-            vrmContainer.style.setProperty('pointer-events', 'none', 'important');
-            vrmContainer.style.setProperty('display', 'none', 'important');
-            console.log('[App] 已隐藏 vrm-container（visibility: hidden），Electron 将认为该区域透明');
-        }
+        // 【修复】VRM 也先仅禁用交互，延迟隐藏，让过渡动画正常播放
         const vrmCanvas = document.getElementById('vrm-canvas');
-        if (vrmCanvas) {
-            vrmCanvas.style.setProperty('visibility', 'hidden', 'important');
-            vrmCanvas.style.setProperty('pointer-events', 'none', 'important');
-            console.log('[App] 已隐藏 vrm-canvas（visibility: hidden）');
+        if (vrmContainer) {
+            vrmContainer.style.setProperty('pointer-events', 'none', 'important');
+            console.log('[App] 已禁用 vrm-container 交互，等待过渡动画完成后再隐藏');
         }
+        if (vrmCanvas) {
+            vrmCanvas.style.setProperty('pointer-events', 'none', 'important');
+            console.log('[App] 已禁用 vrm-canvas 交互');
+        }
+
+        // 【修复】为 VRM 容器添加 minimized 类，触发 slide+fade 退出动画（与 Live2D 一致）
+        if (isVrmActive && vrmContainer) {
+            // 清除可能冲突的内联样式（由 showCurrentModel 设置）
+            vrmContainer.style.removeProperty('visibility');
+            vrmContainer.style.removeProperty('display');
+            vrmContainer.style.removeProperty('opacity');
+            vrmContainer.style.removeProperty('transform');
+            // 取消 VRM canvas 渐入动画
+            if (window._vrmCanvasFadeInId) {
+                clearInterval(window._vrmCanvasFadeInId);
+                window._vrmCanvasFadeInId = null;
+            }
+            // 清除 VRM canvas 上可能残留的内联 opacity
+            const vrmCanvasForHide = document.getElementById('vrm-canvas');
+            if (vrmCanvasForHide) {
+                vrmCanvasForHide.style.opacity = '';
+            }
+            vrmContainer.classList.add('minimized');
+            console.log('[App] 已为 vrm-container 添加 minimized 类，触发退出动画');
+        }
+
+        // 在过渡动画完成（1s）后，彻底隐藏 canvas / container，使 Electron alpha 检测认为透明
+        // 保存 setTimeout ID，以便"请她回来"时取消
+        if (window._goodbyeHideTimerId) clearTimeout(window._goodbyeHideTimerId);
+        window._goodbyeHideTimerId = setTimeout(() => {
+            window._goodbyeHideTimerId = null;
+            if (live2dCanvas) {
+                live2dCanvas.style.setProperty('visibility', 'hidden', 'important');
+                console.log('[App] 过渡完成，已隐藏 live2d-canvas（visibility: hidden）');
+            }
+            if (vrmContainer) {
+                vrmContainer.style.setProperty('visibility', 'hidden', 'important');
+                vrmContainer.style.setProperty('display', 'none', 'important');
+                console.log('[App] 过渡完成，已隐藏 vrm-container');
+            }
+            if (vrmCanvas) {
+                vrmCanvas.style.setProperty('visibility', 'hidden', 'important');
+                console.log('[App] 过渡完成，已隐藏 vrm-canvas');
+            }
+        }, 1100); // 比 CSS transition 的 1s 稍长，确保动画完全结束
 
         // 在隐藏 DOM 之前先读取 "请她离开" 按钮的位置（避免隐藏后 getBoundingClientRect 返回异常）
         // 优先读取当前激活模型的按钮位置（Live2D 或 VRM）
@@ -5615,6 +5803,13 @@ function init_app() {
     const handleReturnClick = async () => {
         console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
 
+        // 立即取消"请她离开"的延迟隐藏定时器，防止在恢复后被意外隐藏
+        if (window._goodbyeHideTimerId) {
+            clearTimeout(window._goodbyeHideTimerId);
+            window._goodbyeHideTimerId = null;
+            console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
+        }
+
         // 第一步：同步 window 中的设置值到局部变量（防止从 l2d 页面返回时值丢失）
         if (typeof window.focusModeEnabled !== 'undefined') {
             focusModeEnabled = window.focusModeEnabled;
@@ -5676,8 +5871,10 @@ function init_app() {
         }
 
         // 【关键修复】恢复 Live2D canvas 的可见性（如果存在）
+        // 注意：如果 return 渐入动画正在播放（_returnFadeTimer 存在），
+        // 不要用 removeProperty 扰动 canvas 的内联样式，否则可能中断 CSS transition
         const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
+        if (live2dCanvas && !window._returnFadeTimer) {
             live2dCanvas.style.removeProperty('visibility');
             live2dCanvas.style.removeProperty('pointer-events');
             live2dCanvas.style.visibility = 'visible';
@@ -6293,10 +6490,23 @@ function init_app() {
                         const notification = data.notification;
                         if (notification) {
                             console.log('[App] 收到后端通知:', notification);
-                            setFloatingAgentStatus(notification);
+                            // notification 是 JSON 字符串，通过 translateStatusMessage 解析并翻译
+                            const translatedNotification = window.translateStatusMessage ? window.translateStatusMessage(notification) : notification;
+                            setFloatingAgentStatus(translatedNotification);
                             maybeShowContentFilterModal(notification);
-                            if (notification.includes('失败') || notification.includes('断开') || notification.includes('错误')) {
-                                showStatusToast(notification, 3000);
+                            // 检查是否包含错误/失败类通知（基于结构化 code 或回退到文本匹配）
+                            let isErrorNotification = false;
+                            try {
+                                const parsed = JSON.parse(notification);
+                                if (parsed && parsed.code) {
+                                    const errorCodes = ['AGENT_AUTO_DISABLED_COMPUTER', 'AGENT_AUTO_DISABLED_BROWSER', 'AGENT_LLM_CHECK_ERROR', 'AGENT_CU_UNAVAILABLE', 'AGENT_CU_ENABLE_FAILED', 'AGENT_CU_CAPABILITY_LOST'];
+                                    isErrorNotification = errorCodes.includes(parsed.code);
+                                }
+                            } catch (_) {
+                                isErrorNotification = notification.includes('失败') || notification.includes('断开') || notification.includes('错误');
+                            }
+                            if (isErrorNotification) {
+                                showStatusToast(translatedNotification, 3000);
                             }
                         }
 
