@@ -234,12 +234,12 @@ function setupGlobalControls(aplayer) {
         return toggleMusicPlayback(aplayer);
     };
 
-    // 上一首
+    // 下一首
     window.playNextTrack = function() {
         return playNextTrack(aplayer);
     };
 
-    // 下一首
+    // 上一首
     window.playPreviousTrack = function() {
         return playPreviousTrack(aplayer);
     };
