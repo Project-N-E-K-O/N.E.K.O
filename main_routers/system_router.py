@@ -2043,32 +2043,37 @@ async def proactive_chat(request: Request):
         elif source_tag in ('WEB', 'BOTH'):
             primary_channel = 'web' if source_tag == 'WEB' else primary_channel
         
-        # 如果音乐通道参与且 source_tag 为 WEB 或 BOTH，返回音乐链接
-        # 避免覆盖已有链接，混合通道时合并链接
-        if 'music' in active_channels and source_tag in ('WEB', 'BOTH'):
+        # 只有当 music 是唯一的非屏幕话题时才自动附带音乐链接
+        # 即：active_channels 中没有 web 时才触发音乐，避免 web + music 混合时被误判
+        has_web_topic = 'web' in active_channels
+        has_music_topic = 'music' in active_channels
+        
+        if has_music_topic and source_tag in ('WEB', 'BOTH'):
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
-                # 初始化或扩展 source_links
-                if not source_links:
-                    source_links = []
-                for track in music_raw.get('data', [])[:3]:
-                    source_links.append({
-                        'title': track.get('name', '未知曲目'),
-                        'artist': track.get('artist', '未知艺术家'),
-                        'url': track.get('url', ''),
-                        'source': '音乐推荐'
-                    })
-                primary_channel = 'music'
+                # 只有当没有 web 话题时才自动附带音乐链接
+                if not has_web_topic:
+                    if not source_links:
+                        source_links = []
+                    for track in music_raw.get('data', [])[:3]:
+                        source_links.append({
+                            'title': track.get('name', '未知曲目'),
+                            'artist': track.get('artist', '未知艺术家'),
+                            'url': track.get('url', ''),
+                            'source': '音乐推荐'
+                        })
+                    primary_channel = 'music'
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
+        # 只有当 music 是唯一非屏幕话题时才记录音乐 key
         if source_tag != 'SCREEN':
             if selected_web_topic_key:
                 _record_topic_usage(lanlan_name, selected_web_topic_key)
-            if selected_music_topic_key:
+            if selected_music_topic_key and not has_web_topic:
                 _record_topic_usage(lanlan_name, selected_music_topic_key)
 
         return JSONResponse({
