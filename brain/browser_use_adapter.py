@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -406,10 +407,10 @@ class BrowserUseAdapter:
         reasons = []
         ok, gate_reasons = self._config_manager.is_agent_api_ready()
         if not ok:
-            reasons.extend(gate_reasons)
+            reasons.append("AGENT_ENDPOINT_NOT_CONFIGURED")
             ready = False
         if not self._ready_import:
-            reasons.append(f"browser-use not installed: {self.last_error}")
+            reasons.append("AGENT_BROWSER_USE_NOT_INSTALLED")
         return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
 
     async def _get_browser_session(self) -> Any:
@@ -691,10 +692,7 @@ class BrowserUseAdapter:
         if not ok:
             return {
                 "success": False,
-                "error": (
-                    "免费 Agent 模型今日试用次数已达上限 "
-                    f"({info.get('used', 0)}/{info.get('limit', 300)})，请明日再试。"
-                ),
+                "error": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}}),
             }
 
         # 所有 pre-checks 通过后才启动 IP 国家查询任务

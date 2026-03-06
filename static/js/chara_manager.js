@@ -1192,8 +1192,8 @@ function showCatgirlForm(key, container) {
     let modelDisplayText = '';
     if (modelType === 'vrm' && cat['vrm']) {
         const vrmPath = cat['vrm'];
-        const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath) : '';
-        modelDisplayText = `VRM: ${vrmName}`;
+        const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '') : '';
+        modelDisplayText = vrmName;
     } else if (cat['live2d']) {
         modelDisplayText = cat['live2d'];
     } else {

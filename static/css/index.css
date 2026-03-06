@@ -227,8 +227,8 @@ button * {
 }
 /* 看板娘判定框-最小化状态 */
 #live2d-container.minimized {
-    right: -800px;
-    /* 向右侧移出屏幕 */
+    transform: translateX(300px);
+    /* 向右平滑滑出（配合 opacity 渐隐） */
     opacity: 0;
     visibility: hidden;
 }
@@ -271,7 +271,7 @@ button * {
 }
 /* 看板娘VR模型判定框-最小化状态 */
 #vrm-container.minimized {
-    right: -800px;
+    transform: translateX(300px);
     opacity: 0;
     visibility: hidden;
 }
