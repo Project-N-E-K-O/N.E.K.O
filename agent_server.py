@@ -3,6 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mimetypes
+import json
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import uuid
@@ -68,9 +69,9 @@ class Modules:
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
-        "computer_use": {"ready": False, "reason": "not checked"},
-        "browser_use": {"ready": False, "reason": "not checked"},
-        "user_plugin": {"ready": False, "reason": "not checked"},
+        "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
+        "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
@@ -120,13 +121,13 @@ async def _fire_user_plugin_capability_check() -> None:
                     _set_capability("user_plugin", True, "")
                     logger.info("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
                 else:
-                    _set_capability("user_plugin", False, "未发现可用插件")
+                    _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
                     logger.info("[Agent] UserPlugin capability check: no plugins found")
             else:
-                _set_capability("user_plugin", False, f"plugin server returned {r.status_code}")
+                _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
                 logger.warning("[Agent] UserPlugin capability check failed: status %s", r.status_code)
     except Exception as e:
-        _set_capability("user_plugin", False, str(e))
+        _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
         logger.debug("[Agent] UserPlugin capability check error: %s", e)
 
 
@@ -156,14 +157,14 @@ async def _fire_agent_llm_connectivity_check() -> None:
 
         try:
             ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
-            reason = "" if ok else (adapter.last_error or "Agent LLM unreachable")
+            reason = "" if ok else "AGENT_LLM_UNREACHABLE"
             _set_capability("computer_use", ok, reason)
             bu = Modules.browser_use
             if bu is not None:
                 if not ok:
                     _set_capability("browser_use", False, reason)
                 elif not getattr(bu, "_ready_import", False):
-                    _set_capability("browser_use", False, f"browser-use not installed: {bu.last_error}")
+                    _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
                 else:
                     _set_capability("browser_use", True, "")
 
@@ -173,22 +174,22 @@ async def _fire_agent_llm_connectivity_check() -> None:
                 logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
                 if Modules.agent_flags.get("computer_use_enabled"):
                     Modules.agent_flags["computer_use_enabled"] = False
-                    Modules.notification = f"已自动关闭键鼠控制: {reason}"
+                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
                 if Modules.agent_flags.get("browser_use_enabled"):
                     Modules.agent_flags["browser_use_enabled"] = False
-                    Modules.notification = f"已自动关闭浏览器控制: {reason}"
+                    Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
 
             _bump_state_revision()
             await _emit_agent_status_update()
         except Exception as e:
             logger.warning("[Agent] Agent-LLM connectivity check error: %s", e)
-            _set_capability("computer_use", False, str(e))
-            _set_capability("browser_use", False, str(e))
+            _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
+            _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
             if Modules.agent_flags.get("computer_use_enabled"):
                 Modules.agent_flags["computer_use_enabled"] = False
             if Modules.agent_flags.get("browser_use_enabled"):
                 Modules.agent_flags["browser_use_enabled"] = False
-            Modules.notification = f"Agent LLM 连接检查异常: {e}"
+            Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()
 
@@ -199,8 +200,41 @@ def _bump_state_revision() -> int:
 
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
+    def _normalize_precheck_reason(raw_reason: str) -> str:
+        text = str(raw_reason or "").strip()
+        if not text:
+            return ""
+        if text.startswith("AGENT_"):
+            return text
+
+        lower = text.lower()
+        # Normalize legacy Chinese/English free-text reasons into stable i18n codes.
+        if "未检查" in text or "not checked" in lower or "pending" in lower:
+            return "AGENT_PRECHECK_PENDING"
+        if "模型未配置" in text or "model not configured" in lower:
+            return "AGENT_MODEL_NOT_CONFIGURED"
+        if "api url 未配置" in lower or "url not configured" in lower:
+            return "AGENT_URL_NOT_CONFIGURED"
+        if "api key 未配置" in lower or "key not configured" in lower:
+            return "AGENT_KEY_NOT_CONFIGURED"
+        if "endpoint not configured" in lower or "api 未配置" in lower:
+            return "AGENT_ENDPOINT_NOT_CONFIGURED"
+        if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
+            return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+        if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
+            return "AGENT_BROWSER_USE_NOT_INSTALLED"
+        if "not initialized" in lower or "初始化失败" in text:
+            return "AGENT_NOT_INITIALIZED"
+        if "未发现可用插件" in text or "no plugins" in lower:
+            return "AGENT_NO_PLUGINS_FOUND"
+        if "plugin server" in lower or "插件服务" in text or "user_plugin server responded" in lower:
+            return "AGENT_PLUGIN_SERVER_ERROR"
+        if "unreachable" in lower or "连接失败" in text or "connectivity" in lower:
+            return "AGENT_LLM_UNREACHABLE"
+        return "AGENT_LLM_UNREACHABLE"
+
     prev = Modules.capability_cache.get(name, {})
-    normalized_reason = reason or ""
+    normalized_reason = _normalize_precheck_reason(reason)
     Modules.capability_cache[name] = {"ready": bool(ready), "reason": normalized_reason}
     if prev.get("ready") != bool(ready) or prev.get("reason", "") != normalized_reason:
         _bump_state_revision()
@@ -1496,7 +1530,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
         Modules.agent_flags["user_plugin_enabled"] = False
-        Modules.notification = f"无法开启 Agent: {(gate.get('reasons') or ['Agent API 未配置'])[0]}"
+        first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
+        _set_capability("computer_use", False, first_reason)
+        _set_capability("browser_use", False, first_reason)
+        _set_capability("user_plugin", False, first_reason)
+        Modules.notification = None
         if Modules.agent_flags != old_flags:
             _bump_state_revision()
             await _emit_agent_status_update(lanlan_name=lanlan_name)
@@ -1511,11 +1549,11 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 _try_refresh_computer_use_adapter(force=True)
             if not Modules.computer_use:
                 Modules.agent_flags["computer_use_enabled"] = False
-                Modules.notification = "无法开启 Computer Use: 模块未加载"
+                Modules.notification = json.dumps({"code": "AGENT_CU_MODULE_NOT_LOADED"})
                 logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
             elif not getattr(Modules.computer_use, "init_ok", False):
                 Modules.agent_flags["computer_use_enabled"] = True
-                Modules.notification = "键鼠控制已开启，Agent LLM 连接确认中..."
+                Modules.notification = json.dumps({"code": "AGENT_CU_ENABLED_CHECKING"})
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 try:
@@ -1526,12 +1564,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         Modules.agent_flags["computer_use_enabled"] = True
                     else:
                         Modules.agent_flags["computer_use_enabled"] = False
-                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else '未知原因'
-                        Modules.notification = f"无法开启 Computer Use: {reason}"
+                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
+                        Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
                         logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
                 except Exception as e:
                     Modules.agent_flags["computer_use_enabled"] = False
-                    Modules.notification = f"开启 Computer Use 失败: {str(e)}"
+                    Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(e)}})
                     logger.error(f"[Agent] Cannot enable Computer Use: Check failed {e}")
         else: # Disabling
             Modules.agent_flags["computer_use_enabled"] = False
@@ -1542,13 +1580,13 @@ async def set_agent_flags(payload: Dict[str, Any]):
             bu = getattr(Modules, "browser_use", None)
             if not bu:
                 Modules.agent_flags["browser_use_enabled"] = False
-                Modules.notification = "无法开启 Browser Use: 模块未加载"
+                Modules.notification = json.dumps({"code": "AGENT_BU_MODULE_NOT_LOADED"})
             elif not getattr(bu, "_ready_import", False):
                 Modules.agent_flags["browser_use_enabled"] = False
-                Modules.notification = f"无法开启 Browser Use: browser-use not installed: {bu.last_error}"
+                Modules.notification = json.dumps({"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": str(bu.last_error)}})
             elif not getattr(Modules.computer_use, "init_ok", False):
                 Modules.agent_flags["browser_use_enabled"] = True
-                Modules.notification = "浏览器控制已开启，Agent LLM 连接确认中..."
+                Modules.notification = json.dumps({"code": "AGENT_BU_ENABLED_CHECKING"})
                 asyncio.ensure_future(_fire_agent_llm_connectivity_check())
             else:
                 Modules.agent_flags["browser_use_enabled"] = True
@@ -1562,23 +1600,23 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                     if r.status_code != 200:
-                        _set_capability("user_plugin", False, f"user_plugin server responded {r.status_code}")
+                        _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
                         Modules.agent_flags["user_plugin_enabled"] = False
-                        Modules.notification = "无法开启 UserPlugin: 插件服务不可用"
+                        Modules.notification = None
                         logger.warning("[Agent] Cannot enable UserPlugin: service unavailable")
                         return {"success": True, "agent_flags": Modules.agent_flags}
                     data = r.json()
                     plugins = data.get("plugins", []) if isinstance(data, dict) else []
                     if not plugins:
-                        _set_capability("user_plugin", False, "未发现可用插件")
+                        _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
                         Modules.agent_flags["user_plugin_enabled"] = False
-                        Modules.notification = "无法开启 UserPlugin: 未发现可用插件"
+                        Modules.notification = None
                         logger.warning("[Agent] Cannot enable UserPlugin: no plugins found")
                         return {"success": True, "agent_flags": Modules.agent_flags}
             except Exception as e:
-                _set_capability("user_plugin", False, str(e))
+                _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
                 Modules.agent_flags["user_plugin_enabled"] = False
-                Modules.notification = f"开启 UserPlugin 失败: {str(e)}"
+                Modules.notification = None
                 logger.error(f"[Agent] Cannot enable UserPlugin: {e}")
                 return {"success": True, "agent_flags": Modules.agent_flags}
         if uf:
@@ -1653,7 +1691,7 @@ async def computer_use_availability():
     if not Modules.computer_use:
         if Modules.agent_flags.get("computer_use_enabled"):
             Modules.agent_flags["computer_use_enabled"] = False
-            Modules.notification = "Computer Use 模块未加载，已自动关闭"
+            Modules.notification = json.dumps({"code": "AGENT_CU_AUTO_CLOSED"})
         raise HTTPException(503, "ComputerUse not ready")
     if not getattr(Modules.computer_use, "init_ok", False):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
@@ -1666,7 +1704,7 @@ async def computer_use_availability():
     if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
         logger.info("[Agent] Computer Use capability lost, disabling flag")
         Modules.agent_flags["computer_use_enabled"] = False
-        Modules.notification = f"Computer Use 不可用: {status.get('reasons', [])[0] if status.get('reasons') else '未知原因'}"
+        Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
         
     return status
 

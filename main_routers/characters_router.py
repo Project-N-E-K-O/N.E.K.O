@@ -94,13 +94,11 @@ async def send_reload_page_notice(session, message_text: str = "语音已更新�
         return False
     
     try:
-        # 翻译消息
-        translated_message = await session.translate_if_needed(message_text)
         await session.websocket.send_text(json.dumps({
             "type": "reload_page",
-            "message": translated_message
+            "message": json.dumps({"code": "RELOAD_PAGE", "details": {"message": message_text}})
         }))
-        logger.info(f"已通知前端刷新页面: {translated_message}")
+        logger.info("已通知前端刷新页面")
         return True
     except Exception as e:
         logger.warning(f"通知前端刷新页面失败: {e}")

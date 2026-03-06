@@ -1,6 +1,7 @@
 # -- coding: utf-8 --
 
 import asyncio
+import json
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -350,9 +351,9 @@ class OmniOfflineClient:
                             will_retry = guard_attempt <= self.max_response_rerolls
                             # 区分原因：超长用明确提示，其它守卫原因用通用提示
                             if discard_reason and "length>" in discard_reason:
-                                final_message = "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）"
+                                final_message = json.dumps({"code": "RESPONSE_TOO_LONG"})
                             else:
-                                final_message = "AI回复不符合要求，已放弃输出"
+                                final_message = json.dumps({"code": "RESPONSE_INVALID"})
                             failure_message = None if will_retry else final_message
                             await self._notify_response_discarded(
                                 discard_reason or "guard",

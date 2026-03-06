@@ -140,10 +140,7 @@ class DirectTaskExecutor:
         ok, info = self._config_manager.consume_agent_daily_quota(source=source, units=1)
         if ok:
             return None
-        return (
-            f"免费 Agent 模型今日试用次数已达上限 "
-            f"({info.get('used', 0)}/{info.get('limit', 300)})，请明日再试。"
-        )
+        return json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}})
     
     def _format_messages(self, messages: List[Dict[str, str]]) -> str:
         """格式化对话消息"""
