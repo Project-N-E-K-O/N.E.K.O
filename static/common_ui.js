@@ -1161,6 +1161,11 @@ const destroyMusicPlayer = () => {
     currentPlayingTrack = null;
 };
 
+// APlayer 库加载单例 Promise
+let aplayerLoadPromise = null;
+// 当前最新的音乐请求 token，用于取消过期请求
+let latestMusicRequestToken = 0;
+
 window.sendMusicMessage = function(trackInfo) {
     // 检查是否需要清理旧的音乐播放器实例
     // 条件：音乐气泡之前的消息数 > 10 且播放器未播放
@@ -1211,16 +1216,19 @@ window.sendMusicMessage = function(trackInfo) {
                currentPlayingTrack.artist === info.artist;
     };
     
-    // 如果是同一首歌且正在播放，不做任何操作
+    // 如果是同一首歌（无论是否正在播放），复用现有实例，不再创建新的
     const player = getMusicPlayerInstance();
-    if (isSameTrack(trackInfo) && player && !player.paused) {
-        console.log('[Common UI] 相同歌曲正在播放中，跳过');
-        return false;
+    if (isSameTrack(trackInfo)) {
+        console.log('[Common UI] 相同歌曲已存在，复用现有实例');
+        // 如果暂停了，可以重新播放
+        if (player && player.paused) {
+            player.play();
+        }
+        return true;
     }
     
-    // 如果播放器正在播放其他歌曲，需要创建新播放器（会停止旧播放并渲染新气泡）
+    // 不同歌曲：如果播放器正在播放，需要创建新播放器（会停止旧播放并渲染新气泡）
     if (!shouldCreateNewPlayer()) {
-        // 已有歌曲在播，需要完全销毁旧实例才能创建新的
         console.log('[Common UI] 已有其他歌曲在播，销毁旧实例并创建新播放器');
         destroyMusicPlayer();
     }
@@ -1229,35 +1237,62 @@ window.sendMusicMessage = function(trackInfo) {
     currentPlayingTrack = trackInfo;
     // 动态加载 APlayer 库
     const loadAPlayerLibrary = () => {
-        return new Promise((resolve, reject) => {
+        // 如果已有加载中的 Promise，复用它而不是创建新的
+        if (aplayerLoadPromise) {
+            return aplayerLoadPromise;
+        }
+        
+        aplayerLoadPromise = new Promise((resolve, reject) => {
             if (typeof APlayer !== 'undefined') {
                 resolve();
                 return;
             }
             
-            // 加载 CSS
-            const cssLink = document.createElement('link');
-            cssLink.rel = 'stylesheet';
-            cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.css';
-            cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
-            document.head.appendChild(cssLink);
+            // 加载 CSS（检查是否已存在）
+            if (!document.querySelector('link[href*="APlayer.min.css"]')) {
+                const cssLink = document.createElement('link');
+                cssLink.rel = 'stylesheet';
+                cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.css';
+                cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
+                document.head.appendChild(cssLink);
+            }
             
-            // 加载 JS
-            const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.js';
-            script.onload = () => {
-                console.log('[Common UI] APlayer 库加载成功');
-                resolve();
-            };
-            script.onerror = () => {
-                console.error('[Common UI] APlayer JS 加载失败');
-                reject(new Error('APlayer 库加载失败'));
-            };
-            document.head.appendChild(script);
+            // 加载 JS（检查是否已存在）
+            if (!document.querySelector('script[src*="APlayer.min.js"]')) {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.js';
+                script.onload = () => {
+                    console.log('[Common UI] APlayer 库加载成功');
+                    resolve();
+                };
+                script.onerror = () => {
+                    console.error('[Common UI] APlayer JS 加载失败');
+                    aplayerLoadPromise = null; // 失败后重置，下次可重试
+                    reject(new Error('APlayer 库加载失败'));
+                };
+                document.head.appendChild(script);
+            } else {
+                // JS 已存在，等待一下让 APlayer 可用
+                setTimeout(() => {
+                    if (typeof APlayer !== 'undefined') {
+                        resolve();
+                    } else {
+                        reject(new Error('APlayer 未定义'));
+                    }
+                }, 100);
+            }
         });
+        
+        return aplayerLoadPromise;
     };
     
     const showMusicPlayer = () => {
+        // 安全校验：音频 URL 白名单检查
+        if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
+            console.warn('[Common UI] 音频 URL 未通过安全校验:', trackInfo.url);
+            return;
+        }
+        
         const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
         
         const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'];
@@ -1460,10 +1495,18 @@ window.sendMusicMessage = function(trackInfo) {
         });
     };
     
+    // 为本次请求生成唯一 token
+    const currentToken = ++latestMusicRequestToken;
+    
     // 检查 APlayer 是否已加载
     if (typeof APlayer === 'undefined') {
         console.log('[Common UI] APlayer 库未加载，正在动态加载...');
         loadAPlayerLibrary().then(() => {
+            // 检查是否为最新请求
+            if (currentToken !== latestMusicRequestToken) {
+                console.log('[Common UI] 请求已过期，跳过渲染');
+                return;
+            }
             stopExistingMusic();
             showMusicPlayer();
             return true;
