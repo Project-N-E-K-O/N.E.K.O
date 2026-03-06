@@ -1147,10 +1147,11 @@ cursor: not-allowed;
 opacity: 0.7;
 }
 
-/* 上传到创意工坊按钮禁用时保持原始样式 */
+/* 上传到创意工坊按钮禁用时保持蓝色背景，降低透明度 */
 #upload-to-workshop-btn:disabled {
 background: #0078d4;
-opacity: 1;
+opacity: 0.5;
+cursor: not-allowed;
 }
 
 .layout-container .btn-primary {
@@ -1719,7 +1720,7 @@ cursor: pointer;
 }
         
 /* Fluent Design 卡片悬停效果 */
-.card:hover, .workshop-card:hover {
+.card:hover {
 transform: translateY(-2px);
 box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
 border-color: rgba(0, 0, 0, 0.12);
@@ -2053,16 +2054,17 @@ flex-direction: column;
 gap: 4px;
 }
 
-/* 状态徽章 - workshop-card专用（SVG六边形风格） */
+/* 状态徽章 - workshop-card专用（SVG正六角形风格，根据文本长度自适应大小） */
 .workshop-card .status-badge {
     position: absolute;
     top: 15px;
     right: 15px;
-    width: 66px;
-    height: 60px;
+    min-width: 56px;
+    aspect-ratio: 1 / 1;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 6px;
     filter: drop-shadow(0 0 6px rgba(45, 185, 255, 0.6));
     z-index: 10;
     background: transparent;
@@ -2082,13 +2084,14 @@ gap: 4px;
 
 .workshop-card .status-badge .badge-text {
     color: white;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: bold;
     letter-spacing: 0.5px;
     z-index: 1;
     text-align: center;
-    white-space: nowrap;
-    line-height: 1;
+    white-space: normal;
+    overflow-wrap: break-word;
+    line-height: 1.2;
 }
 
 /* SVG六边形状态颜色 - 通过CSS变量或直接设置fill */

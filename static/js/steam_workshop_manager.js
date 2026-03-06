@@ -1135,9 +1135,12 @@ function escapeHtml(text) {
     if (typeof text !== 'string') {
         return String(text);
     }
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 
@@ -1713,17 +1716,18 @@ function renderSubscriptionsPage() {
         // 确保publishedFileId转换为字符串，避免类型错误
         const formattedItem = {
             id: String(item.publishedFileId),
-            name: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
+            rawName: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
+            name: escapeHtml(item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`),
             author: escapeHtml(safeAuthorName(item)),
             rawAuthor: safeAuthorName(item),
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
-            previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+            previewUrl: encodeURI(item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png'),
             state: item.state || {},
             // 添加安装路径信息
             installedFolder: item.installedFolder || '',
-            description: item.description || (window.t ? window.t('steam.noDescription') : '暂无描述'),
+            description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
             timeAdded: item.timeAdded || 0,
             fileSize: item.fileSizeOnDisk || item.fileSize || 0
         };
@@ -1779,7 +1783,7 @@ function renderSubscriptionsPage() {
             }
                     <div class="card-actions">
                         <!-- 查看详情下次再加，一时半会儿搞不定 -->
-                        <button class="button button-danger" onclick="unsubscribeItem('${formattedItem.id}', '${formattedItem.name}')">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
+                        <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
@@ -2041,7 +2045,7 @@ function viewItemDetails(itemId) {
             const authorInitial = escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase());
 
             // 更新模态框内容
-            document.getElementById('modalTitle').textContent = formattedItem.name;
+            document.getElementById('modalTitle').textContent = formattedItem.rawName;
 
             const detailContent = document.getElementById('itemDetailContent');
             detailContent.innerHTML = `
@@ -2449,15 +2453,25 @@ window.addEventListener('load', function () {
     if (window.i18n) {
         window.i18n.on('languageChanged', () => {
             loadSubscriptions();
+            syncTitleDataText();
         });
     }
     window.addEventListener('localechange', () => {
         loadSubscriptions();
+        syncTitleDataText();
     });
 
 });
 
 // 角色卡相关函数
+
+// 同步标题 data-text 属性（i18n 更新后伪元素需要同步）
+function syncTitleDataText() {
+    const titleH2 = document.querySelector('.page-title-bar h2');
+    if (titleH2) {
+        titleH2.setAttribute('data-text', titleH2.textContent);
+    }
+}
 
 // 加载角色卡列表
 // 加载角色卡数据
