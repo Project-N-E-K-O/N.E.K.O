@@ -1197,110 +1197,106 @@ def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
 
 
 PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
-    'zh': """你是AI助手。现在需要你根据对话上下文，判断是否要推荐音乐，并生成适合的搜索关键词。
+    'zh': """你是{lanlan_name}，现在{master_name}可能想听音乐了。请根据与{master_name}的对话历史和当前的对话内容，判断是否要为{master_name}播放音乐。
 
-======对话历史======
+======以下为对话历史======
 {memory_context}
 ======以上为对话历史======
 
-======近期聊天======
+======以下是当前的对话======
 {recent_chats_section}
-======以上为近期聊天======
+======以上为当前的对话======
 
-请根据以下原则决定：
-1. 当用户明确提出听歌请求时（如"来点音乐"、"放首歌"），生成搜索关键词。
-2. 当对话中出现放松、休息、工作累了、下午犯困、心情不好、轻松等情境时，可以生成轻松音乐的关键词。
-3. 如果气氛适合，推荐适当的音乐风格关键词。
+请根据以下原则决定是否播放音乐，以及播放什么：
+1. 当{master_name}明确提出听歌请求时（例如"来点音乐"、"放首歌"、"想听歌"），你应该播放音乐。
+2. 当对话中出现放松、休息、工作累了、下午犯困、心情不好、轻松等情境时，可以主动推荐轻松的音乐。
+3. 分析{master_name}的请求，提取出歌曲、歌手或音乐风格作为搜索关键词。支持的风格包括：华语、流行、电子、说唱、lofi、chill、pop、hiphop、ambient、古典、钢琴、acousti等。
+4. 如果{master_name}没有明确指定，你可以根据对话的氛围或{master_name}的喜好推荐音乐。例如，如果气氛很轻松，可以推荐lofi或chill风格的音乐。
 
-请只返回以下格式之一：
-- 搜索关键词（如"周杰伦"、"lofi"、"放松的纯音乐"）- 直接返回关键词，不要加引号或其他文字
-- [PASS] - 当不适合播放音乐时
+请回复：
+- 如果决定播放音乐，直接返回你生成的搜索关键词（例如"周杰伦"、"lofi"、"放松的纯音乐"）。
+- 只有在明确不适合播放音乐的情况下，才只回复 "[PASS]"。""",
 
-直接返回你的回答，不要有任何解释或其他内容。""",
-
-    'en': """You are an AI assistant. Based on the conversation context, determine whether to recommend music and generate a suitable search keyword.
+    'en': """You are {lanlan_name}, and {master_name} might want to listen to some music. Based on your chat history and the current conversation, decide if you should play music for {master_name}.
 
 ======Chat History======
 {memory_context}
 ======End of Chat History======
 
-======Recent Chats======
+======Current Conversation======
 {recent_chats_section}
-======End of Recent Chats======
+======End of Current Conversation======
 
-Please decide based on these rules:
-1. When user explicitly asks for music, generate a search keyword.
-2. When conversation mentions relaxing, taking a break, being tired, etc., generate a relaxing music keyword.
-3. If the atmosphere is suitable, recommend an appropriate music genre keyword.
+Use these rules to decide whether to play music and what to play:
+1. When {master_name} explicitly asks for music (e.g., "play some music," "put on a song," "want to listen to music"), you should play music.
+2. When the conversation mentions relaxing, taking a break, being tired from work, sleepy, feeling down, relaxed mood, etc., you can proactively recommend relaxing music.
+3. Analyze {master_name}'s request to extract keywords like song title, artist, or genre for searching. Supported genres: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. If {master_name} doesn't specify, you can recommend music based on the conversation's mood or {master_name}'s preferences. For example, if the mood is relaxed, suggest lofi or chill music.
 
-Please return ONLY ONE of the following:
-- Search keyword (e.g., "Jay Chou", "lofi", "relaxing instrumental music") - return the keyword only, no quotes or other text
-- [PASS] - when it's not suitable to play music
+Reply:
+- If you decide to play music, return only the search keyword you generated (e.g., "Jay Chou," "lofi," "relaxing instrumental music").
+- Only reply with "[PASS]" when it's clearly not suitable to play music.""",
 
-Return only your answer with no explanation or other content.""",
-
-    'ja': """你是AI助手。根据会话上下文，判断是否推荐音乐，并生成合适的搜索关键词。
+    'ja': """あなたは{lanlan_name}で、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
 
 ======会話履歴======
 {memory_context}
 ======以上======
 
-======最近のチャット======
+======現在の会話======
 {recent_chats_section}
 ======以上======
 
-以下の原則に基づいて決定してください：
-1. ユーザーが明確に音楽をリクエストした場合、搜索キーワードを生成します。
-2. 会話でリラックス、休憩、疲れなどの情境がある場合、リラックスした音乐的キーワードを生成します。
-3. 氛囲気が適切な場合、適切な音楽ジャンルのキーワードを提案します。
+以下の原則に基づいて、音楽を再生するか、何を再生するかを決定してください：
+1. {master_name}が明確に音楽をリクエストした場合（例：「音楽かけて」、「何か曲を再生して」、「音楽を聴きたい」）、音楽を再生すべきです。
+2. 会話でリラックス、休憩、睡魔、気分不佳、リラックスした雰囲气などの状況が出てきたら、軽やかな音楽を積極的におすすめできます。
+3. {master_name}のリクエストを分析し、曲名、アーティスト、音乐スタイルから検索キーワードを抽出します。サポートするスタイル：ポップ、ヒップホップ、ロック、エレクトニック、クラシック、ピアノ、アコースティック、lofi、chill、ambientなど。
+4. {master_name}が何も指定しなかった場合、会話の雰囲気や{master_name}の好みに基づいて音楽ことをおすすめできます。
 
-以下の形式のいずれかを返してください：
-- 搜索キーワード（例：「ジェイ・チョウ」、「リラックスできるインストゥルメンタル」）- 引用符や他のテキストなしでキーワードのみを返してください
-- [PASS] - 音楽を再生するのに適していない場合
+返信：
+- 音楽再生を決定した場合、生成した検索キーワードのみを返してください（例：「宇多田ヒカル」、「lofi」、「リラックスできるインストゥルメンタル」）。
+- 明らかに音楽を再生するのに適していない場合にのみ "[PASS]" を返してください。""",
 
-説明や他のコンテンツなしに、あなたの回答だけを返してください。""",
-
-    'ko': """AI 어시스턴트입니다. 대화 맥락에 따라 음악을 추천할지 판단하고 적합한 검색 키워드를 생성하세요.
+    'ko': """당신은 {lanlan_name}이고, {master_name}이(가) 음악을 듣고 싶어할 수 있습니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을(를) 위해 음악을 재생할지 판단하세요.
 
 ======대화 기록======
 {memory_context}
 ======이상======
 
-======최근 채팅======
+======현재 대화======
 {recent_chats_section}
 ======이상======
 
-다음 원칙에 따라 결정하세요:
-1. 사용자가 명시적으로 음악을 요청할 때 검색 키워드를 생성합니다.
-2. 대화에서 휴식, 피로, 스트레스 등의 상황이 나타나면 편안한 음악 키워드를 생성합니다.
-3. 분위기가 적합하면 적절한 음악 장르 키워드를 제안합니다.
+다음 원칙에 따라 음악을 재생할지, 무엇을 재생할지 결정하세요:
+1. {master_name}이(가) 명시적으로 음악을 요청할 때(예: "음악 틀어줘", "노래춰", "음악 듣고 싶어") 음악을 재생해야 합니다.
+2. 대화에서 휴식, 피로, 스트레스, 기분 우울,relaxed mood 등의 상황이 나타나면 편안한 음악을 적극 추천할 수 있습니다.
+3. {master_name}의 요청을 분석하여 노래 제목, 아티스트 또는 장르로부터 검색 키워드를 추출하세요. 지원 장르: 팝, 힙합, 로파이, 칠일레트로닉, 앰비언트, 클래식, 피아노, 어쿠스틱 등
+4. {master_name}이(가) 아무것도 지정하지 않으면 대화 분위기나 {master_name}의 취향에 따라 음악을 추천할 수 있습니다. 예: 분위기가 가벼우면 로파이나 칠 음악 추천
 
-다음 형식 중 하나만 반환하세요:
-- 검색 키워드 (예: "방탄소년단", "lofi", "편안한 인스트루멘틀") - 따옴표나 다른 텍스트 없이 키워드만 반환
-- [PASS] - 음악을 재생하기에 적합하지 않을 때
+회신:
+- 음악 재생을 결정한 경우 생성한 검색 키워드만 반환하세요 (예: "방탄소년단", "lofi", "편안한 인스트루멘틀")
+- 명확하게 음악을 재생하기에 적합하지 않은 경우에만 "[PASS]"를 반환하세요""",
 
-설명이나 다른 내용 없이 답변만 반환하세요.""",
+    'ru': """Вы - {lanlan_name}, и {master_name}, возможно, захочет послушать музыку. На основе истории чата и текущего разговора решите, стоит ли воспроизводить музыку для {master_name}.
 
-    'ru': """Вы - ИИ-ассистент. На основе контекста разговора определите, рекомендовать ли музыку, и создайте подходящий ключевой слова для поиска.
-
-======История разговора======
+======История чата======
 {memory_context}
 ======Конец истории======
 
-======Недавние чаты======
+======Текущий разговор======
 {recent_chats_section}
-======Конец чатов======
+======Конец разговора======
 
-Пожалуйста, примите решение на основе этих правил:
-1. Когда пользователь явно запрашивает музыку, создайте ключевое слово для поиска.
-2. Когда в разговоре упоминается отдых, усталость, настроение для расслабления и т.д., создайте ключевое слово для релакс-музыки.
-3. Если атмосфера подходит, предложите подходящий жанр музыки.
+Используйте эти правила, чтобы решить, воспроизводить ли музыку и какую:
+1. Когда {master_name} явно запрашивает музыку (например, "включи музыку", "поставь песню", "хочу послушать музыку"), вы должны воспроизвести музыку.
+2. Когда в разговоре упоминается отдых, усталость, сонливость, плохое настроение, расслабленная атмосфера и т.д., вы можете активно рекомендовать легкую музыку.
+3. Проанализируйте запрос {master_name}, чтобы извлечь ключевые слова: название песни, исполнитель или жанр. Поддерживаемые жанры: поп, хип-хоп, лофай, чилл, электроника, эмбиент, классика, пианино, акустика и т.д.
+4. Если {master_name} ничего не указал, вы можете порекомендовать музыку на основе атмосферы разговора или предпочтений {master_name}. Например, если атмосфера расслабленная, предложите лофай или чилл-музыку.
 
-Пожалуйста, верните только ОДИН из следующих вариантов:
-- Ключевое слово для поиска (например, "Queen", "lofi", "расслабляющая инструментальная музыка") - верните только ключевое слово, без кавычек или другого текста
-- [PASS] - когда не подходит играть музыку
-
-Верните только ваш ответ без объяснений или другого содержания.""",
+Ответьте:
+- Если вы решили воспроизвести музыку, верните только сгенерированное ключевое слово (например, "Queen", "lofi", "расслабляющая инструментальная музыка").
+- Верните "[PASS]", только когда явно не подходит воспроизводить музыку.
+""",
 }
 
 

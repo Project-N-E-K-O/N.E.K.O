@@ -1689,6 +1689,8 @@ async def proactive_chat(request: Request):
             try:
                 from config.prompts_sys import get_proactive_music_keyword_prompt
                 music_keyword_prompt = get_proactive_music_keyword_prompt(proactive_lang).format(
+                    lanlan_name=lanlan_name,
+                    master_name=master_name_current,
                     memory_context=memory_context,
                     recent_chats_section=proactive_chat_history_prompt
                 )
