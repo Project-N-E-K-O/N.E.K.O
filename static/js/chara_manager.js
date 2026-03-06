@@ -1007,6 +1007,28 @@ function renderCatgirls() {
     updateSwitchButtons();
 }
 
+// 创建隐藏猫娘列表项的辅助函数
+function createHiddenCatgirlItem(key) {
+    const item = document.createElement('div');
+    item.className = 'hidden-catgirl-item';
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'catgirl-name';
+    nameSpan.textContent = key;
+    
+    const unhideBtn = document.createElement('button');
+    unhideBtn.className = 'btn sm unhide';
+    unhideBtn.innerHTML = `<span data-i18n="character.show">${window.t ? window.t('character.show') : '显示'}</span>`;
+    unhideBtn.onclick = function() {
+        window.unhideCatgirl(key);
+    };
+    
+    item.appendChild(nameSpan);
+    item.appendChild(unhideBtn);
+    
+    return item;
+}
+
 // 渲染已隐藏的猫娘列表
 function renderHiddenCatgirls(forceExpand = false) {
     const hiddenArea = document.getElementById('hidden-catgirl-area');
@@ -1044,45 +1066,27 @@ function renderHiddenCatgirls(forceExpand = false) {
             if (arrow) arrow.classList.remove('expanded');
         }
         
-        hiddenHeader.onclick = function() {
-            if (hiddenList.style.display !== 'none') {
-                hiddenList.style.display = 'none';
-                if (arrow) arrow.classList.remove('expanded');
-                hiddenHeader.setAttribute('aria-expanded', 'false');
-            } else {
-                hiddenList.innerHTML = '';
-                const catgirls = characterData['猫娘'] || {};
-                hiddenKeys.forEach(k => {
-                    if (!catgirls[k]) return;
+        if (!hiddenHeader.dataset.bound) {
+            hiddenHeader.dataset.bound = 'true';
+            hiddenHeader.onclick = function() {
+                if (hiddenList.style.display !== 'none') {
+                    hiddenList.style.display = 'none';
+                    if (arrow) arrow.classList.remove('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'false');
+                } else {
+                    hiddenList.innerHTML = '';
+                    const catgirls = characterData['猫娘'] || {};
+                    hiddenKeys.forEach(k => {
+                        if (!catgirls[k]) return;
+                        hiddenList.appendChild(createHiddenCatgirlItem(k));
+                    });
                     
-                    const item = document.createElement('div');
-                    item.className = 'hidden-catgirl-item';
-                    item.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #fff; border-radius: 8px; margin-bottom: 8px; border: 1px solid #b3e5fc;';
-                    
-                    const nameSpan = document.createElement('span');
-                    nameSpan.textContent = k;
-                    nameSpan.style.color = '#40C5F1';
-                    nameSpan.style.fontWeight = '600';
-                    
-                    const unhideBtn = document.createElement('button');
-                    unhideBtn.className = 'btn sm';
-                    unhideBtn.style.background = '#40C5F1';
-                    unhideBtn.style.minWidth = '80px';
-                    unhideBtn.innerHTML = `<span data-i18n="character.show">${window.t ? window.t('character.show') : '显示'}</span>`;
-                    unhideBtn.onclick = function() {
-                        window.unhideCatgirl(k);
-                    };
-                    
-                    item.appendChild(nameSpan);
-                    item.appendChild(unhideBtn);
-                    hiddenList.appendChild(item);
-                });
-                
-                hiddenList.style.display = 'block';
-                if (arrow) arrow.classList.add('expanded');
-                hiddenHeader.setAttribute('aria-expanded', 'true');
-            }
-        };
+                    hiddenList.style.display = 'block';
+                    if (arrow) arrow.classList.add('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'true');
+                }
+            };
+        }
     }
     
     if (isCurrentlyExpanded || forceExpand) {
@@ -1090,28 +1094,7 @@ function renderHiddenCatgirls(forceExpand = false) {
         
         hiddenKeys.forEach(key => {
             if (!catgirls[key]) return;
-            
-            const item = document.createElement('div');
-            item.className = 'hidden-catgirl-item';
-            item.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #fff; border-radius: 8px; margin-bottom: 8px; border: 1px solid #b3e5fc;';
-            
-            const nameSpan = document.createElement('span');
-            nameSpan.textContent = key;
-            nameSpan.style.color = '#40C5F1';
-            nameSpan.style.fontWeight = '600';
-            
-            const unhideBtn = document.createElement('button');
-            unhideBtn.className = 'btn sm';
-            unhideBtn.style.background = '#40C5F1';
-            unhideBtn.style.minWidth = '80px';
-            unhideBtn.innerHTML = `<span data-i18n="character.show">${window.t ? window.t('character.show') : '显示'}</span>`;
-            unhideBtn.onclick = function() {
-                window.unhideCatgirl(key);
-            };
-            
-            item.appendChild(nameSpan);
-            item.appendChild(unhideBtn);
-            hiddenList.appendChild(item);
+            hiddenList.appendChild(createHiddenCatgirlItem(key));
         });
     }
 }

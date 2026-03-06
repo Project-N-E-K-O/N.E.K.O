@@ -223,6 +223,14 @@ body {
     font-weight: 600;
     font-size: 1.1rem;
     padding: 8px;
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+}
+
+.hidden-catgirl-header:focus {
+    outline: none;
 }
 
 .hidden-catgirl-arrow {
@@ -241,7 +249,25 @@ body {
 }
 
 .hidden-catgirl-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #fff;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border: 1px solid #b3e5fc;
     transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+
+.hidden-catgirl-item .catgirl-name {
+    color: #40C5F1;
+    font-weight: 600;
+}
+
+.hidden-catgirl-item .btn.sm.unhide {
+    background: #40C5F1;
+    min-width: 80px;
 }
 
 .hidden-catgirl-item:hover {
