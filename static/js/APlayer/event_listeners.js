@@ -190,9 +190,43 @@ function updateTrackInfo(aplayer) {
         trackArtistElement.textContent = currentTrack.artist || '未知艺术家';
     }
     
-    if (trackCoverElement && currentTrack.cover) {
-        trackCoverElement.src = currentTrack.cover;
-        trackCoverElement.alt = `${currentTrack.name} - ${currentTrack.artist}`;
+    if (trackCoverElement) {
+        if (currentTrack.cover) {
+            trackCoverElement.src = currentTrack.cover;
+            trackCoverElement.alt = `${currentTrack.name} - ${currentTrack.artist}`;
+            trackCoverElement.style.display = '';
+            
+            // 隐藏后备图标
+            const coverContainer = trackCoverElement.parentElement;
+            const fallbackIcon = coverContainer?.querySelector('.cover-fallback-icon');
+            if (fallbackIcon) {
+                fallbackIcon.style.display = 'none';
+            }
+        } else {
+            trackCoverElement.src = '';
+            trackCoverElement.alt = '';
+            trackCoverElement.style.display = 'none';
+            
+            // 无封面时显示后备图标
+            const coverContainer = trackCoverElement.parentElement;
+            let fallbackIcon = coverContainer?.querySelector('.cover-fallback-icon');
+            if (!fallbackIcon) {
+                fallbackIcon = document.createElement('span');
+                fallbackIcon.className = 'cover-fallback-icon';
+                fallbackIcon.textContent = '🎵';
+                fallbackIcon.style.cssText = `
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    font-size: 32px;
+                    color: rgba(255,255,255,0.5);
+                    pointer-events: none;
+                `;
+                coverContainer?.appendChild(fallbackIcon);
+            }
+            fallbackIcon.style.display = 'flex';
+        }
     }
 }
 

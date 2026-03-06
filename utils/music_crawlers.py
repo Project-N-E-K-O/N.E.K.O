@@ -452,14 +452,64 @@ class MusopenCrawler(BaseMusicCrawler):
         })
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
-        logger.info(f"[{self.platform_name}] 正在获取免版权古典音乐...")
-        # 随机选择一个古典乐页面
+        logger.info(f"[{self.platform_name}] 正在获取免版权古典音乐... 关键词: {keyword}")
+        
+        # 关键词到页面的映射
+        keyword_map = {
+            'chopin': 'https://musopen.org/music/43-nocturnes-op-9/',
+            'nocturne': 'https://musopen.org/music/43-nocturnes-op-9/',
+            '夜曲': 'https://musopen.org/music/43-nocturnes-op-9/',
+            '肖邦': 'https://musopen.org/music/43-nocturnes-op-9/',
+            'debussy': 'https://musopen.org/music/801-claire-de-lune/',
+            'claire de lune': 'https://musopen.org/music/801-claire-de-lune/',
+            '月光': 'https://musopen.org/music/801-claire-de-lune/',
+            '德彪西': 'https://musopen.org/music/801-claire-de-lune/',
+            'vivaldi': 'https://musopen.org/music/449-the-four-seasons/',
+            'four seasons': 'https://musopen.org/music/449-the-four-seasons/',
+            '四季': 'https://musopen.org/music/449-the-four-seasons/',
+            '维瓦尔第': 'https://musopen.org/music/449-the-four-seasons/',
+            'beethoven': 'https://musopen.org/music/707-symphony-no-5-in-c-minor-op-67/',
+            'symphony no.5': 'https://musopen.org/music/707-symphony-no-5-in-c-minor-op-67/',
+            '第五交响曲': 'https://musopen.org/music/707-symphony-no-5-in-c-minor-op-67/',
+            '贝多芬': 'https://musopen.org/music/707-symphony-no-5-in-c-minor-op-67/',
+            'mozart': 'https://musopen.org/music/466-eine-kleine-nachtmusik/',
+            'Eine Kleine Nachtmusik': 'https://musopen.org/music/466-eine-kleine-nachtmusik/',
+            '小夜曲': 'https://musopen.org/music/466-eine-kleine-nachtmusik/',
+            '莫扎特': 'https://musopen.org/music/466-eine-kleine-nachtmusik/',
+            'bach': 'https://musopen.org/music/25172-cello-suite-no-1-in-g-major-bwv-1007/',
+            'cello suite': 'https://musopen.org/music/25172-cello-suite-no-1-in-g-major-bwv-1007/',
+            '巴赫': 'https://musopen.org/music/25172-cello-suite-no-1-in-g-major-bwv-1007/',
+            'classical': 'https://musopen.org/music/43-nocturnes-op-9/',
+            '古典': 'https://musopen.org/music/43-nocturnes-op-9/',
+            'piano': 'https://musopen.org/music/43-nocturnes-op-9/',
+            '钢琴': 'https://musopen.org/music/43-nocturnes-op-9/',
+        }
+        
+        # 随机备用页面列表
         music_pages = [
-            'https://musopen.org/music/43-nocturnes-op-9/', # 肖邦夜曲
-            'https://musopen.org/music/801-claire-de-lune/', # 德彪西月光
-            'https://musopen.org/music/449-the-four-seasons/' # 维瓦尔第四季
+            'https://musopen.org/music/43-nocturnes-op-9/',
+            'https://musopen.org/music/801-claire-de-lune/',
+            'https://musopen.org/music/449-the-four-seasons/'
         ]
-        url = random.choice(music_pages)
+        
+        # 根据关键词选择页面
+        if keyword:
+            keyword_lower = keyword.lower().strip()
+            url = keyword_map.get(keyword_lower)
+            if not url:
+                # 尝试模糊匹配
+                for key, page in keyword_map.items():
+                    if key in keyword_lower or keyword_lower in key:
+                        url = page
+                        break
+            if url:
+                logger.info(f"[{self.platform_name}] 匹配到关键词 '{keyword}' -> {url}")
+            else:
+                logger.info(f"[{self.platform_name}] 关键词 '{keyword}' 未匹配，随机选择")
+                url = random.choice(music_pages)
+        else:
+            url = random.choice(music_pages)
+            logger.info(f"[{self.platform_name}] 无关键词，随机选择: {url}")
 
         try:
             response = await self.client.get(url)
@@ -700,26 +750,38 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             else:
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
-                
-        # 执行第一梯队
-        primary_responses = await asyncio.gather(*primary_tasks, return_exceptions=True)
-        for res in primary_responses:
-            if isinstance(res, list) and res:
-                all_results.extend(res)
+        
+        # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
+        if primary_tasks:
+            for coro in asyncio.as_completed(primary_tasks):
+                try:
+                    res = await coro
+                    if isinstance(res, list) and res:
+                        all_results.extend(res)
+                        logger.info(f"[智能调度] 第一梯队某源命中，停止等待其他源")
+                        break
+                except Exception as e:
+                    logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
                 
         # --- 组建第二梯队（兜底截断逻辑） ---
         if not all_results:
-            logger.info("[智能调度] 第一梯队未命中，停止等待，触发第二级兜底引擎...")
+            logger.info("[智能调度] 第一梯队未命中，触发第二级兜底引擎...")
             fallback_tasks = []
             fallback_fma = "piano" if "钢琴" in kw_lower else "relax"
             
             fallback_tasks.append(all_crawlers['netease'].search(keyword, limit))
             fallback_tasks.append(all_crawlers['fma'].search(fallback_fma, limit))
             
-            fallback_responses = await asyncio.gather(*fallback_tasks, return_exceptions=True)
-            for res in fallback_responses:
-                if isinstance(res, list) and res:
-                    all_results.extend(res)
+            # 兜底梯队也使用竞速模式
+            for coro in asyncio.as_completed(fallback_tasks):
+                try:
+                    res = await coro
+                    if isinstance(res, list) and res:
+                        all_results.extend(res)
+                        logger.info(f"[智能调度] 兜底源命中，停止等待")
+                        break
+                except Exception as e:
+                    logger.warning(f"[智能调度] 兜底源异常: {e}")
 
     else: 
         # 场景 B: 纯背景音乐推荐 -> 并发盲抽

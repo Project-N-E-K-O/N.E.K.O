@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "setuptools<70"]
 build-backend = "hatchling.build"
 
 [project]
@@ -50,7 +50,6 @@ dependencies = [
   "qrcode>=8.2",
   "httpx>=0.28.1",
   "psutil>=7.0.0",
-  "setuptools<70",
   "neteasecloudmusic>=0.1.10",
 ]
 

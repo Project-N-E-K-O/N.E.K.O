@@ -2209,9 +2209,9 @@
         "unknownArtist": "Неизвестный исполнитель",
         "playing": "Воспроизведение",
         "paused": "Пауза",
-        "searching": "Поиск: {query}",
-        "notFound": "Песня не найдена: {query}",
-        "nowPlaying": "Сейчас играет: {name}",
+        "searching": "Поиск: {{query}}",
+        "notFound": "Песня не найдена: {{query}}",
+        "nowPlaying": "Сейчас играет: {{name}}",
         "searchFailed": "Ошибка поиска музыки"
     }
 }

@@ -2209,9 +2209,9 @@
         "unknownArtist": "不明なアーティスト",
         "playing": "再生中",
         "paused": "一時停止",
-        "searching": "検索中: {query}",
-        "notFound": "曲が見つかりません: {query}",
-        "nowPlaying": "再生中: {name}",
+        "searching": "検索中: {{query}}",
+        "notFound": "曲が見つかりません: {{query}}",
+        "nowPlaying": "再生中: {{name}}",
         "searchFailed": "音楽検索に失敗しました"
     }
 }

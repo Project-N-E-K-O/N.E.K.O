@@ -1395,9 +1395,16 @@ window.sendMusicMessage = function(trackInfo) {
                             name: trackName,
                             artist: artistName,
                             url: trackInfo.url,
-                            cover: trackInfo.cover || ''
+                            cover: hasCover ? trackInfo.cover : ''
                         }]
                     });
+                    
+                    // 注册到全局引用，供 getMusicPlayerInstance() 使用
+                    if (!window.aplayerInjected) {
+                        window.aplayerInjected = {};
+                    }
+                    window.aplayerInjected.aplayer = aplayerInstance;
+                    window.aplayer = aplayerInstance;
                     
                     // 绑定播放按钮事件
                     if (playBtn) {

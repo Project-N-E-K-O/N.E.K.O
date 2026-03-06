@@ -2209,9 +2209,9 @@
         "unknownArtist": "알 수 없는 아티스트",
         "playing": "재생 중",
         "paused": "일시 정지",
-        "searching": "검색 중: {query}",
-        "notFound": "곡을 찾을 수 없습니다: {query}",
-        "nowPlaying": "재생 중: {name}",
+        "searching": "검색 중: {{query}}",
+        "notFound": "곡을 찾을 수 없습니다: {{query}}",
+        "nowPlaying": "재생 중: {{name}}",
         "searchFailed": "음악 검색 실패"
     }
 }

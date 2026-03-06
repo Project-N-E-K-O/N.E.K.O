@@ -190,6 +190,34 @@ function createPlayerContainer(config) {
             background: white;
         `;
         
+        // 创建自定义 UI 元素（供 updateUI 使用）
+        const trackNameEl = document.createElement('div');
+        trackNameEl.id = 'aplayer-track-name';
+        trackNameEl.style.display = 'none';
+        playerContainer.appendChild(trackNameEl);
+        
+        const trackArtistEl = document.createElement('div');
+        trackArtistEl.id = 'aplayer-track-artist';
+        trackArtistEl.style.display = 'none';
+        playerContainer.appendChild(trackArtistEl);
+        
+        const statusEl = document.createElement('div');
+        statusEl.id = 'aplayer-status';
+        statusEl.style.display = 'none';
+        playerContainer.appendChild(statusEl);
+        
+        // 创建封面元素（供 updateTrackInfo 使用）
+        const coverWrapper = document.createElement('div');
+        coverWrapper.id = 'aplayer-cover-wrapper';
+        coverWrapper.style.display = 'none';
+        
+        const trackCoverEl = document.createElement('img');
+        trackCoverEl.id = 'aplayer-track-cover';
+        trackCoverEl.alt = '';
+        coverWrapper.appendChild(trackCoverEl);
+        
+        playerContainer.appendChild(coverWrapper);
+        
         document.body.appendChild(playerContainer);
     }
     

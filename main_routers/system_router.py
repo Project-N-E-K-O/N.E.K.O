@@ -1418,14 +1418,7 @@ async def proactive_chat(request: Request):
                 return (mode, {'formatted_content': formatted, 'raw_data': personal_dynamics, 'links': links})
             
             elif mode == 'music':
-                # AI根据气氛自动推荐音乐，无需关键词触发
-                music_content = await fetch_music_content(keyword="", limit=5)
-                if not music_content.get('success'):
-                    raise ValueError(f"获取音乐失败: {music_content.get('error')}")
-                formatted = _format_music_content(music_content)
-                _log_music_content(lanlan_name, music_content)
-                links = _extract_links_from_raw(mode, music_content)
-                return (mode, {'formatted_content': formatted, 'raw_data': music_content, 'links': []})
+                return (mode, {'placeholder': True, 'note': '关键词将在 Phase 1 开始前生成'})
 
             else:
                 raise ValueError(f"未知模式: {mode}")
@@ -1688,8 +1681,42 @@ async def proactive_chat(request: Request):
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
         selected_web_topic_key = ''
+        selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
         
-        # --- 音乐模式：让AI根据气氛判断是否推荐音乐（无需关键词） ---
+        # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
+        if music_content and music_content.get('placeholder'):
+            logger.info(f"[{lanlan_name}] 音乐模式：开始生成搜索关键词...")
+            try:
+                from config.prompts_sys import get_proactive_music_keyword_prompt
+                music_keyword_prompt = get_proactive_music_keyword_prompt(proactive_lang).format(
+                    memory_context=memory_context,
+                    recent_chats_section=proactive_chat_history_prompt
+                )
+                music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
+                print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
+                
+                if "[PASS]" in music_keyword_result:
+                    print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
+                    music_content = None
+                else:
+                    keyword = music_keyword_result.strip()
+                    if keyword:
+                        music_content = await fetch_music_content(keyword=keyword, limit=5)
+                        if not music_content.get('success'):
+                            logger.warning(f"[{lanlan_name}] 音乐搜索失败: {music_content.get('error')}，尝试随机推荐")
+                            music_content = await fetch_music_content(keyword="", limit=5)
+                        else:
+                            print(f"[{lanlan_name}] 音乐模式：使用关键词 '{keyword}' 搜索到 {len(music_content.get('data', []))} 首歌曲")
+                            _log_music_content(lanlan_name, music_content)
+                    else:
+                        logger.warning(f"[{lanlan_name}] 音乐模式：AI 未返回有效关键词，尝试随机推荐")
+                        music_content = await fetch_music_content(keyword="", limit=5)
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
+                try:
+                    music_content = await fetch_music_content(keyword="", limit=5)
+                except Exception:
+                    music_content = None
         
         # --- Web 通道: 1 次 LLM 筛选 ---
         if merged_web_content:
@@ -1749,8 +1776,8 @@ async def proactive_chat(request: Request):
                     else:
                         logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         phase1_topics.append(('music', music_topic))
-                        # 记录音乐话题 key
-                        _record_topic_usage(lanlan_name, music_topic_key)
+                        # 暂存音乐话题 key，等 Phase 2 成功后再记录
+                        selected_music_topic_key = music_topic_key
                 else:
                     logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
@@ -2019,8 +2046,11 @@ async def proactive_chat(request: Request):
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
-        if source_tag != 'SCREEN' and selected_web_topic_key:
-            _record_topic_usage(lanlan_name, selected_web_topic_key)
+        if source_tag != 'SCREEN':
+            if selected_web_topic_key:
+                _record_topic_usage(lanlan_name, selected_web_topic_key)
+            if selected_music_topic_key:
+                _record_topic_usage(lanlan_name, selected_music_topic_key)
 
         return JSONResponse({
             "success": True,

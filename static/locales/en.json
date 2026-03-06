@@ -2209,9 +2209,9 @@
         "unknownArtist": "Unknown Artist",
         "playing": "Playing",
         "paused": "Paused",
-        "searching": "Searching for: {query}",
-        "notFound": "Song not found: {query}",
-        "nowPlaying": "Now playing: {name}",
+        "searching": "Searching for: {{query}}",
+        "notFound": "Song not found: {{query}}",
+        "nowPlaying": "Now playing: {{name}}",
         "searchFailed": "Music search failed"
     }
 }
