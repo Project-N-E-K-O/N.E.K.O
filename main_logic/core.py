@@ -8,7 +8,7 @@ import json
 import struct  # For packing audio data
 import re
 import time
-from typing import Any, Optional, cast
+from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -577,6 +577,17 @@ class LLMSessionManager:
                 await self.send_status(message_text)
         logger.info("💥 Session closed by API Server.")
         await self.disconnected_by_server(expected_session=expected_session)
+
+    def _bind_session_lifecycle_callbacks(self, session):
+        async def on_connection_error(message=None, session_ref=session):
+            await self.handle_connection_error(message, expected_session=session_ref)
+
+        setattr(session, 'on_connection_error', on_connection_error)
+        if isinstance(session, OmniRealtimeClient):
+            async def on_silence_timeout(session_ref=session):
+                await self.handle_silence_timeout(expected_session=session_ref)
+
+            session.on_silence_timeout = on_silence_timeout
     
     async def handle_repetition_detected(self):
         """处理重复度检测回调：通知前端"""
@@ -1089,16 +1100,7 @@ class LLMSessionManager:
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
-
-            async def on_connection_error(message=None, session_ref=new_session):
-                await self.handle_connection_error(message, expected_session=session_ref)
-
-            cast(Any, new_session).on_connection_error = on_connection_error
-            if isinstance(new_session, OmniRealtimeClient):
-                async def on_silence_timeout(session_ref=new_session):
-                    await self.handle_silence_timeout(expected_session=session_ref)
-
-                new_session.on_silence_timeout = on_silence_timeout
+            self._bind_session_lifecycle_callbacks(new_session)
 
             # 连接 session
             if new_session:
@@ -1490,16 +1492,7 @@ class LLMSessionManager:
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
-
-            async def on_pending_connection_error(message=None, session_ref=self.pending_session):
-                await self.handle_connection_error(message, expected_session=session_ref)
-
-            cast(Any, self.pending_session).on_connection_error = on_pending_connection_error
-            if isinstance(self.pending_session, OmniRealtimeClient):
-                async def on_pending_silence_timeout(session_ref=self.pending_session):
-                    await self.handle_silence_timeout(expected_session=session_ref)
-
-                self.pending_session.on_silence_timeout = on_pending_silence_timeout
+            self._bind_session_lifecycle_callbacks(self.pending_session)
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
