@@ -3,6 +3,14 @@
  * 负责处理所有APlayer相关的事件和用户交互
  * 包含播放状态变化、音量变化、时间更新、错误处理等事件的监听
  */
+
+function t(key, fallback) {
+    if (window.t && typeof window.t === 'function') {
+        return window.t(key) || fallback;
+    }
+    return fallback;
+}
+
 /**
  * 初始化APlayer事件监听器
  * @param {APlayer} aplayer - APlayer实例
@@ -51,7 +59,7 @@ export function initEventListeners(aplayer) {
     // 错误处理事件
     aplayer.on('error', (e) => {
         console.error('[APlayer] Error:', e);
-        showNotification('播放出错', 'error');
+        showNotification(t('music.playError', '播放出错'), 'error');
         dispatchCustomEvent('aplayer-error', { error: e });
     });
 
@@ -90,7 +98,7 @@ function updatePlayButton(isPlaying) {
         playBtn.innerHTML = isPlaying ? 
             '<i class="fas fa-pause"></i>' : 
             '<i class="fas fa-play"></i>';
-        playBtn.title = isPlaying ? '暂停' : '播放';
+        playBtn.title = isPlaying ? t('music.paused', '暂停') : t('music.playing', '播放');
     }
 }
 
@@ -101,7 +109,10 @@ function updatePlayButton(isPlaying) {
 function updatePlaybackStatus(status) {
     const statusElement = document.getElementById('aplayer-status');
     if (statusElement) {
-        statusElement.textContent = status;
+        const statusText = status === 'playing' ? t('music.playing', '播放中') :
+                          status === 'paused' ? t('music.paused', '已暂停') :
+                          status === 'ended' ? t('music.ended', '已结束') : status;
+        statusElement.textContent = statusText;
         statusElement.className = `aplayer-status aplayer-status-${status}`;
     }
 }
@@ -183,11 +194,11 @@ function updateTrackInfo(aplayer) {
     const trackCoverElement = document.getElementById('aplayer-track-cover');
     
     if (trackNameElement) {
-        trackNameElement.textContent = currentTrack.name || '未知歌曲';
+        trackNameElement.textContent = currentTrack.name || t('music.unknownTrack', '未知曲目');
     }
     
     if (trackArtistElement) {
-        trackArtistElement.textContent = currentTrack.artist || '未知艺术家';
+        trackArtistElement.textContent = currentTrack.artist || t('music.unknownArtist', '未知艺术家');
     }
     
     if (trackCoverElement) {

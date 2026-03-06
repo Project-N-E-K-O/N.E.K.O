@@ -2212,6 +2212,8 @@
         "searching": "Searching for: {{query}}",
         "notFound": "Song not found: {{query}}",
         "nowPlaying": "Now playing: {{name}}",
-        "searchFailed": "Music search failed"
+        "searchFailed": "Music search failed",
+        "playError": "Playback error",
+        "ended": "Ended"
     }
 }

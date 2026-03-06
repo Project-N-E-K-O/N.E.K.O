@@ -1208,27 +1208,17 @@ window.sendMusicMessage = function(trackInfo) {
     const player = getMusicPlayerInstance();
     if (isSameTrack(trackInfo) && player && !player.paused) {
         console.log('[Common UI] 相同歌曲正在播放中，跳过');
-        return;
+        return false;
     }
     
-    // 如果播放器正在播放其他歌曲，先停止
+    // 如果播放器正在播放其他歌曲，需要创建新播放器（会停止旧播放并渲染新气泡）
     if (!shouldCreateNewPlayer()) {
-        // 尝试添加到当前播放列表
-        if (player && player.list) {
-            player.list.add([{
-                name: trackName,
-                artist: artistName,
-                url: trackInfo.url,
-                cover: trackInfo.cover || ''
-            }]);
-            player.play();
-            currentPlayingTrack = trackInfo;
-            console.log('[Common UI] 已添加到播放列表');
-        }
-        return;
+        // 已有歌曲在播，需要完全销毁旧实例才能创建新的
+        console.log('[Common UI] 已有其他歌曲在播，销毁旧实例并创建新播放器');
+        destroyMusicPlayer();
     }
     
-    // 更新当前播放信息
+    // 更新当前播放信息（无论是否停止旧播放，都需要更新）
     currentPlayingTrack = trackInfo;
     // 动态加载 APlayer 库
     const loadAPlayerLibrary = () => {
@@ -1278,10 +1268,20 @@ window.sendMusicMessage = function(trackInfo) {
                 if (!['http:', 'https:'].includes(parsed.protocol)) return false;
                 // 允许常见的音乐/图片 CDN 域名
                 const allowedDomains = [
+                    // 国内音乐平台
                     'y.qq.com', 'music.126.net', 'music.163.com', 'imgcache.qq.com',
                     'i.y.qq.com', 'thirdqq.qlogo.cn', 'p1.music.126.net', 'p2.music.126.net',
                     'p3.music.126.net', 'p4.music.126.net', 'p5.music.126.net',
-                    'cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'fastly.jsdelivr.net'
+                    // CDN
+                    'cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'fastly.jsdelivr.net',
+                    // 国外音乐平台
+                    'soundcloud.com', 'sccdn.co',
+                    'itunes.apple.com', 'mzstatic.com',
+                    'bandcamp.com', 'bcbits.com',
+                    'freemusicarchive.org',
+                    'musopen.org',
+                    // 通用图片托管
+                    'imgix.net', 'images.unsplash.com'
                 ];
                 const hostname = parsed.hostname.toLowerCase();
                 return allowedDomains.some(domain => hostname === domain || hostname.endsWith('.' + domain));
@@ -1453,11 +1453,14 @@ window.sendMusicMessage = function(trackInfo) {
         loadAPlayerLibrary().then(() => {
             stopExistingMusic();
             showMusicPlayer();
+            return true;
         }).catch(err => {
             console.error('[Common UI] APlayer 库加载失败:', err);
+            return false;
         });
     } else {
         stopExistingMusic();
         showMusicPlayer();
+        return true;
     }
 };

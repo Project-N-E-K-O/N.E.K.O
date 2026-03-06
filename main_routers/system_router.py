@@ -1700,21 +1700,38 @@ async def proactive_chat(request: Request):
                     music_content = None
                 else:
                     keyword = music_keyword_result.strip()
+                    music_raw = None
                     if keyword:
-                        music_content = await fetch_music_content(keyword=keyword, limit=5)
-                        if not music_content.get('success'):
-                            logger.warning(f"[{lanlan_name}] 音乐搜索失败: {music_content.get('error')}，尝试随机推荐")
-                            music_content = await fetch_music_content(keyword="", limit=5)
+                        music_raw = await fetch_music_content(keyword=keyword, limit=5)
+                        if not music_raw.get('success'):
+                            logger.warning(f"[{lanlan_name}] 音乐搜索失败: {music_raw.get('error')}，尝试随机推荐")
+                            music_raw = await fetch_music_content(keyword="", limit=5)
                         else:
-                            print(f"[{lanlan_name}] 音乐模式：使用关键词 '{keyword}' 搜索到 {len(music_content.get('data', []))} 首歌曲")
-                            _log_music_content(lanlan_name, music_content)
+                            print(f"[{lanlan_name}] 音乐模式：使用关键词 '{keyword}' 搜索到 {len(music_raw.get('data', []))} 首歌曲")
                     else:
                         logger.warning(f"[{lanlan_name}] 音乐模式：AI 未返回有效关键词，尝试随机推荐")
-                        music_content = await fetch_music_content(keyword="", limit=5)
+                        music_raw = await fetch_music_content(keyword="", limit=5)
+                    
+                    if music_raw and music_raw.get('success'):
+                        _log_music_content(lanlan_name, music_raw)
+                        music_content = {
+                            'formatted_content': _format_music_content(music_raw),
+                            'raw_data': music_raw,
+                        }
+                    else:
+                        music_content = None
             except Exception as e:
                 logger.warning(f"[{lanlan_name}] 音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
                 try:
-                    music_content = await fetch_music_content(keyword="", limit=5)
+                    music_raw = await fetch_music_content(keyword="", limit=5)
+                    if music_raw and music_raw.get('success'):
+                        _log_music_content(lanlan_name, music_raw)
+                        music_content = {
+                            'formatted_content': _format_music_content(music_raw),
+                            'raw_data': music_raw,
+                        }
+                    else:
+                        music_content = None
                 except Exception:
                     music_content = None
         

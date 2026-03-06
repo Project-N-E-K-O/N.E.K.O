@@ -167,8 +167,21 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
                 cookies = json.loads(decrypted_data)
                 
-                logger.info(f"✅ 已解密加载 {platform} 凭证")
-                return cookies if isinstance(cookies, dict) else {}
+                # 校验 Cookie 结构：确保所有值都是字符串
+                if isinstance(cookies, dict):
+                    valid_cookies = {}
+                    for k, v in cookies.items():
+                        if not isinstance(k, str):
+                            continue
+                        if not isinstance(v, str):
+                            valid_cookies[str(k)] = str(v)
+                        else:
+                            valid_cookies[k] = v
+                    logger.info(f"✅ 已解密加载 {platform} 凭证")
+                    return valid_cookies
+                else:
+                    logger.warning(f"{platform} Cookie 解密后不是对象")
+                    return {}
             else:
                 # 密钥文件不存在，可能是明文文件
                 raise FileNotFoundError("密钥文件不存在")
@@ -196,9 +209,21 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 if not isinstance(cookies, dict):
                     logger.warning(f"{platform} Cookie 明文内容不是对象: {cookie_file}")
                     return {}
-
+                
+                # 校验 Cookie 结构：确保所有值都是字符串
+                valid_cookies = {}
+                for k, v in cookies.items():
+                    if not isinstance(k, str):
+                        logger.warning(f"{platform} Cookie 键类型不合法: {type(k).__name__}, 跳过")
+                        continue
+                    if not isinstance(v, str):
+                        logger.warning(f"{platform} Cookie 值类型不合法: key={k}, value_type={type(v).__name__}, 尝试转换为字符串")
+                        valid_cookies[str(k)] = str(v)
+                    else:
+                        valid_cookies[k] = v
+                
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
-                return cookies if isinstance(cookies, dict) else {}
+                return valid_cookies
             except Exception as plain_error:
                 logger.error(f"明文加载 {platform} Cookie 失败: {plain_error}")
                 return {}

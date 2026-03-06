@@ -2019,14 +2019,15 @@ function init_app() {
             return;
         }
         
-        _lastPlayedMusicUrl = musicUrl;
-        _lastMusicPlayTime = now;
-        
         if (window.sendMusicMessage) {
-            window.sendMusicMessage(trackInfo);
-            if (window.showStatusToast) {
-                const playMsg = window.t ? window.t('music.nowPlaying', { name: trackInfo.name }) : `为您播放: ${trackInfo.name}`;
-                window.showStatusToast(playMsg, 3000);
+            const accepted = window.sendMusicMessage(trackInfo);
+            if (accepted) {
+                _lastPlayedMusicUrl = musicUrl;
+                _lastMusicPlayTime = now;
+                if (window.showStatusToast) {
+                    const playMsg = window.t ? window.t('music.nowPlaying', { name: trackInfo.name }) : `为您播放: ${trackInfo.name}`;
+                    window.showStatusToast(playMsg, 3000);
+                }
             }
         } else {
             console.warn('[MusicDispatch] sendMusicMessage 未定义');

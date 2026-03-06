@@ -1197,7 +1197,7 @@ def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
 
 
 PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
-    'zh': """你是{lanlan_name}的AI助手。现在需要你根据对话上下文，判断是否要推荐音乐，并生成适合的搜索关键词。
+    'zh': """你是AI助手。现在需要你根据对话上下文，判断是否要推荐音乐，并生成适合的搜索关键词。
 
 ======对话历史======
 {memory_context}

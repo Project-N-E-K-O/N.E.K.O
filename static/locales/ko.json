@@ -2212,6 +2212,8 @@
         "searching": "검색 중: {{query}}",
         "notFound": "곡을 찾을 수 없습니다: {{query}}",
         "nowPlaying": "재생 중: {{name}}",
-        "searchFailed": "음악 검색 실패"
+        "searchFailed": "음악 검색 실패",
+        "playError": "재생 오류",
+        "ended": "종료"
     }
 }

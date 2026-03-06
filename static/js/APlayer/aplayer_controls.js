@@ -169,8 +169,8 @@ export function getCurrentTrackInfo(aplayer) {
             return {
                 name: currentTrack.name,
                 artist: currentTrack.artist,
-                duration: aplayer.duration,
-                currentTime: aplayer.currentTime,
+                duration: aplayer.audio ? aplayer.audio.duration : 0,
+                currentTime: aplayer.audio ? aplayer.audio.currentTime : 0,
                 paused: !aplayer.playing,
                 success: true
             };

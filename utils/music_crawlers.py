@@ -56,12 +56,15 @@ class MusicCache:
     
     def _cleanup(self):
         """
-        清理过期缓存
+        清理过期缓存（按歌曲 TTL 删除过期项）
         """
         current_time = time.time()
-        if current_time - self.last_cleanup > self.expire_seconds:
-            self.cache = []
-            self.last_cleanup = current_time
+        # 移除已过期的项
+        self.cache = [
+            item for item in self.cache
+            if current_time - item.get('timestamp', 0) < self.expire_seconds
+        ]
+        self.last_cleanup = current_time
     
     def is_duplicate(self, url: str, name: str, artist: str) -> bool:
         """
@@ -753,12 +756,20 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         
         # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
         if primary_tasks:
-            for coro in asyncio.as_completed(primary_tasks):
+            # 创建任务以便后续取消
+            primary_coroutines = primary_tasks
+            primary_task_objs = [asyncio.create_task(coro) for coro in primary_coroutines]
+            
+            for coro in asyncio.as_completed(primary_task_objs):
                 try:
                     res = await coro
                     if isinstance(res, list) and res:
                         all_results.extend(res)
-                        logger.info(f"[智能调度] 第一梯队某源命中，停止等待其他源")
+                        logger.info(f"[智能调度] 第一梯队某源命中，取消其他任务")
+                        # 取消剩余任务
+                        for task in primary_task_objs:
+                            if not task.done():
+                                task.cancel()
                         break
                 except Exception as e:
                     logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
@@ -773,12 +784,17 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             fallback_tasks.append(all_crawlers['fma'].search(fallback_fma, limit))
             
             # 兜底梯队也使用竞速模式
-            for coro in asyncio.as_completed(fallback_tasks):
+            fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
+            for coro in asyncio.as_completed(fallback_task_objs):
                 try:
                     res = await coro
                     if isinstance(res, list) and res:
                         all_results.extend(res)
-                        logger.info(f"[智能调度] 兜底源命中，停止等待")
+                        logger.info(f"[智能调度] 兜底源命中，取消其他任务")
+                        # 取消剩余任务
+                        for task in fallback_task_objs:
+                            if not task.done():
+                                task.cancel()
                         break
                 except Exception as e:
                     logger.warning(f"[智能调度] 兜底源异常: {e}")

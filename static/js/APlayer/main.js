@@ -371,12 +371,3 @@ export function delayedInitializeAPlayer(options = {}) {
 export function getAPlayerMusicSources(region) {
     return getMusicSources(region);
 }
-
-// 自动初始化APlayer（如果页面加载完成）
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    delayedInitializeAPlayer();
-} else {
-    window.addEventListener('load', () => {
-        delayedInitializeAPlayer();
-    });
-}

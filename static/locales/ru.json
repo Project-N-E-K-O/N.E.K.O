@@ -2212,6 +2212,8 @@
         "searching": "Поиск: {{query}}",
         "notFound": "Песня не найдена: {{query}}",
         "nowPlaying": "Сейчас играет: {{name}}",
-        "searchFailed": "Ошибка поиска музыки"
+        "searchFailed": "Ошибка поиска музыки",
+        "playError": "Ошибка воспроизведения",
+        "ended": "Завершено"
     }
 }

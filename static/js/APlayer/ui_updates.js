@@ -31,7 +31,7 @@ export function initializeAPlayerUI(aplayer, config = {}) {
     if (!container) return;
     
     if (config.theme) {
-        container.classList.add(`aplayer-theme-${config.theme}`);
+        setPlayerTheme(aplayer, config.theme);
     }
     
     updateUI(aplayer);
