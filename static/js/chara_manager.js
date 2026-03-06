@@ -379,6 +379,7 @@ if (!window._charaManagerFoldHandler) {
 // 角色数据缓存
 let characterData = null;
 let currentRequestId = 0;
+let updateSwitchButtonsReqId = 0;
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 
@@ -526,14 +527,14 @@ async function loadCharacterData() {
             window._currentCatgirl = undefined;
         }
         
+        if (thisRequestId !== currentRequestId) {
+            return;
+        }
+        
         const hiddenKeys = getHiddenCatgirlKeys();
         if (window._currentCatgirl && hiddenKeys.includes(window._currentCatgirl)) {
             const updatedKeys = hiddenKeys.filter(k => k !== window._currentCatgirl);
             localStorage.setItem('hidden_catgirls', JSON.stringify(updatedKeys));
-        }
-        
-        if (thisRequestId !== currentRequestId) {
-            return;
         }
         
         renderMaster();
@@ -927,8 +928,8 @@ function renderCatgirls() {
         expandBtn.style.transform = 'rotate(-90deg)';
         header.appendChild(expandBtn);
 
-        const currentCatgirl = window._currentCatgirl || '';
-        if (key !== currentCatgirl) {
+        const currentCatgirl = window._currentCatgirl;
+        if (currentCatgirl && key !== currentCatgirl) {
             const hideBtn = document.createElement('span');
             hideBtn.className = 'catgirl-hide';
             hideBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#40C5F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;cursor:pointer;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -1068,6 +1069,11 @@ function renderHiddenCatgirls(forceExpand = false) {
     const hiddenArea = document.getElementById('hidden-catgirl-area');
     const hiddenList = document.getElementById('hidden-catgirl-list');
     const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
+    
+    if (!hiddenArea || !hiddenList) {
+        return;
+    }
+    
     const hiddenKeys = getHiddenCatgirlKeys();
     
     if (hiddenKeys.length === 0) {
@@ -1199,7 +1205,6 @@ window.unhideCatgirl = async function(key) {
     localStorage.setItem('hidden_catgirls', JSON.stringify(newHiddenKeys));
     
     renderCatgirls();
-    renderHiddenCatgirls();
 }
 
 // 随机颜色函数
@@ -2476,10 +2481,16 @@ window.addEventListener('unload', sendBeacon);
 
 // 更新切换按钮状态
 function updateSwitchButtons() {
+    const thisReqId = ++updateSwitchButtonsReqId;
+    
     fetch('/api/characters/current_catgirl')
         .then(response => response.json())
         .then(data => {
-            const currentCatgirl = data.current_catgirl || '';
+            if (thisReqId !== updateSwitchButtonsReqId) {
+                return;
+            }
+            
+            const currentCatgirl = data.current_catgirl || undefined;
             window._currentCatgirl = currentCatgirl;
             const catgirls = characterData['猫娘'] || {};
 
