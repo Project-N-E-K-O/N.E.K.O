@@ -757,8 +757,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
         if primary_tasks:
             # 创建任务以便后续取消
-            primary_coroutines = primary_tasks
-            primary_task_objs = [asyncio.create_task(coro) for coro in primary_coroutines]
+            primary_task_objs = [asyncio.create_task(coro) for coro in primary_tasks]
             
             for coro in asyncio.as_completed(primary_task_objs):
                 try:
@@ -770,7 +769,12 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                         for task in primary_task_objs:
                             if not task.done():
                                 task.cancel()
+                        # 等待取消完成
+                        await asyncio.gather(*primary_task_objs, return_exceptions=True)
                         break
+                except asyncio.CancelledError:
+                    # 任务被取消，忽略
+                    pass
                 except Exception as e:
                     logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
                 
@@ -795,7 +799,12 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                         for task in fallback_task_objs:
                             if not task.done():
                                 task.cancel()
+                        # 等待取消完成
+                        await asyncio.gather(*fallback_task_objs, return_exceptions=True)
                         break
+                except asyncio.CancelledError:
+                    # 任务被取消，忽略
+                    pass
                 except Exception as e:
                     logger.warning(f"[智能调度] 兜底源异常: {e}")
 
