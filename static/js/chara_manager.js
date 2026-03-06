@@ -378,6 +378,7 @@ if (!window._charaManagerFoldHandler) {
 
 // 角色数据缓存
 let characterData = null;
+let currentRequestId = 0;
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 
@@ -504,6 +505,8 @@ function scrollToElementCentered(element, delay = 100) {
 }
 
 async function loadCharacterData() {
+    const thisRequestId = ++currentRequestId;
+    
     try {
         const resp = await fetch('/api/characters');
         if (!resp.ok) {
@@ -515,12 +518,22 @@ async function loadCharacterData() {
             const currentResp = await fetch('/api/characters/current_catgirl');
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
-                window._currentCatgirl = currentData.current_catgirl || '';
+                window._currentCatgirl = currentData.current_catgirl || undefined;
             } else {
-                window._currentCatgirl = '';
+                window._currentCatgirl = undefined;
             }
         } catch (e) {
-            window._currentCatgirl = '';
+            window._currentCatgirl = undefined;
+        }
+        
+        const hiddenKeys = getHiddenCatgirlKeys();
+        if (window._currentCatgirl && hiddenKeys.includes(window._currentCatgirl)) {
+            const updatedKeys = hiddenKeys.filter(k => k !== window._currentCatgirl);
+            localStorage.setItem('hidden_catgirls', JSON.stringify(updatedKeys));
+        }
+        
+        if (thisRequestId !== currentRequestId) {
+            return;
         }
         
         renderMaster();
@@ -888,7 +901,7 @@ function renderCatgirls() {
     const list = document.getElementById('catgirl-list');
     list.innerHTML = '';
     const catgirls = characterData['猫娘'] || {};
-    const hiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
+    const hiddenKeys = getHiddenCatgirlKeys();
     Object.keys(catgirls).forEach(key => {
         if (hiddenKeys.includes(key)) return;
         
@@ -1015,6 +1028,19 @@ function renderCatgirls() {
     updateSwitchButtons();
 }
 
+// 获取隐藏猫娘键的辅助函数，带错误处理
+function getHiddenCatgirlKeys() {
+    try {
+        const stored = localStorage.getItem('hidden_catgirls');
+        if (!stored) return [];
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(x => typeof x === 'string');
+    } catch (e) {
+        return [];
+    }
+}
+
 // 创建隐藏猫娘列表项的辅助函数
 function createHiddenCatgirlItem(key) {
     const item = document.createElement('div');
@@ -1042,7 +1068,7 @@ function renderHiddenCatgirls(forceExpand = false) {
     const hiddenArea = document.getElementById('hidden-catgirl-area');
     const hiddenList = document.getElementById('hidden-catgirl-list');
     const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
-    const hiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
+    const hiddenKeys = getHiddenCatgirlKeys();
     
     if (hiddenKeys.length === 0) {
         hiddenArea.style.display = 'none';
@@ -1083,7 +1109,7 @@ function renderHiddenCatgirls(forceExpand = false) {
                     hiddenHeader.setAttribute('aria-expanded', 'false');
                 } else {
                     hiddenList.innerHTML = '';
-                    const freshHiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
+                    const freshHiddenKeys = getHiddenCatgirlKeys();
                     const catgirls = characterData['猫娘'] || {};
                     freshHiddenKeys.forEach(k => {
                         if (!catgirls[k]) return;
@@ -1144,7 +1170,7 @@ window.hideCatgirl = async function(key) {
     block.style.transform = `translate(${deltaX}px, ${deltaY}px) scale(0.8)`;
     block.style.opacity = '0';
     
-    const hiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
+    const hiddenKeys = getHiddenCatgirlKeys();
     if (!hiddenKeys.includes(key)) {
         hiddenKeys.push(key);
         localStorage.setItem('hidden_catgirls', JSON.stringify(hiddenKeys));
@@ -1168,7 +1194,7 @@ window.hideCatgirl = async function(key) {
 
 // 取消隐藏猫娘函数
 window.unhideCatgirl = async function(key) {
-    const hiddenKeys = JSON.parse(localStorage.getItem('hidden_catgirls') || '[]');
+    const hiddenKeys = getHiddenCatgirlKeys();
     const newHiddenKeys = hiddenKeys.filter(k => k !== key);
     localStorage.setItem('hidden_catgirls', JSON.stringify(newHiddenKeys));
     
