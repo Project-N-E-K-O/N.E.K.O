@@ -456,6 +456,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
+                                # 只有 remaining 为空，或者 /process 真正成功写入 memory 后，才能安全清空本地缓存。
+                                # 如果因为冷却或请求失败而跳过 /process，这里必须保留消息，避免记忆数据丢失。
+                                process_completed = not remaining
                                 if not shutdown_event.is_set() and remaining:
                                     if can_request_memory('process'):
                                         try:
@@ -470,11 +473,20 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                         mark_memory_failure('process', result.get('message', 'unknown error'))
                                                     else:
                                                         mark_memory_success('process')
+                                                        # 只有确认 memory_server 已处理这批 remaining 后，才允许清空 chat_history。
+                                                        process_completed = True
                                                         logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
                                         except Exception as e:
                                             mark_memory_failure('process', e)
-                                chat_history.clear()
-                                last_synced_index = 0
+                                    else:
+                                        # 当前仍处于 backoff 冷却窗口，不发新请求，但保留 remaining 等下次再送。
+                                        logger.info(f"[{lanlan_name}] session end 记忆结算仍在冷却中，暂不重试，保留 {len(remaining)} 条未同步消息")
+                                if process_completed:
+                                    chat_history.clear()
+                                    last_synced_index = 0
+                                else:
+                                    # 只要 /process 没成功，就绝不能清空；否则 remaining 会永久丢失。
+                                    logger.warning(f"[{lanlan_name}] session end 记忆结算未完成，保留 {len(remaining)} 条消息等待后续重试")
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                     await asyncio.sleep(0.02)
