@@ -1154,9 +1154,9 @@ const destroyMusicPlayer = () => {
     if (window.aplayerInjected && window.aplayerInjected.aplayer) {
         window.aplayerInjected.aplayer = null;
     }
-    // 移除音乐气泡
-    document.querySelectorAll('.music-bubble').forEach(bubble => {
-        bubble.remove();
+    // 移除音乐消息根节点（整块移除，避免残留）
+    document.querySelectorAll('.music-message-root').forEach(root => {
+        root.remove();
     });
     currentPlayingTrack = null;
 };
@@ -1366,17 +1366,23 @@ window.sendMusicMessage = function(trackInfo) {
         messageDiv.appendChild(playBtn);
         messageDiv.appendChild(playerContainer);
         
-        // 插入样式
-        const styleEl = document.createElement('style');
-        styleEl.textContent = `
-            .music-bubble + .music-bubble { margin-top: 2px !important; }
-            .music-bubble button.music-play-btn:hover { transform: scale(1.1); }
-            .music-bubble button.music-play-btn:active { transform: scale(0.95); }
-        `;
+        // 插入样式（使用全局样式避免重复创建）
+        let globalStyle = document.getElementById('music-player-global-style');
+        if (!globalStyle) {
+            globalStyle = document.createElement('style');
+            globalStyle.id = 'music-player-global-style';
+            globalStyle.textContent = `
+                .music-bubble + .music-bubble { margin-top: 2px !important; }
+                .music-bubble button.music-play-btn:hover { transform: scale(1.1); }
+                .music-bubble button.music-play-btn:active { transform: scale(0.95); }
+            `;
+            document.head.appendChild(globalStyle);
+        }
         
         // 使用 addNewMessage 添加消息（传入 Node 以保留事件监听器）
+        // 添加唯一标识类以便销毁时整块移除
         const tempDiv = document.createElement('div');
-        tempDiv.appendChild(styleEl);
+        tempDiv.className = 'music-message-root';
         tempDiv.appendChild(messageDiv);
         addNewMessage(tempDiv);
         
