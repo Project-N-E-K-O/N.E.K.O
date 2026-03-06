@@ -39,7 +39,7 @@ function addNewMessage(message) {
 
     const newMessageElement = document.createElement('div');
     if (typeof message === 'string') {
-        newMessageElement.innerHTML = message;
+        newMessageElement.textContent = message; // 修复：全局辅助函数严禁使用 innerHTML 承接不确定的字符串
     } else if (message instanceof Node) {
         newMessageElement.appendChild(message);
     } else {
@@ -440,7 +440,7 @@ if (toggleBtn) {
                 iconImg = document.createElement('img');
                 iconImg.style.width = '32px';  /* 图标尺寸 */
                 iconImg.style.height = '32px';  /* 图标尺寸 */
-                iconImg.style.objectFit = 'cover';
+                iconImg.style.objectFit = 'contain'; // 修复：与原生初始化保持一致，防止图标被裁剪
                 iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
                 toggleBtn.innerHTML = '';
                 toggleBtn.appendChild(iconImg);
@@ -1174,16 +1174,7 @@ window.sendMusicMessage = function(trackInfo) {
         destroyMusicPlayer();
     }
     
-    // 安全处理：对外部输入进行 HTML 转义
-    const escapeHtml = (str) => {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
-    };
-    // 转义用于 innerHTML 的部分
-    const trackNameEscaped = escapeHtml(trackInfo.name || '未知曲目');
-    const artistNameEscaped = escapeHtml(trackInfo.artist || '未知艺术家');
-    // 用于 textContent 的原始值（自动防 XSS）
+    // 使用 textContent 赋值天然具备防 XSS 能力，直接使用原始值即可
     const trackName = trackInfo.name || '未知曲目';
     const artistName = trackInfo.artist || '未知艺术家';
     
@@ -1215,16 +1206,28 @@ window.sendMusicMessage = function(trackInfo) {
                currentPlayingTrack.name === info.name && 
                currentPlayingTrack.artist === info.artist;
     };
+
+    // 检查当前播放器的 DOM 容器是否还在页面上（应对用户清空聊天记录的情况）
+    const isPlayerInDOM = () => {
+        const player = getMusicPlayerInstance();
+        return player && player.container && document.body.contains(player.container);
+    };
     
-    // 如果是同一首歌（无论是否正在播放），复用现有实例，不再创建新的
+    // 如果是同一首歌且气泡还在，复用现有实例；否则销毁旧幽灵实例并重建
     const player = getMusicPlayerInstance();
     if (isSameTrack(trackInfo)) {
-        console.log('[Common UI] 相同歌曲已存在，复用现有实例');
-        // 如果暂停了，可以重新播放
-        if (player && player.paused) {
-            player.play();
+        if (isPlayerInDOM()) {
+            console.log('[Common UI] 相同歌曲且气泡存在，复用现有实例');
+            if (player && player.paused) {
+                player.play();
+            }
+            return true;
+        } else {
+            console.log('[Common UI] 相同歌曲但气泡已被清理，彻底重置并重建');
+            destroyMusicPlayer(); 
+            // 关键修复：既然气泡没了，就把这首歌当作一首新歌来处理，防止后面的逻辑误判
+            currentPlayingTrack = null; 
         }
-        return true;
     }
     
     // 不同歌曲：如果播放器正在播放，需要创建新播放器（会停止旧播放并渲染新气泡）
@@ -1304,7 +1307,8 @@ window.sendMusicMessage = function(trackInfo) {
                     'updates.broadcastify.com'
                 ];
                 if (!allowedProtocols.includes(parsed.protocol)) return false;
-                if (!allowedDomains.some(d => parsed.hostname.endsWith(d))) return false;
+                // 修复：严格限制全等匹配或合法子域名匹配，防止 SSRF 域名绕过 (如 scambandcamp.com)
+                if (!allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d))) return false;
                 return true;
             } catch {
                 return false;
@@ -1502,11 +1506,11 @@ window.sendMusicMessage = function(trackInfo) {
             }
             stopExistingMusic();
             showMusicPlayer();
-            return true;
         }).catch(err => {
             console.error('[Common UI] APlayer 库加载失败:', err);
-            return false;
         });
+        // 修复：必须在此处同步返回 true，否则外层调用的 accepted 判断会失败
+        return true;
     } else {
         stopExistingMusic();
         showMusicPlayer();

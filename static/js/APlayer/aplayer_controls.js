@@ -1,11 +1,6 @@
 // ========== APlayer 控制器模块 ==========
 // 提供统一的 APlayer 控制接口
 
-/**
- * 音乐源配置
- * 包含中国和国际两个区域的音乐源列表
- * 与后端 GLOBAL_CRAWLERS 保持一致
- */
 const musicSources = {
     china: [
         { name: '网易云音乐', url: 'https://music.163.com', id: 'netease' },
@@ -25,11 +20,6 @@ const musicSources = {
     ]
 };
 
-/**
- * 校验 APlayer 实例是否存在
- * @param {APlayer} aplayer - APlayer 实例
- * @returns {boolean} - 如果 APlayer 存在则返回 true，否则返回 false
- */
 function ensureAPlayerInitialized(aplayer) {
     if (!aplayer) {
         console.warn('[APlayer] APlayer not initialized');
@@ -38,11 +28,6 @@ function ensureAPlayerInitialized(aplayer) {
     return true;
 }
 
-/**
- * 获取音乐源列表
- * @param {string} region - 用户区域（"china" 或 "international"）
- * @returns {Array} - 音乐源列表
- */
 export function getMusicSources(region) {
     if (region === 'china') {
         return musicSources.china;
@@ -54,11 +39,6 @@ export function getMusicSources(region) {
     }
 }
 
-/**
- * 播放/暂停音乐
- * @param {APlayer} aplayer - APlayer 实例
- * @returns {Object} - 操作结果
- */
 export function toggleMusicPlayback(aplayer) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) return { success: false, error: 'APlayer not initialized' };
@@ -74,11 +54,6 @@ export function toggleMusicPlayback(aplayer) {
     }
 }
 
-/**
- * 播放下一首歌曲
- * @param {APlayer} aplayer - APlayer 实例
- * @returns {Object} - 操作结果
- */
 export function playNextTrack(aplayer) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) return { success: false, error: 'APlayer not initialized' };
@@ -86,7 +61,8 @@ export function playNextTrack(aplayer) {
         aplayer.skipForward();
         console.log('[APlayer] playNextTrack: switched to next track');
 
-        const currentTrack = aplayer.list.audios[aplayer.list.index];
+        const list = aplayer.list;
+        const currentTrack = list && list.audios ? list.audios[list.index] : null;
         if (currentTrack) {
             return {
                 name: currentTrack.name,
@@ -101,11 +77,6 @@ export function playNextTrack(aplayer) {
     }
 }
 
-/**
- * 播放上一首歌曲
- * @param {APlayer} aplayer - APlayer 实例
- * @returns {Object} - 操作结果
- */
 export function playPreviousTrack(aplayer) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) return { success: false, error: 'APlayer not initialized' };
@@ -113,7 +84,8 @@ export function playPreviousTrack(aplayer) {
         aplayer.skipBack();
         console.log('[APlayer] playPreviousTrack: switched to previous track');
 
-        const currentTrack = aplayer.list.audios[aplayer.list.index];
+        const list = aplayer.list;
+        const currentTrack = list && list.audios ? list.audios[list.index] : null;
         if (currentTrack) {
             return {
                 name: currentTrack.name,
@@ -128,12 +100,6 @@ export function playPreviousTrack(aplayer) {
     }
 }
 
-/**
- * 调节音乐音量
- * @param {APlayer} aplayer - APlayer 实例
- * @param {number} volume - 音量值 (0-1)
- * @returns {Object} - 操作结果
- */
 export function setMusicVolume(aplayer, volume) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) return { success: false, error: 'APlayer not initialized' };
@@ -153,18 +119,15 @@ export function setMusicVolume(aplayer, volume) {
     }
 }
 
-/**
- * 获取当前播放信息
- * @param {APlayer} aplayer - APlayer 实例
- * @returns {Object} - 播放信息
- */
 export function getCurrentTrackInfo(aplayer) {
     try {
         if (!ensureAPlayerInitialized(aplayer)) {
             return { success: false, error: 'APlayer not initialized' };
         }
         
-        const currentTrack = aplayer.list.audios[aplayer.list.index];
+        const list = aplayer.list;
+        const currentTrack = list && list.audios ? list.audios[list.index] : null;
+        
         if (currentTrack) {
             return {
                 name: currentTrack.name,
@@ -172,7 +135,8 @@ export function getCurrentTrackInfo(aplayer) {
                 duration: aplayer.audio ? aplayer.audio.duration : 0,
                 currentTime: aplayer.audio ? aplayer.audio.currentTime : 0,
                 paused: !aplayer.playing,
-                success: true
+                success: true,
+                cover: currentTrack.cover
             };
         } else {
             return { success: false, error: 'No track in playlist' };

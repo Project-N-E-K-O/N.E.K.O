@@ -385,12 +385,12 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     优先使用s.weibo.com热搜榜页面（刷新频率更高），需要Cookie
     如果失败则回退到公开API
     """
-    from bs4 import BeautifulSoup
-    
-    # 微博Cookie配置 - 用于访问热搜页面
-    WEIBO_COOKIE = "SUB=_2AkMWJrkXf8NxqwJRmP8SxWjnaY12zwnEieKgekjMJRMxHRl-yj9jqmtbtRB6PaaX-IGp-AjmO6k5cS-OH2X9CayaTzVD"
-    
     try:
+        # 动态获取平台 Cookie，拒绝硬编码
+        weibo_cookies = _get_platform_cookies('weibo')
+        sub_cookie = weibo_cookies.get('SUB') or weibo_cookies.get('sub', '')
+        cookie_header = f"SUB={sub_cookie}" if sub_cookie else ""
+        
         # 优先使用s.weibo.com热搜页面（刷新频率更高）
         url = "https://s.weibo.com/top/summary?cate=realtimehot"
         
@@ -399,8 +399,9 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             'Referer': 'https://s.weibo.com/',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Cookie': WEIBO_COOKIE,
         }
+        if cookie_header:
+            headers['Cookie'] = cookie_header
         
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.1, 0.5))
@@ -1564,13 +1565,8 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                     # 提取 URL（处理相对和绝对 URL）
                     href = link.get('href', '')
                     if href:
-                        # 如果是相对 URL，转换为绝对 URL
-                        if href.startswith('/'):
-                            url = urljoin('https://www.baidu.com', href)
-                        elif not href.startswith('http'):
-                            url = urljoin('https://www.baidu.com/', href)
-                        else:
-                            url = href
+                        # urljoin 能够自动处理绝对URL、相对URL以及以 '/' 开头的根URL
+                        url = urljoin('https://www.baidu.com', href)
                     else:
                         url = ''
                     
@@ -2283,11 +2279,6 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     - 目标变更为：移动端首页关注流的固定 Container ID
     - 必须伪装成手机浏览器的 User-Agent
     """
-    import re
-    import random
-    import asyncio
-    import httpx
-    
     try:
         from utils.cookies_login import validate_cookies, load_cookies_from_file
         

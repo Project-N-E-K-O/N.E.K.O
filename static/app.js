@@ -1,4 +1,16 @@
-// 全局窗口管理函数
+/**
+ * 全局窗口管理函数
+ */
+
+// 【防崩溃兜底】确保 window.t 始终是一个可调用的函数
+if (typeof window.t !== 'function') {
+    window.t = function(key, fallback) { return fallback || key; };
+}
+// 定义全局安全的翻译函数 safeT，供内部直接调用
+window.safeT = function(key, fallback) {
+    return (window.t && typeof window.t === 'function') ? window.t(key, fallback) : (fallback || key);
+};
+const safeT = window.safeT;
 
 // 上次用户输入时间（毫秒级）
 let lastUserInputTime = 0;
@@ -157,6 +169,10 @@ function init_app() {
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
+
+    // 【补充声明】修复未声明变量导致的隐式全局或 ReferenceError
+    let subtitleCheckDebounceTimer = null; 
+    let nextChunkTime = 0; // 统一用于音频预调度的时间戳
 
     // 屏幕流闲置释放的统一 helper 函数
     function scheduleScreenCaptureIdleCheck() {
@@ -1062,8 +1078,8 @@ function init_app() {
 
                         let fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
                         // 1. 触发音乐气泡生成
-                        if (typeof processMusicCommands === 'function' && fullText) {
-                            processMusicCommands(fullText);
+                        if (typeof window.processMusicCommands === 'function' && fullText) {
+                            window.processMusicCommands(fullText);
                         }
                         
                         // 2. 剔除音乐指令，避免影响后续的情感分析和字幕翻译
@@ -1281,27 +1297,27 @@ function init_app() {
                             window.showStatusToast(searchMsg, 2000);
                         }
                         
-                    fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
-                        .then(res => res.json())
-                        .then(result => {
-                            if (result.success && result.data && result.data.length > 0) {
-                                const track = result.data[0];
-                                window.dispatchMusicPlay(track);
-                            } else {
-                                console.warn(`[Music] API did not find a song for: ${searchTerm}`);
-                                if (window.showStatusToast) {
-                                    const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
-                                    window.showStatusToast(notFoundMsg, 3000);
+                        fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
+                            .then(res => res.json())
+                            .then(result => {
+                                if (result.success && result.data && result.data.length > 0) {
+                                    const track = result.data[0];
+                                    window.dispatchMusicPlay(track);
+                                } else {
+                                    console.warn(`[Music] API did not find a song for: ${searchTerm}`);
+                                    if (window.showStatusToast) {
+                                        const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
+                                        window.showStatusToast(notFoundMsg, 3000);
+                                    }
                                 }
-                            }
-                        })
-                        .catch(e => {
-                            console.error(`[Music] Music search API call failed:`, e);
-                            if (window.showStatusToast) {
-                                window.showStatusToast(`音乐搜索失败`, 3000);
-                            }
-                        });
-                }
+                            })
+                            .catch(e => {
+                                console.error(`[Music] Music search API call failed:`, e);
+                                if (window.showStatusToast) {
+                                    window.showStatusToast(safeT('music.searchFailed', '音乐搜索失败'), 3000);
+                                }
+                            });
+                    }
                 } else if (response.type === 'repetition_warning') {
                     // 处理高重复度对话警告
                     console.log(window.t('console.repetitionWarningReceived'), response.name);
@@ -2206,18 +2222,16 @@ function init_app() {
                 window._pendingMusicCommand = '';
             }
             
-            // 检查是否有未闭合的 [play_music:，如果有则提取并暂存
-            const pendingMatch = incoming.match(/\[play_music:\s*$/);
-            if (pendingMatch) {
-                window._pendingMusicCommand = pendingMatch[0];
-                incoming = incoming.slice(0, pendingMatch.index);
-            }
-            
-            // 继续检查 JSON 体的未闭合情况：如果有 {"name": 但没有 }]，则暂存
-            const jsonStartMatch = incoming.match(/\[play_music:\s*(\{[^}]*)$/);
-            if (jsonStartMatch) {
-                window._pendingMusicCommand = '[play_music: ' + jsonStartMatch[1];
-                incoming = incoming.slice(0, jsonStartMatch.index);
+            // 捕获字符串末尾尚未闭合的任意中括号块（如 "[play_", "[play_music:{" 等）
+            const openBracketMatch = incoming.match(/\[[^\]]*$/);
+            if (openBracketMatch) {
+                // 检查这个未闭合的标签是否可能是 [play_music 相关的
+                // 即使它只吐出个 "[pl"，也先拦截下来放入暂存区，防止泄漏到气泡中
+                const partialText = openBracketMatch[0];
+                if (partialText.startsWith('[p') || partialText.startsWith('[play')) {
+                    window._pendingMusicCommand = partialText;
+                    incoming = incoming.slice(0, openBracketMatch.index);
+                }
             }
             
             const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
@@ -4743,7 +4757,7 @@ function init_app() {
         audioBufferQueue = [];
         isPlaying = false;
         audioStartTime = 0;
-        nextStartTime = 0; // 新增：重置预调度时间
+        nextChunkTime = 0; // 修复：统一使用 nextChunkTime
 
         // 重置 OGG OPUS 流式解码器（等待重置完成，避免竞态条件）
         await resetOggOpusDecoder();
@@ -4766,7 +4780,7 @@ function init_app() {
         audioBufferQueue = [];
         isPlaying = false;
         audioStartTime = 0;
-        nextStartTime = 0;
+        nextChunkTime = 0;
 
         // 注意：不调用 resetOggOpusDecoder()！
         // 解码器将在收到新 speech_id 时才重置，避免丢失头信息

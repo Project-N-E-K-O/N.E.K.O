@@ -1118,6 +1118,8 @@ def _normalize_prompt_language(lang: str) -> str:
         return 'en'
     if lang_lower.startswith('ko'):
         return 'ko'
+    if lang_lower.startswith('ru'):
+        return 'ru'
     return 'en'
 
 
@@ -1304,9 +1306,6 @@ def get_proactive_music_keyword_prompt(lang: str = 'zh') -> str:
     """
     获取音乐关键词生成的 prompt
     """
-    lang_lower = (lang or 'zh').lower()
-    if lang_lower.startswith('ru'):
-        return PROACTIVE_MUSIC_KEYWORD_PROMPTS['ru']
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(lang_key, PROACTIVE_MUSIC_KEYWORD_PROMPTS['zh'])
 
@@ -1352,28 +1351,28 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = '
 
     _si = {
         'zh': {
-            'both':   '3. 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
-            'screen': '3. 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-            'web':    '3. 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-            'none':   '3. 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
+            'both':   '- 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
+            'screen': '- 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'web':    '- 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+            'none':   '- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
         },
         'en': {
-            'both':   '3. You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
-            'screen': '3. You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
-            'web':    '3. You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
-            'none':   '3. You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
+            'both':   '- You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
+            'screen': '- You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'web':    '- You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
+            'none':   '- You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
         },
         'ja': {
-            'both':   '3. どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先',
-            'screen': '3. ご主人が見ている画面の内容について話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
-            'web':    '3. 提供された外部話題をもとに話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
-            'none':   '3. 会話履歴と現在の状態をもとに自然に話しかけてもいいが、最近似たような話をしたか、特に話すことがなければパスしてもいい',
+            'both':   '- どの素材を使うかは自由：画面の内容だけ、外部話題だけ、または両方。画面の内容がある場合はご主人が見ている内容を優先',
+            'screen': '- ご主人が見ている画面の内容について話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'web':    '- 提供された外部話題をもとに話しかけてもいいが、最近似たような話をしたか、その話題に興味がなければパスしてもいい',
+            'none':   '- 会話履歴と現在の状態をもとに自然に話しかけてもいいが、最近似たような話をしたか、特に話すことがなければパスしてもいい',
         },
         'ko': {
-            'both':   '3. 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선',
-            'screen': '3. 주인이 현재 화면에서 보고 있는 내용에 대해 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
-            'web':    '3. 제공된 외부 주제를 대화 소재로 활용해도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
-            'none':   '3. 대화 기록과 현재 상태를 바탕으로 자연스럽게 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 딱히 할 말이 없으면 패스해도 됨',
+            'both':   '- 어떤 소재를 쓸지는 자유: 화면 내용만, 외부 주제만, 또는 둘 다. 화면 내용이 있으면 주인이 보고 있는 내용 우선',
+            'screen': '- 주인이 현재 화면에서 보고 있는 내용에 대해 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'web':    '- 제공된 외부 주제를 대화 소재로 활용해도 되지만, 최근 비슷한 이야기를 했거나 그 주제에 관심이 없으면 패스해도 됨',
+            'none':   '- 대화 기록과 현재 상태를 바탕으로 자연스럽게 말을 걸어도 되지만, 최근 비슷한 이야기를 했거나 딱히 할 말이 없으면 패스해도 됨',
         },
     }
 

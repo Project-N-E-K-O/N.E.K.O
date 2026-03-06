@@ -19,12 +19,12 @@ import re
 import json
 import time
 import urllib.parse
-from urllib.parse import unquote
+from urllib.parse import unquote, unquote_plus
 from bs4 import BeautifulSoup
 from typing import List, Dict, Any, Optional
 from collections import Counter
-
 from utils.logger_config import get_module_logger
+
 
 # ==================================================
 # 1. 模块级设置
@@ -72,9 +72,10 @@ class MusicCache:
         """
         self._cleanup()
         for item in self.cache:
-            if item['url'] == url:
+            # 增加真值判断，防止空字符串之间的错误匹配
+            if url and item['url'] == url:
                 return True
-            if item['name'] == name and item['artist'] == artist:
+            if name and artist and item['name'] == name and item['artist'] == artist:
                 return True
         return False
     
@@ -207,6 +208,10 @@ class BaseMusicCrawler:
         """
         raise NotImplementedError
 
+    def _refresh_user_agent(self):
+        """动态刷新 User-Agent 防止被封"""
+        self.client.headers.update({'User-Agent': get_random_user_agent()})
+
     def _format_item(self, name: str, url: str, artist: str = "未知艺术家", cover: str = "") -> Dict[str, Any]:
         """
         将抓取到的数据统一为 APlayer 兼容的格式。
@@ -241,6 +246,7 @@ class NeteaseCrawler(BaseMusicCrawler):
         })
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         if not keyword:
             logger.debug(f"[{self.platform_name}] 因关键词为空而跳过")
             return []
@@ -313,23 +319,31 @@ class SoundCloudCrawler(BaseMusicCrawler):
         
         try:
             res = await self.client.get("https://soundcloud.com/")
-            # 找到主页挂载的所有的 JS 脚本
-            scripts = re.findall(r'<script crossorigin src="([^"]+)"></script>', res.text)
+            # 找到主页挂载的所有的 JS 脚本（优化正则，忽略其他属性变化）
+            scripts = re.findall(r'<script[^>]*src="([^"]+)"[^>]*>', res.text)
+            # 兼容未来可能出现的 query 参数，如 xxx.js?v=123
+            scripts = [s for s in scripts if s.split('?')[0].endswith('.js')]
             # Token 通常在最后几个 JS 文件里，倒序查找
             for js_url in reversed(scripts):
-                js_res = await self.client.get(js_url)
-                # 正则匹配 32 位的 client_id
-                match = re.search(r'client_id:"([^"]{32})"', js_res.text)
-                if match:
-                    self.client_id = match.group(1)
-                    logger.info(f"[{self.platform_name}] 成功动态获取 Client ID")
-                    return self.client_id
+                try:
+                    js_res = await self.client.get(js_url)
+                    # 正则匹配 32 位的 client_id
+                    match = re.search(r'client_id:"([^"]{32})"', js_res.text)
+                    if match:
+                        self.client_id = match.group(1)
+                        logger.info(f"[{self.platform_name}] 成功动态获取 Client ID")
+                        return self.client_id
+                except Exception as inner_e:
+                    logger.debug(f"[{self.platform_name}] 跳过无法访问的 JS 文件 ({js_url}): {inner_e}")
+                    continue  # 忽略当前失败的文件，继续检查下一个
+                    
         except Exception as e:
             logger.warning(f"[{self.platform_name}] 动态获取 Client ID 失败: {e}")
         
         return None
 
     async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         
         # 加入最多 2 次的重试机制，防 Token 突然过期
@@ -386,9 +400,10 @@ class SoundCloudCrawler(BaseMusicCrawler):
                         cover_url = track.get('artwork_url') or ''
                         if cover_url:
                             cover_url = cover_url.replace('-large', '-t500x500')
-                        
+
                         return self._format_item(name=title, url=real_audio_url, artist=artist, cover=cover_url)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"[{self.platform_name}] 解析音频流内部错误: {e}")
                         return None
 
                 stream_tasks = [fetch_stream_url(track, client_id) for track in collection[:limit * 3]]
@@ -415,6 +430,7 @@ class iTunesCrawler(BaseMusicCrawler):
         self.api_base = "https://itunes.apple.com"
 
     async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         
         try:
@@ -482,6 +498,7 @@ class MusopenCrawler(BaseMusicCrawler):
         })
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在获取免版权古典音乐... 关键词: {keyword}")
         
         # 关键词到页面的映射
@@ -597,6 +614,7 @@ class FMACrawler(BaseMusicCrawler):
         super().__init__("FMA")
 
     async def search(self, keyword: str = "piano", limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         search_url = f'https://freemusicarchive.org/search/?adv=1&quicksearch={keyword}'
         
@@ -660,6 +678,7 @@ class BandcampCrawler(BaseMusicCrawler):
         super().__init__("Bandcamp")
 
     async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
+        self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         results = []
         try:
@@ -1029,9 +1048,9 @@ async def main():
     await close_all_crawlers()
 
 if __name__ == '__main__':
-    # 针对 Windows 环境的 asyncio 报错防范
+    # 针对 Windows 环境的 asyncio 报错防范 (仅测试时生效)
+    # 在生产环境中，请确保在主入口文件(如 main.py) 顶部进行此设置
     import sys
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
     asyncio.run(main())

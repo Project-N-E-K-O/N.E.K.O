@@ -1,12 +1,8 @@
 /**
  * APlayer 注入器 - 将 APlayer 集成到 common-ui 中
- * 功能:
- *  - 在聊天容器内嵌入 APlayer 播放器
- *  - 提供播放器的显示/隐藏控制
- *  - 支持主题和位置配置
  */
 
-import { initializeAPlayer } from './main.js';
+import { initializeAPlayer, destroyAPlayer } from './main.js';
 
 const APLAYER_CONFIG = {
     containerId: 'aplayer-container',
@@ -16,7 +12,7 @@ const APLAYER_CONFIG = {
     defaultMiniPlayer: true
 };
 
-export function injectAPlayerToChatContainer(options = {}) {
+export async function injectAPlayerToChatContainer(options = {}) {
     const config = {
         ...APLAYER_CONFIG,
         ...options
@@ -43,15 +39,16 @@ export function injectAPlayerToChatContainer(options = {}) {
 
     chatContainer.appendChild(aplayerContainer);
 
-    const aplayer = initializeAPlayer({
+    // 异步等待实例加载
+    const aplayer = await initializeAPlayer({
         container: aplayerContainer,
         ...options
-    }, (aplayerInstance) => {
-        if (aplayerInstance) {
-            console.log('[APlayer] Successfully injected to chat-container');
-            setupInjectedControls(aplayerInstance, config);
-        }
     });
+
+    if (aplayer) {
+        console.log('[APlayer] Successfully injected to chat-container');
+        setupInjectedControls(aplayer, config);
+    }
 
     return aplayer;
 }
@@ -62,7 +59,7 @@ function setupInjectedControls(aplayer, config) {
 
     const toggleBtn = document.createElement('button');
     toggleBtn.id = 'aplayer-toggle-btn';
-    toggleBtn.innerHTML = '🎵';
+    toggleBtn.innerHTML = '<i class="fas fa-music"></i>';
     Object.assign(toggleBtn.style, {
         position: 'absolute',
         top: '-40px',
@@ -73,7 +70,8 @@ function setupInjectedControls(aplayer, config) {
         borderRadius: '50%',
         background: 'rgba(255, 255, 255, 0.9)',
         border: '2px solid #4f8cff',
-        fontSize: '20px',
+        fontSize: '18px',
+        color: '#4f8cff',
         cursor: 'pointer',
         zIndex: '101',
         transition: 'all 0.2s ease',
@@ -110,24 +108,22 @@ function setupInjectedControls(aplayer, config) {
             container.style.left = '0';
             container.style.bottom = '0';
             container.style.borderRadius = '8px 8px 0 0';
-            // 按钮移到右上角，显示折叠图标
             toggleBtn.style.top = '10px';
             toggleBtn.style.left = 'auto';
             toggleBtn.style.right = '10px';
             toggleBtn.style.transform = 'none';
-            toggleBtn.innerHTML = '✕';
+            toggleBtn.innerHTML = '<i class="fas fa-times"></i>';
         } else {
             // 迷你模式
             container.style.width = '300px';
             container.style.left = '10px';
             container.style.bottom = '10px';
             container.style.borderRadius = '8px';
-            // 按钮恢复到顶部居中
             toggleBtn.style.top = '-40px';
             toggleBtn.style.left = '50%';
             toggleBtn.style.right = 'auto';
             toggleBtn.style.transform = 'translateX(-50%)';
-            toggleBtn.innerHTML = '🎵';
+            toggleBtn.innerHTML = '<i class="fas fa-music"></i>';
         }
     });
 
@@ -175,30 +171,12 @@ function setupInjectedControls(aplayer, config) {
 }
 
 export function removeAPlayerFromChatContainer() {
-    // 先销毁播放器实例
-    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-        const player = window.aplayerInjected.aplayer;
-        if (typeof player.pause === 'function') {
-            player.pause();
-        }
-        if (typeof player.destroy === 'function') {
-            player.destroy();
-        }
-    }
-    
-    // 使用存储的容器引用，而非硬编码 ID
-    const container = window.aplayerInjected?.container || document.getElementById('aplayer-container');
-    if (container) {
-        container.remove();
-        console.log('[APlayer] Removed from chat-container');
-    }
+    // 统一调用 main.js 的原生销毁方法处理
+    destroyAPlayer(); 
 
     if (window.aplayerInjected) {
         delete window.aplayerInjected;
-    }
-    
-    if (window.aplayer) {
-        window.aplayer = null;
+        console.log('[APlayer] Removed from chat-container');
     }
 }
 
@@ -207,15 +185,14 @@ export function getAPlayerInstance() {
 }
 
 export function getAPlayerContainer() {
-    // 优先使用存储的容器引用，回退到默认 ID
     return window.aplayerInjected?.container || document.getElementById('aplayer-container');
 }
 
-export function setupAPlayerInChat(options = {}) {
+export async function setupAPlayerInChat(options = {}) {
     if (getAPlayerContainer()) {
         console.warn('[APlayer] Already injected, removing old instance');
         removeAPlayerFromChatContainer();
     }
 
-    return injectAPlayerToChatContainer(options);
+    return await injectAPlayerToChatContainer(options);
 }
