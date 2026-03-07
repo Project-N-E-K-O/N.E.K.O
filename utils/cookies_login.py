@@ -71,14 +71,19 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
                 return False
     return True
 
-def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool = True) -> bool:
-    """保存Cookie，可选择是否加密"""
+def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
+    """保存Cookie，包含规范化校验与加密逻辑"""
     try:
         if platform not in COOKIE_FILES:
             return False
+
+        # 【核心修复】增加防御性调用，确保即便从程序化接口传入的 dict 也能通过值类型校验
+        cookies = _normalize_cookies(cookies, platform)
+        if not cookies:
+            return False
             
         if not validate_cookies(platform, cookies):
-            print(f"❌ 凭证格式异常，{platform} Cookie 保存已取消。")
+            logger.error(f"❌ 凭证核心字段校验失败，{platform} Cookie 保存已取消。")
             return False
             
         cookie_file = COOKIE_FILES[platform]
@@ -129,10 +134,9 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
-        # 打印脱敏后的摘要，让用户安心
-        logger.info(f"\n🔐 【{platform.capitalize()} 凭证摘要】:")
+        logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
         for k, v in list(cookies.items())[:3]: # 仅展示前三个键
-            print(f"   - {k}: {mask_string(v)}")
+            logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
     except Exception as e:
@@ -214,11 +218,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
             logger.debug(f"解密 {platform} Cookie 失败，尝试明文加载: {decrypt_error}")
             
             try:
-                # 先检查文件是否存在以及是否有内容
-                if not cookie_file.exists():
-                    logger.warning(f"{platform} Cookie 文件不存在: {cookie_file}")
-                    return {}
-                
+                # 【清理】移除重复的 exists() 检查，函数入口已做保护
                 if cookie_file.stat().st_size == 0:
                     logger.info(f"{platform} Cookie 文件为空: {cookie_file}")
                     return {}
