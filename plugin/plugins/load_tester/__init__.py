@@ -1,12 +1,11 @@
 import asyncio
 import time
 import threading
-import multiprocessing as mp
 from collections import Counter
 from typing import Any, Dict, Optional, cast
 
 from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle, worker
+from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
 from plugin.sdk import ok
 from plugin.sdk.bus.types import BusReplayContext
 
@@ -949,7 +948,6 @@ class LoadTestPlugin(NekoPluginBase):
         )
         return ok(data=stats)
 
-    @worker(timeout=300.0)  # Run in worker thread to avoid blocking command loop
     @plugin_entry(
         id="bench_plugin_event_qps",
         name="Bench Plugin Event QPS",
@@ -975,7 +973,7 @@ class LoadTestPlugin(NekoPluginBase):
             "required": ["target_plugin_id", "event_type", "event_id"],
         },
     )
-    def bench_plugin_event_qps(
+    async def bench_plugin_event_qps(
         self,
         target_plugin_id: str,
         event_type: str,
@@ -1196,11 +1194,9 @@ class LoadTestPlugin(NekoPluginBase):
 
             result_box.append(result)
 
-        # Run directly in worker thread context (no need for separate thread with @worker decorator)
-        _run()
+        await asyncio.to_thread(_run)
 
         if not result_box:
-            # In case the worker failed very early; return an empty result shell
             return ok(
                 data={
                     "test": "bench_plugin_event_qps",

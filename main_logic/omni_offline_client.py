@@ -66,6 +66,7 @@ class OmniOfflineClient:
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         on_response_discarded: Optional[Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]] = None,
+        on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         max_response_length: Optional[int] = None
     ):
@@ -81,6 +82,7 @@ class OmniOfflineClient:
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
+        self.on_status_message = on_status_message
         self.on_response_done = on_response_done
         self.on_proactive_done: Optional[Callable[[], Awaitable[None]]] = None
         self.on_repetition_detected = on_repetition_detected
@@ -280,6 +282,8 @@ class OmniOfflineClient:
         max_retries = 3
         retry_delays = [1, 2]
         assistant_message = ""
+        status_reported = False
+        guard_exhausted = False
         
         try:
             self._is_responding = True
@@ -290,11 +294,10 @@ class OmniOfflineClient:
             if not has_user_message:
                 error_msg = "对话历史中没有用户消息，无法生成回复"
                 logger.error(f"OmniOfflineClient: {error_msg}")
-                if self.handle_connection_error:
-                    await self.handle_connection_error(error_msg)
+                if self.on_status_message:
+                    await self.on_status_message(f"⚠️ {error_msg}")
+                    status_reported = True
                 return
-            
-            guard_exhausted = False
             for attempt in range(max_retries):
                 try:
                     assistant_message = ""
@@ -368,8 +371,9 @@ class OmniOfflineClient:
                                 continue
                             
                             logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
-                            if self.handle_connection_error:
-                                await self.handle_connection_error(final_message)
+                            if self.on_status_message:
+                                await self.on_status_message(f"⚠️ {final_message}")
+                                status_reported = True
                             assistant_message = ""
                             guard_exhausted = True
                             break
@@ -386,36 +390,36 @@ class OmniOfflineClient:
                         break
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
-                    logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
+                    error_type = type(e).__name__
+                    logger.info(f"ℹ️ 捕获到 {error_type} 错误")
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
-                        # 通知前端正在重试
-                        if self.handle_connection_error:
-                            await self.handle_connection_error(f"连接问题，正在重试...（第{attempt + 1}次）")
+                        if self.on_status_message:
+                            await self.on_status_message(f"⚠️ LLM {error_type}，正在重试（{attempt + 1}/{max_retries}）...")
                         await asyncio.sleep(wait_time)
-                        continue  # 继续下一次重试
+                        continue
                     else:
-                        error_msg = f"LLM调用失败，已重试{max_retries}次: {str(e)}"
+                        error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
-                        if self.handle_connection_error:
-                            await self.handle_connection_error(error_msg)
+                        if self.on_status_message:
+                            await self.on_status_message(error_msg)
+                            status_reported = True
                         break
                 except Exception as e:
-                    error_msg = f"Error in text streaming: {str(e)}"
+                    error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
-                    if self.handle_connection_error:
-                        await self.handle_connection_error(error_msg)
-                    break  # 非重试类错误直接退出
+                    if self.on_status_message:
+                        await self.on_status_message(error_msg)
+                        status_reported = True
+                    break
         finally:
             self._is_responding = False
             
-            # 空回复兜底：如果所有重试都未产生文本，向前端发送错误提示
-            if not assistant_message and not guard_exhausted:
+            if not assistant_message and not guard_exhausted and not status_reported:
                 logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
-                if self.on_text_delta:
-                    fallback_msg = "（服务暂时不稳定，请再试一次）"
-                    await self.on_text_delta(fallback_msg, True)
+                if self.on_status_message:
+                    await self.on_status_message("💥 LLM未返回任何回复，请检查API连接和配置")
             
             # Call response done callback
             if self.on_response_done:
@@ -495,9 +499,9 @@ class OmniOfflineClient:
         except Exception as e:
             error_msg = f"OmniOfflineClient.stream_proactive error: {e}"
             logger.error(error_msg)
-            if self.handle_connection_error:
-                await self.handle_connection_error(error_msg)
-            assistant_message = ""  # 防止残缺内容被 finally 写入历史
+            if self.on_status_message:
+                await self.on_status_message(f"💥 主动回复生成失败: {type(e).__name__}: {e}")
+            assistant_message = ""
             return False
         finally:
             self._is_responding = False

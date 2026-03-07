@@ -489,7 +489,7 @@ class MoltbotBridgePlugin(NekoPluginBase):
             
             # 发送请求获取 runId
             run_id = None
-            async with aiohttp.ClientSession() as http_session:
+            async with aiohttp.ClientSession(trust_env=True) as http_session:
                 async with http_session.post(
                     url,
                     json={

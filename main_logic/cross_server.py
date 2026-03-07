@@ -131,8 +131,13 @@ async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
         pass
 
 
-def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", config=None):
-    """独立进程运行的同步连接器"""
+def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", config=None, status_callback=None):
+    """独立进程运行的同步连接器
+
+    Args:
+        status_callback: Optional callable(str) -> None, thread-safe, invoked
+            on the caller's event loop to push status/error messages to the frontend.
+    """
 
     # 创建一个新的事件循环
     loop = asyncio.new_event_loop()
@@ -309,7 +314,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             ) as response:
                                                 result = await response.json()
                                                 if result.get('status') == 'error':
-                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {result.get('message')}")
+                                                    err_detail = result.get('message', '未知错误')
+                                                    logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {err_detail}")
+                                                    if status_callback:
+                                                        try:
+                                                            status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
+                                                        except Exception:
+                                                            pass
                                                 else:
                                                     logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
                                     except RuntimeError as e:
@@ -512,6 +523,33 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 else:
                                     # 只要 /process 没成功，就绝不能清空；否则 remaining 会永久丢失。
                                     logger.warning(f"[{lanlan_name}] session end 记忆结算未完成，保留 {len(remaining)} 条消息等待后续重试")
+                                    try:
+                                        async with aiohttp.ClientSession() as session:
+                                            async with session.post(
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                timeout=aiohttp.ClientTimeout(total=30.0)
+                                            ) as response:
+                                                result = await response.json()
+                                                if result.get('status') == 'error':
+                                                    err_detail = result.get('message', '未知错误')
+                                                    logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {err_detail}")
+                                                    if status_callback:
+                                                        try:
+                                                            status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
+                                                        except Exception:
+                                                            pass
+                                                else:
+                                                    logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
+                                    except Exception as e:
+                                        logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {e}")
+                                        if status_callback:
+                                            try:
+                                                status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
+                                            except Exception:
+                                                pass
+                                chat_history.clear()
+                                last_synced_index = 0
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                     await asyncio.sleep(0.02)

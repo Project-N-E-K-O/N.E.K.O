@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Generic, List, Optional, TypeVar
+from typing import Dict, Generic, Optional, TypeVar
 
 __all__ = [
     "Protocol",

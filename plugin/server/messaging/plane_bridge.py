@@ -5,20 +5,23 @@ import socket
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
 
 import ormsgpack
 import zmq
-from loguru import logger
+from plugin.logging_config import get_logger
 
 from plugin.settings import MESSAGE_PLANE_BRIDGE_ENABLED, MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
 
+logger = get_logger("server.messaging.plane_bridge")
 
-def _dumps(obj: Any) -> bytes:
+_RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
+
+
+def _dumps(obj: object) -> bytes:
     return ormsgpack.packb(obj)
 
 
-def _parse_tcp_endpoint(endpoint: str) -> Optional[Tuple[str, int]]:
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
     ep = str(endpoint)
     if not ep.startswith("tcp://"):
         return None
@@ -28,7 +31,7 @@ def _parse_tcp_endpoint(endpoint: str) -> Optional[Tuple[str, int]]:
     host, port_s = rest.rsplit(":", 1)
     try:
         port = int(port_s)
-    except Exception:
+    except (ValueError, TypeError):
         return None
     host = host.strip() or "127.0.0.1"
     return host, port
@@ -38,9 +41,9 @@ class _Bridge:
     def __init__(self) -> None:
         self._endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
         self._enabled = bool(MESSAGE_PLANE_BRIDGE_ENABLED)
-        self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=4096)
+        self._q: "queue.Queue[dict[str, object]]" = queue.Queue(maxsize=4096)
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if not self._enabled:
@@ -55,10 +58,10 @@ class _Bridge:
     def stop(self) -> None:
         try:
             self._stop.set()
-        except Exception:
+        except _RUNTIME_ERRORS:
             pass
 
-    def enqueue_delta(self, *, store: str, topic: str, payload: Dict[str, Any]) -> None:
+    def enqueue_delta(self, *, store: str, topic: str, payload: dict[str, object]) -> None:
         if not self._enabled:
             return
         msg = {
@@ -77,10 +80,17 @@ class _Bridge:
         }
         try:
             self._q.put_nowait(msg)
-        except Exception:
+        except queue.Full:
             return
 
-    def enqueue_snapshot(self, *, store: str, topic: str, items: List[Dict[str, Any]], mode: str = "replace") -> None:
+    def enqueue_snapshot(
+        self,
+        *,
+        store: str,
+        topic: str,
+        items: list[dict[str, object]],
+        mode: str = "replace",
+    ) -> None:
         if not self._enabled:
             return
         msg = {
@@ -95,7 +105,7 @@ class _Bridge:
         }
         try:
             self._q.put_nowait(msg)
-        except Exception:
+        except queue.Full:
             return
 
     def _wait_tcp_ready(self, endpoint: str) -> None:
@@ -107,13 +117,13 @@ class _Bridge:
             try:
                 with socket.create_connection((host, port), timeout=0.2):
                     return
-            except Exception:
+            except OSError:
                 time.sleep(0.2)
 
     def _run(self) -> None:
         try:
             self._wait_tcp_ready(self._endpoint)
-        except Exception:
+        except _RUNTIME_ERRORS:
             pass
         if self._stop.is_set():
             return
@@ -123,14 +133,14 @@ class _Bridge:
         sock.linger = 0
         try:
             sock.connect(self._endpoint)
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError) as err:
             try:
-                logger.warning("[message_plane_bridge] connect failed: {}", e)
-            except Exception:
+                logger.warning("[message_plane_bridge] connect failed: {}", err)
+            except _RUNTIME_ERRORS:
                 pass
             try:
                 sock.close(0)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError):
                 pass
             return
 
@@ -140,16 +150,16 @@ class _Bridge:
                     msg = self._q.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                except Exception:
+                except _RUNTIME_ERRORS:
                     continue
                 try:
                     sock.send(_dumps(msg), flags=zmq.NOBLOCK)
-                except Exception:
+                except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError):
                     continue
         finally:
             try:
                 sock.close(0)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, OSError, zmq.ZMQError):
                 pass
 
 
@@ -164,9 +174,15 @@ def stop_bridge() -> None:
     _bridge.stop()
 
 
-def publish_record(*, store: str, record: Dict[str, Any], topic: str = "all") -> None:
+def publish_record(*, store: str, record: dict[str, object], topic: str = "all") -> None:
     _bridge.enqueue_delta(store=store, topic=topic, payload=record)
 
 
-def publish_snapshot(*, store: str, records: List[Dict[str, Any]], topic: str = "all", mode: str = "replace") -> None:
+def publish_snapshot(
+    *,
+    store: str,
+    records: list[dict[str, object]],
+    topic: str = "all",
+    mode: str = "replace",
+) -> None:
     _bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode)

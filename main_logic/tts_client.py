@@ -1146,7 +1146,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 }
                                 
                                 # 使用异步HTTP客户端流式接收SSE响应
-                                async with aiohttp.ClientSession() as session:
+                                async with aiohttp.ClientSession(trust_env=True) as session:
                                     async with session.post(tts_url, headers=headers, json=payload) as resp:
                                         if resp.status == 200:
                                             # CogTTS返回SSE格式: data: {...JSON...}

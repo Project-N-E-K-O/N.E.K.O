@@ -30,6 +30,7 @@ Plugin SDK 模块
             return ok(data={"counter": self.counter})
 """
 
+# ── Eager imports: used by virtually every plugin ──────────────────────
 from .version import SDK_VERSION
 from .errors import ErrorCode
 from .responses import ok, fail
@@ -41,81 +42,96 @@ from .decorators import (
     message,
     timer_interval,
     custom_event,
-    worker,
     plugin,
-    # Hook 装饰器
     hook,
     before_entry,
     after_entry,
     around_entry,
     replace_entry,
-    # 类型常量（用于 IDE 识别）
     PERSIST_ATTR,
-    CHECKPOINT_ATTR,  # 向后兼容别名
-    WORKER_MODE_ATTR,
+    CHECKPOINT_ATTR,
     EntryKind,
 )
 from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
 from .hook_executor import HookExecutorMixin
-from .call_chain import (
-    CallChain,
-    AsyncCallChain,
-    CircularCallError,
-    CallChainTooDeepError,
-    get_call_chain,
-    get_call_depth,
-    is_in_call_chain,
-)
 from .base import NekoPluginBase, PluginMeta
 from .router import PluginRouter, PluginRouterError
 from .config import PluginConfig
 from .plugins import Plugins
 from .events import EventMeta, EventHandler, EVENT_META_ATTR
-from .system_info import SystemInfo
-from .memory import MemoryClient
-from .types import PluginContextProtocol
-from .store import PluginStore
-from .database import PluginDatabase, PluginKVStore
-from .state import PluginStatePersistence, StatePersistence, EXTENDED_TYPES
 
-# Adapter 模块（可选导入，避免循环依赖）
-try:
-    from .adapter import (
-        AdapterBase,
-        AdapterConfig,
-        AdapterContext,
-        AdapterMode,
-        AdapterMessage,
-        AdapterResponse,
-        AdapterGatewayCore,
-        ExternalEnvelope,
-        CallablePluginInvoker,
-        DefaultPolicyEngine,
-        DefaultRequestNormalizer,
-        DefaultResponseSerializer,
-        DefaultRouteEngine,
-        GatewayAction,
-        GatewayError,
-        GatewayErrorException,
-        GatewayRequest,
-        GatewayResponse,
-        LoggerLike,
-        PluginInvoker,
-        PolicyEngine,
-        Protocol,
-        RequestNormalizer,
-        ResponseSerializer,
-        RouteDecision,
-        RouteEngine,
-        RouteMode,
-        TransportAdapter,
-        on_adapter_event,
-        on_adapter_startup,
-        on_adapter_shutdown,
-    )
-    _ADAPTER_AVAILABLE = True
-except ImportError:
-    _ADAPTER_AVAILABLE = False
+# ── Lazy imports: loaded on first access via __getattr__ ───────────────
+# call_chain, system_info, memory, types, store, database, state, adapter
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    # call_chain
+    "CallChain":           (".call_chain", "CallChain"),
+    "AsyncCallChain":      (".call_chain", "AsyncCallChain"),
+    "CircularCallError":   (".call_chain", "CircularCallError"),
+    "CallChainTooDeepError": (".call_chain", "CallChainTooDeepError"),
+    "get_call_chain":      (".call_chain", "get_call_chain"),
+    "get_call_depth":      (".call_chain", "get_call_depth"),
+    "is_in_call_chain":    (".call_chain", "is_in_call_chain"),
+    # system_info / memory / types
+    "SystemInfo":          (".system_info", "SystemInfo"),
+    "MemoryClient":        (".memory", "MemoryClient"),
+    "PluginContextProtocol": (".types", "PluginContextProtocol"),
+    # store / database / state
+    "PluginStore":         (".store", "PluginStore"),
+    "PluginDatabase":      (".database", "PluginDatabase"),
+    "PluginKVStore":       (".database", "PluginKVStore"),
+    "PluginStatePersistence": (".state", "PluginStatePersistence"),
+    "StatePersistence":    (".state", "PluginStatePersistence"),
+    "EXTENDED_TYPES":      (".state", "EXTENDED_TYPES"),
+    # adapter
+    "AdapterBase":         (".adapter", "AdapterBase"),
+    "AdapterConfig":       (".adapter", "AdapterConfig"),
+    "AdapterContext":      (".adapter", "AdapterContext"),
+    "AdapterMode":         (".adapter", "AdapterMode"),
+    "AdapterMessage":      (".adapter", "AdapterMessage"),
+    "AdapterResponse":     (".adapter", "AdapterResponse"),
+    "AdapterGatewayCore":  (".adapter", "AdapterGatewayCore"),
+    "ExternalEnvelope":    (".adapter", "ExternalEnvelope"),
+    "CallablePluginInvoker": (".adapter", "CallablePluginInvoker"),
+    "DefaultPolicyEngine": (".adapter", "DefaultPolicyEngine"),
+    "DefaultRequestNormalizer": (".adapter", "DefaultRequestNormalizer"),
+    "DefaultResponseSerializer": (".adapter", "DefaultResponseSerializer"),
+    "DefaultRouteEngine":  (".adapter", "DefaultRouteEngine"),
+    "GatewayAction":       (".adapter", "GatewayAction"),
+    "GatewayError":        (".adapter", "GatewayError"),
+    "GatewayErrorException": (".adapter", "GatewayErrorException"),
+    "GatewayRequest":      (".adapter", "GatewayRequest"),
+    "GatewayResponse":     (".adapter", "GatewayResponse"),
+    "LoggerLike":          (".adapter", "LoggerLike"),
+    "PluginInvoker":       (".adapter", "PluginInvoker"),
+    "PolicyEngine":        (".adapter", "PolicyEngine"),
+    "Protocol":            (".adapter", "Protocol"),
+    "RequestNormalizer":   (".adapter", "RequestNormalizer"),
+    "ResponseSerializer":  (".adapter", "ResponseSerializer"),
+    "RouteDecision":       (".adapter", "RouteDecision"),
+    "RouteEngine":         (".adapter", "RouteEngine"),
+    "RouteMode":           (".adapter", "RouteMode"),
+    "TransportAdapter":    (".adapter", "TransportAdapter"),
+    "on_adapter_event":    (".adapter", "on_adapter_event"),
+    "on_adapter_startup":  (".adapter", "on_adapter_startup"),
+    "on_adapter_shutdown": (".adapter", "on_adapter_shutdown"),
+}
+
+
+def __getattr__(name: str):
+    spec = _LAZY_IMPORTS.get(name)
+    if spec is not None:
+        module_path, attr = spec
+        import importlib
+        try:
+            mod = importlib.import_module(module_path, __package__)
+        except ImportError:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+        val = getattr(mod, attr)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # 版本和错误码
@@ -127,94 +143,92 @@ __all__ = [
     "fail",
     
     # 装饰器
-    "neko_plugin",      # 插件类装饰器
-    "plugin_entry",     # 插件入口装饰器
-    "lifecycle",        # 生命周期装饰器 (startup/shutdown/reload/freeze/unfreeze)
-    "on_event",         # 通用事件装饰器
-    "message",          # 消息事件装饰器
-    "timer_interval",   # 定时任务装饰器
-    "custom_event",     # 自定义事件装饰器
-    "worker",           # Worker 模式装饰器
-    "plugin",           # 插件装饰器命名空间
+    "neko_plugin",
+    "plugin_entry",
+    "lifecycle",
+    "on_event",
+    "message",
+    "timer_interval",
+    "custom_event",
+    "plugin",
     
-    # Hook 装饰器（插件内中间件 & 跨插件 Hook）
-    "hook",             # Hook 装饰器
-    "before_entry",     # before 类型 Hook 快捷方式
-    "after_entry",      # after 类型 Hook 快捷方式
-    "around_entry",     # around 类型 Hook 快捷方式
-    "replace_entry",    # replace 类型 Hook 快捷方式
-    "HookMeta",         # Hook 元数据
-    "HookHandler",      # Hook 处理器
-    "HookTiming",       # Hook 时机类型
-    "HookExecutorMixin", # Hook 执行器 Mixin（供自定义类使用）
-    "HOOK_META_ATTR",   # Hook 元数据属性名
+    # Hook 装饰器
+    "hook",
+    "before_entry",
+    "after_entry",
+    "around_entry",
+    "replace_entry",
+    "HookMeta",
+    "HookHandler",
+    "HookTiming",
+    "HookExecutorMixin",
+    "HOOK_META_ATTR",
     
-    # 调用链追踪（防止循环调用和死锁）
-    "CallChain",        # 同步调用链追踪器
-    "AsyncCallChain",   # 异步调用链追踪器
-    "CircularCallError", # 循环调用错误
-    "CallChainTooDeepError", # 调用链过深错误
-    "get_call_chain",   # 获取当前调用链
-    "get_call_depth",   # 获取当前调用深度
-    "is_in_call_chain", # 检查是否在调用链中
+    # 调用链追踪
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
     
     # 基类和元数据
-    "NekoPluginBase",   # 插件基类
-    "PluginRouter",     # 插件路由器（模块化入口点，支持动态加载/卸载）
-    "PluginRouterError", # 路由器错误
-    "PluginMeta",       # 插件元数据
-    "PluginConfig",     # 插件配置
-    "Plugins",          # 插件间调用
-    "EventMeta",        # 事件元数据
-    "EventHandler",     # 事件处理器
-    "SystemInfo",       # 系统信息
-    "MemoryClient",     # 记忆客户端
+    "NekoPluginBase",
+    "PluginRouter",
+    "PluginRouterError",
+    "PluginMeta",
+    "PluginConfig",
+    "Plugins",
+    "EventMeta",
+    "EventHandler",
+    "SystemInfo",
+    "MemoryClient",
     
     # 状态持久化
-    "PluginStatePersistence", # 状态持久化管理器（推荐）
-    "StatePersistence", # 向后兼容别名
-    "EXTENDED_TYPES",   # 支持的扩展类型 (datetime, Enum, set, Path 等)
+    "PluginStatePersistence",
+    "StatePersistence",
+    "EXTENDED_TYPES",
     
     # 类型定义和常量
     "PluginContextProtocol",
-    "EntryKind",        # 入口类型: "service", "action", "hook", "custom", "lifecycle", "consumer", "timer"
-    "PERSIST_ATTR",     # 持久化属性名
-    "CHECKPOINT_ATTR",  # 向后兼容别名
-    "WORKER_MODE_ATTR", # Worker 模式属性名
-    "EVENT_META_ATTR",  # 事件元数据属性名
+    "EntryKind",
+    "PERSIST_ATTR",
+    "CHECKPOINT_ATTR",
+    "EVENT_META_ATTR",
     
-    # Adapter 相关（type="adapter" 插件使用）
-    "AdapterBase",      # Adapter 基类
-    "AdapterConfig",    # Adapter 配置
-    "AdapterContext",   # Adapter 上下文
-    "AdapterMode",      # Adapter 工作模式
-    "AdapterMessage",   # Adapter 消息
-    "AdapterResponse",  # Adapter 响应
-    "AdapterGatewayCore", # Gateway Core 编排器
-    "ExternalEnvelope", # 外部协议包
-    "DefaultRequestNormalizer", # 默认请求规范化器
-    "DefaultPolicyEngine", # 默认策略引擎
-    "DefaultRouteEngine", # 默认路由引擎
-    "DefaultResponseSerializer", # 默认响应序列化器
-    "CallablePluginInvoker", # 可注入调用器
-    "GatewayAction",    # Gateway 动作类型
-    "GatewayRequest",   # Gateway 统一请求
-    "GatewayResponse",  # Gateway 统一响应
-    "GatewayError",     # Gateway 结构化错误
-    "GatewayErrorException", # Gateway 错误异常
-    "RouteDecision",    # Gateway 路由决策
-    "RouteMode",        # Gateway 路由模式
-    "LoggerLike",       # Gateway 日志接口
-    "TransportAdapter", # 传输层接口
-    "RequestNormalizer", # 规范化接口
-    "PolicyEngine",     # 策略引擎接口
-    "RouteEngine",      # 路由引擎接口
-    "PluginInvoker",    # 插件调用接口
-    "ResponseSerializer", # 响应序列化接口
-    "Protocol",         # 协议类型枚举
-    "on_adapter_event", # Adapter 事件装饰器
-    "on_adapter_startup",   # Adapter 启动装饰器
-    "on_adapter_shutdown",  # Adapter 关闭装饰器
+    # Adapter 相关
+    "AdapterBase",
+    "AdapterConfig",
+    "AdapterContext",
+    "AdapterMode",
+    "AdapterMessage",
+    "AdapterResponse",
+    "AdapterGatewayCore",
+    "ExternalEnvelope",
+    "DefaultRequestNormalizer",
+    "DefaultPolicyEngine",
+    "DefaultRouteEngine",
+    "DefaultResponseSerializer",
+    "CallablePluginInvoker",
+    "GatewayAction",
+    "GatewayRequest",
+    "GatewayResponse",
+    "GatewayError",
+    "GatewayErrorException",
+    "RouteDecision",
+    "RouteMode",
+    "LoggerLike",
+    "TransportAdapter",
+    "RequestNormalizer",
+    "PolicyEngine",
+    "RouteEngine",
+    "PluginInvoker",
+    "ResponseSerializer",
+    "Protocol",
+    "on_adapter_event",
+    "on_adapter_startup",
+    "on_adapter_shutdown",
 ]
 
 # Hook 使用示例:

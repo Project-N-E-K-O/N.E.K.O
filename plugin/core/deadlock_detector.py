@@ -22,8 +22,8 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 

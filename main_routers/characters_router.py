@@ -1079,8 +1079,8 @@ async def add_catgirl(request: Request):
     
     # 通知记忆服务器重新加载配置
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            async with httpx.AsyncClient(proxy=None) as client:
+                        resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get('status') == 'success':
@@ -1861,7 +1861,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
             
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=60, proxy=None) as client:
                 resp = await client.post(register_url, data=data, files=files)
                 
                 if resp.status_code == 200:

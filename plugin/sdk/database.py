@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Any, Union, Coroutine, overload
 from contextlib import contextmanager, asynccontextmanager
@@ -143,7 +144,7 @@ class PluginDatabase:
         )
         
         if self.logger:
-            self.logger.debug(f"[Database] Initialized engines (database file will be created on first use)")
+            self.logger.debug("[Database] Initialized engines (database file will be created on first use)")
     
     def _is_in_event_loop(self) -> bool:
         """检测当前是否在事件循环中运行
@@ -179,7 +180,7 @@ class PluginDatabase:
         """
         if not self.enabled:
             if self.logger:
-                self.logger.warning(f"[Database] Cannot create tables: database is disabled")
+                self.logger.warning("[Database] Cannot create tables: database is disabled")
             return
         
         self.Base.metadata.create_all(bind=self._engine)
@@ -192,7 +193,7 @@ class PluginDatabase:
         """
         if not self.enabled:
             if self.logger:
-                self.logger.warning(f"[Database] Cannot create tables: database is disabled")
+                self.logger.warning("[Database] Cannot create tables: database is disabled")
             return
         
         async with self._async_engine.begin() as conn:
@@ -233,7 +234,7 @@ class PluginDatabase:
         """
         if not self.enabled:
             if self.logger:
-                self.logger.warning(f"[Database] Cannot drop tables: database is disabled")
+                self.logger.warning("[Database] Cannot drop tables: database is disabled")
             return
         
         self.Base.metadata.drop_all(bind=self._engine)
@@ -246,7 +247,7 @@ class PluginDatabase:
         """
         if not self.enabled:
             if self.logger:
-                self.logger.warning(f"[Database] Cannot drop tables: database is disabled")
+                self.logger.warning("[Database] Cannot drop tables: database is disabled")
             return
         
         async with self._async_engine.begin() as conn:
@@ -527,7 +528,6 @@ class PluginKVStore:
             return
         self._ensure_table()
         
-        import time
         now = time.time()
         data = self._serialize(value)
         
