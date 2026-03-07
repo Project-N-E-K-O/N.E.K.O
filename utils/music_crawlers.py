@@ -626,10 +626,17 @@ class FMACrawler(BaseMusicCrawler):
     async def search(self, keyword: str = "piano", limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
-        search_url = f'https://freemusicarchive.org/search/?adv=1&quicksearch={keyword}'
+        
+        # 【核心修复】将基础 URL 与查询参数分离
+        search_url = 'https://freemusicarchive.org/search/'
+        params = {
+            'adv': '1',
+            'quicksearch': keyword
+        }
         
         try:
-            response = await self.client.get(search_url)
+            # 交给 httpx 自动进行 URL 安全编码
+            response = await self.client.get(search_url, params=params)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
