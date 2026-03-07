@@ -120,7 +120,10 @@ class MusicCache:
         artist_counter = Counter(artists)
         unique_artists = len(artist_counter)
         
-        artist_diversity = unique_artists / len(tracks) if tracks else 0
+        if tracks:
+            artist_diversity = unique_artists / len(tracks)
+        else:
+            artist_diversity = 0
         
         # 风格多样性评估（基于关键词）
         style_notes = []
@@ -286,7 +289,10 @@ class NeteaseCrawler(BaseMusicCrawler):
                 song_id = song.get("id")
                 song_name = song.get("name", "未知曲目")
                 artists = song.get("artists", [])
-                artist_name = artists[0].get("name", "未知") if artists else "未知"
+                if artists:
+                    artist_name = artists[0].get("name", "未知")
+                else:
+                    artist_name = "未知"
                 cover_url = song.get("album", {}).get("picUrl", "")
                 # 使用外链地址，无需付费即可播放
                 audio_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
@@ -726,7 +732,10 @@ class BandcampCrawler(BaseMusicCrawler):
                     artist = tralbum.get('artist', 'Bandcamp 艺术家')
                     
                     cover_art = track_soup.find('a', class_='popupImage')
-                    cover_url = cover_art['href'] if cover_art else ""
+                    if cover_art:
+                        cover_url = cover_art['href']
+                    else:
+                        cover_url = ""
                     
                     return self._format_item(
                         name=title,
