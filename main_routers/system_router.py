@@ -1756,18 +1756,13 @@ async def proactive_chat(request: Request):
                     music_raw = None
                     if keyword:
                         music_raw = await fetch_music_content(keyword=keyword, limit=5)
-                        if music_raw and music_raw.get('success'):
-                            _log_music_content(lanlan_name, music_raw)
-                            music_content = {
-                                'formatted_content': _format_music_content(music_raw, proactive_lang),
-                                'raw_data': music_raw,
-                                }
-                        else:
-                            music_content = None
+                        if not (music_raw and music_raw.get('success')):
+                            logger.warning(f"[{lanlan_name}] 音乐模式：关键词 '{keyword}' 搜索失败，尝试随机推荐")
+                            music_raw = await fetch_music_content(keyword="", limit=5)
                     else:
                         logger.warning(f"[{lanlan_name}] 音乐模式：AI 未返回有效关键词，尝试随机推荐")
                         music_raw = await fetch_music_content(keyword="", limit=5)
-                    
+
                     if music_raw and music_raw.get('success'):
                         _log_music_content(lanlan_name, music_raw)
                         music_content = {
@@ -1945,7 +1940,8 @@ async def proactive_chat(request: Request):
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
-            has_web=bool(external_section) or bool(music_section),
+            has_web=bool(external_section),
+            has_music=bool(music_section),  # 分离音乐布尔位
             lang=proactive_lang,
         )
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
