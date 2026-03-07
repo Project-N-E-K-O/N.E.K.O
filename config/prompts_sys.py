@@ -1335,7 +1335,7 @@ def get_proactive_generate_prompt(lang: str = 'zh') -> str:
     return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
 
 
-def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = 'zh') -> tuple:
+def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, lang: str = 'zh') -> tuple:
     """
     根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签
     """
@@ -1347,6 +1347,8 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, lang: str = '
         key = 'screen'
     elif has_web:
         key = 'web'
+    elif has_music:
+        key = 'music'
     else:
         key = 'none'
 
