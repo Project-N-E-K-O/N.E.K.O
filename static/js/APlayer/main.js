@@ -71,14 +71,15 @@ function loadAPlayerLibrary() {
     aplayerLoadPromise = new Promise((resolve, reject) => {
         const cssLink = document.createElement('link');
         cssLink.rel = 'stylesheet';
-        // 【修改】锁定稳定版本号 1.10.1
-        cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.css';
+        cssLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.css';
+        cssLink.crossOrigin = 'anonymous';
+        cssLink.integrity = 'sha512-CIwaY5DuGKTXq24u2Zf1kS//4E//rS42RruwB2O1kH1S5/5512w/aM7w8jQ2J0X7r5E1pMwJIf73H1mH1E6XmA==';
         document.head.appendChild(cssLink);
         
         const script = document.createElement('script');
-        // 【修改】锁定稳定版本号 1.10.1 并添加跨域安全配置
-        script.src = 'https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.js';
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.js';
         script.crossOrigin = 'anonymous';
+        script.integrity = 'sha512-RWosNn0G8icq6F8yJUzFj4A8qH/I8KzU0KzQ0F2X8xY756S1E3yJmC0RkH66g7O2/5wM9B2GjK/RXYtA==';
         script.onload = () => {
             console.log('[APlayer] Library loaded successfully');
             resolve();

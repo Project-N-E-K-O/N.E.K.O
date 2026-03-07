@@ -4,12 +4,20 @@
  */
 
 export function t(key, fallback) {
-    if (window.t && typeof window.t === 'function') {
-        // 【核心修复】将 fallback 参数透传给全局 window.t
-        const translated = window.t(key, fallback);
-        return translated && translated !== key ? translated : fallback;
+    if (typeof window === 'undefined') return fallback || key;
+
+    // 优先使用 app.js 中定义的全局安全翻译函数（它完美处理了字符串兜底）
+    if (typeof window.safeT === 'function') {
+        return window.safeT(key, fallback);
     }
-    return fallback;
+    
+    // 作为最后一道防线：如果 safeT 还没就绪，按 i18next 的标准格式传入 defaultValue
+    if (typeof window.t === 'function') {
+        const res = window.t(key, { defaultValue: fallback });
+        return typeof res === 'string' ? res : (fallback || key);
+    }
+    
+    return fallback || key;
 }
 
 export function formatTime(seconds) {

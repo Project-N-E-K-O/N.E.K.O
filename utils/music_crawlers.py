@@ -556,8 +556,8 @@ class MusopenCrawler(BaseMusicCrawler):
             if url:
                 logger.info(f"[{self.platform_name}] 匹配到关键词 '{keyword}' -> {url}")
             else:
-                logger.info(f"[{self.platform_name}] 关键词 '{keyword}' 未匹配，随机选择")
-                url = random.choice(music_pages)
+                logger.info(f"[{self.platform_name}] 关键词 '{keyword}' 未匹配，返回空结果以触发其他源兜底")
+                return []
         else:
             url = random.choice(music_pages)
             logger.info(f"[{self.platform_name}] 无关键词，随机选择: {url}")

@@ -2709,10 +2709,13 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             }
             
             # 【新增】汇总海外平台失败的错误信息给顶层
+            # 【新增】汇总海外平台失败的错误信息给顶层
             if not top_success:
                 errors = []
-                if r_dyn.get('error'): errors.append(f"Reddit: {r_dyn.get('error')}")
-                if t_dyn.get('error'): errors.append(f"Twitter: {t_dyn.get('error')}")
+                if r_dyn.get('error'):
+                    errors.append(f"Reddit: {r_dyn.get('error')}")
+                if t_dyn.get('error'):
+                    errors.append(f"Twitter: {t_dyn.get('error')}")
                 if errors:
                     result['error'] = " | ".join(errors)
                 else:

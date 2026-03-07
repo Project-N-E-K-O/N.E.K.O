@@ -245,11 +245,9 @@ export function setupKeyboardShortcuts(aplayer) {
     
     keyboardHandler = (e) => {
         // 增加 isComposing 判断，防止输入法打字触发快捷键
-        // 【修复】排除所有可交互元素和富文本编辑区，防止全局空格键拦截正常的按钮点击/下拉框激活操作
-        const targetTag = e.target.tagName;
+        // 【核心修复】使用 closest 向上冒泡查找，防止焦点落在 button/a 内部的 span/i 等子元素上时快捷键被劫持
         if (
-            ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT', 'A'].includes(targetTag) || 
-            e.target.isContentEditable || 
+            e.target.closest('input, textarea, button, select, a, [contenteditable]') || 
             e.isComposing
         ) {
             return;

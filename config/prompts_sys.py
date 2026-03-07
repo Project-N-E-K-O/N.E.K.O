@@ -1490,7 +1490,9 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         },
     }
 
-    return _si[lang][key], _of[lang][key]
+    source_map = _si.get(lang, _si['en'])
+    format_map = _of.get(lang, _of['en'])
+    return source_map[key], format_map[key]
 
 
 # =====================================================================
