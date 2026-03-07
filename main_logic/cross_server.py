@@ -321,6 +321,10 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
                                 last_synced_index = 0
+                                # renew session 会整体结算并清空当前会话；如果这里还保留旧的 pending /process 状态，
+                                # 后续 turn end 会把过期边界误当成当前 chat_history 的有效下标，导致 /cache 与 /process 边界错乱。
+                                pending_process_messages = None
+                                pending_process_boundary = None
 
                             if message["data"] == 'turn end': # lanlan的消息结束了
                                 current_turn = 'user'
