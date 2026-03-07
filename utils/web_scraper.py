@@ -2671,10 +2671,15 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             # 【新增】汇总全平台失败的错误信息给顶层
             if not top_success:
                 errors = []
-                if b_dyn.get('error'): errors.append(f"B站: {b_dyn.get('error')}")
-                if w_dyn.get('error'): errors.append(f"微博: {w_dyn.get('error')}")
-                if d_dyn.get('error'): errors.append(f"抖音: {d_dyn.get('error')}")
-                if k_dyn.get('error'): errors.append(f"快手: {k_dyn.get('error')}")
+                if b_dyn.get('error'):
+                    errors.append(f"B站: {b_dyn.get('error')}")
+                if w_dyn.get('error'):
+                    errors.append(f"微博: {w_dyn.get('error')}")
+                if d_dyn.get('error'):
+                    errors.append(f"抖音: {d_dyn.get('error')}")
+                if k_dyn.get('error'):
+                    errors.append(f"快手: {k_dyn.get('error')}")
+                
                 if errors:
                     result['error'] = " | ".join(errors)
                 else:
