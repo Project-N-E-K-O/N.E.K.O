@@ -204,10 +204,10 @@ function updatePlaylistToggle(isShown) {
     const playlistBtn = document.getElementById('aplayer-playlist-btn');
     if (playlistBtn) {
         playlistBtn.classList.toggle('active', isShown);
-        // 【修改】接入 i18n，删除硬编码中文，并使用安全翻译函数
+        // 【核心修复】使用模块内导入的 t 函数替代直接调用 window.safeT，防止初始化顺序导致的报错
         playlistBtn.title = isShown ? 
-            window.safeT('music.hidePlaylist', '隐藏播放列表') : 
-            window.safeT('music.showPlaylist', '显示播放列表');
+            t('music.hidePlaylist', '隐藏播放列表') : 
+            t('music.showPlaylist', '显示播放列表');
     }
 }
 
