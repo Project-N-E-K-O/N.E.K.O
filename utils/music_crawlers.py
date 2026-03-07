@@ -275,7 +275,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 # `fee` == 0 (免费), `fee` == 8 (会员免费)
                 if song.get("fee", 1) in [0, 8]:
                     found_songs.append(song)
-                    
+
             if not found_songs:
                 return []
 
@@ -579,8 +579,12 @@ class MusopenCrawler(BaseMusicCrawler):
                 if main_img and main_img.get('src'):
                     cover_url = main_img['src']
             # ===================================
-            # 使用正则从页面源码中提取所有 mp3/m4a 链接
-            audio_links = re.findall(r'https?://[^\s"\'<>\[\]]+\.(?:mp3|m4a)', response.text)
+            # 【核心修复】先抓取完整 URL，再通过正则筛选音频链接，防止鉴权参数（Expires等）被截断
+            candidate_urls = re.findall(r'https?://[^\s"\'<>\[\]]+', response.text)
+            audio_links = [
+                u for u in candidate_urls
+                if re.search(r'\.(?:mp3|m4a)(?:$|[?&])', u, re.IGNORECASE)
+            ]
             unique_links = list(set(audio_links))
             
             if not unique_links:
@@ -835,18 +839,20 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     if keyword: 
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        classical_keywords = [
-            # zh
-            "古典", "钢琴", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲",
-            # en
-            "classical", "piano", "chopin", "beethoven", "mozart", "symphony", "nocturne",
-            # ja
-            "クラシック", "ピアノ", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
-            # ko
-            "클래식", "피아노", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
-            # ru
-            "классическая", "фортепиано", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
+        # 1. 【强古典词】命中后极高概率是古典乐，直接进 Musopen 桶
+        strong_classical = [
+            "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
+            "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
+            "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
+            "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
+            "шопен", "бетховен", "моцарт", "симфония", "ноктюрн"
         ]
+        
+        # 2. 【乐器词】具有歧义，可能是古典也可能是现代
+        instruments = ["钢琴", "piano", "ピアノ", "피아노", "фортепиано", "violin", "小提琴", "cello", "大提琴"]
+        
+        # 3. 【现代风格词】只要出现这些词，即便有乐器，也绝对不走 Musopen
+        modern_styles = ["lofi", "chill", "relax", "remix", "cover", "说唱", "hiphop", "电子", "electronic", "放松", "伴奏"]
 
         indie_keywords = [
             "独立",  "电音", "小众", "环境音", 
@@ -879,21 +885,35 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
-        if any(kw in kw_lower for kw in classical_keywords):
+        
+        # 1. 【核心修复】古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
+        is_classical = any(kw in kw_lower for kw in strong_classical) or \
+                       (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))
+        
+        if is_classical:
+            logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
             primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
+        
+        # 2. 【补充修复】华语/流行路由：命中你定义的华语歌手或关键词
         elif any(kw in kw_lower for kw in chinese_keywords):
+            logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
+
+        # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in indie_keywords):
+            logger.info(f"[智能调度] 识别到独立/电子风格意图，优先调度 Bandcamp/SoundCloud: {keyword}")
             primary_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
             primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+            
+        # 4. 默认兜底：按地域偏好
         else:
             if china:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
             else:
-                # 非中文区但检测到华语关键词时，也加入网易云
+                # 非中文区默认首选
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
-        
+                
         # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
         if primary_tasks:
             # 创建任务以便后续取消
