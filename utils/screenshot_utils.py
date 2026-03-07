@@ -134,9 +134,12 @@ async def analyze_image_with_vision_model(
 
         client = AsyncOpenAI(
             api_key=vision_api_key,
-            base_url=vision_base_url if vision_base_url else None,
-            max_retries=0,
-        )
+        })
+        if vision_base_url:
+            client.base_url = vision_base_url
+        else:
+            client.base_url = None
+        client.max_retries = 0
         
         if window_title:
             system_content = "你是一个图像描述助手。请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。"

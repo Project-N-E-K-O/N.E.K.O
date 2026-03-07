@@ -356,8 +356,11 @@ class PlatformLoginManager:
             result[platform] = {
                 "name": info['name'],
                 "methods": info['methods'],
-                "default_method": info['methods'][0] if info['methods'] else None
             }
+            if info['methods']:
+                result[platform]['default_method'] = info['methods'][0]
+            else:
+                result[platform]['default_method'] = None
         return result
 
 async def interactive_login():

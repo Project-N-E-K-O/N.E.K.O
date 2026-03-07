@@ -163,7 +163,10 @@ def initialize_global_language() -> str:
             return _global_language or 'en'
         
         # 判断区域
-        _global_region = 'china' if _is_china_region() else 'non-china'
+        if _is_china_region():
+            _global_region = 'china'
+        else:
+            _global_region = 'non-china'
         logger.info(f"系统区域判断: {_global_region}")
         
         # 优先级1：尝试从 Steam 获取
@@ -313,7 +316,10 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
     """
     if not lang:
-        return 'zh' if format == 'short' else 'zh-CN'
+        if format == 'short':
+            return 'zh'
+        else:
+            return 'zh-CN'
     
     lang_lower = lang.lower().strip()
     
@@ -352,9 +358,15 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     if lang_lower.startswith('zh'):
         # 区分简体和繁体中文
         if 'tw' in lang_lower or 'hant' in lang_lower or 'hk' in lang_lower:
-            return 'zh-TW' if format == 'full' else 'zh'
+            if format == 'full':
+                return 'zh-TW'
+            else:
+                return 'zh'
         else:
-            return 'zh' if format == 'short' else 'zh-CN'
+            if format == 'short':
+                return 'zh'
+            else:
+                return 'zh-CN'
     elif lang_lower.startswith('ja'):
         return 'ja'
     elif lang_lower.startswith('ko'):
@@ -366,7 +378,10 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
-        return 'zh' if format == 'short' else 'zh-CN'
+        if format == 'short':
+            return 'zh'
+        else:
+            return 'zh-CN'
 
 
 # ============================================================================
@@ -498,7 +513,10 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             'auto': 'auto'
         }
         
-        translatepy_source = TRANSLATEPY_LANG_MAP.get(source_lang, source_lang) if source_lang != 'unknown' else 'auto'
+        if source_lang != 'unknown':
+            translatepy_source = TRANSLATEPY_LANG_MAP.get(source_lang, source_lang)
+        else:
+            translatepy_source = 'auto'
         translatepy_target = TRANSLATEPY_LANG_MAP.get(target_lang, target_lang)
         
         # 如果源语言和目标语言相同，不需要翻译
@@ -520,7 +538,10 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
                         # 创建单个服务实例进行翻译
                         service_instance = service_class()
                         # 如果 source 是 None，使用 'auto'
-                        source_param = source if source else 'auto'
+                        if source:
+                            source_param = source
+                        else:
+                            source_param = 'auto'
                         result = service_instance.translate(text_to_translate, destination_language=target, source_language=source_param)
                         if result and hasattr(result, 'result') and result.result:
                             return result.result
@@ -528,7 +549,10 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
                         continue
                 
                 # 如果所有单个服务都失败，尝试使用 Translator 的自动选择（但只使用可访问的服务）
-                source_param = source if source else 'auto'
+                if source:
+                    source_param = source
+                else:
+                    source_param = 'auto'
                 result = translator.translate(text_to_translate, destination_language=target, source_language=source_param)
                 if result and hasattr(result, 'result') and result.result:
                     return result.result
@@ -547,12 +571,16 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             translated_chunks = []
             for chunk in chunks:
                 try:
+                    if translatepy_source != 'auto':
+                        chunk_source = translatepy_source
+                    else:
+                        chunk_source = None
                     chunk_result = await loop.run_in_executor(
                         None, 
                         _translate_sync, 
                         chunk, 
                         translatepy_target, 
-                        translatepy_source if translatepy_source != 'auto' else None
+                        chunk_source
                     )
                     if chunk_result:
                         translated_chunks.append(chunk_result)
@@ -567,12 +595,16 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
         else:
             # 单次翻译，在线程池中运行
             loop = asyncio.get_running_loop()
+            if translatepy_source != 'auto':
+                chunk_source = translatepy_source
+            else:
+                chunk_source = None
             translated_text = await loop.run_in_executor(
                 None, 
                 _translate_sync, 
                 text, 
                 translatepy_target, 
-                translatepy_source if translatepy_source != 'auto' else None
+                chunk_source
             )
         
         if translated_text and translated_text.strip():
@@ -666,7 +698,11 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         logger.warning(f"获取区域信息失败: {e}，默认使用非中文区优先级")
         is_china = False
     
-    logger.debug(f"🔄 [翻译服务] 开始翻译流程: {source_lang} -> {target_lang}, 文本长度: {len(text)}, 区域: {'中文区' if is_china else '非中文区'}")
+    if is_china:
+        region_str = '中文区'
+    else:
+        region_str = '非中文区'
+    logger.debug(f"🔄 [翻译服务] 开始翻译流程: {source_lang} -> {target_lang}, 文本长度: {len(text)}, 区域: {region_str}")
     
     # 语言代码映射：我们的代码 -> Google Translate 代码
     GOOGLE_LANG_MAP = {
@@ -678,7 +714,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     }
     
     google_target = GOOGLE_LANG_MAP.get(target_lang, target_lang)
-    google_source = GOOGLE_LANG_MAP.get(source_lang, source_lang) if source_lang != 'unknown' else 'auto'
+    if source_lang != 'unknown':
+        google_source = GOOGLE_LANG_MAP.get(source_lang, source_lang)
+    else:
+        google_source = 'auto'
     
     # 辅助函数：尝试 Google 翻译（带超时机制）
     async def _try_google_translate(timeout: float = 5.0) -> Optional[str]:
@@ -708,7 +747,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                     translated_chunks = []
                     for i, chunk in enumerate(chunks):
                         # 第一个分段可以使用auto，后续分段使用已检测的源语言
-                        chunk_source = google_source if i > 0 or source_lang != 'unknown' else 'auto'
+                        if i > 0 or source_lang != 'unknown':
+                            chunk_source = google_source
+                        else:
+                            chunk_source = 'auto'
                         # googletrans 4.0+ 的 translate 方法返回协程，需要使用 await
                         result = await translator.translate(chunk, src=chunk_source, dest=google_target)
                         translated_chunks.append(result.text)
@@ -989,19 +1031,50 @@ class TranslationService:
         try:
             if target_lang_normalized == 'en':
                 target_lang_name = "English"
-                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
+                else:
+                    source_lang_name = "the source language"
             elif target_lang_normalized == 'ja':
                 target_lang_name = "Japanese"
-                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "the source language"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                else:
+                    source_lang_name = "the source language"
             elif target_lang_normalized == 'ko':
                 target_lang_name = "Korean"
-                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
+                else:
+                    source_lang_name = "the source language"
             elif target_lang_normalized == 'ru':
                 target_lang_name = "Russian"
-                source_lang_name = "Chinese" if detected_lang_normalized == 'zh-CN' else "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "the source language"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
+                else:
+                    source_lang_name = "the source language"
             else:  # zh-CN
                 target_lang_name = "简体中文"
-                source_lang_name = "English" if detected_lang_normalized == 'en' else "Japanese" if detected_lang_normalized == 'ja' else "Russian" if detected_lang_normalized == 'ru' else "the source language"
+                if detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
+                elif detected_lang_normalized == 'ru':
+                    source_lang_name = "Russian"
+                else:
+                    source_lang_name = "the source language"
             
             system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
 

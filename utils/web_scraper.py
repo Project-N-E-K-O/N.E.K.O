@@ -622,11 +622,14 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
                 
                 trending_list.append({
                     'word': trend,
-                    'tweet_count': tweet_counts[i] if i < len(tweet_counts) else 'N/A',
-                    'note': '',
-                    'rank': i + 1,
-                    'url': search_url
                 })
+                if i < len(tweet_counts):
+                    trending_list[-1]['tweet_count'] = tweet_counts[i]
+                else:
+                    trending_list[-1]['tweet_count'] = 'N/A'
+                trending_list[-1]['note'] = ''
+                trending_list[-1]['rank'] = i + 1
+                trending_list[-1]['url'] = search_url
             
             if trending_list:
                 return {
@@ -2423,7 +2426,10 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                     rt_clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', rt_text)).strip()
                     clean_text = f"{clean_text} // [转发动态] @{rt_author}: {rt_clean_text}"
                 
-                display_text = clean_text if clean_text else "[分享了图片/动态]"
+                if clean_text:
+                    display_text = clean_text
+                else:
+                    display_text = "[分享了图片/动态]"
                 final_content = f"博主【{author}】: {display_text}"
                 mid = mblog.get('mid') or mblog.get('id', '')
                 
@@ -2507,13 +2513,20 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
             
             for i, text in enumerate(tweet_texts[:limit]):
                 clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+                if i < len(screen_names):
+                    author_str = screen_names[i]
+                else:
+                    author_str = 'Unknown'
                 tweets.append({
-                    'author': f"@{screen_names[i] if i<len(screen_names) else 'Unknown'}", 
+                    'author': f"@{author_str}", 
                     'content': clean_text,
                     'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
                 })
                 
-            return {'success': True, 'tweets': tweets} if tweets else {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
+            if tweets:
+                return {'success': True, 'tweets': tweets}
+            else:
+                return {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
     except Exception as e: 
         logger.error(f"Twitter 网页抓取 fallback 失败: {e}")
         return {'success': False, 'error': str(e)}
@@ -2552,11 +2565,14 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             'User-Agent': get_random_user_agent(), 
             'Accept': 'application/json',
             'Authorization': f'Bearer {bearer_token}',
-            'x-twitter-auth-type': 'OAuth2Session' if 'auth_token' in twitter_cookies else '',
-            'x-csrf-token': ct0,  # <-- 防火墙放行的关键钥匙
             'x-twitter-active-user': 'yes',
             'x-twitter-client-language': 'zh-cn'
         }
+        if 'auth_token' in twitter_cookies:
+            headers['x-twitter-auth-type'] = 'OAuth2Session'
+        else:
+            headers['x-twitter-auth-type'] = ''
+        headers['x-csrf-token'] = ct0
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
@@ -2625,10 +2641,14 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             )
             
             # 2. 增加对抖音和快手的异常隔离与安全降级
-            b_dyn = {'success': False, 'error': str(b_dyn)} if isinstance(b_dyn, Exception) else b_dyn
-            w_dyn = {'success': False, 'error': str(w_dyn)} if isinstance(w_dyn, Exception) else w_dyn
-            d_dyn = {'success': False, 'error': str(d_dyn)} if isinstance(d_dyn, Exception) else d_dyn
-            k_dyn = {'success': False, 'error': str(k_dyn)} if isinstance(k_dyn, Exception) else k_dyn
+            if isinstance(b_dyn, Exception):
+                b_dyn = {'success': False, 'error': str(b_dyn)}
+            if isinstance(w_dyn, Exception):
+                w_dyn = {'success': False, 'error': str(w_dyn)}
+            if isinstance(d_dyn, Exception):
+                d_dyn = {'success': False, 'error': str(d_dyn)}
+            if isinstance(k_dyn, Exception):
+                k_dyn = {'success': False, 'error': str(k_dyn)}
 
             # 3. 只要有一个平台成功，就判定为总体成功
             top_success = any([
@@ -2655,7 +2675,10 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 if w_dyn.get('error'): errors.append(f"微博: {w_dyn.get('error')}")
                 if d_dyn.get('error'): errors.append(f"抖音: {d_dyn.get('error')}")
                 if k_dyn.get('error'): errors.append(f"快手: {k_dyn.get('error')}")
-                result['error'] = " | ".join(errors) if errors else "所有中文平台均获取失败"
+                if errors:
+                    result['error'] = " | ".join(errors)
+                else:
+                    result['error'] = "所有中文平台均获取失败"
                 
             return result
             
@@ -2666,8 +2689,10 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 fetch_twitter_personal_dynamic(limit),
                 return_exceptions=True
             )
-            r_dyn = {'success': False, 'error': str(r_dyn)} if isinstance(r_dyn, Exception) else r_dyn
-            t_dyn = {'success': False, 'error': str(t_dyn)} if isinstance(t_dyn, Exception) else t_dyn
+            if isinstance(r_dyn, Exception):
+                r_dyn = {'success': False, 'error': str(r_dyn)}
+            if isinstance(t_dyn, Exception):
+                t_dyn = {'success': False, 'error': str(t_dyn)}
             
             top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
             
@@ -2683,7 +2708,10 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 errors = []
                 if r_dyn.get('error'): errors.append(f"Reddit: {r_dyn.get('error')}")
                 if t_dyn.get('error'): errors.append(f"Twitter: {t_dyn.get('error')}")
-                result['error'] = " | ".join(errors) if errors else "所有海外平台均获取失败"
+                if errors:
+                    result['error'] = " | ".join(errors)
+                else:
+                    result['error'] = "所有海外平台均获取失败"
                 
             return result
             
