@@ -195,8 +195,14 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 cookies = json.loads(decrypted_data)
                 
                 # 校验 Cookie 结构：确保所有值都是字符串
+                i# 校验 Cookie 结构：确保所有值都是字符串
                 if isinstance(cookies, dict):
                     valid_cookies = _normalize_cookies(cookies, platform)
+                    # 【新增】判断归一化后是否为空（被判定为不合法）
+                    if not valid_cookies:
+                        logger.warning(f"{platform} Cookie 解密后格式校验不通过，拒绝加载")
+                        return {}
+                        
                     logger.info(f"✅ 已解密加载 {platform} 凭证")
                     return valid_cookies
                 else:
