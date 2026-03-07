@@ -241,7 +241,10 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
                 
                 # 提取推荐理由（如果有）
                 rcmd_reason = item.get('rcmd_reason', {})
-                rcmd_reason_text = rcmd_reason.get('content', '') if isinstance(rcmd_reason, dict) else ''
+                if isinstance(rcmd_reason, dict):
+                    rcmd_reason_text = rcmd_reason.get('content', '')
+                else:
+                    rcmd_reason_text = ''
                     
                 videos.append({
                     'title': item.get('title', ''),
@@ -336,8 +339,11 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
                     'subreddit': f"r/{subreddit}",
                     'score': _format_score(score),
                     'comments': _format_score(num_comments),
-                    'url': f"https://www.reddit.com{permalink}" if permalink else ''
                 })
+                if permalink:
+                    posts[-1]['url'] = f"https://www.reddit.com{permalink}"
+                else:
+                    posts[-1]['url'] = ''
             
             if posts:
                 logger.info(f"从Reddit获取到{len(posts)}条热门帖子")
@@ -389,7 +395,10 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         # 动态获取平台 Cookie，拒绝硬编码
         weibo_cookies = _get_platform_cookies('weibo')
         sub_cookie = weibo_cookies.get('SUB') or weibo_cookies.get('sub', '')
-        cookie_header = f"SUB={sub_cookie}" if sub_cookie else ""
+        if sub_cookie:
+            cookie_header = f"SUB={sub_cookie}"
+        else:
+            cookie_header = ""
         
         # 优先使用s.weibo.com热搜页面（刷新频率更高）
         url = "https://s.weibo.com/top/summary?cate=realtimehot"
@@ -445,14 +454,23 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                         href = f"https://s.weibo.com{href}"
                     
                     # 解析热度值
-                    hot_text = span.get_text(strip=True) if span else ''
+                    if span:
+                        hot_text = span.get_text(strip=True)
+                    else:
+                        hot_text = ''
                     # 热度可能包含类型标签如"剧集 336075"，需要提取数字
                     import re
                     hot_match = re.search(r'(\d+)', hot_text)
-                    raw_hot = int(hot_match.group(1)) if hot_match else 0
+                    if hot_match:
+                        raw_hot = int(hot_match.group(1))
+                    else:
+                        raw_hot = 0
                     
                     # 提取标签（如"剧集"、"晚会"等）
-                    note = re.sub(r'\d+', '', hot_text).strip() if hot_text else ''
+                    if hot_text:
+                        note = re.sub(r'\d+', '', hot_text).strip()
+                    else:
+                        note = ''
                     
                     trending_list.append({
                         'word': word,
@@ -512,7 +530,10 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
                     
                     word = item.get('word', '')
                     # 构建搜索URL
-                    search_url = f"https://s.weibo.com/weibo?q={quote(word)}" if word else ''
+                    if word:
+                        search_url = f"https://s.weibo.com/weibo?q={quote(word)}"
+                    else:
+                        search_url = ''
                     
                     trending_list.append({
                         'word': word,
@@ -590,10 +611,14 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
             
             for i, trend in enumerate(trends[:limit]):
                 if trend and not trend.startswith('#'):
-                    trend = '#' + trend if not trend.startswith('@') else trend
+                    if not trend.startswith('@'):
+                        trend = '#' + trend
                 
                 # 构建搜索URL
-                search_url = f"https://twitter.com/search?q={quote(trend)}" if trend else ''
+                if trend:
+                    search_url = f"https://twitter.com/search?q={quote(trend)}"
+                else:
+                    search_url = ''
                 
                 trending_list.append({
                     'word': trend,
@@ -846,7 +871,10 @@ async def _fetch_content_by_region(
         包含成功状态和内容的字典
     """
     china_region = is_china_region()
-    region = 'china' if china_region else 'non-china'
+    if china_region:
+        region = 'china'
+    else:
+        region = 'non-china'
     
     try:
         if china_region:
@@ -1123,7 +1151,10 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
         if active_window:
             raw_title = active_window.title
             # 截断标题以避免记录敏感信息
-            sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
+            if len(raw_title) > 30:
+                sanitized_title = raw_title[:30] + '...'
+            else:
+                sanitized_title = raw_title
             logger.info(f"获取到活跃窗口标题: {sanitized_title}")
             
             if include_raw:
@@ -1177,7 +1208,10 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         )
         
         # 清理/脱敏窗口标题用于日志显示
-        sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
+        if len(window_title) > 30:
+            sanitized_title = window_title[:30] + '...'
+        else:
+            sanitized_title = window_title
         
         # 检测区域并使用适当的提示词
         china_region = is_china_region()
@@ -1244,7 +1278,10 @@ keyword three"""
         
     except Exception as e:
         # 异常日志中也使用脱敏标题
-        sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
+        if len(window_title) > 30:
+            sanitized_title = window_title[:30] + '...'
+        else:
+            sanitized_title = window_title
         if is_china_region():
             logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
         else:
@@ -1646,7 +1683,8 @@ def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
         output_lines.append(f"{i}. {title}")
         if abstract:
             # 限制摘要长度
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         output_lines.append("")
     
@@ -1691,7 +1729,8 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
         
         output_lines.append(f"{i}. {title}")
         if abstract:
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         output_lines.append("")
     
@@ -1772,7 +1811,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         successful_queries = []
         
         # 根据区域选择搜索函数
-        search_func = search_baidu if china_region else search_google
+        if china_region:
+            search_func = search_baidu
+        else:
+            search_func = search_google
         
         for query in search_queries:
             if not query or len(query) < 2:
@@ -1797,7 +1839,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
             title = result.get('title', '')
             
             # 优先使用URL进行去重，回退到title
-            dedup_key = url if url else title
+            if url:
+                dedup_key = url
+            else:
+                dedup_key = title
             
             if dedup_key and dedup_key not in seen_keys:
                 seen_keys.add(dedup_key)
@@ -1827,8 +1872,11 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
             'window_title': sanitized_title,
             'search_queries': successful_queries,
             'search_results': unique_results,
-            'region': 'china' if china_region else 'non-china'
         }
+        if china_region:
+            result['region'] = 'china'
+        else:
+            result['region'] = 'non-china'
         
     except Exception as e:
         if is_china_region():
@@ -1896,7 +1944,8 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
         
         output_lines.append(f"{i}. {title}")
         if abstract:
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         if url:
             if china_region:
@@ -1991,11 +2040,17 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             if not isinstance(d, dict):
                 return {}
             v = d.get(key)
-            return v if isinstance(v, dict) else {}
+            if isinstance(v, dict):
+                return v
+            else:
+                return {}
 
         dynamic_list = []
         items = data.get("data")
-        items = items.get("items", []) if isinstance(items, dict) else []
+        if isinstance(items, dict):
+            items = items.get("items", [])
+        else:
+            items = []
 
         for item in items:
             if not isinstance(item, dict):
@@ -2035,7 +2090,10 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                         
                     case "MAJOR_TYPE_DRAW": 
                         # 图文动态：保持动态页面链接
-                        content = f"[图文动态] {raw_text}" if raw_text else "[分享了图片]"
+                        if raw_text:
+                            content = f"[图文动态] {raw_text}"
+                        else:
+                            content = "[分享了图片]"
                         
                     case "MAJOR_TYPE_ARTICLE":
                         # 专栏文章：添加文章链接
@@ -2079,7 +2137,10 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                                 specific_url = f"https://live.bilibili.com/{room_match.group(1)}"
                                 
                         elif dynamic_type == "DYNAMIC_TYPE_FORWARD":
-                            content = f"[转发动态] {raw_text}" if raw_text else "[转发了动态]"
+                            if raw_text:
+                                content = f"[转发动态] {raw_text}"
+                            else:
+                                content = "[转发了动态]"
                         else:
                             content = raw_text or "发布了新动态"
 
@@ -2176,8 +2237,11 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                         'author': author,
                         'content': final_content,
                         'timestamp': item.get("create_time", "刚刚"),
-                        'url': f"https://www.douyin.com/video/{aweme_id}" if aweme_id else "https://www.douyin.com/"
                     })
+                    if aweme_id:
+                        dynamic_list[-1]['url'] = f"https://www.douyin.com/video/{aweme_id}"
+                    else:
+                        dynamic_list[-1]['url'] = "https://www.douyin.com/"
                 except Exception as item_err:
                     logger.warning(f"解析抖音动态项失败，跳过: {item_err}")
                     continue
@@ -2255,8 +2319,11 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                         'author': author,
                         'content': final_content,
                         'timestamp': photo.get("timestamp", "刚刚"),
-                        'url': f"https://www.kuaishou.com/short-video/{photo_id}" if photo_id else "https://www.kuaishou.com/"
                     })
+                    if photo_id:
+                        dynamic_list[-1]['url'] = f"https://www.kuaishou.com/short-video/{photo_id}"
+                    else:
+                        dynamic_list[-1]['url'] = "https://www.kuaishou.com/"
                 except Exception as item_err:
                     logger.warning(f"解析快手动态项失败，跳过: {item_err}")
                     continue
