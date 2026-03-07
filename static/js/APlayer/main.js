@@ -96,7 +96,8 @@ export async function initializeAPlayer(options = {}, onReady = null) {
         ...APLAYER_CONFIG,
         ...options,
         ui: { ...APLAYER_CONFIG.ui, ...options.ui },
-        player: { ...APLAYER_CONFIG.player, ...options.player }
+        player: { ...APLAYER_CONFIG.player, ...options.player },
+        defaultPlaylist: options.audio || APLAYER_CONFIG.defaultPlaylist
     };
 
     try {
