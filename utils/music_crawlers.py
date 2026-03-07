@@ -19,9 +19,8 @@ import re
 import json
 import time
 import urllib.parse
-from urllib.parse import unquote, unquote_plus
 from bs4 import BeautifulSoup
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from collections import Counter
 from utils.logger_config import get_module_logger
 
@@ -120,10 +119,8 @@ class MusicCache:
         artist_counter = Counter(artists)
         unique_artists = len(artist_counter)
         
-        if tracks:
-            artist_diversity = unique_artists / len(tracks)
-        else:
-            artist_diversity = 0
+        # 【清理】顶部已有判空保护，这里直接计算即可
+        artist_diversity = unique_artists / len(tracks)
         
         # 风格多样性评估（基于关键词）
         style_notes = []
@@ -325,8 +322,8 @@ class SoundCloudCrawler(BaseMusicCrawler):
             scripts = re.findall(r'<script[^>]*src="([^"]+)"[^>]*>', res.text)
             # 兼容未来可能出现的 query 参数，如 xxx.js?v=123
             scripts = [s for s in scripts if s.split('?')[0].endswith('.js')]
-            # Token 通常在最后几个 JS 文件里，倒序查找
-            for js_url in reversed(scripts):
+            # Token 通常在最后几个 JS 文件里，倒序查找（【核心修复】限制扫描最近的 10 个，防止性能损耗）
+            for js_url in reversed(scripts[-10:]):
                 try:
                     js_res = await self.client.get(js_url)
                     # 正则匹配 32 位的 client_id
@@ -394,6 +391,9 @@ class SoundCloudCrawler(BaseMusicCrawler):
                             return None
                         
                         stream_res = await self.client.get(f"{stream_api}?client_id={client_id}")
+                        # 【核心修复】检查状态码，防止 429/500 等错误导致 .json() 解析崩溃
+                        if stream_res.status_code != 200:
+                            return None
                         real_audio_url = stream_res.json().get('url')
                         
                         if not real_audio_url:
@@ -458,7 +458,8 @@ class iTunesCrawler(BaseMusicCrawler):
                 title = track.get('trackName', '未知曲目')
                 artist = track.get('artistName', '未知艺术家')
                 preview_url = track.get('previewUrl')
-                cover_url = track.get('artworkUrl100', '').replace('100x100', '600x600')
+                # 【核心修复】iTunes API 封面带 bb 后缀，修正替换逻辑以获取高清图
+                cover_url = track.get('artworkUrl100', '').replace('100x100bb', '600x600bb')
                 
                 if preview_url:
                     results.append(self._format_item(
@@ -649,7 +650,13 @@ class FMACrawler(BaseMusicCrawler):
 
             results = []
             for item in play_items[:limit]:
-                track_info = json.loads(item['data-track-info'])
+                try:
+                    # 【核心修复】增加 try-except，防止单条数据 JSON 格式错误中断整个搜索逻辑
+                    track_info = json.loads(item['data-track-info'])
+                except (json.JSONDecodeError, KeyError):
+                    logger.debug(f"[{self.platform_name}] 跳过格式异常的音轨数据")
+                    continue
+                
                 title = track_info.get('title', '未知FMA曲目')
                 artist = track_info.get('artistName', '未知FMA艺术家')
                 audio_url = track_info.get('playbackUrl')
@@ -714,8 +721,10 @@ class BandcampCrawler(BaseMusicCrawler):
             if not items:
                 logger.warning(f"[{self.platform_name}] 未找到与 '{keyword}' 相关的曲目")
                 return []
-                
-            random.shuffle(items)
+            
+            # 【核心修复】只打乱前 N 个候选，保留搜索结果的大体相关性
+            top_items = items[:limit * 5]
+            random.shuffle(top_items)
             
             async def fetch_track(item):
                 target_url = item.get('href', '')
@@ -744,7 +753,8 @@ class BandcampCrawler(BaseMusicCrawler):
                     
                     cover_art = track_soup.find('a', class_='popupImage')
                     if cover_art:
-                        cover_url = cover_art['href']
+                        # 【核心修复】使用 .get 防止 <a> 标签缺少 href 属性时崩溃
+                        cover_url = cover_art.get('href', '')
                     else:
                         cover_url = ""
                     
@@ -913,15 +923,15 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                 # 非中文区默认首选
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
-                
+
         # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
         if primary_tasks:
             # 创建任务以便后续取消
             primary_task_objs = [asyncio.create_task(coro) for coro in primary_tasks]
             
-            for coro in asyncio.as_completed(primary_task_objs):
+            for completed_task in asyncio.as_completed(primary_task_objs):
                 try:
-                    res = await coro
+                    res = await completed_task
                     if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
