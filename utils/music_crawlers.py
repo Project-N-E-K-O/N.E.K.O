@@ -875,8 +875,6 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
             else:
                 # 非中文区但检测到华语关键词时，也加入网易云
-                if any(kw in kw_lower for kw in chinese_keywords):
-                    primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
         
@@ -890,7 +888,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                     res = await coro
                     if isinstance(res, list) and res:
                         all_results.extend(res)
-                        logger.info(f"[智能调度] 第一梯队某源命中，取消其他任务")
+                        logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
                         # 取消剩余任务
                         for task in primary_task_objs:
                             if not task.done():
