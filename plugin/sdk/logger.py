@@ -116,18 +116,14 @@ class PluginFileLogger:
             # 按修改时间排序（最旧的在前）
             log_files.sort(key=lambda f: f.stat().st_mtime)
             
-            # 删除最旧的文件
             files_to_delete = log_files[:-self.max_files]
             for log_file in files_to_delete:
                 try:
                     log_file.unlink()
-                    if self._logger:
-                        self._logger.debug(f"Deleted old log file: {log_file.name}")
-                except (OSError, PermissionError) as e:
-                    # 如果logger还没创建，使用print
-                    print(f"Warning: Failed to delete old log file {log_file}: {e}", file=sys.stderr)
-        except (OSError, PermissionError) as e:
-            print(f"Warning: Failed to cleanup old logs: {e}", file=sys.stderr)
+                except (OSError, PermissionError):
+                    pass
+        except (OSError, PermissionError):
+            pass
     
     def setup(self, logger_instance: Optional[Any] = None) -> Any:
         """

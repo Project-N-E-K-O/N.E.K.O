@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -76,6 +77,36 @@ def _parse_time(raw: str, tz: timezone | ZoneInfo) -> Optional[Tuple[datetime, b
             pass
 
     return None
+
+
+_RE_NORMALIZE_REPEAT = re.compile(
+    r"^(?:every|per|each|每)\s*"
+    r"(\d+(?:\.\d+)?)\s*"
+    r"(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)$",
+    re.IGNORECASE,
+)
+_UNIT_MAP = {
+    "s": "s", "sec": "s", "secs": "s", "second": "s", "seconds": "s",
+    "m": "m", "min": "m", "mins": "m", "minute": "m", "minutes": "m",
+    "h": "h", "hr": "h", "hrs": "h", "hour": "h", "hours": "h",
+    "d": "d", "day": "d", "days": "d",
+}
+
+
+def _normalize_repeat(raw: str) -> str:
+    """Best-effort normalisation of natural-language repeat values.
+
+    "every 10s"        -> "10s"
+    "every 2 minutes"  -> "2m"
+    "每 30 seconds"    -> "30s"
+    Already-clean values pass through unchanged.
+    """
+    raw = raw.strip().lower()
+    m = _RE_NORMALIZE_REPEAT.match(raw)
+    if m:
+        return f"{m.group(1)}{_UNIT_MAP[m.group(2).rstrip('s') or m.group(2)]}"
+    raw = re.sub(r"^(?:every|per|each|每)\s+", "", raw)
+    return raw
 
 
 @neko_plugin
@@ -283,13 +314,23 @@ class MemoReminderPlugin(NekoPluginBase):
     @plugin_entry(
         id="add_reminder",
         name="添加提醒",
-        description="排期一个备忘提醒（异步，不会立即触发）。调用成功仅表示排期完成，到时间后系统会自动推送提醒消息，请勿在排期完成时就提醒用户。time 可以是绝对时间 (2026-03-07 09:00)、仅时间 (07:00)、或相对时间 (15s / 30m / 2h / 1d)。repeat 可选: once, daily, weekly, hourly, 或自定义间隔如 90m。",
+        description=(
+            "排期一个备忘提醒（异步，不会立即触发）。"
+            "调用成功仅表示排期完成，到时间后系统会自动推送提醒消息，请勿在排期完成时就提醒用户。\n"
+            "time 格式: 绝对时间 '2026-03-07 09:00' / 仅时间 '07:00' / 相对偏移 '15s' '30m' '2h' '1d'（纯数字+单位，不要加 'every' 'in' 等词）。\n"
+            "repeat 格式: 'once' | 'daily' | 'weekly' | 'hourly' | 自定义间隔如 '10s' '90m' '2h'（纯数字+单位）。"
+            "错误示例: 'every 10s'、'10 seconds'。正确示例: '10s'。"
+        ),
         input_schema={
             "type": "object",
             "properties": {
                 "time": {
                     "type": "string",
-                    "description": "触发时间：绝对时间 (YYYY-MM-DD HH:MM) 或相对时间 (30m, 2h, 1d)",
+                    "description": (
+                        "触发时间。格式: 绝对时间 'YYYY-MM-DD HH:MM' | 仅时间 'HH:MM' | "
+                        "相对偏移 '<数字><单位>' 如 '30m' '2h' '1d'。"
+                        "单位: s=秒 m=分 h=时 d=天。不要加 'in' 'after' 等前缀。"
+                    ),
                 },
                 "message": {
                     "type": "string",
@@ -297,7 +338,11 @@ class MemoReminderPlugin(NekoPluginBase):
                 },
                 "repeat": {
                     "type": "string",
-                    "description": "重复模式: once(默认), daily, weekly, hourly, 或自定义间隔如 90m",
+                    "description": (
+                        "重复模式(默认 once)。"
+                        "可选值: 'once' | 'daily' | 'weekly' | 'hourly' | '<数字><单位>' 如 '10s' '90m' '2h'。"
+                        "只传纯数字+单位，不要加 'every' 等前缀。"
+                    ),
                     "default": "once",
                 },
             },
@@ -311,7 +356,7 @@ class MemoReminderPlugin(NekoPluginBase):
             return fail("INVALID_TIME", f"无法解析时间: {time}")
 
         trigger_dt, has_date = parsed
-        repeat = repeat.strip().lower()
+        repeat = _normalize_repeat(repeat)
         if repeat not in ("once", "daily", "weekly", "hourly"):
             if repeat.endswith(("m", "h", "s", "d")):
                 try:
@@ -370,15 +415,25 @@ class MemoReminderPlugin(NekoPluginBase):
         local_str = trigger_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
         self.logger.info("Reminder added: id={} trigger_at={} ({}) repeat={}", rid, local_str, tz, repeat)
 
+        repeat_desc = {
+            "once": "will fire once (no repeat)",
+            "daily": "repeats every day",
+            "weekly": "repeats every week",
+            "hourly": "repeats every hour",
+        }.get(repeat, f"repeats every {repeat}")
+
         return ok(data={
             "status": "scheduled",
             "reminder_id": rid,
             "trigger_at_local": local_str,
             "repeat": repeat,
+            "message": message,
             "instruction": (
-                f"Reminder scheduled for {local_str}. "
-                "IMPORTANT: This is only a scheduling confirmation — the reminder has NOT fired yet. "
-                "Do NOT deliver the reminder content now. "
+                f"Reminder scheduled: content=\"{message}\", "
+                f"first fire at {local_str}, {repeat_desc}. "
+                "This is ONLY a scheduling confirmation — the reminder has NOT fired yet. "
+                "Do NOT deliver the reminder content to the user now; "
+                "the system will push it automatically when the time comes."
             ),
         })
 
