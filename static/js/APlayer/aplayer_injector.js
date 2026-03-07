@@ -189,6 +189,12 @@ export function removeAPlayerFromChatContainer() {
         delete window.aplayerInjected;
         console.log('[APlayer] Metadata removed from memory');
     }
+     // 清理 main.js setupGlobalControls 创建的全局函数闭包
+    delete window.toggleMusicPlayback;
+    delete window.playNextTrack;
+    delete window.playPreviousTrack;
+    delete window.setMusicVolume;
+    delete window.getCurrentTrackInfo;
 }
 
 export function getAPlayerInstance() {
