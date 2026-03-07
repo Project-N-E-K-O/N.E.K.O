@@ -768,7 +768,7 @@ class BandcampCrawler(BaseMusicCrawler):
                     logger.debug(f"[{self.platform_name}] 获取曲目失败: {e}")
                     return None
             
-            track_tasks = [fetch_track(item) for item in items[:limit * 3]]
+            track_tasks = [fetch_track(item) for item in top_items[:limit * 3]]
             track_results = await asyncio.gather(*track_tasks, return_exceptions=True)
             
             for track in track_results:
@@ -849,10 +849,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     if keyword: 
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        # 1. 【强古典词】命中后极高概率是古典乐，直接进 Musopen 桶
+        # 1. 【强古典词】补回 "古典" 与 "classical" 核心词，确保正确路由至 Musopen
         strong_classical = [
-            "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
-            "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
+            "古典", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
+            "classical", "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
             "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
             "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
             "шопен", "бетховен", "моцарт", "симфония", "ноктюрн"
@@ -960,9 +960,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             
             # 兜底梯队也使用竞速模式
             fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
-            for coro in asyncio.as_completed(fallback_task_objs):
+            # 【统一命名】将循环变量改为 completed_task，与主循环保持一致
+            for completed_task in asyncio.as_completed(fallback_task_objs):
                 try:
-                    res = await coro
+                    res = await completed_task
                     if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 兜底源命中，取消其他任务")
