@@ -1,7 +1,7 @@
 /** * APlayer 主模块
  * 整合所有APlayer功能的主入口
  */
-
+window.initializeAPlayer = initializeAPlayer;
 import { 
     toggleMusicPlayback, 
     playNextTrack, 
