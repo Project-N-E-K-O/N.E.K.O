@@ -807,9 +807,18 @@ async def close_all_crawlers():
     logger.info("正在关闭所有音乐爬虫实例...")
     crawlers = _crawlers_cache
     if crawlers:
-        await asyncio.gather(*[crawler.close() for crawler in crawlers.values()])
+        # 【核心修复】加入 return_exceptions=True，确保个别爬虫关闭失败不会打断整体清理流程
+        results = await asyncio.gather(
+            *[crawler.close() for crawler in crawlers.values()], 
+            return_exceptions=True
+        )
+        # 遍历检查是否有关闭报错的实例，记录日志但不抛出
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.warning(f"关闭第 {i+1} 个爬虫实例时发生异常: {res}")
+                
     _crawlers_cache = None
-    logger.info("所有音乐爬虫实例已关闭")
+    logger.info("所有音乐爬虫实例已清理完毕")
 
 # =======================================================
 # 4. 主调度函数
