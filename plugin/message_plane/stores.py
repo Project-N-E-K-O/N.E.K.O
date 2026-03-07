@@ -4,7 +4,6 @@ import time
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from itertools import islice
 from typing import Any, Deque, Dict, Optional
 
 from loguru import logger

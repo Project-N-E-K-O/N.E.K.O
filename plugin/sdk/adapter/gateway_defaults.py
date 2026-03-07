@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Callable
@@ -211,7 +212,7 @@ class CallablePluginInvoker:
     logger: LoggerLike | None = None
 
     async def invoke(self, request: GatewayRequest, decision: RouteDecision) -> object:
-        logger = self.logger if self.logger is not None else logger
+        log = self.logger if self.logger is not None else logger
 
         if decision.mode == RouteMode.DROP:
             raise GatewayErrorException(
@@ -223,11 +224,14 @@ class CallablePluginInvoker:
                 )
             )
 
-        logger.debug(
+        log.debug(
             "Gateway invoking target: mode={}, plugin_id={}, entry_id={}, request_id={}",
             decision.mode.value,
             decision.plugin_id or "",
             decision.entry_id or "",
             request.request_id,
         )
-        return self.invoke_fn(request, decision)
+        result = self.invoke_fn(request, decision)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result

@@ -1491,7 +1491,7 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(proxy=None) as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
                 resp.raise_for_status()  # Check for HTTP errors explicitly
                 if resp.status_code == 200:

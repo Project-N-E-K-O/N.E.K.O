@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
 
 if TYPE_CHECKING:
-    from .events import EventMeta
+    pass
 
 
 class HookExecutorMixin(ABC):

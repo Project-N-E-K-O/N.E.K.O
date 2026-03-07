@@ -3,7 +3,6 @@
  */
 import { ref, onMounted, onUnmounted, watch, type Ref, type MaybeRef, toRef, isRef } from 'vue'
 import { useLogsStore } from '@/stores/logs'
-import { useAuthStore } from '@/stores/auth'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { API_BASE_URL } from '@/utils/constants'
@@ -13,7 +12,6 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   const pluginId = isRef(pluginIdInput) ? pluginIdInput : toRef(() => pluginIdInput)
   const { t } = useI18n()
   const logsStore = useLogsStore()
-  const authStore = useAuthStore()
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
   const reconnectTimer = ref<number | null>(null)
@@ -25,7 +23,6 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   function getWebSocketUrl(): string {
     const id = pluginId.value
     const encodedId = encodeURIComponent(id)
-    const authCode = authStore.authCode
 
     // 构建基础 URL
     let baseUrl: string
@@ -50,13 +47,6 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
         baseUrl = `${protocol}//${host}/ws/logs/${encodedId}`
       }
     }
-    
-    // 添加验证码查询参数
-    if (authCode) {
-      const separator = baseUrl.includes('?') ? '&' : '?'
-      return `${baseUrl}${separator}code=${encodeURIComponent(authCode)}`
-    }
-    
     return baseUrl
   }
 
