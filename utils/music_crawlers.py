@@ -416,7 +416,7 @@ class SoundCloudCrawler(BaseMusicCrawler):
                 stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
                 
                 # 过滤出有效结果，取前 limit 个
-                valid_results = [r for r in stream_results if r]
+                valid_results = [r for r in stream_results if isinstance(r, dict)]
                 results = valid_results[:limit]
                 return results # 成功则直接返回，退出重试循环
 
@@ -596,9 +596,13 @@ class MusopenCrawler(BaseMusicCrawler):
             for link in unique_links[:limit]:
                 # 尝试从链接中解析文件名作为曲目名
                 try:
-                    filename_part = link.split('filename=')[-1]
-                    # 使用 unquote_plus 完美处理 URL 中的加号(+)和百分号乱码
-                    real_name = urllib.parse.unquote_plus(filename_part).replace('.mp3', '').replace('.m4a', '')
+                    if 'filename=' in link:
+                        filename_part = link.split('filename=')[-1].split('&')[0]
+                        real_name = urllib.parse.unquote_plus(filename_part).replace('.mp3', '').replace('.m4a', '')
+                    else:
+                        # 从路径中提取文件名作为兜底
+                        path_part = link.split('/')[-1].split('?')[0]
+                        real_name = urllib.parse.unquote_plus(path_part).replace('.mp3', '').replace('.m4a', '') or "古典曲目"
                 except Exception:
                     real_name = "古典曲目"
                 # 传入 cover 参数
@@ -751,7 +755,7 @@ class BandcampCrawler(BaseMusicCrawler):
             track_results = await asyncio.gather(*track_tasks, return_exceptions=True)
             
             for track in track_results:
-                if track and len(results) < limit:
+                if isinstance(track, dict) and len(results) < limit:
                     results.append(track)
         except httpx.TimeoutException:
             logger.warning(f"[{self.platform_name}] 搜索 '{keyword}' 超时")
