@@ -1194,8 +1194,8 @@ PROACTIVE_GENERATE_PROMPTS = {
 
 def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
     lang_key = _normalize_prompt_language(lang)
-    prompt_set = PROACTIVE_CHAT_PROMPTS.get(lang_key, PROACTIVE_CHAT_PROMPTS['zh'])
-    return prompt_set.get(kind, prompt_set['home'])
+    prompt_set = PROACTIVE_CHAT_PROMPTS.get(lang_key, PROACTIVE_CHAT_PROMPTS.get('en', PROACTIVE_CHAT_PROMPTS['zh']))
+    return prompt_set.get(kind, prompt_set.get('home'))
 
 
 PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
@@ -1308,12 +1308,12 @@ def get_proactive_music_keyword_prompt(lang: str = 'zh') -> str:
     获取音乐关键词生成的 prompt
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(lang_key, PROACTIVE_MUSIC_KEYWORD_PROMPTS['zh'])
+    return PROACTIVE_MUSIC_KEYWORD_PROMPTS.get(lang_key, PROACTIVE_MUSIC_KEYWORD_PROMPTS.get('en', PROACTIVE_MUSIC_KEYWORD_PROMPTS['zh']))
 
 
 def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS['zh'])
+    return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS.get('en', PROACTIVE_CHAT_REWRITE_PROMPTS['zh']))
 
 
 def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
@@ -1321,7 +1321,7 @@ def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
     获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。
     """
     lang_key = _normalize_prompt_language(lang)
-    prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS['zh'])
+    prompt_set = PROACTIVE_SCREEN_PROMPTS.get(lang_key, PROACTIVE_SCREEN_PROMPTS.get('en', PROACTIVE_SCREEN_PROMPTS['zh']))
     if channel not in prompt_set:
         raise ValueError(f"Unsupported channel '{channel}'. Vision is handled before Phase 1 and should not be passed here; only 'web' is supported.")
     return prompt_set[channel]
@@ -1332,7 +1332,7 @@ def get_proactive_generate_prompt(lang: str = 'zh') -> str:
     获取 Phase 2 生成阶段 prompt
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS['zh'])
+    return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
 
 
 def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, lang: str = 'zh') -> tuple:
