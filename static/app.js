@@ -23,6 +23,14 @@ window.safeT = function(key, fallback) {
 
 // 【新增】定义一个全局或模块级的门闩变量
 let currentMusicSearchEpoch = 0;
+
+// 【新增】统一失效在途音乐搜索的工具函数
+window.invalidatePendingMusicSearch = function() {
+    currentMusicSearchEpoch++;
+    window._pendingMusicCommand = '';
+    console.log(`[Music] 搜索纪元更新至: ${currentMusicSearchEpoch}, 已失效所有在途请求`);
+};
+
 // 上次用户输入时间（毫秒级）
 let lastUserInputTime = 0;
 // 关闭所有已打开的设置窗口（弹窗）
@@ -584,6 +592,7 @@ function init_app() {
 
                     appendMessage(response.text, 'gemini', isNewMessage);
                 } else if (response.type === 'response_discarded') {
+                    window.invalidatePendingMusicSearch();
                     const attempt = response.attempt || 0;
                     const maxAttempts = response.max_attempts || 0;
                     console.log(`[Discard] AI回复被丢弃 reason=${response.reason} attempt=${attempt}/${maxAttempts} retry=${response.will_retry}`);
@@ -2145,28 +2154,45 @@ function init_app() {
                 const query = `${aiTrackInfo.name} ${aiTrackInfo.artist || ''}`.trim();
                 
                 if (query) {
-                    // 2. 调用你的 FastAPI 路由，获取真实的 mp3 直链和封面
+                    // 【核心修复1】在发出请求前增加并锁定当前纪元
+                    const myEpoch = ++currentMusicSearchEpoch;
+                    
                     const response = await fetch(`/api/music/search?query=${encodeURIComponent(query)}`);
                     const result = await response.json();
                     
-                    if (result.success && result.data && result.data.length > 0) {
-                        const realTrack = result.data[0];
-                        
-                        // 3. 合并 AI 的数据和后端的真实数据
-                        const finalTrackInfo = {
-                            name: realTrack.name || aiTrackInfo.name,
-                            artist: realTrack.artist || aiTrackInfo.artist,
-                            url: realTrack.url,          // 你的 FastAPI 返回的拼接好的直链
-                            cover: realTrack.cover,      // 你的 FastAPI 返回的专辑封面
-                            theme: aiTrackInfo.theme || '#44b7fe'
-                        };
-                        
-                        window.dispatchMusicPlay(finalTrackInfo);
-                    } else {
-                        console.warn('[Music] API 未找到歌曲:', query);
+                    // 【核心修复2】门闩校验：如果纪元对不上（说明期间切猫或打断了），直接丢弃该结果
+                    if (myEpoch !== currentMusicSearchEpoch) {
+                        console.log(`[Music] 指令搜索结果过时，已丢弃: "${query}"`);
+                        continue; // 注意：如果这里不是 for 循环内部而是回调，请改为 return;
+                    }
+
+                    // 【核心修复3】细化错误区分：服务报错 vs 没搜到
+                    if (!result.success) {
+                        console.error('[Music] Search API failed:', result.error);
                         if (window.showStatusToast) {
-                            const notFoundMsg = window.t ? window.t('music.notFound', { query: query }) : `找不到歌曲: ${query}`;
-                            window.showStatusToast(notFoundMsg, 3000);
+                            const failMsg = window.safeT ? window.safeT('music.searchFailed', '音乐搜索失败') : '音乐搜索失败';
+                            window.showStatusToast(result.message || result.error || failMsg, 3000);
+                        }
+                        continue; // 或者 return;
+                    }
+
+                    // 正常命中结果
+                    if (result.data && result.data.length > 0) {
+                        const realTrack = result.data[0];
+                        console.log('[Music] 指令搜歌命中:', realTrack.name);
+                        
+                        // 调用主分支统一的播放调度逻辑
+                        if (typeof window.dispatchMusicPlay === 'function') {
+                            window.dispatchMusicPlay(realTrack);
+                        } else {
+                            console.warn('[Music] dispatchMusicPlay 不可用，尝试直接发送');
+                            window.sendMusicMessage(realTrack);
+                        }
+                    } else {
+                        // 接口调用成功，但真的没搜到这首歌
+                        if (window.showStatusToast) {
+                            const notFoundMsg = window.safeT ? window.safeT('music.notFound', '找不到歌曲') : '找不到歌曲';
+                            window.showStatusToast(`${notFoundMsg}: ${query}`, 3000);
                         }
                     }
                 }
@@ -4726,6 +4752,8 @@ function init_app() {
     function stopRecording() {
         // 停止语音期间主动视觉定时
         stopProactiveVisionDuringSpeech();
+        // 【新增】输入结束/打断时重置搜歌任务
+        window.invalidatePendingMusicSearch();
 
         stopScreening();
         if (!isRecording) return;
@@ -9901,6 +9929,8 @@ function init_app() {
 
     // 处理猫娘切换的逻辑（支持 VRM 和 Live2D 双模型类型热切换）
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
+        // 【新增】切换猫娘必须清空上一任的搜歌任务
+        window.invalidatePendingMusicSearch();
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', isSwitchingCatgirl);
