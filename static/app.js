@@ -2192,7 +2192,7 @@ function init_app() {
                         // 接口调用成功，但真的没搜到这首歌
                         if (window.showStatusToast) {
                             const notFoundMsg = window.safeT ? window.safeT('music.notFound', '找不到歌曲') : '找不到歌曲';
-                            window.showStatusToast(`${notFoundMsg}: ${query}`, 3000);
+                            window.showStatusToast(notFoundMsg, 3000);
                         }
                     }
                 }
