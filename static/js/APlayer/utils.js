@@ -5,7 +5,8 @@
 
 export function t(key, fallback) {
     if (window.t && typeof window.t === 'function') {
-        const translated = window.t(key);
+        // 【核心修复】将 fallback 参数透传给全局 window.t
+        const translated = window.t(key, fallback);
         return translated && translated !== key ? translated : fallback;
     }
     return fallback;
