@@ -2263,11 +2263,15 @@
     "music": {
         "unknownTrack": "不明な曲",
         "unknownArtist": "不明なアーティスト",
+        "play": "再生",
+        "pause": "一時停止",
         "playing": "再生中",
         "paused": "一時停止",
         "searching": "検索中",
         "notFound": "曲が見つかりません",
         "nowPlaying": "再生中",
+        "showPlaylist": "プレイリストを表示",
+        "hidePlaylist": "プレイリストを非表示",
         "searchFailed": "音楽検索に失敗しました",
         "playError": "再生エラー",
         "ended": "終了"

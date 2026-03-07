@@ -2263,11 +2263,15 @@
     "music": {
         "unknownTrack": "未知曲目",
         "unknownArtist": "未知藝術家",
+        "play": "播放",
+        "pause": "暫停",
         "playing": "播放中",
         "paused": "已暫停",
         "searching": "正在為您搜尋",
         "notFound": "找不到歌曲",
         "nowPlaying": "為您播放",
+        "showPlaylist": "顯示播放列表",
+        "hidePlaylist": "隱藏播放列表",
         "searchFailed": "音樂搜尋失敗",
         "playError": "播放出錯",
         "ended": "已結束"

@@ -2263,11 +2263,15 @@
     "music": {
         "unknownTrack": "Unknown Track",
         "unknownArtist": "Unknown Artist",
+        "play": "Play",
+        "pause": "Pause",
         "playing": "Playing",
         "paused": "Paused",
-        "searching": "Searching for",
-        "notFound": "Song not found",
-        "nowPlaying": "Now playing",
+        "searching": "Searching",
+        "notFound": "Track not found",
+        "nowPlaying": "Now Playing",
+        "showPlaylist": "Show Playlist",
+        "hidePlaylist": "Hide Playlist",
         "searchFailed": "Music search failed",
         "playError": "Playback error",
         "ended": "Ended"
