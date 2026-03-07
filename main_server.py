@@ -841,11 +841,14 @@ async def on_shutdown():
         # 关闭音乐爬虫连接池
         try:
             from utils.music_crawlers import close_all_crawlers
-            await close_all_crawlers()
+            # 【核心修改】增加 5 秒超时兜底。如果 5 秒内关不完，直接抛弃，保障服务器顺利退出
+            await asyncio.wait_for(close_all_crawlers(), timeout=5.0)
+            
+        except asyncio.TimeoutError:
+            # 单独捕获超时异常，记录警告但放行
+            logger.warning("音乐爬虫连接池清理超时，已强制跳过以保证服务正常退出。")
         except Exception as e:
             logger.debug(f"音乐爬虫清理失败: {e}", exc_info=True)
-        
-        logger.info("✅ 资源清理完成")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
