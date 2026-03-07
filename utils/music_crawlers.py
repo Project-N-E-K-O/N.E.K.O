@@ -921,7 +921,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
                     res = await coro
                     if isinstance(res, list) and res:
                         all_results.extend(res)
-                        logger.info(f"[智能调度] 兜底源命中，取消其他任务")
+                        logger.info("[智能调度] 兜底源命中，取消其他任务")
                         # 取消剩余任务
                         for task in fallback_task_objs:
                             if not task.done():
