@@ -1003,19 +1003,22 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         logger.warning("去重后无可用音乐")
         return {'success': False, 'error': '去重后无可用音乐', 'data': []}
     
-    # 评估多样性
-    diversity_info = music_cache.get_diversity_score(unique_results)
-    logger.info(f"成功获取到 {len(unique_results)} 首音乐，多样性评分: {diversity_info['score']}% (风格: {diversity_info['style_notes']}, 独立艺术家: {diversity_info['unique_artists']})")
+    # 【核心修复】提前截取实际需要下发的数据切片
+    final_results = unique_results[:limit]
+
+    # 基于“实际返回的歌曲”来评估多样性
+    diversity_info = music_cache.get_diversity_score(final_results)
+    logger.info(f"成功下发 {len(final_results)} 首音乐 (候选池总计 {len(unique_results)} 首)，下发队列多样性评分: {diversity_info['score']}% (风格: {diversity_info['style_notes']}, 独立艺术家: {diversity_info['unique_artists']})")
     
-    # 日志只显示前5首
-    display_tracks = unique_results[:5]
+    # 日志只展示实际下发的歌曲（最多打印前5首防刷屏）
+    display_tracks = final_results[:5]
     log_items = [f"{t.get('name', '未知')[:15]}-{t.get('artist', '未知')[:10]}" for t in display_tracks]
-    logger.info(f"[音乐日志] 代表性歌曲: {log_items}")
+    logger.info(f"[音乐日志] 实际下发歌曲: {log_items}")
     
     # 标记实际返回的歌曲为已播放（写入缓存）
-    music_cache.mark_as_played(unique_results[:limit])
+    music_cache.mark_as_played(final_results)
     
-    return {'success': True, 'data': unique_results[:limit], 'diversity': diversity_info}
+    return {'success': True, 'data': final_results, 'diversity': diversity_info}
 
 # =======================================================
 # 5. 用于独立测试的入口
