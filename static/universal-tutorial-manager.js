@@ -841,7 +841,7 @@ class UniversalTutorialManager {
     getEmotionManagerSteps() {
         return [
             {
-                element: '#model-select',
+                element: '#model-singleselect',
                 popover: {
                     title: this.t('tutorial.emotion_manager.step1.title', '🎭 选择模型'),
                     description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。'),
@@ -861,7 +861,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: this.t('tutorial.emotion_manager.step3.title', '🔄 重置配置'),
                     description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。'),
-                }
+                },
+                skipAutoShow: true
             }
         ];
     }
@@ -2245,7 +2246,7 @@ class UniversalTutorialManager {
 
                 // 情感配置页面：未选择模型时禁止进入下一步
                 if (this.currentPage === 'emotion_manager' &&
-                    currentStepConfig.element === '#model-select') {
+                    currentStepConfig.element === '#model-singleselect') {
                     const updateNextState = () => {
                         const hasModel = this.hasEmotionManagerModelSelected();
                         const hasSelectableModels = this.hasEmotionManagerSelectableModels();
@@ -2282,7 +2283,7 @@ class UniversalTutorialManager {
                     currentStepConfig.element === '#emotion-config' &&
                     !this.hasEmotionManagerModelSelected()) {
                     console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
-                    const targetIndex = steps.findIndex(step => step.element === '#model-select');
+                    const targetIndex = steps.findIndex(step => step.element === '#model-singleselect');
                     if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
                         this.driver.showStep(targetIndex);
                         return;

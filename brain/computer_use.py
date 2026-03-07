@@ -7,6 +7,7 @@ The multimodal model handles visual grounding directly in its generated code.
 Supports thinking mode for models that provide it.
 """
 from typing import Dict, Any, Optional, List, Tuple
+import json
 import re
 import base64
 import platform
@@ -487,16 +488,13 @@ class ComputerUseAdapter:
         reasons: List[str] = []
         if not model_cfg.get("base_url") or not model_cfg.get("model"):
             ok = False
-            reasons.append("Agent endpoint not configured")
+            reasons.append("AGENT_ENDPOINT_NOT_CONFIGURED")
         if pyautogui is None:
             ok = False
-            reasons.append("pyautogui not installed")
+            reasons.append("AGENT_PYAUTOGUI_NOT_INSTALLED")
         if not self.init_ok:
             ok = False
-            msg = "Agent not initialized"
-            if self.last_error:
-                msg += f": {self.last_error}"
-            reasons.append(msg)
+            reasons.append("AGENT_NOT_INITIALIZED")
         return {
             "enabled": True,
             "ready": ok,
@@ -876,8 +874,8 @@ class ComputerUseAdapter:
                     return {
                         "thought": "",
                         "action": "",
-                        "code": 'computer.terminate(status="failure", answer="免费 Agent 模型今日试用次数已达上限（300次）")',
-                        "raw": "",
+                        "code": 'computer.terminate(status="failure", answer="AGENT_QUOTA_EXCEEDED")',
+                        "raw": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get("used", 0), "limit": info.get("limit", 300)}}),
                     }
                 resp = self._llm_client.chat.completions.create(
                     model=model,

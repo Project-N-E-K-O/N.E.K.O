@@ -606,7 +606,7 @@ class OmniRealtimeClient:
                         self._fatal_error_occurred = True
                         logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
                         if self.on_connection_error:
-                            asyncio.create_task(self.on_connection_error("💥 连接超时 (Response timeout)，语音对话已中断。"))
+                            asyncio.create_task(self.on_connection_error(json.dumps({"code": "RESPONSE_TIMEOUT"})))
                         # 尝试关闭连接
                         asyncio.create_task(self.close())
                     return  # 不再抛出异常，直接返回
@@ -735,7 +735,7 @@ class OmniRealtimeClient:
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
-                    await self.on_status_message("⚠️ 图片内容被审查系统拦截，请尝试更换图片或内容。")
+                    await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return "图片识别发生严重错误！"
     
     async def stream_image(self, image_b64: str) -> None:
@@ -1029,7 +1029,7 @@ class OmniRealtimeClient:
                         self._throttle_until = time.time() + self._throttle_duration
                         logger.warning(f"⚡ 503 detected, throttling for {self._throttle_duration}s")
                         if self.on_status_message:
-                            await self.on_status_message("⚠️ 服务器繁忙，正在自动调节发送速率...")
+                            await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                         continue
                     
                     error_msg_lower = error_msg.lower()
@@ -1144,7 +1144,7 @@ class OmniRealtimeClient:
             if self.ws:
                 await self.ws.close()
             if self.on_connection_error:
-                await self.on_connection_error("💥 连接超时，请检查网络连接。")
+                await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
             logger.error(f"Error in message handling: {str(e)}")
             raise e
