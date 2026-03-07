@@ -3,8 +3,8 @@ Hook 类型定义模块
 
 提供 Hook 系统的类型定义，避免循环导入。
 """
-from dataclasses import dataclass, field
-from typing import Callable, Literal, Optional, Any, List
+from dataclasses import dataclass
+from typing import Callable, Literal, Optional, Any
 
 # Hook 装饰器的属性名
 HOOK_META_ATTR = "_neko_hook_meta"

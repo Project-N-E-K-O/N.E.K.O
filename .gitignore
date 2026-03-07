@@ -119,3 +119,4 @@ sendText.js
 data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage
+.VSCodeCounter

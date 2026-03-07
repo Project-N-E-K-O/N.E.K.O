@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from loguru import logger
 
 from plugin.core.state import state
 from plugin._types.models import PluginDependency
@@ -29,15 +28,8 @@ except ImportError:  # pragma: no cover
     SpecifierSet = None  # type: ignore
     InvalidSpecifier = Exception  # type: ignore
 
-
-def _wrap_logger(logger: Any) -> Any:
-    """向后兼容函数，现在统一返回 loguru logger"""
-    return logger
-
-
 def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
     """解析版本规范字符串"""
-    logger = _wrap_logger(logger)
     if not spec or SpecifierSet is None:
         return None
     try:
@@ -163,7 +155,6 @@ def _check_single_plugin_version(
     Returns:
         (是否满足, 错误信息)
     """
-    logger = _wrap_logger(logger)
     dep_version_str = dep_plugin_meta.get("version", "0.0.0")
     
     # 如果 conflicts 是列表，检查版本是否在冲突范围内
@@ -243,7 +234,6 @@ def _check_plugin_dependency(
     Returns:
         (是否满足, 错误信息)
     """
-    logger = _wrap_logger(logger)
     def _runtime_enabled(pid: str) -> bool:
         with state.acquire_plugins_read_lock():
             meta = state.plugins.get(pid)
@@ -431,7 +421,6 @@ def _parse_plugin_dependencies(
     Returns:
         依赖列表
     """
-    logger = _wrap_logger(logger)
     dependencies: List[PluginDependency] = []
     
     # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表

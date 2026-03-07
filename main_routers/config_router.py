@@ -594,7 +594,7 @@ async def update_core_config(request: Request):
         try:
             import httpx
             from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, proxy=None) as client:
                 await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
             logger.info("已通知 agent_server 刷新 CUA 适配器")
         except Exception as notify_err:
