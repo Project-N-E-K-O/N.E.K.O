@@ -40,13 +40,14 @@ async def search_music(query: str = Query(default="", min_length=0, max_length=2
             track_count = len(results.get('data', []))
             logger.info(f"[音乐API] 搜索成功，返回 {track_count} 首音乐")
         else:
-            logger.warning(f"[音乐API] 搜索失败: {results.get('error', '未知错误')}")
+            error = results.get('error', '未知错误')
+            logger.warning(f"[音乐API] 搜索失败: {error}")
             # 统一失败返回结构
             return {
                 "success": False,
                 "data": [],
-                "error": results.get('error', '未知错误'),
-                "message": "音乐搜索失败"
+                "error": error,
+                "message": results.get("message") or error or "音乐搜索失败"
             }
         
         return results
