@@ -1194,6 +1194,8 @@ window.hideCatgirl = async function(key) {
     const hiddenArea = document.getElementById('hidden-catgirl-area');
     const hiddenList = document.getElementById('hidden-catgirl-list');
     
+    if (!hiddenArea || !hiddenList) return;
+    
     const wasHidden = hiddenArea.style.display === 'none';
     if (wasHidden) {
         hiddenArea.style.display = 'block';
