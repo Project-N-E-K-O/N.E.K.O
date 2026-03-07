@@ -164,25 +164,30 @@ function setupInjectedControls(aplayer, config) {
         }
     };
 
+    // 【修复】注入后无条件覆盖全局控制函数，确保外部调用指向当前活跃实例，不再被旧闭包锁死
     window.aplayerControls = window.aplayerControls || {};
-    window.aplayerControls.showPlayer = window.aplayerControls.showPlayer || window.aplayerInjected.show;
-    window.aplayerControls.hidePlayer = window.aplayerControls.hidePlayer || window.aplayerInjected.hide;
-    window.aplayerControls.togglePlayer = window.aplayerControls.togglePlayer || window.aplayerInjected.toggle;
+    window.aplayerControls.showPlayer = window.aplayerInjected.show;
+    window.aplayerControls.hidePlayer = window.aplayerInjected.hide;
+    window.aplayerControls.togglePlayer = window.aplayerInjected.toggle;
 }
 
 export function removeAPlayerFromChatContainer() {
+    // 【修复】优先从当前注入的对象中动态获取容器 ID，再回退到默认值，防止自定义 ID 漏删
+    const containerId = window.aplayerInjected?.containerId || 'aplayer-container';
+    
     // 统一调用 main.js 的原生销毁方法处理
     destroyAPlayer(); 
 
-    // 【新增】兜底清理 DOM，防止因为半成品导致 destroyAPlayer 没清干净
-    const leftoverContainer = document.getElementById('aplayer-container');
+    // 【修改】使用解析出的动态 ID 进行清理
+    const leftoverContainer = document.getElementById(containerId);
     if (leftoverContainer && leftoverContainer.parentNode) {
         leftoverContainer.parentNode.removeChild(leftoverContainer);
+        console.log(`[APlayer] Container #${containerId} removed`);
     }
 
     if (window.aplayerInjected) {
         delete window.aplayerInjected;
-        console.log('[APlayer] Removed from chat-container');
+        console.log('[APlayer] Metadata removed from memory');
     }
 }
 
@@ -191,7 +196,9 @@ export function getAPlayerInstance() {
 }
 
 export function getAPlayerContainer() {
-    return window.aplayerInjected?.container || document.getElementById('aplayer-container');
+    // 【修改】获取容器时也遵循动态 ID 优先原则
+    const containerId = window.aplayerInjected?.containerId || 'aplayer-container';
+    return window.aplayerInjected?.container || document.getElementById(containerId);
 }
 
 export async function setupAPlayerInChat(options = {}) {
