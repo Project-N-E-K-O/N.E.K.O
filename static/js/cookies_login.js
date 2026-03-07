@@ -307,6 +307,7 @@ async function requestQR(config, platformKey) {
         }
     } catch (err) {
         console.error("Request QR error:", err);
+        if (currentPlatform !== platformKey) return;
         qrLoginBox.innerHTML = `
             <div style="text-align: center; padding: 20px; color: #ef4444;">
                 ${safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接')}
@@ -406,6 +407,12 @@ function startQrPoll(config, platformKey) {
         } catch (err) {
             console.error("Poll error:", err);
             shouldContinuePolling = false;
+            if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
+                const statusEl = document.getElementById('qr-status');
+                if (statusEl) {
+                    statusEl.textContent = safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+                }
+            }
             stopQrPoll();
         } finally {
             if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
