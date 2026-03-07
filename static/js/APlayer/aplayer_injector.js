@@ -195,6 +195,12 @@ export function removeAPlayerFromChatContainer() {
     delete window.playPreviousTrack;
     delete window.setMusicVolume;
     delete window.getCurrentTrackInfo;
+    // 【新增】清理 setupGlobalControls 创建的 aplayerControls 对象（含 play/pause/toggle 等旧闭包）
+    // 防止下一次初始化时因为 || 逻辑导致旧闭包残留
+    if (window.aplayerControls) {
+        delete window.aplayerControls;
+        console.log('[APlayer] Global controls closures cleared');
+    }
 }
 
 export function getAPlayerInstance() {
