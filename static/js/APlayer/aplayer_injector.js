@@ -39,20 +39,30 @@ export async function injectAPlayerToChatContainer(options = {}) {
 
     chatContainer.appendChild(aplayerContainer);
 
-    // 异步等待实例加载
-    const aplayer = await initializeAPlayer({
-        ...options,
-        container: aplayerContainer
-    });
+    let aplayer = null;
+    try {
+        // 异步等待实例加载
+        aplayer = await initializeAPlayer({
+            ...options,
+            container: aplayerContainer
+        });
 
-    if (aplayer) {
-        console.log('[APlayer] Successfully injected to chat-container');
-        setupInjectedControls(aplayer, config);
+        if (aplayer) {
+            console.log('[APlayer] Successfully injected to chat-container');
+            setupInjectedControls(aplayer, config);
+            return aplayer;
+        }
+    } catch (e) {
+        console.error('[APlayer] Injection failed due to initialization error:', e);
     }
 
-    return aplayer;
+    // 【核心修复】如果初始化返回 null 或抛出异常，说明注入失败，必须移除刚才创建的空壳容器喵
+    if (aplayerContainer && aplayerContainer.parentNode) {
+        console.warn('[APlayer] Cleaning up empty container after injection failure');
+        aplayerContainer.parentNode.removeChild(aplayerContainer);
+    }
+    return null;
 }
-
 function setupInjectedControls(aplayer, config) {
     const container = document.getElementById(config.containerId);
     if (!container) return;
