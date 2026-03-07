@@ -282,7 +282,10 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
                 await _close(1011, "heartbeat timeout")
                 return
             try:
-                await q.put({"type": "ping"})
+                q.put_nowait({"type": "ping"})
+            except asyncio.QueueFull:
+                await _close(1013, "slow client")
+                return
             except Exception:
                 return
 
@@ -300,11 +303,18 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
             out["result"] = result
         else:
             out["error"] = str(error or "error")
-        await q.put(out)
+        try:
+            q.put_nowait(out)
+        except asyncio.QueueFull:
+            await _close(1013, "slow client")
 
     try:
         hello = {"type": "event", "event": "session.ready", "data": {"run_id": run_id, "perm": perm, "exp": exp}}
-        await q.put(hello)
+        try:
+            q.put_nowait(hello)
+        except asyncio.QueueFull:
+            await _close(1013, "slow client")
+            return
 
         while True:
             raw = await ws.receive_text()

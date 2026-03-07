@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from loguru import logger
+
 from plugin.settings import (
     BLOB_STORE_DIR,
     BLOB_UPLOAD_MAX_BYTES,
@@ -48,7 +50,7 @@ class BlobStore:
             try:
                 self.cleanup_expired_uploads()
             except Exception:
-                pass
+                logger.debug("blob upload janitor error", exc_info=True)
 
     def cleanup_expired_uploads(self) -> int:
         deadline = float(time.time()) - self._upload_ttl_seconds
@@ -70,7 +72,7 @@ class BlobStore:
                 except FileNotFoundError:
                     pass
                 except Exception:
-                    pass
+                    logger.warning("Failed to remove expired blob {}: {}", path, sess.upload_id, exc_info=True)
         return len(expired)
 
     def _ensure_dirs(self) -> Path:

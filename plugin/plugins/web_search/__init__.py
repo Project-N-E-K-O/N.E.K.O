@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, unquote
+from typing import Any, Dict, List
+from urllib.parse import unquote
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
@@ -361,7 +361,6 @@ class WebSearchPlugin(NekoPluginBase):
         defs = self._defaults()
         max_r = max_results if max_results > 0 else defs["max_results"]
         rgn = region.strip() or defs["region"]
-        timeout = defs["timeout"]
 
         if not _DDGS_AVAILABLE:
             return fail(

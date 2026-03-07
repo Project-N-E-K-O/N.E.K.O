@@ -245,23 +245,9 @@ async def _handle_agent_event(event: dict):
                         pass
             return
         if not mgr and event_type in ("proactive_message", "task_result"):
-            # No target session found — do NOT fallback to a random session
-            # to avoid injecting task results into unrelated conversations.
-            # Send a frontend-only notification if any websocket is available.
-            text = (event.get("text") or "").strip()
-            if text:
-                for _name, _mgr in session_manager.items():
-                    if _mgr and _mgr.websocket and hasattr(_mgr.websocket, "send_json"):
-                        try:
-                            await _mgr.websocket.send_json({
-                                "type": "agent_notification",
-                                "text": text,
-                                "source": "brain",
-                                "status": event.get("status") or "completed",
-                            })
-                        except Exception:
-                            pass
-            logger.info("[EventBus] %s dropped (no target session for lanlan=%s), sent notification only", event_type, lanlan)
+            # No target session found — drop the event entirely.
+            # Do NOT broadcast text to other sessions to prevent cross-session leaks.
+            logger.info("[EventBus] %s dropped: no target session for lanlan=%s", event_type, lanlan)
             return
         if not mgr:
             logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
@@ -453,7 +439,11 @@ async def initialize_character_data():
                         loop = _server_loop
                         if loop is None or loop.is_closed():
                             return
-                        asyncio.run_coroutine_threadsafe(mgr.send_status(msg), loop)
+                        ws = mgr.websocket
+                        if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                            import json as _json
+                            data = _json.dumps({"type": "status", "message": msg})
+                            asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
                     return _cb
                 _status_cb = _make_status_cb(_char_name)
 

@@ -214,8 +214,14 @@ class InMemoryRunStore:
             r = self._runs.get(run_id)
             if r is None:
                 return None
-            if r.status in ("succeeded", "failed", "canceled", "timeout"):
+            if r.status in _TERMINAL_STATUSES:
                 return r.model_copy(deep=True)
+            new_status = patch.get("status")
+            if new_status is not None and new_status != r.status:
+                allowed = _ALLOWED_TRANSITIONS.get(r.status)
+                if allowed is not None and new_status not in allowed:
+                    logger.warning("Blocked illegal run transition: {} -> {} (run={})", r.status, new_status, run_id)
+                    return r.model_copy(deep=True)
             data = r.model_dump()
             data.update(patch)
             data["updated_at"] = float(time.time())
@@ -299,6 +305,7 @@ _run_store: RunStore = InMemoryRunStore()
 _export_store: ExportStore = InMemoryExportStore()
 
 _active_run_tasks: Dict[str, asyncio.Task] = {}
+_pending_cancel_tasks: set[asyncio.Task] = set()
 
 # NOTE: threading.Lock (not asyncio.Lock) because update_run_from_plugin is a
 # sync function called from both asyncio coroutines and IPC handler threads.
@@ -575,7 +582,9 @@ def _propagate_cancel_to_plugin(plugin_id: str, run_id: str) -> None:
         if host is None:
             return
         loop = asyncio.get_running_loop()
-        loop.create_task(host.cancel_run(run_id), name=f"cancel_run:{run_id}")
+        task = loop.create_task(host.cancel_run(run_id), name=f"cancel_run:{run_id}")
+        _pending_cancel_tasks.add(task)
+        task.add_done_callback(_pending_cancel_tasks.discard)
     except Exception:
         logger.debug("Failed to propagate cancel for run {} to plugin {}", run_id, plugin_id, exc_info=True)
 
@@ -738,6 +747,7 @@ async def _execute_run_guarded(
             timeout=timeout,
         )
     except asyncio.CancelledError:
+        _propagate_cancel_to_plugin(plugin_id, run_id)
         term = _run_store.commit_terminal(
             run_id,
             status="canceled",
@@ -747,6 +757,7 @@ async def _execute_run_guarded(
         if term is not None:
             _emit_runs("change", term)
     except asyncio.TimeoutError:
+        _propagate_cancel_to_plugin(plugin_id, run_id)
         term = _run_store.commit_terminal(
             run_id,
             status="timeout",

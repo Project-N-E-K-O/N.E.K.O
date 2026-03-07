@@ -169,14 +169,13 @@ class MemoReminderPlugin(NekoPluginBase):
             except Exception:
                 self.logger.exception("Error in reminder checker")
 
+            self._wake_event.clear()
             wait_sec = self._next_trigger_seconds()
             if wait_sec is not None:
                 wait_sec = max(wait_sec, 0.1)
             else:
                 wait_sec = 86400.0
 
-            self._wake_event.clear()
-            # 精确等到下条提醒时间，或被 _notify_change 唤醒
             self._wake_event.wait(timeout=wait_sec)
             if self._stop_event.is_set():
                 break
@@ -258,8 +257,12 @@ class MemoReminderPlugin(NekoPluginBase):
                 val = float(repeat[:-1])
             except ValueError:
                 return None
+            if val <= 0:
+                return None
             delta_map = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
             delta = timedelta(**{delta_map.get(unit, "minutes"): val})
+            if delta.total_seconds() <= 0:
+                return None
             next_dt = trigger_dt + delta
             while next_dt <= now:
                 next_dt += delta
@@ -302,6 +305,13 @@ class MemoReminderPlugin(NekoPluginBase):
 
         trigger_dt, has_date = parsed
         repeat = repeat.strip().lower()
+        if repeat not in ("once", "daily", "weekly", "hourly") and repeat.endswith(("m", "h", "s", "d")):
+            try:
+                val = float(repeat[:-1])
+                if val <= 0:
+                    return fail("INVALID_REPEAT", f"重复间隔必须为正数: {repeat}")
+            except ValueError:
+                return fail("INVALID_REPEAT", f"无法解析重复模式: {repeat}")
         now = _now(_TZ_UTC)
 
         if trigger_dt <= now:
@@ -402,8 +412,9 @@ class MemoReminderPlugin(NekoPluginBase):
         description="删除所有待触发的提醒",
     )
     async def clear_reminders(self, **_):
-        count = len(self._load_reminders())
-        self._save_reminders([])
+        with self._reminders_lock:
+            count = len(self._load_reminders_unlocked())
+            self._save_reminders_unlocked([])
         self._notify_change()
         self.logger.info("All {} reminders cleared", count)
         return ok(data={"cleared": count})
