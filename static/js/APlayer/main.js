@@ -280,7 +280,10 @@ function setupGlobalControls(aplayer) {
         play: () => aplayer.play(),
         pause: () => aplayer.pause(),
         toggle: () => aplayer.toggle(),
-        stop: () => aplayer.stop(),
+        stop: () => {               // ✅ 组合使用暂停和归零来模拟停止
+            aplayer.pause();
+            aplayer.seek(0);
+        },
         seek: (time) => aplayer.seek(time),
         setVolume: (vol) => aplayer.volume(vol),
         skipForward: () => aplayer.skipForward(),
