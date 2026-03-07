@@ -2318,16 +2318,25 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
             window._pendingMusicCommand = '';
-            const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message', 'gemini');
+            
+            // 1. 先清洗文本
             const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
-            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanNewText;
-            chatContainer.appendChild(messageDiv);
-            window.currentGeminiMessage = messageDiv;
-            // ========== 新增：追踪本轮气泡 ==========
-            window.currentTurnGeminiBubbles.push(messageDiv);
-            // ========== 追踪结束 ==========
+            
+            // 2. 【核心修复】只有当清洗后还有实质性文本时，才去创建气泡 DOM
+            if (cleanNewText.trim()) {
+                const messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', 'gemini');
+                messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanNewText;
+                
+                chatContainer.appendChild(messageDiv);
+                window.currentGeminiMessage = messageDiv;
+                
+                // ========== 新增：追踪本轮气泡 ==========
+                window.currentTurnGeminiBubbles.push(messageDiv);
+                // ========== 追踪结束 ==========
+            }
 
+            // 3. 移除多余的旧代码，只对干净的文本调用字幕检测
             checkAndShowSubtitlePrompt(cleanNewText);
 
             if (isFirstAIResponse) {
