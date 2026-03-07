@@ -79,8 +79,8 @@ function updatePlayButton(isPlaying) {
         // 修正语义反转：播放中 title 显示“暂停”，暂停中 title 显示“播放”
         // 同时改用动作词 key（如 music.pause/play）并使用 safeT 确保安全
         playBtn.title = isPlaying ? 
-            window.safeT('music.pause', '暂停') : 
-            window.safeT('music.play', '播放');
+            t('music.pause', '暂停') : 
+            t('music.play', '播放');
     }
 }
 
