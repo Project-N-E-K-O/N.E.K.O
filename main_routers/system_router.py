@@ -525,36 +525,62 @@ def _log_music_content(lanlan_name: str, music_content: dict):
         logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
 
 def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
-    """Formats music content into a readable string."""
+    """Formats music content into a readable string with multi-language support."""
     if not music_content.get('success'):
         return ""
     
     _texts = {
-        'zh': {'title': '【今日音乐推荐】', 'album': '专辑', 'desc': '这些歌曲都是当下热门或经典之作，很适合在工作或休闲时聆听～'},
-        'en': {'title': '[Today\'s Music Recommendations]', 'album': 'Album', 'desc': 'These are currently popular or classic tracks, great for listening while working or relaxing~'},
-        'ja': {'title': '【今日の音楽おすすめ】', 'album': 'アルバム', 'desc': 'これらは現在人気のある、または定番の曲で、仕事中やリラックスタイムにぴったりです～'},
-        'ko': {'title': '[오늘의 음악 추천]', 'album': '앨범', 'desc': '현재 인기 있거나 클래식한 곡들로, 일하거나 휴식할 때 듣기 좋습니다~'},
-        'ru': {'title': '[Сегодняшние музыкальные рекомендации]', 'album': 'Альбом', 'desc': 'Это популярные или классические треки, отлично подходящие для работы или отдыха~'}
+        'zh': {
+            'title': '【音乐搜索结果】', 
+            'album': '专辑', 
+            'unknown_track': '未知曲目', 
+            'unknown_artist': '未知艺术家'
+        },
+        'en': {
+            'title': '[Music Search Results]', 
+            'album': 'Album', 
+            'unknown_track': 'Unknown Track', 
+            'unknown_artist': 'Unknown Artist'
+        },
+        'ja': {
+            'title': '【音楽検索結果】', 
+            'album': 'アルバム', 
+            'unknown_track': '不明な曲', 
+            'unknown_artist': '不明なアーティスト'
+        },
+        'ko': {
+            'title': '[음악 검색 결과]', 
+            'album': '앨범', 
+            'unknown_track': '알 수 없는 곡', 
+            'unknown_artist': '알 수 없는 아티스트'
+        },
+        'ru': {
+            'title': '[Результаты поиска музыки]', 
+            'album': 'Альбом', 
+            'unknown_track': 'Неизвестный трек', 
+            'unknown_artist': 'Неизвестный исполнитель'
+        }
     }
     t = _texts.get(lang, _texts['zh'])
     
     output_lines = [t['title']]
     tracks = music_content.get('data', [])
     for i, track in enumerate(tracks[:5], 1):
-        name = track.get('name', '未知曲目')
-        artist = track.get('artist', '未知艺术家')
+        # 使用多语言字典中的“未知”占位符，替代硬编码的中文
+        name = track.get('name') or t['unknown_track']
+        artist = track.get('artist') or t['unknown_artist']
         album = track.get('album', '')
+        
         if album:
             output_lines.append(f"{i}. 《{name}》 - {artist}（{t['album']}：{album}）")
         else:
             output_lines.append(f"{i}. 《{name}》 - {artist}")
     
+    # 如果除了标题没有抓到任何歌曲，则返回空
     if len(output_lines) == 1:
         return ""
-    
-    output_lines.append("")
-    output_lines.append(t['desc'])
         
+    # 删除了原来的 desc 尾注，保持素材的客观中立
     return "\n".join(output_lines)
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
