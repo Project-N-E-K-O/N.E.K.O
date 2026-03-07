@@ -1433,77 +1433,98 @@ window.sendMusicMessage = function(trackInfo) {
         
         // 使用双重 requestAnimationFrame 确保 DOM 已渲染
         requestAnimationFrame(() => {
-            requestAnimationFrame(async() => {
+            requestAnimationFrame(async () => {
                 const container = document.getElementById(playerId);
                 const playBtn = document.getElementById(playerId + '-play');
-                
+
                 if (container && typeof window.initializeAPlayer === 'function') {
-                    // 【修改】调用 main.js 提供的统一初始化函数，而不是直接 new APlayer
-                    // 注意：如果是异步函数，前面需补上 await（当前所在函数 showMusicPlayer 也需标记为 async）
-                    aplayerInstance = await window.initializeAPlayer({ 
-                        container: container,
-                        theme: '#667eea',
-                        loop: 'none',
-                        preload: 'none',
-                        mutex: true, // 保持互斥，确保气泡播放时主播放器自动暂停
-                        volume: 0.7,
-                        listFolded: true,
-                        order: 'normal',
-                        audio: [{
-                            name: trackName,
-                            artist: artistName,
-                            url: trackInfo.url,
-                            cover: hasCover ? trackInfo.cover : ''
-                        }]
-                    });
-                    
-                    // 确保实例挂载，防止被主播放器逻辑误伤
-                    if (!window.aplayerInjected) window.aplayerInjected = {};
-                    // 注意：这里我们仅保留一个引用用于判断，不覆盖全局主播放器实例
-                    // 注册到统一入口，供 getMusicPlayerInstance() 访问
-                    window.aplayerInjected.aplayer = aplayerInstance;
-                    console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
-                    
-                    // 绑定播放按钮事件
-                    if (playBtn) {
-                        playBtn.addEventListener('click', () => {
-                            if (aplayerInstance) {
-                                if (aplayerInstance.paused) {
-                                    aplayerInstance.play();
-                                    playBtn.textContent = '⏸';
-                                } else {
-                                    aplayerInstance.pause();
-                                    playBtn.textContent = '▶';
-                                }
-                            }
+                    try {
+                        // 【修改】包裹 try...catch 捕获初始化异常
+                        aplayerInstance = await window.initializeAPlayer({ 
+                            container: container,
+                            theme: '#667eea',
+                            loop: 'none',
+                            preload: 'none',
+                            mutex: true, // 保持互斥，确保气泡播放时主播放器自动暂停
+                            volume: 0.7,
+                            listFolded: true,
+                            order: 'normal',
+                            audio: [{
+                                name: trackName,
+                                artist: artistName,
+                                url: trackInfo.url,
+                                cover: hasCover ? trackInfo.cover : ''
+                            }]
                         });
-                    }
-                    
-                    // 监听播放状态变化
-                    aplayerInstance.on('play', () => {
-                        if (playBtn) playBtn.textContent = '⏸';
-                    });
-                    aplayerInstance.on('pause', () => {
-                        if (playBtn) playBtn.textContent = '▶';
-                    });
-                    // 播放结束时重置当前播放信息，允许创建新的播放器
-                    aplayerInstance.on('ended', () => {
-                        console.log('[Common UI] 音乐播放结束');
-                        if (playBtn) playBtn.textContent = '▶';
-                    });
-                    
-                    // 美化 APlayer 样式（隐藏起来）
-                    const apElement = container.querySelector('.aplayer');
-                    if (apElement) {
-                        apElement.style.display = 'none';
+                        
+                        if (!aplayerInstance) {
+                            throw new Error("APlayer instance is null after initialization");
+                        }
+
+                        // 确保实例挂载，防止被主播放器逻辑误伤
+                        if (!window.aplayerInjected) window.aplayerInjected = {};
+                        window.aplayerInjected.aplayer = aplayerInstance;
+                        
+                        console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
+
+                        // 绑定播放按钮事件
+                        if (playBtn) {
+                            playBtn.addEventListener('click', () => {
+                                if (aplayerInstance) {
+                                    if (aplayerInstance.paused) {
+                                        aplayerInstance.play();
+                                        playBtn.textContent = '⏸';
+                                    } else {
+                                        aplayerInstance.pause();
+                                        playBtn.textContent = '▶';
+                                    }
+                                }
+                            });
+                        }
+
+                        // 监听播放状态变化
+                        aplayerInstance.on('play', () => {
+                            if (playBtn) playBtn.textContent = '⏸';
+                        });
+                        aplayerInstance.on('pause', () => {
+                            if (playBtn) playBtn.textContent = '▶';
+                        });
+                        
+                        // 播放结束时
+                        aplayerInstance.on('ended', () => {
+                            console.log('[Common UI] 音乐播放结束');
+                            if (playBtn) playBtn.textContent = '▶';
+                        });
+
+                        // 美化 APlayer 样式（隐藏起来）
+                        const apElement = container.querySelector('.aplayer');
+                        if (apElement) {
+                            apElement.style.display = 'none';
+                        }
+                        
+                    } catch (err) {
+                        console.error('[Common UI] 音乐气泡初始化失败，正在回滚:', err);
+                        // 【核心修复：异常回滚】
+                        if (tempDiv && tempDiv.parentNode) {
+                            tempDiv.parentNode.removeChild(tempDiv); // 拔掉死气泡
+                        }
+                        currentPlayingTrack = null; // 重置当前播放状态，避免去重锁死
+                        if (window.showStatusToast) {
+                            const errMsg = window.safeT ? window.safeT('music.playError', '音乐播放加载失败') : '音乐播放加载失败';
+                            window.showStatusToast(errMsg, 3000);
+                        }
                     }
                 } else {
                     console.error('[Common UI] 找不到音乐气泡挂载点或 APlayer 未定义');
+                    // 【核心修复：环境缺失回滚】
+                    if (tempDiv && tempDiv.parentNode) {
+                        tempDiv.parentNode.removeChild(tempDiv); // 拔掉死气泡
+                    }
+                    currentPlayingTrack = null; // 重置当前播放状态
                 }
             });
         });
-    };
-    
+    }
     // 为本次请求生成唯一 token
     const currentToken = ++latestMusicRequestToken;
     
