@@ -162,7 +162,9 @@ export async function initializeAPlayer(options = {}, onReady = null) {
 export function destroyAPlayer() {
     if (!window.aplayer) return true;
     
+    let success = true;
     try {
+        // 尝试正常暂停并销毁实例
         if (typeof window.aplayer.pause === 'function') {
             window.aplayer.pause();
         }
@@ -170,6 +172,7 @@ export function destroyAPlayer() {
             window.aplayer.destroy();
         }
         
+        // 尝试清理 DOM
         const container = window.aplayer.container;
         if (container && container.parentNode) {
             const wrapper = document.getElementById('aplayer-container');
@@ -179,25 +182,36 @@ export function destroyAPlayer() {
                 container.parentNode.removeChild(container);
             }
         }
-        
-       window.aplayer = null;
-        // 【新增】同步清理镜像引用
-        if (window.aplayerInjected) {
-            window.aplayerInjected.aplayer = null;
-        }
-        removeKeyboardShortcuts();
-
         console.log('[APlayer] Destroyed successfully');
-        return true;
     } catch (e) {
         console.error('[APlayer] Failed to destroy:', e);
+        success = false;
+    } finally {
+        // 【核心修复】无论 try 中是否报错，finally 块都会确保执行彻底的清理
+        
+        // 1. 清理实例引用
         window.aplayer = null;
-        // 【新增】失败分支也同步清理镜像引用
         if (window.aplayerInjected) {
             window.aplayerInjected.aplayer = null;
         }
-        return false;
+        
+        // 2. 确保移除键盘快捷键，防止报错分支漏调导致重复绑定
+        if (typeof removeKeyboardShortcuts === 'function') {
+            removeKeyboardShortcuts();
+        }
+        
+        // 3. 清理 setupGlobalControls 挂载的所有全局闭包，杜绝“幽灵控制”
+        delete window.toggleMusicPlayback;
+        delete window.playNextTrack;
+        delete window.playPreviousTrack;
+        delete window.setMusicVolume;
+        delete window.getCurrentTrackInfo;
+        if (window.aplayerControls) {
+            delete window.aplayerControls;
+        }
     }
+    
+    return success;
 }
 
 function updateAPlayerConfig(aplayer, config) {
