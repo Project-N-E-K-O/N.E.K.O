@@ -1,20 +1,20 @@
 # 音乐路由
 import re
 from typing import Dict, Optional
-from fastapi import APIRouter, Request, HTTPException, status, Depends, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 
 # 导入分离出去的爬虫类
 from utils.music_crawlers import fetch_music_content
-
-router = APIRouter()
 from utils.logger_config import get_module_logger
+router = APIRouter()
+
 logger = get_module_logger(__name__, "Music")
 
 @router.get("/api/music/search")
-async def search_music(query: str = Query(default="", min_length=0, max_length=200)):
+async def search_music(query: str = Query(default="", max_length=200)):
     """
     智能音乐分发路由，统一调用 music_crawlers 中的 fetch_music_content。
     """
@@ -24,11 +24,11 @@ async def search_music(query: str = Query(default="", min_length=0, max_length=2
     
     # 空白输入校验
     if not query:
-        logger.warning("[音乐API] 搜索关键词为空，返回失败结果")
+        logger.warning("[音乐API] 搜索关键词为空,返回失败结果")
         return {
             "success": False,  # 【核心修复】标记为失败
             "data": [],
-            "error": "搜索关键词不能为空",  # 填入 error 字段方便前端捕获
+            "error": "EMPTY_QUERY",  # 填入 error 字段方便前端捕获
             "message": "搜索关键词不能为空"
         }
     
