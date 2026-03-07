@@ -320,8 +320,10 @@ async def initialize_character_data():
     
     logger.info("正在加载角色配置...")
     
-    # 清理无效的voice_id引用
-    _config_manager.cleanup_invalid_voice_ids()
+    # 清理无效的voice_id引用；如果发现旧版 CosyVoice 音色，推入通知缓冲池等前端连接后弹出
+    _cleaned, _legacy_names = _config_manager.cleanup_invalid_voice_ids()
+    if _legacy_names:
+        core.enqueue_prominent_notice("CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。")
     
     # 加载最新的角色数据
     master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = _config_manager.get_character_data()
@@ -749,7 +751,7 @@ def _sync_preload_modules():
         import asyncio
         
         async def _warmup_httpx():
-            async with httpx.AsyncClient(timeout=1.0, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
                     await client.get("http://127.0.0.1:1", timeout=0.01)
@@ -970,7 +972,7 @@ async def shutdown_server_async():
         try:
             from config import MEMORY_SERVER_PORT
             shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-            async with httpx.AsyncClient(timeout=1, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=1, proxy=None, trust_env=False) as client:
                 response = await client.post(shutdown_url)
                 if response.status_code == 200:
                     logger.info("已向memory_server发送关闭信号")

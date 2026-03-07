@@ -1421,17 +1421,19 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         # 构造 ExternalEnvelope
         request_id = str(uuid.uuid4())
+        payload: dict[str, object] = {
+            "name": tool_name,
+            "arguments": arguments or {},
+            "target_plugin_id": target_plugin_id,
+        }
+        if isinstance(timeout_s, (int, float)) and timeout_s > 0:
+            payload["timeout_s"] = float(timeout_s)
         envelope = ExternalEnvelope(
             protocol="mcp",
             connection_id="neko_internal",
             request_id=request_id,
             action="tool_call",
-            payload={
-                "name": tool_name,
-                "arguments": arguments or {},
-                "target_plugin_id": target_plugin_id,
-                "timeout": float(timeout_s) if isinstance(timeout_s, (int, float)) and timeout_s > 0 else None,
-            },
+            payload=payload,
             metadata={},
         )
         

@@ -121,7 +121,7 @@ def _enqueue_error(response_queue, error_value):
 
 
 def _adjust_free_tts_url(url: str) -> str:
-    """Free TTS URL 的地区替换：非大陆用户将 lanlan.tech 替换为 lanlan.app。"""
+    """Free TTS URL 的地区替换：双重判定（IP + Steam 均非大陆）时替换为 lanlan.app。"""
     if 'lanlan.tech' not in url:
         return url
     try:
@@ -896,7 +896,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         """
         nonlocal last_streaming_call_time
         kwargs = dict(
-            model="cosyvoice-v3-plus",
+            model="cosyvoice-v3.5-plus",
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,

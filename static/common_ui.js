@@ -306,16 +306,16 @@ if (toggleBtn) {
         isTransitioning = true;
 
         try {
-            // 移动端：仅折叠内容区与标题，不最小化整个容器，保持输入区常驻
+            // 移动端：折叠时隐藏所有内容，仅保留切换按钮
             if (uiIsMobileWidth()) {
                 const becomingCollapsed = !chatContainer.classList.contains('mobile-collapsed');
+                const textInputArea = document.getElementById('text-input-area');
                 if (becomingCollapsed) {
                     chatContainer.classList.add('mobile-collapsed');
-                    // 隐藏内容区与标题
                     if (chatContentWrapper) chatContentWrapper.style.display = 'none';
                     const chatHeader = document.getElementById('chat-header');
                     if (chatHeader) chatHeader.style.display = 'none';
-                    // 确保切换按钮始终可见
+                    if (textInputArea) textInputArea.style.display = 'none';
                     if (toggleBtn) {
                         toggleBtn.style.display = 'block';
                         toggleBtn.style.visibility = 'visible';
@@ -323,10 +323,10 @@ if (toggleBtn) {
                     }
                 } else {
                     chatContainer.classList.remove('mobile-collapsed');
-                    // 显示内容区与标题
                     if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
                     const chatHeader = document.getElementById('chat-header');
                     if (chatHeader) chatHeader.style.removeProperty('display');
+                    if (textInputArea) textInputArea.style.removeProperty('display');
                     if (toggleBtn) {
                         toggleBtn.style.removeProperty('display');
                         toggleBtn.style.removeProperty('visibility');

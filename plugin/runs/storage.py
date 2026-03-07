@@ -17,6 +17,14 @@ from plugin.settings import (
 )
 
 
+class UploadNotFoundError(RuntimeError):
+    """Raised when a finalize targets a missing or expired upload session."""
+
+    def __init__(self, upload_id: str, *, reason: str = "") -> None:
+        self.upload_id = upload_id
+        super().__init__(f"upload {upload_id} not found: {reason}" if reason else f"upload {upload_id} not found")
+
+
 @dataclass(frozen=True)
 class UploadSession:
     upload_id: str
@@ -59,6 +67,12 @@ class BlobStore:
             for upload_id, sess in list(self._uploads.items()):
                 if float(sess.created_at) > deadline:
                     continue
+                # Skip sessions whose tmp file was recently written to (still active).
+                try:
+                    if sess.tmp_path.exists() and sess.tmp_path.stat().st_mtime > deadline:
+                        continue
+                except OSError:
+                    pass
                 expired.append(sess)
                 self._uploads.pop(upload_id, None)
                 if self._blob_to_run.get(sess.blob_id) == sess.run_id:
@@ -117,12 +131,12 @@ class BlobStore:
         with self._lock:
             return self._uploads.get(str(upload_id))
 
-    def finalize_upload(self, upload_id: str) -> Optional[UploadSession]:
+    def finalize_upload(self, upload_id: str) -> UploadSession:
         upload_id = str(upload_id)
         with self._lock:
             sess = self._uploads.get(upload_id)
             if sess is None:
-                return None
+                raise UploadNotFoundError(upload_id, reason="session not found (expired or never created)")
         if sess.final_path.exists():
             with self._lock:
                 if self._uploads.get(upload_id) == sess:
@@ -138,7 +152,7 @@ class BlobStore:
         with self._lock:
             if self._uploads.get(upload_id) == sess:
                 self._uploads.pop(upload_id, None)
-        return None
+        raise UploadNotFoundError(upload_id, reason="both tmp and final paths missing")
 
     def get_blob_path(self, *, run_id: str, blob_id: str) -> Optional[Path]:
         rid = str(run_id)

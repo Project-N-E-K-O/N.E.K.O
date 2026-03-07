@@ -36,6 +36,7 @@ from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code, get_global_language
+import threading
 from threading import Thread
 from queue import Queue
 from uuid import uuid4
@@ -45,6 +46,29 @@ import httpx
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# ---------------------------------------------------------------------------
+# 重要通知缓冲池
+# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息，
+# 前端页面加载时通过 HTTP 接口 drain_prominent_notices() 一次性取走。
+# ---------------------------------------------------------------------------
+_prominent_notice_queue: list[dict] = []
+_prominent_notice_lock = threading.Lock()
+
+
+def enqueue_prominent_notice(message: str):
+    """将一条醒目通知放入缓冲池，等待前端拉取。"""
+    with _prominent_notice_lock:
+        _prominent_notice_queue.append({"message": message})
+
+
+def drain_prominent_notices() -> list[dict]:
+    """取出并清空缓冲池（一次性消费，供 HTTP 接口调用）。"""
+    with _prominent_notice_lock:
+        items = list(_prominent_notice_queue)
+        _prominent_notice_queue.clear()
+    return items
+
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -823,12 +847,12 @@ class LLMSessionManager:
 
         # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
-            cleaned_count = self._config_manager.cleanup_invalid_voice_ids()
+            cleaned_count, _ = self._config_manager.cleanup_invalid_voice_ids()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
-        
+
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
@@ -1040,7 +1064,7 @@ class LLMSessionManager:
             _mem_start = time.time()
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             try:
-                async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
+                async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
@@ -1349,7 +1373,7 @@ class LLMSessionManager:
         header = _loc(AGENT_PLUGINS_HEADER, _lang)
         count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
                 r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                 if r.status_code != 200:
                     return ""
@@ -1378,7 +1402,7 @@ class LLMSessionManager:
         if not self._is_agent_enabled():
             return ""
         try:
-            async with httpx.AsyncClient(timeout=1.5, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
                 if resp.status_code != 200:
                     return ""
@@ -1493,7 +1517,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)

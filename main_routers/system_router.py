@@ -56,6 +56,14 @@ from utils.logger_config import get_module_logger
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
+
+@router.get("/pending-notices")
+async def get_pending_notices():
+    """前端页面加载时拉取待弹通知（一次性消费）。"""
+    from main_logic.core import drain_prominent_notices
+    return drain_prominent_notices()
+
+
 # --- 主动搭话近期记录暂存区 ---
 # {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
 _proactive_chat_history: dict[str, deque] = {}
@@ -1391,7 +1399,7 @@ async def proactive_chat(request: Request):
         
         raw_memory_context = ""
         try:
-            async with httpx.AsyncClient(proxy=None) as client:
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
                 resp.raise_for_status()  # Check for HTTP errors explicitly
                 if resp.status_code == 200:

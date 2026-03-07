@@ -3303,6 +3303,75 @@ function init_app() {
         }
     }
 
+    // 重要通知模态框（全屏遮罩 + 居中弹窗，用户必须点确认才能关闭）
+    function showProminentNotice(message) {
+        if (document.getElementById('prominent-notice-overlay')) return;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'prominent-notice-overlay';
+        overlay.style.cssText = `
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 2147483647;
+            display: flex; align-items: center; justify-content: center;
+            pointer-events: auto;
+            animation: pnOverlayIn 0.25s ease;
+        `;
+
+        const box = document.createElement('div');
+        box.style.cssText = `
+            position: relative;
+            background: #1e293b;
+            color: #f1f5f9;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 32px 28px 24px;
+            width: 370px; max-width: 88vw;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+            text-align: center;
+            pointer-events: auto;
+            animation: pnBoxIn 0.3s ease;
+        `;
+
+        const btn = document.createElement('button');
+        btn.textContent = '确认';
+        btn.style.cssText = `
+            background: #3b82f6; color: #fff; border: none;
+            border-radius: 10px; padding: 10px 48px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.15s;
+        `;
+
+        box.innerHTML = `
+            <img src="/static/icons/exclamation.png" alt="" style="width:36px;height:36px;margin-bottom:14px;">
+            <div style="font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;">${message}</div>
+        `;
+        box.appendChild(btn);
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        if (!document.querySelector('style[data-prominent-notice-animation]')) {
+            const s = document.createElement('style');
+            s.setAttribute('data-prominent-notice-animation', 'true');
+            s.textContent = `
+                @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
+                @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
+                @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
+            `;
+            document.head.appendChild(s);
+        }
+
+        const dismiss = () => {
+            overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+            setTimeout(() => overlay.remove(), 200);
+        };
+        btn.addEventListener('click', dismiss);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) dismiss(); });
+    }
+    window.showProminentNotice = showProminentNotice;
+
     // 显示"可以说话了"提示
     function showReadyToSpeakToast() {
         let toast = document.getElementById('voice-ready-toast');
@@ -3814,11 +3883,15 @@ function init_app() {
                 // 恢复子元素可见性
                 const chatContentWrapper = chatContainerEl.querySelector('.chat-content-wrapper');
                 const chatHeader = chatContainerEl.querySelector('.chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) {
                     chatContentWrapper.style.display = '';
                 }
                 if (chatHeader) {
                     chatHeader.style.display = '';
+                }
+                if (textInputArea) {
+                    textInputArea.style.display = '';
                 }
 
                 // 同步更新切换按钮的状态（图标和标题）
@@ -5760,12 +5833,14 @@ function init_app() {
             chatContainerEl.classList.add(collapseClass);
             console.log('[App] 折叠后类列表:', chatContainerEl.className);
 
-            // 移动端还需要隐藏内容区
+            // 移动端还需要隐藏内容区和输入区
             if (isMobile) {
                 const chatContentWrapper = document.getElementById('chat-content-wrapper');
                 const chatHeader = document.getElementById('chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) chatContentWrapper.style.display = 'none';
                 if (chatHeader) chatHeader.style.display = 'none';
+                if (textInputArea) textInputArea.style.display = 'none';
             }
 
             // 同步更新切换按钮的状态（图标和标题）
@@ -5990,8 +6065,10 @@ function init_app() {
             if (isMobile) {
                 const chatContentWrapper = document.getElementById('chat-content-wrapper');
                 const chatHeader = document.getElementById('chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
                 if (chatHeader) chatHeader.style.removeProperty('display');
+                if (textInputArea) textInputArea.style.removeProperty('display');
             }
 
             // 同步更新切换按钮的状态（图标和标题）
@@ -10505,6 +10582,20 @@ window.addEventListener("load", () => {
             window.showStatusToast(window.t ? window.t('app.started', { name: lanlan_config.lanlan_name }) : `${lanlan_config.lanlan_name}已启动`, 3000);
         }
     }, 1000);
+
+    // 拉取待弹重要通知（由后端启动阶段缓冲，前端页面加载后一次性消费）
+    setTimeout(() => {
+        fetch('/api/pending-notices')
+            .then(r => r.json())
+            .then(notices => {
+                if (Array.isArray(notices) && typeof window.showProminentNotice === 'function') {
+                    notices.forEach(n => {
+                        if (n && n.message) window.showProminentNotice(n.message);
+                    });
+                }
+            })
+            .catch(() => {});
+    }, 2000);
 });
 
 // 监听voice_id更新消息和VRM表情预览消息
