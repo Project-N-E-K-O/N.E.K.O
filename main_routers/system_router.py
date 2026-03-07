@@ -2116,6 +2116,7 @@ async def proactive_chat(request: Request):
                         'title': track.get('name', '未知曲目'),
                         'artist': track.get('artist', '未知艺术家'),
                         'url': track.get('url', ''),
+                        'cover': track.get('cover', ''),
                         'source': '音乐推荐'
                     })
                 
