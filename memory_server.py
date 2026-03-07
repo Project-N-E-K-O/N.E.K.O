@@ -19,6 +19,7 @@ import asyncio
 import logging
 import argparse
 from utils.frontend_utils import get_timestamp
+from typing import Optional
 
 # 配置日志
 from utils.logger_config import setup_logging
@@ -26,6 +27,9 @@ logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO
 
 class HistoryRequest(BaseModel):
     input_history: str
+    # /process 默认仍兼容旧调用方：未传时 recent 更新与完整处理共用同一份历史。
+    # cross_server 在 session end 场景下可单独传 recent_input_history，避免把已 /cache 的消息再次写进 recent history。
+    recent_input_history: Optional[str] = None
 
 app = FastAPI()
 
@@ -177,8 +181,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         
         uid = str(uuid4())
         input_history = convert_to_messages(json.loads(request.input_history))
-        logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-        await recent_history_manager.update_history(input_history, lanlan_name)
+        # input_history 始终代表 /process 的完整处理范围，供 time index / review 使用。
+        # recent_input_history 只代表这次还需要补写到 recent history 的增量；
+        # 如果调用方未显式传入，则退回旧行为，仍用完整 history 更新 recent。
+        recent_input_history = input_history
+        if request.recent_input_history is not None:
+            recent_input_history = convert_to_messages(json.loads(request.recent_input_history))
+        logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}，recent增量: {len(recent_input_history)}")
+        if recent_input_history:
+            await recent_history_manager.update_history(recent_input_history, lanlan_name)
         """
         下面屏蔽了两个模块，因为这两个模块需要消耗token，但当前版本实用性近乎于0。尤其是，Qwen与GPT等旗舰模型相比性能差距过大。
         """

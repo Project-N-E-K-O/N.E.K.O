@@ -196,6 +196,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
             )
             state['delay'] = min(state['delay'] * 2, 5.0)
 
+        def safe_status_callback(text: str):
+            # 前端状态回调只用于提示，不应反向影响同步主流程；这里统一吞掉回调异常，
+            # 避免 UI 通知失败把 memory 的退避/保留逻辑一起打断。
+            if status_callback:
+                try:
+                    status_callback(text)
+                except Exception:
+                    pass
+
         while not shutdown_event.is_set():
             try:
                 # 检查消息队列
@@ -483,14 +492,19 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算。
                                 # 如果之前已有一批消息因 /process 失败而被冻结，则本次优先继续投递这份冻结快照，
                                 # 并把冻结之后新增的消息并入其中，保证 /process 最终拿到完整连续的会话片段。
+                                # 注意：其中一部分后缀消息可能已经在 turn end 通过 /cache 写进过 recent history。
+                                # /process 仍需要拿到完整 remaining 做 time index / review，但 recent history 只应补写尚未 /cache 的那一段。
                                 if pending_process_messages is None:
-                                    remaining = chat_history[last_synced_index:]
+                                    process_recent_messages = chat_history[last_synced_index:]
+                                    remaining = list(process_recent_messages)
                                     if remaining:
                                         pending_process_messages = list(remaining)
                                         pending_process_boundary = len(chat_history)
                                 else:
+                                    process_recent_messages = []
                                     if pending_process_boundary is not None and pending_process_boundary < len(chat_history):
-                                        pending_process_messages.extend(chat_history[pending_process_boundary:])
+                                        process_recent_messages = chat_history[pending_process_boundary:]
+                                        pending_process_messages.extend(process_recent_messages)
                                         pending_process_boundary = len(chat_history)
                                     remaining = pending_process_messages
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
@@ -503,12 +517,17 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             async with aiohttp.ClientSession() as session:
                                                 async with session.post(
                                                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
-                                                    json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                    json={
+                                                        'input_history': json.dumps(remaining, indent=2, ensure_ascii=False),
+                                                        'recent_input_history': json.dumps(process_recent_messages, indent=2, ensure_ascii=False),
+                                                    },
                                                     timeout=aiohttp.ClientTimeout(total=30.0)
                                                 ) as response:
                                                     result = await response.json()
                                                     if result.get('status') == 'error':
-                                                        mark_memory_failure('process', result.get('message', 'unknown error'))
+                                                        err_detail = result.get('message', 'unknown error')
+                                                        mark_memory_failure('process', err_detail)
+                                                        safe_status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
                                                     else:
                                                         mark_memory_success('process')
                                                         # 只有确认 memory_server 已处理这批 remaining 后，才允许清空 chat_history。
@@ -516,6 +535,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                         logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
                                         except Exception as e:
                                             mark_memory_failure('process', e)
+                                            safe_status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
                                     else:
                                         # 当前仍处于 backoff 冷却窗口，不发新请求，但保留 remaining 等下次再送。
                                         logger.info(f"[{lanlan_name}] session end 记忆结算仍在冷却中，暂不重试，保留 {len(remaining)} 条未同步消息")
@@ -527,33 +547,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 else:
                                     # 只要 /process 没成功，就绝不能清空；否则 remaining 会永久丢失。
                                     logger.warning(f"[{lanlan_name}] session end 记忆结算未完成，保留 {len(remaining)} 条消息等待后续重试")
-                                    try:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
-                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
-                                                timeout=aiohttp.ClientTimeout(total=30.0)
-                                            ) as response:
-                                                result = await response.json()
-                                                if result.get('status') == 'error':
-                                                    err_detail = result.get('message', '未知错误')
-                                                    logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {err_detail}")
-                                                    if status_callback:
-                                                        try:
-                                                            status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
-                                                        except Exception:
-                                                            pass
-                                                else:
-                                                    logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
-                                    except Exception as e:
-                                        logger.warning(f"[{lanlan_name}] session end 记忆结算失败: {e}")
-                                        if status_callback:
-                                            try:
-                                                status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
-                                            except Exception:
-                                                pass
-                                chat_history.clear()
-                                last_synced_index = 0
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                     await asyncio.sleep(0.02)
