@@ -194,8 +194,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
                 cookies = json.loads(decrypted_data)
                 
-                # 校验 Cookie 结构：确保所有值都是字符串
-                i# 校验 Cookie 结构：确保所有值都是字符串
+                # 校验 Cookie 结构: 确保所有值都是字符串
                 if isinstance(cookies, dict):
                     valid_cookies = _normalize_cookies(cookies, platform)
                     # 【新增】判断归一化后是否为空（被判定为不合法）
