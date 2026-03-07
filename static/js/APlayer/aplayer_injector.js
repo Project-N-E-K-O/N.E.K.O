@@ -41,8 +41,8 @@ export async function injectAPlayerToChatContainer(options = {}) {
 
     // 异步等待实例加载
     const aplayer = await initializeAPlayer({
-        container: aplayerContainer,
-        ...options
+        ...options,
+        container: aplayerContainer
     });
 
     if (aplayer) {
