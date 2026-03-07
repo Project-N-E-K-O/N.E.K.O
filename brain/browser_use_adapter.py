@@ -357,7 +357,7 @@ class BrowserUseAdapter:
             self.last_error = str(e)
 
     @staticmethod
-    def _get_ip_country() -> Optional[str]:
+    async def _get_ip_country() -> Optional[str]:
         """Return the user's IP country code (e.g. 'US', 'JP', 'CN').
 
         Priority: Steam GeoIP -> ipinfo.io fallback.
@@ -383,10 +383,10 @@ class BrowserUseAdapter:
 
         # Fallback: public GeoIP API
         try:
-            import urllib.request
-            import json as _json
-            with urllib.request.urlopen("https://ipinfo.io/json", timeout=3) as resp:
-                data = _json.loads(resp.read())
+            import httpx
+            async with httpx.AsyncClient(timeout=3) as client:
+                resp = await client.get("https://ipinfo.io/json")
+                data = resp.json()
             code = (data.get("country") or "").upper()
             if code:
                 BrowserUseAdapter._ip_country_cache = code
@@ -700,7 +700,7 @@ class BrowserUseAdapter:
         # 所有 pre-checks 通过后才启动 IP 国家查询任务
         if not BrowserUseAdapter._ip_country_cache:
             country_future = asyncio.create_task(
-                asyncio.to_thread(self._get_ip_country)
+                self._get_ip_country()
             )
 
         for launch_attempt in range(2):

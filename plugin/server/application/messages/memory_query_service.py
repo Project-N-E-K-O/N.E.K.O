@@ -62,7 +62,7 @@ class MemoryQueryService:
                 lanlan_name=normalized_lanlan_name,
                 query=normalized_query,
             )
-            async with httpx.AsyncClient(timeout=normalized_timeout) as client:
+            async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 result = response.json()

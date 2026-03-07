@@ -749,7 +749,7 @@ def _sync_preload_modules():
         import asyncio
         
         async def _warmup_httpx():
-            async with httpx.AsyncClient(timeout=1.0) as client:
+            async with httpx.AsyncClient(timeout=1.0, proxy=None) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
                     await client.get("http://127.0.0.1:1", timeout=0.01)
@@ -970,7 +970,7 @@ async def shutdown_server_async():
         try:
             from config import MEMORY_SERVER_PORT
             shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-            async with httpx.AsyncClient(timeout=1) as client:
+            async with httpx.AsyncClient(timeout=1, proxy=None) as client:
                 response = await client.post(shutdown_url)
                 if response.status_code == 200:
                     logger.info("已向memory_server发送关闭信号")

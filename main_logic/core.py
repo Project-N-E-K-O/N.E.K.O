@@ -283,7 +283,7 @@ class LLMSessionManager:
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-                logger.info("[%s] handle_proactive_complete: turn_end sent to frontend", self.lanlan_name)
+                logger.debug("[%s] handle_proactive_complete: turn_end sent to frontend", self.lanlan_name)
             else:
                 logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
         except Exception as e:
@@ -479,7 +479,7 @@ class LLMSessionManager:
                 }
                 await self.websocket.send_json(message)
                 if is_first_chunk:
-                    logger.info("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
+                    logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
                 self.sync_message_queue.put({"type": "json", "data": message})
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
@@ -1024,7 +1024,7 @@ class LLMSessionManager:
             _mem_start = time.time()
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
@@ -1333,7 +1333,7 @@ class LLMSessionManager:
         header = _loc(AGENT_PLUGINS_HEADER, _lang)
         count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None) as client:
                 r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                 if r.status_code != 200:
                     return ""
@@ -1362,7 +1362,7 @@ class LLMSessionManager:
         if not self._is_agent_enabled():
             return ""
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
+            async with httpx.AsyncClient(timeout=1.5, proxy=None) as client:
                 resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
                 if resp.status_code != 200:
                     return ""
@@ -1472,7 +1472,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
@@ -1762,7 +1762,7 @@ class LLMSessionManager:
             self.lanlan_name, sess_type, self._agent_delivery_in_progress, len(self.pending_agent_callbacks),
         )
         if self._agent_delivery_in_progress:
-            logger.info("[%s] trigger_agent_callbacks: skipped — delivery already in progress", self.lanlan_name)
+            logger.debug("[%s] trigger_agent_callbacks: skipped — delivery already in progress", self.lanlan_name)
             return
         if not self.pending_agent_callbacks:
             return
@@ -1807,12 +1807,12 @@ class LLMSessionManager:
 
             elif isinstance(self.session, OmniOfflineClient):
                 if getattr(self.session, "_is_responding", False):
-                    logger.info("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
+                    logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
                     return
-                logger.info("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
+                logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
                 self.pending_agent_callbacks.clear()
                 delivered = await self.session.stream_proactive(instruction)
-                logger.info("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
+                logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
                 if delivered:
                     self.pending_extra_replies.clear()
                 else:
@@ -1833,7 +1833,7 @@ class LLMSessionManager:
                         self.pending_extra_replies.clear()
                     else:
                         self.pending_agent_callbacks.extend(callbacks_snapshot)
-                    logger.info("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
+                    logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
                 else:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
 
