@@ -2290,7 +2290,11 @@ function init_app() {
                 // 检查这个未闭合的标签是否可能是 [play_music 相关的
                 // 即使它只吐出个 "[pl"，也先拦截下来放入暂存区，防止泄漏到气泡中
                 const partialText = openBracketMatch[0];
-                if (partialText.startsWith('[p') || partialText.startsWith('[play')) {
+                const normalizedPartial = normalizeGeminiText(partialText);
+                const isPlayMusicPrefix = 
+                normalizedPartial.startsWith(PLAY_MUSIC_PREFIX) || PLAY_MUSIC_PREFIX.startsWith(normalizedPartial);
+            
+                if (isPlayMusicPrefix) {
                     window._pendingMusicCommand = partialText;
                     incoming = incoming.slice(0, openBracketMatch.index);
                 }
