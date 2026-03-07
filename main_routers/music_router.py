@@ -24,11 +24,11 @@ async def search_music(query: str = Query(default="", min_length=0, max_length=2
     
     # 空白输入校验
     if not query:
-        logger.warning("[音乐API] 搜索关键词为空，返回空结果")
+        logger.warning("[音乐API] 搜索关键词为空，返回失败结果")
         return {
-            "success": True,
+            "success": False,  # 【核心修复】标记为失败
             "data": [],
-            "error": None,
+            "error": "搜索关键词不能为空",  # 填入 error 字段方便前端捕获
             "message": "搜索关键词不能为空"
         }
     
