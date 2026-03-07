@@ -1060,11 +1060,12 @@ function init_app() {
                     console.log(window.t('console.turnEndReceived'));
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
                     try {
-                        // 【修改】turn end 时未闭合的命令片段直接丢弃，避免半截指令泄漏到正文
+                        // 【补充修复】在 flush 最后缓冲区前，不仅要清空 pending，
+                        // 还要确保 rest 里的半截指令被彻底正则抹除，防止“打字机”最后蹦出个 [play_...
                         window._pendingMusicCommand = ''; 
 
                         let rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer
+                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
                         
                         // 统一清理可能残留的完整或半截指令内容
@@ -2189,9 +2190,12 @@ function init_app() {
                             window.sendMusicMessage(realTrack);
                         }
                     } else {
-                        // 接口调用成功，但真的没搜到这首歌
+                        // 【修复】直接使用 window.t 并传入 query 参数，配合你新改的 JSON 占位符
                         if (window.showStatusToast) {
-                            const notFoundMsg = window.safeT ? window.safeT('music.notFound', '找不到歌曲') : '找不到歌曲';
+                            const notFoundMsg = window.t('music.notFound', { 
+                                query: aiTrackInfo.name, 
+                                defaultValue: `找不到歌曲: ${aiTrackInfo.name}` 
+                            });
                             window.showStatusToast(notFoundMsg, 3000);
                         }
                     }
@@ -2318,7 +2322,7 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
             window._pendingMusicCommand = '';
-            
+
             // 1. 先清洗文本
             const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
             
@@ -9291,14 +9295,16 @@ function init_app() {
                 if (result.action === 'chat') {
                     console.log('主动搭话已发送:', result.message, result.source_mode ? `(来源: ${result.source_mode})` : '');
 
-                    // 如果有 source_links（非音乐模式），延迟后在聊天中显示可点击链接（旁路，不进入 AI 记忆）
-                    if (result.source_links && result.source_links.length > 0 && result.source_mode !== 'music') {
+                    // 【核心修复】解除链接与音乐的互斥逻辑。
+                    // 无论 source_mode 是什么，只要有链接就尝试显示（除了纯音乐模式下可能重复显示的链接）。
+                    // 在 BOTH 模式下（后端现已归类为 music），我们需要既展示 Web 链接又播放音乐喵！
+                    if (result.source_links && result.source_links.length > 0) {
                         setTimeout(() => {
                             _showProactiveChatSourceLinks(result.source_links);
-                        }, 3000); // 等 AI 消息显示完再追加
+                        }, 3000);
                     }
                     
-                    // 如果是音乐模式，尝试播放音乐
+                    // 如果模式包含音乐信号，尝试播放第一条音轨
                     if (result.source_mode === 'music' && result.source_links && result.source_links.length > 0) {
                         const musicLink = result.source_links[0];
                         console.log('[ProactiveChat] 收到音乐链接:', musicLink);
