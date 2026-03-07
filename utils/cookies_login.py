@@ -231,6 +231,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                     if not content:
                         logger.warning(f"{platform} Cookie 文件内容为空或只有空白字符: {cookie_file}")
                         return {}
+                
                 cookies = json.loads(content)
                 if not isinstance(cookies, dict):
                     logger.warning(f"{platform} Cookie 明文内容不是对象: {cookie_file}")
@@ -238,13 +239,18 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 
                 # 校验 Cookie 结构：确保所有值都是字符串
                 valid_cookies = _normalize_cookies(cookies, platform)
+                # 【新增】判断归一化后是否为空（被判定为不合法）
+                if not valid_cookies:
+                    logger.warning(f"{platform} Cookie 明文内容格式校验不通过，拒绝加载: {cookie_file}")
+                    return {}
                 
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return valid_cookies
+                
             except Exception as plain_error:
                 logger.error(f"明文加载 {platform} Cookie 失败: {plain_error}")
                 return {}
-        
+                
     except Exception as e:
         logger.error(f"❌ 加载 {platform} Cookie 失败: {e}")
         return {}
