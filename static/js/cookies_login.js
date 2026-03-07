@@ -239,7 +239,8 @@ async function showQRLogin(config) {
     }
 }
 
-let qrPollInterval = null;
+let qrPollTimeout = null;
+let qrPollInFlight = false;
 let currentQrKey = null;
 
 async function requestQR(config) {
@@ -309,16 +310,17 @@ async function requestQR(config) {
 }
 
 function startQrPoll(config) {
-    if (qrPollInterval) {
-        clearInterval(qrPollInterval);
-    }
-    
-    qrPollInterval = setInterval(async () => {
+    stopQrPoll();
+
+    const pollOnce = async () => {
         if (!currentQrKey) {
             stopQrPoll();
             return;
         }
-        
+
+        if (qrPollInFlight) return;
+        qrPollInFlight = true;
+
         try {
             const response = await fetch('/api/auth/QRLogin', {
                 method: 'POST',
@@ -328,37 +330,37 @@ function startQrPoll(config) {
                     qrcode_key: currentQrKey 
                 })
             });
-            
+
             const result = await response.json();
             const statusEl = document.getElementById('qr-status');
             const data = result.data;
-            
+
             if (result.success && data.status === 'success') {
                 stopQrPoll();
                 if (statusEl) {
                     statusEl.innerHTML = '<span style="color: #22c55e; font-weight: 600;">' + safeT('cookiesLogin.qrLogin.status.success', '✅ {{message}}').replace('{{message}}', data.message) + '</span>';
                 }
-                
+
                 const cookies = data.cookies;
                 const cookieFields = data.cookie_fields || [];
-                
+
                 cookieFields.forEach(field => {
                     if (cookies && cookies[field]) {
                         const input = document.getElementById('input-' + field);
                         if (input) input.value = cookies[field];
                     }
                 });
-                
+
                 showAlert(true, safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置'));
-                
+
                 setTimeout(() => {
                     showQRLogin(config);
                 }, 2000);
-                
+
             } else if (data) {
                 const status = data.status;
                 const message = data.message;
-                
+
                 if (statusEl) {
                     if (status === 'expired') {
                         statusEl.innerHTML = '<span style="color: #ef4444;">' + safeT('cookiesLogin.qrLogin.status.expired', '❌ {{message}}，请刷新').replace('{{message}}', message) + '</span>';
@@ -374,15 +376,23 @@ function startQrPoll(config) {
             }
         } catch (err) {
             console.error("Poll error:", err);
+        } finally {
+            qrPollInFlight = false;
+            if (currentQrKey) {
+                qrPollTimeout = setTimeout(pollOnce, 1500);
+            }
         }
-    }, 1500);
+    };
+
+    pollOnce();
 }
 
 function stopQrPoll() {
-    if (qrPollInterval) {
-        clearInterval(qrPollInterval);
-        qrPollInterval = null;
+    if (qrPollTimeout) {
+        clearTimeout(qrPollTimeout);
+        qrPollTimeout = null;
     }
+    qrPollInFlight = false;
 }
 
 
