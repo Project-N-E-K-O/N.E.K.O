@@ -213,6 +213,10 @@ function updateAPlayerConfig(aplayer, config) {
     if (config.ui) {
         initializeAPlayerUI(aplayer, config.ui);
     }
+    if (config.defaultPlaylist && config.defaultPlaylist.length > 0) {
+        aplayer.list.clear(); // 清空旧歌单
+        aplayer.list.add(config.defaultPlaylist); // 注入新歌单
+    }
 }
 
 function createPlayerContainer(config) {
