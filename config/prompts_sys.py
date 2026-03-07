@@ -1212,7 +1212,8 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 请根据以下原则决定是否播放音乐，以及播放什么：
 1. 当{master_name}明确提出听歌请求时（例如"来点音乐"、"放首歌"、"想听歌"），你应该播放音乐。
 2. 当对话中出现放松、休息、工作累了、下午犯困、心情不好、轻松等情境时，可以主动推荐轻松的音乐。
-3. 分析{master_name}的请求，提取出歌曲、歌手或音乐风格作为搜索关键词。支持的风格包括：华语、流行、电子、说唱、lofi、chill、pop、hiphop、ambient、古典、钢琴、acousti等。
+3. 分析{master_name}的请求，提取出歌曲、歌手或音乐风格作为搜索关键词。支持的风格包括：华语、流行、电子、说唱、lofi、chill、pop、hiphop、ambient、古典、钢琴、acoustic
+等。
 4. 如果{master_name}没有明确指定，你可以根据对话的氛围或{master_name}的喜好推荐音乐。例如，如果气氛很轻松，可以推荐lofi或chill风格的音乐。
 
 请回复：
