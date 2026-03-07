@@ -1771,7 +1771,7 @@ async def proactive_chat(request: Request):
                     if music_raw and music_raw.get('success'):
                         _log_music_content(lanlan_name, music_raw)
                         music_content = {
-                            'formatted_content': _format_music_content(music_raw),
+                            'formatted_content': _format_music_content(music_raw, proactive_lang),
                             'raw_data': music_raw,
                         }
                     else:
@@ -1783,7 +1783,7 @@ async def proactive_chat(request: Request):
                     if music_raw and music_raw.get('success'):
                         _log_music_content(lanlan_name, music_raw)
                         music_content = {
-                            'formatted_content': _format_music_content(music_raw),
+                            'formatted_content': _format_music_content(music_raw, proactive_lang),
                             'raw_data': music_raw,
                         }
                     else:
@@ -2097,20 +2097,24 @@ async def proactive_chat(request: Request):
         if source_tag == 'SCREEN':
             source_links = []
             primary_channel = 'vision'
-        elif source_tag in ('WEB', 'BOTH'):
-            primary_channel = 'web' if source_tag == 'WEB' else primary_channel
+        elif source_tag == 'WEB':
+            primary_channel = 'web'
         elif source_tag == 'MUSIC':
-            # 删除了错误的覆盖行，保留严谨的幻觉防御
-            primary_channel = 'music' if has_music_topic else primary_channel
+            # 【修复】明确是纯音乐模式时，清空之前 Web 筛选匹配到的链接，防止前端播放逻辑混淆
+            source_links = []
+            primary_channel = 'music'
+        elif source_tag == 'BOTH':
+            # BOTH 模式下不清除链接，保持原有的 primary_channel
+            pass
         
-        # 判断本轮是否实际采用了音乐推荐
-        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH') or source_tag not in ('SCREEN', 'WEB'))
+        # 【优化】严格判断是否采用音乐：仅在模型明确回复标签包含 MUSIC 或 BOTH 时生效
+        # 解决 source_tag 为空或未明确命中时默认判定为音乐的问题
+        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
         
         if is_music_used:
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
-                if not source_links:
-                    source_links = []
+                # 只有在明确是 MUSIC 标签时，才清空并强转主通道（上面已处理一次清空，这里追加链接）
                 for track in music_raw.get('data', [])[:3]:
                     source_links.append({
                         'title': track.get('name', '未知曲目'),
@@ -2118,7 +2122,10 @@ async def proactive_chat(request: Request):
                         'url': track.get('url', ''),
                         'source': '音乐推荐'
                     })
-                primary_channel = 'music'
+                
+                # 【建议拆分】切换主通道的操作仅在纯音乐模式下进行
+                if source_tag == 'MUSIC':
+                    primary_channel = 'music'
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
