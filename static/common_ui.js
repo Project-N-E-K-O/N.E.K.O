@@ -1309,13 +1309,13 @@ window.sendMusicMessage = function(trackInfo) {
                 const allowedProtocols = ['http:', 'https:'];
                 const allowedDomains = [
                     'cdn.jsdelivr.net', 'i.scdn.co', 'p.scdn.co', 'a.scdn.co',
-                    'via.placeholder.com', 'i.imgur.com', 'piccdn', 'y.qq.com',
+                    'via.placeholder.com', 'i.imgur.com', 'y.qq.com',
                     'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
                     'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
                     'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
                     'fma-fma.net', 'musopen.org', 'bandcamp.com', 'soundcloud.com',
                     'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                    'updates.broadcastify.com'
+                    'updates.broadcastify.com','music.163.com'
                 ];
                 if (!allowedProtocols.includes(parsed.protocol)) return false;
                 // 修复：严格限制全等匹配或合法子域名匹配，防止 SSRF 域名绕过 (如 scambandcamp.com)
