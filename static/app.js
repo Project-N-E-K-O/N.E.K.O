@@ -2326,7 +2326,7 @@ function init_app() {
             // 1. 先清洗文本
             const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
             
-            // 2. 【核心修复】只有当清洗后还有实质性文本时，才去创建气泡 DOM
+            // 2. 只有当清洗后还有实质性文本时，才去创建气泡 DOM；否则清空指针以避免误追加
             if (cleanNewText.trim()) {
                 const messageDiv = document.createElement('div');
                 messageDiv.classList.add('message', 'gemini');
@@ -2334,10 +2334,12 @@ function init_app() {
                 
                 chatContainer.appendChild(messageDiv);
                 window.currentGeminiMessage = messageDiv;
-                
+
                 // ========== 新增：追踪本轮气泡 ==========
                 window.currentTurnGeminiBubbles.push(messageDiv);
                 // ========== 追踪结束 ==========
+            } else {
+                window.currentGeminiMessage = null;
             }
 
             // 3. 移除多余的旧代码，只对干净的文本调用字幕检测
