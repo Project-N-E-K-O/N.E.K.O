@@ -142,27 +142,24 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
 def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]:
     """
     规范化 Cookie 结构：
-    - 键必须是 str 类型
-    - 值只能是 str 或 primitive (int/float/bool)，dict/list/None 直接判坏
+    - 强制要求键和值必须全部为字符串类型
+    - 杜绝 int/bool/None 等非字符串值被意外转换为非空字符串（如 "False"）
     """
     valid_cookies: Dict[str, str] = {}
     
     for k, v in cookies.items():
+        # 1. 校验键必须为字符串
         if not isinstance(k, str):
-            logger.warning(f"{platform} Cookie 键类型不合法: {type(k).__name__}")
+            logger.warning(f"[{platform}] Cookie 键格式错误：'{k}' 必须为字符串类型")
             return {}
         
-        if isinstance(v, (dict, list)) or v is None:
-            logger.warning(f"{platform} Cookie 值类型不合法: key={k}, value_type={type(v).__name__}")
-            return {}
-        
-        # 【核心修复】为了防止坏凭证（如 false/0）被转成非空字符串绕过验证
-        # 严格限制 Cookie 值必须为字符串类型，不再做强制转换
+        # 2. 【核心修复】校验值必须为字符串。
+        # 移除对 dict/list/int/bool 的分段判断，统一实行“非字符即非法”策略
         if isinstance(v, str):
             valid_cookies[k] = v
         else:
-            logger.warning(f"[{platform}] Cookie 格式非法：键 '{k}' 必须为字符串，当前类型为 {type(v).__name__}")
-            # 只要有一个字段非法，就认为整组 Cookie 无效，防止带病上线
+            logger.warning(f"[{platform}] Cookie 格式非法：键 '{k}' 的值必须为字符串，当前类型为 {type(v).__name__}")
+            # 只要发现一个字段不是字符串（如 bool、int 或 None），即认为整组凭证无效，防止绕过验证
             return {}
     
     return valid_cookies
