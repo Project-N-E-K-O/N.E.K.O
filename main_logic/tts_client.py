@@ -867,11 +867,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 # 回合切换窗口或未就绪时直接丢弃，避免错序串包
                 return
 
-            # speech_id 切换时重置首包聚合状态
+            # speech_id 切换时重置首包聚合状态（含后续聚合缓冲，避免旧数据串入新回合）
             if sid != self._active_sid:
                 self._active_sid = sid
                 self._bootstrap_buffer.clear()
                 self._bootstrap_sent = False
+                self._agg_buffer.clear()
 
             if not self._bootstrap_sent:
                 self._bootstrap_buffer.extend(data)
@@ -1021,6 +1022,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             current_speech_id = sid
             char_buffer = ""
             detected_lang = None
+            # 显式清理聚合缓冲：close() 会触发 on_complete→reset_bootstrap_state，
+            # 但若 SDK 线程延迟触发 on_complete，新 synthesizer 的 on_open 可能先执行
+            # 导致 _agg_buffer 带着旧数据进入新回合。此处提前清理消除该竞态。
+            callback.reset_bootstrap_state()
             callback.accepted_speech_id = sid
             
         if tts_text is None or not tts_text.strip():

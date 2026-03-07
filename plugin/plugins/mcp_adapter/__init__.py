@@ -1421,27 +1421,28 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         # 构造 ExternalEnvelope
         request_id = str(uuid.uuid4())
-        payload: dict[str, object] = {
-            "name": tool_name,
-            "arguments": arguments or {},
-            "target_plugin_id": target_plugin_id,
-        }
-        if timeout_s is not None:
-            if not isinstance(timeout_s, (int, float)):
-                raise TypeError(f"timeout_s must be a number, got {type(timeout_s).__name__}")
-            if timeout_s <= 0:
-                raise ValueError(f"timeout_s must be positive, got {timeout_s}")
-            payload["timeout_s"] = float(timeout_s)
-        envelope = ExternalEnvelope(
-            protocol="mcp",
-            connection_id="neko_internal",
-            request_id=request_id,
-            action="tool_call",
-            payload=payload,
-            metadata={},
-        )
-        
         try:
+            payload: dict[str, object] = {
+                "name": tool_name,
+                "arguments": arguments or {},
+                "target_plugin_id": target_plugin_id,
+            }
+            if timeout_s is not None:
+                # bool is a subclass of int in Python; reject it explicitly to avoid
+                # True/False being silently coerced to 1.0/0.0.
+                if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+                    raise TypeError(f"timeout_s must be a number, got {type(timeout_s).__name__}")
+                if timeout_s <= 0:
+                    raise ValueError(f"timeout_s must be positive, got {timeout_s}")
+                payload["timeout_s"] = float(timeout_s)
+            envelope = ExternalEnvelope(
+                protocol="mcp",
+                connection_id="neko_internal",
+                request_id=request_id,
+                action="tool_call",
+                payload=payload,
+                metadata={},
+            )
             response = await self._gateway_core.handle_envelope(envelope)
         except Exception as exc:
             self.ctx.logger.exception(f"Gateway invoke raised unexpected exception: {exc}")

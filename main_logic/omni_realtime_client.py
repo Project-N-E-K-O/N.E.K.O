@@ -381,8 +381,11 @@ class OmniRealtimeClient:
         返回 True 时，若来自 RNNoise 则调用方需置 _silence_reset_pending=False；
         若来自 VAD+静音则本函数已更新 _last_silence_clear_speech_time。
         """
-        if use_rnnoise_path and self._silence_reset_pending:
-            return True
+        if use_rnnoise_path:
+            # RNNoise 路径：仅以 RNNoise 的 4 秒静音回调为准；
+            # 若尚未收到回调（_silence_reset_pending=False），直接返回 False，
+            # 不得降级到 VAD 时间戳逻辑，否则会误触提前清空。
+            return self._silence_reset_pending
         # 无 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
         if self._has_server_vad:
             last_speech = self._last_speech_time
@@ -421,6 +424,8 @@ class OmniRealtimeClient:
         self._silence_reset_pending = False
         self._last_silence_clear_speech_time = 0.0
         self._last_local_loud_time = 0.0
+        self._client_vad_active = False
+        self._client_vad_last_speech_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -1223,6 +1228,8 @@ class OmniRealtimeClient:
         self._silence_reset_pending = False
         self._last_silence_clear_speech_time = 0.0
         self._last_local_loud_time = 0.0
+        self._client_vad_active = False
+        self._client_vad_last_speech_time = 0.0
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1270,6 +1277,8 @@ class OmniRealtimeClient:
                 self._silence_reset_pending = False
                 self._last_silence_clear_speech_time = 0.0
                 self._last_local_loud_time = 0.0
+                self._client_vad_active = False
+                self._client_vad_last_speech_time = 0.0
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:

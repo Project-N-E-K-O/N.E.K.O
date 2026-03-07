@@ -49,11 +49,14 @@ logger = get_module_logger(__name__, "Main")
 
 # ---------------------------------------------------------------------------
 # 重要通知缓冲池
-# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息，
-# 前端页面加载时通过 HTTP 接口 drain_prominent_notices() 一次性取走。
+# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
+# 前端通过 GET /api/pending-notices 拉取（返回通知列表和游标），
+# 用户全部确认后通过 POST /api/pending-notices/ack?cursor=N 只删除已展示的通知，
+# 避免 peek→ack 两次 HTTP 往返之间新入队的通知被静默清空（TOCTOU）。
 # ---------------------------------------------------------------------------
 _prominent_notice_queue: list[dict] = []
 _prominent_notice_lock = threading.Lock()
+_prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
 
 
 def enqueue_prominent_notice(notice: "str | dict"):
@@ -62,26 +65,43 @@ def enqueue_prominent_notice(notice: "str | dict"):
     可传入字符串（自动包装为 {"message": ...}）或结构化字典
     （建议包含 "code"、"message"、"message_en"、"details" 字段）。
     """
+    global _prominent_notice_seq
     if isinstance(notice, str):
         item: dict = {"message": notice}
     else:
         item = dict(notice)
     with _prominent_notice_lock:
+        _prominent_notice_seq += 1
+        item["_nid"] = _prominent_notice_seq
         _prominent_notice_queue.append(item)
 
 
-def peek_prominent_notices() -> list[dict]:
-    """返回缓冲池快照，不清空（供非破坏性读取）。"""
-    with _prominent_notice_lock:
-        return list(_prominent_notice_queue)
+def peek_prominent_notices() -> tuple[list[dict], int]:
+    """返回缓冲池快照和当前游标（供 GET /pending-notices 使用）。
 
-
-def drain_prominent_notices() -> list[dict]:
-    """取出并清空缓冲池（一次性消费，供确认接口调用）。"""
+    返回 (notices_without_internal_fields, cursor)；cursor 是本次快照中最大的
+    _nid，调用方将其传给 drain_prominent_notices(cursor) 即可精确删除已展示项。
+    """
     with _prominent_notice_lock:
         items = list(_prominent_notice_queue)
+    cursor = items[-1]["_nid"] if items else 0
+    public = [{k: v for k, v in it.items() if k != "_nid"} for it in items]
+    return public, cursor
+
+
+def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
+    """删除 _nid ≤ up_to_cursor 的通知，保留之后新入队的项目。
+
+    返回被删除的通知列表。传入 0 或负数时不删除任何条目。
+    """
+    if up_to_cursor <= 0:
+        return []
+    with _prominent_notice_lock:
+        remaining = [it for it in _prominent_notice_queue if it.get("_nid", 0) > up_to_cursor]
+        drained = [it for it in _prominent_notice_queue if it.get("_nid", 0) <= up_to_cursor]
         _prominent_notice_queue.clear()
-    return items
+        _prominent_notice_queue.extend(remaining)
+    return drained
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---

@@ -59,16 +59,26 @@ logger = get_module_logger(__name__, "Main")
 
 @router.get("/pending-notices")
 async def get_pending_notices():
-    """前端页面加载时拉取待弹通知（只读快照，不清空队列）。"""
+    """前端页面加载时拉取待弹通知（只读快照，不清空队列）。
+    
+    返回 {"notices": [...], "cursor": N}；前端确认后须将 cursor 回传给 ack 接口，
+    确保只删除本次已展示的通知，不会误删两次请求之间新入队的条目。
+    """
     from main_logic.core import peek_prominent_notices
-    return peek_prominent_notices()
+    notices, cursor = peek_prominent_notices()
+    return {"notices": notices, "cursor": cursor}
 
 
 @router.post("/pending-notices/ack")
-async def ack_pending_notices():
-    """前端展示完通知后调用，清空通知队列。"""
+async def ack_pending_notices(request: Request):
+    """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
     from main_logic.core import drain_prominent_notices
-    drain_prominent_notices()
+    try:
+        body = await request.json()
+        cursor = int(body.get("cursor", 0))
+    except Exception:
+        cursor = 0
+    drain_prominent_notices(cursor)
     return {"ok": True}
 
 

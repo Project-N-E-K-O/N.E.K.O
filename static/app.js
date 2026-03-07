@@ -135,6 +135,7 @@ function init_app() {
     let audioBufferQueue = [];
     let screenshotCounter = 0; // 截图计数器
     let isPlaying = false;
+    let scheduleAudioChunksRunning = false;
     let audioStartTime = 0;
     let nextChunkTime = 0;
     let scheduledSources = [];
@@ -3306,93 +3307,107 @@ function init_app() {
     // 重要通知模态框（全屏遮罩 + 居中弹窗，用户必须点确认才能关闭）
     // 接受字符串或通知对象 {code, message, message_en, details}
     // 返回 Promise，在用户确认后 resolve（用于串行展示多条通知）
-    function showProminentNotice(noticeOrMessage) {
-        const notice = (typeof noticeOrMessage === 'string')
-            ? { message: noticeOrMessage }
-            : noticeOrMessage;
+    //
+    // 实现：内部维护一条 FIFO 队列；若当前已有遮罩，新调用入队等待，
+    // 不会丢失内容也不会同时弹出两个遮罩。
+    const _prominentNoticeQueue = [];
+    let _prominentNoticeActive = false;
+
+    function _drainProminentNoticeQueue() {
+        if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
+        const { notice, resolve } = _prominentNoticeQueue.shift();
+        _prominentNoticeActive = true;
+        _renderProminentNotice(notice, () => {
+            resolve();
+            _prominentNoticeActive = false;
+            _drainProminentNoticeQueue();
+        });
+    }
+
+    function _renderProminentNotice(notice, onDismiss) {
         const displayText = (notice.code && typeof safeT === 'function')
             ? safeT(notice.code, notice.message_en || notice.message)
             : (notice.message_en || notice.message || '');
 
+        const overlay = document.createElement('div');
+        overlay.id = 'prominent-notice-overlay';
+        overlay.style.cssText = `
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 2147483647;
+            display: flex; align-items: center; justify-content: center;
+            pointer-events: auto;
+            animation: pnOverlayIn 0.25s ease;
+        `;
+
+        const box = document.createElement('div');
+        box.style.cssText = `
+            position: relative;
+            background: #1e293b;
+            color: #f1f5f9;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 32px 28px 24px;
+            width: 370px; max-width: 88vw;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+            text-align: center;
+            pointer-events: auto;
+            animation: pnBoxIn 0.3s ease;
+        `;
+
+        const btn = document.createElement('button');
+        btn.textContent = (typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认';
+        btn.style.cssText = `
+            background: #3b82f6; color: #fff; border: none;
+            border-radius: 10px; padding: 10px 48px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.15s;
+        `;
+
+        const icon = document.createElement('img');
+        icon.src = '/static/icons/exclamation.png';
+        icon.alt = '';
+        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
+
+        const textDiv = document.createElement('div');
+        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;';
+        textDiv.textContent = displayText;
+
+        box.appendChild(icon);
+        box.appendChild(textDiv);
+        box.appendChild(btn);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        if (!document.querySelector('style[data-prominent-notice-animation]')) {
+            const s = document.createElement('style');
+            s.setAttribute('data-prominent-notice-animation', 'true');
+            s.textContent = `
+                @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
+                @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
+                @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
+            `;
+            document.head.appendChild(s);
+        }
+
+        const dismiss = () => {
+            overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+            setTimeout(() => {
+                overlay.remove();
+                onDismiss();
+            }, 200);
+        };
+        btn.addEventListener('click', dismiss);
+    }
+
+    function showProminentNotice(noticeOrMessage) {
+        const notice = (typeof noticeOrMessage === 'string')
+            ? { message: noticeOrMessage }
+            : noticeOrMessage;
         return new Promise((resolve) => {
-            const existing = document.getElementById('prominent-notice-overlay');
-            if (existing) {
-                existing.addEventListener('pn:dismissed', resolve, { once: true });
-                return;
-            }
-
-            const overlay = document.createElement('div');
-            overlay.id = 'prominent-notice-overlay';
-            overlay.style.cssText = `
-                position: fixed; inset: 0;
-                background: rgba(0,0,0,0.55);
-                z-index: 2147483647;
-                display: flex; align-items: center; justify-content: center;
-                pointer-events: auto;
-                animation: pnOverlayIn 0.25s ease;
-            `;
-
-            const box = document.createElement('div');
-            box.style.cssText = `
-                position: relative;
-                background: #1e293b;
-                color: #f1f5f9;
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 16px;
-                padding: 32px 28px 24px;
-                width: 370px; max-width: 88vw;
-                box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-                text-align: center;
-                pointer-events: auto;
-                animation: pnBoxIn 0.3s ease;
-            `;
-
-            const btn = document.createElement('button');
-            btn.textContent = (typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认';
-            btn.style.cssText = `
-                background: #3b82f6; color: #fff; border: none;
-                border-radius: 10px; padding: 10px 48px;
-                font-size: 15px; font-weight: 600; cursor: pointer;
-                pointer-events: auto;
-                transition: background 0.15s;
-            `;
-
-            const icon = document.createElement('img');
-            icon.src = '/static/icons/exclamation.png';
-            icon.alt = '';
-            icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
-
-            const textDiv = document.createElement('div');
-            textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;';
-            textDiv.textContent = displayText;
-
-            box.appendChild(icon);
-            box.appendChild(textDiv);
-            box.appendChild(btn);
-            overlay.appendChild(box);
-            document.body.appendChild(overlay);
-
-            if (!document.querySelector('style[data-prominent-notice-animation]')) {
-                const s = document.createElement('style');
-                s.setAttribute('data-prominent-notice-animation', 'true');
-                s.textContent = `
-                    @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
-                    @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
-                    @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
-                `;
-                document.head.appendChild(s);
-            }
-
-            const dismiss = () => {
-                overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
-                setTimeout(() => {
-                    overlay.dispatchEvent(new Event('pn:dismissed'));
-                    overlay.remove();
-                    resolve();
-                }, 200);
-            };
-            btn.addEventListener('click', dismiss);
-            overlay.addEventListener('click', (e) => { if (e.target === overlay) dismiss(); });
+            _prominentNoticeQueue.push({ notice, resolve });
+            _drainProminentNoticeQueue();
         });
     }
     window.showProminentNotice = showProminentNotice;
@@ -4653,6 +4668,9 @@ function init_app() {
 
 
     function scheduleAudioChunks() {
+        if (scheduleAudioChunksRunning) return;
+        scheduleAudioChunksRunning = true;
+
         const scheduleAheadTime = 5;
 
         initializeGlobalAnalyser();
@@ -4739,6 +4757,7 @@ function init_app() {
         }
 
         // 继续调度循环
+        scheduleAudioChunksRunning = false;
         setTimeout(scheduleAudioChunks, 25); // 25ms间隔检查
     }
 
@@ -4826,11 +4845,9 @@ function init_app() {
             );
             isPlaying = true;
             scheduleAudioChunks();
-        } else {
-            Promise.resolve().then(() => {
-                try { scheduleAudioChunks(); } catch (_) {}
-            });
         }
+        // When isPlaying is already true the scheduler loop is already running via
+        // its own setTimeout; no need to spawn an extra call.
     }
 
     function enqueueIncomingAudioBlob(blob) {
@@ -10588,16 +10605,23 @@ window.addEventListener("load", () => {
         }
     }, 1000);
 
-    // 拉取待弹重要通知（由后端启动阶段缓冲，前端页面加载后串行展示，全部确认后通知后端清空）
+    // 拉取待弹重要通知（由后端启动阶段缓冲，前端页面加载后串行展示）
+    // 使用游标确认：只 ack 本次拉取到的通知，避免 peek→ack 之间新入队的通知被误删。
     setTimeout(async () => {
         try {
             const r = await fetch('/api/pending-notices');
-            const notices = await r.json();
-            if (Array.isArray(notices) && notices.length > 0 && typeof window.showProminentNotice === 'function') {
+            const data = await r.json();
+            const notices = Array.isArray(data) ? data : (data.notices || []);
+            const cursor = (data && typeof data.cursor === 'number') ? data.cursor : 0;
+            if (notices.length > 0 && typeof window.showProminentNotice === 'function') {
                 for (const n of notices) {
                     if (n) await window.showProminentNotice(n);
                 }
-                await fetch('/api/pending-notices/ack', { method: 'POST' }).catch(() => {});
+                await fetch('/api/pending-notices/ack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cursor }),
+                }).catch(() => {});
             }
         } catch (_) {}
     }, 2000);

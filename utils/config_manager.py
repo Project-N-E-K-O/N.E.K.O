@@ -1152,7 +1152,9 @@ class ConfigManager:
                 "http://ip-api.com/json/?fields=countryCode",
                 headers={"User-Agent": "Mozilla/5.0"},
             )
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
             country = (data.get("countryCode") or "").upper()
             if country:

@@ -217,7 +217,7 @@ class RunService:
             except UploadNotFoundError as exc:
                 raise _to_domain_error(
                     code="UPLOAD_NOT_FOUND",
-                    message=str(exc),
+                    message="upload not found",
                     status_code=404,
                     details={"upload_id": upload_id},
                 ) from exc
