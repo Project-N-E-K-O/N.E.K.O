@@ -667,16 +667,18 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}", "code": "TTS_CONNECTION_FAILED", "details": {"msg": f"Non-JSON response (HTTP {resp.status})"}}
+                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}): {text[:200]}")
+                    return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
                 if resp.status == 200:
                     return {"success": True, "voices": result}
-                return {"success": False, "error": f"HTTP {resp.status}: {str(result)[:200]}", "code": "TTS_CONNECTION_FAILED", "details": {"msg": f"HTTP {resp.status}"}}
+                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}: {str(result)[:200]}")
+                return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
-        return {"success": False, "error": f"Connection error: {str(e)}", "code": "TTS_CONNECTION_FAILED", "details": {"msg": str(e)}}
+        return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
-        return {"success": False, "error": str(e), "code": "TTS_CONNECTION_FAILED", "details": {"msg": str(e)}}
+        return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
 
 
 def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
