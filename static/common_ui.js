@@ -1460,8 +1460,8 @@ window.sendMusicMessage = function(trackInfo) {
                     // 确保实例挂载，防止被主播放器逻辑误伤
                     if (!window.aplayerInjected) window.aplayerInjected = {};
                     // 注意：这里我们仅保留一个引用用于判断，不覆盖全局主播放器实例
-                    window.aplayerInjected.currentBubblePlayer = aplayerInstance;
-                    
+                    // 注册到统一入口，供 getMusicPlayerInstance() 访问
+                    window.aplayerInjected.aplayer = aplayerInstance;
                     console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
                     
                     // 绑定播放按钮事件
