@@ -1130,7 +1130,6 @@ async def proxy_image(image_path: str):
                 
                 # 方法2：尝试从路径中提取创意工坊相关部分
                 if not workshop_related_dir:
-                    import re
                     match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
                     if match:
                         workshop_related_dir = match.group(1)
@@ -1143,7 +1142,6 @@ async def proxy_image(image_path: str):
                 
                 # 方法4：如果是Steam创意工坊内容路径，添加整个steamapps/workshop目录
                 if not workshop_related_dir:
-                    import re
                     steamapps_match = re.search(r'(.*?steamapps)', decoded_path, re.IGNORECASE)
                     if steamapps_match:
                         workshop_related_dir = os.path.join(steamapps_match.group(1), 'workshop')
@@ -1158,7 +1156,6 @@ async def proxy_image(image_path: str):
                             logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
                     else:
                         # 如果目录不存在，尝试直接添加steamapps/workshop路径
-                        import re
                         workshop_match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
                         if workshop_match:
                             potential_dir = workshop_match.group(0)
@@ -1650,9 +1647,6 @@ async def proactive_chat(request: Request):
         all_web_links: list[dict] = []
         
         # 收集音乐链接（在 Phase 1 Web 筛选完成后）
-        if music_content and music_content.get('links'):
-            all_web_links.extend(music_content.get('links', []))
-        
         web_modes = [m for m in sources if m != 'vision' and m != 'music']
         
         merged_web_content = ""
@@ -1745,8 +1739,6 @@ async def proactive_chat(request: Request):
                     music_content = None
                 else:
                     keyword = music_keyword_result.strip()
-                    # --- 优化：去掉局部的 import re，使用更强大的正则防大模型加戏 ---
-                    import re
                     # 匹配 "关键词：xxx" 或 "搜索：xxx"，并忽略前面的换行或客套话
                     keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
                     # 清洗各类成对的符号、引号及换行
@@ -1933,10 +1925,8 @@ async def proactive_chat(request: Request):
         
         music_section = ""
         if music_topic:
-            logger.info(f"[{lanlan_name}] Phase 2 音乐话题内容:\n{music_topic[:200]}...")
-            ml = _loc(EXTERNAL_TOPIC_HEADER, proactive_lang)
-            mf = _loc(EXTERNAL_TOPIC_FOOTER, proactive_lang)
-            music_section = f"{ml}\n{music_topic}\n{mf}"
+            # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
+            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
@@ -1966,11 +1956,7 @@ async def proactive_chat(request: Request):
                 'ru': "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)"
             }
            # 直接使用上文已经解析好的 proactive_lang 变量
-            if proactive_lang:
-                current_lang = proactive_lang
-            else:
-                current_lang = 'zh'
-                
+            current_lang = proactive_lang
             # 优先匹配当前语言，找不到则退回英文，最后退回中文
             generate_prompt += music_tag_instructions.get(current_lang, music_tag_instructions.get('en', music_tag_instructions['zh']))
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
@@ -2101,31 +2087,31 @@ async def proactive_chat(request: Request):
         logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
-        has_web_topic = 'web' in active_channels
         has_music_topic = 'music' in active_channels
 
-        # 根据来源标签调整通道/链接
+        # 【核心修复】重新对齐 source_mode 处理逻辑，确保 BOTH 模式下音乐能播放
+        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
+
         if source_tag == 'SCREEN':
             source_links = []
             primary_channel = 'vision'
         elif source_tag == 'WEB':
             primary_channel = 'web'
         elif source_tag == 'MUSIC':
-            # 【修复】明确是纯音乐模式时，清空之前 Web 筛选匹配到的链接，防止前端播放逻辑混淆
-            source_links = []
+            source_links = [] # 纯音乐模式不需要 Web 链接
             primary_channel = 'music'
         elif source_tag == 'BOTH':
-            # BOTH 模式下不清除链接，保持原有的 primary_channel
-            pass
-        
-        # 【优化】严格判断是否采用音乐：仅在模型明确回复标签包含 MUSIC 或 BOTH 时生效
-        # 解决 source_tag 为空或未明确命中时默认判定为音乐的问题
-        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
+            # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
+            # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容
+            if is_music_used:
+                primary_channel = 'music'
+            else:
+                primary_channel = 'web'
         
         if is_music_used:
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
-                # 只有在明确是 MUSIC 标签时，才清空并强转主通道（上面已处理一次清空，这里追加链接）
+                # 追加音乐链接到 source_links
                 for track in music_raw.get('data', [])[:3]:
                     source_links.append({
                         'title': track.get('name', '未知曲目'),
@@ -2134,10 +2120,6 @@ async def proactive_chat(request: Request):
                         'cover': track.get('cover', ''),
                         'source': '音乐推荐'
                     })
-                
-                # 【建议拆分】切换主通道的操作仅在纯音乐模式下进行
-                if source_tag == 'MUSIC':
-                    primary_channel = 'music'
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
@@ -2145,10 +2127,11 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
         
-        # 精准的话题去重记录：根据实际选用的标签，将对应的 topic_key 记录到防重复队列中
-        if selected_web_topic_key and source_tag in ('WEB', 'BOTH'):
+        # 【逻辑优化】精准的话题去重记录
+        if selected_web_topic_key and (source_tag in ('WEB', 'BOTH')):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
             
+        # 【增强去重】即使 source_tag 解析为空，只要逻辑上判定使用了音乐（如 BOTH 模式降级处理），也必须记录
         if selected_music_topic_key and is_music_used:
             _record_topic_usage(lanlan_name, selected_music_topic_key)
 
