@@ -408,10 +408,11 @@ function startQrPoll(config, platformKey) {
             shouldContinuePolling = false;
             stopQrPoll();
         } finally {
-            if (currentPlatform !== platformKey || currentQrKey !== expectedQrKey) return;
-            qrPollInFlight = false;
-            if (shouldContinuePolling && currentQrKey === expectedQrKey) {
-                qrPollTimeout = setTimeout(pollOnce, 1500);
+            if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
+                qrPollInFlight = false;
+                if (shouldContinuePolling && currentQrKey === expectedQrKey) {
+                    qrPollTimeout = setTimeout(pollOnce, 1500);
+                }
             }
         }
     };
