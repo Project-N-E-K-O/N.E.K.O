@@ -1264,7 +1264,7 @@ window.sendMusicMessage = function(trackInfo) {
             if (!document.querySelector('link[href*="APlayer.min.css"]')) {
                 const cssLink = document.createElement('link');
                 cssLink.rel = 'stylesheet';
-                cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.css';
+                cssLink.href = 'https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.css';
                 cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
                 document.head.appendChild(cssLink);
             }
@@ -1272,7 +1272,8 @@ window.sendMusicMessage = function(trackInfo) {
             // 加载 JS（检查是否已存在）
             if (!document.querySelector('script[src*="APlayer.min.js"]')) {
                 const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.js';
+                script.src = 'https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.js';
+                script.crossOrigin = 'anonymous';
                 script.onload = () => {
                     console.log('[Common UI] APlayer 库加载成功');
                     resolve();
