@@ -1,18 +1,28 @@
 /**
  * 全局窗口管理函数
  */
-// 【新增】定义一个全局或模块级的门闩变量
-let currentMusicSearchEpoch = 0;
+
 // 【防崩溃兜底】确保 window.t 始终是一个可调用的函数
 if (typeof window.t !== 'function') {
-    window.t = function(key, fallback) { return fallback || key; };
+    window.t = function(key, fallback) { 
+        // 【修改】确保即使 fallback 传入了对象，这里也只返回字符串
+        return typeof fallback === 'string' ? fallback : key; 
+    };
 }
 // 定义全局安全的翻译函数 safeT，供内部直接调用
 window.safeT = function(key, fallback) {
-    return (window.t && typeof window.t === 'function') ? window.t(key, fallback) : (fallback || key);
+    if (window.t && typeof window.t === 'function') {
+        const translated = window.t(key, fallback);
+        // 【修改】确保翻译库返回的确实是字符串，否则退回安全值
+        if (typeof translated === 'string') {
+            return translated;
+        }
+    }
+    return typeof fallback === 'string' ? fallback : key;
 };
-const safeT = window.safeT;
 
+// 【新增】定义一个全局或模块级的门闩变量
+let currentMusicSearchEpoch = 0;
 // 上次用户输入时间（毫秒级）
 let lastUserInputTime = 0;
 // 关闭所有已打开的设置窗口（弹窗）
@@ -1305,27 +1315,46 @@ function init_app() {
                         fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
                             .then(res => res.json())
                             .then(result => {
-                                // 【新增】检查如果纪元不匹配，说明有更新的请求，直接丢弃
-                                if (myEpoch !== currentMusicSearchEpoch) {
-                                    console.log(`[Music] 丢弃过期的搜索结果: ${searchTerm}`);
-                                    return;
+                                // 【新增】检查门闩，丢弃过期请求
+                                if (typeof myEpoch !== 'undefined' && typeof currentMusicSearchEpoch !== 'undefined') {
+                                    if (myEpoch !== currentMusicSearchEpoch) {
+                                        console.log(`[Music] 丢弃过期的搜索结果: ${searchTerm}`);
+                                        return;
+                                    }
                                 }
 
-                                if (result.success && result.data && result.data.length > 0) {
-                                    const track = result.data[0];
-                                    window.dispatchMusicPlay(track);
+                                // 【修改】将 success 为 false 的情况单独拆分出来
+                                if (result.success) {
+                                    if (result.data && result.data.length > 0) {
+                                        const track = result.data[0];
+                                        window.dispatchMusicPlay(track);
+                                    } else {
+                                        console.warn(`[Music] API did not find a song for: ${searchTerm}`);
+                                        if (window.showStatusToast) {
+                                            const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
+                                            window.showStatusToast(notFoundMsg, 3000);
+                                        }
+                                    }
                                 } else {
-                                    console.warn(`[Music] API did not find a song for: ${searchTerm}`);
+                                    console.error(`[Music] Music search API returned error:`, result.message || result.error);
                                     if (window.showStatusToast) {
-                                        const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
-                                        window.showStatusToast(notFoundMsg, 3000);
+                                        const failMsg = window.safeT ? window.safeT('music.searchFailed', '音乐搜索失败') : '音乐搜索失败';
+                                        // 优先显示后端给出的具体错误信息，如果没有再用通用提示
+                                        const detailMsg = result.message || result.error || failMsg;
+                                        window.showStatusToast(detailMsg, 3000);
                                     }
                                 }
                             })
                             .catch(e => {
+                                // 【新增】检查门闩，如果是过期请求直接忽略
+                                if (typeof myEpoch !== 'undefined' && typeof currentMusicSearchEpoch !== 'undefined') {
+                                    if (myEpoch !== currentMusicSearchEpoch) return;
+                                }
+                                
                                 console.error(`[Music] Music search API call failed:`, e);
                                 if (window.showStatusToast) {
-                                    window.showStatusToast(safeT('music.searchFailed', '音乐搜索失败'), 3000);
+                                    const failMsg = window.safeT ? window.safeT('music.searchFailed', '音乐搜索失败') : '音乐搜索失败';
+                                    window.showStatusToast(failMsg, 3000);
                                 }
                             });
                     }
