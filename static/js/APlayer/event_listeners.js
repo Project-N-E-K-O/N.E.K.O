@@ -165,7 +165,9 @@ function updateTrackInfo(aplayer) {
     if (trackCoverElement) {
         if (trackInfo.cover) {
             trackCoverElement.src = trackInfo.cover;
-            trackCoverElement.alt = `${trackInfo.name} - ${trackInfo.artist}`;
+            const safeName = trackInfo.name || t('music.unknownTrack', '未知曲目');
+            const safeArtist = trackInfo.artist || t('music.unknownArtist', '未知艺术家');
+            trackCoverElement.alt = `${safeName} - ${safeArtist}`;
             trackCoverElement.style.display = '';
             
             const coverContainer = trackCoverElement.parentElement;

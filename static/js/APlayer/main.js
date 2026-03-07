@@ -95,11 +95,26 @@ function loadAPlayerLibrary() {
 }
 
 export async function initializeAPlayer(options = {}, onReady = null) {
+    // 提取属于 player 配置的顶层参数，防止调用方扁平传参时被丢弃
+    const extractedPlayerOptions = {};
+    const playerKeys = ['mini', 'autoplay', 'theme', 'loop', 'order', 'preload', 'volume', 'mutex', 'listFolded', 'listMaxHeight', 'lrcType'];
+    
+    playerKeys.forEach(key => {
+        if (options[key] !== undefined) {
+            extractedPlayerOptions[key] = options[key];
+        }
+    });
+
     const config = {
         ...APLAYER_CONFIG,
         ...options,
         ui: { ...APLAYER_CONFIG.ui, ...options.ui },
-        player: { ...APLAYER_CONFIG.player, ...options.player },
+        // 按照优先级合并：默认配置 < 传入的顶层参数 < 传入的 options.player 对象
+        player: { 
+            ...APLAYER_CONFIG.player, 
+            ...extractedPlayerOptions,
+            ...(options.player || {}) 
+        },
         defaultPlaylist: options.audio || APLAYER_CONFIG.defaultPlaylist
     };
 
@@ -174,12 +189,16 @@ export function destroyAPlayer() {
         
         // 尝试清理 DOM
         const container = window.aplayer.container;
-        if (container && container.parentNode) {
+        if (container) {
             const wrapper = document.getElementById('aplayer-container');
-            if (wrapper && wrapper.contains(container)) {
-                wrapper.parentNode.removeChild(wrapper);
+            if (wrapper && (wrapper === container || wrapper.contains(container))) {
+                // 如果是本模块自己创建的全局浮动窗，安全连根拔起
+                if (wrapper.parentNode) {
+                    wrapper.parentNode.removeChild(wrapper);
+                }
             } else {
-                container.parentNode.removeChild(container);
+                // 【核心修复】如果是外部传入的宿主容器（如聊天气泡），仅清空内部渲染残留，绝不删除宿主本身
+                container.innerHTML = '';
             }
         }
         console.log('[APlayer] Destroyed successfully');

@@ -649,7 +649,8 @@ class FMACrawler(BaseMusicCrawler):
                 return []
 
             results = []
-            for item in play_items[:limit]:
+            # 扩大候选窗口，防止前几条损坏数据把正常结果饿死
+            for item in play_items[:limit * 5]:
                 try:
                     # 【核心修复】增加 try-except，防止单条数据 JSON 格式错误中断整个搜索逻辑
                     track_info = json.loads(item['data-track-info'])
@@ -685,6 +686,9 @@ class FMACrawler(BaseMusicCrawler):
                 # =============================
                 if audio_url:
                     results.append(self._format_item(name=title, url=audio_url, artist=artist, cover=cover_url))
+                    # 收集满 limit 数量后及时退出循环
+                    if len(results) >= limit:
+                        break
             return results
 
         except httpx.TimeoutException:

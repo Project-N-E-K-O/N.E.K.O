@@ -1171,53 +1171,68 @@ let aplayerLoadPromise = null;
 let latestMusicRequestToken = 0;
 
 window.sendMusicMessage = function(trackInfo) {
-    // 检查是否需要清理旧的音乐播放器实例
-    // 条件：音乐气泡之前的消息数 > 10 且播放器未播放
+    // --- 【新增：前置安全校验】将原 showMusicPlayer 内部的校验移到最开始 ---
+    const isSafeUrl = (url) => {
+        if (!url) return false;
+        try {
+            const parsed = new URL(url);
+            const allowedProtocols = ['http:', 'https:'];
+            const allowedDomains = [
+                'cdn.jsdelivr.net', 'i.scdn.co', 'p.scdn.co', 'a.scdn.co',
+                'via.placeholder.com', 'i.imgur.com', 'y.qq.com',
+                'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+                'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+                'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
+                'fma-fma.net', 'musopen.org', 'bandcamp.com', 'soundcloud.com',
+                'itunes.apple.com', 'audio-ssl.itunes.apple.com',
+                'updates.broadcastify.com','music.163.com'
+            ];
+            if (!allowedProtocols.includes(parsed.protocol)) return false;
+            // 严格限制全等匹配或合法子域名匹配，防止 SSRF 域名绕过
+            if (!allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d))) return false;
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    // 1. 最先检查 URL 合法性，不合法直接驳回，绝不打断当前正在播放的音乐
+    if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
+        console.warn('[Common UI] 音频 URL 未通过安全校验，拒绝播放:', trackInfo.url);
+        return false;
+    }
+
+    // 2. 检查是否需要清理闲置的旧音乐播放器实例（防止未播放的DOM无限堆积）
     if (shouldCleanupOldMusicPlayer()) {
         console.log('[Common UI] 音乐气泡之前消息数超过10条且播放器未播放，销毁旧实例');
         destroyMusicPlayer();
     }
     
-    // 使用 textContent 赋值天然具备防 XSS 能力，直接使用原始值即可
     const trackName = trackInfo.name || '未知曲目';
     const artistName = trackInfo.artist || '未知艺术家';
     
-    // 检查是否需要创建新播放器
     const shouldCreateNewPlayer = () => {
-        // 没有当前播放信息，需要创建
         if (!currentPlayingTrack) return true;
-        
         const player = getMusicPlayerInstance();
-        if (player) {
-            // 如果正在播放，不创建新的
-            if (!player.paused) {
-                console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
-                return false;
-            }
+        if (player && !player.paused) {
+            console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
+            return false;
         }
-        
         return true;
     };
     
-    // 停止之前可能正在播放的音乐
-    const stopExistingMusic = () => {
-        stopMusicPlayer();
-    };
-    
-    // 检查是否已有相同歌曲在播放
     const isSameTrack = (info) => {
         return currentPlayingTrack && 
                currentPlayingTrack.name === info.name && 
                currentPlayingTrack.artist === info.artist;
     };
 
-    // 检查当前播放器的 DOM 容器是否还在页面上（应对用户清空聊天记录的情况）
     const isPlayerInDOM = () => {
         const player = getMusicPlayerInstance();
         return player && player.container && document.body.contains(player.container);
     };
     
-    // 如果是同一首歌且气泡还在，复用现有实例；否则销毁旧幽灵实例并重建
+    // 如果是同一首歌且气泡还在，复用现有实例
     const player = getMusicPlayerInstance();
     if (isSameTrack(trackInfo)) {
         if (isPlayerInDOM()) {
@@ -1229,30 +1244,13 @@ window.sendMusicMessage = function(trackInfo) {
         } else {
             console.log('[Common UI] 相同歌曲但气泡已被清理，彻底重置并重建');
             destroyMusicPlayer(); 
-            // 关键修复：既然气泡没了，就把这首歌当作一首新歌来处理，防止后面的逻辑误判
             currentPlayingTrack = null; 
         }
     }
     
-    // 只要页面上存在任何旧播放器实例（无论是播放中、已暂停还是已播放结束），都先清理掉，确保页面唯一性
-    if (getMusicPlayerInstance()) {
-        console.log('[Common UI] 检测到旧音乐气泡残留，正在执行回收销毁...');
-        destroyMusicPlayer();
-    }
-
-    // 【核心修复】在创建新气泡前，先销毁可能存在的旧气泡 DOM 和实例
-    if (shouldCreateNewPlayer()) {
-        console.log('[Common UI] 准备切换新歌曲，正在清理旧气泡...');
-        destroyMusicPlayer(); 
-    }
-    // 更新当前播放信息（无论是否停止旧播放，都需要更新）
-    currentPlayingTrack = trackInfo;
     // 动态加载 APlayer 库
     const loadAPlayerLibrary = () => {
-        // 如果已有加载中的 Promise，复用它而不是创建新的
-        if (aplayerLoadPromise) {
-            return aplayerLoadPromise;
-        }
+        if (aplayerLoadPromise) return aplayerLoadPromise;
         
         aplayerLoadPromise = new Promise((resolve, reject) => {
             if (typeof APlayer !== 'undefined') {
@@ -1260,7 +1258,6 @@ window.sendMusicMessage = function(trackInfo) {
                 return;
             }
             
-            // 加载 CSS（检查是否已存在）
             if (!document.querySelector('link[href*="APlayer.min.css"]')) {
                 const cssLink = document.createElement('link');
                 cssLink.rel = 'stylesheet';
@@ -1269,7 +1266,6 @@ window.sendMusicMessage = function(trackInfo) {
                 document.head.appendChild(cssLink);
             }
             
-            // 加载 JS（检查是否已存在）
             if (!document.querySelector('script[src*="APlayer.min.js"]')) {
                 const script = document.createElement('script');
                 script.src = 'https://cdn.jsdelivr.net/npm/aplayer@1.10.1/dist/APlayer.min.js';
@@ -1280,75 +1276,46 @@ window.sendMusicMessage = function(trackInfo) {
                 };
                 script.onerror = () => {
                     console.error('[Common UI] APlayer JS 加载失败');
-                    aplayerLoadPromise = null; // 失败后重置，下次可重试
+                    aplayerLoadPromise = null;
                     reject(new Error('APlayer 库加载失败'));
                 };
                 document.head.appendChild(script);
             } else {
-                // JS 已存在，等待一下让 APlayer 可用
                 setTimeout(() => {
                     if (typeof APlayer !== 'undefined') {
                         resolve();
                     } else {
-                        // 【修改】将存储 promise 的变量置空（请根据你的实际变量名替换 aplayerLoadPromise）
                         aplayerLoadPromise = null; 
                         reject(new Error('APlayer 未定义'));
                     }
                 }, 100);
             }
         });
-        
         return aplayerLoadPromise;
     };
     
-    const showMusicPlayer = async () => {
-        // 安全校验：URL 白名单
-        const isSafeUrl = (url) => {
-            if (!url) return false;
-            try {
-                const parsed = new URL(url);
-                const allowedProtocols = ['http:', 'https:'];
-                const allowedDomains = [
-                    'cdn.jsdelivr.net', 'i.scdn.co', 'p.scdn.co', 'a.scdn.co',
-                    'via.placeholder.com', 'i.imgur.com', 'y.qq.com',
-                    'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-                    'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-                    'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-                    'fma-fma.net', 'musopen.org', 'bandcamp.com', 'soundcloud.com',
-                    'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                    'updates.broadcastify.com','music.163.com'
-                ];
-                if (!allowedProtocols.includes(parsed.protocol)) return false;
-                // 修复：严格限制全等匹配或合法子域名匹配，防止 SSRF 域名绕过 (如 scambandcamp.com)
-                if (!allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d))) return false;
-                return true;
-            } catch {
-                return false;
-            }
-        };
-        
-        // 安全校验：音频 URL 白名单检查
-        if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
-            console.warn('[Common UI] 音频 URL 未通过安全校验:', trackInfo.url);
-            return;
+    // --- 【核心修复：将销毁旧实例和写入状态延后至真正开始渲染前】 ---
+    const executePlay = async () => {
+        // 此时 APlayer 库已就绪，且 URL 已通过校验
+        // 安全地销毁旧实例并写入当前播放状态
+        if (getMusicPlayerInstance() || shouldCreateNewPlayer()) {
+            console.log('[Common UI] 准备切换新歌曲，正在回收旧气泡...');
+            destroyMusicPlayer();
         }
-        
+        currentPlayingTrack = trackInfo;
+
         const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-        
         const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'];
         const randomColor = colors[Math.floor(Math.random() * colors.length)];
         
         console.log('[Music] trackInfo:', trackInfo);
-        console.log('[Music] cover value:', trackInfo.cover);
         
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
         
-        // 创建 DOM 元素（避免 innerHTML XSS）
         const messageDiv = document.createElement('div');
         messageDiv.className = 'chat-message bot-message music-bubble';
         messageDiv.style.cssText = 'display: inline-flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); margin-top: 8px;';
         
-        // 封面容器
         const coverDiv = document.createElement('div');
         coverDiv.className = 'music-cover';
         coverDiv.style.cssText = 'width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, ' + randomColor + ', #667eea); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;';
@@ -1373,7 +1340,6 @@ window.sendMusicMessage = function(trackInfo) {
             coverDiv.appendChild(coverSpan);
         }
         
-        // 音乐信息容器
         const infoDiv = document.createElement('div');
         infoDiv.className = 'music-info';
         infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
@@ -1381,36 +1347,32 @@ window.sendMusicMessage = function(trackInfo) {
         const titleDiv = document.createElement('div');
         titleDiv.className = 'music-title';
         titleDiv.style.cssText = 'color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;';
-        titleDiv.textContent = trackName; // 使用 textContent 避免 XSS
+        titleDiv.textContent = trackName;
         
         const artistDiv = document.createElement('div');
         artistDiv.className = 'music-artist';
         artistDiv.style.cssText = 'color: rgba(255,255,255,0.6); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
-        artistDiv.textContent = artistName; // 使用 textContent 避免 XSS
+        artistDiv.textContent = artistName;
         
         infoDiv.appendChild(titleDiv);
         infoDiv.appendChild(artistDiv);
         
-        // 播放按钮
         const playBtn = document.createElement('button');
         playBtn.className = 'music-play-btn';
         playBtn.id = playerId + '-play';
         playBtn.textContent = '▶';
         playBtn.style.cssText = 'width: 36px; height: 36px; border-radius: 50%; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4); transition: transform 0.2s;';
         
-        // 隐藏的 APlayer 容器
         const playerContainer = document.createElement('div');
         playerContainer.id = playerId;
         playerContainer.className = 'music-msg-container';
         playerContainer.style.display = 'none';
         
-        // 组装所有元素
         messageDiv.appendChild(coverDiv);
         messageDiv.appendChild(infoDiv);
         messageDiv.appendChild(playBtn);
         messageDiv.appendChild(playerContainer);
         
-        // 插入样式（使用全局样式避免重复创建）
         let globalStyle = document.getElementById('music-player-global-style');
         if (!globalStyle) {
             globalStyle = document.createElement('style');
@@ -1423,8 +1385,6 @@ window.sendMusicMessage = function(trackInfo) {
             document.head.appendChild(globalStyle);
         }
         
-        // 使用 addNewMessage 添加消息（传入 Node 以保留事件监听器）
-        // 添加唯一标识类以便销毁时整块移除
         const tempDiv = document.createElement('div');
         tempDiv.className = 'music-message-root';
         tempDiv.appendChild(messageDiv);
@@ -1432,7 +1392,6 @@ window.sendMusicMessage = function(trackInfo) {
         
         let aplayerInstance = null;
         
-        // 使用双重 requestAnimationFrame 确保 DOM 已渲染
         requestAnimationFrame(() => {
             requestAnimationFrame(async () => {
                 const container = document.getElementById(playerId);
@@ -1440,13 +1399,12 @@ window.sendMusicMessage = function(trackInfo) {
 
                 if (container && typeof window.initializeAPlayer === 'function') {
                     try {
-                        // 【修改】包裹 try...catch 捕获初始化异常
                         aplayerInstance = await window.initializeAPlayer({ 
                             container: container,
                             theme: '#667eea',
                             loop: 'none',
                             preload: 'none',
-                            mutex: true, // 保持互斥，确保气泡播放时主播放器自动暂停
+                            mutex: true,
                             volume: 0.7,
                             listFolded: true,
                             order: 'normal',
@@ -1462,13 +1420,11 @@ window.sendMusicMessage = function(trackInfo) {
                             throw new Error("APlayer instance is null after initialization");
                         }
 
-                        // 确保实例挂载，防止被主播放器逻辑误伤
                         if (!window.aplayerInjected) window.aplayerInjected = {};
                         window.aplayerInjected.aplayer = aplayerInstance;
                         
                         console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
 
-                        // 绑定播放按钮事件
                         if (playBtn) {
                             playBtn.addEventListener('click', () => {
                                 if (aplayerInstance) {
@@ -1483,7 +1439,6 @@ window.sendMusicMessage = function(trackInfo) {
                             });
                         }
 
-                        // 监听播放状态变化
                         aplayerInstance.on('play', () => {
                             if (playBtn) playBtn.textContent = '⏸';
                         });
@@ -1491,13 +1446,11 @@ window.sendMusicMessage = function(trackInfo) {
                             if (playBtn) playBtn.textContent = '▶';
                         });
                         
-                        // 播放结束时
                         aplayerInstance.on('ended', () => {
                             console.log('[Common UI] 音乐播放结束');
                             if (playBtn) playBtn.textContent = '▶';
                         });
 
-                        // 美化 APlayer 样式（隐藏起来）
                         const apElement = container.querySelector('.aplayer');
                         if (apElement) {
                             apElement.style.display = 'none';
@@ -1505,11 +1458,10 @@ window.sendMusicMessage = function(trackInfo) {
                         
                     } catch (err) {
                         console.error('[Common UI] 音乐气泡初始化失败，正在回滚:', err);
-                        // 【核心修复：异常回滚】
                         if (tempDiv && tempDiv.parentNode) {
-                            tempDiv.parentNode.removeChild(tempDiv); // 拔掉死气泡
+                            tempDiv.parentNode.removeChild(tempDiv);
                         }
-                        currentPlayingTrack = null; // 重置当前播放状态，避免去重锁死
+                        currentPlayingTrack = null;
                         if (window.showStatusToast) {
                             const errMsg = window.safeT ? window.safeT('music.playError', '音乐播放加载失败') : '音乐播放加载失败';
                             window.showStatusToast(errMsg, 3000);
@@ -1517,37 +1469,32 @@ window.sendMusicMessage = function(trackInfo) {
                     }
                 } else {
                     console.error('[Common UI] 找不到音乐气泡挂载点或 APlayer 未定义');
-                    // 【核心修复：环境缺失回滚】
                     if (tempDiv && tempDiv.parentNode) {
-                        tempDiv.parentNode.removeChild(tempDiv); // 拔掉死气泡
+                        tempDiv.parentNode.removeChild(tempDiv);
                     }
-                    currentPlayingTrack = null; // 重置当前播放状态
+                    currentPlayingTrack = null;
                 }
             });
         });
-    }
-    // 为本次请求生成唯一 token
+    };
+
     const currentToken = ++latestMusicRequestToken;
     
-    // 检查 APlayer 是否已加载
     if (typeof APlayer === 'undefined') {
         console.log('[Common UI] APlayer 库未加载，正在动态加载...');
         loadAPlayerLibrary().then(() => {
-            // 检查是否为最新请求
             if (currentToken !== latestMusicRequestToken) {
                 console.log('[Common UI] 请求已过期，跳过渲染');
                 return;
             }
-            stopExistingMusic();
-            showMusicPlayer();
+            executePlay();
         }).catch(err => {
-            console.error('[Common UI] APlayer 库加载失败:', err);
+            console.error('[Common UI] APlayer 库加载失败，中止操作:', err);
+            // APlayer加载失败时不再向下走，从而保护了原先播放的实例
         });
-        // 修复：必须在此处同步返回 true，否则外层调用的 accepted 判断会失败
         return true;
     } else {
-        stopExistingMusic();
-        showMusicPlayer();
+        executePlay();
         return true;
     }
 };
