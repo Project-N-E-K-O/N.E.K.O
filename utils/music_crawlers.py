@@ -926,13 +926,11 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         if not all_results:
             logger.info("[智能调度] 第一梯队未命中，触发第二级兜底引擎...")
             fallback_tasks = []
-            # 支持多语言古典乐关键词
-            fallback_fma = "piano" if any(kw in kw_lower for kw in [
-                "钢琴", "piano", "ピアノ", "피아노", "фортепиано"
-            ]) else "relax"
             
+            # 【核心修复】不要在这里将关键词篡改为 "relax"
+            # 必须透传原始 keyword，这样搜不到才会真实返回空，让路由层去触发真正的随机逻辑
             fallback_tasks.append(all_crawlers['netease'].search(keyword, limit))
-            fallback_tasks.append(all_crawlers['fma'].search(fallback_fma, limit))
+            fallback_tasks.append(all_crawlers['fma'].search(keyword, limit))
             
             # 兜底梯队也使用竞速模式
             fallback_task_objs = [asyncio.create_task(coro) for coro in fallback_tasks]
