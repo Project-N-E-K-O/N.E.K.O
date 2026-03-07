@@ -243,7 +243,15 @@ export function setupKeyboardShortcuts(aplayer) {
     
     keyboardHandler = (e) => {
         // 增加 isComposing 判断，防止输入法打字触发快捷键
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.isComposing) return;
+        // 【修复】排除所有可交互元素和富文本编辑区，防止全局空格键拦截正常的按钮点击/下拉框激活操作
+        const targetTag = e.target.tagName;
+        if (
+            ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT', 'A'].includes(targetTag) || 
+            e.target.isContentEditable || 
+            e.isComposing
+        ) {
+            return;
+        }
         
         switch (e.code) {
             case 'Space':
