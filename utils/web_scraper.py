@@ -1873,6 +1873,7 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         return {
             'success': True,
             'window_title': sanitized_title,
+            'region': '',
             'search_queries': successful_queries,
             'search_results': unique_results,
         }
