@@ -346,7 +346,14 @@ function startQrPoll(config, platformKey) {
             });
 
             const result = await response.json();
-            
+            if (!response.ok) {
+                throw new Error(
+                    typeof result?.detail === 'string'
+                        ? result.detail
+                        : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接')
+                );
+            }
+
             if (currentPlatform !== platformKey || currentQrKey !== expectedQrKey) {
                 shouldContinuePolling = false;
                 return;
@@ -410,7 +417,7 @@ function startQrPoll(config, platformKey) {
             if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
                 const statusEl = document.getElementById('qr-status');
                 if (statusEl) {
-                    statusEl.textContent = safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+                    statusEl.textContent = typeof err?.message === 'string' && err.message ? err.message : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
                 }
             }
             stopQrPoll();
