@@ -338,7 +338,7 @@ function startQrPoll(config, platformKey) {
             const statusEl = document.getElementById('qr-status');
             const data = result.data;
 
-            if (result.success && data.status === 'success') {
+            if (result.success && data?.status === 'success') {
                 shouldContinuePolling = false;
                 stopQrPoll();
                 if (statusEl) {
