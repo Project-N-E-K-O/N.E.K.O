@@ -2571,8 +2571,8 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 k_dyn.get('success', False)
             ])
             
-            # 4. 在返回的字典中追加 douyin_dynamic 和 kuaishou_dynamic
-            return {
+            # 4. 封装返回字典
+            result = {
                 'success': top_success, 
                 'region': 'china', 
                 'bilibili_dynamic': b_dyn, 
@@ -2580,6 +2580,18 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 'douyin_dynamic': d_dyn,
                 'kuaishou_dynamic': k_dyn
             }
+            
+            # 【新增】汇总全平台失败的错误信息给顶层
+            if not top_success:
+                errors = []
+                if b_dyn.get('error'): errors.append(f"B站: {b_dyn.get('error')}")
+                if w_dyn.get('error'): errors.append(f"微博: {w_dyn.get('error')}")
+                if d_dyn.get('error'): errors.append(f"抖音: {d_dyn.get('error')}")
+                if k_dyn.get('error'): errors.append(f"快手: {k_dyn.get('error')}")
+                result['error'] = " | ".join(errors) if errors else "所有中文平台均获取失败"
+                
+            return result
+            
         else:
             logger.info("检测到非中文区域，获取Reddit和Twitter个人动态")
             r_dyn, t_dyn = await asyncio.gather(
@@ -2591,12 +2603,27 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             t_dyn = {'success': False, 'error': str(t_dyn)} if isinstance(t_dyn, Exception) else t_dyn
             
             top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
-            return {'success': top_success, 'region': 'non-china', 'reddit_dynamic': r_dyn, 'twitter_dynamic': t_dyn}
+            
+            result = {
+                'success': top_success, 
+                'region': 'non-china', 
+                'reddit_dynamic': r_dyn, 
+                'twitter_dynamic': t_dyn
+            }
+            
+            # 【新增】汇总海外平台失败的错误信息给顶层
+            if not top_success:
+                errors = []
+                if r_dyn.get('error'): errors.append(f"Reddit: {r_dyn.get('error')}")
+                if t_dyn.get('error'): errors.append(f"Twitter: {t_dyn.get('error')}")
+                result['error'] = " | ".join(errors) if errors else "所有海外平台均获取失败"
+                
+            return result
             
     except Exception as e:
         logger.error(f"获取个人动态内容失败: {e}")
         return {'success': False, 'error': str(e)}
-
+        
 def format_personal_dynamics(data: Dict[str, Any]) -> str:
     """
     格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)
