@@ -523,16 +523,20 @@ async function loadCharacterData() {
         characterData = fetchedData;
         
         let fetchedCurrentCatgirl;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
         try {
-            const currentResp = await fetch('/api/characters/current_catgirl');
+            const currentResp = await fetch('/api/characters/current_catgirl', { signal: controller.signal });
+            clearTimeout(timeoutId);
             if (currentResp.ok) {
                 const currentData = await currentResp.json();
                 fetchedCurrentCatgirl = currentData.current_catgirl || undefined;
             } else {
-                fetchedCurrentCatgirl = window._currentCatgirl;
+                fetchedCurrentCatgirl = undefined;
             }
         } catch (e) {
-            fetchedCurrentCatgirl = window._currentCatgirl;
+            fetchedCurrentCatgirl = undefined;
         }
         
         if (thisRequestId !== currentRequestId) {
