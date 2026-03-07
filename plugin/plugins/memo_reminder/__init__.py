@@ -170,6 +170,8 @@ class MemoReminderPlugin(NekoPluginBase):
                 self.logger.exception("Error in reminder checker")
 
             self._wake_event.clear()
+            if self._stop_event.is_set():
+                break
             wait_sec = self._next_trigger_seconds()
             if wait_sec is not None:
                 wait_sec = max(wait_sec, 0.1)
@@ -199,8 +201,13 @@ class MemoReminderPlugin(NekoPluginBase):
                     continue
 
                 if trigger_dt <= now:
+                    try:
+                        self._push_reminder(r)
+                    except Exception:
+                        self.logger.exception("Failed to push reminder {}", r.get("id", "?"))
+                        kept.append(r)
+                        continue
                     fired_ids.append(r.get("id", "?"))
-                    self._push_reminder(r)
                     updated = self._reschedule(r, now)
                     if updated:
                         kept.append(updated)
@@ -305,13 +312,16 @@ class MemoReminderPlugin(NekoPluginBase):
 
         trigger_dt, has_date = parsed
         repeat = repeat.strip().lower()
-        if repeat not in ("once", "daily", "weekly", "hourly") and repeat.endswith(("m", "h", "s", "d")):
-            try:
-                val = float(repeat[:-1])
-                if val <= 0:
-                    return fail("INVALID_REPEAT", f"重复间隔必须为正数: {repeat}")
-            except ValueError:
-                return fail("INVALID_REPEAT", f"无法解析重复模式: {repeat}")
+        if repeat not in ("once", "daily", "weekly", "hourly"):
+            if repeat.endswith(("m", "h", "s", "d")):
+                try:
+                    val = float(repeat[:-1])
+                    if val <= 0:
+                        return fail("INVALID_REPEAT", f"重复间隔必须为正数: {repeat}")
+                except ValueError:
+                    return fail("INVALID_REPEAT", f"无法解析重复模式: {repeat}")
+            else:
+                return fail("INVALID_REPEAT", f"不支持的重复模式: {repeat}")
         now = _now(_TZ_UTC)
 
         if trigger_dt <= now:

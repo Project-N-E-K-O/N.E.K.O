@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import WebSocket
+from loguru import logger
 
 from plugin.core.state import state
 from plugin.runs.manager import ExportListResponse, RunRecord, get_run, list_export_for_run
@@ -165,8 +166,10 @@ class WsRunHub:
     def _try_enqueue(self, run_id: str, evt: Dict[str, Any]) -> None:
         try:
             self._dispatch_q.put_nowait((run_id, evt))
+        except asyncio.QueueFull:
+            logger.debug("ws_run_hub dispatch queue full, dropping event for run={}", run_id)
         except Exception:
-            return
+            pass
 
     async def _dispatch_loop(self) -> None:
         while True:
@@ -257,8 +260,12 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
 
     try:
         run_id, perm, exp = verify_run_token(token)
-    except Exception as e:
-        await _close(1008, str(e))
+    except ValueError:
+        await _close(1008, "invalid token")
+        return
+    except Exception:
+        logger.debug("run websocket token verification failed", exc_info=True)
+        await _close(1008, "authentication failed")
         return
 
     rec = get_run(run_id)
@@ -266,7 +273,12 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
         await _close(1008, "run not found")
         return
 
-    await ws_run_hub.start()
+    try:
+        await ws_run_hub.start()
+    except Exception:
+        logger.debug("ws_run_hub.start() failed", exc_info=True)
+        await ws.close(code=1011, reason="internal error")
+        return
 
     q: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=256)
     conn = _Conn(ws=ws, run_id=run_id, perm=perm, queue=q)

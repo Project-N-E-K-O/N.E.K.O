@@ -301,8 +301,8 @@ async def _handle_agent_event(event: dict):
                     if err_msg:
                         notif["error_message"] = err_msg[:500]
                     await mgr.websocket.send_json(notif)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[EventBus] agent_notification send failed: %s", e)
         elif event_type == "task_update":
             if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                 try:

@@ -224,11 +224,19 @@ class WebSearchPlugin(NekoPluginBase):
         return ok(data={"status": "shutdown"})
 
     def _defaults(self):
-        return {
-            "max_results": int(self._cfg.get("max_results", 8)),
-            "region": str(self._cfg.get("region", "wt-wt")),
-            "timeout": float(self._cfg.get("timeout_seconds", 15)),
-        }
+        try:
+            mr = int(self._cfg.get("max_results", 8))
+        except (TypeError, ValueError):
+            mr = 8
+        mr = max(1, min(mr, 50))
+        try:
+            to = float(self._cfg.get("timeout_seconds", 15))
+        except (TypeError, ValueError):
+            to = 15.0
+        if to <= 0:
+            to = 15.0
+        rgn = str(self._cfg.get("region", "wt-wt")).strip() or "wt-wt"
+        return {"max_results": mr, "region": rgn, "timeout": to}
 
     async def _do_text_search(
         self,
@@ -408,11 +416,12 @@ class WebSearchPlugin(NekoPluginBase):
             return fail("EMPTY_QUERY", "搜索关键词不能为空")
 
         defs = self._defaults()
+        max_r = max_results if max_results > 0 else defs["max_results"]
         timeout = defs["timeout"]
         rgn = defs["region"]
 
         try:
-            results = await self._do_text_search(query, max_results, rgn, timeout)
+            results = await self._do_text_search(query, max_r, rgn, timeout)
         except Exception as e:
             return fail("SEARCH_ERROR", f"搜索失败: {e}")
 

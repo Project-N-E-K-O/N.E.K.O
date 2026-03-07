@@ -133,7 +133,12 @@ class BlobStore:
             with self._lock:
                 if self._uploads.get(upload_id) == sess:
                     self._uploads.pop(upload_id, None)
-        return sess
+            return sess
+        logger.warning("finalize_upload: both paths missing for upload_id={}", upload_id)
+        with self._lock:
+            if self._uploads.get(upload_id) == sess:
+                self._uploads.pop(upload_id, None)
+        return None
 
     def get_blob_path(self, *, run_id: str, blob_id: str) -> Optional[Path]:
         rid = str(run_id)

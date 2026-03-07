@@ -274,31 +274,38 @@ class InMemoryRunStore:
             nr = RunRecord.model_validate(data)
             self._runs[run_id] = nr
             self._completed_order.append(run_id)
-            self._evict_completed_locked()
-            return nr.model_copy(deep=True)
+            evicted = self._evict_completed_locked()
+            result = nr.model_copy(deep=True)
 
-    def _evict_completed_locked(self) -> None:
+        for rid in evicted:
+            try:
+                _export_store.remove_for_run(rid)
+            except Exception:
+                pass
+            try:
+                with _runs_emit_lock:
+                    _runs_last_emit_at.pop(rid, None)
+            except Exception:
+                pass
+
+        return result
+
+    def _evict_completed_locked(self) -> List[str]:
         """Evict oldest terminal Runs when exceeding max_completed.
 
-        Uses ``_completed_order`` (a deque appended in commit_terminal order)
-        so each eviction is O(1) amortized instead of O(n) full-scan + sort.
+        Returns a list of evicted run IDs whose external cleanup (export store,
+        emit tracking) must be performed by the caller outside ``self._lock``.
         """
+        evicted: List[str] = []
         if self._max_completed <= 0:
-            return
+            return evicted
         while len(self._completed_order) > self._max_completed:
             rid = self._completed_order.popleft()
             r = self._runs.get(rid)
             if r is not None and r.status in _TERMINAL_STATUSES:
                 self._runs.pop(rid, None)
-                try:
-                    _export_store.remove_for_run(rid)
-                except Exception:
-                    pass
-                try:
-                    with _runs_emit_lock:
-                        _runs_last_emit_at.pop(rid, None)
-                except Exception:
-                    pass
+                evicted.append(rid)
+        return evicted
 
 
 _run_store: RunStore = InMemoryRunStore()
@@ -488,8 +495,8 @@ def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, An
             continue
         try:
             patch2[k] = int(vv)
-        except Exception:
-            raise RuntimeError(f"invalid {k}")
+        except Exception as e:
+            raise RuntimeError(f"invalid {k}") from e
 
     step_v = patch2.get("step")
     step_total_v = patch2.get("step_total")

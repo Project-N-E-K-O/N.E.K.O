@@ -282,6 +282,7 @@ class OmniOfflineClient:
         retry_delays = [1, 2]
         assistant_message = ""
         status_reported = False
+        guard_exhausted = False
         
         try:
             self._is_responding = True
@@ -296,8 +297,6 @@ class OmniOfflineClient:
                     await self.on_status_message(f"⚠️ {error_msg}")
                     status_reported = True
                 return
-            
-            guard_exhausted = False
             for attempt in range(max_retries):
                 try:
                     assistant_message = ""
