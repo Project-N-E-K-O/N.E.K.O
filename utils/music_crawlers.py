@@ -822,6 +822,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             # ru
             "классическая", "фортепиано", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
         ]
+
         indie_keywords = [
             "独立",  "电音", "小众", "环境音", 
             "electronic", "chill", "lofi",
@@ -829,7 +830,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
              "인디", "전자음악",
             "инди", "электронная", "лоуфай",
         ]
-        chinese_keywords = [
+        raw_chinese_keywords = [
             # zh
             "华语", "中文", "国语", "华语流行", "中文歌",
             # en
@@ -849,7 +850,7 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             # 台流
             "台式", "台客", "闽南语", "台语",
         ]
-        
+        chinese_keywords = [kw.lower() for kw in raw_chinese_keywords]
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
