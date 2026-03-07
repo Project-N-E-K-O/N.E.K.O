@@ -170,6 +170,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
         # 因此这里单独冻结一份待 /process 的快照；/cache 只处理快照之后新增的消息。
         pending_process_messages = None
         pending_process_boundary = None
+        # /cache、/process、/renew 在网络半失败时都可能出现“服务端已写入，但客户端没收到响应”的情况。
+        # 因此这里为每一批待发送数据保留稳定 request_id；只要还是同一批消息的自动重试，就必须复用同一个 ID，
+        # 这样 memory_server 才能识别为同一次请求并直接返回缓存结果，避免重复写 recent/timeindex。
+        pending_cache_request_id = None
+        pending_cache_request_boundary = None
+        pending_process_request_id = None
+        pending_process_request_boundary = None
+        pending_renew_request_id = None
+        pending_renew_request_boundary = None
         # memory 服务断开后，cross_server 的主循环仍会继续高速运行。
         # 这里为不同接口分别维护一个最小退避状态，避免 /cache 和 /process 在失败后被无限高频重试。
         memory_retry_state = {
@@ -321,11 +330,21 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         remaining.extend(chat_history[pending_process_boundary:])
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 if remaining:
+                                    renew_request_boundary = len(remaining)
+                                    # 热重置请求在失败后也会重试；这里同样需要稳定 request_id，
+                                    # 否则服务端可能已经处理成功，但客户端在读响应前断开，下一次 /renew 会把同一批消息再次落库。
+                                    # 但如果热重置 payload 已经扩展到更大的批次，也必须换新 ID，避免服务端把新批次误当成旧重试。
+                                    if pending_renew_request_id is None or pending_renew_request_boundary != renew_request_boundary:
+                                        pending_renew_request_id = uuid.uuid4().hex
+                                        pending_renew_request_boundary = renew_request_boundary
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
                                                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
-                                                json={'input_history': json.dumps(remaining, indent=2, ensure_ascii=False)},
+                                                json={
+                                                    'input_history': json.dumps(remaining, indent=2, ensure_ascii=False),
+                                                    'request_id': pending_renew_request_id,
+                                                },
                                                 timeout=aiohttp.ClientTimeout(total=30.0)
                                             ) as response:
                                                 result = await response.json()
@@ -338,6 +357,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                         except Exception:
                                                             pass
                                                 else:
+                                                    pending_renew_request_id = None
+                                                    pending_renew_request_boundary = None
                                                     logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
@@ -352,6 +373,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 后续 turn end 会把过期边界误当成当前 chat_history 的有效下标，导致 /cache 与 /process 边界错乱。
                                 pending_process_messages = None
                                 pending_process_boundary = None
+                                pending_cache_request_id = None
+                                pending_cache_request_boundary = None
+                                pending_process_request_id = None
+                                pending_process_request_boundary = None
+                                pending_renew_request_id = None
+                                pending_renew_request_boundary = None
 
                             if message["data"] == 'turn end': # lanlan的消息结束了
                                 current_turn = 'user'
@@ -412,18 +439,29 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     cache_start_index = max(cache_start_index, pending_process_boundary)
                                 if had_user_input_this_turn and not shutdown_event.is_set() and cache_start_index < len(chat_history):
                                     new_messages = chat_history[cache_start_index:]
+                                    cache_request_boundary = len(chat_history)
+                                    # 只有当缓存批次边界不变时，才能安全复用同一个 request_id。
+                                    # 如果这轮 turn end 又追加了新消息，说明 payload 已变化，必须换新 ID，避免服务端把新批次误判成旧重试。
+                                    if pending_cache_request_id is None or pending_cache_request_boundary != cache_request_boundary:
+                                        pending_cache_request_id = uuid.uuid4().hex
+                                        pending_cache_request_boundary = cache_request_boundary
                                     if can_request_memory('cache'):
                                         try:
                                             async with aiohttp.ClientSession() as session:
                                                 async with session.post(
                                                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-                                                    json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
+                                                    json={
+                                                        'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False),
+                                                        'request_id': pending_cache_request_id,
+                                                    },
                                                     timeout=aiohttp.ClientTimeout(total=10.0)
                                                 ) as response:
                                                     result = await response.json()
                                                     if result.get('status') != 'error':
                                                         mark_memory_success('cache')
                                                         last_synced_index = len(chat_history)
+                                                        pending_cache_request_id = None
+                                                        pending_cache_request_boundary = None
                                                     else:
                                                         mark_memory_failure('cache', result.get('message', 'unknown error'))
                                         except Exception as e:
@@ -494,6 +532,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     last_synced_index = 0
                                     pending_process_messages = None
                                     pending_process_boundary = None
+                                    pending_cache_request_id = None
+                                    pending_cache_request_boundary = None
+                                    pending_process_request_id = None
+                                    pending_process_request_boundary = None
+                                    pending_renew_request_id = None
+                                    pending_renew_request_boundary = None
                                     break
                                 
                                 # 增量结算：只发 /cache 未覆盖的剩余消息，触发 LLM 结算。
@@ -514,6 +558,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         pending_process_messages.extend(process_recent_messages)
                                         pending_process_boundary = len(chat_history)
                                     remaining = pending_process_messages
+                                process_request_boundary = len(remaining)
+                                # /process 的 request_id 必须与当前冻结批次长度绑定：
+                                # 同一批次重试复用同一个 ID；一旦 pending 批次并入了新消息，就生成新的 ID，避免新消息被旧去重结果吞掉。
+                                if remaining and (pending_process_request_id is None or pending_process_request_boundary != process_request_boundary):
+                                    pending_process_request_id = uuid.uuid4().hex
+                                    pending_process_request_boundary = process_request_boundary
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 # 只有 remaining 为空，或者 /process 真正成功写入 memory 后，才能安全清空本地缓存。
                                 # 如果因为冷却或请求失败而跳过 /process，这里必须保留消息，避免记忆数据丢失。
@@ -526,6 +576,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
                                                     json={
                                                         'input_history': json.dumps(remaining, indent=2, ensure_ascii=False),
+                                                        'request_id': pending_process_request_id,
                                                         'recent_input_history': json.dumps(process_recent_messages, indent=2, ensure_ascii=False),
                                                     },
                                                     timeout=aiohttp.ClientTimeout(total=30.0)
@@ -539,6 +590,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                         mark_memory_success('process')
                                                         # 只有确认 memory_server 已处理这批 remaining 后，才允许清空 chat_history。
                                                         process_completed = True
+                                                        pending_process_request_id = None
+                                                        pending_process_request_boundary = None
                                                         logger.info(f"[{lanlan_name}] session end 记忆结算完成，{len(remaining)} 条消息")
                                         except Exception as e:
                                             mark_memory_failure('process', e)
@@ -551,6 +604,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     last_synced_index = 0
                                     pending_process_messages = None
                                     pending_process_boundary = None
+                                    pending_cache_request_id = None
+                                    pending_cache_request_boundary = None
+                                    pending_process_request_id = None
+                                    pending_process_request_boundary = None
+                                    pending_renew_request_id = None
+                                    pending_renew_request_boundary = None
                                 else:
                                     # 只要 /process 没成功，就绝不能清空；否则 remaining 会永久丢失。
                                     logger.warning(f"[{lanlan_name}] session end 记忆结算未完成，保留 {len(remaining)} 条消息等待后续重试")

@@ -20,6 +20,7 @@ import logging
 import argparse
 from utils.frontend_utils import get_timestamp
 from typing import Optional
+from collections import OrderedDict
 
 # 配置日志
 from utils.logger_config import setup_logging
@@ -27,6 +28,9 @@ logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO
 
 class HistoryRequest(BaseModel):
     input_history: str
+    # request_id 由调用方为“同一次请求的重试”稳定复用。
+    # 这样即使服务端已成功写入、客户端却在读响应前超时，重试也能直接命中去重结果，避免重复落库。
+    request_id: Optional[str] = None
     # /process 默认仍兼容旧调用方：未传时 recent 更新与完整处理共用同一份历史。
     # cross_server 在 session end 场景下可单独传 recent_input_history，避免把已 /cache 的消息再次写进 recent history。
     recent_input_history: Optional[str] = None
@@ -97,6 +101,37 @@ enable_shutdown = False
 # 全局变量用于管理correction任务
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# 用一个有上限的内存缓存保存“已成功处理过的请求 ID -> 响应”。
+# 这里只覆盖短期重试场景：当客户端在读响应前断开/超时并马上重发时，服务端可直接返回旧结果，避免 recent/timeindex 重复写入。
+processed_request_results = OrderedDict()
+PROCESSED_REQUEST_CACHE_SIZE = 512
+
+
+def _build_request_cache_key(endpoint: str, lanlan_name: str, request_id: Optional[str]):
+    if not request_id:
+        return None
+    return endpoint, lanlan_name, request_id
+
+
+def _get_cached_request_result(endpoint: str, lanlan_name: str, request_id: Optional[str]):
+    cache_key = _build_request_cache_key(endpoint, lanlan_name, request_id)
+    if cache_key is None:
+        return None
+    cached = processed_request_results.get(cache_key)
+    if cached is not None:
+        # 命中后刷新到末尾，保持最近使用的请求优先保留在缓存里。
+        processed_request_results.move_to_end(cache_key)
+    return cached
+
+
+def _store_cached_request_result(endpoint: str, lanlan_name: str, request_id: Optional[str], result: dict):
+    cache_key = _build_request_cache_key(endpoint, lanlan_name, request_id)
+    if cache_key is None:
+        return
+    processed_request_results[cache_key] = result
+    processed_request_results.move_to_end(cache_key)
+    while len(processed_request_results) > PROCESSED_REQUEST_CACHE_SIZE:
+        processed_request_results.popitem(last=False)
 
 @app.post("/shutdown")
 async def shutdown_memory_server():
@@ -154,12 +189,18 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """轻量级缓存：仅将新消息追加到 recent history，不触发 time_manager / review 等 LLM 操作。
     供 cross_server 在每轮 turn end 时调用，保持 memory_browser 实时可见。"""
     try:
+        cached_result = _get_cached_request_result("cache", lanlan_name, request.request_id)
+        if cached_result is not None:
+            logger.info(f"[MemoryServer] cache: 命中幂等请求 {request.request_id}，直接返回缓存结果")
+            return cached_result
         input_history = convert_to_messages(json.loads(request.input_history))
         if not input_history:
             return {"status": "cached", "count": 0}
         logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
         await recent_history_manager.update_history(input_history, lanlan_name, compress=False)
-        return {"status": "cached", "count": len(input_history)}
+        result = {"status": "cached", "count": len(input_history)}
+        _store_cached_request_result("cache", lanlan_name, request.request_id, result)
+        return result
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}")
         return {"status": "error", "message": str(e)}
@@ -170,6 +211,10 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks
     try:
+        cached_result = _get_cached_request_result("process", lanlan_name, request.request_id)
+        if cached_result is not None:
+            logger.info(f"[MemoryServer] process: 命中幂等请求 {request.request_id}，直接返回缓存结果")
+            return cached_result
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
             character_data = _config_manager.load_characters()
@@ -210,7 +255,9 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         task = asyncio.create_task(_run_review_in_background(lanlan_name))
         correction_tasks[lanlan_name] = task
         
-        return {"status": "processed"}
+        result = {"status": "processed"}
+        _store_cached_request_result("process", lanlan_name, request.request_id, result)
+        return result
     except Exception as e:
         logger.error(f"处理对话历史失败: {e}")
         return {"status": "error", "message": str(e)}
@@ -220,6 +267,10 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
     lanlan_name = validate_lanlan_name(lanlan_name)
     global correction_tasks
     try:
+        cached_result = _get_cached_request_result("renew", lanlan_name, request.request_id)
+        if cached_result is not None:
+            logger.info(f"[MemoryServer] renew: 命中幂等请求 {request.request_id}，直接返回缓存结果")
+            return cached_result
         # 检查角色是否存在于配置中，如果不存在则记录信息但继续处理（允许新角色）
         try:
             character_data = _config_manager.load_characters()
@@ -250,7 +301,9 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
         task = asyncio.create_task(_run_review_in_background(lanlan_name))
         correction_tasks[lanlan_name] = task
         
-        return {"status": "processed"}
+        result = {"status": "processed"}
+        _store_cached_request_result("renew", lanlan_name, request.request_id, result)
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
