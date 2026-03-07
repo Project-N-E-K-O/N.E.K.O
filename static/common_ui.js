@@ -35,21 +35,25 @@ function scrollToBottom() {
 
 // --- 添加新消息函数 (修正) ---
 function addNewMessage(message) {
-    if (!chatContentWrapper) return; // 安全检查
+    if (!chatContentWrapper) return;
 
+    // 【修改】如果是 Node 类型，直接进入容器，防止产生匿名的外层包裹 div 导致清理残留
+    if (message instanceof Node) {
+        chatContentWrapper.appendChild(message);
+        scrollToBottom();
+        return message;
+    }
+
+    // 字符串类型的消息维持原有的包裹逻辑
     const newMessageElement = document.createElement('div');
     if (typeof message === 'string') {
-        newMessageElement.textContent = message; // 修复：全局辅助函数严禁使用 innerHTML 承接不确定的字符串
-    } else if (message instanceof Node) {
-        newMessageElement.appendChild(message);
-    } else {
-        console.warn('[addNewMessage] Invalid message type:', typeof message);
-        return;
+        newMessageElement.textContent = message;
     }
+    
+    newMessageElement.className = 'chat-message';
     chatContentWrapper.appendChild(newMessageElement);
-
-    // 确保在添加消息后立即滚动到底部
-    setTimeout(scrollToBottom, 10); // 短暂延迟确保DOM更新
+    scrollToBottom();
+    return newMessageElement;
 }
 
 // --- 整个对话区可拖拽缩放（输入区/按钮高度固定，历史区自适应） ---
@@ -1230,12 +1234,17 @@ window.sendMusicMessage = function(trackInfo) {
         }
     }
     
-    // 不同歌曲：如果播放器正在播放，需要创建新播放器（会停止旧播放并渲染新气泡）
-    if (!shouldCreateNewPlayer()) {
-        console.log('[Common UI] 已有其他歌曲在播，销毁旧实例并创建新播放器');
+    // 只要页面上存在任何旧播放器实例（无论是播放中、已暂停还是已播放结束），都先清理掉，确保页面唯一性
+    if (getMusicPlayerInstance()) {
+        console.log('[Common UI] 检测到旧音乐气泡残留，正在执行回收销毁...');
         destroyMusicPlayer();
     }
-    
+
+    // 【核心修复】在创建新气泡前，先销毁可能存在的旧气泡 DOM 和实例
+    if (shouldCreateNewPlayer()) {
+        console.log('[Common UI] 准备切换新歌曲，正在清理旧气泡...');
+        destroyMusicPlayer(); 
+    }
     // 更新当前播放信息（无论是否停止旧播放，都需要更新）
     currentPlayingTrack = trackInfo;
     // 动态加载 APlayer 库
@@ -1291,7 +1300,7 @@ window.sendMusicMessage = function(trackInfo) {
         return aplayerLoadPromise;
     };
     
-    const showMusicPlayer = () => {
+    const showMusicPlayer = async () => {
         // 安全校验：URL 白名单
         const isSafeUrl = (url) => {
             if (!url) return false;
@@ -1424,17 +1433,19 @@ window.sendMusicMessage = function(trackInfo) {
         
         // 使用双重 requestAnimationFrame 确保 DOM 已渲染
         requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
+            requestAnimationFrame(async() => {
                 const container = document.getElementById(playerId);
                 const playBtn = document.getElementById(playerId + '-play');
                 
-                if (container && typeof APlayer !== 'undefined') {
-                    aplayerInstance = new APlayer({
+                if (container && typeof window.initializeAPlayer === 'function') {
+                    // 【修改】调用 main.js 提供的统一初始化函数，而不是直接 new APlayer
+                    // 注意：如果是异步函数，前面需补上 await（当前所在函数 showMusicPlayer 也需标记为 async）
+                    aplayerInstance = await window.initializeAPlayer({ 
                         container: container,
                         theme: '#667eea',
                         loop: 'none',
                         preload: 'none',
-                        mutex: true,
+                        mutex: true, // 保持互斥，确保气泡播放时主播放器自动暂停
                         volume: 0.7,
                         listFolded: true,
                         order: 'normal',
@@ -1446,12 +1457,12 @@ window.sendMusicMessage = function(trackInfo) {
                         }]
                     });
                     
-                    // 注册到全局引用，供 getMusicPlayerInstance() 使用
-                    if (!window.aplayerInjected) {
-                        window.aplayerInjected = {};
-                    }
-                    window.aplayerInjected.aplayer = aplayerInstance;
-                    window.aplayer = aplayerInstance;
+                    // 确保实例挂载，防止被主播放器逻辑误伤
+                    if (!window.aplayerInjected) window.aplayerInjected = {};
+                    // 注意：这里我们仅保留一个引用用于判断，不覆盖全局主播放器实例
+                    window.aplayerInjected.currentBubblePlayer = aplayerInstance;
+                    
+                    console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
                     
                     // 绑定播放按钮事件
                     if (playBtn) {
@@ -1479,7 +1490,6 @@ window.sendMusicMessage = function(trackInfo) {
                     aplayerInstance.on('ended', () => {
                         console.log('[Common UI] 音乐播放结束');
                         if (playBtn) playBtn.textContent = '▶';
-                        currentPlayingTrack = null;
                     });
                     
                     // 美化 APlayer 样式（隐藏起来）
