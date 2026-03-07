@@ -1051,18 +1051,14 @@ function init_app() {
                     console.log(window.t('console.turnEndReceived'));
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
                     try {
-                        // 先把未闭合的音乐指令 flush 掉（不显示，保留指令完整性）
-                        const pendingCmd = window._pendingMusicCommand || '';
-                        window._pendingMusicCommand = '';
-                        
+                        // 【修改】turn end 时未闭合的命令片段直接丢弃，避免半截指令泄漏到正文
+                        window._pendingMusicCommand = ''; 
+
                         let rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer
                             : '';
                         
-                        // 合并 pending 命令后统一清理
-                        if (pendingCmd) {
-                            rest = rest + pendingCmd;
-                        }
+                        // 统一清理可能残留的完整或半截指令内容
                         rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
                         
                         const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
