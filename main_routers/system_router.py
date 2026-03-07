@@ -1837,13 +1837,22 @@ async def proactive_chat(request: Request):
         if music_content and music_content.get('formatted_content'):
             music_topic = music_content['formatted_content']
             if music_topic:
-                # 检查音乐话题是否重复（基于歌曲名去重）
+                # 检查音乐话题是否重复
                 music_tracks = music_content.get('raw_data', {}).get('data', [])
                 if music_tracks:
-                    # 使用第一首歌的曲目名作为去重 key
+                    # 获取第一首歌的详细信息
                     first_track = music_tracks[0]
                     track_name = first_track.get('name', '')
-                    music_topic_key = f"music:{track_name}"
+                    track_artist = first_track.get('artist', '')
+                    track_url = first_track.get('url', '')
+                    
+                    # 复用通用的去重键生成函数，优先利用 URL 的唯一性，
+                    # 即使没有 URL 也会结合“歌名 - 艺术家”来生成 key，避免同名曲误伤
+                    music_topic_key = _build_topic_dedup_key(
+                        topic_title=f"{track_name} - {track_artist}",
+                        topic_source='music',
+                        topic_url=track_url
+                    )
                     
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
                         print(f"[{lanlan_name}] Phase 1 音乐话题去重命中，跳过: {track_name}")
