@@ -2115,9 +2115,9 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     注意: 抖音接口通常需要 X-Bogus 等签名参数，这里主要依赖有效 Cookie 和基础参数尝试获取
     """
     try:
-        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        from utils.cookies_login import validate_cookies
         
-        cookies = load_cookies_from_file('douyin')
+        cookies = _get_platform_cookies('douyin')
         if not cookies:
             return {'success': False, 'error': '未找到抖音 Cookie 配置'}
         
@@ -2198,9 +2198,9 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     依赖: 需在配置中提供含有真实有效会话的 Cookie (kuaishou_cookies.json)
     """
     try:
-        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        from utils.cookies_login import validate_cookies
         
-        cookies = load_cookies_from_file('kuaishou')
+        cookies = _get_platform_cookies('kuaishou')
         if not cookies:
             return {'success': False, 'error': '未找到快手 Cookie 配置'}
         
@@ -2280,9 +2280,9 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     - 必须伪装成手机浏览器的 User-Agent
     """
     try:
-        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        from utils.cookies_login import validate_cookies
         
-        weibo_cookies = load_cookies_from_file('weibo')
+        weibo_cookies = _get_platform_cookies('weibo')
         if not weibo_cookies:
             return {'success': False, 'error': '未找到 config/weibo_cookies.json'}
         
@@ -2457,9 +2457,9 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     
     try:
-        from utils.cookies_login import validate_cookies, load_cookies_from_file
+        from utils.cookies_login import validate_cookies
         
-        twitter_cookies = load_cookies_from_file('twitter')
+        twitter_cookies = _get_platform_cookies('twitter')
         if not twitter_cookies:
              return {'success': False, 'error': '未配置 config/twitter_cookies.json'}
         
