@@ -75,7 +75,12 @@ function updatePlayButton(isPlaying) {
         playBtn.innerHTML = isPlaying ? 
             '<i class="fas fa-pause"></i>' : 
             '<i class="fas fa-play"></i>';
-        playBtn.title = isPlaying ? t('music.paused', '暂停') : t('music.playing', '播放');
+        
+        // 修正语义反转：播放中 title 显示“暂停”，暂停中 title 显示“播放”
+        // 同时改用动作词 key（如 music.pause/play）并使用 safeT 确保安全
+        playBtn.title = isPlaying ? 
+            window.safeT('music.pause', '暂停') : 
+            window.safeT('music.play', '播放');
     }
 }
 
@@ -199,7 +204,10 @@ function updatePlaylistToggle(isShown) {
     const playlistBtn = document.getElementById('aplayer-playlist-btn');
     if (playlistBtn) {
         playlistBtn.classList.toggle('active', isShown);
-        playlistBtn.title = isShown ? '隐藏播放列表' : '显示播放列表';
+        // 【修改】接入 i18n，删除硬编码中文，并使用安全翻译函数
+        playlistBtn.title = isShown ? 
+            window.safeT('music.hidePlaylist', '隐藏播放列表') : 
+            window.safeT('music.showPlaylist', '显示播放列表');
     }
 }
 
