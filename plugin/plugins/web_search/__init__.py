@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urljoin, unquote
+from urllib.parse import quote_plus, unquote
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
@@ -257,7 +257,6 @@ class WebSearchPlugin(NekoPluginBase):
         query: str,
         max_results: int,
         region: str,
-        timeout: float,
     ) -> List[Dict[str, str]]:
         if self._backend == "ddgs_lib":
             try:
@@ -373,7 +372,7 @@ class WebSearchPlugin(NekoPluginBase):
         self.logger.info("News search: query={!r} max={} region={}", query, max_r, rgn)
 
         try:
-            results = await self._do_news_search(query, max_r, rgn, timeout)
+            results = await self._do_news_search(query, max_r, rgn)
         except Exception as e:
             self.logger.exception("News search failed for query={!r}", query)
             return fail("SEARCH_ERROR", f"新闻搜索失败: {e}")

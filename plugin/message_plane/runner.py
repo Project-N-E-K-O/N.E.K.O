@@ -48,8 +48,6 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
     deadline = time.time() + max(0.0, float(timeout_s))
     while time.time() < deadline:
         try:
-            import socket
-
             with socket.create_connection((host, port), timeout=0.2):
                 return True
         except Exception:
@@ -71,6 +69,7 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
         resp = rpc.request(op="health", args={}, timeout=float(timeout_s))
         # request() should be sync here; if a coroutine leaks out, treat as unhealthy.
         if asyncio.iscoroutine(resp):
+            resp.close()
             return False
         if not isinstance(resp, dict):
             return False
@@ -106,6 +105,84 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._pub = None
         self._proc: subprocess.Popen | None = None
 
+    def _cleanup_embedded(
+        self,
+        *,
+        rpc_srv=None,
+        ingest_srv=None,
+        pub_srv=None,
+        ingest_thread: threading.Thread | None = None,
+        rpc_thread: threading.Thread | None = None,
+    ) -> None:
+        try:
+            if rpc_srv is not None:
+                rpc_srv.stop()
+        except Exception:
+            pass
+        try:
+            if ingest_srv is not None:
+                ingest_srv.stop()
+        except Exception:
+            pass
+        try:
+            if rpc_srv is not None:
+                rpc_srv.close()
+        except Exception:
+            pass
+        try:
+            if ingest_srv is not None:
+                ingest_srv.close()
+        except Exception:
+            pass
+        try:
+            if ingest_thread is not None and ingest_thread.is_alive():
+                ingest_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if rpc_thread is not None and rpc_thread.is_alive():
+                rpc_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if pub_srv is not None:
+                pub_srv.close()
+        except Exception:
+            pass
+
+        self._rpc = None
+        self._ingest = None
+        self._pub = None
+        self._thread = None
+        self._ingest_thread = None
+
+    def _terminate_process(self, proc: subprocess.Popen | None) -> None:
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            return
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            return
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            logger.warning("message_plane process did not exit after kill pid={}", getattr(proc, "pid", "?"))
+        except Exception:
+            pass
+
     def start(self) -> MessagePlaneEndpoints:
         if self._run_mode == "external":
             return self._start_external()
@@ -114,6 +191,11 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
     def _start_embedded(self) -> MessagePlaneEndpoints:
         if self._thread is not None and self._thread.is_alive():
             return self._endpoints
+        rpc_srv = None
+        ingest_srv = None
+        pub_srv = None
+        ingest_thread = None
+        t = None
         try:
             from plugin.message_plane.ingest_server import MessagePlaneIngestServer
             from plugin.message_plane.pub_server import MessagePlanePubServer
@@ -153,6 +235,14 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             logger.info("message_plane embedded started")
         except Exception as e:
             logger.warning("message_plane embedded start failed: {}", e)
+            self._cleanup_embedded(
+                rpc_srv=rpc_srv,
+                ingest_srv=ingest_srv,
+                pub_srv=pub_srv,
+                ingest_thread=ingest_thread,
+                rpc_thread=t,
+            )
+            raise
         return self._endpoints
 
     def _start_external(self) -> MessagePlaneEndpoints:
@@ -178,11 +268,11 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         except Exception as e:
             self._proc = None
             logger.warning("message_plane external process start failed: {}", e)
-            return self._endpoints
+            raise
 
-        _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=3.0)
-        _wait_tcp_ready(str(self._endpoints.ingest), timeout_s=3.0)
-        _wait_tcp_ready(str(self._endpoints.pub), timeout_s=3.0)
+        for label, ep in [("rpc", self._endpoints.rpc), ("ingest", self._endpoints.ingest), ("pub", self._endpoints.pub)]:
+            if not _wait_tcp_ready(str(ep), timeout_s=3.0):
+                logger.warning("message_plane {} endpoint not ready: {}", label, ep)
         return self._endpoints
 
     def stop(self) -> None:
@@ -191,19 +281,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             self._proc = None
             if p is None:
                 return
-            try:
-                if p.poll() is None:
-                    p.terminate()
-            except Exception:
-                pass
-            try:
-                p.wait(timeout=1.0)
-            except Exception:
-                try:
-                    if p.poll() is None:
-                        p.kill()
-                except Exception:
-                    pass
+            self._terminate_process(p)
             return
 
         rpc_srv = self._rpc
@@ -218,31 +296,13 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._thread = None
         self._ingest_thread = None
 
-        try:
-            if rpc_srv is not None:
-                rpc_srv.stop()
-        except Exception:
-            pass
-        try:
-            if ingest_srv is not None:
-                ingest_srv.stop()
-        except Exception:
-            pass
-        try:
-            if ingest_thread is not None and ingest_thread.is_alive():
-                ingest_thread.join(timeout=1.0)
-        except Exception:
-            pass
-        try:
-            if rpc_thread is not None and rpc_thread.is_alive():
-                rpc_thread.join(timeout=1.0)
-        except Exception:
-            pass
-        try:
-            if pub_srv is not None:
-                pub_srv.close()
-        except Exception:
-            pass
+        self._cleanup_embedded(
+            rpc_srv=rpc_srv,
+            ingest_srv=ingest_srv,
+            pub_srv=pub_srv,
+            ingest_thread=ingest_thread,
+            rpc_thread=rpc_thread,
+        )
 
     def health_check(self, *, timeout_s: float = 1.0) -> bool:
         if not _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=float(timeout_s)):

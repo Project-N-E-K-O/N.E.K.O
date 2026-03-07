@@ -81,6 +81,7 @@ RUN_STORE_MAX_COMPLETED = _get_int_env("NEKO_RUN_STORE_MAX_COMPLETED", 500)
 
 BLOB_STORE_DIR = os.getenv("NEKO_BLOB_STORE_DIR", str((Path(__file__).parent / "store" / "blobs").resolve()))
 BLOB_UPLOAD_MAX_BYTES = _get_int_env("NEKO_BLOB_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)
+BLOB_UPLOAD_SESSION_TTL_SECONDS = _get_float_env("NEKO_BLOB_UPLOAD_SESSION_TTL_SECONDS", 3600.0)
 
 
 # ========== 超时 & 轮询配置（秒） ==========

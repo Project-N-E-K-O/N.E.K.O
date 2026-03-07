@@ -88,13 +88,22 @@ class MemoReminderPlugin(NekoPluginBase):
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._checker_thread: Optional[threading.Thread] = None
+        self._reminders_lock = threading.Lock()
 
-    def _load_reminders(self) -> List[Dict[str, Any]]:
+    def _load_reminders_unlocked(self) -> List[Dict[str, Any]]:
         data = self.store.get(_STORE_KEY, [])
         return data if isinstance(data, list) else []
 
-    def _save_reminders(self, reminders: List[Dict[str, Any]]) -> None:
+    def _save_reminders_unlocked(self, reminders: List[Dict[str, Any]]) -> None:
         self.store.set(_STORE_KEY, reminders)
+
+    def _load_reminders(self) -> List[Dict[str, Any]]:
+        with self._reminders_lock:
+            return self._load_reminders_unlocked()
+
+    def _save_reminders(self, reminders: List[Dict[str, Any]]) -> None:
+        with self._reminders_lock:
+            self._save_reminders_unlocked(reminders)
 
     def _notify_change(self) -> None:
         """唤醒 checker 线程，使其立即重新计算下次触发时间。"""
@@ -109,9 +118,9 @@ class MemoReminderPlugin(NekoPluginBase):
         tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
         try:
             self._tz: timezone | ZoneInfo = ZoneInfo(tz_name)
-        except (KeyError, Exception):
+        except Exception as e:
             self._tz = ZoneInfo(_DEFAULT_TZ)
-            self.logger.warning("Invalid timezone {!r}, falling back to {}", tz_name, _DEFAULT_TZ)
+            self.logger.warning("Invalid timezone {!r}, falling back to {} ({})", tz_name, _DEFAULT_TZ, e)
 
         self._stop_event.clear()
         self._wake_event.clear()
@@ -173,34 +182,35 @@ class MemoReminderPlugin(NekoPluginBase):
                 break
 
     def _fire_due_reminders(self) -> None:
-        reminders = self._load_reminders()
-        if not reminders:
-            return
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            if not reminders:
+                return
 
-        now = _now(_TZ_UTC)
-        fired_ids: list[str] = []
-        kept: list[Dict[str, Any]] = []
+            now = _now(_TZ_UTC)
+            fired_ids: List[str] = []
+            kept: List[Dict[str, Any]] = []
 
-        for r in reminders:
-            trigger_iso = r.get("trigger_at", "")
-            try:
-                trigger_dt = datetime.fromisoformat(trigger_iso)
-            except (ValueError, TypeError):
-                kept.append(r)
-                continue
+            for r in reminders:
+                trigger_iso = r.get("trigger_at", "")
+                try:
+                    trigger_dt = datetime.fromisoformat(trigger_iso)
+                except (ValueError, TypeError):
+                    kept.append(r)
+                    continue
 
-            if trigger_dt <= now:
-                fired_ids.append(r.get("id", "?"))
-                self._push_reminder(r)
-                updated = self._reschedule(r, now)
-                if updated:
-                    kept.append(updated)
-            else:
-                kept.append(r)
+                if trigger_dt <= now:
+                    fired_ids.append(r.get("id", "?"))
+                    self._push_reminder(r)
+                    updated = self._reschedule(r, now)
+                    if updated:
+                        kept.append(updated)
+                else:
+                    kept.append(r)
 
-        if fired_ids:
-            self._save_reminders(kept)
-            self.logger.info("Fired reminders: {}", fired_ids)
+            if fired_ids:
+                self._save_reminders_unlocked(kept)
+                self.logger.info("Fired reminders: {}", fired_ids)
 
     def _push_reminder(self, r: Dict[str, Any]) -> None:
         msg = r.get("message", "提醒时间到了！")
@@ -327,14 +337,14 @@ class MemoReminderPlugin(NekoPluginBase):
             "lanlan_name": lanlan_name,
         }
 
-        reminders = self._load_reminders()
-        cfg = self.store.get("_memo_cfg", {})
-        max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
-        if len(reminders) >= max_r:
-            return fail("LIMIT_REACHED", f"提醒数量已达上限 ({max_r})")
-
-        reminders.append(reminder)
-        self._save_reminders(reminders)
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            cfg = self.store.get("_memo_cfg", {})
+            max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
+            if len(reminders) >= max_r:
+                return fail("LIMIT_REACHED", f"提醒数量已达上限 ({max_r})")
+            reminders.append(reminder)
+            self._save_reminders_unlocked(reminders)
         self._notify_change()
 
         local_str = trigger_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -375,12 +385,13 @@ class MemoReminderPlugin(NekoPluginBase):
         },
     )
     async def delete_reminder(self, reminder_id: str, **_):
-        reminders = self._load_reminders()
-        original_len = len(reminders)
-        reminders = [r for r in reminders if r.get("id") != reminder_id]
-        if len(reminders) == original_len:
-            return fail("NOT_FOUND", f"未找到提醒: {reminder_id}")
-        self._save_reminders(reminders)
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            original_len = len(reminders)
+            reminders = [r for r in reminders if r.get("id") != reminder_id]
+            if len(reminders) == original_len:
+                return fail("NOT_FOUND", f"未找到提醒: {reminder_id}")
+            self._save_reminders_unlocked(reminders)
         self._notify_change()
         self.logger.info("Reminder deleted: {}", reminder_id)
         return ok(data={"deleted": reminder_id, "remaining": len(reminders)})

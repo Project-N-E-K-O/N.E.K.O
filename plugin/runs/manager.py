@@ -740,8 +740,8 @@ async def _execute_run_guarded(
     except asyncio.CancelledError:
         term = _run_store.commit_terminal(
             run_id,
-            status="cancelled",
-            error=RunError(code="CANCELLED", message="Run was cancelled"),
+            status="canceled",
+            error=RunError(code="CANCELED", message="Run was canceled"),
             result_refs=[],
         )
         if term is not None:

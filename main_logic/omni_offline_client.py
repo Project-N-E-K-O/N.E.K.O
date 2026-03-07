@@ -281,6 +281,7 @@ class OmniOfflineClient:
         max_retries = 3
         retry_delays = [1, 2]
         assistant_message = ""
+        status_reported = False
         
         try:
             self._is_responding = True
@@ -293,6 +294,7 @@ class OmniOfflineClient:
                 logger.error(f"OmniOfflineClient: {error_msg}")
                 if self.on_status_message:
                     await self.on_status_message(f"⚠️ {error_msg}")
+                    status_reported = True
                 return
             
             guard_exhausted = False
@@ -401,17 +403,19 @@ class OmniOfflineClient:
                         logger.error(error_msg)
                         if self.on_status_message:
                             await self.on_status_message(error_msg)
+                            status_reported = True
                         break
                 except Exception as e:
                     error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
                     if self.on_status_message:
                         await self.on_status_message(error_msg)
+                        status_reported = True
                     break
         finally:
             self._is_responding = False
             
-            if not assistant_message and not guard_exhausted:
+            if not assistant_message and not guard_exhausted and not status_reported:
                 logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
                 if self.on_status_message:
                     await self.on_status_message("💥 LLM未返回任何回复，请检查API连接和配置")

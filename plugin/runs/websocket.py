@@ -133,6 +133,9 @@ class WsRunHub:
                 except Exception:
                     pass
             self._unsubs = []
+            self._started = False
+            self._loop = None
+            raise
 
         if self._dispatch_task is None:
             self._dispatch_task = asyncio.create_task(self._dispatch_loop(), name="ws-run-hub-dispatch")
@@ -279,7 +282,7 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
                 await _close(1011, "heartbeat timeout")
                 return
             try:
-                await ws.send_text(json.dumps({"type": "ping"}, ensure_ascii=False, separators=(",", ":")))
+                await q.put({"type": "ping"})
             except Exception:
                 return
 
@@ -297,11 +300,11 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
             out["result"] = result
         else:
             out["error"] = str(error or "error")
-        await ws.send_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+        await q.put(out)
 
     try:
         hello = {"type": "event", "event": "session.ready", "data": {"run_id": run_id, "perm": perm, "exp": exp}}
-        await ws.send_text(json.dumps(hello, ensure_ascii=False, separators=(",", ":")))
+        await q.put(hello)
 
         while True:
             raw = await ws.receive_text()
@@ -380,10 +383,14 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
             pass
         try:
             await send_task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
         try:
             await hb_task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
         try:

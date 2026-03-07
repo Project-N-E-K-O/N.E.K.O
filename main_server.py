@@ -156,6 +156,7 @@ def get_default_steam_info():
 # Steamworks 初始化将在 @app.on_event("startup") 中延迟执行
 # 这样可以避免在模块导入时就执行 DLL 加载等操作
 steamworks = None
+_server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
 
@@ -244,20 +245,24 @@ async def _handle_agent_event(event: dict):
                         pass
             return
         if not mgr and event_type in ("proactive_message", "task_result"):
-            # Prefer a manager with an active websocket so we can deliver immediately
-            fallback_any = None
-            for _name, _mgr in session_manager.items():
-                if not _mgr:
-                    continue
-                if not fallback_any:
-                    fallback_any = (_name, _mgr)
-                if _mgr.websocket:
-                    mgr = _mgr
-                    logger.info("[EventBus] %s broadcast fallback: picked %s (has websocket)", event_type, _name)
-                    break
-            if not mgr and fallback_any:
-                mgr = fallback_any[1]
-                logger.info("[EventBus] %s broadcast fallback: picked %s (no websocket, pending)", event_type, fallback_any[0])
+            # No target session found — do NOT fallback to a random session
+            # to avoid injecting task results into unrelated conversations.
+            # Send a frontend-only notification if any websocket is available.
+            text = (event.get("text") or "").strip()
+            if text:
+                for _name, _mgr in session_manager.items():
+                    if _mgr and _mgr.websocket and hasattr(_mgr.websocket, "send_json"):
+                        try:
+                            await _mgr.websocket.send_json({
+                                "type": "agent_notification",
+                                "text": text,
+                                "source": "brain",
+                                "status": event.get("status") or "completed",
+                            })
+                        except Exception:
+                            pass
+            logger.info("[EventBus] %s dropped (no target session for lanlan=%s), sent notification only", event_type, lanlan)
+            return
         if not mgr:
             logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
@@ -440,14 +445,17 @@ async def initialize_character_data():
         if need_start_thread:
             try:
                 _char_name = k
-                _main_loop = asyncio.get_event_loop()
-                def _make_status_cb(char_name, loop):
+                def _make_status_cb(char_name):
                     def _cb(msg):
                         mgr = session_manager.get(char_name)
-                        if mgr:
-                            asyncio.run_coroutine_threadsafe(mgr.send_status(msg), loop)
+                        if not mgr:
+                            return
+                        loop = _server_loop
+                        if loop is None or loop.is_closed():
+                            return
+                        asyncio.run_coroutine_threadsafe(mgr.send_status(msg), loop)
                     return _cb
-                _status_cb = _make_status_cb(_char_name, _main_loop)
+                _status_cb = _make_status_cb(_char_name)
 
                 sync_process[k] = Thread(
                     target=cross_server.sync_connector_process,
@@ -783,7 +791,8 @@ def _sync_preload_modules():
 async def on_startup():
     """服务器启动时执行的初始化操作"""
     if _IS_MAIN_PROCESS:
-        global steamworks, _preload_task, agent_event_bridge
+        global steamworks, _preload_task, agent_event_bridge, _server_loop
+        _server_loop = asyncio.get_running_loop()
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         

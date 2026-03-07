@@ -386,7 +386,7 @@ def _check_extension_type_guard(config_path: Path, plugin_id: str, logger: Any) 
     return False
 
 
-def _handle_config_update_command(
+async def _handle_config_update_command(
     msg: dict,
     ctx: Any,
     events_by_type: dict,
@@ -432,11 +432,13 @@ def _handle_config_update_command(
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
             try:
-                asyncio.run(config_change_handler(
+                result = config_change_handler(
                     old_config=old_config,
                     new_config=ctx._effective_config,
                     mode=mode,
-                ))
+                )
+                if inspect.isawaitable(result):
+                    await result
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
@@ -1116,7 +1118,7 @@ def _plugin_process_runner(
 
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
-                    _handle_config_update_command(
+                    await _handle_config_update_command(
                         msg=msg, ctx=ctx, events_by_type=events_by_type,
                         plugin_id=plugin_id, res_sender=res_sender, logger=logger,
                     )
@@ -1124,7 +1126,11 @@ def _plugin_process_runner(
 
                 # ── TRIGGER_CUSTOM ──
                 if msg_type == "TRIGGER_CUSTOM":
-                    asyncio.create_task(_handle_trigger_custom(msg))
+                    req_id = str(msg.get("req_id") or uuid.uuid4())
+                    task_key = f"custom:{req_id}"
+                    task = asyncio.create_task(_handle_trigger_custom(msg))
+                    _run_tasks[task_key] = task
+                    task.add_done_callback(lambda _t, key=task_key: _run_tasks.pop(key, None))
                     continue
 
                 # ── DISABLE / ENABLE EXTENSION ──
@@ -1354,6 +1360,11 @@ class PluginHost:
                 "Plugin {} process failed to start, shutting down comm_manager",
                 self.plugin_id,
             )
+            state.unregister_downlink_sender(self.plugin_id)
+            try:
+                self.transport.close()
+            except Exception:
+                pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             raise
         self.logger.info("Plugin {} process started (pid: {})", self.plugin_id, self.process.pid)
@@ -1366,6 +1377,11 @@ class PluginHost:
                 self.plugin_id,
                 exitcode,
             )
+            state.unregister_downlink_sender(self.plugin_id)
+            try:
+                self.transport.close()
+            except Exception:
+                pass
             await self.comm_manager.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             raise PluginLifecycleError(
                 f"Plugin {self.plugin_id} failed to stay alive after startup (exitcode={exitcode})"

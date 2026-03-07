@@ -479,7 +479,7 @@ class LLMSessionManager:
                 }
                 await self.websocket.send_json(message)
                 if is_first_chunk:
-                    logger.info("[%s] send_lanlan_response: first chunk sent via WS (%.40s…)", self.lanlan_name, text[:40])
+                    logger.info("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
                 self.sync_message_queue.put({"type": "json", "data": message})
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
@@ -1811,24 +1811,27 @@ class LLMSessionManager:
                     return
                 logger.info("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
                 self.pending_agent_callbacks.clear()
-                self.pending_extra_replies.clear()
                 delivered = await self.session.stream_proactive(instruction)
                 logger.info("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
-                if not delivered:
+                if delivered:
+                    self.pending_extra_replies.clear()
+                else:
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
 
             else:
                 # 没有 session；尝试启动文本 session 后立即投递
-                if self.websocket:
+                ws = self.websocket
+                if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
                     try:
-                        await self.start_session(self.websocket, new=False, input_mode='text')
+                        await self.start_session(ws, new=False, input_mode='text')
                     except Exception as e:
                         logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
                 if isinstance(self.session, OmniOfflineClient):
                     self.pending_agent_callbacks.clear()
-                    self.pending_extra_replies.clear()
                     delivered = await self.session.stream_proactive(instruction)
-                    if not delivered:
+                    if delivered:
+                        self.pending_extra_replies.clear()
+                    else:
                         self.pending_agent_callbacks.extend(callbacks_snapshot)
                     logger.info("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
                 else:

@@ -1,7 +1,7 @@
-"""插件进程间通信资源管理器 — ZMQ 版
+"""插件进程间通信资源管理器 - ZMQ 版
 
 通过 :class:`~plugin.core.zmq_transport.HostTransport` 与子进程通信。
-所有消息复用 2 个 ZMQ 管道（downlink / uplink），按 channel tag 分流。
+所有消息复用 2 个 ZMQ 管道 (downlink / uplink), 按 channel tag 分流。
 """
 from __future__ import annotations
 
