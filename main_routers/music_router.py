@@ -1,10 +1,8 @@
 # 音乐路由
-import re
-from typing import Dict, Optional
+
 from fastapi import APIRouter, Query
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, field_validator
+from utils.music_crawlers import fetch_music_content
+from utils.logger_config import get_module_logger
 
 # 导入分离出去的爬虫类
 from utils.music_crawlers import fetch_music_content
