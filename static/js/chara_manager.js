@@ -977,6 +977,14 @@ function renderCatgirls() {
         const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
         switchBtn.innerHTML = switchText;
         switchBtn.addEventListener('click', function () { switchCatgirl(key); });
+        
+        if (window._currentCatgirl && key === window._currentCatgirl) {
+            const currentText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.currentCatgirl">${window.t('character.currentCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 当前猫娘';
+            switchBtn.innerHTML = currentText;
+            switchBtn.style.color = '#fff';
+            switchBtn.disabled = true;
+        }
+        
         actionsDiv.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
@@ -1038,7 +1046,6 @@ function renderCatgirls() {
     });
 
     renderHiddenCatgirls();
-    updateSwitchButtons();
 }
 
 // 获取隐藏猫娘键的辅助函数，带错误处理
@@ -1198,24 +1205,24 @@ window.hideCatgirl = async function(key) {
         localStorage.setItem('hidden_catgirls', JSON.stringify(hiddenKeys));
     }
     
-    setTimeout(() => {
-        block.style.display = 'none';
-        block.style.transform = '';
-        block.style.opacity = '';
-        block.style.transition = '';
-        
-        const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
-        if (hiddenCountSpan) {
-            const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
-            hiddenCountSpan.textContent = `${hiddenText} (${hiddenKeys.length})`;
-        }
-        
-        renderHiddenCatgirls();
-    }, 500);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    block.style.display = 'none';
+    block.style.transform = '';
+    block.style.opacity = '';
+    block.style.transition = '';
+    
+    const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
+    if (hiddenCountSpan) {
+        const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
+        hiddenCountSpan.textContent = `${hiddenText} (${hiddenKeys.length})`;
+    }
+    
+    renderHiddenCatgirls();
 }
 
 // 取消隐藏猫娘函数
-window.unhideCatgirl = async function(key) {
+window.unhideCatgirl = function(key) {
     const hiddenKeys = getHiddenCatgirlKeys();
     const newHiddenKeys = hiddenKeys.filter(k => k !== key);
     localStorage.setItem('hidden_catgirls', JSON.stringify(newHiddenKeys));
