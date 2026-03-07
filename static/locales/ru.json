@@ -2265,9 +2265,9 @@
         "unknownArtist": "Неизвестный исполнитель",
         "playing": "Воспроизведение",
         "paused": "Пауза",
-        "searching": "Поиск: {{query}}",
-        "notFound": "Песня не найдена: {{query}}",
-        "nowPlaying": "Сейчас играет: {{name}}",
+        "searching": "Поиск",
+        "notFound": "Песня не найдена",
+        "nowPlaying": "Сейчас играет",
         "searchFailed": "Ошибка поиска музыки",
         "playError": "Ошибка воспроизведения",
         "ended": "Завершено"

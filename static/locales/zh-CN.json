@@ -2265,9 +2265,9 @@
         "unknownArtist": "未知艺术家",
         "playing": "播放中",
         "paused": "已暂停",
-        "searching": "正在为您搜索: {{query}}",
-        "notFound": "找不到歌曲: {{query}}",
-        "nowPlaying": "为您播放: {{name}}",
+        "searching": "正在为您搜索",
+        "notFound": "找不到歌曲",
+        "nowPlaying": "为您播放",
         "searchFailed": "音乐搜索失败",
         "playError": "播放出错",
         "ended": "已结束"
