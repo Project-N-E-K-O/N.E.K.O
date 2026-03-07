@@ -5,7 +5,8 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - Modules with public APIs: 34
 - Public module functions: 29
 - Public class methods: 347
-- Surface validation test: `plugin/tests/unit/test_sdk_method_surface_complete.py`
+- Surface validation tests:
+  - `plugin/tests/unit/sdk/core/test_sdk_method_surface_complete.py`
 
 ## Module Inventory
 

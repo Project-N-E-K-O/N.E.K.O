@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 from pathlib import Path
 
 import pytest
@@ -81,3 +82,49 @@ def test_sdk_public_method_surface_exists_runtime() -> None:
 
     assert checked > 0
     assert missing == []
+
+
+@pytest.mark.plugin_unit
+def test_sdk_public_method_surface_has_callable_contracts() -> None:
+    """Ensure every discovered public SDK symbol is callable or a descriptor.
+
+    This is a broad regression net for the entire SDK public method surface.
+    """
+    py_files = sorted(p for p in SDK_ROOT.rglob("*.py") if p.name != "__init__.py")
+
+    invalid: list[str] = []
+    checked = 0
+
+    for path in py_files:
+        module_name = _module_name_from_path(path)
+        funcs, classes = _iter_public_api_from_ast(path)
+        if not funcs and not classes:
+            continue
+
+        module = importlib.import_module(module_name)
+
+        for fn in funcs:
+            checked += 1
+            obj = getattr(module, fn, None)
+            if not callable(obj):
+                invalid.append(f"{module_name}.{fn}")
+
+        for cls_name, methods in classes.items():
+            cls = getattr(module, cls_name, None)
+            if cls is None:
+                continue
+            for method in methods:
+                checked += 1
+                # Static inspect avoids descriptor binding side effects.
+                obj = inspect.getattr_static(cls, method, None)
+                if obj is None:
+                    invalid.append(f"{module_name}.{cls_name}.{method}")
+                    continue
+                if isinstance(obj, (staticmethod, classmethod, property)):
+                    continue
+                if callable(obj):
+                    continue
+                invalid.append(f"{module_name}.{cls_name}.{method}")
+
+    assert checked > 0
+    assert invalid == []

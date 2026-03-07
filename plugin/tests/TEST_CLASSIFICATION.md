@@ -34,24 +34,30 @@ This file is the canonical taxonomy for `plugin/tests`.
 - `test_request_router.py`: request router core handling and fallback send path.
 - `test_request_router_additional.py`: request router queue/start-stop/zmq import-failure branches.
 
-### C. SDK Core / Surface
+### C. SDK / Adapter
 
-- `test_sdk_adapter_gateway.py`: adapter gateway core/default contracts.
-- `test_sdk_base_and_adapter.py`: sdk base/adaptation behavior.
-- `test_sdk_bus_models_and_clients.py`: bus models and client contracts.
-- `test_sdk_call_chain.py`: call chain behavior.
-- `test_sdk_decorators.py`: decorators metadata/schema behavior.
-- `test_sdk_hook_and_adapter_extras.py`: hook/adapter extra behavior.
-- `test_sdk_hook_executor.py`: hook execution contracts.
-- `test_sdk_memory_system_state.py`: memory/system state access behavior.
-- `test_sdk_message_plane_transport_client.py`: message-plane transport behavior.
-- `test_sdk_method_surface_complete.py`: sdk method surface completeness.
-- `test_sdk_neko_adapter_plugin.py`: neko adapter plugin behavior.
-- `test_sdk_plugins_and_config.py`: sdk plugin/config usage paths.
-- `test_sdk_public_api_surface.py`: public API surface expectations.
-- `test_sdk_responses.py`: standard envelope response behavior.
-- `test_sdk_router.py`: sdk router behavior.
-- `test_sdk_store_database_logger_transport.py`: store/db/logger/transport behaviors.
+- `unit/sdk/adapter/test_sdk_adapter_gateway.py`: adapter gateway core/default contracts.
+- `unit/sdk/adapter/test_sdk_neko_adapter_plugin.py`: neko adapter plugin behavior.
+
+### D. SDK / Bus
+
+- `unit/sdk/bus/test_sdk_bus_models_and_clients.py`: bus models and client contracts.
+
+### E. SDK / Core Surface
+
+- `unit/sdk/core/test_sdk_base_and_adapter.py`: sdk base/adaptation behavior.
+- `unit/sdk/core/test_sdk_call_chain.py`: call chain behavior.
+- `unit/sdk/core/test_sdk_decorators.py`: decorators metadata/schema behavior.
+- `unit/sdk/core/test_sdk_hook_and_adapter_extras.py`: hook/adapter extra behavior.
+- `unit/sdk/core/test_sdk_hook_executor.py`: hook execution contracts.
+- `unit/sdk/core/test_sdk_memory_system_state.py`: memory/system state access behavior.
+- `unit/sdk/core/test_sdk_message_plane_transport_client.py`: message-plane transport behavior.
+- `unit/sdk/core/test_sdk_method_surface_complete.py`: sdk method surface completeness + callable contract checks.
+- `unit/sdk/core/test_sdk_plugins_and_config.py`: sdk plugin/config usage paths.
+- `unit/sdk/core/test_sdk_public_api_surface.py`: public API surface expectations.
+- `unit/sdk/core/test_sdk_responses.py`: standard envelope response behavior.
+- `unit/sdk/core/test_sdk_router.py`: sdk router behavior.
+- `unit/sdk/core/test_sdk_store_database_logger_transport.py`: store/db/logger/transport behaviors.
 
 ## 3) Integration / E2E Classification
 
@@ -73,7 +79,9 @@ Keep `test_*.py` naming; split by domain folder under each level:
 - `unit/server/messaging/...`
 - `unit/server/routes/...`
 - `unit/server/infrastructure/...`
-- `unit/sdk/...`
+- `unit/sdk/adapter/...`
+- `unit/sdk/bus/...`
+- `unit/sdk/core/...`
 - `integration/server/...`
 - `e2e/plugin_ui/...`
 
@@ -84,5 +92,4 @@ This preserves pytest discovery while making ownership and review scope obvious.
 - If subject module path starts with `plugin.server.application`, place under `unit/server/application/`.
 - If subject module path starts with `plugin.server.messaging`, place under `unit/server/messaging/`.
 - If a test covers multiple subsystems, place by primary entrypoint and add a header comment.
-- SDK tests must remain under `unit/sdk/` and avoid server fixture coupling.
-
+- SDK tests must remain under `unit/sdk/{adapter,bus,core}` and avoid server fixture coupling.
