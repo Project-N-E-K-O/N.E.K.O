@@ -66,10 +66,6 @@ def file_lock(file_obj: LockableFile):
             _msvcrt.locking(file_obj.fileno(), _msvcrt.LK_UNLCK, lock_size)
         return
 
-    if _fcntl is None:
-        yield
-        return
-
     _fcntl.flock(file_obj.fileno(), _fcntl.LOCK_EX)
     try:
         yield

@@ -42,6 +42,12 @@ def test_fail_with_errorcode_and_int_code_paths() -> None:
     assert payload_int["error"]["message"] == "not found"
     assert is_envelope(payload_int) is True
 
+    payload_unknown_int = fail(999, "custom int error")
+    assert payload_unknown_int["code"] == 999
+    assert payload_unknown_int["error"]["code"] == "999"
+    assert payload_unknown_int["error"]["message"] == "custom int error"
+    assert is_envelope(payload_unknown_int) is True
+
 
 @pytest.mark.plugin_unit
 def test_fail_with_string_code_defaults_to_internal_and_meta() -> None:

@@ -275,8 +275,6 @@ def apply_user_config_profiles(
 
     merged = dict(base_config)
     for key, value in overlay.items():
-        if key == "plugin":
-            continue
         if isinstance(value, Mapping):
             value_mapping = _to_string_key_mapping(value)
             current_obj = merged.get(key)
