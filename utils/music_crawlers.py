@@ -835,9 +835,9 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
             # en
             "mandarin", "c-pop", "chinese pop",
             # ja
-            "中国語", "中文", "華語", "j-pop", "日本流行",
+            "中国語", "中文", "華語",
             # ko
-            "한글", "가요", "한국 대중음악", "k-pop", "kpop",
+            "중국어", "중국 음악", "중국 팝",
             # ru
             "китайская музыка", "китайский поп",
             # 华语歌手 (常见中文歌手名)
