@@ -177,14 +177,22 @@ export function destroyAPlayer() {
             }
         }
         
-        window.aplayer = null;
+       window.aplayer = null;
+        // 【新增】同步清理镜像引用
+        if (window.aplayerInjected) {
+            window.aplayerInjected.aplayer = null;
+        }
         removeKeyboardShortcuts();
-        
+
         console.log('[APlayer] Destroyed successfully');
         return true;
     } catch (e) {
         console.error('[APlayer] Failed to destroy:', e);
         window.aplayer = null;
+        // 【新增】失败分支也同步清理镜像引用
+        if (window.aplayerInjected) {
+            window.aplayerInjected.aplayer = null;
+        }
         return false;
     }
 }

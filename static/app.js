@@ -1,7 +1,8 @@
 /**
  * 全局窗口管理函数
  */
-
+// 【新增】定义一个全局或模块级的门闩变量
+let currentMusicSearchEpoch = 0;
 // 【防崩溃兜底】确保 window.t 始终是一个可调用的函数
 if (typeof window.t !== 'function') {
     window.t = function(key, fallback) { return fallback || key; };
@@ -1297,9 +1298,19 @@ function init_app() {
                             window.showStatusToast(searchMsg, 2000);
                         }
                         
+                        // 【新增】每次搜索前纪元+1，并记录下当前请求的纪元
+                        currentMusicSearchEpoch++;
+                        const myEpoch = currentMusicSearchEpoch;
+
                         fetch(`/api/music/search?query=${encodeURIComponent(searchTerm)}`)
                             .then(res => res.json())
                             .then(result => {
+                                // 【新增】检查如果纪元不匹配，说明有更新的请求，直接丢弃
+                                if (myEpoch !== currentMusicSearchEpoch) {
+                                    console.log(`[Music] 丢弃过期的搜索结果: ${searchTerm}`);
+                                    return;
+                                }
+
                                 if (result.success && result.data && result.data.length > 0) {
                                     const track = result.data[0];
                                     window.dispatchMusicPlay(track);

@@ -174,6 +174,12 @@ export function removeAPlayerFromChatContainer() {
     // 统一调用 main.js 的原生销毁方法处理
     destroyAPlayer(); 
 
+    // 【新增】兜底清理 DOM，防止因为半成品导致 destroyAPlayer 没清干净
+    const leftoverContainer = document.getElementById('aplayer-container');
+    if (leftoverContainer && leftoverContainer.parentNode) {
+        leftoverContainer.parentNode.removeChild(leftoverContainer);
+    }
+
     if (window.aplayerInjected) {
         delete window.aplayerInjected;
         console.log('[APlayer] Removed from chat-container');

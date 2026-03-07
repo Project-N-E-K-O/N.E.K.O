@@ -524,19 +524,28 @@ def _log_music_content(lanlan_name: str, music_content: dict):
     else:
         logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
 
-def _format_music_content(music_content: dict) -> str:
+def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
     """Formats music content into a readable string."""
     if not music_content.get('success'):
         return ""
     
-    output_lines = ["【今日音乐推荐】"]
+    _texts = {
+        'zh': {'title': '【今日音乐推荐】', 'album': '专辑', 'desc': '这些歌曲都是当下热门或经典之作，很适合在工作或休闲时聆听～'},
+        'en': {'title': '[Today\'s Music Recommendations]', 'album': 'Album', 'desc': 'These are currently popular or classic tracks, great for listening while working or relaxing~'},
+        'ja': {'title': '【今日の音楽おすすめ】', 'album': 'アルバム', 'desc': 'これらは現在人気のある、または定番の曲で、仕事中やリラックスタイムにぴったりです～'},
+        'ko': {'title': '[오늘의 음악 추천]', 'album': '앨범', 'desc': '현재 인기 있거나 클래식한 곡들로, 일하거나 휴식할 때 듣기 좋습니다~'},
+        'ru': {'title': '[Сегодняшние музыкальные рекомендации]', 'album': 'Альбом', 'desc': 'Это популярные или классические треки, отлично подходящие для работы или отдыха~'}
+    }
+    t = _texts.get(lang, _texts['zh'])
+    
+    output_lines = [t['title']]
     tracks = music_content.get('data', [])
     for i, track in enumerate(tracks[:5], 1):
         name = track.get('name', '未知曲目')
         artist = track.get('artist', '未知艺术家')
         album = track.get('album', '')
         if album:
-            output_lines.append(f"{i}. 《{name}》 - {artist}（专辑：{album}）")
+            output_lines.append(f"{i}. 《{name}》 - {artist}（{t['album']}：{album}）")
         else:
             output_lines.append(f"{i}. 《{name}》 - {artist}")
     
@@ -544,7 +553,7 @@ def _format_music_content(music_content: dict) -> str:
         return ""
     
     output_lines.append("")
-    output_lines.append("这些歌曲都是当下热门或经典之作，很适合在工作或休闲时聆听～")
+    output_lines.append(t['desc'])
         
     return "\n".join(output_lines)
 
@@ -1609,7 +1618,10 @@ async def proactive_chat(request: Request):
         # ================================================================
         
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
-        music_content = sources.get('music')
+        music_content = {
+            'formatted_content': _format_music_content(music_raw, proactive_lang),
+            'raw_data': music_raw,
+        }
         
         logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
         
@@ -1630,7 +1642,14 @@ async def proactive_chat(request: Request):
                 if remaining_total <= 0:
                     break
                 src = sources[m]
-                label_map = {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'}
+                _label_maps = {
+                    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
+                    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
+                    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
+                    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
+                    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'}
+                }
+                label_map = _label_maps.get(proactive_lang, _label_maps['zh'])
                 label = label_map.get(m, m)
                 links = src.get('links', []) or []
 
@@ -1705,8 +1724,9 @@ async def proactive_chat(request: Request):
                 else:
                     keyword = music_keyword_result.strip()
                     # --- 优化：去掉局部的 import re，使用更强大的正则防大模型加戏 ---
+                    import re
                     # 匹配 "关键词：xxx" 或 "搜索：xxx"，并忽略前面的换行或客套话
-                    keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?)[：:\s]+', '', keyword, count=1)
+                    keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
                     # 清洗各类成对的符号、引号及换行
                     keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
                     # ----------------------------------------------------
@@ -1751,7 +1771,6 @@ async def proactive_chat(request: Request):
             try:
                 prompt = get_proactive_screen_prompt('web', proactive_lang).format(
                     memory_context=memory_context,
-                    recent_chats_section=proactive_chat_history_prompt,
                     merged_content=merged_web_content,
                     # --- 修改：传入空字符串即可，因为真实对话已经在 memory_context 里了 ---
                     recent_chats_section=""
@@ -2012,7 +2031,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]

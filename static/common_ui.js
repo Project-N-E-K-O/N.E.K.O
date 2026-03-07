@@ -1280,6 +1280,8 @@ window.sendMusicMessage = function(trackInfo) {
                     if (typeof APlayer !== 'undefined') {
                         resolve();
                     } else {
+                        // 【修改】将存储 promise 的变量置空（请根据你的实际变量名替换 aplayerLoadPromise）
+                        aplayerLoadPromise = null; 
                         reject(new Error('APlayer 未定义'));
                     }
                 }, 100);
