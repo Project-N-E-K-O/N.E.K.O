@@ -243,7 +243,23 @@ async def _handle_agent_event(event: dict):
                     except Exception:
                         pass
             return
+        if not mgr and event_type in ("proactive_message", "task_result"):
+            # Prefer a manager with an active websocket so we can deliver immediately
+            fallback_any = None
+            for _name, _mgr in session_manager.items():
+                if not _mgr:
+                    continue
+                if not fallback_any:
+                    fallback_any = (_name, _mgr)
+                if _mgr.websocket:
+                    mgr = _mgr
+                    logger.info("[EventBus] %s broadcast fallback: picked %s (has websocket)", event_type, _name)
+                    break
+            if not mgr and fallback_any:
+                mgr = fallback_any[1]
+                logger.info("[EventBus] %s broadcast fallback: picked %s (no websocket, pending)", event_type, fallback_any[0])
         if not mgr:
+            logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
@@ -262,7 +278,7 @@ async def _handle_agent_event(event: dict):
                     "timestamp": event.get("timestamp") or "",
                 }
                 mgr.enqueue_agent_callback(callback)
-                # Attempt immediate delivery; re-queued automatically if session is busy
+                logger.info("[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks", event_type)
                 mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:
@@ -276,8 +292,26 @@ async def _handle_agent_event(event: dict):
                         if err_msg:
                             notif["error_message"] = err_msg[:500]
                         await mgr.websocket.send_json(notif)
-                    except Exception:
-                        pass
+                        logger.info("[EventBus] agent_notification sent to frontend: %.60s", text[:60])
+                    except Exception as e:
+                        logger.warning("[EventBus] agent_notification WS send failed: %s", e)
+                else:
+                    logger.warning("[EventBus] agent_notification: no websocket available")
+        elif event_type == "agent_notification":
+            if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+                try:
+                    notif = {
+                        "type": "agent_notification",
+                        "text": event.get("text", ""),
+                        "source": event.get("source", "brain"),
+                        "status": event.get("status", "error"),
+                    }
+                    err_msg = event.get("error_message") or ""
+                    if err_msg:
+                        notif["error_message"] = err_msg[:500]
+                    await mgr.websocket.send_json(notif)
+                except Exception:
+                    pass
         elif event_type == "task_update":
             if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                 try:
@@ -405,9 +439,19 @@ async def initialize_character_data():
         
         if need_start_thread:
             try:
+                _char_name = k
+                _main_loop = asyncio.get_event_loop()
+                def _make_status_cb(char_name, loop):
+                    def _cb(msg):
+                        mgr = session_manager.get(char_name)
+                        if mgr:
+                            asyncio.run_coroutine_threadsafe(mgr.send_status(msg), loop)
+                    return _cb
+                _status_cb = _make_status_cb(_char_name, _main_loop)
+
                 sync_process[k] = Thread(
                     target=cross_server.sync_connector_process,
-                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}),
+                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
                     daemon=True,
                     name=f"SyncConnector-{k}"
                 )

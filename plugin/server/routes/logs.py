@@ -10,7 +10,7 @@ from fastapi import APIRouter, Query, WebSocket
 from plugin.logging_config import get_logger
 from plugin.server.application.logs import LogQueryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.auth import get_admin_code, require_admin
+from plugin.server.infrastructure.auth import require_admin
 from plugin.server.logs import log_stream_endpoint
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
@@ -52,9 +52,4 @@ async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin) 
 
 @router.websocket("/ws/logs/{plugin_id}")
 async def websocket_log_stream(websocket: WebSocket, plugin_id: str) -> None:
-    code = websocket.query_params.get("code", "").upper()
-    admin_code = get_admin_code()
-    if not admin_code or code != admin_code:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
     await log_stream_endpoint(websocket, plugin_id)

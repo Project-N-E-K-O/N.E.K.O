@@ -216,10 +216,12 @@ class PluginCommunicationResourceManager:
         except Exception as e:
             raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
 
-    async def send_stop_command(self) -> None:
+    async def send_stop_command(self, timeout: float = 0.5) -> None:
         try:
-            await self.transport.send_command({"type": "STOP"})
+            await asyncio.wait_for(self.transport.send_command({"type": "STOP"}), timeout=timeout)
             self.logger.debug("Sent STOP to plugin {}", self.plugin_id)
+        except asyncio.TimeoutError:
+            self.logger.warning("Sending STOP to plugin {} timed out after {}s", self.plugin_id, timeout)
         except Exception as e:
             self.logger.warning("Failed to send STOP to plugin {}: {}", self.plugin_id, e)
 

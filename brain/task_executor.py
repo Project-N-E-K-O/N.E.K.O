@@ -433,7 +433,7 @@ Rules:
         
         # Strongly enforce JSON-only output to reduce parsing errors
         # NOTE: Require the model to return entry_id when has_task and can_execute are true.
-        system_prompt = f"""You are a User Plugin selection agent. AVAILABLE PLUGINS:
+        system_prompt = f"""You are a User Plugin automation assessment agent, AVAILABLE PLUGINS:
 {plugins_desc}
 
 INSTRUCTIONS:

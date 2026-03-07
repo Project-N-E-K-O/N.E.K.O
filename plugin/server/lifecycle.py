@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import atexit
 import asyncio
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -13,11 +12,11 @@ from plugin.core.registry import load_plugins_from_toml
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.auth import generate_admin_code, set_admin_code
 from plugin.utils.time_utils import now_iso
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
+from plugin.server.messaging.proactive_bridge import start_proactive_bridge, stop_proactive_bridge
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
@@ -41,19 +40,6 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
-
-    @staticmethod
-    def _persist_admin_code_for_non_tty(admin_code: str) -> Path | None:
-        code_file = (PLUGIN_CONFIG_ROOT.parent / ".plugin_server_admin_code").resolve()
-        try:
-            code_file.write_text(f"{admin_code}\n", encoding="utf-8")
-            try:
-                code_file.chmod(0o600)
-            except OSError:
-                logger.warning("failed to chmod admin code file: path={}", code_file)
-            return code_file
-        except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-            return None
 
     @staticmethod
     def _plugin_factory(
@@ -212,6 +198,15 @@ class ServerLifecycleService:
                 str(exc),
             )
 
+        try:
+            start_proactive_bridge()
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+            logger.warning(
+                "failed to start proactive bridge: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
         await self._start_hosts()
 
         def _get_hosts() -> dict[str, object]:
@@ -227,28 +222,30 @@ class ServerLifecycleService:
         except Exception as exc:
             logger.warning("failed to emit server_startup_ready event: {}", exc)
 
-        admin_code = generate_admin_code()
-        set_admin_code(admin_code)
-        if sys.stdout.isatty():
-            print("\n" + "=" * 60, flush=True)
-            print(f"ADMIN CODE: {admin_code}", flush=True)
-            print("Add HTTP header: Authorization: Bearer <admin_code>", flush=True)
-            print("=" * 60 + "\n", flush=True)
-        else:
-            code_file = self._persist_admin_code_for_non_tty(admin_code)
-            if code_file is not None:
-                logger.warning(
-                    "admin code generated and persisted for non-interactive stdout: path={}",
-                    code_file,
-                )
-            else:
-                logger.warning("admin code generated but not printed/persisted on non-interactive stdout")
-        logger.info("admin authentication code generated")
-
     async def _shutdown_hosts(self) -> bool:
         hosts_snapshot = self._get_plugin_hosts_snapshot()
         if not hosts_snapshot:
             return False
+
+        per_host_timeout = PLUGIN_SHUTDOWN_TIMEOUT + 0.5
+
+        async def _shutdown_one(plugin_id: str, host_obj: _PluginHostContract) -> None:
+            try:
+                await asyncio.wait_for(
+                    host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
+                    timeout=per_host_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "plugin {} shutdown timed out after {:.1f}s, force-killing",
+                    plugin_id, per_host_timeout,
+                )
+                proc = getattr(host_obj, "process", None)
+                if proc is not None and proc.is_alive():
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():
@@ -263,7 +260,7 @@ class ServerLifecycleService:
                     type(host_obj).__name__,
                 )
                 continue
-            tasks.append(asyncio.create_task(host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)))
+            tasks.append(asyncio.create_task(_shutdown_one(plugin_id, host_obj)))
 
         if not tasks:
             return False
@@ -288,15 +285,16 @@ class ServerLifecycleService:
 
         had_errors = False
 
-        try:
-            stop_bridge()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
-            had_errors = True
-            logger.warning(
-                "failed to stop message bridge: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
+        # Phase 1: sync signals (instant)
+        for stop_fn, label in [
+            (stop_proactive_bridge, "proactive bridge"),
+            (stop_bridge, "message bridge"),
+        ]:
+            try:
+                stop_fn()
+            except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
+                had_errors = True
+                logger.warning("failed to stop {}: {}", label, exc)
 
         runner = self._message_plane_runner
         self._message_plane_runner = None
@@ -305,66 +303,49 @@ class ServerLifecycleService:
                 runner.stop()
             except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
                 had_errors = True
-                logger.warning(
-                    "failed to stop message_plane runner: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+                logger.warning("failed to stop message_plane runner: {}", exc)
 
-        try:
+        # Phase 2: parallel shutdown of all async components
+        async def _stop_metrics():
             await metrics_collector.stop()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
-            had_errors = True
-            logger.warning(
-                "failed to stop metrics collector: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
-        try:
+        async def _stop_status():
             await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
-            had_errors = True
-            logger.warning(
-                "failed to stop status consumer: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
-        had_errors = (await self._shutdown_hosts()) or had_errors
-
-        try:
+        async def _stop_bus():
             await bus_subscription_manager.stop()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
-            had_errors = True
-            logger.warning(
-                "failed to stop bus subscription manager: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
-        try:
+        async def _stop_router():
             await plugin_router.stop()
-        except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
-            had_errors = True
-            logger.warning(
-                "failed to stop plugin router: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
+        async def _stop_hosts():
+            return await self._shutdown_hosts()
+
+        parallel_tasks = {
+            "metrics": asyncio.create_task(_stop_metrics()),
+            "status_consumer": asyncio.create_task(_stop_status()),
+            "hosts": asyncio.create_task(_stop_hosts()),
+            "bus_subscriptions": asyncio.create_task(_stop_bus()),
+            "router": asyncio.create_task(_stop_router()),
+        }
+
+        results = await asyncio.gather(*parallel_tasks.values(), return_exceptions=True)
+        for (label, _task), result in zip(parallel_tasks.items(), results):
+            if isinstance(result, BaseException):
+                had_errors = True
+                logger.warning("failed to stop {}: {}", label, result)
+            elif label == "hosts" and result is True:
+                had_errors = True
+
+        # Phase 3: resource cleanup
         try:
-            await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=1.5)
+            await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:
             had_errors = True
             logger.warning("cleanup plugin communication resources timed out")
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
             had_errors = True
-            logger.warning(
-                "failed to cleanup plugin communication resources: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
+            logger.warning("failed to cleanup plugin communication resources: {}", exc)
 
         try:
             emit_lifecycle_event({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
@@ -380,16 +361,12 @@ class ServerLifecycleService:
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(state.close_plugin_resources),
-                    timeout=1.5,
+                    timeout=0.5,
                 )
             except asyncio.TimeoutError:
                 logger.warning("forced cleanup after timeout also timed out")
             except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
-                logger.warning(
-                    "forced cleanup after timeout failed: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+                logger.warning("forced cleanup after timeout failed: {}", exc)
             return
 
         if result.had_errors:

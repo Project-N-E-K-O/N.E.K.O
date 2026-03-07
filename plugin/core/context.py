@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import asyncio
 import base64
+import copy
 import time
 try:
     import tomllib
@@ -118,6 +119,8 @@ class PluginContext:
     _push_lock: Optional[Any] = None
     _push_batcher: Optional[Any] = None
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
+    _effective_config: Optional[Dict[str, Any]] = None
+    _current_lanlan: Optional[str] = None
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -709,10 +712,11 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         unsafe: bool = False,
         fast_mode: bool = False,
+        target_lanlan: Optional[str] = None,
     ) -> None:
         """
         子进程 / 插件内部调用：推送消息到主进程的消息队列。
-        
+
         Args:
             source: 插件自己标明的来源
             message_type: 消息类型，可选值: "text", "url", "binary", "binary_url"
@@ -723,7 +727,11 @@ class PluginContext:
             binary_url: 二进制文件的URL（当message_type为binary_url时）
             metadata: 额外的元数据
             unsafe: 为 True 时，允许主进程跳过严格 schema 校验（用于高性能场景，默认 False）
+            target_lanlan: 目标角色名，用于将消息路由到指定 session（可选）
         """
+        if target_lanlan:
+            metadata = dict(metadata or {})
+            metadata.setdefault("target_lanlan", target_lanlan)
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:
@@ -999,9 +1007,10 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         unsafe: bool = False,
         fast_mode: bool = False,
+        target_lanlan: Optional[str] = None,
     ) -> None:
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
-        
+
         Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
         """
         await asyncio.to_thread(
@@ -1016,6 +1025,7 @@ class PluginContext:
             metadata=metadata,
             unsafe=unsafe,
             fast_mode=fast_mode,
+            target_lanlan=target_lanlan,
         )
 
     def _send_request_and_wait(
@@ -1151,6 +1161,15 @@ class PluginContext:
 
         if response_queue is not None:
             while time.time() < deadline:
+                response = state.get_plugin_response(request_id)
+                if isinstance(response, dict):
+                    if response.get("error"):
+                        raise RuntimeError(_error_to_message(response.get("error")))
+                    result = response.get("result")
+                    if wrap_result:
+                        return result if isinstance(result, dict) else {"result": result}
+                    return result
+
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     break
@@ -1372,7 +1391,62 @@ class PluginContext:
             return self.query_plugins_async(filters=filters, timeout=timeout)
         return self.query_plugins_sync(filters=filters, timeout=timeout)
 
+    async def _get_local_config_payload(
+        self,
+        *,
+        payload_type: str,
+        profile_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from plugin.server.application.config import ConfigQueryService
+
+            service = ConfigQueryService()
+            if payload_type == "config":
+                cached = getattr(self, "_effective_config", None)
+                if isinstance(cached, dict):
+                    return {
+                        "plugin_id": self.plugin_id,
+                        "config": copy.deepcopy(cached),
+                        "config_path": str(self.config_path),
+                    }
+                payload = await service.get_plugin_config(plugin_id=self.plugin_id)
+                config_obj = payload.get("config")
+                if isinstance(config_obj, dict):
+                    self._effective_config = copy.deepcopy(config_obj)
+                return payload
+            if payload_type == "base":
+                return await service.get_plugin_base_config(plugin_id=self.plugin_id)
+            if payload_type == "profiles":
+                return await service.get_plugin_profiles_state(plugin_id=self.plugin_id)
+            if payload_type == "profile":
+                if not isinstance(profile_name, str) or not profile_name.strip():
+                    return None
+                return await service.get_plugin_profile_config(
+                    plugin_id=self.plugin_id,
+                    profile_name=profile_name.strip(),
+                )
+            if payload_type == "effective":
+                return await service.get_plugin_effective_config(
+                    plugin_id=self.plugin_id,
+                    profile_name=profile_name.strip() if isinstance(profile_name, str) and profile_name.strip() else None,
+                )
+        except Exception as exc:
+            try:
+                self.logger.debug(
+                    "[PluginContext] local config read fallback failed: plugin_id={}, payload_type={}, err_type={}, err={}",
+                    self.plugin_id,
+                    payload_type,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            except Exception:
+                pass
+        return None
+
     async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="config")
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_config",
@@ -1386,6 +1460,9 @@ class PluginContext:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
     async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="base")
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_base_config",
@@ -1399,6 +1476,9 @@ class PluginContext:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
 
     async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="profiles")
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_profiles_state",
@@ -1414,6 +1494,12 @@ class PluginContext:
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
+        local_payload = await self._get_local_config_payload(
+            payload_type="profile",
+            profile_name=profile_name,
+        )
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_profile_config",
@@ -1445,6 +1531,16 @@ class PluginContext:
         }
         if isinstance(profile_name, str) and profile_name.strip():
             request_data["profile_name"] = profile_name.strip()
+
+        local_payload = await self._get_local_config_payload(
+            payload_type="effective",
+            profile_name=profile_name,
+        )
+        if isinstance(local_payload, dict):
+            effective_obj = local_payload.get("config")
+            if isinstance(effective_obj, dict) and profile_name is None:
+                self._effective_config = copy.deepcopy(effective_obj)
+            return local_payload
 
         try:
             return await self._send_request_and_wait_async(

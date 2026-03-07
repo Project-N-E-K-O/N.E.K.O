@@ -24,15 +24,137 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_PLUGIN_PACKAGE_ROOT = Path(__file__).resolve().parent
+
+
+def _prepend_sys_path(path: Path, index: int) -> None:
+    value = str(path)
+    try:
+        while value in sys.path:
+            sys.path.remove(value)
+    except Exception:
+        pass
+    sys.path.insert(index, value)
+
+
+# Keep import resolution deterministic even when launcher/sitecustomize preloads paths.
+_prepend_sys_path(_PROJECT_ROOT, 0)
+_prepend_sys_path(_PLUGIN_PACKAGE_ROOT, 1)
+
+
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if not isinstance(endpoint, str) or not endpoint.startswith("tcp://"):
+        return None
+    host_port = endpoint[6:]
+    if ":" not in host_port:
+        return None
+    host, port_text = host_port.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError):
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    return host, port
+
+
+def _is_tcp_port_available(host: str, port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.close()
+        except OSError:
+            pass
+
+
+def _find_next_available_port(host: str, start_port: int, max_tries: int = 50) -> int | None:
+    for port in range(start_port, start_port + max_tries):
+        if _is_tcp_port_available(host, port):
+            return port
+    return None
+
+
+def _ensure_plugin_zmq_endpoint_available() -> None:
+    endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", "tcp://127.0.0.1:38765")
+    parsed = _parse_tcp_endpoint(endpoint)
+    if parsed is None:
+        return
+    host, base_port = parsed
+    if _is_tcp_port_available(host, base_port):
+        return
+
+    fallback_port = _find_next_available_port(host, base_port + 1, max_tries=100)
+    if fallback_port is None:
+        return
+
+    fallback_endpoint = f"tcp://{host}:{fallback_port}"
+    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENDPOINT"] = fallback_endpoint
+    try:
+        print(
+            (
+                "[user_plugin_server] NEKO_PLUGIN_ZMQ_IPC_ENDPOINT occupied, "
+                f"fallback to {fallback_endpoint}"
+            ),
+            file=sys.stderr,
+        )
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+
+_ensure_plugin_zmq_endpoint_available()
+
 from config import USER_PLUGIN_SERVER_PORT
 from plugin.logging_config import configure_default_logger, get_logger
 
 configure_default_logger()
 logger = get_logger("server.user_plugin_server")
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+
+def _can_register_faulthandler_signal() -> bool:
+    return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
+
+
+def _configure_windows_event_loop_policy() -> None:
+    if sys.platform != "win32":
+        return
+    policy_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+    if policy_cls is None:
+        return
+    try:
+        asyncio.set_event_loop_policy(policy_cls())
+    except (RuntimeError, ValueError, TypeError, AttributeError):
+        try:
+            print("[user_plugin_server] failed to set WindowsSelectorEventLoopPolicy", file=sys.stderr)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+
+def _disable_windows_plugin_zmq_when_tornado_missing() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import tornado  # type: ignore  # noqa: F401
+        return
+    except Exception:
+        pass
+    os.environ["NEKO_PLUGIN_ZMQ_IPC_ENABLED"] = "false"
+    try:
+        print(
+            "[user_plugin_server] tornado not found on Windows; disable plugin ZeroMQ IPC",
+            file=sys.stderr,
+        )
+    except (OSError, RuntimeError, ValueError):
+        pass
+
 
 try:
     from utils.logger_config import setup_logging
@@ -70,6 +192,11 @@ def _configure_uvicorn_logging_bridge() -> None:
 
 
 def _configure_server_log_sink() -> None:
+    if sys.platform == "win32":
+        # Windows multi-process rotation can keep file handles open and
+        # trigger repeated rename failures; keep the robust logger sink only.
+        return
+
     log_path_obj = server_log_config.get_log_file_path()
     if not isinstance(log_path_obj, str):
         return
@@ -106,6 +233,10 @@ _configure_uvicorn_logging_bridge()
 _configure_server_log_sink()
 _configure_python_logging_root()
 
+# Must run before any event loop gets created on Windows.
+_configure_windows_event_loop_policy()
+_disable_windows_plugin_zmq_when_tornado_missing()
+
 from plugin.server.infrastructure.exceptions import register_exception_handlers  # noqa: E402
 from plugin.server.lifecycle import shutdown, startup  # noqa: E402
 from plugin.server.routes import (  # noqa: E402
@@ -127,14 +258,15 @@ from plugin.server.routes.frontend import mount_static_files  # noqa: E402
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _ = app
 
-    try:
-        faulthandler.register(signal.SIGUSR1, all_threads=True)
-    except (RuntimeError, OSError, AttributeError, ValueError) as exc:
-        logger.debug(
-            "failed to register faulthandler SIGUSR1: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
+    if _can_register_faulthandler_signal():
+        try:
+            faulthandler.register(signal.SIGUSR1, all_threads=True)
+        except (RuntimeError, OSError, AttributeError, ValueError) as exc:
+            logger.debug(
+                "failed to register faulthandler SIGUSR1: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
 
     stop_event = threading.Event()
     last_heartbeat: dict[str, float] = {"t": time.monotonic()}
@@ -266,7 +398,8 @@ def _enable_fault_handler_dump_file() -> IO[str] | None:
 
     try:
         faulthandler.enable(file=dump_file)
-        faulthandler.register(signal.SIGUSR1, all_threads=True, file=dump_file)
+        if _can_register_faulthandler_signal():
+            faulthandler.register(signal.SIGUSR1, all_threads=True, file=dump_file)
         return dump_file
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
         logger.warning(
@@ -285,7 +418,8 @@ def _enable_fault_handler_dump_file() -> IO[str] | None:
 def _enable_fault_handler_fallback() -> None:
     try:
         faulthandler.enable()
-        faulthandler.register(signal.SIGUSR1, all_threads=True)
+        if _can_register_faulthandler_signal():
+            faulthandler.register(signal.SIGUSR1, all_threads=True)
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
         logger.warning(
             "failed to enable fallback faulthandler: err_type={}, err={}",
@@ -378,7 +512,8 @@ if __name__ == "__main__":
         old_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _sigint_handler)
         signal.signal(signal.SIGTERM, _sigint_handler)
-        signal.signal(signal.SIGQUIT, _sigint_handler)
+        if hasattr(signal, "SIGQUIT"):
+            signal.signal(signal.SIGQUIT, _sigint_handler)
     except (ValueError, OSError, RuntimeError) as exc:
         old_sigint = None
         logger.warning(

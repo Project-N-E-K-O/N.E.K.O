@@ -565,12 +565,18 @@ def _plugin_process_runner(
         try:
             from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
 
-            if PLUGIN_ZMQ_IPC_ENABLED:
-                from plugin.utils.zeromq_ipc import ZmqIpcClient
+            enabled = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED")
+            if enabled is None:
+                use_zmq = bool(PLUGIN_ZMQ_IPC_ENABLED)
+            else:
+                use_zmq = str(enabled).lower() in ("true", "1", "yes", "on")
 
-                ctx._zmq_ipc_client = ZmqIpcClient(plugin_id=plugin_id, endpoint=PLUGIN_ZMQ_IPC_ENDPOINT)
+            if use_zmq:
+                from plugin.utils.zeromq_ipc import ZmqIpcClient
+                endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", PLUGIN_ZMQ_IPC_ENDPOINT)
+                ctx._zmq_ipc_client = ZmqIpcClient(plugin_id=plugin_id, endpoint=endpoint)
                 try:
-                    logger.info("[Plugin Process] ZeroMQ IPC enabled: {}", PLUGIN_ZMQ_IPC_ENDPOINT)
+                    logger.info("[Plugin Process] ZeroMQ IPC enabled: {}", endpoint)
                 except Exception:
                     pass
         except Exception:
@@ -712,13 +718,47 @@ def _plugin_process_runner(
         ctx._entry_map = entry_map
         ctx._instance = instance
 
+        # asyncio.Queue fed from the downlink for plugin-to-plugin responses
+        _response_inbox: asyncio.Queue = asyncio.Queue()
+        ctx._response_queue = _response_inbox
+        _startup_pending_downlink: list[tuple[str, dict]] = []
+
+        async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
+            poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+            while not stop_event.is_set():
+                result = await child_transport.recv_downlink(timeout_ms=poll_ms)
+                if result is None:
+                    continue
+                ch, msg = result
+                if ch == CH_RESP:
+                    await _response_inbox.put(msg)
+                    continue
+                if ch == CH_CMD and isinstance(msg, dict) and msg.get("type") == "STOP":
+                    stop_event.set()
+                    break
+                if isinstance(msg, dict):
+                    _startup_pending_downlink.append((ch, msg))
+
+        async def _run_startup_with_downlink(startup_callable: Any) -> None:
+            stop_event = asyncio.Event()
+            pump_task = asyncio.create_task(_startup_downlink_pump(stop_event), name="startup-downlink-pump")
+            try:
+                await startup_callable()
+            finally:
+                stop_event.set()
+                pump_task.cancel()
+                try:
+                    await pump_task
+                except asyncio.CancelledError:
+                    pass
+
         # 生命周期：startup
         lifecycle_events = events_by_type.get("lifecycle", {})
         startup_fn = lifecycle_events.get("startup")
         if startup_fn:
             try:
                 with ctx._handler_scope("lifecycle.startup"):
-                    asyncio.run(startup_fn())
+                    asyncio.run(_run_startup_with_downlink(startup_fn))
             except (KeyboardInterrupt, SystemExit):
                 # 系统级中断，直接抛出
                 raise
@@ -886,6 +926,9 @@ def _plugin_process_runner(
                 ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
                 if isinstance(ctx_obj, dict):
                     run_id = ctx_obj.get("run_id")
+                    lanlan_name = ctx_obj.get("lanlan_name")
+                    if lanlan_name:
+                        ctx._current_lanlan = str(lanlan_name)
             except Exception:
                 pass
 
@@ -942,6 +985,15 @@ def _plugin_process_runner(
 
             logger.info("[Plugin Process] TRIGGER_CUSTOM {}.{} req_id={}", event_type, event_id, req_id)
 
+            try:
+                ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
+                if isinstance(ctx_obj, dict):
+                    lanlan_name = ctx_obj.get("lanlan_name")
+                    if lanlan_name:
+                        ctx._current_lanlan = str(lanlan_name)
+            except Exception:
+                pass
+
             custom_events = events_by_type.get(event_type, {})
             method = custom_events.get(event_id)
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
@@ -979,10 +1031,6 @@ def _plugin_process_runner(
                 except Exception:
                     logger.exception("Failed to send response for req_id={}", req_id)
 
-        # asyncio.Queue fed from the downlink for plugin-to-plugin responses
-        _response_inbox: asyncio.Queue = asyncio.Queue()
-        ctx._response_queue = _response_inbox
-
         async def _async_command_loop():
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
 
@@ -993,7 +1041,14 @@ def _plugin_process_runner(
                 except Exception:
                     pass
 
-                result = await child_transport.recv_downlink(timeout_ms=poll_ms)
+                try:
+                    if _startup_pending_downlink:
+                        result = _startup_pending_downlink.pop(0)
+                    else:
+                        result = await child_transport.recv_downlink(timeout_ms=poll_ms)
+                except asyncio.CancelledError:
+                    logger.info("[Plugin Process] Command loop cancelled, shutting down")
+                    break
                 if result is None:
                     continue
                 ch, msg = result
@@ -1156,7 +1211,9 @@ def _plugin_process_runner(
         if shutdown_fn:
             try:
                 with ctx._handler_scope("lifecycle.shutdown"):
-                    asyncio.run(shutdown_fn())
+                    result = shutdown_fn()
+                    if asyncio.iscoroutine(result):
+                        asyncio.run(result)
             except (KeyboardInterrupt, SystemExit):
                 raise
             except Exception as e:
@@ -1170,9 +1227,32 @@ def _plugin_process_runner(
         child_transport.close()
 
     except (KeyboardInterrupt, SystemExit):
-        # 系统级中断，正常退出
         logger.info("Plugin process {} interrupted", plugin_id)
-        raise
+        try:
+            for ev in timer_stop_events:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            shutdown_fn = lifecycle_events.get("shutdown")
+            if shutdown_fn:
+                with ctx._handler_scope("lifecycle.shutdown"):
+                    result = shutdown_fn()
+                    if asyncio.iscoroutine(result):
+                        asyncio.run(result)
+        except BaseException:
+            pass
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        try:
+            child_transport.close()
+        except Exception:
+            pass
     except Exception as e:
         # 进程崩溃，记录详细信息
         logger.exception("Plugin process {} crashed", plugin_id)
@@ -1237,7 +1317,8 @@ class PluginHost:
                 self._process_stop_event,
                 extension_configs,
             ),
-            daemon=True,
+            # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
+            daemon=False,
         )
 
         self.comm_manager = PluginCommunicationResourceManager(

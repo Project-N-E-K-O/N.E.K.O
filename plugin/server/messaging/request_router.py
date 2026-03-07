@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import os
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +53,17 @@ class _ZmqIpcServerContract(Protocol):
     async def serve_forever(self, shutdown_event: asyncio.Event) -> None: ...
 
     def close(self) -> None: ...
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def _is_plugin_zmq_ipc_enabled() -> bool:
+    return _get_bool_env("NEKO_PLUGIN_ZMQ_IPC_ENABLED", bool(PLUGIN_ZMQ_IPC_ENABLED))
 
 
 def _normalize_mapping(raw: object) -> JsonObject | None:
@@ -111,14 +124,15 @@ class PluginRouter:
         shutdown_event.clear()
         self._router_task = asyncio.create_task(self._router_loop(), name="plugin-router-loop")
 
-        if PLUGIN_ZMQ_IPC_ENABLED:
+        if _is_plugin_zmq_ipc_enabled():
             try:
                 from plugin.utils.zeromq_ipc import ZmqIpcServer
+                endpoint = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", PLUGIN_ZMQ_IPC_ENDPOINT)
 
                 self._zmq_server = cast(
                     _ZmqIpcServerContract,
                     ZmqIpcServer(
-                        endpoint=PLUGIN_ZMQ_IPC_ENDPOINT,
+                        endpoint=endpoint,
                         request_handler=self._handle_zmq_request,
                     ),
                 )
@@ -126,7 +140,7 @@ class PluginRouter:
                     self._zmq_server.serve_forever(shutdown_event),
                     name="plugin-router-zmq-server",
                 )
-                logger.info("ZeroMQ IPC server started at {}", PLUGIN_ZMQ_IPC_ENDPOINT)
+                logger.info("ZeroMQ IPC server started at {}", endpoint)
             except (ImportError, ModuleNotFoundError, RuntimeError, ValueError, TypeError, OSError, ZMQError) as exc:
                 self._zmq_server = None
                 self._zmq_task = None
@@ -315,13 +329,33 @@ class PluginRouter:
         loop = asyncio.get_running_loop()
         executor = self._ensure_executor()
 
-        def _read_request() -> object:
-            return queue_obj.get(timeout=0.1)
+        def _read_request_sync() -> object:
+            getter = getattr(queue_obj, "get", None)
+            if not callable(getter):
+                raise TypeError("plugin_comm_queue.get is not callable")
+            try:
+                return getter(timeout=0.1)
+            except TypeError:
+                return getter()
 
         try:
-            request_obj = await loop.run_in_executor(executor, _read_request)
+            request_obj = await asyncio.wait_for(queue_obj.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return None
         except Empty:
             return None
+        except TypeError:
+            try:
+                request_obj = await loop.run_in_executor(executor, _read_request_sync)
+            except Empty:
+                return None
+            except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
+                logger.debug(
+                    "Error getting request from queue(sync): err_type={}, err={}",
+                    type(exc).__name__,
+                    str(exc),
+                )
+                return None
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.debug(
                 "Error getting request from queue: err_type={}, err={}",
@@ -358,6 +392,55 @@ class PluginRouter:
             "result": result,
             "error": error,
         }
+
+        try:
+            sender = state.get_downlink_sender(to_plugin)
+        except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
+            sender = None
+            logger.debug(
+                "failed to get downlink sender: plugin_id={}, err_type={}, err={}",
+                to_plugin,
+                type(exc).__name__,
+                str(exc),
+            )
+
+        if callable(sender):
+            try:
+                maybe_awaitable = sender(response)
+                if inspect.isawaitable(maybe_awaitable):
+                    task = asyncio.create_task(maybe_awaitable)
+
+                    def _on_done(done_task: asyncio.Task[object]) -> None:
+                        try:
+                            done_task.result()
+                        except Exception as send_exc:
+                            logger.debug(
+                                "downlink response send failed: plugin_id={}, req_id={}, err_type={}, err={}",
+                                to_plugin,
+                                request_id,
+                                type(send_exc).__name__,
+                                str(send_exc),
+                            )
+                            try:
+                                state.set_plugin_response(request_id, response, timeout=timeout)
+                            except Exception:
+                                logger.debug(
+                                    "fallback set_plugin_response failed after downlink error: plugin_id={}, req_id={}",
+                                    to_plugin,
+                                    request_id,
+                                    exc_info=True,
+                                )
+
+                    task.add_done_callback(_on_done)
+                return
+            except Exception as exc:
+                logger.debug(
+                    "downlink sender call failed: plugin_id={}, req_id={}, err_type={}, err={}",
+                    to_plugin,
+                    request_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
 
         queue_obj: _ResponseQueue | None = None
         try:

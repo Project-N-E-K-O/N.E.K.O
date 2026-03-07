@@ -4,17 +4,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { i18n } from '@/i18n'
-import { useAuthStore } from '@/stores/auth'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'Login',
-    component: () => import('@/views/Login.vue'),
-    meta: {
-      titleKey: 'auth.login',
-      requiresAuth: false
-    }
+    redirect: '/'
   },
   {
     path: '/',
@@ -96,28 +91,7 @@ router.beforeEach((to, from, next) => {
     document.title = `${title} - ${suffix}`
   }
 
-  // 认证检查
-  const authStore = useAuthStore()
-  const requiresAuth = to.meta.requiresAuth !== false
-
-  if (requiresAuth) {
-    if (!authStore.isAuthenticated) {
-      // 未认证，跳转到登录页
-      next({
-        path: '/login',
-        query: { redirect: to.fullPath }
-      })
-    } else {
-      next()
-    }
-  } else {
-    // 登录页，如果已认证则跳转到首页
-    if (to.name === 'Login' && authStore.isAuthenticated) {
-      next('/')
-    } else {
-      next()
-    }
-  }
+  next()
 })
 
 export default router

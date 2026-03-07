@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -63,14 +66,30 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
     except Exception:
         return False
 
-    try:
+    def _check_once() -> bool:
         rpc = MessagePlaneRpcClient(plugin_id="server", endpoint=str(endpoint))
         resp = rpc.request(op="health", args={}, timeout=float(timeout_s))
+        # request() should be sync here; if a coroutine leaks out, treat as unhealthy.
+        if asyncio.iscoroutine(resp):
+            return False
         if not isinstance(resp, dict):
             return False
         if not resp.get("ok"):
             return False
         return True
+
+    try:
+        asyncio.get_running_loop()
+        in_event_loop = True
+    except RuntimeError:
+        in_event_loop = False
+
+    try:
+        if in_event_loop:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(_check_once)
+                return bool(fut.result(timeout=max(float(timeout_s), 0.1) + 0.5))
+        return _check_once()
     except Exception:
         return False
 
@@ -231,6 +250,62 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         return _rpc_health_check(str(self._endpoints.rpc), timeout_s=float(timeout_s))
 
 
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if not isinstance(endpoint, str) or not endpoint.startswith("tcp://"):
+        return None
+    host_port = endpoint[6:]
+    if ":" not in host_port:
+        return None
+    host, port_text = host_port.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError):
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    return host, port
+
+
+def _is_tcp_port_available(host: str, port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.close()
+        except OSError:
+            pass
+
+
+def _resolve_endpoint_with_fallback(endpoint: str, used_ports: set[tuple[str, int]]) -> str:
+    parsed = _parse_tcp_endpoint(endpoint)
+    if parsed is None:
+        return endpoint
+    host, base_port = parsed
+
+    if (host, base_port) not in used_ports and _is_tcp_port_available(host, base_port):
+        used_ports.add((host, base_port))
+        return endpoint
+
+    for port in range(base_port + 1, base_port + 200):
+        hp = (host, port)
+        if hp in used_ports:
+            continue
+        if _is_tcp_port_available(host, port):
+            used_ports.add(hp)
+            fallback = f"tcp://{host}:{port}"
+            logger.warning("message_plane endpoint occupied, fallback: {} -> {}", endpoint, fallback)
+            return fallback
+
+    return endpoint
+
+
 def build_message_plane_runner() -> MessagePlaneRunner:
     from plugin.settings import (
         MESSAGE_PLANE_RUN_MODE,
@@ -239,10 +314,27 @@ def build_message_plane_runner() -> MessagePlaneRunner:
         MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
     )
 
+    run_mode = os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE", str(MESSAGE_PLANE_RUN_MODE)).strip().lower()
+    if run_mode not in ("embedded", "external"):
+        run_mode = str(MESSAGE_PLANE_RUN_MODE)
+
+    rpc_env = os.getenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+    pub_env = os.getenv("NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT", str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT))
+    ingest_env = os.getenv("NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT", str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT))
+
+    used_ports: set[tuple[str, int]] = set()
+    rpc_ep = _resolve_endpoint_with_fallback(str(rpc_env), used_ports)
+    pub_ep = _resolve_endpoint_with_fallback(str(pub_env), used_ports)
+    ingest_ep = _resolve_endpoint_with_fallback(str(ingest_env), used_ports)
+
+    os.environ["NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT"] = rpc_ep
+    os.environ["NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT"] = pub_ep
+    os.environ["NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT"] = ingest_ep
+
     endpoints = MessagePlaneEndpoints(
-        rpc=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT),
-        pub=str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT),
-        ingest=str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT),
+        rpc=rpc_ep,
+        pub=pub_ep,
+        ingest=ingest_ep,
     )
 
-    return PythonMessagePlaneRunner(run_mode=str(MESSAGE_PLANE_RUN_MODE), endpoints=endpoints)
+    return PythonMessagePlaneRunner(run_mode=run_mode, endpoints=endpoints)
