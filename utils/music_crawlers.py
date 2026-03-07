@@ -275,11 +275,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                 # `fee` == 0 (免费), `fee` == 8 (会员免费)
                 if song.get("fee", 1) in [0, 8]:
                     found_songs.append(song)
-            
-            # 如果没有免费的，就使用第一首作为备选
-            if not found_songs and songs:
-                found_songs.append(songs[0])
-
+                    
             if not found_songs:
                 return []
 
