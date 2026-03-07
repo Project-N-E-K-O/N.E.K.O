@@ -310,8 +310,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.clear()
                                     break
                                 
-                                # 增量发送：只发 /cache 未覆盖的剩余消息，触发 LLM 结算
-                                remaining = chat_history[last_synced_index:]
+                                # 热重置会在上传后立刻清空本地 chat_history，所以这里不能只看 last_synced_index 之后的 live 增量。
+                                # 如果之前已有一批消息因 /process 失败被冻结，必须先把这批 pending 消息并入 /renew payload，
+                                # 否则后面一旦清空 pending 状态，这些旧消息就会被静默丢掉。
+                                if pending_process_messages is None:
+                                    remaining = chat_history[last_synced_index:]
+                                else:
+                                    remaining = list(pending_process_messages)
+                                    if pending_process_boundary is not None and pending_process_boundary < len(chat_history):
+                                        remaining.extend(chat_history[pending_process_boundary:])
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
                                 if remaining:
                                     try:
