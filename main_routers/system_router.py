@@ -1957,7 +1957,22 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
-            generate_prompt += "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）"
+            # 【核心修复】将 [MUSIC] 标签的强制约束进行多语言本地化，防止模型在非中文语境下忽略该指令
+            music_tag_instructions = {
+                'zh': "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）",
+                'en': "\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB]!)",
+                'ja': "\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] ではなく必ず [MUSIC] タグを使用してください！）",
+                'ko': "\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)",
+                'ru': "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)"
+            }
+           # 直接使用上文已经解析好的 proactive_lang 变量
+            if proactive_lang:
+                current_lang = proactive_lang
+            else:
+                current_lang = 'zh'
+                
+            # 优先匹配当前语言，找不到则退回英文，最后退回中文
+            generate_prompt += music_tag_instructions.get(current_lang, music_tag_instructions.get('en', music_tag_instructions['zh']))
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
