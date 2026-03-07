@@ -41,14 +41,6 @@ class EventMeta:
     # 预留更多字段（后续扩展用）
     metadata: Dict[str, Any] | None = None
     
-    # 向后兼容别名（已弃用，将在 v2.0 移除）
-    @property
-    def extra(self) -> Dict[str, Any] | None:
-        """已弃用，请使用 metadata"""
-        import warnings
-        warnings.warn("EventMeta.extra is deprecated, use metadata instead", DeprecationWarning, stacklevel=2)
-        return self.metadata
-    
     def is_custom_event(self) -> bool:
         """判断是否是自定义事件类型"""
         return self.event_type not in STANDARD_EVENT_TYPES

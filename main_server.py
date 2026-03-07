@@ -156,6 +156,7 @@ def get_default_steam_info():
 # Steamworks 初始化将在 @app.on_event("startup") 中延迟执行
 # 这样可以避免在模块导入时就执行 DLL 加载等操作
 steamworks = None
+_server_loop: asyncio.AbstractEventLoop | None = None
 
 _config_manager = get_config_manager()
 
@@ -243,7 +244,13 @@ async def _handle_agent_event(event: dict):
                     except Exception:
                         pass
             return
+        if not mgr and event_type in ("proactive_message", "task_result"):
+            # No target session found — drop the event entirely.
+            # Do NOT broadcast text to other sessions to prevent cross-session leaks.
+            logger.info("[EventBus] %s dropped: no target session for lanlan=%s", event_type, lanlan)
+            return
         if not mgr:
+            logger.info("[EventBus] %s dropped: no session_manager for lanlan=%s", event_type, lanlan)
             return
         if event_type in ("task_result", "proactive_message"):
             text = (event.get("text") or "").strip()
@@ -262,7 +269,7 @@ async def _handle_agent_event(event: dict):
                     "timestamp": event.get("timestamp") or "",
                 }
                 mgr.enqueue_agent_callback(callback)
-                # Attempt immediate delivery; re-queued automatically if session is busy
+                logger.info("[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks", event_type)
                 mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:
@@ -276,8 +283,26 @@ async def _handle_agent_event(event: dict):
                         if err_msg:
                             notif["error_message"] = err_msg[:500]
                         await mgr.websocket.send_json(notif)
-                    except Exception:
-                        pass
+                        logger.info("[EventBus] agent_notification sent to frontend: %.60s", text[:60])
+                    except Exception as e:
+                        logger.warning("[EventBus] agent_notification WS send failed: %s", e)
+                else:
+                    logger.warning("[EventBus] agent_notification: no websocket available")
+        elif event_type == "agent_notification":
+            if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+                try:
+                    notif = {
+                        "type": "agent_notification",
+                        "text": event.get("text", ""),
+                        "source": event.get("source", "brain"),
+                        "status": event.get("status", "error"),
+                    }
+                    err_msg = event.get("error_message") or ""
+                    if err_msg:
+                        notif["error_message"] = err_msg[:500]
+                    await mgr.websocket.send_json(notif)
+                except Exception as e:
+                    logger.debug("[EventBus] agent_notification send failed: %s", e)
         elif event_type == "task_update":
             if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                 try:
@@ -405,9 +430,26 @@ async def initialize_character_data():
         
         if need_start_thread:
             try:
+                _char_name = k
+                def _make_status_cb(char_name):
+                    def _cb(msg):
+                        mgr = session_manager.get(char_name)
+                        if not mgr:
+                            return
+                        loop = _server_loop
+                        if loop is None or loop.is_closed():
+                            return
+                        ws = mgr.websocket
+                        if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                            import json as _json
+                            data = _json.dumps({"type": "status", "message": msg})
+                            asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
+                    return _cb
+                _status_cb = _make_status_cb(_char_name)
+
                 sync_process[k] = Thread(
                     target=cross_server.sync_connector_process,
-                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}),
+                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True}, _status_cb),
                     daemon=True,
                     name=f"SyncConnector-{k}"
                 )
@@ -707,7 +749,7 @@ def _sync_preload_modules():
         import asyncio
         
         async def _warmup_httpx():
-            async with httpx.AsyncClient(timeout=1.0) as client:
+            async with httpx.AsyncClient(timeout=1.0, proxy=None) as client:
                 # 发送一个简单请求预热 SSL 上下文
                 try:
                     await client.get("http://127.0.0.1:1", timeout=0.01)
@@ -739,7 +781,8 @@ def _sync_preload_modules():
 async def on_startup():
     """服务器启动时执行的初始化操作"""
     if _IS_MAIN_PROCESS:
-        global steamworks, _preload_task, agent_event_bridge
+        global steamworks, _preload_task, agent_event_bridge, _server_loop
+        _server_loop = asyncio.get_running_loop()
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -927,7 +970,7 @@ async def shutdown_server_async():
         try:
             from config import MEMORY_SERVER_PORT
             shutdown_url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/shutdown"
-            async with httpx.AsyncClient(timeout=1) as client:
+            async with httpx.AsyncClient(timeout=1, proxy=None) as client:
                 response = await client.post(shutdown_url)
                 if response.status_code == 200:
                     logger.info("已向memory_server发送关闭信号")

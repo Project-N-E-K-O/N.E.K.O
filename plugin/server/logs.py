@@ -7,17 +7,45 @@
 import re
 import asyncio
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set
 from collections import deque
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from loguru import logger
+from plugin.logging_config import get_logger
 
 from plugin.settings import PLUGIN_CONFIG_ROOT
 
+
+logger = get_logger("server.logs")
+
+_RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
+
 # 服务器日志的特殊 ID
 SERVER_LOG_ID = "_server"
+
+
+def _parse_log_time(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    candidates = (stripped, stripped.replace("T", " "))
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            continue
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(stripped, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _validate_plugin_id(plugin_id: str) -> None:
@@ -74,7 +102,7 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         try:
             try:
                 from utils.logger_config import RobustLoggerConfig
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 import importlib.util
 
                 project_root = PLUGIN_CONFIG_ROOT.parent.parent
@@ -92,7 +120,7 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
             # 确保目录存在
             log_dir.mkdir(parents=True, exist_ok=True)
             return log_dir
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to get server log directory, using fallback: {e}")
             # 降级方案：使用项目根目录下的 log 文件夹
             # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
@@ -157,7 +185,7 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
             return log_dir
     except HTTPException:
         raise
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
         logger.warning(f"Failed to use project log directory, using plugin directory: {e}")
         # 降级方案：使用插件目录下的logs子目录
         plugin_dir = PLUGIN_CONFIG_ROOT / plugin_id
@@ -184,7 +212,7 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         return log_dir
 
 
-def get_plugin_log_files(plugin_id: str) -> List[Dict[str, Any]]:
+def get_plugin_log_files(plugin_id: str) -> list[dict[str, object]]:
     """
     获取插件的日志文件列表
     
@@ -225,7 +253,7 @@ def get_plugin_log_files(plugin_id: str) -> List[Dict[str, Any]]:
     return log_files
 
 
-def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
+def parse_log_line(line: str) -> dict[str, object] | None:
     """
     解析日志行
     
@@ -360,7 +388,7 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
                 file = ":".join(parts[:-2]) if len(parts) > 3 else parts[0]
             else:
                 file = parts[0] if parts else location
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             file = location
             line_num = 0
         return {
@@ -381,7 +409,7 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def read_log_file_tail(log_file: Path, lines: int = 100) -> List[Dict[str, Any]]:
+def read_log_file_tail(log_file: Path, lines: int = 100) -> list[dict[str, object]]:
     """
     读取日志文件的最后N行
     
@@ -410,18 +438,18 @@ def read_log_file_tail(log_file: Path, lines: int = 100) -> List[Dict[str, Any]]
                     parsed_logs.append(log_entry)
             
             return parsed_logs
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read log file {log_file}")
         return []
 
 
 def filter_logs(
-    logs: List[Dict[str, Any]],
-    level: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    search: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    logs: list[dict[str, object]],
+    level: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    search: str | None = None
+) -> list[dict[str, object]]:
     """
     过滤日志
     
@@ -442,10 +470,22 @@ def filter_logs(
         level_upper = level.upper()
         filtered = [log for log in filtered if log.get("level") == level_upper]
     
-    # 按时间过滤（简单实现，可以改进）
+    # 按时间过滤
     if start_time or end_time:
-        # TODO: 实现时间范围过滤
-        pass
+        start_dt = _parse_log_time(start_time) if isinstance(start_time, str) else None
+        end_dt = _parse_log_time(end_time) if isinstance(end_time, str) else None
+        if start_dt is not None or end_dt is not None:
+            time_filtered: list[dict[str, object]] = []
+            for log in filtered:
+                ts = _parse_log_time(log.get("timestamp"))
+                if ts is None:
+                    continue
+                if start_dt is not None and ts < start_dt:
+                    continue
+                if end_dt is not None and ts > end_dt:
+                    continue
+                time_filtered.append(log)
+            filtered = time_filtered
     
     # 关键词搜索
     if search:
@@ -461,11 +501,11 @@ def filter_logs(
 def get_plugin_logs(
     plugin_id: str,
     lines: int = 100,
-    level: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    search: Optional[str] = None
-) -> Dict[str, Any]:
+    level: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    search: str | None = None
+) -> dict[str, object]:
     """
     获取插件日志或服务器日志
     
@@ -505,14 +545,14 @@ def get_plugin_logs(
             key=lambda f: f.stat().st_mtime,
             reverse=True
         )
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to find log files in {log_dir} with pattern {pattern}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to find log files"
+            "error": "Failed to find log files"
         }
     
     if not log_files:
@@ -529,14 +569,14 @@ def get_plugin_logs(
     # 读取日志
     try:
         logs = read_log_file_tail(latest_log, lines)
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read log file {latest_log}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to read log file"
+            "error": "Failed to read log file"
         }
     
     # 过滤
@@ -554,12 +594,12 @@ def get_plugin_logs(
 # ========== WebSocket 实时日志推送 ==========
 
 # 全局日志监控器字典：{plugin_id: LogFileWatcher}
-_log_watchers: Dict[str, 'LogFileWatcher'] = {}
+_log_watchers: dict[str, "LogFileWatcher"] = {}
 # 保护 _log_watchers 的线程锁（用于异步环境下的并发访问）
 _log_watchers_lock = threading.Lock()
 
 
-def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[List[Dict[str, Any]], int]:
+def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[list[dict[str, object]], int]:
     """
     从指定位置读取日志文件的增量内容
     
@@ -590,7 +630,7 @@ def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[List[
                     new_logs.append(log_entry)
             
             return new_logs, new_position
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
         logger.exception(f"Failed to read incremental log from {log_file}")
         return [], last_position
 
@@ -600,10 +640,10 @@ class LogFileWatcher:
     
     def __init__(self, plugin_id: str):
         self.plugin_id = plugin_id
-        self.clients: Set[WebSocket] = set()
+        self.clients: set[WebSocket] = set()
         self.last_position: int = 0
-        self.current_log_file: Optional[Path] = None
-        self._watch_task: Optional[asyncio.Task] = None
+        self.current_log_file: Path | None = None
+        self._watch_task: asyncio.Task[None] | None = None
         self._running = False
     
     def add_client(self, websocket: WebSocket):
@@ -677,17 +717,17 @@ class LogFileWatcher:
                 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 logger.exception(f"Error in log watcher loop for {self.plugin_id}")
                 await asyncio.sleep(1)
     
-    async def _broadcast_logs(self, logs: List[Dict[str, Any]]):
+    async def _broadcast_logs(self, logs: list[dict[str, object]]):
         """广播日志给所有连接的客户端"""
         if not logs or not self.clients:
             return
         
         disconnected = []
-        for client in self.clients:
+        for client in list(self.clients):
             try:
                 # 检查连接状态
                 if hasattr(client, 'client_state'):
@@ -704,7 +744,7 @@ class LogFileWatcher:
                 # 连接已断开或关闭，记录但不抛出异常
                 logger.debug(f"Failed to send logs to client (disconnected): {e}")
                 disconnected.append(client)
-            except Exception as e:
+            except (ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
                 # 其他错误，记录并标记为断开
                 logger.debug(f"Failed to send logs to client: {e}")
                 disconnected.append(client)
@@ -741,7 +781,7 @@ class LogFileWatcher:
                 self.current_log_file = log_files[0]
                 # 获取文件当前大小作为起始位置
                 self.last_position = self.current_log_file.stat().st_size
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
             logger.exception("Failed to send initial logs")
 
 
@@ -778,18 +818,18 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
                 # 发送心跳保持连接
                 try:
                     await websocket.send_json({"type": "ping"})
-                except Exception:
+                except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                     # 如果发送失败，连接可能已关闭，退出循环
                     break
             except WebSocketDisconnect:
                 break
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
                 # 其他异常，记录日志并退出
                 logger.debug(f"WebSocket receive error for {plugin_id}: {e}")
                 break
     except WebSocketDisconnect:
         pass
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
         # 记录错误但不抛出，确保 finally 块执行
         logger.debug(f"Error in log stream endpoint for {plugin_id}: {e}")
     finally:
@@ -800,6 +840,5 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
             with _log_watchers_lock:
                 if not watcher.clients:
                     _log_watchers.pop(plugin_id, None)
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
             logger.debug(f"Error cleaning up watcher for {plugin_id}: {e}")
-

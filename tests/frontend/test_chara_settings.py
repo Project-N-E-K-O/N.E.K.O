@@ -5,9 +5,10 @@ from playwright.sync_api import Page, expect
 def test_chara_manager_load(mock_page: Page, running_server: str):
     """Test that the character manager page loads and displays character list."""
     # Verify server is reachable
-    import requests
+    import httpx
     try:
-        resp = requests.get(f"{running_server}/chara_manager", timeout=5)
+        with httpx.Client(proxy=None) as client:
+            resp = client.get(f"{running_server}/chara_manager", timeout=5)
         print(f"Server check: {resp.status_code}")
         assert resp.status_code == 200, f"Failed to reach page: {resp.text[:100]}"
     except Exception as e:

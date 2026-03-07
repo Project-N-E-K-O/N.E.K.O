@@ -67,8 +67,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     
     # 立即设置websocket到session manager，以支持主动搭话
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
-    session_manager[lanlan_name].websocket = websocket
+    mgr = session_manager[lanlan_name]
+    mgr.websocket = websocket
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
+
+    if mgr.pending_agent_callbacks:
+        logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
+        asyncio.create_task(mgr.trigger_agent_callbacks())
 
     try:
         while True:
