@@ -1734,11 +1734,11 @@ async def proactive_chat(request: Request):
                 music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
                 print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
                 
-                if "[PASS]" in music_keyword_result:
+                if re.search(r'^\s*\[pass\]\b', music_keyword_result or '', re.IGNORECASE):
                     print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
                     music_content = None
                 else:
-                    keyword = music_keyword_result.strip()
+                    keyword = (music_keyword_result or '').strip()
                     # 匹配 "关键词：xxx" 或 "搜索：xxx"，并忽略前面的换行或客套话
                     keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
                     # 清洗各类成对的符号、引号及换行
@@ -1934,6 +1934,18 @@ async def proactive_chat(request: Request):
             has_music=bool(music_section),  # 分离音乐布尔位
             lang=proactive_lang,
         )
+        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
+        if music_section and external_section:
+            music_tag_hint = {
+                'zh': "，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊网页话题和音乐)",
+                'en': ", or [MUSIC] (music only), or [BOTH] (both web and music)",
+                'ja': "、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音乐の両方)",
+                'ko': ", 또는 [MUSIC] (음악만), 또는 [BOTH] (웹과 음악 모두)",
+                'ru': ", или [MUSIC] (только музыка), или [BOTH] (и веб, и музыка)"
+            }.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            # 在第一行标签选择中注入 [MUSIC] 和 [BOTH]
+            output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
+
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,

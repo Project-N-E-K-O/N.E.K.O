@@ -4,9 +4,6 @@ from fastapi import APIRouter, Query
 from utils.music_crawlers import fetch_music_content
 from utils.logger_config import get_module_logger
 
-# 导入分离出去的爬虫类
-from utils.music_crawlers import fetch_music_content
-from utils.logger_config import get_module_logger
 router = APIRouter()
 
 logger = get_module_logger(__name__, "Music")

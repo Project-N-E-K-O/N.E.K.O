@@ -4,9 +4,15 @@
 
 // 【防崩溃兜底】确保 window.t 始终是一个可调用的函数
 if (typeof window.t !== 'function') {
-    window.t = function(key, fallback) { 
-        // 【修改】确保即使 fallback 传入了对象，这里也只返回字符串
-        return typeof fallback === 'string' ? fallback : key; 
+    window.t = function(key, fallback) {
+        // 如果 fallback 是字符串，直接返回
+        if (typeof fallback === 'string') return fallback;
+        // 如果 fallback 是 i18next 格式的对象，且包含 defaultValue，则回退到该默认值
+        if (fallback && typeof fallback === 'object' && fallback.defaultValue) {
+            return fallback.defaultValue;
+        }
+        // 实在没办法了才返回 key
+        return key;
     };
 }
 // 定义全局安全的翻译函数 safeT，供内部直接调用
@@ -609,24 +615,6 @@ function init_app() {
                             }
                         });
                         window.currentTurnGeminiBubbles = [];
-                    }
-
-                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
-                        chatContainer && chatContainer.children && chatContainer.children.length > 0) {
-                        const toRemove = [];
-                        for (let i = chatContainer.children.length - 1; i >= 0; i--) {
-                            const el = chatContainer.children[i];
-                            if (el.classList && el.classList.contains('message') && el.classList.contains('gemini')) {
-                                toRemove.push(el);
-                            } else {
-                                break;
-                            }
-                        }
-                        toRemove.forEach(el => {
-                            if (el && el.parentNode) {
-                                el.parentNode.removeChild(el);
-                            }
-                        });
                     }
 
                     window._geminiTurnFullText = '';
@@ -1310,7 +1298,7 @@ function init_app() {
                     if (searchTerm) {
                         console.log(`[Music] Received music action with search term: ${searchTerm}`);
                         if (window.showStatusToast) {
-                            const searchMsg = window.t ? window.t('music.searching', { query: searchTerm }) : `正在为您搜索: ${searchTerm}`;
+                            const searchMsg = window.t('music.searching', { query: searchTerm, defaultValue: '正在为您搜索: ' + searchTerm });
                             window.showStatusToast(searchMsg, 2000);
                         }
                         
@@ -1337,7 +1325,7 @@ function init_app() {
                                     } else {
                                         console.warn(`[Music] API did not find a song for: ${searchTerm}`);
                                         if (window.showStatusToast) {
-                                            const notFoundMsg = window.t ? window.t('music.notFound', { query: searchTerm }) : `找不到歌曲: ${searchTerm}`;
+                                            const notFoundMsg = window.t('music.notFound', { query: searchTerm, defaultValue: '找不到歌曲: ' + searchTerm });
                                             window.showStatusToast(notFoundMsg, 3000);
                                         }
                                     }
@@ -2108,7 +2096,7 @@ function init_app() {
                 _lastPlayedMusicUrl = musicUrl;
                 _lastMusicPlayTime = now;
                 if (window.showStatusToast) {
-                    const playMsg = window.t ? window.t('music.nowPlaying', { name: trackInfo.name }) : `为您播放: ${trackInfo.name}`;
+                    const playMsg = window.t('music.nowPlaying', { name: trackInfo.name, defaultValue: '为您播放: ' + trackInfo.name });
                     window.showStatusToast(playMsg, 3000);
                 }
             }
@@ -2288,19 +2276,21 @@ function init_app() {
                 window._pendingMusicCommand = '';
             }
             
-            // 捕获字符串末尾尚未闭合的任意中括号块（如 "[play_", "[play_music:{" 等）
+            // 捕获字符串末尾尚未闭合的任意中括号块（防止 JSON 片段泄漏到聊天气泡）
             const openBracketMatch = incoming.match(/\[[^\]]*$/);
             if (openBracketMatch) {
-                // 检查这个未闭合的标签是否可能是 [play_music 相关的
-                // 即使它只吐出个 "[pl"，也先拦截下来放入暂存区，防止泄漏到气泡中
                 const partialText = openBracketMatch[0];
                 const normalizedPartial = normalizeGeminiText(partialText);
-                const isPlayMusicPrefix = 
-                normalizedPartial.startsWith('[play_music:') || normalizedPartial.startsWith('[play_music:');
-            
+        
+                // 这样即使只收到 "[" 或 "[pl"，只要它是指令前缀的一部分，就会被正确拦截并存入缓冲区
+                const targetPrefix = "[play_music:";
+                const isPlayMusicPrefix = targetPrefix.startsWith(normalizedPartial);
+
                 if (isPlayMusicPrefix) {
                     window._pendingMusicCommand = partialText;
                     incoming = incoming.slice(0, openBracketMatch.index);
+                }
+                    console.log(`[Music] 拦截到不完整指令片段: ${partialText}`);
                 }
             }
             
@@ -2316,7 +2306,7 @@ function init_app() {
                 window._realisticGeminiQueue.push(...sentences);
                 processRealisticQueue(window._realisticGeminiVersion || 0);
             }
-        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+        else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
@@ -2350,54 +2340,69 @@ function init_app() {
                 console.log(window.t('console.aiFirstReplyDetected'));
                 checkAndUnlockFirstDialogueAchievement();
             }
-        } else if (sender === 'gemini' && isMergeMessagesEnabled() && !isNewMessage && window.currentGeminiMessage &&
-            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-            window.currentGeminiMessage.isConnected) {
+        } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
+            // 【核心重构】不再依赖 isNewMessage 标志，而是根据“本轮是否已有气泡”来决策。
+            // 解决首个 chunk 被清洗为空（纯指令）时导致的渲染坠落 Bug
+            const cleanText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            
+            // 场景 A: 本轮尚未创建气泡（可能是首个带文本的块，也可能是被指令切断后的后续块）
+            if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) {
+                if (cleanText.trim()) {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.classList.add('message', 'gemini');
+                    messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanText;
+                    chatContainer.appendChild(messageDiv);
+                    
+                    window.currentGeminiMessage = messageDiv;
+                    window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
+                    window.currentTurnGeminiBubbles.push(messageDiv);
+                    
+                    checkAndShowSubtitlePrompt(cleanText);
+                } else {
+                    // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
+                    window.currentGeminiMessage = null;
+                }
+            } 
+            // 场景 B: 气泡已存在，执行平滑追加
+            else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
+                const fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                const timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /) || [""];
+                window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
 
-            // 追加到现有消息（使用 textContent 避免 XSS 风险）
-            // window.currentGeminiMessage.textContent += text;
-            // 【替换为以下三行】：使用正则处理过的完整文本整体替换，避免打字机效果暴露出残缺代码
-            const cleanText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-            const timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /) || [""];
-            window.currentGeminiMessage.textContent = timePrefix[0] + cleanText;
-
-            // 防抖机制优化流式输出时的语言检测
-            if (subtitleCheckDebounceTimer) {
-                clearTimeout(subtitleCheckDebounceTimer);
-            }
-
-            subtitleCheckDebounceTimer = setTimeout(() => {
-                if (!window.currentGeminiMessage ||
-                    window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
-                    !window.currentGeminiMessage.isConnected) {
-                    subtitleCheckDebounceTimer = null;
-                    return;
+                // 触发原有的字幕检测逻辑
+                if (subtitleCheckDebounceTimer) {
+                    clearTimeout(subtitleCheckDebounceTimer);
                 }
 
-                const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
-                if (fullText && fullText.trim()) {
-                    if (userLanguage === null) {
-                        getUserLanguage().then(() => {
-                            if (window.currentGeminiMessage &&
-                                window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                                window.currentGeminiMessage.isConnected) {
-                                const detectedLang = detectLanguage(fullText);
-                                if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                                    showSubtitlePrompt();
+                subtitleCheckDebounceTimer = setTimeout(() => {
+                    if (!window.currentGeminiMessage ||
+                        window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
+                        !window.currentGeminiMessage.isConnected) {
+                        subtitleCheckDebounceTimer = null;
+                        return;
+                    }
+
+                    const currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                    if (currentFullText && currentFullText.trim()) {
+                        if (userLanguage === null) {
+                            getUserLanguage().then(() => {
+                                if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
+                                    const detectedLang = detectLanguage(currentFullText);
+                                    if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
+                                        showSubtitlePrompt();
+                                    }
                                 }
+                            }).catch(err => console.warn('[i18n] Stream error:', err));
+                        } else {
+                            const detectedLang = detectLanguage(currentFullText);
+                            if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
+                                showSubtitlePrompt();
                             }
-                        }).catch(err => {
-                            console.warn(window.t('console.getUserLanguageFailedStream'), err);
-                        });
-                    } else {
-                        const detectedLang = detectLanguage(fullText);
-                        if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
-                            showSubtitlePrompt();
                         }
                     }
-                }
-                subtitleCheckDebounceTimer = null;
-            }, 300);
+                    subtitleCheckDebounceTimer = null;
+                }, 300);
+            }
         } else {
             // 创建新消息
             const messageDiv = document.createElement('div');
