@@ -2292,7 +2292,7 @@ function init_app() {
                 const partialText = openBracketMatch[0];
                 const normalizedPartial = normalizeGeminiText(partialText);
                 const isPlayMusicPrefix = 
-                normalizedPartial.startsWith(PLAY_MUSIC_PREFIX) || PLAY_MUSIC_PREFIX.startsWith(normalizedPartial);
+                normalizedPartial.startsWith('[play_music:') || normalizedPartial.startsWith('[play_music:');
             
                 if (isPlayMusicPrefix) {
                     window._pendingMusicCommand = partialText;
