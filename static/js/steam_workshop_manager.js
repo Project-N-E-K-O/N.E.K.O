@@ -2455,6 +2455,7 @@ window.addEventListener('load', function () {
         loadSubscriptions();
         syncTitleDataText();
     }
+    updateLocaleDependent();
     window.addEventListener('localechange', updateLocaleDependent);
 
 });
