@@ -156,12 +156,13 @@ def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]
             logger.warning(f"{platform} Cookie 值类型不合法: key={k}, value_type={type(v).__name__}")
             return {}
         
+        # 【核心修复】为了防止坏凭证（如 false/0）被转成非空字符串绕过验证
+        # 严格限制 Cookie 值必须为字符串类型，不再做强制转换
         if isinstance(v, str):
             valid_cookies[k] = v
-        elif isinstance(v, (int, float, bool)):
-            valid_cookies[k] = str(v)
         else:
-            logger.warning(f"{platform} Cookie 值类型不支持: key={k}, value_type={type(v).__name__}")
+            logger.warning(f"[{platform}] Cookie 格式非法：键 '{k}' 必须为字符串，当前类型为 {type(v).__name__}")
+            # 只要有一个字段非法，就认为整组 Cookie 无效，防止带病上线
             return {}
     
     return valid_cookies
