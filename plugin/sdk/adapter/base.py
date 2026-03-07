@@ -6,10 +6,10 @@ Adapter 基类
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
@@ -153,10 +153,14 @@ class AdapterContext:
         """
         if self._plugin_ctx is None:
             raise RuntimeError("AdapterContext not bound to PluginContext")
-        
-        # TODO: 实现广播机制
-        self.logger.debug("Broadcasting event: {} with payload: {}", event_type, payload)
-        return []
+
+        # 当前 SDK 尚未提供 adapter 级稳定广播协议，避免静默返回空列表造成误判。
+        self.logger.warning(
+            "broadcast_event is not implemented: event_type={}, payload_keys={}",
+            event_type,
+            list(payload.keys()) if isinstance(payload, dict) else [],
+        )
+        raise NotImplementedError("Adapter broadcast_event is not implemented yet")
     
     def register_event_handler(
         self,
@@ -262,15 +266,22 @@ class AdapterBase(ABC):
             return await self._forward_to_plugin(msg, route)
         
         if route.target == RouteTarget.BROADCAST:
-            responses = await self.ctx.broadcast_event(
-                f"{msg.protocol.value}.{msg.action}",
-                {"message": msg},
-            )
-            # 返回第一个非空响应
-            for resp in responses:
-                if resp is not None:
-                    return msg.reply(resp)
-            return None
+            try:
+                responses = await self.ctx.broadcast_event(
+                    f"{msg.protocol.value}.{msg.action}",
+                    {"message": msg},
+                )
+                # 返回第一个非空响应
+                for resp in responses:
+                    if resp is not None:
+                        return msg.reply(resp)
+                return None
+            except NotImplementedError as e:
+                self.logger.warning("Broadcast route is not implemented: {}", e)
+                return msg.error(str(e), code="NOT_IMPLEMENTED")
+            except Exception as e:
+                self.logger.exception("Broadcast route failed")
+                return msg.error(str(e), code="BROADCAST_ERROR")
         
         return None
     
@@ -388,7 +399,13 @@ class AdapterBase(ABC):
                 handler = self._tools[tool_name]
                 args = msg.payload.get("arguments", {}) if isinstance(msg.payload, dict) else {}
                 try:
-                    result = await handler(**args) if callable(handler) else None
+                    if not callable(handler):
+                        return msg.error(f"Handler for tool '{tool_name}' is not callable")
+                    if not isinstance(args, dict):
+                        return msg.error(f"Invalid arguments for tool '{tool_name}': must be object")
+                    result = handler(**args)
+                    if asyncio.iscoroutine(result):
+                        result = await result
                     return msg.reply(result)
                 except Exception as e:
                     return msg.error(str(e))

@@ -9,9 +9,8 @@ from typing import Any, Dict, Optional, Set, Tuple
 from fastapi import WebSocket
 
 from plugin.core.state import state
-from plugin.server.infrastructure.auth import get_admin_code
 from plugin.server.management import stop_plugin
-from plugin.server.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
+from plugin.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
 
 
 @dataclass(frozen=True)
@@ -158,36 +157,6 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
             await ws.close(code=code, reason=reason)
         except Exception:
             pass
-
-    try:
-        auth_raw = await asyncio.wait_for(ws.receive_text(), timeout=5.0)
-    except Exception:
-        await _close(1008, "auth required")
-        return
-
-    try:
-        auth = json.loads(auth_raw)
-    except Exception:
-        await _close(1008, "invalid auth")
-        return
-
-    if not isinstance(auth, dict) or auth.get("type") != "auth":
-        await _close(1008, "auth required")
-        return
-
-    code = auth.get("code")
-    if not isinstance(code, str) or not code:
-        await _close(1008, "invalid code")
-        return
-
-    server_code = get_admin_code()
-    if server_code is None:
-        await _close(1011, "auth not initialized")
-        return
-
-    if code.strip().upper() != str(server_code).strip().upper():
-        await _close(1008, "forbidden")
-        return
 
     await ws_admin_hub.start()
 
