@@ -121,21 +121,11 @@ def _enqueue_error(response_queue, error_value):
 
 
 def _adjust_free_tts_url(url: str) -> str:
-    """Free TTS URL 的地区替换：双重判定（IP + Steam 均非大陆）时替换为 lanlan.app。"""
-    if 'lanlan.tech' not in url:
-        return url
+    """Free TTS URL 的地区替换：委托给 ConfigManager._adjust_free_api_url。"""
     try:
-        from utils.config_manager import ConfigManager
-        if ConfigManager._region_cache is not None:
-            if ConfigManager._region_cache:
-                return url.replace('lanlan.tech', 'lanlan.app')
-            return url
-        cm = get_config_manager()
-        if cm._check_non_mainland():
-            return url.replace('lanlan.tech', 'lanlan.app')
+        return get_config_manager()._adjust_free_api_url(url, True)
     except Exception:
-        pass
-    return url
+        return url
 
 
 _TTS_LANGUAGE_CODE_MAP = {
@@ -827,11 +817,18 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self._bootstrap_buffer = bytearray()
             self._bootstrap_sent = False
             self._bootstrap_min_bytes = 1024
+            # 后续小包聚合：OGG OPUS 页常只有几百字节，高频小包
+            # 会给前端主线程带来大量 WASM 解码调用，Live2D 渲染繁忙时
+            # 容易导致 audio buffer underrun。聚合到 ≥4KB 再下发，
+            # 减少前端处理次数、增大每段解码出的音频长度。
+            self._agg_buffer = bytearray()
+            self._agg_min_bytes = 4096
 
         def reset_bootstrap_state(self):
             self._active_sid = None
             self._bootstrap_buffer.clear()
             self._bootstrap_sent = False
+            self._agg_buffer.clear()
             
         def on_open(self): 
             self.connection_lost = False
@@ -842,8 +839,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         def on_complete(self): 
             # 短句可能在首包聚合阈值前就结束，完成时强制冲刷缓冲，避免整句静音。
             try:
-                if self._bootstrap_buffer and self._active_sid:
-                    self.response_queue.put(("__audio__", self._active_sid, bytes(self._bootstrap_buffer)))
+                sid = self._active_sid
+                if sid:
+                    if self._bootstrap_buffer:
+                        self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
+                    if self._agg_buffer:
+                        self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
             finally:
                 self.reset_bootstrap_state()
                 
@@ -881,7 +882,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 self._bootstrap_sent = True
                 return
 
-            self.response_queue.put(("__audio__", sid, data))
+            self._agg_buffer.extend(data)
+            if len(self._agg_buffer) >= self._agg_min_bytes:
+                self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
+                self._agg_buffer.clear()
             
     callback = Callback(response_queue)
     synthesizer = None

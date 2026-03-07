@@ -56,14 +56,28 @@ _prominent_notice_queue: list[dict] = []
 _prominent_notice_lock = threading.Lock()
 
 
-def enqueue_prominent_notice(message: str):
-    """将一条醒目通知放入缓冲池，等待前端拉取。"""
+def enqueue_prominent_notice(notice: "str | dict"):
+    """将一条醒目通知放入缓冲池，等待前端拉取。
+    
+    可传入字符串（自动包装为 {"message": ...}）或结构化字典
+    （建议包含 "code"、"message"、"message_en"、"details" 字段）。
+    """
+    if isinstance(notice, str):
+        item: dict = {"message": notice}
+    else:
+        item = dict(notice)
     with _prominent_notice_lock:
-        _prominent_notice_queue.append({"message": message})
+        _prominent_notice_queue.append(item)
+
+
+def peek_prominent_notices() -> list[dict]:
+    """返回缓冲池快照，不清空（供非破坏性读取）。"""
+    with _prominent_notice_lock:
+        return list(_prominent_notice_queue)
 
 
 def drain_prominent_notices() -> list[dict]:
-    """取出并清空缓冲池（一次性消费，供 HTTP 接口调用）。"""
+    """取出并清空缓冲池（一次性消费，供确认接口调用）。"""
     with _prominent_notice_lock:
         items = list(_prominent_notice_queue)
         _prominent_notice_queue.clear()
@@ -847,9 +861,16 @@ class LLMSessionManager:
 
         # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
-            cleaned_count, _ = self._config_manager.cleanup_invalid_voice_ids()
+            cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
+            if legacy_names:
+                enqueue_prominent_notice({
+                    "code": "notice.voiceMigration.legacyRemoved",
+                    "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+                    "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+                    "details": {"voices": legacy_names},
+                })
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 

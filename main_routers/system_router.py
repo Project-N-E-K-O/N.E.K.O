@@ -59,9 +59,17 @@ logger = get_module_logger(__name__, "Main")
 
 @router.get("/pending-notices")
 async def get_pending_notices():
-    """前端页面加载时拉取待弹通知（一次性消费）。"""
+    """前端页面加载时拉取待弹通知（只读快照，不清空队列）。"""
+    from main_logic.core import peek_prominent_notices
+    return peek_prominent_notices()
+
+
+@router.post("/pending-notices/ack")
+async def ack_pending_notices():
+    """前端展示完通知后调用，清空通知队列。"""
     from main_logic.core import drain_prominent_notices
-    return drain_prominent_notices()
+    drain_prominent_notices()
+    return {"ok": True}
 
 
 # --- 主动搭话近期记录暂存区 ---

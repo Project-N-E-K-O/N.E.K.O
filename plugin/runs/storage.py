@@ -137,22 +137,19 @@ class BlobStore:
             sess = self._uploads.get(upload_id)
             if sess is None:
                 raise UploadNotFoundError(upload_id, reason="session not found (expired or never created)")
-        if sess.final_path.exists():
-            with self._lock:
+            if sess.final_path.exists():
                 if self._uploads.get(upload_id) == sess:
                     self._uploads.pop(upload_id, None)
-            return sess
-        if sess.tmp_path.exists():
-            os.replace(str(sess.tmp_path), str(sess.final_path))
-            with self._lock:
+                return sess
+            if sess.tmp_path.exists():
+                os.replace(str(sess.tmp_path), str(sess.final_path))
                 if self._uploads.get(upload_id) == sess:
                     self._uploads.pop(upload_id, None)
-            return sess
-        logger.warning("finalize_upload: both paths missing for upload_id={}", upload_id)
-        with self._lock:
+                return sess
+            logger.warning("finalize_upload: both paths missing for upload_id={}", upload_id)
             if self._uploads.get(upload_id) == sess:
                 self._uploads.pop(upload_id, None)
-        raise UploadNotFoundError(upload_id, reason="both tmp and final paths missing")
+            raise UploadNotFoundError(upload_id, reason="both tmp and final paths missing")
 
     def get_blob_path(self, *, run_id: str, blob_id: str) -> Optional[Path]:
         rid = str(run_id)

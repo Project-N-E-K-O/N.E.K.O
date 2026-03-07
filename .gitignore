@@ -120,3 +120,6 @@ data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage
 .VSCodeCounter
+
+# 插件服务器运行时生成的凭证文件
+plugin/.plugin_server_admin_code

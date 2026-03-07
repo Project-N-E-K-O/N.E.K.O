@@ -1375,7 +1375,7 @@ async def get_voices():
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')
         openrouter_url = core_config.get('OPENROUTER_URL', '')
-        if any(d in core_url or d in openrouter_url for d in ('lanlan.tech', 'lanlan.app')):
+        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
             from utils.api_config_loader import get_free_voices
             free_voices = get_free_voices()
             if free_voices:

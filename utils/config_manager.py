@@ -1131,15 +1131,21 @@ class ConfigManager:
 
     # Combined region cache (None = not checked, True = non-mainland, False = mainland)
     _region_cache = None
-    # Individual caches for dual check (None = indeterminate, True/False = result)
+    # Individual caches for dual check (None = not yet tried, True/False = result,
+    # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
     _ip_check_cache = None
     _steam_check_cache = None
+    # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
+    # re-attempt it (and never pay the timeout again) within the same process.
+    _GEO_INDETERMINATE = object()
 
     @staticmethod
     def _check_ip_non_mainland_http():
         """Independent IP geolocation via China-fast HTTP API (ip-api.com over HTTP)."""
-        if ConfigManager._ip_check_cache is not None:
-            return ConfigManager._ip_check_cache
+        cache = ConfigManager._ip_check_cache
+        if cache is not None:
+            # True/False → deterministic result; sentinel → tried-and-failed, skip retry
+            return None if cache is ConfigManager._GEO_INDETERMINATE else cache
         try:
             import urllib.request
             req = urllib.request.Request(
@@ -1156,6 +1162,8 @@ class ConfigManager:
                 return result
         except Exception as e:
             print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
+        # Mark as attempted-but-indeterminate so the network probe is never retried.
+        ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
         return None
 
     @staticmethod
@@ -1200,7 +1208,12 @@ class ConfigManager:
             print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return False
 
-        # Either source indeterminate — don't cache, default to mainland
+        # Both sources simultaneously indeterminate (e.g. ip-api.com blocked AND Steam not
+        # yet initialised).  Cache False so subsequent calls — including the other _URL fields
+        # iterated inside get_core_config() — skip all geo work without any I/O cost.
+        # If only one source is indeterminate the mixed cases above already handled it;
+        # we only reach here when neither source returned a usable result.
+        ConfigManager._region_cache = False
         print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), default mainland", file=sys.stderr)
         return False
 

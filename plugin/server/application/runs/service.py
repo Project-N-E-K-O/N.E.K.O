@@ -215,11 +215,10 @@ class RunService:
             try:
                 blob_store.finalize_upload(upload_id)
             except UploadNotFoundError as exc:
-                _cleanup_tmp_upload_file(upload_id, session.tmp_path)
                 raise _to_domain_error(
-                    code="UPLOAD_FINALIZE_FAILED",
+                    code="UPLOAD_NOT_FOUND",
                     message=str(exc),
-                    status_code=500,
+                    status_code=404,
                     details={"upload_id": upload_id},
                 ) from exc
             return {

@@ -310,12 +310,21 @@ if (toggleBtn) {
             if (uiIsMobileWidth()) {
                 const becomingCollapsed = !chatContainer.classList.contains('mobile-collapsed');
                 const textInputArea = document.getElementById('text-input-area');
+                const chatHeader = document.getElementById('chat-header');
                 if (becomingCollapsed) {
+                    if (chatContentWrapper) {
+                        chatContentWrapper.dataset.prevDisplay = chatContentWrapper.style.display;
+                        chatContentWrapper.style.display = 'none';
+                    }
+                    if (chatHeader) {
+                        chatHeader.dataset.prevDisplay = chatHeader.style.display;
+                        chatHeader.style.display = 'none';
+                    }
+                    if (textInputArea) {
+                        textInputArea.dataset.prevDisplay = textInputArea.style.display;
+                        textInputArea.style.display = 'none';
+                    }
                     chatContainer.classList.add('mobile-collapsed');
-                    if (chatContentWrapper) chatContentWrapper.style.display = 'none';
-                    const chatHeader = document.getElementById('chat-header');
-                    if (chatHeader) chatHeader.style.display = 'none';
-                    if (textInputArea) textInputArea.style.display = 'none';
                     if (toggleBtn) {
                         toggleBtn.style.display = 'block';
                         toggleBtn.style.visibility = 'visible';
@@ -323,10 +332,21 @@ if (toggleBtn) {
                     }
                 } else {
                     chatContainer.classList.remove('mobile-collapsed');
-                    if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
-                    const chatHeader = document.getElementById('chat-header');
-                    if (chatHeader) chatHeader.style.removeProperty('display');
-                    if (textInputArea) textInputArea.style.removeProperty('display');
+                    if (chatContentWrapper) {
+                        const prev = chatContentWrapper.dataset.prevDisplay;
+                        if (prev) { chatContentWrapper.style.display = prev; } else { chatContentWrapper.style.removeProperty('display'); }
+                        delete chatContentWrapper.dataset.prevDisplay;
+                    }
+                    if (chatHeader) {
+                        const prev = chatHeader.dataset.prevDisplay;
+                        if (prev) { chatHeader.style.display = prev; } else { chatHeader.style.removeProperty('display'); }
+                        delete chatHeader.dataset.prevDisplay;
+                    }
+                    if (textInputArea) {
+                        const prev = textInputArea.dataset.prevDisplay;
+                        if (prev) { textInputArea.style.display = prev; } else { textInputArea.style.removeProperty('display'); }
+                        delete textInputArea.dataset.prevDisplay;
+                    }
                     if (toggleBtn) {
                         toggleBtn.style.removeProperty('display');
                         toggleBtn.style.removeProperty('visibility');

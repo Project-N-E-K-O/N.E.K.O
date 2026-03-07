@@ -1426,7 +1426,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             "arguments": arguments or {},
             "target_plugin_id": target_plugin_id,
         }
-        if isinstance(timeout_s, (int, float)) and timeout_s > 0:
+        if timeout_s is not None:
+            if not isinstance(timeout_s, (int, float)):
+                raise TypeError(f"timeout_s must be a number, got {type(timeout_s).__name__}")
+            if timeout_s <= 0:
+                raise ValueError(f"timeout_s must be positive, got {timeout_s}")
             payload["timeout_s"] = float(timeout_s)
         envelope = ExternalEnvelope(
             protocol="mcp",
