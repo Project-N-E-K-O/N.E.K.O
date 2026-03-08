@@ -8,7 +8,7 @@ This module provides a lightweight `Result` model for dual usage styles:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Literal, TypeAlias, TypeVar
+from typing import Callable, Generic, Literal, TypeAlias, TypeVar
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -19,7 +19,7 @@ F = TypeVar("F")
 class ResultError(RuntimeError):
     """Raised when unwrapping an `Err` result."""
 
-    def __init__(self, error: Any, message: str | None = None):
+    def __init__(self, error: object, message: str | None = None):
         self.error = error
         self.code = None
         self.details = None
@@ -64,7 +64,7 @@ class Ok(Generic[T]):
     def map(self, fn: Callable[[T], U]) -> Ok[U]:
         return Ok(fn(self.value))
 
-    def map_err(self, _fn: Callable[[Any], F]) -> Ok[T]:
+    def map_err(self, _fn: Callable[[object], F]) -> Ok[T]:
         return self
 
     def bind(self, fn: Callable[[T], Result[U, F]]) -> Result[U, F]:
@@ -100,16 +100,16 @@ class Err(Generic[E]):
     def err(self) -> E:
         return self.error
 
-    def map(self, _fn: Callable[[Any], U]) -> Err[E]:
+    def map(self, _fn: Callable[[object], U]) -> Err[E]:
         return self
 
     def map_err(self, fn: Callable[[E], F]) -> Err[F]:
         return Err(fn(self.error))
 
-    def bind(self, _fn: Callable[[Any], Result[U, F]]) -> Result[U, E | F]:
+    def bind(self, _fn: Callable[[object], Result[U, F]]) -> Result[U, E | F]:
         return self
 
-    def unwrap(self) -> Any:
+    def unwrap(self) -> object:
         if isinstance(self.error, Exception):
             raise self.error
         raise ResultError(self.error)

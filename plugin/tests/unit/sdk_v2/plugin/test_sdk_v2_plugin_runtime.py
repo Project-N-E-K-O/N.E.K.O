@@ -13,11 +13,31 @@ from plugin.sdk_v2.shared.models.version import SDK_VERSION
 class _Ctx:
     plugin_id = "demo"
 
+    async def get_own_config(self, timeout: float = 5.0) -> dict[str, object]:
+        return {"config": {"feature": {"enabled": True}}}
+
+    async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
+        return {"config": updates}
+
+    async def query_plugins_async(self, filters: dict[str, object], timeout: float = 5.0) -> dict[str, object]:
+        return {"plugins": [{"plugin_id": "demo", "name": "Demo"}]}
+
+    async def trigger_plugin_event_async(
+        self,
+        *,
+        target_plugin_id: str,
+        event_type: str,
+        event_id: str,
+        params: dict[str, object],
+        timeout: float,
+    ) -> dict[str, object]:
+        return {"target_plugin_id": target_plugin_id, "event_type": event_type, "event_id": event_id, "params": params}
+
 
 def test_runtime_constants_types_and_reexports() -> None:
     assert rt.EVENT_META_ATTR == "__neko_event_meta__"
     assert rt.HOOK_META_ATTR == "__neko_hook_meta__"
-    assert isinstance(rt.EXTENDED_TYPES, dict)
+    assert isinstance(rt.EXTENDED_TYPES, tuple)
     assert rt.SDK_VERSION == SDK_VERSION
     assert rt.ErrorCode is ErrorCode
     assert rt.ok is ok
@@ -54,7 +74,16 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
     assert hm.priority == 0
     assert hm.condition is None
 
-    assert [f.name for f in fields(rt.EventMeta)] == ["event_type", "id", "name", "description", "input_schema"]
+    assert [f.name for f in fields(rt.EventMeta)] == [
+        "event_type",
+        "id",
+        "name",
+        "description",
+        "input_schema",
+        "auto_start",
+        "metadata",
+        "extra",
+    ]
 
 
 def test_runtime_error_classes_construct() -> None:
@@ -73,61 +102,62 @@ def test_hook_executor_mixin_not_implemented() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_config_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.PluginConfig(_Ctx())
-
-    cfg = object.__new__(rt.PluginConfig)
-    with pytest.raises(NotImplementedError):
-        await cfg.dump()
-    with pytest.raises(NotImplementedError):
-        await cfg.get("a.b")
-    with pytest.raises(NotImplementedError):
-        await cfg.require("a.b")
-    with pytest.raises(NotImplementedError):
-        await cfg.set("a.b", 1)
-    with pytest.raises(NotImplementedError):
-        await cfg.update({"a": 1})
-    with pytest.raises(NotImplementedError):
-        await cfg.get_section("a")
+    cfg = rt.PluginConfig(_Ctx())
+    dumped = await cfg.dump()
+    assert dumped.is_ok()
+    assert dumped.unwrap()["feature"]["enabled"] is True
+    got = await cfg.get("feature.enabled")
+    assert got.is_ok()
+    required = await cfg.require("feature.enabled")
+    assert required.is_ok()
+    missing = await cfg.require("feature.missing")
+    assert missing.is_err()
+    set_result = await cfg.set("feature.new", True)
+    assert set_result.is_ok()
+    updated = await cfg.update({"x": 1})
+    assert updated.is_ok()
+    section = await cfg.get_section("feature")
+    assert section.is_ok()
 
 
 @pytest.mark.asyncio
 async def test_plugins_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.Plugins(_Ctx())
-
-    plugins = object.__new__(rt.Plugins)
-    with pytest.raises(NotImplementedError):
-        await plugins.call_entry("a:b")
-    with pytest.raises(NotImplementedError):
-        await plugins.call_event("a:e:i")
-    with pytest.raises(NotImplementedError):
-        await plugins.list()
-    with pytest.raises(NotImplementedError):
-        await plugins.require("a")
+    plugins = rt.Plugins(_Ctx())
+    listed = await plugins.list()
+    assert listed.is_ok()
+    entry = await plugins.call_entry("demo:run", {"k": 1})
+    assert entry.is_ok()
+    event = await plugins.call_event("demo:custom:run", {"k": 1})
+    assert event.is_ok()
+    required = await plugins.require("demo")
+    assert required.is_ok()
+    missing = await plugins.require("missing")
+    assert missing.is_err()
 
 
 @pytest.mark.asyncio
 async def test_router_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.PluginRouter()
+    router = rt.PluginRouter(prefix="p_")
+    added = await router.add_entry("x", lambda _payload: None)
+    assert added.is_ok()
+    duplicate = await router.add_entry("x", lambda _payload: None)
+    assert duplicate.is_err()
+    entries = await router.list_entries()
+    assert entries.is_ok()
+    assert entries.unwrap()[0].id == "p_x"
+    removed = await router.remove_entry("x")
+    assert removed.is_ok()
+    assert removed.unwrap() is True
 
-    router = object.__new__(rt.PluginRouter)
-    with pytest.raises(NotImplementedError):
-        await router.add_entry("x", lambda: None)
-    with pytest.raises(NotImplementedError):
-        await router.remove_entry("x")
-    with pytest.raises(NotImplementedError):
-        await router.list_entries()
 
-
-def test_call_chain_helpers_raise_not_implemented() -> None:
+@pytest.mark.asyncio
+async def test_call_chain_helpers_raise_not_implemented() -> None:
     with pytest.raises(NotImplementedError):
-        rt.get_call_chain()
+        await rt.get_call_chain()
     with pytest.raises(NotImplementedError):
-        rt.get_call_depth()
+        await rt.get_call_depth()
     with pytest.raises(NotImplementedError):
-        rt.is_in_call_chain("p", "e")
+        await rt.is_in_call_chain("p", "e")
 
 
 @pytest.mark.asyncio
@@ -139,7 +169,7 @@ async def test_system_info_contract_methods_raise_not_implemented() -> None:
     with pytest.raises(NotImplementedError):
         await info.get_system_config()
     with pytest.raises(NotImplementedError):
-        info.get_python_env()
+        await info.get_python_env()
 
 
 @pytest.mark.asyncio

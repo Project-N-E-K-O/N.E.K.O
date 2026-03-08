@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import TypeAlias
 
 from .errors import ErrorCode
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def ok(data: Any = None, *, code: ErrorCode = ErrorCode.SUCCESS, message: str = "", trace_id: Optional[str] = None, **meta: Any) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+def ok(
+    data: JsonValue | JsonObject | None = None,
+    *,
+    code: ErrorCode = ErrorCode.SUCCESS,
+    message: str = "",
+    trace_id: str | None = None,
+    **meta: JsonValue,
+) -> JsonObject:
+    payload: JsonObject = {
         "success": True,
         "code": int(code),
         "data": data,
@@ -27,7 +38,15 @@ def ok(data: Any = None, *, code: ErrorCode = ErrorCode.SUCCESS, message: str = 
     return payload
 
 
-def fail(code: ErrorCode | str | int, message: str, *, details: Any = None, retriable: bool = False, trace_id: Optional[str] = None, **meta: Any) -> Dict[str, Any]:
+def fail(
+    code: ErrorCode | str | int,
+    message: str,
+    *,
+    details: JsonValue | JsonObject | None = None,
+    retriable: bool = False,
+    trace_id: str | None = None,
+    **meta: JsonValue,
+) -> JsonObject:
     if isinstance(code, ErrorCode):
         code_int = int(code)
         code_name = code.name
@@ -35,13 +54,13 @@ def fail(code: ErrorCode | str | int, message: str, *, details: Any = None, retr
         code_int = code
         try:
             code_name = ErrorCode(code).name
-        except Exception:
+        except ValueError:
             code_name = str(code)
     else:
         code_int = int(ErrorCode.INTERNAL)
         code_name = str(code)
 
-    payload: Dict[str, Any] = {
+    payload: JsonObject = {
         "success": False,
         "code": code_int,
         "data": None,
@@ -60,7 +79,7 @@ def fail(code: ErrorCode | str | int, message: str, *, details: Any = None, retr
     return payload
 
 
-def is_envelope(value: Any) -> bool:
+def is_envelope(value: object) -> bool:
     return isinstance(value, dict) and value.get("success") in (True, False) and "error" in value and "time" in value
 
 
