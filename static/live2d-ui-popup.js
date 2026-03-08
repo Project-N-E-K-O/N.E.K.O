@@ -1247,6 +1247,10 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
+                // 在用户手势上下文中获取屏幕流（避免定时器中调用 getDisplayMedia 导致 macOS 反复弹窗）
+                if (typeof window.acquireProactiveVisionStream === 'function') {
+                    window.acquireProactiveVisionStream();
+                }
                 // 如果正在语音对话中，启动15秒1帧定时器
                 if (typeof window.isRecording !== 'undefined' && window.isRecording) {
                     if (typeof window.startProactiveVisionDuringSpeech === 'function') {
@@ -1254,6 +1258,10 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                     }
                 }
             } else {
+                // 释放屏幕流
+                if (typeof window.releaseProactiveVisionStream === 'function') {
+                    window.releaseProactiveVisionStream();
+                }
                 if (typeof window.stopProactiveChatSchedule === 'function') {
                     // 只有当主动搭话也关闭时才停止调度
                     if (!window.proactiveChatEnabled) {
