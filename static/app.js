@@ -9415,10 +9415,9 @@ function init_app() {
             return;
         }
 
-        // 如果正在录音（语音模式），不释放流（语音模式可能也在用）
+        // 如果正在录音，先停止主动视觉定时器
         if (isRecording) {
-            console.log('[主动视觉] 语音模式活跃中，不释放流');
-            return;
+            stopProactiveVisionDuringSpeech();
         }
 
         if (screenCaptureStream) {
