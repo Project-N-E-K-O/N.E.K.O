@@ -38,6 +38,16 @@ This matrix tracks `plugin/` test scope for SDK + server config scenarios.
   - schema inference + params model attachment + worker/persist metadata
 - `sdk.router`
   - prefix behavior, bind constraints, dependency injection error path, metadata prefixing
+- `sdk.integration`
+  - async full-flow for `Plugins.call_entry_async` + dynamic router entries + hooks
+  - real `PluginContext` wire flow (`_plugin_comm_queue` + `_response_queue` + `state.set_plugin_response`)
+  - real `PluginContext` config wire flow (`PLUGIN_CONFIG_GET/UPDATE/BASE/PROFILE/EFFECTIVE`)
+  - real `BUS_SUBSCRIBE/BUS_UNSUBSCRIBE` request flow + `dispatch_bus_change` watcher delivery
+  - `BusList.watch_async/start_async/stop_async/reload_async` combinations
+  - `PluginStore` x `PluginStatePersistence` async persistence flows
+  - `PluginStore`/`PluginStatePersistence` fault-tolerance flows (corrupted bytes, unknown state version)
+  - timeout/cancel propagation (`call_entry_async`, watcher lifecycle, message-plane batch)
+  - entry-id conflict resolution (router-router and router-plugin override behavior)
 
 ## Next High-Value Additions
 

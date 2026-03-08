@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1932,7 +1933,15 @@ class BusList(BusListCore, Generic[TRecord]):
         bus: Optional[str] = None,
         debounce_ms: float = 0.0,
     ) -> "BusListWatcher[TRecord]":
-        return self.watch(ctx=ctx, bus=bus, debounce_ms=debounce_ms)
+        # Construct watcher on a worker thread so smart sync/async bus.get()
+        # replay paths do not accidentally return coroutine objects while the
+        # current thread is running an event loop.
+        return await asyncio.to_thread(
+            self.watch,
+            ctx,
+            bus=bus,
+            debounce_ms=debounce_ms,
+        )
 
 
 from plugin.sdk.bus.watchers import BusListDelta, BusListWatcher, list_Subscription, list_subscription  # noqa: E402

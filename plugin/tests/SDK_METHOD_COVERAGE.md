@@ -58,13 +58,13 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 
 ### `plugin/sdk/bus/bus_list.py`
 - `functions`: (none)
-- `BusListCore`: reload_with, reload, reload_with_async
-- `BusListWatcherCore`: subscribe, start, stop
+- `BusListCore`: reload_with, reload, reload_with_async, reload_async
+- `BusListWatcherCore`: subscribe, start, stop, start_async, stop_async
 
 ### `plugin/sdk/bus/conversations.py`
 - `functions`: (none)
 - `ConversationRecord`: from_raw, from_index
-- `ConversationClient`: get_sync, get_async, get, get_by_id
+- `ConversationClient`: get_sync, get_async, get, get_by_id, get_by_id_async
 
 ### `plugin/sdk/bus/events.py`
 - `functions`: (none)
@@ -88,7 +88,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `functions`: (none)
 - `MessageRecord`: from_raw, from_index, dump
 - `MessageList`: merge
-- `MessageClient`: get_message_plane_all, get_sync, get_async, get, get_by_conversation
+- `MessageClient`: get_message_plane_all, get_message_plane_all_async, get_sync, get_async, get, get_by_conversation, get_by_conversation_async
 
 ### `plugin/sdk/bus/records.py`
 - `functions`: parse_iso_timestamp
@@ -113,7 +113,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 - `BusList`: count, size, dump, dump_records, fast_mode, trace, trace_dump, trace_tree_dump, explain, merge, sort, sorted, intersection, intersect, difference, subtract, filter, where_in, where_eq, where_contains, where_regex, where_gt, where_ge, where_lt, where_le, try_filter, where, limit, reload, reload_with, reload_with_async, watch
 
 ### `plugin/sdk/bus/watchers.py`
-- `functions`: list_subscription
+- `functions`: list_subscription, list_subscription_async
 - `classes`: (none)
 
 ### `plugin/sdk/call_chain.py`
@@ -156,7 +156,7 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 
 ### `plugin/sdk/plugins.py`
 - `functions`: (none)
-- `Plugins`: list, call_entry, call_event, call, require
+- `Plugins`: list_async, call_entry_async, call_event_async, call_async, require_async, list, call_entry, call_event, call, require
 
 ### `plugin/sdk/responses.py`
 - `functions`: ok, fail, is_envelope
@@ -169,11 +169,11 @@ This file inventories public functions/methods under `plugin/sdk` and maps them 
 
 ### `plugin/sdk/state.py`
 - `functions`: (none)
-- `PluginStatePersistence`: collect_attrs, restore_attrs, save, load, clear, has_saved_state, get_state_info
+- `PluginStatePersistence`: collect_attrs, collect_attrs_async, restore_attrs, restore_attrs_async, save, save_async, load, load_async, clear, clear_async, has_saved_state, has_saved_state_async, get_state_info, get_state_info_async
 
 ### `plugin/sdk/store.py`
 - `functions`: (none)
-- `PluginStore`: get, set, delete, exists, keys, clear, count, dump, close
+- `PluginStore`: get, get_async, set, set_async, delete, delete_async, exists, exists_async, keys, keys_async, clear, clear_async, count, count_async, dump, dump_async, close, close_async
 
 ### `plugin/sdk/system_info.py`
 - `functions`: (none)
