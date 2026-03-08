@@ -3397,7 +3397,11 @@ function init_app() {
             document.head.appendChild(s);
         }
 
+        let dismissed = false;
         const dismiss = () => {
+            if (dismissed) return;
+            dismissed = true;
+            btn.removeEventListener('click', dismiss);
             overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
             setTimeout(() => {
                 overlay.remove();
@@ -3408,9 +3412,16 @@ function init_app() {
     }
 
     function showProminentNotice(noticeOrMessage) {
-        const notice = (typeof noticeOrMessage === 'string')
-            ? { message: noticeOrMessage }
-            : noticeOrMessage;
+        let notice;
+        if (typeof noticeOrMessage === 'string') {
+            notice = { message: noticeOrMessage };
+        } else if (noticeOrMessage && typeof noticeOrMessage === 'object') {
+            notice = noticeOrMessage;
+        } else {
+            // null / undefined / unexpected type — wrap defensively so
+            // _renderProminentNotice never throws and blocks the queue.
+            notice = { message: String(noticeOrMessage ?? '') };
+        }
         return new Promise((resolve) => {
             _prominentNoticeQueue.push({ notice, resolve });
             _drainProminentNoticeQueue();

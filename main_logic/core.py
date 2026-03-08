@@ -828,6 +828,17 @@ class LLMSessionManager:
             legacy_keys=('voice_id',),
         )
 
+    def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
+        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。"""
+        if not legacy_names:
+            return
+        enqueue_prominent_notice({
+            "code": "notice.voiceMigration.legacyRemoved",
+            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "details": {"voices": legacy_names},
+        })
+
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()
         text = text.replace("\n", "")
@@ -884,13 +895,7 @@ class LLMSessionManager:
             cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
-            if legacy_names:
-                enqueue_prominent_notice({
-                    "code": "notice.voiceMigration.legacyRemoved",
-                    "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
-                    "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
-                    "details": {"voices": legacy_names},
-                })
+            self._enqueue_voice_migration_notice(legacy_names)
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 
@@ -1491,13 +1496,7 @@ class LLMSessionManager:
                 cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
                 if cleaned_count > 0:
                     logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
-                if legacy_names:
-                    enqueue_prominent_notice({
-                        "code": "notice.voiceMigration.legacyRemoved",
-                        "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
-                        "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
-                        "details": {"voices": legacy_names},
-                    })
+                self._enqueue_voice_migration_notice(legacy_names)
             except Exception as e:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
 
