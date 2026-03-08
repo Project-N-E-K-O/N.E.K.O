@@ -318,22 +318,48 @@ margin-top: 16px;
 display: none;
 }
 
-.status.success {
+.status.info {
+background: #d1ecf1;
+color: #0c5460;
+border: 1px solid #bee5eb;
+}
+
+#status { 
+position: fixed; 
+top: 50%; 
+left: 50%; 
+transform: translate(-50%, -50%); 
+padding: 16px 32px; 
+border-radius: 12px; 
+display: none; 
+z-index: 10001; 
+box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15); 
+font-weight: 500; 
+animation: statusFadeIn 0.3s ease; 
+white-space: nowrap; 
+} 
+
+@keyframes statusFadeIn { 
+from { 
+    opacity: 0; 
+    transform: translate(-50%, -50%) scale(0.9); 
+} 
+to { 
+    opacity: 1; 
+    transform: translate(-50%, -50%) scale(1); 
+} 
+} 
+
+#status.success {
 background: #d4edda;
 color: #155724;
 border: 1px solid #c3e6cb;
 }
 
-.status.error {
+#status.error {
 background: #f8d7da;
 color: #721c24;
 border: 1px solid #f5c6cb;
-}
-
-.status.info {
-background: #d1ecf1;
-color: #0c5460;
-border: 1px solid #bee5eb;
 }
 
 #current-api-key {

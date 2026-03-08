@@ -57,6 +57,13 @@
                     <span data-i18n="character.catgirlProfile" class="tips">猫娘档案:进阶设定包含Live2D形象、语音ID等。</span>
                 </div>
                 <div id="catgirl-list"></div>
+                <div id="hidden-catgirl-area" style="display: none;">
+                    <button type="button" class="hidden-catgirl-header" aria-controls="hidden-catgirl-list" aria-expanded="false">
+                        <span class="hidden-catgirl-arrow" aria-hidden="true">▶</span>
+                        <span id="hidden-catgirl-count" data-i18n="character.hiddenCatgirls">已隐藏猫娘</span>
+                    </button>
+                    <div id="hidden-catgirl-list"></div>
+                </div>
                 <button type="button" class="btn add sm" id="add-catgirl-btn" aria-label="新增猫娘">
                     <img src="/static/icons/add.png" alt="" class="add-icon">
                     <span data-i18n="character.addCatgirl">新增猫娘</span>

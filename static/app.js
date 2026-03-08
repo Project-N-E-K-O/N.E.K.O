@@ -5377,13 +5377,21 @@ function init_app() {
                     }
                     // 取消上一次 VRM canvas 渐入动画
                     if (window._vrmCanvasFadeInId) {
-                        clearInterval(window._vrmCanvasFadeInId);
+                        clearTimeout(window._vrmCanvasFadeInId);
                         window._vrmCanvasFadeInId = null;
+                    }
+                    if (window._vrmCanvasFadeInListener) {
+                        const prevCanvas = document.getElementById('vrm-canvas');
+                        if (prevCanvas) {
+                            prevCanvas.removeEventListener('transitionend', window._vrmCanvasFadeInListener);
+                        }
+                        window._vrmCanvasFadeInListener = null;
                     }
 
                     // 【第一步】在容器可见之前，先将 VRM canvas opacity 设为 0（防止旧帧闪烁）
                     const vrmCanvasInner = document.getElementById('vrm-canvas');
                     if (vrmCanvasInner) {
+                        vrmCanvasInner.style.transition = 'none';
                         vrmCanvasInner.style.opacity = '0';
                     }
 
@@ -5402,26 +5410,35 @@ function init_app() {
                     // 立即恢复 CSS 过渡（以便后续退出动画正常播放）
                     vrmContainer.style.transition = '';
 
-                    // 【第二步】恢复 VRM canvas 可见性并启动渐入动画
+                    // 【第二步】恢复 VRM canvas 可见性并启动 CSS transition 渐入动画
                     if (vrmCanvasInner) {
                         vrmCanvasInner.style.setProperty('visibility', 'visible', 'important');
                         vrmCanvasInner.style.setProperty('pointer-events', 'auto', 'important');
 
-                        // 使用 setInterval 渐入动画（VRM 使用 Three.js，无 model.alpha，用 CSS opacity）
-                        let vrmFadeStep = 0;
-                        const vrmFadeSteps = 30;
-                        const vrmFadeInterval = 16;
-                        window._vrmCanvasFadeInId = setInterval(() => {
-                            vrmFadeStep++;
-                            const progress = Math.min(vrmFadeStep / vrmFadeSteps, 1);
-                            const eased = 1 - Math.pow(1 - progress, 2.5);
-                            vrmCanvasInner.style.opacity = String(eased);
-                            if (vrmFadeStep >= vrmFadeSteps) {
-                                clearInterval(window._vrmCanvasFadeInId);
+                        // 强制浏览器刷新 canvas 的 opacity:0 状态（确保 transition 从 0 开始）
+                        void vrmCanvasInner.offsetWidth;
+
+                        // 使用 CSS transition 渐入（与 Live2D 一致，GPU 加速更流畅）
+                        vrmCanvasInner.style.transition = 'opacity 0.5s ease-out';
+                        vrmCanvasInner.style.opacity = '1';
+
+                        // 过渡完成后清除内联样式，避免干扰后续功能
+                        const cleanupFadeIn = () => {
+                            vrmCanvasInner.removeEventListener('transitionend', window._vrmCanvasFadeInListener);
+                            window._vrmCanvasFadeInListener = null;
+                            if (window._vrmCanvasFadeInId) {
+                                clearTimeout(window._vrmCanvasFadeInId);
                                 window._vrmCanvasFadeInId = null;
-                                vrmCanvasInner.style.opacity = '';
                             }
-                        }, vrmFadeInterval);
+                            vrmCanvasInner.style.transition = '';
+                            vrmCanvasInner.style.opacity = '';
+                        };
+                        window._vrmCanvasFadeInListener = (e) => {
+                            if (e.propertyName === 'opacity') cleanupFadeIn();
+                        };
+                        vrmCanvasInner.addEventListener('transitionend', window._vrmCanvasFadeInListener);
+                        // 安全超时兜底，防止 transitionend 不触发
+                        window._vrmCanvasFadeInId = setTimeout(cleanupFadeIn, 1000);
                     }
                     console.log('[showCurrentModel] 已设置vrmContainer可见（带canvas渐入动画）');
                 }
@@ -5992,8 +6009,10 @@ function init_app() {
         }
 
         // 恢复 VRM canvas 的可见性（如果存在）
+        // 注意：如果 return 渐入动画正在播放（_vrmCanvasFadeInId 存在），
+        // 不要用 removeProperty 扰动 canvas 的内联样式，否则可能中断 CSS transition
         const vrmCanvas = document.getElementById('vrm-canvas');
-        if (vrmCanvas) {
+        if (vrmCanvas && !window._vrmCanvasFadeInId) {
             vrmCanvas.style.removeProperty('visibility');
             vrmCanvas.style.removeProperty('pointer-events');
             vrmCanvas.style.visibility = 'visible';
