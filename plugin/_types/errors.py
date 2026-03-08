@@ -77,7 +77,6 @@ class ErrorCode(IntEnum):
     CIRCULAR_CALL = 1003
     PLUGIN_RATE_LIMITED = 1004
     
-    # 向后兼容别名（映射到新值）
     @classmethod
     def from_string(cls, name: str) -> "ErrorCode":
         """从字符串名称获取错误码
@@ -92,16 +91,6 @@ class ErrorCode(IntEnum):
             ValueError: 如果名称无效
         """
         name_upper = name.upper()
-        # 处理向后兼容别名
-        if name_upper == "EXECUTION_ERROR":
-            return cls.INTERNAL
-        if name_upper == "COMMUNICATION_ERROR":
-            return cls.DEPENDENCY_MISSING
-        if name_upper == "SERVICE_UNAVAILABLE":
-            return cls.NOT_READY
-        if name_upper == "INVALID_PARAMS":
-            return cls.VALIDATION_ERROR
-        
         try:
             return cls[name_upper]
         except KeyError as err:

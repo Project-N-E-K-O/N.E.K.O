@@ -8,11 +8,10 @@
 """
 import asyncio
 import os
-from typing import Any, Callable, TypeVar, Optional
+from typing import Callable, TypeVar, cast
 from functools import wraps
 
 from fastapi import HTTPException
-from loguru import logger
 from plugin._types.exceptions import (
     PluginError,
     PluginNotFoundError,
@@ -21,6 +20,9 @@ from plugin._types.exceptions import (
     PluginExecutionError,
     PluginCommunicationError,
 )
+from plugin.logging_config import get_logger
+
+logger = get_logger("server.infrastructure.error_handler")
 
 # 是否在开发模式（开发模式下可以返回更详细的错误信息）
 DEBUG_MODE = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
@@ -40,6 +42,22 @@ EXPECTED_EXCEPTIONS = (
 )
 
 T = TypeVar('T')
+UNEXPECTED_RUNTIME_EXCEPTIONS = (
+    RuntimeError,
+    OSError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    TimeoutError,
+    ImportError,
+    ModuleNotFoundError,
+    LookupError,
+    AssertionError,
+    NameError,
+    ArithmeticError,
+    UnicodeError,
+)
 
 
 def safe_error_message(error: Exception, context: str = "") -> str:
@@ -147,7 +165,7 @@ def error_handler(
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> T:
+        async def async_wrapper(*args: object, **kwargs: object) -> T:
             try:
                 return await func(*args, **kwargs)
             except HTTPException:
@@ -156,26 +174,44 @@ def error_handler(
             except EXPECTED_EXCEPTIONS as e:
                 # 预期的异常，转换为 HTTPException
                 raise handle_plugin_error(e, context, default_status_code, log_level) from e
-            except Exception as e:
+            except UNEXPECTED_RUNTIME_EXCEPTIONS as e:
                 # 未预期的异常
                 logger.exception(f"{context}: Unexpected error type: {type(e).__name__}")
                 if reraise_unexpected:
                     raise
                 raise handle_plugin_error(e, context, default_status_code, log_level) from e
+            except BaseException as e:
+                if isinstance(e, (SystemExit, KeyboardInterrupt, GeneratorExit)):
+                    raise
+                if not isinstance(e, Exception):
+                    raise
+                logger.exception(f"{context}: Unexpected base exception type: {type(e).__name__}")
+                if reraise_unexpected:
+                    raise
+                raise handle_plugin_error(cast(Exception, e), context, default_status_code, log_level) from e
         
         @wraps(func)
-        def sync_wrapper(*args: Any, **kwargs: Any) -> T:
+        def sync_wrapper(*args: object, **kwargs: object) -> T:
             try:
                 return func(*args, **kwargs)
             except HTTPException:
                 raise
             except EXPECTED_EXCEPTIONS as e:
                 raise handle_plugin_error(e, context, default_status_code, log_level) from e
-            except Exception as e:
+            except UNEXPECTED_RUNTIME_EXCEPTIONS as e:
                 logger.exception(f"{context}: Unexpected error type: {type(e).__name__}")
                 if reraise_unexpected:
                     raise
                 raise handle_plugin_error(e, context, default_status_code, log_level) from e
+            except BaseException as e:
+                if isinstance(e, (SystemExit, KeyboardInterrupt, GeneratorExit)):
+                    raise
+                if not isinstance(e, Exception):
+                    raise
+                logger.exception(f"{context}: Unexpected base exception type: {type(e).__name__}")
+                if reraise_unexpected:
+                    raise
+                raise handle_plugin_error(cast(Exception, e), context, default_status_code, log_level) from e
         
         # 根据函数是否为协程函数选择包装器
         if asyncio.iscoroutinefunction(func):
@@ -189,9 +225,9 @@ def error_handler(
 def safe_execute(
     func: Callable[..., T],
     context: str,
-    default_return: Optional[T] = None,
+    default_return: T | None = None,
     log_level: str = "warning"
-) -> Optional[T]:
+) -> T | None:
     """
     安全执行函数，捕获异常并返回默认值（用于非关键操作）
     
@@ -210,7 +246,13 @@ def safe_execute(
         log_func = getattr(logger, log_level, logger.warning)
         log_func(f"{context}: {e}", exc_info=True)
         return default_return
-    except Exception as e:
+    except UNEXPECTED_RUNTIME_EXCEPTIONS as e:
         logger.exception(f"{context}: Unexpected error type: {type(e).__name__}")
         return default_return
-
+    except BaseException as e:
+        if isinstance(e, (SystemExit, KeyboardInterrupt, GeneratorExit)):
+            raise
+        if not isinstance(e, Exception):
+            raise
+        logger.exception(f"{context}: Unexpected base exception type: {type(e).__name__}")
+        return default_return

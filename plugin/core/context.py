@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import asyncio
 import base64
+import copy
 import time
 try:
     import tomllib
@@ -17,12 +18,9 @@ import threading
 import functools
 import itertools
 
-# 模块级初始化锁，用于 _push_lock 的双检初始化
-_PUSH_LOCK_INIT = threading.Lock()
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 try:
@@ -46,6 +44,9 @@ from plugin.settings import (
     SYNC_CALL_IN_HANDLER_POLICY,
 )
 
+# 模块级初始化锁，用于 _push_lock 的双检初始化
+_PUSH_LOCK_INIT = threading.Lock()
+
 if TYPE_CHECKING:
     from plugin.sdk.bus.types import BusHubProtocol
     from plugin.sdk.bus.events import EventClient
@@ -59,8 +60,6 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
-
-_IN_WORKER: contextvars.ContextVar[bool] = contextvars.ContextVar("plugin_in_worker", default=False)
 
 
 class _BusHub:
@@ -120,6 +119,8 @@ class PluginContext:
     _push_lock: Optional[Any] = None
     _push_batcher: Optional[Any] = None
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
+    _effective_config: Optional[Dict[str, Any]] = None
+    _current_lanlan: Optional[str] = None
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -217,25 +218,6 @@ class PluginContext:
         except Exception:
             pass
 
-    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
-        """[DEPRECATED] Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."""
-        try:
-            self.logger.warning(
-                "PluginContext.get_user_context() is deprecated; "
-                "use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."
-            )
-        except Exception:
-            pass
-        from plugin.sdk.bus.memory import MemoryClient as BusMemoryClient
-        bus_client = BusMemoryClient(self)
-        if self._is_in_event_loop():
-            raise RuntimeError(
-                "get_user_context() cannot be called from within an event loop; "
-                "use await ctx.bus.memory.get_async(...) instead."
-            )
-        result = bus_client.get_sync(bucket_id=bucket_id, limit=limit, timeout=timeout)
-        return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
-
     def _get_sync_call_in_handler_policy(self) -> str:
         """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
 
@@ -267,14 +249,18 @@ class PluginContext:
         handler_ctx = _IN_HANDLER.get()
         if handler_ctx is None:
             return
-        # @worker threads run in a separate thread pool — sync IPC calls
-        # are safe there (they don't block the command loop).
-        if _IN_WORKER.get():
+        # If no event loop is running on the current thread, we are in a
+        # thread-pool thread (e.g. asyncio.to_thread).  Sync IPC calls are
+        # safe there — they only block that worker thread, not the loop.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
             return
         policy = self._get_sync_call_in_handler_policy()
         msg = (
             f"Sync call '{method_name}' invoked inside handler ({handler_ctx}). "
-            "This may block the command loop and cause deadlocks/timeouts."
+            "This may block the event loop and cause deadlocks/timeouts. "
+            "Use the async variant or wrap in asyncio.to_thread()."
         )
         if policy == "reject":
             raise RuntimeError(msg)
@@ -311,7 +297,7 @@ class PluginContext:
         """检测当前是否在事件循环中运行。
         
         Returns:
-            True 如果当前在事件循环中，False 如果在 worker 线程或无事件循环环境
+            True 如果当前在事件循环中，False 如果在无事件循环环境
         """
         try:
             asyncio.get_running_loop()
@@ -326,10 +312,9 @@ class PluginContext:
         strict: it refuses to run when an event loop is already running.
 
         NOTE: ``asyncio.run()`` creates a **new** Context, which does NOT inherit
-        the calling thread's contextvars.  To preserve values like
-        ``_CURRENT_RUN_ID`` that were propagated into a @worker thread, we
-        capture a snapshot of the current context and re-apply it inside the
-        new event loop via a thin wrapper coroutine.
+        the calling thread's contextvars.  We capture a snapshot of the current
+        context and re-apply it inside the new event loop via a thin wrapper
+        coroutine.
         """
 
         self._enforce_sync_call_policy(operation)
@@ -480,7 +465,7 @@ class PluginContext:
             description=description, label=label, metadata=metadata, timeout=timeout,
         )
 
-    # ==================== Backward-compatible thin wrappers ====================
+    # ==================== Convenience export wrappers ====================
 
     async def _export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_async(export_type="text", run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
@@ -727,10 +712,11 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         unsafe: bool = False,
         fast_mode: bool = False,
+        target_lanlan: Optional[str] = None,
     ) -> None:
         """
         子进程 / 插件内部调用：推送消息到主进程的消息队列。
-        
+
         Args:
             source: 插件自己标明的来源
             message_type: 消息类型，可选值: "text", "url", "binary", "binary_url"
@@ -741,7 +727,11 @@ class PluginContext:
             binary_url: 二进制文件的URL（当message_type为binary_url时）
             metadata: 额外的元数据
             unsafe: 为 True 时，允许主进程跳过严格 schema 校验（用于高性能场景，默认 False）
+            target_lanlan: 目标角色名，用于将消息路由到指定 session（可选）
         """
+        if target_lanlan:
+            metadata = dict(metadata or {})
+            metadata["target_lanlan"] = target_lanlan
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:
@@ -1017,9 +1007,10 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         unsafe: bool = False,
         fast_mode: bool = False,
+        target_lanlan: Optional[str] = None,
     ) -> None:
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
-        
+
         Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
         """
         await asyncio.to_thread(
@@ -1034,6 +1025,7 @@ class PluginContext:
             metadata=metadata,
             unsafe=unsafe,
             fast_mode=fast_mode,
+            target_lanlan=target_lanlan,
         )
 
     def _send_request_and_wait(
@@ -1168,17 +1160,24 @@ class PluginContext:
             return result
 
         if response_queue is not None:
-            loop = asyncio.get_running_loop()
             while time.time() < deadline:
+                response = state.get_plugin_response(request_id)
+                if isinstance(response, dict):
+                    if response.get("error"):
+                        raise RuntimeError(_error_to_message(response.get("error")))
+                    result = response.get("result")
+                    if wrap_result:
+                        return result if isinstance(result, dict) else {"result": result}
+                    return result
+
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     break
                 try:
-                    msg = await loop.run_in_executor(
-                        None,
-                        lambda r=remaining: response_queue.get(timeout=min(0.05, r)),
+                    msg = await asyncio.wait_for(
+                        response_queue.get(), timeout=min(0.05, remaining),
                     )
-                except Empty:
+                except asyncio.TimeoutError:
                     continue
                 except Exception:
                     break
@@ -1392,7 +1391,78 @@ class PluginContext:
             return self.query_plugins_async(filters=filters, timeout=timeout)
         return self.query_plugins_sync(filters=filters, timeout=timeout)
 
+    async def _get_local_config_payload(
+        self,
+        *,
+        payload_type: str,
+        profile_name: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from plugin.server.application.config import ConfigQueryService
+
+            service = ConfigQueryService()
+            if payload_type == "config":
+                cached = getattr(self, "_effective_config", None)
+                if isinstance(cached, dict):
+                    return {
+                        "plugin_id": self.plugin_id,
+                        "config": copy.deepcopy(cached),
+                        "config_path": str(self.config_path),
+                    }
+                payload = await asyncio.wait_for(
+                    service.get_plugin_config(plugin_id=self.plugin_id),
+                    timeout=timeout,
+                )
+                config_obj = payload.get("config")
+                if isinstance(config_obj, dict):
+                    self._effective_config = copy.deepcopy(config_obj)
+                return payload
+            if payload_type == "base":
+                return await asyncio.wait_for(
+                    service.get_plugin_base_config(plugin_id=self.plugin_id),
+                    timeout=timeout,
+                )
+            if payload_type == "profiles":
+                return await asyncio.wait_for(
+                    service.get_plugin_profiles_state(plugin_id=self.plugin_id),
+                    timeout=timeout,
+                )
+            if payload_type == "profile":
+                if not isinstance(profile_name, str) or not profile_name.strip():
+                    return None
+                return await asyncio.wait_for(
+                    service.get_plugin_profile_config(
+                        plugin_id=self.plugin_id,
+                        profile_name=profile_name.strip(),
+                    ),
+                    timeout=timeout,
+                )
+            if payload_type == "effective":
+                return await asyncio.wait_for(
+                    service.get_plugin_effective_config(
+                        plugin_id=self.plugin_id,
+                        profile_name=profile_name.strip() if isinstance(profile_name, str) and profile_name.strip() else None,
+                    ),
+                    timeout=timeout,
+                )
+        except Exception as exc:
+            try:
+                self.logger.debug(
+                    "[PluginContext] local config read fallback failed: plugin_id={}, payload_type={}, err_type={}, err={}",
+                    self.plugin_id,
+                    payload_type,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            except Exception:
+                pass
+        return None
+
     async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="config", timeout=timeout)
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_config",
@@ -1406,6 +1476,9 @@ class PluginContext:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
     async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="base", timeout=timeout)
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_base_config",
@@ -1419,6 +1492,9 @@ class PluginContext:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
 
     async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
+        local_payload = await self._get_local_config_payload(payload_type="profiles", timeout=timeout)
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_profiles_state",
@@ -1434,6 +1510,13 @@ class PluginContext:
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
+        local_payload = await self._get_local_config_payload(
+            payload_type="profile",
+            profile_name=profile_name,
+            timeout=timeout,
+        )
+        if isinstance(local_payload, dict):
+            return local_payload
         try:
             return await self._send_request_and_wait_async(
                 method_name="get_own_profile_config",
@@ -1465,6 +1548,17 @@ class PluginContext:
         }
         if isinstance(profile_name, str) and profile_name.strip():
             request_data["profile_name"] = profile_name.strip()
+
+        local_payload = await self._get_local_config_payload(
+            payload_type="effective",
+            profile_name=profile_name,
+            timeout=timeout,
+        )
+        if isinstance(local_payload, dict):
+            effective_obj = local_payload.get("config")
+            if isinstance(effective_obj, dict) and profile_name is None:
+                self._effective_config = copy.deepcopy(effective_obj)
+            return local_payload
 
         try:
             return await self._send_request_and_wait_async(
@@ -1552,4 +1646,3 @@ class PluginContext:
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
-

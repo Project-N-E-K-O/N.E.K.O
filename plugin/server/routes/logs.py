@@ -1,18 +1,22 @@
 """
 日志路由
 """
+from __future__ import annotations
+
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket
-from loguru import logger
+from fastapi import APIRouter, Query, WebSocket
 
-from plugin._types.exceptions import PluginError
-from plugin.server.infrastructure.error_handler import handle_plugin_error
-from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint
-from plugin.server.infrastructure.utils import now_iso
-from plugin.server.infrastructure.auth import require_admin, get_admin_code
+from plugin.logging_config import get_logger
+from plugin.server.application.logs import LogQueryService
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.auth import require_admin
+from plugin.server.logs import log_stream_endpoint
+from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
 router = APIRouter()
+logger = get_logger("server.routes.logs")
+log_query_service = LogQueryService()
 
 
 @router.get("/plugin/{plugin_id}/logs")
@@ -23,66 +27,29 @@ async def get_plugin_logs_endpoint(
     start_time: Optional[str] = Query(default=None),
     end_time: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None, description="关键词搜索"),
-    _: str = require_admin
-):
+    _: str = require_admin,
+) -> dict[str, object]:
     try:
-        result = get_plugin_logs(
+        return log_query_service.get_plugin_logs(
             plugin_id=plugin_id,
             lines=lines,
             level=level,
             start_time=start_time,
             end_time=end_time,
-            search=search
+            search=search,
         )
-        if "error" in result:
-            logger.warning(f"Error getting logs for {plugin_id}: {result.get('error')}")
-        return result
-    except (PluginError, ValueError, AttributeError, OSError) as e:
-        logger.warning(f"Failed to get logs for plugin {plugin_id}: {e}")
-        return {
-            "plugin_id": plugin_id,
-            "logs": [],
-            "total_lines": 0,
-            "returned_lines": 0,
-            "error": "Failed to retrieve logs"
-        }
-    except Exception:
-        logger.exception(f"Failed to get logs for plugin {plugin_id}: Unexpected error type")
-        return {
-            "plugin_id": plugin_id,
-            "logs": [],
-            "total_lines": 0,
-            "returned_lines": 0,
-            "error": "Failed to retrieve logs"
-        }
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.get("/plugin/{plugin_id}/logs/files")
-async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin):
+async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        files = get_plugin_log_files(plugin_id)
-        return {
-            "plugin_id": plugin_id,
-            "log_files": files,
-            "count": len(files),
-            "time": now_iso()
-        }
-    except HTTPException:
-        raise
-    except (PluginError, ValueError, AttributeError, OSError) as e:
-        raise handle_plugin_error(e, f"Failed to get log files for plugin {plugin_id}", 500) from e
-    except Exception as e:
-        logger.exception(f"Failed to get log files for plugin {plugin_id}: Unexpected error type")
-        raise handle_plugin_error(e, f"Failed to get log files for plugin {plugin_id}", 500) from e
+        return log_query_service.get_plugin_log_files(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.websocket("/ws/logs/{plugin_id}")
-async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
-    code = websocket.query_params.get("code", "").upper()
-    admin_code = get_admin_code()
-    
-    if not admin_code or code != admin_code:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
-    
+async def websocket_log_stream(websocket: WebSocket, plugin_id: str) -> None:
     await log_stream_endpoint(websocket, plugin_id)
