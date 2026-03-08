@@ -24,7 +24,8 @@ debug_audio/*
 memory/store/*
 !memory/store/.gitkeep
 
-# 忽略 utils 缓存目录（如 cache.db 等）
+# 忽略缓存目录（根目录及 utils 下）
+cache/
 utils/cache/
 config/api.py
 config/*.json
