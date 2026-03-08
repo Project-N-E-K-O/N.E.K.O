@@ -112,7 +112,7 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
 async def _fire_user_plugin_capability_check() -> None:
     """Probe the user plugin server to determine if user_plugin capability is ready."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0), proxy=None) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0), proxy=None, trust_env=False) as client:
             r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if r.status_code == 200:
                 data = r.json()
@@ -1125,7 +1125,7 @@ async def startup():
             if force_refresh:
                 url += "?refresh=true"
             try:
-                async with httpx.AsyncClient(timeout=1.0, proxy=None) as client:
+                async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                     r = await client.get(url)
                     if r.status_code == 200:
                         try:
@@ -1618,7 +1618,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin
             try:
-                async with httpx.AsyncClient(timeout=1.0, proxy=None) as client:
+                async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
                     r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                     if r.status_code != 200:
                         _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")

@@ -227,8 +227,14 @@ class OmniRealtimeClient:
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
         
-        # 静音重置事件异步队列
+        # 静音重置事件异步队列（RNNoise 4秒静音回调用）
         self._silence_reset_pending = False
+        # 按“上次语音时间”做静音清 buffer：无 RNNoise 时也生效，与 RESET_TIMEOUT 一致
+        self._silence_buffer_clear_seconds = 4.0
+        self._last_silence_clear_speech_time = 0.0
+        # 叠加本地音量：必须连续 2 秒本地静音才允许 clear，避免 VAD 延迟导致误清
+        self._local_quiet_seconds = 2.0
+        self._last_local_loud_time = 0.0
         
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
@@ -358,6 +364,46 @@ class OmniRealtimeClient:
         """当音频处理器检测到4秒静音并重置缓存时调用。标记待发送clear事件。"""
         self._silence_reset_pending = True
     
+    def _should_clear_audio_buffer_on_silence(
+        self, current_time: float, use_rnnoise_path: bool
+    ) -> bool:
+        """是否应在静音时清空 input_audio_buffer。
+        
+        有 RNNoise 且当前走 RNNoise 路径：以 RNNoise 为准（内部 4 秒静音回调置 _silence_reset_pending）。
+        无 RNNoise（或未走 RNNoise 路径）：以 VAD + 连续本地静音为准。
+        
+        连续静音判定标准：
+        - 时长：最近 _local_quiet_seconds 秒（默认 2 秒）内无“大音量”；
+        - 大音量：原始 PCM 的 RMS > _client_vad_threshold（默认 500，int16 范围）。
+        即：每帧用原始输入算 RMS，超过阈值则更新 _last_local_loud_time；只有
+        (current_time - _last_local_loud_time) >= _local_quiet_seconds 才认为连续静音。
+        
+        返回 True 时，若来自 RNNoise 则调用方需置 _silence_reset_pending=False；
+        若来自 VAD+静音则本函数已更新 _last_silence_clear_speech_time。
+        """
+        if use_rnnoise_path:
+            # RNNoise 路径：仅以 RNNoise 的 4 秒静音回调为准；
+            # 若尚未收到回调（_silence_reset_pending=False），直接返回 False，
+            # 不得降级到 VAD 时间戳逻辑，否则会误触提前清空。
+            return self._silence_reset_pending
+        # 无 RNNoise 路径：VAD 静音 ≥ _silence_buffer_clear_seconds 且 连续本地静音 ≥ _local_quiet_seconds
+        if self._has_server_vad:
+            last_speech = self._last_speech_time
+        else:
+            last_speech = self._client_vad_last_speech_time if self._client_vad_last_speech_time > 0 else None
+        if last_speech is None:
+            return False
+        local_quiet_elapsed = current_time - self._last_local_loud_time
+        if local_quiet_elapsed < self._local_quiet_seconds:
+            return False
+        silence_elapsed = current_time - last_speech
+        if silence_elapsed < self._silence_buffer_clear_seconds:
+            return False
+        if last_speech <= self._last_silence_clear_speech_time:
+            return False
+        self._last_silence_clear_speech_time = last_speech
+        return True
+    
     async def clear_audio_buffer(self):
         """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
         clear_event = {
@@ -376,6 +422,10 @@ class OmniRealtimeClient:
 
         # 确保开始新连接时状态完全重置
         self._silence_reset_pending = False
+        self._last_silence_clear_speech_time = 0.0
+        self._last_local_loud_time = 0.0
+        self._client_vad_active = False
+        self._client_vad_last_speech_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
 
@@ -632,6 +682,14 @@ class OmniRealtimeClient:
         if self._fatal_error_occurred:
             return
         
+        current_time = time.time()
+        # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
+        raw_samples = np.frombuffer(audio_chunk, dtype=np.int16)
+        if len(raw_samples) > 0:
+            local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
+            if local_rms > self._client_vad_threshold:
+                self._last_local_loud_time = current_time
+        
         # Detect input sample rate based on chunk size
         # 48kHz: 480 samples (10ms) = 960 bytes
         # 16kHz: 512 samples (~32ms) = 1024 bytes
@@ -639,23 +697,18 @@ class OmniRealtimeClient:
         is_48khz = (num_samples == 480)  # RNNoise frame size
         
         
+        use_rnnoise_path = is_48khz and self._audio_processor is not None
         # Apply RNNoise noise reduction only for 48kHz input (PC)
-        if is_48khz and self._audio_processor is not None:
+        if use_rnnoise_path:
             # Use async wrapper to avoid blocking main loop
             audio_chunk = await self.process_audio_chunk_async(audio_chunk)
             
             # Skip if RNNoise is buffering (returns empty)
             if len(audio_chunk) == 0:
                 return
-            
-            # 检查是否有待发送的静音重置事件（4秒静音触发）
-            if self._silence_reset_pending:
-                self._silence_reset_pending = False
-                await self.clear_audio_buffer()
         
         # Unified VAD update (priority: server VAD > RNNoise > RMS)
         # Grace period check: always runs regardless of VAD source
-        current_time = time.time()
         if self._client_vad_active and current_time - self._client_vad_last_speech_time > self._client_vad_grace_period:
             self._client_vad_active = False
         
@@ -674,6 +727,12 @@ class OmniRealtimeClient:
                     if rms > self._client_vad_threshold:
                         self._client_vad_last_speech_time = current_time
                         self._client_vad_active = True
+        
+        # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
+        if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
+            if use_rnnoise_path:
+                self._silence_reset_pending = False
+            await self.clear_audio_buffer()
         
         # Gemini uses different API
         if self._is_gemini:
@@ -1167,6 +1226,10 @@ class OmniRealtimeClient:
         self._silence_timeout_triggered = False
         self._last_speech_time = None
         self._silence_reset_pending = False
+        self._last_silence_clear_speech_time = 0.0
+        self._last_local_loud_time = 0.0
+        self._client_vad_active = False
+        self._client_vad_last_speech_time = 0.0
 
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
@@ -1212,6 +1275,10 @@ class OmniRealtimeClient:
                 self._silence_timeout_triggered = False
                 self._last_speech_time = None
                 self._silence_reset_pending = False
+                self._last_silence_clear_speech_time = 0.0
+                self._last_local_loud_time = 0.0
+                self._client_vad_active = False
+                self._client_vad_last_speech_time = 0.0
 
                 # 重置音频处理器状态
                 if self._audio_processor is not None:

@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "브라우저 제어가 활성화되었습니다. Agent LLM 연결 확인 중...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 모듈이 로드되지 않아 자동 비활성화되었습니다",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}"
+        "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL이 설정되지 않았습니다. API 설정에서 커스텀 TTS를 활성화하고 설정하세요.",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL은 localhost여야 합니다",
+        "TTS_AUDIO_API_KEY_MISSING": "오디오 API 키(AUDIO_API_KEY)가 설정되지 않았습니다",
+        "TTS_VOICE_NOT_REGISTERED": "이 캐릭터에 등록된 음성이 없습니다",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "필수 매개변수가 누락되었습니다",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL을 입력하세요",
+        "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
@@ -1147,6 +1154,9 @@
         "addCatgirl": "NEKO 추가",
         "switchCatgirl": "NEKO 전환",
         "deleteCatgirl": "NEKO 삭제",
+        "hideCatgirl": "이 NEKO 숨기기",
+        "hiddenCatgirls": "숨겨진 NEKO",
+        "show": "숨김 해제",
         "advancedSettings": "고급 설정",
         "modelSettings": "모델 설정",
         "modelNotSet": "설정되지 않음",
@@ -2254,6 +2264,11 @@
         "status": {
             "active": "● 준비 완료",
             "inactive": "○ 구성되지 않음"
+        }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
         }
     }
 }
