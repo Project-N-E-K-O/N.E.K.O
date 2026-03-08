@@ -53,6 +53,7 @@ from plugin.sdk_v2.shared.models.version import SDK_VERSION
 from plugin.sdk_v2.shared.logging import (
     LogLevel,
     LoggerLike,
+    build_component_name,
     configure_sdk_default_logger,
     format_log_text,
     get_plugin_logger,
@@ -104,6 +105,7 @@ StatePersistence = PluginStatePersistence
 __all__ = [
     "SDK_VERSION",
     "LogLevel",
+    "build_component_name",
     "LoggerLike",
     "get_sdk_logger",
     "get_plugin_logger",

@@ -161,3 +161,25 @@ def test_enable_file_logging_sets_file_logger_attribute() -> None:
     base = _DemoPlugin(ctx=_Ctx())
     logger = base.enable_file_logging(log_level="DEBUG")
     assert logger is getattr(base, "file_logger")
+
+
+def test_logger_helpers_are_wired() -> None:
+    base = _DemoPlugin(ctx=_Ctx())
+    assert base.logger is not None
+    assert base.sdk_logger is base.logger
+    assert base.logger_component() == "plugin.demo"
+    assert base.logger_component("worker") == "plugin.demo.worker"
+
+    child = base.get_logger("worker")
+    assert child is not None
+
+    configured = base.setup_logger(level="INFO", suffix="worker")
+    assert configured is not None
+
+
+def test_enable_file_logging_keeps_default_logger_synced() -> None:
+    base = _DemoPlugin(ctx=_Ctx())
+    logger = base.enable_file_logging(log_level="DEBUG")
+    assert logger is getattr(base, "file_logger")
+    assert logger is base.logger
+    assert logger is base.sdk_logger

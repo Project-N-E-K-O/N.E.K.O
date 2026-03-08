@@ -8,17 +8,9 @@ from typing import Protocol, runtime_checkable
 
 from loguru import logger as _loguru_logger
 
-from plugin.logging_config import (
-    FORMAT_FILE,
-    LOG_COMPRESSION,
-    LOG_DIR,
-    LOG_MAX_SIZE,
-    LOG_RETENTION,
-    LogLevel,
-    get_logger,
-    setup_logging,
-)
+from plugin.logging_config import FORMAT_FILE, LOG_COMPRESSION, LOG_DIR, LOG_MAX_SIZE, LOG_RETENTION
 from plugin.sdk_v2.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
+from plugin.sdk_v2.shared.logging import LogLevel, LoggerLike, get_plugin_logger, setup_sdk_logging
 from .types import EntryHandler, InputSchema, PluginContextProtocol, RouterProtocol
 
 
@@ -60,6 +52,8 @@ class NekoPluginBase:
         self.store = None
         self.db = None
         self._routers: list[RouterProtocol] = []
+        self.logger: LoggerLike = getattr(ctx, "logger", None) or self.get_logger()
+        self.sdk_logger: LoggerLike = self.logger
 
     def get_input_schema(self) -> InputSchema:
         schema = getattr(self, "input_schema", None)
@@ -83,6 +77,42 @@ class NekoPluginBase:
             self._routers.remove(router)
             return True
         return False
+
+    def logger_component(self, suffix: str | None = None) -> str:
+        plugin_id = str(getattr(self.ctx, "plugin_id", "plugin"))
+        from plugin.sdk_v2.shared.logging import build_component_name
+
+        return build_component_name("plugin", plugin_id, suffix)
+
+    def get_logger(self, suffix: str | None = None) -> LoggerLike:
+        plugin_id = str(getattr(self.ctx, "plugin_id", "plugin"))
+        return get_plugin_logger(plugin_id, suffix=suffix)
+
+    def setup_logger(
+        self,
+        *,
+        level: str | LogLevel | None = None,
+        force: bool = False,
+        suffix: str | None = None,
+    ) -> LoggerLike:
+        parsed_level: LogLevel | None
+        if level is None:
+            parsed_level = None
+        elif isinstance(level, LogLevel):
+            parsed_level = level
+        else:
+            try:
+                parsed_level = LogLevel(level.strip().upper())
+            except ValueError as error:
+                raise ValueError(f"invalid log level: {level!r}") from error
+
+        component = self.logger_component(suffix)
+        setup_sdk_logging(component=component, level=parsed_level, force=force)
+        logger = self.get_logger(suffix)
+        if suffix in (None, ""):
+            self.logger = logger
+            self.sdk_logger = logger
+        return logger
 
     def collect_entries(self) -> dict[str, EntryHandler]:
         entries: dict[str, EntryHandler] = {}
@@ -121,9 +151,8 @@ class NekoPluginBase:
         if backup_count is not None and backup_count <= 0:
             raise ValueError("backup_count must be > 0")
 
-        plugin_id = str(getattr(self.ctx, "plugin_id", "plugin"))
-        component = f"plugin.{plugin_id}"
-        setup_logging(component=component, level=parsed_level)
+        component = self.logger_component()
+        setup_sdk_logging(component=component, level=parsed_level)
 
         if log_dir is not None or max_bytes is not None or backup_count is not None:
             target_dir = Path(log_dir) if log_dir is not None else LOG_DIR
@@ -146,7 +175,9 @@ class NekoPluginBase:
             )
             setattr(self, "_file_sink_id", sink_id)
 
-        logger = get_logger(component)
+        logger = self.get_logger()
+        self.logger = logger
+        self.sdk_logger = logger
         setattr(self, "file_logger", logger)
         return logger
 

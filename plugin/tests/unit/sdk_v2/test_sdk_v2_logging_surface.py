@@ -11,6 +11,8 @@ def test_shared_logging_exports() -> None:
     assert shared_logging.PLUGIN_COMPONENT_ROOT == "plugin"
     assert shared_logging.EXTENSION_COMPONENT_ROOT == "extension"
     assert shared_logging.ADAPTER_COMPONENT_ROOT == "adapter"
+    assert shared_logging.build_component_name("plugin", "demo") == "plugin.demo"
+    assert shared_logging.build_component_name("plugin", "demo", "worker") == "plugin.demo.worker"
     for name in shared_logging.__all__:
         assert hasattr(shared_logging, name)
 
@@ -22,6 +24,7 @@ def test_runtime_logging_exports_are_aligned() -> None:
         (adapter_runtime, "get_adapter_logger"),
     ):
         assert runtime_mod.LogLevel is shared_logging.LogLevel
+        assert runtime_mod.build_component_name is shared_logging.build_component_name
         assert runtime_mod.LoggerLike is shared_logging.LoggerLike
         assert runtime_mod.get_sdk_logger is shared_logging.get_sdk_logger
         assert runtime_mod.setup_sdk_logging is shared_logging.setup_sdk_logging
