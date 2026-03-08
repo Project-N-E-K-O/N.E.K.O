@@ -82,26 +82,22 @@ function loadAPlayerLibrary() {
             return;
         }
 
-        if (!existingScript) {
-            const script = document.createElement('script');
-            script.src = '/static/libs/APlayer.min.js';
-            script.onload = () => {
-                console.log('[APlayer] Library loaded successfully (local)');
-                resolve();
-            };
-            script.onerror = (e) => {
-                console.error('[APlayer] Failed to load library');
-                aplayerLoadPromise = null;
-                reject(e);
-            };
-            document.head.appendChild(script);
-        } else {
-            existingScript.addEventListener('load', () => resolve());
-            existingScript.addEventListener('error', (e) => {
-                aplayerLoadPromise = null;
-                reject(e);
-            });
+        if (existingScript) {
+            existingScript.remove();
         }
+
+        const script = document.createElement('script');
+        script.src = '/static/libs/APlayer.min.js';
+        script.onload = () => {
+            console.log('[APlayer] Library loaded successfully (local)');
+            resolve();
+        };
+        script.onerror = (e) => {
+            console.error('[APlayer] Failed to load library');
+            aplayerLoadPromise = null;
+            reject(e);
+        };
+        document.head.appendChild(script);
     });
 
     return aplayerLoadPromise;
@@ -173,8 +169,9 @@ export async function initializeAPlayer(options = {}, onReady = null) {
             : playerContainer;
     }
 
+    let ap = null;
     try {
-        const ap = new APlayer({
+        ap = new APlayer({
             container: mountPoint,
             ...config.player,
             audio: config.defaultPlaylist
@@ -196,10 +193,12 @@ export async function initializeAPlayer(options = {}, onReady = null) {
         return ap;
     } catch (e) {
         console.error('[APlayer] Failed to create instance:', e);
-        if (window.aplayer === ap) {
-            window.aplayer = null;
+        if (ap) {
+            if (window.aplayer === ap) {
+                window.aplayer = null;
+            }
+            try { ap.destroy(); } catch (_) { /* best-effort cleanup */ }
         }
-        try { ap.destroy(); } catch (_) { /* best-effort cleanup */ }
         return null;
     }
 }

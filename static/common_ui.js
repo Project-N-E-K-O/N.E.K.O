@@ -1496,8 +1496,10 @@ window.sendMusicMessage = function(trackInfo) {
                         }
                         
                         if (currentToken !== latestMusicRequestToken) {
-                            console.log('[Common UI] APlayer 初始化后发现请求过期，销毁死实例');
-                            if (typeof aplayerInstance.destroy === 'function') {
+                            console.log('[Common UI] APlayer 初始化后发现请求过期，销毁实例');
+                            if (typeof window.destroyAPlayer === 'function' && window.aplayer === aplayerInstance) {
+                                window.destroyAPlayer();
+                            } else if (typeof aplayerInstance.destroy === 'function') {
                                 aplayerInstance.destroy();
                             }
                             return;
