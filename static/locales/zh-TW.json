@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "瀏覽器控制已開啟，Agent LLM 連接確認中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模組未載入，已自動關閉",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "TTS服務連接失敗: {{msg}}"
+        "TTS_CONNECTION_FAILED": "TTS服務連接失敗: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，請先在 API 設置中啟用並配置自訂 TTS",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必須為 localhost",
+        "TTS_AUDIO_API_KEY_MISSING": "未配置音訊 API 金鑰 (AUDIO_API_KEY)",
+        "TTS_VOICE_NOT_REGISTERED": "該角色未註冊聲音",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要參數",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "請填寫 GPT-SoVITS API URL",
+        "TTS_GPT_SOVITS_URL_INVALID": "無效的 GPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "請檢查 iOS 設定 → Safari → 攝影機 權限是否為「允許」",
@@ -1147,6 +1154,9 @@
         "addCatgirl": "新增貓娘",
         "switchCatgirl": "切換貓娘",
         "deleteCatgirl": "刪除貓娘",
+        "hideCatgirl": "隱藏此貓娘",
+        "hiddenCatgirls": "已隱藏貓娘",
+        "show": "顯示",
         "advancedSettings": "進階設定",
         "modelSettings": "模型設定",
         "modelNotSet": "未設置",
@@ -2275,5 +2285,9 @@
         "searchFailed": "音樂搜尋失敗",
         "playError": "播放出錯",
         "ended": "已結束"
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"
+        }
     }
 }

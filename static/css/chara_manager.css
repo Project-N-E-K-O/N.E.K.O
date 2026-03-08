@@ -30,8 +30,8 @@ body {
 }
 
 /* 标题栏 */
-.container-header {
-    background: #40C5F1;
+body .container-header {
+    background: linear-gradient(to right, #4BD4FD, #17A7FF);
     padding: 18px 24px;
     display: flex;
     justify-content: space-between;
@@ -206,6 +206,83 @@ body {
     margin-top: 12px;
 }
 
+#hidden-catgirl-area {
+    margin-top: 12px;
+    padding: 12px;
+    border: 2px dashed #b3e5fc;
+    border-radius: 16px;
+    background: rgba(179, 229, 252, 0.2);
+}
+
+.hidden-catgirl-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    color: #40C5F1;
+    font-weight: 600;
+    font-size: 1.1rem;
+    padding: 8px;
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+}
+
+.hidden-catgirl-header:focus {
+    outline: none;
+}
+
+.hidden-catgirl-arrow {
+    font-size: 12px;
+    color: #40C5F1;
+    transition: transform 0.3s ease;
+    margin-right: 4px;
+}
+
+.hidden-catgirl-arrow.expanded {
+    transform: rotate(90deg);
+}
+
+#hidden-catgirl-list {
+    margin-top: 8px;
+}
+
+.hidden-catgirl-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #fff;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    border: 1px solid #b3e5fc;
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+
+.hidden-catgirl-item .catgirl-name {
+    color: #40C5F1;
+    font-weight: 600;
+}
+
+.hidden-catgirl-item .btn.sm.unhide {
+    background: #40C5F1;
+    min-width: 80px;
+}
+
+.hidden-catgirl-item:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 8px 20px rgba(64, 197, 241, 0.3);
+}
+
+.catgirl-hide {
+    transition: opacity 0.3s ease;
+}
+
+.catgirl-hide:hover {
+    opacity: 0.7;
+}
+
 .master-section-header .tips {
     margin: 0;
     color: #40C5F1;
@@ -299,9 +376,8 @@ body {
     border: 2px solid #b3e5fc;
     border-radius: 50px;
     background: #fff;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, border-radius 0.3s ease;
     min-height: 30px;
-    overflow: visible;
     min-width: 150px;
     /* 减小最小宽度，让 flex 更自由 */
     position: relative;
@@ -505,6 +581,15 @@ body {
 
 .field-row textarea::-webkit-scrollbar-thumb:hover {
     background-color: rgba(64, 197, 241, 0.5);
+}
+
+.field-row.has-scrollbar {
+    overflow: hidden;
+    border-radius: 16px;
+}
+
+.field-row.has-scrollbar textarea {
+    border-radius: 14px;
 }
 
 .field-row .optional {
@@ -775,6 +860,12 @@ body {
     padding: 0;
     background: #f0f8ff;
     overflow: hidden;
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+}
+
+.catgirl-block:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 8px 20px rgba(64, 197, 241, 0.3);
 }
 
 .catgirl-header {

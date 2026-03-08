@@ -781,6 +781,15 @@
                 element.alt = text;
             }
         });
+
+        // 更新所有带有 data-i18n-aria 属性的元素
+        document.querySelectorAll('[data-i18n-aria]').forEach(element => {
+            const key = element.getAttribute('data-i18n-aria');
+            const text = i18next.t(key, {});
+            if (text && text !== key) {
+                element.setAttribute('aria-label', text);
+            }
+        });
     }
 
     /**
