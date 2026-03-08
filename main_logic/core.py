@@ -1486,6 +1486,21 @@ class LLMSessionManager:
             self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
             self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
             
+            # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
+            try:
+                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                if cleaned_count > 0:
+                    logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
+                if legacy_names:
+                    enqueue_prominent_notice({
+                        "code": "notice.voiceMigration.legacyRemoved",
+                        "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+                        "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+                        "details": {"voices": legacy_names},
+                    })
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id

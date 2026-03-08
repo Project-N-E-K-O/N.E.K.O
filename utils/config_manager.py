@@ -1211,12 +1211,11 @@ class ConfigManager:
             return False
 
         # Both sources simultaneously indeterminate (e.g. ip-api.com blocked AND Steam not
-        # yet initialised).  Cache False so subsequent calls — including the other _URL fields
-        # iterated inside get_core_config() — skip all geo work without any I/O cost.
-        # If only one source is indeterminate the mixed cases above already handled it;
-        # we only reach here when neither source returned a usable result.
-        ConfigManager._region_cache = False
-        print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), default mainland", file=sys.stderr)
+        # yet initialised).  Do NOT write to _region_cache: Steam may initialise shortly
+        # after this call, and caching False here would permanently suppress re-evaluation.
+        # Callers that iterate get_core_config() will simply retry the geo check on the
+        # next invocation until at least one source becomes definitive.
+        print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
         return False
 
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:

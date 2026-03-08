@@ -838,9 +838,10 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             
         def on_complete(self): 
             # 短句可能在首包聚合阈值前就结束，完成时强制冲刷缓冲，避免整句静音。
+            # 若已静音（打断/回合切换），跳过投递，避免旧流尾包进入新回合的 response_queue。
             try:
                 sid = self._active_sid
-                if sid:
+                if sid and not self._muted:
                     if self._bootstrap_buffer:
                         self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
                     if self._agg_buffer:

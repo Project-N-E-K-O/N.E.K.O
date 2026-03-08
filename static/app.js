@@ -3325,9 +3325,15 @@ function init_app() {
     }
 
     function _renderProminentNotice(notice, onDismiss) {
-        const displayText = (notice.code && typeof safeT === 'function')
-            ? safeT(notice.code, notice.message_en || notice.message)
+        // 回退文本优先级：按用户 locale 选择语言，避免 i18n 未就绪时展示错误语种。
+        const _isChinese = (typeof _isUserRegionChina === 'function' && _isUserRegionChina())
+            || /^zh/i.test(navigator.language || '');
+        const localeFallback = _isChinese
+            ? (notice.message || notice.message_en || '')
             : (notice.message_en || notice.message || '');
+        const displayText = (notice.code && typeof safeT === 'function')
+            ? safeT(notice.code, localeFallback)
+            : localeFallback;
 
         const overlay = document.createElement('div');
         overlay.id = 'prominent-notice-overlay';
@@ -4671,6 +4677,8 @@ function init_app() {
         if (scheduleAudioChunksRunning) return;
         scheduleAudioChunksRunning = true;
 
+        try {
+
         const scheduleAheadTime = 5;
 
         initializeGlobalAnalyser();
@@ -4757,8 +4765,11 @@ function init_app() {
         }
 
         // 继续调度循环
-        scheduleAudioChunksRunning = false;
         setTimeout(scheduleAudioChunks, 25); // 25ms间隔检查
+
+        } finally {
+            scheduleAudioChunksRunning = false;
+        }
     }
 
 
