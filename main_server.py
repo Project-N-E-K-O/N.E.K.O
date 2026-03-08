@@ -891,8 +891,8 @@ async def on_shutdown():
         # 关闭音乐爬虫连接池
         try:
             from utils.music_crawlers import close_all_crawlers
-            # 【核心修改】增加 5 秒超时兜底。如果 5 秒内关不完，直接抛弃，保障服务器顺利退出
-            await asyncio.wait_for(close_all_crawlers(), timeout=5.0)
+            # 【核心修改】增加 1 秒超时兜底。如果 1 秒内关不完，直接抛弃，保障服务器顺利退出
+            await asyncio.wait_for(close_all_crawlers(), timeout=1.0)
             
         except asyncio.TimeoutError:
             # 单独捕获超时异常，记录警告但放行
