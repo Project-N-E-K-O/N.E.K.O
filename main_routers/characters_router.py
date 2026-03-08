@@ -1837,8 +1837,13 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
     
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================
-        # MD5 去重：检查是否已有相同音频注册过的音色
+        # MD5 去重：检查是否已有相同音频 + 相同语言注册过的音色
         existing = _config_manager.find_voice_by_audio_md5('__LOCAL_TTS__', audio_md5)
+        if existing:
+            voice_id, voice_data = existing
+            if voice_data.get('ref_language', 'ch') != ref_language:
+                existing = None  # 语言不同，需要重新注册
+                logger.info(f"本地 TTS 音频 MD5 命中但 ref_language 不同（已有={voice_data.get('ref_language', 'ch')}, 请求={ref_language}），跳过复用")
         if existing:
             voice_id, voice_data = existing
             logger.info(f"本地 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -1890,6 +1895,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                         'prefix': prefix,
                         'is_local': True,
                         'audio_md5': audio_md5,
+                        'ref_language': ref_language,
                         'created_at': datetime.now().isoformat()
                     }
                     try:
@@ -1929,6 +1935,11 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
     dedup_api_key = tts_config_for_dedup.get('api_key', '')
     if dedup_api_key:
         existing = _config_manager.find_voice_by_audio_md5(dedup_api_key, audio_md5)
+        if existing:
+            voice_id, voice_data = existing
+            if voice_data.get('ref_language', 'ch') != ref_language:
+                existing = None  # 语言不同，需要重新注册
+                logger.info(f"阿里云 TTS 音频 MD5 命中但 ref_language 不同（已有={voice_data.get('ref_language', 'ch')}, 请求={ref_language}），跳过复用")
         if existing:
             voice_id, voice_data = existing
             logger.info(f"阿里云 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -2149,6 +2160,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                     'prefix': prefix,
                     'file_url': tmp_url,
                     'audio_md5': audio_md5,
+                    'ref_language': ref_language,
                     'created_at': datetime.now().isoformat()
                 }
                 try:
