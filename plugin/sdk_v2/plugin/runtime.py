@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping, TypedDict
+from typing import Mapping
 
 from plugin.sdk_v2.shared.constants import EVENT_META_ATTR, HOOK_META_ATTR
 from plugin.sdk_v2.shared.core.config import (
@@ -64,38 +64,7 @@ from plugin.sdk_v2.shared.runtime.system_info import SystemInfo
 from plugin.sdk_v2.shared.storage.database import PluginDatabase, PluginKVStore
 from plugin.sdk_v2.shared.storage.state import EXTENDED_TYPES, PluginStatePersistence
 from plugin.sdk_v2.shared.storage.store import PluginStore
-
-
-class ErrorDetail(TypedDict, total=False):
-    code: str
-    message: str
-    details: JsonValue | JsonObject | None
-    retriable: bool
-
-
-class OkEnvelope(TypedDict, total=False):
-    success: bool
-    code: int
-    data: JsonValue | JsonObject | None
-    message: str
-    error: None
-    time: str
-    trace_id: str | None
-    meta: dict[str, JsonValue]
-
-
-class ErrEnvelope(TypedDict, total=False):
-    success: bool
-    code: int
-    data: None
-    message: str
-    error: ErrorDetail
-    time: str
-    trace_id: str | None
-    meta: dict[str, JsonValue]
-
-
-Envelope = OkEnvelope | ErrEnvelope
+from plugin.sdk_v2.public.plugin.runtime_models import Envelope, ErrEnvelope, ErrorDetail, OkEnvelope
 
 
 class Plugins(_SharedPlugins):

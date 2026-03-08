@@ -1,27 +1,12 @@
 """SDK v2 extension surface (contract-only)."""
 
-from .base import ExtensionMeta, NekoExtensionBase
-from .decorators import extension_entry, extension_hook
-from .runtime import (
-    ExtensionRuntime,
-    MessagePlaneTransport,
-    PluginConfig,
-    PluginRouter,
-    get_call_chain,
-    get_call_depth,
-    is_in_call_chain,
-)
+from __future__ import annotations
 
-__all__ = [
-    "ExtensionMeta",
-    "NekoExtensionBase",
-    "extension_entry",
-    "extension_hook",
-    "ExtensionRuntime",
-    "PluginConfig",
-    "PluginRouter",
-    "MessagePlaneTransport",
-    "get_call_chain",
-    "get_call_depth",
-    "is_in_call_chain",
-]
+from . import base as _base
+from . import decorators as _decorators
+from . import runtime as _runtime
+from .base import *
+from .decorators import *
+from .runtime import *
+
+__all__ = list(dict.fromkeys([*_base.__all__, *_decorators.__all__, *_runtime.__all__]))

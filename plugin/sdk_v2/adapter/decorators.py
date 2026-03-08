@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
 
-ADAPTER_EVENT_META = "__adapter_event_meta__"
-ADAPTER_LIFECYCLE_META = "__adapter_lifecycle_meta__"
-
-
-@dataclass(slots=True)
-class AdapterEventMeta:
-    protocol: str
-    action: str
-    pattern: str | None
-    priority: int
+from plugin.sdk_v2.public.adapter.decorators import (
+    ADAPTER_EVENT_META,
+    ADAPTER_LIFECYCLE_META,
+    AdapterEventMeta,
+)
 
 
 def _not_impl(*_args: object, **_kwargs: object) -> None:

@@ -1,15 +1,7 @@
-"""Compatibility layer: `plugin.sdk_v2.public.adapter`.
+"""Internal adapter implementation package for SDK v2.
 
-Deprecated import path. Prefer `plugin.sdk_v2.adapter`.
+This package stores adapter-internal implementation modules. It is not a
+supported developer-facing import surface.
 """
 
-from __future__ import annotations
-
-from plugin.sdk_v2 import adapter as _adapter
-
-for _name in _adapter.__all__:
-    globals()[_name] = getattr(_adapter, _name)
-
-__all__ = list(_adapter.__all__)
-
-del _name
+__all__: list[str] = []
