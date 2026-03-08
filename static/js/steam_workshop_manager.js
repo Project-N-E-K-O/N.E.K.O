@@ -1,9 +1,3 @@
-// 统一的暗色模式检测辅助函数
-function getIsDarkTheme() {
-    return (window.nekoTheme && typeof window.nekoTheme.isDark === 'function' && window.nekoTheme.isDark()) ||
-        document.documentElement.getAttribute('data-theme') === 'dark';
-}
-
 // 角色保留字段配置（优先从后端集中配置加载；失败时使用前端兜底）
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
@@ -956,11 +950,6 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
     modalContainer.appendChild(modalContent);
     modalOverlay.appendChild(modalContainer);
 
-    const isDark = getIsDarkTheme();
-    if (isDark) {
-        modalContent.classList.add('dark-theme');
-    }
-
     // 添加到页面
     document.body.appendChild(modalOverlay);
 
@@ -1003,8 +992,8 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
             }
             
             .confirm-modal-content.dark-theme {
-                background-color: #333;
-                color: #e0e0e0;
+                background-color: white;
+                color: #333;
             }
 
             .confirm-modal-message {
@@ -1094,16 +1083,11 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageElement.style.position = 'relative';
     messageElement.style.zIndex = '1000';
 
-    // 为不同类型设置背景色（区分暗色模式）
-    const isDark = getIsDarkTheme();
-    const bgColors = isDark
-        ? { error: 'rgba(198,40,40,0.2)', warning: 'rgba(255,143,0,0.15)', success: 'rgba(46,125,50,0.2)', info: 'rgba(58,159,216,0.15)' }
-        : { error: '#ffebee', warning: '#fff8e1', success: '#e8f5e9', info: '#e3f2fd' };
-    messageElement.style.backgroundColor = bgColors[type] || (isDark ? '#333' : '#f5f5f5');
-    if (isDark) {
-        const textColors = { error: '#ef9a9a', warning: '#ffd54f', success: '#81c784', info: '#64b5f6' };
-        messageElement.style.color = textColors[type] || '#e0e0e0';
-    }
+    // 为不同类型设置背景色和前景色
+    const bgColors = { error: '#ffebee', warning: '#fff8e1', success: '#e8f5e9', info: '#e3f2fd' };
+    const fgColors = { error: '#c62828', warning: '#e65100', success: '#2e7d32', info: '#1565c0' };
+    messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
+    messageElement.style.color = fgColors[type] || '#333';
 
     // 设置消息显示动画
     setTimeout(() => {
@@ -1151,9 +1135,12 @@ function escapeHtml(text) {
     if (typeof text !== 'string') {
         return String(text);
     }
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 
@@ -1180,14 +1167,13 @@ function showToast(message, duration = 3000) {
     const messageElement = document.createElement('div');
     // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
     messageElement.textContent = message;
-    const isDark = getIsDarkTheme();
     messageElement.style.cssText = `
         padding: 15px 20px;
         margin-bottom: 10px;
-        background: ${isDark ? 'rgba(46, 125, 50, 0.25)' : '#e8f5e9'};
-        color: ${isDark ? '#81c784' : '#2e7d32'};
+        background: #e8f5e9;
+        color: #2e7d32;
         border-radius: 6px;
-        box-shadow: 0 4px 12px rgba(0,0,0,${isDark ? '0.3' : '0.15'});
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         font-weight: bold;
         opacity: 0;
         transform: translateY(-10px);
@@ -1220,14 +1206,13 @@ function LoadingManager() {
             if (loadingCount.value === 1) {
                 const loadingOverlay = document.createElement('div');
                 loadingOverlay.id = 'loading-overlay';
-                const isDark = getIsDarkTheme();
                 loadingOverlay.style.cssText = `
                     position: fixed;
                     top: 0;
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    background: ${isDark ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.8)'};
+                    background: rgba(255, 255, 255, 0.8);
                     display: flex;
                     flex-direction: column;
                     align-items: center;
@@ -1238,8 +1223,8 @@ function LoadingManager() {
 
                 const loadingSpinner = document.createElement('div');
                 loadingSpinner.style.cssText = `
-                    border: 4px solid ${isDark ? '#444' : '#f3f3f3'};
-                    border-top: 4px solid ${isDark ? '#3a9fd8' : '#3498db'};
+                    border: 4px solid #f3f3f3;
+                    border-top: 4px solid #3498db;
                     border-radius: 50%;
                     width: 40px;
                     height: 40px;
@@ -1250,7 +1235,7 @@ function LoadingManager() {
                 const loadingText = document.createElement('div');
                 loadingText.textContent = message;
                 loadingText.style.fontSize = '16px';
-                loadingText.style.color = isDark ? '#e0e0e0' : '#333';
+                loadingText.style.color = '#333';
 
                 // 添加CSS动画
                 let style = document.getElementById('loading-overlay-style');
@@ -1731,17 +1716,18 @@ function renderSubscriptionsPage() {
         // 确保publishedFileId转换为字符串，避免类型错误
         const formattedItem = {
             id: String(item.publishedFileId),
-            name: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
+            rawName: item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`,
+            name: escapeHtml(item.title || `${window.t ? window.t('steam.unknownItem') : '未知物品'}_${String(item.publishedFileId)}`),
             author: escapeHtml(safeAuthorName(item)),
             rawAuthor: safeAuthorName(item),
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
-            previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+            previewUrl: encodeURI(item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png'),
             state: item.state || {},
             // 添加安装路径信息
             installedFolder: item.installedFolder || '',
-            description: item.description || (window.t ? window.t('steam.noDescription') : '暂无描述'),
+            description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
             timeAdded: item.timeAdded || 0,
             fileSize: item.fileSizeOnDisk || item.fileSize || 0
         };
@@ -1765,10 +1751,18 @@ function renderSubscriptionsPage() {
             <div class="workshop-card">
                 <div class="card-header">
                     <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="card-image" onerror="this.src='../static/icons/Steam_icon_logo.png'">
-                    <div class="status-badge ${statusClass}">${statusText}</div>
+                    <div class="status-badge ${statusClass}">
+                        <svg class="badge-bg" viewBox="-5 -5 115 115">
+                            <path d="M6.104,38.038 C1.841,45.421 1.841,54.579 6.104,61.962 L18.785,83.923 C23.048,91.306 30.979,95.885 39.505,95.885 L64.865,95.885 C73.391,95.885 81.322,91.306 85.585,83.923 L98.266,61.962 C102.529,54.579 102.529,45.421 98.266,38.038 L85.585,16.077 C81.322,8.694 73.391,4.115 64.865,4.115 L39.505,4.115 C30.979,4.115 23.048,8.694 18.785,16.077 Z"
+                                  fill="#21b8ff"
+                                  stroke="#dcf4ff"
+                                  stroke-width="8" />
+                        </svg>
+                        <div class="badge-text">${statusText}</div>
+                    </div>
                 </div>
                 <div class="card-content">
-                    <h3 class="card-title">${formattedItem.name}</h3>
+                    <h3 class="card-title">${formattedItem.name}<img src="/static/icons/paw_ui.png" class="card-title-paw" alt=""></h3>
                     <div class="author-info">
                         <div class="author-avatar">${escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase())}</div>
                         <span>${window.t ? window.t('steam.author') : '作者'}: ${formattedItem.author}</span>
@@ -1789,7 +1783,7 @@ function renderSubscriptionsPage() {
             }
                     <div class="card-actions">
                         <!-- 查看详情下次再加，一时半会儿搞不定 -->
-                        <button class="button button-danger" onclick="unsubscribeItem('${formattedItem.id}', '${formattedItem.name}')">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
+                        <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
@@ -1802,8 +1796,8 @@ function updatePagination() {
     const pagination = document.querySelector('.pagination');
     if (!pagination) return;
 
-    const prevBtn = pagination.querySelector('button:first-child');
-    const nextBtn = pagination.querySelector('button:last-child');
+    const prevBtn = pagination.querySelector('.pagination-btn-wrapper:first-child button');
+    const nextBtn = pagination.querySelector('.pagination-btn-wrapper:last-child button');
     const pageInfo = pagination.querySelector('span');
 
     // 更新页码信息
@@ -2456,18 +2450,25 @@ window.addEventListener('load', function () {
     autoScanAndAddWorkshopCharacterCards();
 
     // 监听语言变化事件，刷新当前页面显示
-    if (window.i18n) {
-        window.i18n.on('languageChanged', () => {
-            loadSubscriptions();
-        });
-    }
-    window.addEventListener('localechange', () => {
+    // 仅使用 localechange，因为 i18next languageChanged 已会触发 localechange
+    function updateLocaleDependent() {
         loadSubscriptions();
-    });
+        syncTitleDataText();
+    }
+    updateLocaleDependent();
+    window.addEventListener('localechange', updateLocaleDependent);
 
 });
 
 // 角色卡相关函数
+
+// 同步标题 data-text 属性（i18n 更新后伪元素需要同步）
+function syncTitleDataText() {
+    const titleH2 = document.querySelector('.page-title-bar h2');
+    if (titleH2) {
+        titleH2.setAttribute('data-text', titleH2.textContent);
+    }
+}
 
 // 加载角色卡列表
 // 加载角色卡数据
@@ -2830,11 +2831,10 @@ function showWorkshopSnapshot() {
     const tagsContainer = document.getElementById('snapshot-tags-container');
     tagsContainer.innerHTML = '';
     if (snapshot.tags && snapshot.tags.length > 0) {
-        const isDark = getIsDarkTheme();
         snapshot.tags.forEach(tag => {
             const tagEl = document.createElement('span');
             tagEl.className = 'tag';
-            tagEl.style.cssText = `background-color: ${isDark ? '#3a3a3a' : '#e0e0e0'}; color: ${isDark ? '#e0e0e0' : 'inherit'}; padding: 4px 8px; border-radius: 4px; font-size: 12px;`;
+            tagEl.style.cssText = `background-color: #e0e0e0; color: inherit; padding: 4px 8px; border-radius: 4px; font-size: 12px;`;
             tagEl.textContent = tag;
             tagsContainer.appendChild(tagEl);
         });
@@ -3745,18 +3745,16 @@ function updateCardPreview() {
     const container = document.getElementById('card-info-dynamic-content');
     if (!container) return;
 
-    const isDark = getIsDarkTheme();
-
     // 从已加载的角色卡列表中获取当前角色卡数据
     if (!currentCharacterCardId || !window.characterCards) {
-        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: #999; text-align: center;">` +
             (window.t ? window.t('steam.selectCharacterCard') : '请选择一个角色卡') + '</p>';
         return;
     }
 
     const currentCard = window.characterCards.find(card => card.id === currentCharacterCardId);
     if (!currentCard) {
-        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: #999; text-align: center;">` +
             (window.t ? window.t('steam.characterCardNotFound') : '找不到角色卡数据') + '</p>';
         return;
     }
@@ -3781,7 +3779,7 @@ function updateCardPreview() {
 
         // 创建属性行
         const row = document.createElement('div');
-        row.style.cssText = `color: ${isDark ? '#b0b0b0' : '#555'}; margin-bottom: 8px;`;
+        row.style.cssText = `color: #000; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid #d5efff; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%;`;
 
         // 格式化值
         let displayValue = '';
@@ -3799,14 +3797,14 @@ function updateCardPreview() {
             displayValue = String(value);
         }
 
-        // 构建HTML
-        row.innerHTML = '<strong>' + escapeHtml(key) + ':</strong> <span style="font-weight: normal;">' + escapeHtml(displayValue) + '</span>';
+        // 构建HTML - 使用黑色文字，添加自动换行
+        row.innerHTML = '<strong style="color: #000;">' + escapeHtml(key) + ':</strong> <span style="font-weight: normal; color: #000; word-wrap: break-word; overflow-wrap: break-word; display: inline-block; max-width: 100%;">' + escapeHtml(displayValue) + '</span>';
         container.appendChild(row);
     }
 
     // 如果没有任何属性显示，显示提示
     if (container.children.length === 0) {
-        container.innerHTML = `<p style="color: ${isDark ? '#888' : '#999'}; text-align: center;">` +
+        container.innerHTML = `<p style="color: #999; text-align: center;">` +
             (window.t ? window.t('steam.noCardProperties') : '暂无属性信息') + '</p>';
     }
 }
@@ -3904,26 +3902,47 @@ async function initLive2DPreview() {
             const containerWidth = container.clientWidth;
             const containerHeight = container.clientHeight;
 
-            // 对于预览模式，我们总是使用适合容器的缩放，忽略保存的偏好设置
-            // 计算适合预览区域的缩放值，减小最大缩放值以确保模型完全显示
-            const defaultScale = Math.min(
-                0.25,  // 减小最大缩放值，使模型整体更小
-                (containerHeight * 0.85) / 7000,  // 根据容器高度计算缩放，使用更合理的比例
-                (containerWidth * 0.85) / 7000    // 根据容器宽度计算缩放，使用更合理的比例
-            );
+            // 先设置临时缩放和锚点以便获取实际边界
+            model.anchor.set(0.5, 0.5);
+            model.scale.set(0.1); // 临时缩放值
+            model.x = 0;
+            model.y = 0;
+
+            // 获取模型的实际边界
+            const bounds = model.getBounds();
+            const modelWidth = bounds.width / 0.1; // 还原原始宽度
+            const modelHeight = bounds.height / 0.1; // 还原原始高度
+
+            // 计算适合容器的缩放比例
+            const padding = 30;
+            const availableWidth = Math.max(50, containerWidth - padding * 2);
+            const availableHeight = Math.max(50, containerHeight - padding * 2);
+
+            // 基于实际模型尺寸计算缩放
+            const scaleX = availableWidth / modelWidth;
+            const scaleY = availableHeight / modelHeight;
+
+            // 取较小值确保完整显示
+            let defaultScale = Math.min(scaleX, scaleY);
+            defaultScale = Math.max(0.01, Math.min(defaultScale, 1.0));
 
             model.scale.set(defaultScale);
 
-            // 设置模型位置，使其居中显示在预览区域，向下调整y轴位置
+            // 将模型居中显示在容器中央
             model.x = containerWidth * 0.5;
-            model.y = containerHeight * 0.78;  // 增加y轴位置，使模型向下移动
+            model.y = containerHeight * 0.5;
 
-            // 设置锚点，确保模型完全显示
-            model.anchor.set(0.5, 0.8);  // 调整锚点，使模型顶部不会超出预览区域
+            // 锚点保持中心，确保模型居中缩放
+            model.anchor.set(0.5, 0.5);
         };
 
         // 添加窗口大小变化的监听，当预览区域大小变化时重新计算模型缩放和位置
         function resizePreviewModel() {
+            const container = document.getElementById('live2d-preview-content');
+            if (live2dPreviewManager && live2dPreviewManager.pixi_app && container &&
+                container.clientWidth > 0 && container.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(container.clientWidth, container.clientHeight);
+            }
             if (live2dPreviewManager && live2dPreviewManager.currentModel) {
                 // 调用我们覆盖的applyModelSettings方法，重新计算模型缩放和位置
                 live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
@@ -4318,7 +4337,7 @@ function selectPreviewImage() {
             } else {
                 // 文件大小符合要求，将提示文字恢复为默认色
                 if (hintElement) {
-                    hintElement.style.color = getIsDarkTheme() ? '#b0b0b0' : '#333';
+                    hintElement.style.color = '#333';
                 }
             }
 

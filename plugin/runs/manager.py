@@ -630,7 +630,7 @@ async def _execute_run(
     Extracted from ``create_run`` so it can be tested and reused independently.
     """
     started = _run_store.update(run_id, status="running", started_at=float(time.time()))
-    if started is None:
+    if started is None or started.status != "running":
         return
     _emit_runs("change", started)
 
