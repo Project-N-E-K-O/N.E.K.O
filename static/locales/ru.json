@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "Управление браузером включено, проверка подключения Agent LLM...",
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}"
+        "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "URL GPT-SoVITS API должен быть localhost",
+        "TTS_AUDIO_API_KEY_MISSING": "Аудио API-ключ (AUDIO_API_KEY) не настроен",
+        "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",

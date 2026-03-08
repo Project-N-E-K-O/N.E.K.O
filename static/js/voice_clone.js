@@ -252,7 +252,7 @@ function registerVoice() {
             const data = await res.json();
             if (!res.ok) {
                 // 从响应体中提取详细错误信息
-                const errorMsg = data.error || data.detail || `API returned ${res.status}`;
+                const errorMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || data.detail || `API returned ${res.status}`);
                 throw new Error(errorMsg);
             }
             return data;
@@ -380,7 +380,8 @@ async function playPreview(voiceId, btn) {
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
                 }
             } else {
-                throw new Error(data.error || 'Failed to get preview');
+                const _errMsg = (data.code && window.t) ? window.t('errors.' + data.code, data.details || {}) : (data.error || 'Failed to get preview');
+                throw new Error(_errMsg);
             }
         }
 

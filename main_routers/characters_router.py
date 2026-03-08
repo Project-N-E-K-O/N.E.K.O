@@ -912,7 +912,7 @@ async def unregister_voice(name: str):
         
         # 检查是否已有voice_id
         if not get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
-            return JSONResponse({'success': False, 'error': '该猫娘未注册声音'}, status_code=400)
+            return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
@@ -1287,7 +1287,8 @@ async def list_custom_tts_voices_for_characters():
         if not base_url or not (base_url.startswith('http://') or base_url.startswith('https://')):
             return JSONResponse({
                 'success': False,
-                'error': '未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS',
+                'error': 'TTS_CUSTOM_URL_NOT_CONFIGURED',
+                'code': 'TTS_CUSTOM_URL_NOT_CONFIGURED',
                 'voices': []
             }, status_code=400)
         
@@ -1298,10 +1299,10 @@ async def list_custom_tts_voices_for_characters():
         host = parsed.hostname or ''
         try:
             if not ipaddress.ip_address(host).is_loopback:
-                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
+                return JSONResponse({'success': False, 'error': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'code': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'voices': []}, status_code=400)
         except ValueError:
             if host not in ('localhost',):
-                return JSONResponse({'success': False, 'error': 'GPT-SoVITS API URL 必须为 localhost', 'voices': []}, status_code=400)
+                return JSONResponse({'success': False, 'error': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'code': 'TTS_CUSTOM_URL_LOCALHOST_ONLY', 'voices': []}, status_code=400)
         
         # 通过适配层获取并标准化自定义 TTS voices
         voices = await get_custom_tts_voices(base_url, provider='gptsovits')
@@ -1416,7 +1417,7 @@ async def get_voice_preview(voice_id: str):
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
         if not audio_api_key:
-            return JSONResponse({'success': False, 'error': '未配置 AUDIO_API_KEY'}, status_code=400)
+            return JSONResponse({'success': False, 'error': 'TTS_AUDIO_API_KEY_MISSING', 'code': 'TTS_AUDIO_API_KEY_MISSING'}, status_code=400)
 
         # 生成音频
         dashscope.api_key = audio_api_key
@@ -1470,7 +1471,8 @@ async def register_voice(request: Request):
         if not voice_id or not voice_data:
             return JSONResponse({
                 'success': False,
-                'error': '缺少必要参数'
+                'error': 'TTS_VOICE_REGISTER_MISSING_PARAMS',
+                'code': 'TTS_VOICE_REGISTER_MISSING_PARAMS'
             }, status_code=400)
         
         # 准备音色数据
@@ -2123,8 +2125,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         if not audio_api_key:
             logger.error("未配置 AUDIO_API_KEY")
             return JSONResponse({
-                'error': '未配置音频API密钥，请在设置中配置AUDIO_API_KEY',
-                'suggestion': '请前往设置页面配置音频API密钥'
+                'error': 'TTS_AUDIO_API_KEY_MISSING',
+                'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
         
         dashscope.api_key = audio_api_key

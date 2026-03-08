@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "ブラウザ制御が有効化されました。Agent LLM 接続確認中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use モジュール未ロード、自動無効化されました",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use が利用できません：$t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}"
+        "TTS_CONNECTION_FAILED": "TTSサービス接続失敗: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URLが設定されていません。API設定でカスタムTTSを有効にして設定してください。",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URLはlocalhostである必要があります",
+        "TTS_AUDIO_API_KEY_MISSING": "音声APIキー（AUDIO_API_KEY）が設定されていません",
+        "TTS_VOICE_NOT_REGISTERED": "このキャラクターには登録された音声がありません",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "必須パラメータが不足しています",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URLを入力してください",
+        "TTS_GPT_SOVITS_URL_INVALID": "無効なGPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "iOS設定 → Safari → カメラの権限が「許可」に設定されているか確認してください",

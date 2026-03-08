@@ -2391,7 +2391,8 @@ window.unregisterVoice = async function (catgirlName) {
             await showAlert(window.t ? window.t('character.voiceUnregistered') : '声音注册已解除');
             await loadCharacterData(); // 刷新数据
         } else {
-            await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
+            const _errMsg = (result.code && window.t) ? window.t('errors.' + result.code, result.details || {}) : translateBackendError(result.error);
+            await showAlert(_errMsg || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
         }
     } catch (error) {
         console.error('解除注册出错:', error);

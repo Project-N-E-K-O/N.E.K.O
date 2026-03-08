@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "Browser control enabled, checking Agent LLM connectivity...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use module not loaded, auto-disabled",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use unavailable: $t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}"
+        "TTS_CONNECTION_FAILED": "TTS service connection failed: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL must be localhost",
+        "TTS_AUDIO_API_KEY_MISSING": "Audio API key (AUDIO_API_KEY) not configured",
+        "TTS_VOICE_NOT_REGISTERED": "This character has no registered voice",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "Missing required parameters",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
+        "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",

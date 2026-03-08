@@ -647,19 +647,19 @@ async def list_gptsovits_voices(request: Request):
         api_url = data.get("api_url", "").rstrip("/")
 
         if not api_url:
-            return {"success": False, "error": "api_url is required"}
+            return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_REQUIRED", "code": "TTS_GPT_SOVITS_URL_REQUIRED"}, status_code=400)
 
-        # SSRF 防护：限制 api_url 只能是 localhost
+        # SSRF 防护: 限制 api_url 只能是 localhost
         parsed = urlparse(api_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            return {"success": False, "error": "Invalid api_url"}
+            return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_INVALID", "code": "TTS_GPT_SOVITS_URL_INVALID"}, status_code=400)
         host = parsed.hostname
         try:
             if not ipaddress.ip_address(host).is_loopback:
-                return {"success": False, "error": "api_url must be localhost"}
+                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
         except ValueError:
             if host not in ("localhost",):
-                return {"success": False, "error": "api_url must be localhost"}
+                return JSONResponse({"success": False, "error": "TTS_CUSTOM_URL_LOCALHOST_ONLY", "code": "TTS_CUSTOM_URL_LOCALHOST_ONLY"}, status_code=400)
 
         endpoint = f"{api_url}/api/v3/voices"
         async with aiohttp.ClientSession() as session:
@@ -668,16 +668,18 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
+                    logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}): {text[:200]}")
+                    return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
                 if resp.status == 200:
                     return {"success": True, "voices": result}
-                return {"success": False, "error": f"HTTP {resp.status}: {str(result)[:200]}"}
+                logger.error(f"GPT-SoVITS v3 API 返回错误状态 HTTP {resp.status}: {str(result)[:200]}")
+                return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
-        return {"success": False, "error": f"Connection error: {str(e)}"}
+        return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Internal TTS connection error", "code": "TTS_CONNECTION_FAILED"}
 
 
 def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
