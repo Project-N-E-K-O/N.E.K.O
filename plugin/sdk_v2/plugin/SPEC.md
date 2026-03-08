@@ -5,6 +5,12 @@
 `sdk_v2.plugin` is the standard plugin-facing API surface.
 It is the default facade for normal plugin development.
 
+
+## Recommended Imports
+
+- `from plugin.sdk_v2.plugin import ...` for normal plugin development
+- `from plugin.sdk_v2 import SDK_VERSION, EVENT_META_ATTR, HOOK_META_ATTR` for SDK-wide constants
+
 ## Surface
 
 - `base.py`: `NekoPluginBase`, `PluginMeta`

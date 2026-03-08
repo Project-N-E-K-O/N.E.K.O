@@ -11,10 +11,39 @@
 - `from plugin.sdk_v2 import plugin as sdk`
 - 或 `from plugin.sdk_v2.plugin import ...`
 
+## 常用导入模板
+```python
+from plugin.sdk_v2.plugin import (
+    NekoPluginBase,
+    neko_plugin,
+    plugin_entry,
+    lifecycle,
+    message,
+    ok,
+    fail,
+    Result,
+)
+```
+
+```python
+from plugin.sdk_v2.plugin import (
+    PluginConfig,
+    Plugins,
+    PluginRouter,
+    MemoryClient,
+    SystemInfo,
+)
+```
+
 ## 封装结构
 - `base.py`：插件基类与元信息
 - `decorators.py`：插件入口、事件、hook 装饰器
 - `runtime.py`：配置、跨插件调用、路由、结果模型、运行时工具
+
+## 迁移建议
+- 旧 `plugin.sdk.base/decorators` 导入优先迁到 `plugin.sdk_v2.plugin`
+- 通用常量可直接从 `plugin.sdk_v2` 顶层拿
+- 只有在需要更低层能力时才进入 `shared/*`
 
 ## 约束（v2）
 - Async-first（不新增 sync API）。

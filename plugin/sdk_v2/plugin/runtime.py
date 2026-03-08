@@ -50,6 +50,16 @@ from plugin.sdk_v2.shared.models import (
 from plugin.sdk_v2.shared.models.errors import ErrorCode
 from plugin.sdk_v2.shared.models.responses import fail, is_envelope, ok
 from plugin.sdk_v2.shared.models.version import SDK_VERSION
+from plugin.sdk_v2.shared.logging import (
+    LogLevel,
+    LoggerLike,
+    configure_sdk_default_logger,
+    format_log_text,
+    get_plugin_logger,
+    get_sdk_logger,
+    intercept_standard_logging,
+    setup_sdk_logging,
+)
 from plugin.sdk_v2.shared.runtime.call_chain import (
     AsyncCallChain,
     CallChain,
@@ -93,6 +103,14 @@ StatePersistence = PluginStatePersistence
 
 __all__ = [
     "SDK_VERSION",
+    "LogLevel",
+    "LoggerLike",
+    "get_sdk_logger",
+    "get_plugin_logger",
+    "setup_sdk_logging",
+    "configure_sdk_default_logger",
+    "intercept_standard_logging",
+    "format_log_text",
     "ErrorCode",
     "ok",
     "fail",

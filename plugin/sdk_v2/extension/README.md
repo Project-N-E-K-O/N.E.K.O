@@ -11,10 +11,38 @@
 - `from plugin.sdk_v2 import extension as sdk_ext`
 - 或 `from plugin.sdk_v2.extension import ...`
 
+## 常用导入模板
+```python
+from plugin.sdk_v2.extension import (
+    NekoExtensionBase,
+    ExtensionMeta,
+    extension_entry,
+    extension_hook,
+    extension,
+    Result,
+    ok,
+    fail,
+)
+```
+
+```python
+from plugin.sdk_v2.extension import (
+    ExtensionRuntime,
+    PluginConfig,
+    PluginRouter,
+    MessagePlaneTransport,
+)
+```
+
 ## 封装结构
 - `base.py`：扩展基类与元信息
 - `decorators.py`：extension entry / hook 装饰器
 - `runtime.py`：配置、路由、传输、结果模型、运行时工具
+
+## 迁移建议
+- 适合能力边界更窄、只需要配置/路由/传输的插件
+- 默认从 `extension` facade 拿能力，不直接依赖 `plugin` facade
+- 只有明确需要时才下探 `shared/*`
 
 ## 约束（v2）
 - Async-first。

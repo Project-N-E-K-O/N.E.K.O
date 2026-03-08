@@ -5,6 +5,12 @@
 `sdk_v2.adapter` is the adapter-facing API surface for protocol bridge and
 gateway scenarios.
 
+
+## Recommended Imports
+
+- `from plugin.sdk_v2.adapter import ...` for base/types/decorators
+- `from plugin.sdk_v2.adapter.runtime import ...` for gateway runtime contracts
+
 ## Surface
 
 - `base.py`: adapter base / config / context contracts

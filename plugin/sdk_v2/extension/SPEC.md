@@ -6,6 +6,12 @@
 It preserves the same async-first and `Result`-first semantics as `plugin`, but
 with a smaller capability boundary.
 
+
+## Recommended Imports
+
+- `from plugin.sdk_v2.extension import ...` for extension development
+- prefer `extension` facade before reaching for `shared/*`
+
 ## Surface
 
 - `base.py`: `ExtensionMeta`, `NekoExtensionBase`

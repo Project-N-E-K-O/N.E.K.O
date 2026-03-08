@@ -4,21 +4,10 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from plugin.sdk_v2.shared.core.types import LoggerLike
 from plugin.sdk_v2.shared.models import Result
 
 from .gateway_models import ExternalEnvelope, GatewayError, GatewayRequest, GatewayResponse, RouteDecision
-
-
-class LoggerLike(Protocol):
-    def debug(self, message: str, *args: object, **kwargs: object) -> object: ...
-
-    def info(self, message: str, *args: object, **kwargs: object) -> object: ...
-
-    def warning(self, message: str, *args: object, **kwargs: object) -> object: ...
-
-    def error(self, message: str, *args: object, **kwargs: object) -> object: ...
-
-    def exception(self, message: str, *args: object, **kwargs: object) -> object: ...
 
 
 class TransportAdapter(Protocol):
