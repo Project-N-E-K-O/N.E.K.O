@@ -3347,6 +3347,10 @@ function init_app() {
         `;
 
         const box = document.createElement('div');
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-modal', 'true');
+        box.setAttribute('aria-label', displayText || 'Notice');
+        box.tabIndex = -1;
         box.style.cssText = `
             position: relative;
             background: #1e293b;
@@ -3384,7 +3388,12 @@ function init_app() {
         box.appendChild(textDiv);
         box.appendChild(btn);
         overlay.appendChild(box);
+        const prevActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        let dismissed = false;
         document.body.appendChild(overlay);
+        if (!dismissed) {
+            btn.focus();
+        }
 
         if (!document.querySelector('style[data-prominent-notice-animation]')) {
             const s = document.createElement('style');
@@ -3397,7 +3406,6 @@ function init_app() {
             document.head.appendChild(s);
         }
 
-        let dismissed = false;
         const dismiss = () => {
             if (dismissed) return;
             dismissed = true;
@@ -3405,6 +3413,9 @@ function init_app() {
             overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
             setTimeout(() => {
                 overlay.remove();
+                if (prevActive && document.contains(prevActive)) {
+                    prevActive.focus();
+                }
                 onDismiss();
             }, 200);
         };
