@@ -557,6 +557,11 @@ class LLMSessionManager:
     async def handle_silence_timeout(self, expected_session=None):
         """处理语音输入静默超时：自动关闭session但保持live2d显示"""
         try:
+            if await self._teardown_pending_session_from_lifecycle_callback(
+                expected_session,
+                source="handle_silence_timeout",
+            ):
+                return
             if expected_session is not None and self.session is not expected_session:
                 logger.info("⏭️ handle_silence_timeout 跳过：session 已被新实例替换")
                 return
@@ -615,6 +620,11 @@ class LLMSessionManager:
     
     async def handle_connection_error(self, message=None, expected_session=None):
         # 标记session已被服务器关闭，停止接收音频输入
+        if await self._teardown_pending_session_from_lifecycle_callback(
+            expected_session,
+            source="handle_connection_error",
+        ):
+            return
         if expected_session is not None and self.session is not expected_session:
             logger.info("⏭️ handle_connection_error 跳过：session 已被新实例替换")
             return
@@ -642,12 +652,26 @@ class LLMSessionManager:
         async def on_connection_error(message=None, session_ref=session):
             await self.handle_connection_error(message, expected_session=session_ref)
 
-        setattr(session, 'on_connection_error', on_connection_error)
+        session.on_connection_error = on_connection_error
+        # OmniOfflineClient 使用 handle_connection_error 属性触发回调，需要同步覆盖
+        if hasattr(session, 'handle_connection_error'):
+            session.handle_connection_error = on_connection_error
         if isinstance(session, OmniRealtimeClient):
             async def on_silence_timeout(session_ref=session):
                 await self.handle_silence_timeout(expected_session=session_ref)
 
             session.on_silence_timeout = on_silence_timeout
+
+    async def _teardown_pending_session_from_lifecycle_callback(self, expected_session, source: str) -> bool:
+        """Handle pending session lifecycle events without touching active main session."""
+        if expected_session is None:
+            return False
+        if self.pending_session is expected_session:
+            logger.warning("⚠️ %s: pending_session触发生命周期回调，执行pending清理", source)
+            await self._cleanup_pending_session_resources()
+            self._reset_preparation_state(clear_main_cache=True)
+            return True
+        return False
     
     async def handle_repetition_detected(self):
         """处理重复度检测回调：通知前端"""
@@ -2470,13 +2494,25 @@ class LLMSessionManager:
             if expected_session is not None and self.session is not expected_session:
                 logger.info("⏭️ end_session 跳过：session 已被新实例替换")
                 return
+            pending_session_ref = self.pending_session
+            main_session_ref = self.session
             self._init_renew_status()
             has_tts_resources = (
                 self.tts_handler_task is not None or
                 (self.tts_thread is not None and self.tts_thread.is_alive())
             )
-            if not self.is_active and not self.session and not has_tts_resources:
-                return
+            should_return_early = not self.is_active and not self.session and not has_tts_resources
+
+        if pending_session_ref and pending_session_ref is not main_session_ref:
+            try:
+                logger.info("End Session: Closing pending session...")
+                await pending_session_ref.close()
+                logger.info("End Session: Pending session closed.")
+            except Exception as e:
+                logger.error(f"💥 End Session: Error closing pending session: {e}")
+
+        if should_return_early:
+            return
 
         logger.info("End Session: Starting cleanup...")
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
