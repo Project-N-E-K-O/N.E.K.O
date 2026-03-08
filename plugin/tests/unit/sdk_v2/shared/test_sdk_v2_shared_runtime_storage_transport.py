@@ -51,12 +51,9 @@ def test_storage_extended_types_contains_supported_types() -> None:
 
 
 def test_runtime_contract_inits_raise() -> None:
-    with pytest.raises(NotImplementedError):
-        runtime_memory.MemoryClient(_ctx=object())
-    with pytest.raises(NotImplementedError):
-        system_info.SystemInfo(_ctx=object())
-    with pytest.raises(NotImplementedError):
-        message_plane.MessagePlaneTransport()
+    assert runtime_memory.MemoryClient(_ctx=object()) is not None
+    assert system_info.SystemInfo(_ctx=object()) is not None
+    assert message_plane.MessagePlaneTransport() is not None
 
 
 @pytest.mark.asyncio
@@ -64,7 +61,7 @@ async def test_runtime_storage_transport_contract_methods_raise() -> None:
     async_chain = object.__new__(call_chain.AsyncCallChain)
     mem = object.__new__(runtime_memory.MemoryClient)
     sys_info = object.__new__(system_info.SystemInfo)
-    plane = object.__new__(message_plane.MessagePlaneTransport)
+    plane = message_plane.MessagePlaneTransport()
 
     with pytest.raises(NotImplementedError):
         await async_chain.get()
@@ -80,26 +77,17 @@ async def test_runtime_storage_transport_contract_methods_raise() -> None:
     with pytest.raises(NotImplementedError):
         await call_chain.is_in_call_chain("p", "run")
 
-    with pytest.raises(NotImplementedError):
-        await mem.query("bucket", "q")
-    with pytest.raises(NotImplementedError):
-        await mem.get("bucket")
+    assert (await mem.query("bucket", "q")).is_err()
+    assert (await mem.get("bucket")).is_err()
 
-    with pytest.raises(NotImplementedError):
-        await sys_info.get_system_config()
-    with pytest.raises(NotImplementedError):
-        await sys_info.get_python_env()
+    assert (await sys_info.get_system_config()).is_err()
+    assert (await sys_info.get_python_env()).is_ok()
 
-    with pytest.raises(NotImplementedError):
-        await plane.request("topic", {})
-    with pytest.raises(NotImplementedError):
-        await plane.notify("topic", {})
-    with pytest.raises(NotImplementedError):
-        await plane.publish("topic", {})
-    with pytest.raises(NotImplementedError):
-        await plane.subscribe("topic", handler=lambda payload: payload)
-    with pytest.raises(NotImplementedError):
-        await plane.unsubscribe("topic")
+    assert (await plane.request("topic", {})).is_err()
+    assert (await plane.notify("topic", {})).is_ok()
+    assert (await plane.publish("topic", {})).is_ok()
+    assert (await plane.subscribe("topic", handler=lambda payload: payload)).is_ok()
+    assert (await plane.unsubscribe("topic")).is_ok()
 
 
 def test_runtime_contract_placeholder_classes() -> None:

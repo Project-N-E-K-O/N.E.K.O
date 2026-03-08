@@ -161,27 +161,57 @@ async def test_call_chain_helpers_raise_not_implemented() -> None:
 
 
 @pytest.mark.asyncio
-async def test_system_info_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.SystemInfo(_Ctx())
+async def test_system_info_runtime_behaviors() -> None:
+    class _CtxWithSystem(_Ctx):
+        async def get_system_config(self, timeout: float = 5.0) -> dict[str, object]:
+            return {"config": {"plugin_dir": "/tmp/demo"}}
 
-    info = object.__new__(rt.SystemInfo)
-    with pytest.raises(NotImplementedError):
-        await info.get_system_config()
-    with pytest.raises(NotImplementedError):
-        await info.get_python_env()
+    info = rt.SystemInfo(_CtxWithSystem())
+    config = await info.get_system_config()
+    assert config.is_ok()
+    env = await info.get_python_env()
+    assert env.is_ok()
+    assert "python" in env.unwrap()
+
+    class _CtxNoSystem:
+        plugin_id = "demo"
+
+    no_system = rt.SystemInfo(_CtxNoSystem())
+    assert (await no_system.get_system_config()).is_err()
 
 
 @pytest.mark.asyncio
-async def test_memory_client_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.MemoryClient(_Ctx())
+async def test_memory_client_runtime_behaviors() -> None:
+    class _CtxMem(_Ctx):
+        async def query_memory_async(self, lanlan_name: str, query: str, timeout: float = 5.0) -> dict[str, object]:
+            return {"bucket": lanlan_name, "query": query}
 
-    mem = object.__new__(rt.MemoryClient)
-    with pytest.raises(NotImplementedError):
-        await mem.query("b", "q")
-    with pytest.raises(NotImplementedError):
-        await mem.get("b")
+        @property
+        def bus(self):
+            class _Bus:
+                class memory:
+                    @staticmethod
+                    async def get_async(bucket_id: str, limit: int = 20, timeout: float = 5.0):
+                        class _List:
+                            @staticmethod
+                            def dump_records():
+                                return [{"bucket": bucket_id, "limit": limit}]
+                        return _List()
+            return _Bus()
+
+    mem = rt.MemoryClient(_CtxMem())
+    queried = await mem.query("b", "q")
+    assert queried.is_ok()
+    got = await mem.get("b")
+    assert got.is_ok()
+    assert got.unwrap()[0]["bucket"] == "b"
+
+    class _CtxNoMem:
+        plugin_id = "demo"
+
+    no_mem = rt.MemoryClient(_CtxNoMem())
+    assert (await no_mem.query("b", "q")).is_err()
+    assert (await no_mem.get("b")).is_err()
 
 
 @pytest.mark.asyncio
