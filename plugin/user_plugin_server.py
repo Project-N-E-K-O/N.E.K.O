@@ -14,15 +14,9 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import FrameType
 from typing import IO
-
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import Response
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _PLUGIN_PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -237,140 +231,10 @@ _configure_python_logging_root()
 _configure_windows_event_loop_policy()
 _disable_windows_plugin_zmq_when_tornado_missing()
 
-from plugin.server.infrastructure.exceptions import register_exception_handlers  # noqa: E402
-from plugin.server.lifecycle import shutdown, startup  # noqa: E402
-from plugin.server.routes import (  # noqa: E402
-    config_router,
-    frontend_router,
-    health_router,
-    logs_router,
-    messages_router,
-    metrics_router,
-    plugin_ui_router,
-    plugins_router,
-    runs_router,
-    websocket_router,
-)
-from plugin.server.routes.frontend import mount_static_files  # noqa: E402
+from plugin.server.http_app import build_plugin_server_app  # noqa: E402
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    _ = app
-
-    if _can_register_faulthandler_signal():
-        try:
-            faulthandler.register(signal.SIGUSR1, all_threads=True)
-        except (RuntimeError, OSError, AttributeError, ValueError) as exc:
-            logger.debug(
-                "failed to register faulthandler SIGUSR1: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-
-    stop_event = threading.Event()
-    last_heartbeat: dict[str, float] = {"t": time.monotonic()}
-
-    async def _heartbeat() -> None:
-        while not stop_event.is_set():
-            last_heartbeat["t"] = time.monotonic()
-            await asyncio.sleep(0.5)
-
-    def _watchdog() -> None:
-        threshold = 8.0
-        while not stop_event.is_set():
-            now = time.monotonic()
-            elapsed = now - last_heartbeat["t"]
-            if elapsed > threshold:
-                logger.error(
-                    "Event loop appears blocked (no heartbeat for {:.1f}s); dumping all thread tracebacks",
-                    elapsed,
-                )
-                try:
-                    faulthandler.dump_traceback(all_threads=True)
-                except (RuntimeError, OSError, ValueError, AttributeError) as exc:
-                    logger.warning(
-                        "failed to dump traceback: err_type={}, err={}",
-                        type(exc).__name__,
-                        str(exc),
-                    )
-                last_heartbeat["t"] = now
-            time.sleep(1.0)
-
-    watchdog_thread = threading.Thread(target=_watchdog, daemon=True, name="event-loop-watchdog")
-    watchdog_thread.start()
-
-    heartbeat_task = asyncio.create_task(_heartbeat(), name="server-heartbeat")
-    await startup()
-    try:
-        yield
-    finally:
-        stop_event.set()
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            logger.debug("heartbeat task cancelled")
-        except RuntimeError as exc:
-            logger.warning(
-                "heartbeat task failed while stopping: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-        await shutdown()
-
-
-app = FastAPI(title="N.E.K.O User Plugin Server", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:48911",
-        "http://127.0.0.1:48911",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-register_exception_handlers(app)
-mount_static_files(app)
-
-
-@app.middleware("http")
-async def _frontend_cache_headers(
-    request: Request,
-    call_next: Callable[[Request], Awaitable[Response]],
-) -> Response:
-    response = await call_next(request)
-    path = request.url.path
-
-    if path.startswith("/ui/assets/"):
-        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
-        return response
-
-    if path in {"/ui", "/ui/"} or (path.startswith("/ui/") and path.endswith(".html")):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
-
-    return response
-
-
-app.include_router(health_router)
-app.include_router(plugins_router)
-app.include_router(runs_router)
-app.include_router(messages_router)
-app.include_router(metrics_router)
-app.include_router(config_router)
-app.include_router(logs_router)
-app.include_router(frontend_router)
-app.include_router(websocket_router)
-app.include_router(plugin_ui_router)
+app = build_plugin_server_app()
 
 
 def _enable_fault_handler_dump_file() -> IO[str] | None:

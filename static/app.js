@@ -617,6 +617,26 @@ function init_app() {
                         window.currentTurnGeminiBubbles = [];
                     }
 
+                    // 兜底：清除未被追踪但残留在聊天底部的 gemini 气泡，
+                    // 确保下一轮 AI 回复能正确出现在玩家气泡下方
+                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                        chatContainer && chatContainer.children && chatContainer.children.length > 0) {
+                        const toRemove = [];
+                        for (let i = chatContainer.children.length - 1; i >= 0; i--) {
+                            const el = chatContainer.children[i];
+                            if (el.classList && el.classList.contains('message') && el.classList.contains('gemini')) {
+                                toRemove.push(el);
+                            } else {
+                                break;
+                            }
+                        }
+                        toRemove.forEach(el => {
+                            if (el && el.parentNode) {
+                                el.parentNode.removeChild(el);
+                            }
+                        });
+                    }
+
                     window._geminiTurnFullText = '';
                     window._pendingMusicCommand = '';
 

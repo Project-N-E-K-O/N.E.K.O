@@ -213,9 +213,7 @@
             const canUse = effectiveAnalyzerEnabled && ready;
             list.forEach(target => {
                 target.checked = optimisticValue && canUse;
-                // When master is ON, keep child toggles clickable even if capability cache
-                // is stale — backend set_agent_flags does a live check and will notify on error.
-                target.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled;
+                target.disabled = !!state.globalBusy || disabledByPending || !effectiveAnalyzerEnabled || !ready;
                 if (canUse) {
                     target.title = getName(k);
                 } else if (!effectiveAnalyzerEnabled) {

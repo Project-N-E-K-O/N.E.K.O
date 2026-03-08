@@ -234,11 +234,15 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
         )
         return result
 
-    running_plugin_ids = {
-        plugin_id
-        for plugin_id in hosts_snapshot.keys()
-        if isinstance(plugin_id, str)
-    }
+    running_plugin_ids = set()
+    for plugin_id, host_obj in hosts_snapshot.items():
+        if not isinstance(plugin_id, str):
+            continue
+        try:
+            if hasattr(host_obj, "is_alive") and host_obj.is_alive():
+                running_plugin_ids.add(plugin_id)
+        except Exception:
+            pass
 
     for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
         if not isinstance(plugin_id_obj, str):

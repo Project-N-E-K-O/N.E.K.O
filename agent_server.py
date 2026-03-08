@@ -43,6 +43,11 @@ class Modules:
     browser_use: BrowserUseAdapter | None = None
     deduper: TaskDeduper | None = None
     task_executor: DirectTaskExecutor | None = None
+    user_plugin_app: FastAPI | None = None
+    user_plugin_http_server: Any = None
+    user_plugin_http_task: Optional[asyncio.Task] = None
+    plugin_lifecycle_started: bool = False
+    _plugin_lifecycle_lock: Optional[asyncio.Lock] = None
     # Task tracking
     task_registry: Dict[str, Dict[str, Any]] = {}
     executor_reset_needed: bool = False
@@ -109,6 +114,147 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
         return False
 
 
+def _get_throttled_logger() -> ThrottledLogger:
+    throttled = Modules.throttled_logger
+    if throttled is None:
+        throttled = ThrottledLogger(logger, interval=30.0)
+        Modules.throttled_logger = throttled
+    return throttled
+
+
+async def _start_embedded_user_plugin_server() -> None:
+    """Start the plugin HTTP server inside the agent process."""
+    existing_task = Modules.user_plugin_http_task
+    if existing_task is not None and not existing_task.done():
+        return
+
+    # Replicate the sys.path setup from user_plugin_server.py so that
+    # plugin entry points like "plugins.testPlugin:HelloPlugin" resolve
+    # correctly (the "plugins" package lives under <project>/plugin/).
+    _plugin_package_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin")
+    if _plugin_package_root not in sys.path:
+        sys.path.insert(1, _plugin_package_root)
+
+    try:
+        from plugin.server.http_app import build_plugin_server_app
+        import uvicorn
+    except Exception as exc:
+        raise RuntimeError(f"failed to import embedded user plugin server: {exc}") from exc
+
+    if Modules.user_plugin_app is None:
+        Modules.user_plugin_app = build_plugin_server_app()
+
+    config = uvicorn.Config(
+        Modules.user_plugin_app,
+        host="127.0.0.1",
+        port=USER_PLUGIN_SERVER_PORT,
+        log_config=None,
+        backlog=4096,
+        timeout_keep_alive=30,
+    )
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    task = asyncio.create_task(server.serve(), name="embedded-user-plugin-server")
+    Modules.user_plugin_http_server = server
+    Modules.user_plugin_http_task = task
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10.0
+    while True:
+        if getattr(server, "started", False):
+            logger.debug("[Agent] Embedded user plugin server started on 127.0.0.1:%s", USER_PLUGIN_SERVER_PORT)
+            return
+
+        if task.done():
+            Modules.user_plugin_http_server = None
+            Modules.user_plugin_http_task = None
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError as cancelled_exc:
+                raise RuntimeError("embedded user plugin server was cancelled during startup") from cancelled_exc
+            if exc is not None:
+                raise RuntimeError(f"embedded user plugin server exited early: {exc}") from exc
+            raise RuntimeError("embedded user plugin server exited before signaling readiness")
+
+        if loop.time() >= deadline:
+            server.should_exit = True
+            Modules.user_plugin_http_server = None
+            Modules.user_plugin_http_task = None
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise RuntimeError("timed out waiting for embedded user plugin server startup")
+
+        await asyncio.sleep(0.1)
+
+
+async def _stop_embedded_user_plugin_server() -> None:
+    """Stop the plugin HTTP server hosted inside the agent process."""
+    server = Modules.user_plugin_http_server
+    task = Modules.user_plugin_http_task
+    Modules.user_plugin_http_server = None
+    Modules.user_plugin_http_task = None
+
+    if server is not None:
+        server.should_exit = True
+
+    if task is None:
+        return
+
+    try:
+        await asyncio.wait_for(task, timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] Embedded user plugin server shutdown timed out")
+        if server is not None:
+            server.force_exit = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _ensure_plugin_lifecycle_started() -> bool:
+    """Start the plugin lifecycle (load & run plugins). Returns True on success."""
+    if Modules.plugin_lifecycle_started:
+        return True
+    if Modules._plugin_lifecycle_lock is None:
+        Modules._plugin_lifecycle_lock = asyncio.Lock()
+    async with Modules._plugin_lifecycle_lock:
+        if Modules.plugin_lifecycle_started:
+            return True
+        try:
+            from plugin.server.lifecycle import startup as plugin_lifecycle_startup
+            await plugin_lifecycle_startup()
+            Modules.plugin_lifecycle_started = True
+            logger.info("[Agent] Plugin lifecycle started")
+            return True
+        except Exception as exc:
+            logger.error("[Agent] Plugin lifecycle startup failed: %s", exc)
+            return False
+
+
+async def _ensure_plugin_lifecycle_stopped() -> None:
+    """Stop the plugin lifecycle (stop plugin processes, cleanup)."""
+    if not Modules.plugin_lifecycle_started:
+        return
+    if Modules._plugin_lifecycle_lock is None:
+        Modules._plugin_lifecycle_lock = asyncio.Lock()
+    async with Modules._plugin_lifecycle_lock:
+        if not Modules.plugin_lifecycle_started:
+            return
+        try:
+            from plugin.server.lifecycle import shutdown as plugin_lifecycle_shutdown
+            await plugin_lifecycle_shutdown()
+            logger.info("[Agent] Plugin lifecycle stopped")
+        except Exception as exc:
+            logger.warning("[Agent] Plugin lifecycle shutdown error: %s", exc)
+        finally:
+            Modules.plugin_lifecycle_started = False
+
+
 async def _fire_user_plugin_capability_check() -> None:
     """Probe the user plugin server to determine if user_plugin capability is ready."""
     try:
@@ -119,13 +265,17 @@ async def _fire_user_plugin_capability_check() -> None:
                 plugins = data.get("plugins", []) if isinstance(data, dict) else []
                 if plugins:
                     _set_capability("user_plugin", True, "")
-                    logger.info("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
+                    logger.debug("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
                 else:
                     _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
-                    logger.info("[Agent] UserPlugin capability check: no plugins found")
+                    logger.debug("[Agent] UserPlugin capability check: no plugins found")
             else:
                 _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
-                logger.warning("[Agent] UserPlugin capability check failed: status %s", r.status_code)
+                _get_throttled_logger().warning(
+                    "user_plugin_capability_check_failed",
+                    "[Agent] UserPlugin capability check failed: status %s",
+                    r.status_code,
+                )
     except Exception as e:
         _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
         logger.debug("[Agent] UserPlugin capability check error: %s", e)
@@ -1090,34 +1240,28 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
 
 @app.on_event("startup")
 async def startup():
+    os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
     Modules.browser_use = BrowserUseAdapter()
     Modules.task_executor = DirectTaskExecutor(computer_use=Modules.computer_use, browser_use=Modules.browser_use)
     Modules.deduper = TaskDeduper()
+    Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
+    try:
+        await _start_embedded_user_plugin_server()
+    except Exception as e:
+        logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
     _set_capability("computer_use", False, "connectivity check pending")
     _set_capability("browser_use", False, "connectivity check pending")
-    _set_capability("user_plugin", False, "connectivity check pending")
+    # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
+    # is NOT started here — it syncs with user_plugin_enabled (default OFF).
+    # The lifecycle starts on-demand when the user toggles the plugin flag ON.
+    _set_capability("user_plugin", True, "")
     _llm_probe_task = asyncio.create_task(_fire_agent_llm_connectivity_check())
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
-    # UserPlugin probe — plugin server may start slightly later, so retry a few times
-    async def _delayed_user_plugin_check():
-        prev_cap = dict(Modules.capability_cache.get("user_plugin", {}))
-        for attempt in range(6):
-            await asyncio.sleep(2)
-            await _fire_user_plugin_capability_check()
-            cap = Modules.capability_cache.get("user_plugin", {})
-            if cap != prev_cap:
-                await _emit_agent_status_update()
-                prev_cap = dict(cap)
-            if cap.get("ready"):
-                break
-    _plugin_probe_task = asyncio.create_task(_delayed_user_plugin_check())
-    Modules._persistent_tasks.add(_plugin_probe_task)
-    _plugin_probe_task.add_done_callback(Modules._persistent_tasks.discard)
     
     try:
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -1141,7 +1285,7 @@ async def startup():
         # inject http-based provider so DirectTaskExecutor can pick up user_plugin_server plugins
         try:
             Modules.task_executor.set_plugin_list_provider(_http_plugin_provider)
-            logger.info("[Agent] Registered http plugin_list_provider for task_executor")
+            logger.debug("[Agent] Registered http plugin_list_provider for task_executor")
         except Exception as e:
             logger.warning(f"[Agent] Failed to inject plugin_list_provider into task_executor: {e}")
     except Exception as e:
@@ -1179,6 +1323,16 @@ async def shutdown():
             t.cancel()
     if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
         Modules.active_computer_use_async_task.cancel()
+
+    try:
+        await _ensure_plugin_lifecycle_stopped()
+    except Exception as e:
+        logger.warning(f"[Agent] Plugin lifecycle cleanup error: {e}")
+
+    try:
+        await _stop_embedded_user_plugin_server()
+    except Exception as e:
+        logger.warning(f"[Agent] Embedded user plugin server cleanup error: {e}")
 
     logger.info("[Agent] 正在清理 AsyncClient 资源...")
 
@@ -1555,6 +1709,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("user_plugin", False, first_reason)
+        await _ensure_plugin_lifecycle_stopped()
         Modules.notification = None
         if Modules.agent_flags != old_flags:
             _bump_state_revision()
@@ -1616,33 +1771,68 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules.agent_flags["browser_use_enabled"] = False
             
     if isinstance(uf, bool):
-        if uf:  # Attempting to enable UserPlugin
-            try:
-                async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
-                    r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-                    if r.status_code != 200:
-                        _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
+        if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
+            Modules.agent_flags["user_plugin_enabled"] = True
+            Modules.notification = json.dumps({"code": "AGENT_UP_ENABLED_CHECKING"})
+
+            async def _bg_plugin_enable():
+                _ln = lanlan_name
+                try:
+                    started = await _ensure_plugin_lifecycle_started()
+                    if not started:
                         Modules.agent_flags["user_plugin_enabled"] = False
-                        Modules.notification = None
-                        logger.warning("[Agent] Cannot enable UserPlugin: service unavailable")
-                        return {"success": True, "agent_flags": Modules.agent_flags}
-                    data = r.json()
-                    plugins = data.get("plugins", []) if isinstance(data, dict) else []
+                        Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
+                        logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
+                        _bump_state_revision()
+                        await _emit_agent_status_update(lanlan_name=_ln)
+                        return
+
+                    plugins = []
+                    for _attempt in range(8):
+                        await asyncio.sleep(0.5)
+                        try:
+                            async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
+                                r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    plugins = data.get("plugins", []) if isinstance(data, dict) else []
+                                    if plugins:
+                                        break
+                        except Exception:
+                            pass
+
                     if not plugins:
-                        _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
                         Modules.agent_flags["user_plugin_enabled"] = False
-                        Modules.notification = None
-                        logger.warning("[Agent] Cannot enable UserPlugin: no plugins found")
-                        return {"success": True, "agent_flags": Modules.agent_flags}
-            except Exception as e:
-                _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
-                Modules.agent_flags["user_plugin_enabled"] = False
-                Modules.notification = None
-                logger.error(f"[Agent] Cannot enable UserPlugin: {e}")
-                return {"success": True, "agent_flags": Modules.agent_flags}
-        if uf:
+                        Modules.notification = json.dumps({"code": "AGENT_NO_PLUGINS_FOUND"})
+                        logger.warning("[Agent] Cannot enable UserPlugin: no plugins found after lifecycle start")
+                        await _ensure_plugin_lifecycle_stopped()
+                    else:
+                        _set_capability("user_plugin", True, "")
+                        logger.info("[Agent] UserPlugin lifecycle ready (%d plugins)", len(plugins))
+                except Exception as exc:
+                    Modules.agent_flags["user_plugin_enabled"] = False
+                    Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
+                    logger.error("[Agent] Background plugin enable failed: %s", exc)
+                finally:
+                    _bump_state_revision()
+                    await _emit_agent_status_update(lanlan_name=_ln)
+
+            _bg = asyncio.create_task(_bg_plugin_enable())
+            Modules._persistent_tasks.add(_bg)
+            _bg.add_done_callback(Modules._persistent_tasks.discard)
+        else:  # Disabling UserPlugin — non-blocking
+            Modules.agent_flags["user_plugin_enabled"] = False
             _set_capability("user_plugin", True, "")
-        Modules.agent_flags["user_plugin_enabled"] = uf
+
+            async def _bg_plugin_disable():
+                try:
+                    await _ensure_plugin_lifecycle_stopped()
+                except Exception as exc:
+                    logger.warning("[Agent] Background plugin disable error: %s", exc)
+
+            _bg = asyncio.create_task(_bg_plugin_disable())
+            Modules._persistent_tasks.add(_bg)
+            _bg.add_done_callback(Modules._persistent_tasks.discard)
 
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
@@ -1675,7 +1865,9 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.agent_flags["browser_use_enabled"] = False
             Modules.agent_flags["user_plugin_enabled"] = False
+            _set_capability("user_plugin", True, "")
             await admin_control({"action": "end_all"})
+            await _ensure_plugin_lifecycle_stopped()
         _bump_state_revision()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
         total_ms = round((time.perf_counter() - t0) * 1000, 2)

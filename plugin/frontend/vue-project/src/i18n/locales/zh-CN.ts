@@ -40,28 +40,8 @@ export default {
     adapterUI: '适配器界面'
   },
   auth: {
-    login: '登录',
-    logout: '退出登录',
-    loggingIn: '验证中...',
-    loginTitle: 'N.E.K.O 插件管理',
-    loginSubtitle: '请输入管理员验证码',
-    codePlaceholder: '请输入4位字母验证码',
-    codeHint: '验证码在服务器启动时显示在终端中',
-    codeFormat: '格式：4个大写字母（如：ABCD）',
-    loginSuccess: '登录成功',
-    loginFailed: '登录失败',
-    codeError: '验证码错误，请重新输入',
-    pasteFromClipboard: '从剪切板获取',
-    clipboardUnsupported: '当前环境不支持读取剪切板',
-    clipboardNoCodeFound: '剪切板中未找到4位字母验证码',
-    clipboardReadFailed: '读取剪切板失败，请检查浏览器权限',
-    networkError: '网络错误，但验证码已保存',
-    unauthorized: '未授权，请重新登录',
-    forbidden: '拒绝访问：验证码错误或已过期',
-    logoutConfirm: '确定要退出登录吗？',
-    logoutSuccess: '已退出登录',
-    reAuthRequired: '认证失效，请重新输入验证码',
-    goToLogin: '去登录页'
+    unauthorized: '未授权访问',
+    forbidden: '拒绝访问'
   },
   plugin: {
     addProfile: {
@@ -234,7 +214,7 @@ export default {
   runs: {
     title: '运行记录',
     detail: '运行详情',
-    wsDisconnected: '实时连接未建立，请检查验证码与服务器状态',
+    wsDisconnected: '实时连接未建立，请检查服务器状态',
     noRuns: '暂无运行记录',
     selectRun: '请选择一条运行记录',
     runId: 'Run ID',
