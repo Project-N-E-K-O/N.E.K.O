@@ -1,16 +1,27 @@
-"""Adapter decorators for SDK v2."""
+"""Adapter decorators for SDK v2.
+
+This module is part of the developer-facing adapter facade. It owns the stable
+adapter decorator names and metadata markers, while concrete runtime behavior
+remains contract-only in the current phase.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 F = TypeVar("F", bound=Callable[..., object])
 
-from plugin.sdk_v2.public.adapter.decorators import (
-    ADAPTER_EVENT_META,
-    ADAPTER_LIFECYCLE_META,
-    AdapterEventMeta,
-)
+ADAPTER_EVENT_META = "__adapter_event_meta__"
+ADAPTER_LIFECYCLE_META = "__adapter_lifecycle_meta__"
+
+
+@dataclass(slots=True, frozen=True)
+class AdapterEventMeta:
+    protocol: str
+    action: str
+    pattern: str | None
+    priority: int
 
 
 def _not_impl(*_args: object, **_kwargs: object) -> None:
