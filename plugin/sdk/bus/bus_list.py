@@ -392,6 +392,23 @@ class BusListCore:
     def reload(self, ctx: Any = None, *, incremental: bool = False) -> Any:
         return self.reload_with(ctx, incremental=bool(incremental))
 
+    async def reload_async(
+        self,
+        ctx: Any = None,
+        *,
+        incremental: bool = False,
+    ) -> Any:
+        if ctx is None:
+            return await asyncio.to_thread(
+                self.reload,
+                incremental=incremental,
+            )
+        return await asyncio.to_thread(
+            self.reload,
+            ctx,
+            incremental=incremental,
+        )
+
     async def reload_with_async(
         self,
         ctx: Any = None,
@@ -486,6 +503,9 @@ class BusListWatcherCore:
         self._unsub = self._state_subscribe(self._bus, _on_event)
         return self
 
+    async def start_async(self) -> Any:
+        return await asyncio.to_thread(self.start)
+
     def stop(self) -> None:
         if self._sub_id is not None:
             sid = self._sub_id
@@ -509,6 +529,9 @@ class BusListWatcherCore:
             self._unsub()
         finally:
             self._unsub = None
+
+    async def stop_async(self) -> None:
+        await asyncio.to_thread(self.stop)
 
 
 def _build_bus_subscribe_request(bus: str, plan_dump: Any) -> dict[str, Any]:

@@ -80,9 +80,24 @@ class _MessageClientProto(Protocol):
         timeout: float = 5.0,
     ) -> "MessageList": ...
 
+    async def get_async(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        timeout: float = 5.0,
+    ) -> "MessageList": ...
+
 
 class _EventClientProto(Protocol):
     def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "EventList": ...
+
+    async def get_async(
         self,
         plugin_id: Optional[str] = None,
         max_count: int = 50,
@@ -98,9 +113,18 @@ class _LifecycleClientProto(Protocol):
         timeout: float = 5.0,
     ) -> "LifecycleList": ...
 
+    async def get_async(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "LifecycleList": ...
+
 
 class _MemoryClientProto(Protocol):
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
+
+    async def get_async(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
 
 
 class _ConversationClientProto(Protocol):
@@ -112,8 +136,25 @@ class _ConversationClientProto(Protocol):
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> "ConversationList": ...
+
+    async def get_async(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        max_count: int = 50,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
     
     def get_by_id(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
+
+    async def get_by_id_async(
         self,
         conversation_id: str,
         *,
@@ -1289,6 +1330,18 @@ class BusList(BusListCore, Generic[TRecord]):
             raise TypeError("reload() missing required argument: 'ctx' (BusList is not bound to a context)")
         return cast("BusList[TRecord]", super().reload(ctx, incremental=bool(incremental)))
 
+    async def reload_async(
+        self,
+        ctx: Optional[BusReplayContext] = None,
+        *,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]":
+        if ctx is None:
+            ctx = getattr(self, "_ctx", None)
+        if ctx is None:
+            raise TypeError("reload_async() missing required argument: 'ctx' (BusList is not bound to a context)")
+        return cast("BusList[TRecord]", await super().reload_async(ctx, incremental=bool(incremental)))
+
     @overload
     def reload_with(
         self,
@@ -1871,6 +1924,15 @@ class BusList(BusListCore, Generic[TRecord]):
         from plugin.sdk.bus.watchers import BusListWatcher
 
         return BusListWatcher(self, ctx, bus=bus, debounce_ms=debounce_ms)
+
+    async def watch_async(
+        self,
+        ctx: Optional[BusReplayContext] = None,
+        *,
+        bus: Optional[str] = None,
+        debounce_ms: float = 0.0,
+    ) -> "BusListWatcher[TRecord]":
+        return self.watch(ctx=ctx, bus=bus, debounce_ms=debounce_ms)
 
 
 from plugin.sdk.bus.watchers import BusListDelta, BusListWatcher, list_Subscription, list_subscription  # noqa: E402

@@ -24,9 +24,24 @@ class _MessageClientProto(Protocol):
         timeout: float = 5.0,
     ) -> "MessageList": ...
 
+    async def get_async(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        timeout: float = 5.0,
+    ) -> "MessageList": ...
+
 
 class _EventClientProto(Protocol):
     def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "EventList": ...
+
+    async def get_async(
         self,
         plugin_id: Optional[str] = None,
         max_count: int = 50,
@@ -42,9 +57,18 @@ class _LifecycleClientProto(Protocol):
         timeout: float = 5.0,
     ) -> "LifecycleList": ...
 
+    async def get_async(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "LifecycleList": ...
+
 
 class _MemoryClientProto(Protocol):
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
+
+    async def get_async(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
 
 
 class _ConversationClientProto(Protocol):
@@ -56,8 +80,25 @@ class _ConversationClientProto(Protocol):
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> "ConversationList": ...
+
+    async def get_async(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        max_count: int = 50,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
     
     def get_by_id(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
+
+    async def get_by_id_async(
         self,
         conversation_id: str,
         *,

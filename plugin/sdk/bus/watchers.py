@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
@@ -21,6 +22,7 @@ __all__ = [
     "BusListDelta",
     "BusListWatcher",
     "list_subscription",
+    "list_subscription_async",
     "list_Subscription",
 ]
 
@@ -187,6 +189,14 @@ def list_subscription(
     on: Union[str, Sequence[str]] = ("add",),
 ) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
     return watcher.subscribe(on=on)
+
+
+async def list_subscription_async(
+    watcher: BusListWatcher[TRecord],
+    *,
+    on: Union[str, Sequence[str]] = ("add",),
+) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
+    return await asyncio.to_thread(list_subscription, watcher, on=on)
 
 
 list_Subscription = list_subscription

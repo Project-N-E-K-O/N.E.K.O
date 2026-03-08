@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import warnings
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -57,6 +59,22 @@ class Plugins:
     """
     ctx: "PluginContextProtocol"
 
+    @staticmethod
+    def _warn_sync_deprecated(name: str) -> None:
+        warnings.warn(
+            f"Plugins.{name}() is deprecated and will be removed in a future version; "
+            f"use Plugins.{name}_async() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    async def list_async(self, filters: Optional[Dict[str, Any]] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
+        if hasattr(self.ctx, "query_plugins_async"):
+            return await self.ctx.query_plugins_async(filters or {}, timeout=timeout)
+        if not hasattr(self.ctx, "query_plugins"):
+            raise PluginCallError("ctx.query_plugins is not available")
+        return await asyncio.to_thread(self.ctx.query_plugins, filters or {}, timeout)
+
     def list(self, filters: Optional[Dict[str, Any]] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
         """查询插件列表
         
@@ -83,9 +101,20 @@ class Plugins:
             >>> plugins = self.plugins.list()
             >>> running_plugins = self.plugins.list(filters={"status": "running"})
         """
+        self._warn_sync_deprecated("list")
         if not hasattr(self.ctx, "query_plugins"):
             raise PluginCallError("ctx.query_plugins is not available")
         return self.ctx.query_plugins(filters or {}, timeout=timeout)
+
+    async def call_entry_async(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
+        plugin_id, entry_id = _parse_entry_ref(ref)
+        return await self.call_async(
+            plugin_id=plugin_id,
+            event_type="plugin_entry",
+            event_id=entry_id,
+            params=params,
+            timeout=timeout,
+        )
 
     def call_entry(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
         """调用其他插件的entry
@@ -110,8 +139,19 @@ class Plugins:
             ...     {"data": [1, 2, 3]}
             ... )
         """
+        self._warn_sync_deprecated("call_entry")
         plugin_id, entry_id = _parse_entry_ref(ref)
         return self.call(plugin_id=plugin_id, event_type="plugin_entry", event_id=entry_id, params=params, timeout=timeout)
+
+    async def call_event_async(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
+        plugin_id, event_type, event_id = _parse_event_ref(ref)
+        return await self.call_async(
+            plugin_id=plugin_id,
+            event_type=event_type,
+            event_id=event_id,
+            params=params,
+            timeout=timeout,
+        )
 
     def call_event(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
         """调用其他插件的自定义事件
@@ -136,8 +176,37 @@ class Plugins:
             ...     {"message": "Hello"}
             ... )
         """
+        self._warn_sync_deprecated("call_event")
         plugin_id, event_type, event_id = _parse_event_ref(ref)
         return self.call(plugin_id=plugin_id, event_type=event_type, event_id=event_id, params=params, timeout=timeout)
+
+    async def call_async(
+        self,
+        *,
+        plugin_id: str,
+        event_type: str,
+        event_id: str,
+        params: Dict[str, Any],
+        timeout: float = 10.0,
+    ) -> Any:
+        if hasattr(self.ctx, "trigger_plugin_event_async"):
+            return await self.ctx.trigger_plugin_event_async(
+                target_plugin_id=plugin_id,
+                event_type=event_type,
+                event_id=event_id,
+                params=params,
+                timeout=timeout,
+            )
+        if not hasattr(self.ctx, "trigger_plugin_event"):
+            raise PluginCallError("ctx.trigger_plugin_event is not available")
+        return await asyncio.to_thread(
+            self.ctx.trigger_plugin_event,
+            target_plugin_id=plugin_id,
+            event_type=event_type,
+            event_id=event_id,
+            params=params,
+            timeout=timeout,
+        )
 
     def call(self, *, plugin_id: str, event_type: str, event_id: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
         """通用插件事件调用方法
@@ -167,6 +236,7 @@ class Plugins:
             ...     params={"param": "value"}
             ... )
         """
+        self._warn_sync_deprecated("call")
         if not hasattr(self.ctx, "trigger_plugin_event"):
             raise PluginCallError("ctx.trigger_plugin_event is not available")
         return self.ctx.trigger_plugin_event(
@@ -176,6 +246,12 @@ class Plugins:
             params=params,
             timeout=timeout,
         )
+
+    async def require_async(self, plugin_id: str, *, timeout: float = 5.0) -> None:
+        info = await self.list_async({"include_events": False}, timeout=timeout)
+        plugins = info.get("plugins", []) if isinstance(info, dict) else []
+        if not any(isinstance(p, dict) and p.get("plugin_id") == plugin_id for p in plugins):
+            raise PluginCallError(f"Required plugin '{plugin_id}' not found")
 
     def require(self, plugin_id: str, *, timeout: float = 5.0) -> None:
         """检查必需的插件是否存在
@@ -198,6 +274,7 @@ class Plugins:
             ...     self.plugins.require("data_processor")
             ...     self.plugins.require("notifier")
         """
+        self._warn_sync_deprecated("require")
         info = self.list({"include_events": False}, timeout=timeout)
         plugins = info.get("plugins", []) if isinstance(info, dict) else []
         if not any(isinstance(p, dict) and p.get("plugin_id") == plugin_id for p in plugins):

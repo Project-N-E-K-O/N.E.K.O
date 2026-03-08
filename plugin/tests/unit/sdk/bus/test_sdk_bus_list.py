@@ -145,6 +145,8 @@ class _Core(bl.BusListCore):
 async def test_bus_list_core_methods() -> None:
     c = _Core()
     assert c.reload(incremental=True)["incremental"] is True
+    assert (await c.reload_async(incremental=True))["incremental"] is True
+    assert (await c.reload_async("ctx", incremental=True))["ctx"] == "ctx"
     assert c._dedupe_key(_Rec(message_id="x")) == ("message_id", "x")
     assert c._sort_value(1) == (0, 1)
     assert c._get_sort_field(_Rec(raw={"k": 1}), "k") == 1
@@ -211,6 +213,17 @@ def test_bus_list_watcher_core_start_stop_and_subscribe(monkeypatch: pytest.Monk
     assert called and called[0] == "messages"
     w2.stop()
     assert "unsub" in called
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_bus_list_watcher_core_async_start_stop() -> None:
+    w = _Watcher()
+    out = await w.start_async()
+    assert out is w
+    assert w._sub_id == "sid-1"
+    await w.stop_async()
+    assert w._sub_id is None
 
 
 @pytest.mark.plugin_unit

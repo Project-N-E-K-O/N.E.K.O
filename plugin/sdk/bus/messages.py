@@ -502,6 +502,103 @@ class MessageClient:
         plan = GetNode(op="get", params={"bus": "messages", "params": get_params}, at=time.time())
         return MessageList(records, plugin_id=effective_pid, ctx=self.ctx, trace=trace, plan=plan)
 
+    async def get_message_plane_all_async(
+        self,
+        *,
+        plugin_id: Optional[str] = None,
+        source: Optional[str] = None,
+        priority_min: Optional[int] = None,
+        after_seq: int = 0,
+        page_limit: int = 200,
+        max_items: int = 5000,
+        timeout: float = 5.0,
+        raw: bool = False,
+        topic: str = "*",
+    ) -> MessageList:
+        pid_norm: Optional[str] = None
+        if isinstance(plugin_id, str):
+            pid_norm = plugin_id.strip()
+        if pid_norm in ("*", ""):
+            pid_norm = None
+
+        rpc = _MessagePlaneRpcClient(
+            plugin_id=getattr(self.ctx, "plugin_id", ""),
+            endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT),
+        )
+
+        out_payloads: List[Dict[str, Any]] = []
+        last_seq = int(after_seq) if after_seq is not None else 0
+        limit_i = max(int(page_limit) if page_limit else 200, 1)
+        hard_max = max(int(max_items) if max_items else 5000, 1)
+
+        while len(out_payloads) < hard_max:
+            args: Dict[str, Any] = {
+                "store": "messages",
+                "topic": str(topic) if isinstance(topic, str) and topic else "*",
+                "after_seq": int(last_seq),
+                "limit": int(min(limit_i, hard_max - len(out_payloads))),
+            }
+            resp = await rpc.request_async(op="bus.get_since", args=args, timeout=float(timeout))
+            if not isinstance(resp, dict):
+                raise TimeoutError(f"message_plane bus.get_since timed out after {timeout}s")
+            if not resp.get("ok"):
+                raise RuntimeError(format_rpc_error(resp.get("error")))
+            result = resp.get("result")
+            items: List[Any] = []
+            if isinstance(result, dict):
+                got = result.get("items")
+                if isinstance(got, list):
+                    items = got
+
+            if not items:
+                break
+
+            progressed = False
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                try:
+                    seq = int(ev.get("seq") or 0)
+                except Exception:
+                    seq = 0
+                if seq > last_seq:
+                    last_seq = seq
+                    progressed = True
+                p = ev.get("payload")
+                if not isinstance(p, dict):
+                    continue
+                if pid_norm is not None and p.get("plugin_id") != pid_norm:
+                    continue
+                if isinstance(source, str) and source and p.get("source") != source:
+                    continue
+                if priority_min is not None:
+                    try:
+                        if int(p.get("priority") or 0) < int(priority_min):
+                            continue
+                    except Exception:
+                        continue
+                out_payloads.append(p)
+                if len(out_payloads) >= hard_max:
+                    break
+
+            if not progressed or len(items) < int(args.get("limit") or 0):
+                break
+
+        records = [MessageRecord.from_raw(p) for p in out_payloads]
+        effective_pid = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
+        if raw:
+            return MessageList(records, plugin_id=effective_pid, ctx=self.ctx, trace=None, plan=None)
+
+        get_params: Dict[str, Any] = {
+            "plugin_id": plugin_id, "max_count": len(records),
+            "priority_min": priority_min, "source": source,
+            "filter": None, "strict": True, "since_ts": None,
+            "timeout": timeout, "raw": raw,
+        }
+        trace = [BusOp(name="get", params=get_params, at=time.time())]
+        plan = GetNode(op="get", params={"bus": "messages", "params": get_params}, at=time.time())
+        return MessageList(records, plugin_id=effective_pid, ctx=self.ctx, trace=trace, plan=plan)
+
     def get_by_conversation(
         self,
         conversation_id: str,
@@ -513,4 +610,18 @@ class MessageClient:
         return self.get(
             filter={"conversation_id": conversation_id},
             max_count=max_count, timeout=timeout,
+        )
+
+    async def get_by_conversation_async(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+        topic: str = "conversation",
+    ) -> MessageList:
+        return await self.get_async(
+            filter={"conversation_id": conversation_id},
+            max_count=max_count,
+            timeout=timeout,
         )

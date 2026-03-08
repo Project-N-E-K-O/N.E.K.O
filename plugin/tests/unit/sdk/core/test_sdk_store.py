@@ -147,3 +147,24 @@ def test_store_msgpack_non_orm_branch_direct(tmp_path: Path, monkeypatch: pytest
     )
     assert store._serialize({"x": 1}) == b"ok"
     assert store._deserialize(b"ok") == {"decoded": True}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_store_async_methods(tmp_path: Path) -> None:
+    from plugin.sdk.store import PluginStore
+
+    store = PluginStore(plugin_id="demo", plugin_dir=tmp_path, enabled=True)
+
+    await store.set_async("a", {"n": 1})
+    assert await store.get_async("a") == {"n": 1}
+    assert await store.exists_async("a") is True
+    assert "a" in await store.keys_async()
+    assert await store.count_async() >= 1
+    assert (await store.dump_async())["a"] == {"n": 1}
+    assert await store.delete_async("a") is True
+    assert await store.get_async("a", default="d") == "d"
+
+    await store.set_async("x", 1)
+    assert await store.clear_async() >= 1
+    await store.close_async()

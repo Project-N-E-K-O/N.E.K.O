@@ -4,6 +4,7 @@
 基于 SQLite 的轻量级键值存储，类似 localStorage。
 """
 
+import asyncio
 import sqlite3
 import threading
 import time
@@ -132,6 +133,10 @@ class PluginStore:
             if self.logger:
                 self.logger.warning(f"[Store] Failed to deserialize key '{key}': {e}")
             return default
+
+    async def get_async(self, key: str, default: Any = None) -> Any:
+        """异步获取值（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.get, key, default)
     
     def set(self, key: str, value: Any) -> None:
         """
@@ -157,6 +162,10 @@ class PluginStore:
                 updated_at = excluded.updated_at
         """, (key, data, now, now))
         conn.commit()
+
+    async def set_async(self, key: str, value: Any) -> None:
+        """异步设置值（在线程池中执行同步 I/O）。"""
+        await asyncio.to_thread(self.set, key, value)
     
     def delete(self, key: str) -> bool:
         """
@@ -177,6 +186,10 @@ class PluginStore:
         )
         conn.commit()
         return cursor.rowcount > 0
+
+    async def delete_async(self, key: str) -> bool:
+        """异步删除键（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.delete, key)
     
     def exists(self, key: str) -> bool:
         """
@@ -196,6 +209,10 @@ class PluginStore:
             (key,)
         )
         return cursor.fetchone() is not None
+
+    async def exists_async(self, key: str) -> bool:
+        """异步检查键是否存在（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.exists, key)
     
     def keys(self, prefix: str = "") -> List[str]:
         """
@@ -218,6 +235,10 @@ class PluginStore:
         else:
             cursor = conn.execute("SELECT key FROM kv_store")
         return [row["key"] for row in cursor.fetchall()]
+
+    async def keys_async(self, prefix: str = "") -> List[str]:
+        """异步获取键列表（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.keys, prefix)
     
     def clear(self) -> int:
         """
@@ -232,6 +253,10 @@ class PluginStore:
         cursor = conn.execute("DELETE FROM kv_store")
         conn.commit()
         return cursor.rowcount
+
+    async def clear_async(self) -> int:
+        """异步清空数据（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.clear)
     
     def count(self) -> int:
         """
@@ -246,6 +271,10 @@ class PluginStore:
         cursor = conn.execute("SELECT COUNT(*) as cnt FROM kv_store")
         row = cursor.fetchone()
         return row["cnt"] if row else 0
+
+    async def count_async(self) -> int:
+        """异步获取记录数（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.count)
     
     def dump(self) -> Dict[str, Any]:
         """
@@ -265,6 +294,10 @@ class PluginStore:
             except Exception:
                 pass
         return result
+
+    async def dump_async(self) -> Dict[str, Any]:
+        """异步导出全部数据（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.dump)
     
     # 便捷语法支持
     def __getitem__(self, key: str) -> Any:
@@ -294,3 +327,7 @@ class PluginStore:
             except Exception:
                 pass
             self._local.conn = None
+
+    async def close_async(self) -> None:
+        """异步关闭数据库连接（在线程池中执行同步 I/O）。"""
+        await asyncio.to_thread(self.close)

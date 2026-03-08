@@ -192,3 +192,16 @@ class ConversationClient:
             max_count=max_count,
             timeout=timeout,
         )
+
+    async def get_by_id_async(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> ConversationList:
+        return await self.get_async(
+            conversation_id=conversation_id,
+            max_count=max_count,
+            timeout=timeout,
+        )

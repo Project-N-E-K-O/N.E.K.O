@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.sdk.bus.conversations import ConversationClient, ConversationRecord
+from plugin.sdk.bus.messages import MessageClient
 from plugin.sdk.bus.events import EventRecord
 from plugin.sdk.bus.lifecycle import LifecycleRecord
 from plugin.sdk.bus.memory import MemoryList, MemoryRecord
 from plugin.sdk.bus.messages import MessageRecord
 from plugin.sdk.bus.records import BinaryNode, GetNode, UnaryNode, parse_iso_timestamp
 from plugin.sdk.bus.types import BusList, BusRecord
+from plugin.sdk.bus.watchers import list_subscription_async
 
 
 @pytest.mark.plugin_unit
@@ -121,3 +123,83 @@ def test_conversation_client_get_sync_and_by_id(monkeypatch: pytest.MonkeyPatch)
 
     one = client.get_by_id("c1", max_count=10)
     assert one.count() == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_conversation_client_get_by_id_async(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Rpc:
+        def request(self, *, op: str, args: dict[str, object], timeout: float):
+            return {
+                "ok": True,
+                "result": {"items": [{"index": {"timestamp": 1, "type": "conversation", "id": "c1"}}]},
+            }
+
+    ctx = SimpleNamespace(plugin_id="demo")
+    client = ConversationClient(ctx=ctx)
+    monkeypatch.setattr("plugin.sdk.bus.conversations._ensure_rpc", lambda _: _Rpc())
+    one = await client.get_by_id_async("c1", max_count=10)
+    assert one.count() == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_message_client_async_convenience_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _AsyncRpc:
+        async def request_async(self, *, op: str, args: dict[str, object], timeout: float):
+            return {
+                "ok": True,
+                "result": {
+                    "items": [
+                        {"seq": 1, "payload": {"plugin_id": "demo", "content": "hello", "priority": 1, "message_id": "m1"}}
+                    ]
+                },
+            }
+
+    class _BusRpc:
+        async def request_async(self, *, op: str, args: dict[str, object], timeout: float):
+            return {
+                "ok": True,
+                "result": {"items": [{"payload": {"plugin_id": "demo", "content": "x", "message_id": "m2"}}]},
+            }
+
+    ctx = SimpleNamespace(plugin_id="demo")
+    client = MessageClient(ctx=ctx)
+    monkeypatch.setattr("plugin.sdk.bus.messages._MessagePlaneRpcClient", lambda **kwargs: _AsyncRpc())
+    monkeypatch.setattr("plugin.sdk.bus.messages._ensure_rpc", lambda _: _BusRpc())
+
+    all_list = await client.get_message_plane_all_async(max_items=10, page_limit=2, raw=True)
+    assert all_list.count() == 1
+
+    by_conv = await client.get_by_conversation_async("c1", max_count=10)
+    assert by_conv.count() == 1
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_bus_list_reload_async_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugin.sdk.bus import bus_list as bl_module
+
+    lst = BusList([])
+    with pytest.raises(TypeError):
+        await lst.reload_async()
+
+    async def _fake_reload_async(self, ctx=None, *, incremental=False):  # type: ignore[no-untyped-def]
+        return BusList([], ctx=ctx)
+
+    monkeypatch.setattr(bl_module.BusListCore, "reload_async", _fake_reload_async)
+    out = await lst.reload_async(ctx=SimpleNamespace(bus="x"), incremental=True)
+    assert isinstance(out, BusList)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_list_subscription_async_helper() -> None:
+    class _W:
+        def subscribe(self, *, on=("add",)):  # noqa: ANN001, ANN201
+            def _deco(fn):  # noqa: ANN001, ANN201
+                return fn
+            return _deco
+
+    dec = await list_subscription_async(_W(), on=("add", "change"))
+    assert callable(dec)

@@ -299,3 +299,34 @@ def test_state_msgpack_non_orm_branch_and_save_failure(tmp_path: Path, monkeypat
         n = 1
     assert sp.save(P(), ["n"]) is False
     assert logger.exception_calls
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_state_async_methods(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugin.sdk.state import PluginStatePersistence
+
+    fake_state = _FakeGlobalState()
+    _inject_fake_core_state(monkeypatch, fake_state)
+
+    class P:
+        n = 1
+
+    p = P()
+    sp = PluginStatePersistence("p-async", tmp_path, backend="memory")
+
+    snap = await sp.collect_attrs_async(p, ["n"])
+    assert snap == {"n": 1}
+    restored = await sp.restore_attrs_async(p, {"n": 2})
+    assert restored == 1 and p.n == 2
+
+    assert await sp.has_saved_state_async() is False
+    assert await sp.save_async(p, ["n"], reason="auto") is True
+    assert await sp.has_saved_state_async() is True
+    p.n = 9
+    assert await sp.load_async(p) is True
+    assert p.n == 2
+    info = await sp.get_state_info_async()
+    assert info and info["plugin_id"] == "p-async"
+    assert await sp.clear_async() is True
+    assert await sp.has_saved_state_async() is False

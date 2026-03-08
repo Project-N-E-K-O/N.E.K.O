@@ -78,16 +78,40 @@ def test_parse_entry_and_event_ref() -> None:
 def test_plugins_call_helpers_and_require() -> None:
     plugins = Plugins(ctx=_PluginCtx(config_data={"runtime": {"enabled": True}}))
 
-    call_result = plugins.call_entry("a:run", {"x": 1}, timeout=2.5)
+    with pytest.deprecated_call():
+        call_result = plugins.call_entry("a:run", {"x": 1}, timeout=2.5)
     assert call_result["target_plugin_id"] == "a"
     assert call_result["event_type"] == "plugin_entry"
 
-    event_result = plugins.call_event("a:custom:run", {"x": 2})
+    with pytest.deprecated_call():
+        event_result = plugins.call_event("a:custom:run", {"x": 2})
     assert event_result["event_type"] == "custom"
 
-    plugins.require("a")
+    with pytest.deprecated_call():
+        plugins.require("a")
     with pytest.raises(PluginCallError):
-        plugins.require("missing")
+        with pytest.deprecated_call():
+            plugins.require("missing")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugins_async_methods() -> None:
+    plugins = Plugins(ctx=_PluginCtx(config_data={"runtime": {"enabled": True}}))
+
+    listed = await plugins.list_async()
+    assert isinstance(listed, dict) and "plugins" in listed
+
+    call_result = await plugins.call_entry_async("a:run", {"x": 1}, timeout=2.5)
+    assert call_result["target_plugin_id"] == "a"
+    assert call_result["event_type"] == "plugin_entry"
+
+    event_result = await plugins.call_event_async("a:custom:run", {"x": 2})
+    assert event_result["event_type"] == "custom"
+
+    await plugins.require_async("a")
+    with pytest.raises(PluginCallError):
+        await plugins.require_async("missing")
 
 
 @pytest.mark.plugin_unit

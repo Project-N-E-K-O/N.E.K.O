@@ -9,6 +9,7 @@
 - 扩展类型支持（datetime, Enum, dataclass 等）
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime, date, timedelta
@@ -296,6 +297,14 @@ class PluginStatePersistence:
                         f"[State] Attribute '{key}' is not serializable, skipping"
                     )
         return snapshot
+
+    async def collect_attrs_async(
+        self,
+        instance: Any,
+        freezable_keys: List[str],
+    ) -> Dict[str, Any]:
+        """异步收集 freezable 属性（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.collect_attrs, instance, freezable_keys)
     
     def restore_attrs(
         self,
@@ -316,6 +325,14 @@ class PluginStatePersistence:
                         f"[State] Failed to restore attribute '{key}': {e}"
                     )
         return restored_count
+
+    async def restore_attrs_async(
+        self,
+        instance: Any,
+        snapshot: Dict[str, Any],
+    ) -> int:
+        """异步恢复属性（在线程池中执行同步逻辑）。"""
+        return await asyncio.to_thread(self.restore_attrs, instance, snapshot)
     
     def save(
         self,
@@ -381,6 +398,15 @@ class PluginStatePersistence:
             if self.logger:
                 self.logger.exception(f"[State] Save failed: {e}")
             return False
+
+    async def save_async(
+        self,
+        instance: Any,
+        freezable_keys: List[str],
+        reason: str = "manual",
+    ) -> bool:
+        """异步保存插件状态（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.save, instance, freezable_keys, reason)
     
     def load(self, instance: Any) -> bool:
         """加载并恢复插件状态
@@ -438,6 +464,10 @@ class PluginStatePersistence:
             if self.logger:
                 self.logger.exception(f"[State] Load failed: {e}")
             return False
+
+    async def load_async(self, instance: Any) -> bool:
+        """异步加载状态（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.load, instance)
     
     def clear(self) -> bool:
         """清除保存的状态"""
@@ -456,6 +486,10 @@ class PluginStatePersistence:
             if self.logger:
                 self.logger.warning(f"[State] Clear failed: {e}")
             return False
+
+    async def clear_async(self) -> bool:
+        """异步清理状态（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.clear)
     
     def has_saved_state(self) -> bool:
         """检查是否有保存的状态"""
@@ -465,6 +499,10 @@ class PluginStatePersistence:
             from plugin.core.state import state
             return state.has_frozen_state_memory(self.plugin_id)
         return self._state_path.exists()
+
+    async def has_saved_state_async(self) -> bool:
+        """异步检查是否存在保存状态（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.has_saved_state)
     
     def get_state_info(self) -> Optional[Dict[str, Any]]:
         """获取保存状态的元信息（不加载数据）"""
@@ -493,3 +531,7 @@ class PluginStatePersistence:
             }
         except Exception:
             return None
+
+    async def get_state_info_async(self) -> Optional[Dict[str, Any]]:
+        """异步读取状态元信息（在线程池中执行同步 I/O）。"""
+        return await asyncio.to_thread(self.get_state_info)
