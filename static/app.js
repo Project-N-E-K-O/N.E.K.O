@@ -9295,49 +9295,55 @@ function init_app() {
 
         // 策略2: 前端 getDisplayMedia（远程服务器等后端不可用时的备选）
         // 复用缓存的 screenCaptureStream，仅在无有效流时才请求新流
-        // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
-        if (!screenCaptureAutoPromptFailed && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
                 let captureStream = screenCaptureStream;
 
                 if (!captureStream || !captureStream.active) {
-                    captureStream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: 'always', frameRate: { max: 1 } },
-                        audio: false,
-                    });
-
-                    screenCaptureStream = captureStream;
-
-                    captureStream.getVideoTracks().forEach(track => {
-                        track.addEventListener('ended', () => {
-                            console.log('[ProactiveVision] 屏幕共享流被用户终止');
-                            if (screenCaptureStream === captureStream) {
-                                screenCaptureStream = null;
-                                screenCaptureStreamLastUsed = null;
-                                if (screenCaptureStreamIdleTimer) {
-                                    clearTimeout(screenCaptureStreamIdleTimer);
-                                    screenCaptureStreamIdleTimer = null;
-                                }
-                            }
+                    // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
+                    if (screenCaptureAutoPromptFailed) {
+                        console.log('[主动搭话截图] screenCaptureAutoPromptFailed 已标记，跳过 getDisplayMedia');
+                    } else {
+                        captureStream = await navigator.mediaDevices.getDisplayMedia({
+                            video: { cursor: 'always', frameRate: { max: 1 } },
+                            audio: false,
                         });
-                    });
+
+                        screenCaptureStream = captureStream;
+
+                        captureStream.getVideoTracks().forEach(track => {
+                            track.addEventListener('ended', () => {
+                                console.log('[ProactiveVision] 屏幕共享流被用户终止');
+                                if (screenCaptureStream === captureStream) {
+                                    screenCaptureStream = null;
+                                    screenCaptureStreamLastUsed = null;
+                                    if (screenCaptureStreamIdleTimer) {
+                                        clearTimeout(screenCaptureStreamIdleTimer);
+                                        screenCaptureStreamIdleTimer = null;
+                                    }
+                                }
+                            });
+                        });
+                    }
                 }
 
-                screenCaptureStreamLastUsed = Date.now();
-                scheduleScreenCaptureIdleCheck();
+                if (captureStream && captureStream.active) {
+                    screenCaptureStreamLastUsed = Date.now();
+                    scheduleScreenCaptureIdleCheck();
 
-                const video = document.createElement('video');
-                video.srcObject = captureStream;
-                video.autoplay = true;
-                video.muted = true;
-                await video.play();
+                    const video = document.createElement('video');
+                    video.srcObject = captureStream;
+                    video.autoplay = true;
+                    video.muted = true;
+                    await video.play();
 
-                const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
-                video.srcObject = null;
-                video.remove();
+                    const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
+                    video.srcObject = null;
+                    video.remove();
 
-                console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
-                return dataUrl;
+                    console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
+                    return dataUrl;
+                }
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
                 screenCaptureAutoPromptFailed = true;
