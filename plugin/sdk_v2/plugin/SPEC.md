@@ -1,83 +1,31 @@
 # sdk_v2.plugin SPEC (SDD Contract)
 
-## 1. Scope
+## Scope
 
 `sdk_v2.plugin` is the standard plugin-facing API surface.
-This spec defines:
-- API names and signatures
-- input/output data structures
-- boundary and validation rules
-- error semantics (`Result` and `ok/fail` envelopes)
+It is the default facade for normal plugin development.
 
-Current phase is contract-only: runtime behavior is intentionally unimplemented.
+## Surface
 
-## 2. Error Model
+- `base.py`: `NekoPluginBase`, `PluginMeta`
+- `decorators.py`: plugin entry / event / hook decorators
+- `runtime.py`: config, plugin calls, router, result/envelope model, runtime tools
 
-Two compatible layers are defined:
+## Error Model
 
-1. `Result` layer (primary internal contract)
-- success: `Ok[T]`
-- error: `Err[E]`
-- helpers: `must`, `unwrap`, `bind_result`, `map_err_result`, etc.
+- primary model: `Result` (`Ok` / `Err`)
+- boundary helper: `ok(...)` / `fail(...)` envelope helpers
+- runtime helpers: `must`, `unwrap`, `bind_result`, `map_err_result`, etc.
 
-2. Envelope layer (boundary compatibility)
-- success: `ok(...)` => `{success: true, code, data, ...}`
-- failure: `fail(...)` => `{success: false, code, error: {...}, ...}`
+## API Contracts
 
-Rule:
-- SDK methods should return `Result[...]`.
-- Entry boundary may emit envelope for IPC/API compatibility.
+- `PluginConfig`: async config access/update facade
+- `Plugins`: async cross-plugin call facade
+- `PluginRouter`: dynamic entry registration facade
+- runtime helpers: call-chain, memory, system, storage contracts
 
-## 3. Data Structures
+## Decorator Contracts
 
-Defined in `runtime.py`:
-- `ErrorDetail`
-- `OkEnvelope`
-- `ErrEnvelope`
-- `Envelope = OkEnvelope | ErrEnvelope`
-- `EventMeta`, `EventHandler`, `HookMeta`
-
-## 4. API Contracts
-
-### PluginConfig (async-only)
-- `dump(timeout=5.0) -> Result[Mapping[str, Any], Exception]`
-- `get(path, default=None, timeout=5.0) -> Result[Any, Exception]`
-- `require(path, timeout=5.0) -> Result[Any, Exception]`
-- `set(path, value, timeout=5.0) -> Result[None, Exception]`
-- `update(patch, timeout=5.0) -> Result[Mapping[str, Any], Exception]`
-- `get_section(path, timeout=5.0) -> Result[Mapping[str, Any], Exception]`
-
-Boundary rules:
-- `timeout > 0`
-- dotted path syntax is validated in implementation
-
-### Plugins (async-only)
-- `call_entry(entry_ref, args=None, timeout=10.0)`
-- `call_event(event_ref, args=None, timeout=10.0)`
-- `list(timeout=5.0)`
-- `require(plugin_id, timeout=5.0)`
-
-Boundary rules:
-- `entry_ref` format: `<plugin_id>:<entry_id>`
-- `event_ref` format: `<plugin_id>:<event_type>:<event_id>`
-- `timeout > 0`
-
-### PluginRouter (dynamic entry)
-- `add_entry(entry_id, handler, ..., replace=False) -> Result[bool, Exception]`
-- `remove_entry(entry_id) -> Result[bool, Exception]`
-- `list_entries() -> Result[list[EventMeta], Exception]`
-
-Boundary rules:
-- `entry_id` non-empty
-- duplicate id without `replace=True` should fail
-
-### Memory/System/Storage
-- all async-only methods return `Result`
-- input validation and transport/storage failures surface as `Err(Exception)`
-
-## 5. Decorator Contracts
-
-Defined in `decorators.py` with full signatures:
 - `neko_plugin`
 - `plugin_entry`
 - `lifecycle`
@@ -86,26 +34,15 @@ Defined in `decorators.py` with full signatures:
 - `custom_event`
 - hook family
 
-Boundary rules include:
-- `plugin_entry(model_validate=True)` means runtime validation required
-- `timer_interval(seconds)` expects positive integer
-- `hook(timing)` in `{before, after, around, replace}`
+## Base Contract
 
-## 6. Base Class Contract
-
-Defined in `base.py`:
 - `NekoPluginBase(ctx)`
 - `get_input_schema()`
 - `include_router()/exclude_router()`
 - `enable_file_logging(...)`
 
-Runtime wiring for `config/plugins/store/db/state` is implementation-phase work.
+## Layering Rules
 
-## 7. Implementation Phase Order
-
-1. `shared/core/config.py`
-2. `shared/core/plugins.py`
-3. `shared/core/router.py`
-4. `shared/runtime/memory.py` + `shared/runtime/system_info.py`
-5. `shared/storage/*`
-6. `plugin/runtime.py` wiring from `shared/*`
+- outer `plugin` facade stays stable
+- shared capabilities come from `shared/*`
+- internal models and composition may sink to `public/*`

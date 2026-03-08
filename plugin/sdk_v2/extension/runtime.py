@@ -11,7 +11,26 @@ from dataclasses import dataclass
 
 from plugin.sdk_v2.shared.core.config import PluginConfig
 from plugin.sdk_v2.shared.core.router import PluginRouter
-from plugin.sdk_v2.shared.models import Result
+from plugin.sdk_v2.shared.models import (
+    Err,
+    Ok,
+    Result,
+    ResultError,
+    bind_result,
+    capture,
+    is_err,
+    is_ok,
+    map_err_result,
+    map_result,
+    match_result,
+    must,
+    raise_for_err,
+    unwrap,
+    unwrap_or,
+)
+from plugin.sdk_v2.shared.models.errors import ErrorCode
+from plugin.sdk_v2.shared.models.responses import fail, is_envelope, ok
+from plugin.sdk_v2.shared.models.version import SDK_VERSION
 from plugin.sdk_v2.shared.runtime.call_chain import get_call_chain, get_call_depth, is_in_call_chain
 from plugin.sdk_v2.shared.transport.message_plane import MessagePlaneTransport
 
@@ -27,6 +46,26 @@ class ExtensionRuntime:
 
 
 __all__ = [
+    "SDK_VERSION",
+    "ErrorCode",
+    "ok",
+    "fail",
+    "is_envelope",
+    "Ok",
+    "Err",
+    "Result",
+    "ResultError",
+    "is_ok",
+    "is_err",
+    "map_result",
+    "map_err_result",
+    "bind_result",
+    "match_result",
+    "unwrap",
+    "unwrap_or",
+    "raise_for_err",
+    "must",
+    "capture",
     "ExtensionRuntime",
     "PluginConfig",
     "PluginRouter",

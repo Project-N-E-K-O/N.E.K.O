@@ -110,3 +110,11 @@ async def test_adapter_not_implemented_methods() -> None:
         await neko.unregister_adapter_tool_entry("n")
     with pytest.raises(NotImplementedError):
         neko.list_adapter_routes()
+
+
+def test_adapter_runtime_common_exports() -> None:
+    assert adapter.SDK_VERSION == "2.0.0a0"
+    assert adapter.ok is not None
+    assert adapter.fail is not None
+    assert adapter.Result is not None
+    assert adapter.ErrorCode is not None
