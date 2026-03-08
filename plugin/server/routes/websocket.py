@@ -3,7 +3,7 @@ WebSocket 路由
 """
 from fastapi import APIRouter, WebSocket
 
-from plugin.server.runs.websocket import ws_run_endpoint
+from plugin.runs.websocket import ws_run_endpoint
 from plugin.server.websocket.admin import ws_admin_endpoint
 
 router = APIRouter()

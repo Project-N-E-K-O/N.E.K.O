@@ -4,17 +4,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { i18n } from '@/i18n'
-import { useAuthStore } from '@/stores/auth'
 
 const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'Login',
-    component: () => import('@/views/Login.vue'),
-    meta: {
-      titleKey: 'auth.login',
-      requiresAuth: false
-    }
+    redirect: '/'
   },
   {
     path: '/',
@@ -25,8 +20,7 @@ const routes: RouteRecordRaw[] = [
         name: 'Dashboard',
         component: () => import('@/views/Dashboard.vue'),
         meta: {
-          titleKey: 'nav.dashboard',
-          requiresAuth: true
+          titleKey: 'nav.dashboard'
         }
       },
       {
@@ -34,8 +28,7 @@ const routes: RouteRecordRaw[] = [
         name: 'PluginList',
         component: () => import('@/views/PluginList.vue'),
         meta: {
-          titleKey: 'nav.plugins',
-          requiresAuth: true
+          titleKey: 'nav.plugins'
         }
       },
       {
@@ -43,8 +36,7 @@ const routes: RouteRecordRaw[] = [
         name: 'PluginDetail',
         component: () => import('@/views/PluginDetail.vue'),
         meta: {
-          titleKey: 'plugins.pluginDetail',
-          requiresAuth: true
+          titleKey: 'plugins.pluginDetail'
         }
       },
       {
@@ -56,8 +48,7 @@ const routes: RouteRecordRaw[] = [
         name: 'Runs',
         component: () => import('@/views/Runs.vue'),
         meta: {
-          titleKey: 'nav.runs',
-          requiresAuth: true
+          titleKey: 'nav.runs'
         }
       },
       {
@@ -65,8 +56,7 @@ const routes: RouteRecordRaw[] = [
         name: 'Logs',
         component: () => import('@/views/Logs.vue'),
         meta: {
-          titleKey: 'nav.serverLogs',
-          requiresAuth: true
+          titleKey: 'nav.serverLogs'
         }
       },
       {
@@ -74,8 +64,7 @@ const routes: RouteRecordRaw[] = [
         name: 'AdapterUI',
         component: () => import('@/views/AdapterUI.vue'),
         meta: {
-          titleKey: 'nav.adapterUI',
-          requiresAuth: true
+          titleKey: 'nav.adapterUI'
         }
       }
     ]
@@ -96,28 +85,7 @@ router.beforeEach((to, from, next) => {
     document.title = `${title} - ${suffix}`
   }
 
-  // 认证检查
-  const authStore = useAuthStore()
-  const requiresAuth = to.meta.requiresAuth !== false
-
-  if (requiresAuth) {
-    if (!authStore.isAuthenticated) {
-      // 未认证，跳转到登录页
-      next({
-        path: '/login',
-        query: { redirect: to.fullPath }
-      })
-    } else {
-      next()
-    }
-  } else {
-    // 登录页，如果已认证则跳转到首页
-    if (to.name === 'Login' && authStore.isAuthenticated) {
-      next('/')
-    } else {
-      next()
-    }
-  }
+  next()
 })
 
 export default router

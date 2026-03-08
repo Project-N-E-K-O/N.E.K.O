@@ -251,7 +251,7 @@ async def save_recent_file(request: Request):
             import httpx
             from config import MEMORY_SERVER_PORT
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                     await client.post(
                         f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cancel_correction/{catgirl_name}",
                         timeout=2.0

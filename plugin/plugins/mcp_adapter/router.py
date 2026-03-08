@@ -62,6 +62,14 @@ class MCPRouteEngine:
         for server_name, client in self._mcp_clients.items():
             for tool in client.tools:
                 tool_id = f"mcp_{server_name}_{tool.name}"
+                if tool_id in self._tool_index:
+                    self._logger.error(
+                        "Duplicate MCP tool_id detected: {} (server='{}', tool='{}'), skip registration",
+                        tool_id,
+                        server_name,
+                        tool.name,
+                    )
+                    continue
                 self._tool_index[tool_id] = server_name
                 self._tool_details[tool_id] = {
                     "name": tool.name,
@@ -89,6 +97,14 @@ class MCPRouteEngine:
         count = 0
         for tool in client.tools:
             tool_id = f"mcp_{server_name}_{tool.name}"
+            if tool_id in self._tool_index:
+                self._logger.error(
+                    "Duplicate MCP tool_id detected: {} (server='{}', tool='{}'), skip registration",
+                    tool_id,
+                    server_name,
+                    tool.name,
+                )
+                continue
             self._tool_index[tool_id] = server_name
             self._tool_details[tool_id] = {
                 "name": tool.name,

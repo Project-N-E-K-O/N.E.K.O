@@ -2258,5 +2258,10 @@
             "active": "● 準備完了",
             "inactive": "○ 未設定"
         }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
+        }
     }
 }
