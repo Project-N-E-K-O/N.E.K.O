@@ -51,6 +51,28 @@ def test_plugin_entry_with_params_model_attaches_model() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_plugin_entry_with_positional_params_model_shorthand() -> None:
+    class Params:
+        @classmethod
+        def model_json_schema(cls):
+            return {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            }
+
+    def handler(self, **kwargs):  # noqa: ANN001, ANN003
+        return {"ok": True}
+
+    decorated = plugin_entry(Params)(handler)
+    meta = getattr(decorated, EVENT_META_ATTR)
+    assert getattr(decorated, _PARAMS_MODEL_ATTR) is Params
+    assert meta.id == "handler"
+    assert isinstance(meta.input_schema, dict)
+    assert "query" in meta.input_schema.get("properties", {})
+
+
+@pytest.mark.plugin_unit
 def test_on_event_sets_persist_attribute() -> None:
     def handler(self, **kwargs):
         return {"ok": True}
@@ -133,6 +155,8 @@ def test_plugin_entry_params_model_invalid_and_extra_metadata() -> None:
 
     with pytest.raises(TypeError):
         plugin_entry(params=BadParams)
+    with pytest.raises(TypeError):
+        plugin_entry(BadParams, params=BadParams)
 
     def handler(self, **kwargs):  # noqa: ANN001, ANN003
         return {"ok": True}
@@ -141,6 +165,99 @@ def test_plugin_entry_params_model_invalid_and_extra_metadata() -> None:
     meta = getattr(decorated, EVENT_META_ATTR)
     assert meta.metadata["x"] == 1
     assert meta.metadata["timeout"] == 1.2
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_entry_params_model_auto_validation_default_and_opt_out() -> None:
+    class _Err(Exception):
+        def errors(self):
+            return [{"loc": ["age"], "msg": "invalid"}]
+
+    class Params:
+        model_fields = {"age": object(), "name": object()}
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"type": "object", "properties": {"age": {"type": "integer"}}}
+
+        @classmethod
+        def model_validate(cls, payload):
+            if not isinstance(payload.get("age"), int):
+                raise _Err("bad age")
+            return type(
+                "_P",
+                (),
+                {"model_dump": lambda self: {"age": payload["age"], "name": payload.get("name", "n")}},
+            )()
+
+    async def h(self, age=0, name="", **kwargs):  # noqa: ANN001, ANN003
+        return {"age": age, "name": name, "extra": kwargs.get("x")}
+
+    d = plugin_entry(params=Params)(h)
+    bad = await d(None, age="x")
+    assert bad["success"] is False
+    assert bad["error"]["code"] == "VALIDATION_ERROR"
+
+    good = await d(None, age=3, x=1)
+    assert good["age"] == 3
+    assert good["name"] == "n"
+    assert good["extra"] == 1
+
+    d2 = plugin_entry(params=Params, model_validate=False)(h)
+    raw = await d2(None, age="x")
+    assert raw["age"] == "x"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_entry_params_model_alias_validator_and_extra_forbid() -> None:
+    class _Err(Exception):
+        def __init__(self, code: str):
+            super().__init__(code)
+            self._code = code
+
+        def errors(self):
+            return [{"loc": ["input"], "msg": self._code}]
+
+    class Params:
+        model_fields = {"name": object(), "age": object()}
+
+        @classmethod
+        def model_json_schema(cls):
+            return {"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}}}
+
+        @classmethod
+        def model_validate(cls, payload):
+            allowed = {"name", "age", "userName"}
+            unknown = [k for k in payload.keys() if k not in allowed]
+            if unknown:
+                raise _Err("extra_forbidden")
+            name = payload.get("name")
+            if name is None:
+                name = payload.get("userName")
+            if not isinstance(name, str):
+                raise _Err("name_required")
+            name = name.strip()
+            if len(name) < 2:
+                raise _Err("name_too_short")
+            age = payload.get("age")
+            if not isinstance(age, int):
+                raise _Err("age_invalid")
+            return type("_P", (), {"model_dump": lambda self: {"name": name, "age": age}})()
+
+    async def h(self, name="", age=0, **kwargs):  # noqa: ANN001, ANN003
+        return {"name": name, "age": age, "_ctx": kwargs.get("_ctx")}
+
+    d = plugin_entry(params=Params)(h)
+    out = await d(None, userName="  Alice  ", age=20, _ctx={"x": 1})
+    assert out["name"] == "Alice"
+    assert out["age"] == 20
+    assert out["_ctx"] == {"x": 1}
+
+    bad = await d(None, name="Bob", age=10, unknown=1)
+    assert bad["success"] is False
+    assert bad["error"]["code"] == "VALIDATION_ERROR"
 
 
 @pytest.mark.plugin_unit

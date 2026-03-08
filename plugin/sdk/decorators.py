@@ -4,11 +4,13 @@
 提供插件开发所需的装饰器。
 """
 import inspect
+from functools import wraps
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, cast, runtime_checkable, get_type_hints
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
 from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
+from .responses import fail
 
 # 状态持久化配置的属性名
 PERSIST_ATTR = "_neko_persist"
@@ -193,6 +195,7 @@ def plugin_entry(
     auto_start: bool = False,
     persist: bool | None = None,
     checkpoint: bool | None = None,  # 向后兼容别名
+    model_validate: bool = True,  # params model runtime validation toggle
     timeout: float | None = None,  # 自定义超时时间（秒），None 表示使用默认值
     metadata: dict | None = None,
     extra: dict | None = None,  # 向后兼容别名，已弃用
@@ -215,6 +218,9 @@ def plugin_entry(
             - True: 强制启用状态保存
             - False: 强制禁用状态保存
         checkpoint: persist 的向后兼容别名
+        model_validate: 是否在运行时自动执行 params.model_validate()
+            - True: 默认启用。对匹配 params 字段的入参执行验证并回填默认值。
+            - False: 仅生成 input_schema，不做运行时自动验证。
         timeout: 自定义超时时间（秒）
             - None: 使用默认超时（PLUGIN_TRIGGER_TIMEOUT，默认 10 秒）
             - 0 或负数: 禁用超时检测（无限等待）
@@ -222,6 +228,18 @@ def plugin_entry(
         metadata: 额外的元数据字典
         extra: metadata 的向后兼容别名（已弃用）
     """
+    # Shorthand: @plugin_entry(MyParamsModel)
+    # If the first positional argument looks like a Pydantic v2 model class,
+    # treat it as `params` instead of entry id.
+    if params is None and id is not None and not isinstance(id, str):
+        _model_json_schema = getattr(id, "model_json_schema", None)
+        if callable(_model_json_schema):
+            params = cast(type, id)
+            id = None
+
+    if params is not None and id is not None and not isinstance(id, str):
+        raise TypeError("When using params, entry id must be a string or None")
+
     # Pydantic model → extract JSON Schema
     effective_schema = input_schema
     if params is not None and effective_schema is None:
@@ -252,11 +270,70 @@ def plugin_entry(
     if params is None:
         return _inner
 
-    # Wrap the on_event decorator to also attach the params model.
+    # Wrap the on_event decorator to also attach params model and optional runtime validation.
     def decorator(fn: Callable) -> Callable:
         fn = _inner(fn)
         setattr(fn, _PARAMS_MODEL_ATTR, params)
-        return fn
+
+        if not model_validate:
+            return fn
+
+        _model_validate = getattr(params, "model_validate", None)
+        if not callable(_model_validate):
+            return fn
+
+        def _validate_and_merge(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+            # Keep internal context keys out of model validation by default.
+            # This preserves compatibility with dispatcher-added kwargs such as "_ctx".
+            payload = {k: v for k, v in kwargs.items() if not str(k).startswith("_")}
+            parsed = _model_validate(payload)
+            _model_dump = getattr(parsed, "model_dump", None)
+            normalized = _model_dump() if callable(_model_dump) else {}
+            merged = dict(kwargs)
+            if isinstance(normalized, dict):
+                merged.update(normalized)
+            return merged
+
+        def _invalid_payload(exc: Exception) -> Dict[str, Any]:
+            details = None
+            _errors = getattr(exc, "errors", None)
+            if callable(_errors):
+                try:
+                    details = _errors()
+                except Exception:
+                    details = str(exc)
+            else:
+                details = str(exc)
+            return fail("VALIDATION_ERROR", "Invalid entry params", details=details)
+
+        if inspect.iscoroutinefunction(fn):
+            @wraps(fn)
+            async def _async_wrapped(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    kwargs = _validate_and_merge(kwargs)
+                except Exception as e:
+                    return _invalid_payload(e)
+                return await fn(*args, **kwargs)
+
+            setattr(_async_wrapped, EVENT_META_ATTR, getattr(fn, EVENT_META_ATTR, None))
+            setattr(_async_wrapped, _PARAMS_MODEL_ATTR, params)
+            if hasattr(fn, PERSIST_ATTR):
+                setattr(_async_wrapped, PERSIST_ATTR, getattr(fn, PERSIST_ATTR))
+            return _async_wrapped
+
+        @wraps(fn)
+        def _sync_wrapped(*args: Any, **kwargs: Any) -> Any:
+            try:
+                kwargs = _validate_and_merge(kwargs)
+            except Exception as e:
+                return _invalid_payload(e)
+            return fn(*args, **kwargs)
+
+        setattr(_sync_wrapped, EVENT_META_ATTR, getattr(fn, EVENT_META_ATTR, None))
+        setattr(_sync_wrapped, _PARAMS_MODEL_ATTR, params)
+        if hasattr(fn, PERSIST_ATTR):
+            setattr(_sync_wrapped, PERSIST_ATTR, getattr(fn, PERSIST_ATTR))
+        return _sync_wrapped
     return decorator
 
 
@@ -617,4 +694,3 @@ before_entry = lambda target="*", priority=0, condition=None: hook(target, "befo
 after_entry = lambda target="*", priority=0, condition=None: hook(target, "after", priority, condition)
 around_entry = lambda target="*", priority=0, condition=None: hook(target, "around", priority, condition)
 replace_entry = lambda target, priority=0, condition=None: hook(target, "replace", priority, condition)
-

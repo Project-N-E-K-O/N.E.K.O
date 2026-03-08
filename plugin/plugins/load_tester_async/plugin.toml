@@ -1,0 +1,56 @@
+[plugin]
+name = "Load Test Plugin"
+description = "Plugin for measuring QPS limits of N.E.K.O plugin subsystems"
+version = "0.1.0"
+id = "load_tester"
+entry = "plugins.load_tester:LoadTestPlugin"
+
+[plugin.author]
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+untested = ">=0.3.0,<0.4.0"
+conflicts = [
+    "<0.1.0",
+    ">=0.4.0",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[load_test]
+duration_seconds = 5
+log_summary = true
+worker_threads = 1
+use_multiprocess = true
+timeout = 1
+sleep_seconds = 2
+# Set to true to auto-run all benchmarks on plugin startup (default: false)
+auto_run_on_startup = false
+[load_test.push_messages]
+enable = true
+
+[load_test.push_messages_fast]
+enable = true
+
+[load_test.bus_messages_get]
+enable = true
+
+[load_test.bus_events_get]
+enable = true
+timeout = 0.5
+
+[load_test.bus_lifecycle_get]
+enable = true
+
+[load_test.buslist_filter]
+enable = true
+
+[load_test.buslist_reload]
+enable = true
+inplace = true
+
+[load_test.plugin_event_qps]
+enable = true
