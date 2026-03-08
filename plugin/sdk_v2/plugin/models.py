@@ -1,4 +1,8 @@
-"""Internal runtime model types for the plugin facade."""
+"""Plugin-facing runtime model types.
+
+These models are part of the public `plugin` facade surface and should not live
+under `public/*`, which is reserved for internal implementation details.
+"""
 
 from __future__ import annotations
 

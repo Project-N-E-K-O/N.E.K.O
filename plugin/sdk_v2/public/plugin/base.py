@@ -1,8 +1,14 @@
-"""Plugin flavor base exports."""
+"""Internal plugin base building blocks.
 
-from plugin.sdk_v2.shared.core import base as _shared_base
+This module is intentionally explicit: it exposes the shared base primitives the
+plugin facade can compose with, without using dynamic namespace injection.
+"""
 
-for _export_name in _shared_base.__all__:
-    globals()[_export_name] = getattr(_shared_base, _export_name)
+from plugin.sdk_v2.shared.core.base import NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG, NekoPluginBase, PluginMeta
 
-__all__ = list(_shared_base.__all__)
+__all__ = [
+    "NEKO_PLUGIN_META_ATTR",
+    "NEKO_PLUGIN_TAG",
+    "PluginMeta",
+    "NekoPluginBase",
+]

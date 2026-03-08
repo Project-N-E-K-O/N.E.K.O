@@ -1,20 +1,37 @@
-"""Extension flavor runtime exports.
+"""Internal extension runtime building blocks.
 
-Keep this narrower than plugin/runtime to enforce capability boundaries.
+The extension internal surface intentionally stays narrower than the plugin
+internal runtime surface.
 """
 
-from plugin.sdk_v2.shared.core import config as _config
-from plugin.sdk_v2.shared.core import router as _router
-from plugin.sdk_v2.shared.runtime import call_chain as _call_chain
-from plugin.sdk_v2.shared.transport import message_plane as _message_plane
+from plugin.sdk_v2.shared.core.config import ConfigPathError, ConfigValidationError, PluginConfig, PluginConfigError
+from plugin.sdk_v2.shared.core.router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler
+from plugin.sdk_v2.shared.runtime.call_chain import (
+    AsyncCallChain,
+    CallChain,
+    CallChainTooDeepError,
+    CircularCallError,
+    get_call_chain,
+    get_call_depth,
+    is_in_call_chain,
+)
+from plugin.sdk_v2.shared.transport.message_plane import MessagePlaneTransport
 
-_MODULES = (_config, _router, _call_chain, _message_plane)
-
-_exports: list[str] = []
-for _module in _MODULES:
-    for _export_name in _module.__all__:
-        globals()[_export_name] = getattr(_module, _export_name)
-        if _export_name not in _exports:
-            _exports.append(_export_name)
-
-__all__ = _exports
+__all__ = [
+    "PluginConfig",
+    "PluginConfigError",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "PluginRouter",
+    "PluginRouterError",
+    "EntryConflictError",
+    "RouteHandler",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+    "MessagePlaneTransport",
+]

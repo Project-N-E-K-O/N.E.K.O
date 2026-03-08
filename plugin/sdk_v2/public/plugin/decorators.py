@@ -1,8 +1,51 @@
-"""Plugin flavor decorators exports."""
+"""Internal plugin decorator building blocks.
 
-from plugin.sdk_v2.shared.core import decorators as _shared_decorators
+This module keeps an explicit list of the shared decorator primitives reused by
+plugin-facing composition code.
+"""
 
-for _export_name in _shared_decorators.__all__:
-    globals()[_export_name] = getattr(_shared_decorators, _export_name)
+from plugin.sdk_v2.shared.core.decorators import (
+    CHECKPOINT_ATTR,
+    EVENT_META_ATTR,
+    HOOK_META_ATTR,
+    PERSIST_ATTR,
+    EntryKind,
+    EventDecoratorMeta,
+    HookDecoratorMeta,
+    after_entry,
+    around_entry,
+    before_entry,
+    custom_event,
+    hook,
+    lifecycle,
+    message,
+    neko_plugin,
+    on_event,
+    plugin,
+    plugin_entry,
+    replace_entry,
+    timer_interval,
+)
 
-__all__ = list(_shared_decorators.__all__)
+__all__ = [
+    "EntryKind",
+    "PERSIST_ATTR",
+    "CHECKPOINT_ATTR",
+    "EVENT_META_ATTR",
+    "HOOK_META_ATTR",
+    "EventDecoratorMeta",
+    "HookDecoratorMeta",
+    "neko_plugin",
+    "on_event",
+    "plugin_entry",
+    "lifecycle",
+    "message",
+    "timer_interval",
+    "custom_event",
+    "hook",
+    "before_entry",
+    "after_entry",
+    "around_entry",
+    "replace_entry",
+    "plugin",
+]

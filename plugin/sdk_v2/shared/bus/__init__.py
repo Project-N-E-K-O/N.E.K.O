@@ -1,4 +1,7 @@
-"""Shared bus contracts for SDK v2."""
+"""Shared bus building blocks for SDK v2.
+
+This package is currently contract-only.
+"""
 
 from ._client_base import BusClientBase
 from .bus_list import Bus

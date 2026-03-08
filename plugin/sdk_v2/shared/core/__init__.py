@@ -1,4 +1,8 @@
-"""Shared core contracts for SDK v2."""
+"""Shared core building blocks for SDK v2.
+
+This package is mixed: most modules are implemented, while a few helper modules
+remain contract-only during the migration.
+"""
 
 from .base import NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG, NekoPluginBase, PluginMeta
 from .config import PluginConfig, PluginConfigError

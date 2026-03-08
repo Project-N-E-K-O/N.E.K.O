@@ -1,11 +1,23 @@
 """Adapter runtime surface for SDK v2.
 
-This facade groups adapter runtime contracts, gateway models, and the common
-Result/error/version primitives adapter authors need at runtime.
+This runtime surface follows the same layout as the other facades: common
+SDK-wide runtime exports first, adapter-specific gateway/runtime contracts
+second.
 """
 
 from __future__ import annotations
 
+from plugin.sdk_v2.shared.logging import (
+    LogLevel,
+    LoggerLike,
+    build_component_name,
+    configure_sdk_default_logger,
+    format_log_text,
+    get_adapter_logger,
+    get_sdk_logger,
+    intercept_standard_logging,
+    setup_sdk_logging,
+)
 from plugin.sdk_v2.shared.models import (
     Err,
     Ok,
@@ -26,20 +38,17 @@ from plugin.sdk_v2.shared.models import (
 from plugin.sdk_v2.shared.models.errors import ErrorCode
 from plugin.sdk_v2.shared.models.responses import fail, is_envelope, ok
 from plugin.sdk_v2.shared.models.version import SDK_VERSION
-from plugin.sdk_v2.shared.logging import (
-    LogLevel,
-    LoggerLike,
-    build_component_name,
-    configure_sdk_default_logger,
-    format_log_text,
-    get_adapter_logger,
-    get_sdk_logger,
-    intercept_standard_logging,
-    setup_sdk_logging,
+from plugin.sdk_v2.shared.runtime.call_chain import (
+    AsyncCallChain,
+    CallChain,
+    CallChainTooDeepError,
+    CircularCallError,
+    get_call_chain,
+    get_call_depth,
+    is_in_call_chain,
 )
 
 from .gateway_contracts import (
-    LoggerLike,
     PluginInvoker,
     PolicyEngine,
     RequestNormalizer,
@@ -66,13 +75,12 @@ from .gateway_models import (
     RouteMode,
 )
 
-__all__ = [
+COMMON_RUNTIME_EXPORTS = [
     "SDK_VERSION",
     "LogLevel",
     "build_component_name",
     "LoggerLike",
     "get_sdk_logger",
-    "get_adapter_logger",
     "setup_sdk_logging",
     "configure_sdk_default_logger",
     "intercept_standard_logging",
@@ -96,6 +104,17 @@ __all__ = [
     "raise_for_err",
     "must",
     "capture",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+]
+
+ADAPTER_RUNTIME_EXPORTS = [
+    "get_adapter_logger",
     "ExternalEnvelope",
     "GatewayAction",
     "GatewayRequest",
@@ -104,7 +123,6 @@ __all__ = [
     "GatewayResponse",
     "RouteDecision",
     "RouteMode",
-    "LoggerLike",
     "TransportAdapter",
     "RequestNormalizer",
     "PolicyEngine",
@@ -118,3 +136,5 @@ __all__ = [
     "DefaultResponseSerializer",
     "CallablePluginInvoker",
 ]
+
+__all__ = [*COMMON_RUNTIME_EXPORTS, *ADAPTER_RUNTIME_EXPORTS]

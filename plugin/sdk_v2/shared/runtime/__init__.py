@@ -1,4 +1,10 @@
-"""Shared runtime contracts for SDK v2."""
+"""Shared runtime building blocks for SDK v2.
+
+Status by module:
+- `call_chain`: contract-only
+- `memory`: contract-only
+- `system_info`: contract-only
+"""
 
 from .call_chain import (
     AsyncCallChain,

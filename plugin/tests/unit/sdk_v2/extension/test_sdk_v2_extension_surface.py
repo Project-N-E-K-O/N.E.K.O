@@ -77,3 +77,16 @@ def test_extension_proxy_object_forwards(monkeypatch: pytest.MonkeyPatch) -> Non
     finally:
         dec.extension_entry = original_entry  # type: ignore[assignment]
         dec.extension_hook = original_hook  # type: ignore[assignment]
+
+
+def test_extension_runtime_surface_is_more_aligned() -> None:
+    assert extension.PluginConfigError is not None
+    assert extension.ConfigPathError is not None
+    assert extension.ConfigValidationError is not None
+    assert extension.PluginRouterError is not None
+    assert extension.EntryConflictError is not None
+    assert extension.RouteHandler is not None
+    assert extension.CallChain.__name__ == "CallChain"
+    assert extension.AsyncCallChain.__name__ == "AsyncCallChain"
+    assert isinstance(extension.CircularCallError("e"), RuntimeError)
+    assert isinstance(extension.CallChainTooDeepError("e"), RuntimeError)

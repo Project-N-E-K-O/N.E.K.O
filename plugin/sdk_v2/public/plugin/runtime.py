@@ -1,32 +1,64 @@
-"""Plugin flavor runtime exports."""
+"""Internal plugin runtime building blocks.
 
-from plugin.sdk_v2.shared.core import config as _config
-from plugin.sdk_v2.shared.core import plugins as _plugins
-from plugin.sdk_v2.shared.core import router as _router
-from plugin.sdk_v2.shared.runtime import call_chain as _call_chain
-from plugin.sdk_v2.shared.runtime import memory as _memory
-from plugin.sdk_v2.shared.runtime import system_info as _system_info
-from plugin.sdk_v2.shared.storage import database as _database
-from plugin.sdk_v2.shared.storage import state as _state
-from plugin.sdk_v2.shared.storage import store as _store
+This module explicitly re-exports the shared runtime contracts the plugin facade
+can compose with. Keeping the list static makes the internal surface easier to
+inspect and maintain.
+"""
 
-_MODULES = (
-    _config,
-    _plugins,
-    _router,
-    _call_chain,
-    _memory,
-    _system_info,
-    _database,
-    _state,
-    _store,
+from plugin.sdk_v2.shared.core.config import ConfigPathError, ConfigValidationError, PluginConfig, PluginConfigError
+from plugin.sdk_v2.shared.core.plugins import (
+    InvalidEntryRefError,
+    InvalidEventRefError,
+    PluginCallError,
+    PluginDescriptor,
+    Plugins,
+    parse_entry_ref,
+    parse_event_ref,
 )
+from plugin.sdk_v2.shared.core.router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler
+from plugin.sdk_v2.shared.runtime.call_chain import (
+    AsyncCallChain,
+    CallChain,
+    CallChainTooDeepError,
+    CircularCallError,
+    get_call_chain,
+    get_call_depth,
+    is_in_call_chain,
+)
+from plugin.sdk_v2.shared.runtime.memory import MemoryClient
+from plugin.sdk_v2.shared.runtime.system_info import SystemInfo
+from plugin.sdk_v2.shared.storage.database import PluginDatabase, PluginKVStore
+from plugin.sdk_v2.shared.storage.state import EXTENDED_TYPES, PluginStatePersistence
+from plugin.sdk_v2.shared.storage.store import PluginStore
 
-_exports: list[str] = []
-for _module in _MODULES:
-    for _export_name in _module.__all__:
-        globals()[_export_name] = getattr(_module, _export_name)
-        if _export_name not in _exports:
-            _exports.append(_export_name)
-
-__all__ = _exports
+__all__ = [
+    "PluginConfig",
+    "PluginConfigError",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "Plugins",
+    "PluginCallError",
+    "PluginDescriptor",
+    "InvalidEntryRefError",
+    "InvalidEventRefError",
+    "parse_entry_ref",
+    "parse_event_ref",
+    "PluginRouter",
+    "PluginRouterError",
+    "EntryConflictError",
+    "RouteHandler",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+    "SystemInfo",
+    "MemoryClient",
+    "PluginStore",
+    "PluginDatabase",
+    "PluginKVStore",
+    "PluginStatePersistence",
+    "EXTENDED_TYPES",
+]
