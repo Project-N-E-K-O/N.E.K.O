@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from pathlib import Path
 
 from plugin.sdk_v2.plugin.base import (
     NEKO_PLUGIN_META_ATTR,
@@ -13,6 +14,8 @@ from plugin.sdk_v2.plugin.decorators import plugin_entry
 
 class _Ctx:
     plugin_id = "demo"
+    config_path = Path("/tmp/demo/plugin.toml")
+    _effective_config = {"plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "data.db"}}, "plugin_state": {"backend": "file"}}
 
     async def get_own_config(self, timeout: float = 5.0) -> dict[str, object]:
         return {"config": {"feature": {"enabled": True}}}
@@ -108,8 +111,9 @@ def test_neko_plugin_base_class_defaults() -> None:
 def test_neko_plugin_base_init_wires_ctx_config_plugins() -> None:
     base = _DemoPlugin(ctx=_Ctx())
     assert base.ctx.plugin_id == "demo"
-    assert base.store is None
-    assert base.db is None
+    assert base.store is not None
+    assert base.db is not None
+    assert base.state is not None
     assert isinstance(base._routers, list)
     assert base.config is not None
     assert base.plugins is not None

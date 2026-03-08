@@ -185,23 +185,38 @@ async def test_memory_client_contract_methods_raise_not_implemented() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_contract_methods_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        rt.PluginStore()
-    with pytest.raises(NotImplementedError):
-        rt.PluginKVStore()
-    with pytest.raises(NotImplementedError):
-        rt.PluginDatabase()
-    with pytest.raises(NotImplementedError):
-        rt.PluginStatePersistence()
+async def test_store_database_and_state_runtime_exports_work(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir()
 
-    store = object.__new__(rt.PluginStore)
-    with pytest.raises(NotImplementedError):
-        await store.get("k")
-    with pytest.raises(NotImplementedError):
-        await store.set("k", "v")
-    with pytest.raises(NotImplementedError):
-        await store.delete("k")
+    store = rt.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
+    assert (await store.set("k", {"v": 1})).is_ok()
+    assert (await store.get("k")).unwrap() == {"v": 1}
+    assert (await store.delete("k")).unwrap() is True
+
+    db = rt.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
+    assert (await db.create_all()).is_ok()
+    session = (await db.session()).unwrap()
+    cursor = await session.execute("SELECT 1")
+    assert cursor.fetchone()[0] == 1
+
+    kv = rt.PluginKVStore(database=db)
+    assert (await kv.set("k", "v")).is_ok()
+    assert (await kv.get("k")).unwrap() == "v"
+    assert (await kv.delete("k")).unwrap() is True
+
+    class _StateObj:
+        __freezable__ = ["counter"]
+
+        def __init__(self) -> None:
+            self.counter = 1
+
+    state_obj = _StateObj()
+    persistence = rt.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="memory")
+    assert (await persistence.save(state_obj)).unwrap() is True
+    state_obj.counter = 0
+    assert (await persistence.load(state_obj)).unwrap() is True
+    assert state_obj.counter == 1
 
 
 def test_runtime_all_exports_exist() -> None:

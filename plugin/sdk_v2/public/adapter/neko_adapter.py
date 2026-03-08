@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugin.sdk_v2.shared import NekoPluginBase
+from plugin.sdk_v2.shared.core.base import NekoPluginBase
 from plugin.sdk_v2.shared.models import Result
 
 from .base import AdapterConfig, AdapterContext, AdapterMode

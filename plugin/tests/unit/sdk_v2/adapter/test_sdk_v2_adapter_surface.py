@@ -118,3 +118,17 @@ def test_adapter_runtime_common_exports() -> None:
     assert adapter.fail is not None
     assert adapter.Result is not None
     assert adapter.ErrorCode is not None
+
+
+@pytest.mark.asyncio
+async def test_adapter_base_methods_raise() -> None:
+    ctx = object.__new__(adapter.AdapterContext)
+    base = object.__new__(adapter.AdapterBase)
+    with pytest.raises(NotImplementedError):
+        await ctx.call_plugin("p", "e", {})
+    with pytest.raises(NotImplementedError):
+        await ctx.broadcast_event("evt", {})
+    with pytest.raises(NotImplementedError):
+        await base.on_startup()
+    with pytest.raises(NotImplementedError):
+        await base.on_shutdown()

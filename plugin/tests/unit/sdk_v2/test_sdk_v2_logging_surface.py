@@ -32,3 +32,19 @@ def test_runtime_logging_exports_are_aligned() -> None:
         assert runtime_mod.intercept_standard_logging is shared_logging.intercept_standard_logging
         assert runtime_mod.format_log_text is shared_logging.format_log_text
         assert getattr(runtime_mod, getter_name) is getattr(shared_logging, getter_name)
+
+
+def test_shared_logging_helpers_call_underlying_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(shared_logging, "get_logger", lambda component: calls.setdefault(component, component))
+    monkeypatch.setattr(shared_logging, "setup_logging", lambda **kwargs: calls.setdefault("setup", kwargs))
+    monkeypatch.setattr(shared_logging, "configure_default_logger", lambda level: calls.setdefault("default", level))
+
+    assert shared_logging.get_sdk_logger("sdk_v2.x") == "sdk_v2.x"
+    assert shared_logging.get_plugin_logger("demo") == "plugin.demo"
+    assert shared_logging.get_extension_logger("demo") == "extension.demo"
+    assert shared_logging.get_adapter_logger("demo") == "adapter.demo"
+    shared_logging.setup_sdk_logging(component="sdk_v2.x", level=shared_logging.LogLevel.INFO, force=True)
+    shared_logging.configure_sdk_default_logger(level="DEBUG")
+    assert calls["setup"]["component"] == "sdk_v2.x"
+    assert calls["default"] == "DEBUG"

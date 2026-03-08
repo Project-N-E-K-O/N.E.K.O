@@ -49,11 +49,35 @@ class NekoPluginBase:
 
         self.config = PluginConfig(ctx)
         self.plugins = Plugins(ctx)
-        self.store = None
-        self.db = None
         self._routers: list[RouterProtocol] = []
         self.logger: LoggerLike = getattr(ctx, "logger", None) or self.get_logger()
         self.sdk_logger: LoggerLike = self.logger
+
+        from plugin.sdk_v2.shared.storage.database import PluginDatabase
+        from plugin.sdk_v2.shared.storage.state import PluginStatePersistence
+        from plugin.sdk_v2.shared.storage.store import PluginStore
+
+        config_path = getattr(ctx, "config_path", None)
+        plugin_dir = Path(config_path).parent if config_path is not None else Path.cwd()
+        effective_cfg = getattr(ctx, "_effective_config", None)
+        if not isinstance(effective_cfg, dict):
+            effective_cfg = {}
+
+        store_cfg = effective_cfg.get("plugin", {}).get("store", {}) if isinstance(effective_cfg.get("plugin"), dict) else {}
+        store_enabled = bool(store_cfg.get("enabled", True)) if isinstance(store_cfg, dict) else True
+
+        db_cfg = effective_cfg.get("plugin", {}).get("database", {}) if isinstance(effective_cfg.get("plugin"), dict) else {}
+        db_enabled = bool(db_cfg.get("enabled", True)) if isinstance(db_cfg, dict) else True
+        db_name = str(db_cfg.get("name", "plugin.db")) if isinstance(db_cfg, dict) else "plugin.db"
+
+        state_cfg = effective_cfg.get("plugin_state", {}) if isinstance(effective_cfg.get("plugin_state"), dict) else {}
+        state_backend = str(state_cfg.get("backend", "file")) if isinstance(state_cfg, dict) else "file"
+
+        plugin_id = str(getattr(ctx, "plugin_id", "plugin"))
+        self.store = PluginStore(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, enabled=store_enabled)
+        self.db = PluginDatabase(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, enabled=db_enabled, db_name=db_name)
+        self.state = PluginStatePersistence(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, backend=state_backend)
+        self._state_persistence = self.state
 
     def get_input_schema(self) -> InputSchema:
         schema = getattr(self, "input_schema", None)
