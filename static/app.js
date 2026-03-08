@@ -135,7 +135,9 @@ function init_app() {
     let audioBufferQueue = [];
     let screenshotCounter = 0; // 截图计数器
     let isPlaying = false;
+    let scheduleAudioChunksRunning = false;
     let audioStartTime = 0;
+    let nextChunkTime = 0;
     let scheduledSources = [];
     let animationFrameId;
     let seqCounter = 0;
@@ -515,7 +517,6 @@ function init_app() {
             // 调试：记录所有收到的消息类型
             if (event.data instanceof Blob) {
                 // 处理二进制音频数据
-                // [Performance] 减少高频二进制数据的日志输出
                 if (window.DEBUG_AUDIO) {
                     console.log(window.t('console.audioBinaryReceived'), event.data.size, window.t('console.audioBinaryBytes'));
                 }
@@ -3303,6 +3304,142 @@ function init_app() {
         }
     }
 
+    // 重要通知模态框（全屏遮罩 + 居中弹窗，用户必须点确认才能关闭）
+    // 接受字符串或通知对象 {code, message, message_en, details}
+    // 返回 Promise，在用户确认后 resolve（用于串行展示多条通知）
+    //
+    // 实现：内部维护一条 FIFO 队列；若当前已有遮罩，新调用入队等待，
+    // 不会丢失内容也不会同时弹出两个遮罩。
+    const _prominentNoticeQueue = [];
+    let _prominentNoticeActive = false;
+
+    function _drainProminentNoticeQueue() {
+        if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
+        const { notice, resolve } = _prominentNoticeQueue.shift();
+        _prominentNoticeActive = true;
+        _renderProminentNotice(notice, () => {
+            resolve();
+            _prominentNoticeActive = false;
+            _drainProminentNoticeQueue();
+        });
+    }
+
+    function _renderProminentNotice(notice, onDismiss) {
+        // 回退文本优先级：按用户 locale 选择语言，避免 i18n 未就绪时展示错误语种。
+        const _isChinese = (typeof _isUserRegionChina === 'function' && _isUserRegionChina())
+            || /^zh/i.test(navigator.language || '');
+        const localeFallback = _isChinese
+            ? (notice.message || notice.message_en || '')
+            : (notice.message_en || notice.message || '');
+        const displayText = (notice.code && typeof safeT === 'function')
+            ? safeT(notice.code, localeFallback)
+            : localeFallback;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'prominent-notice-overlay';
+        overlay.style.cssText = `
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 2147483647;
+            display: flex; align-items: center; justify-content: center;
+            pointer-events: auto;
+            animation: pnOverlayIn 0.25s ease;
+        `;
+
+        const box = document.createElement('div');
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-modal', 'true');
+        box.setAttribute('aria-label', displayText || 'Notice');
+        box.tabIndex = -1;
+        box.style.cssText = `
+            position: relative;
+            background: #1e293b;
+            color: #f1f5f9;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 32px 28px 24px;
+            width: 370px; max-width: 88vw;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+            text-align: center;
+            pointer-events: auto;
+            animation: pnBoxIn 0.3s ease;
+        `;
+
+        const btn = document.createElement('button');
+        btn.textContent = (typeof safeT === 'function') ? safeT('common.confirm', '确认') : '确认';
+        btn.style.cssText = `
+            background: #3b82f6; color: #fff; border: none;
+            border-radius: 10px; padding: 10px 48px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.15s;
+        `;
+
+        const icon = document.createElement('img');
+        icon.src = '/static/icons/exclamation.png';
+        icon.alt = '';
+        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;';
+
+        const textDiv = document.createElement('div');
+        textDiv.style.cssText = 'font-size:16px;font-weight:600;line-height:1.7;margin-bottom:22px;';
+        textDiv.textContent = displayText;
+
+        box.appendChild(icon);
+        box.appendChild(textDiv);
+        box.appendChild(btn);
+        overlay.appendChild(box);
+        const prevActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        let dismissed = false;
+        document.body.appendChild(overlay);
+        if (!dismissed) {
+            btn.focus();
+        }
+
+        if (!document.querySelector('style[data-prominent-notice-animation]')) {
+            const s = document.createElement('style');
+            s.setAttribute('data-prominent-notice-animation', 'true');
+            s.textContent = `
+                @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
+                @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
+                @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
+            `;
+            document.head.appendChild(s);
+        }
+
+        const dismiss = () => {
+            if (dismissed) return;
+            dismissed = true;
+            btn.removeEventListener('click', dismiss);
+            overlay.style.animation = 'pnOverlayOut 0.2s ease forwards';
+            setTimeout(() => {
+                overlay.remove();
+                if (prevActive && document.contains(prevActive)) {
+                    prevActive.focus();
+                }
+                onDismiss();
+            }, 200);
+        };
+        btn.addEventListener('click', dismiss);
+    }
+
+    function showProminentNotice(noticeOrMessage) {
+        let notice;
+        if (typeof noticeOrMessage === 'string') {
+            notice = { message: noticeOrMessage };
+        } else if (noticeOrMessage && typeof noticeOrMessage === 'object') {
+            notice = noticeOrMessage;
+        } else {
+            // null / undefined / unexpected type — wrap defensively so
+            // _renderProminentNotice never throws and blocks the queue.
+            notice = { message: String(noticeOrMessage ?? '') };
+        }
+        return new Promise((resolve) => {
+            _prominentNoticeQueue.push({ notice, resolve });
+            _drainProminentNoticeQueue();
+        });
+    }
+    window.showProminentNotice = showProminentNotice;
+
     // 显示"可以说话了"提示
     function showReadyToSpeakToast() {
         let toast = document.getElementById('voice-ready-toast');
@@ -3814,11 +3951,15 @@ function init_app() {
                 // 恢复子元素可见性
                 const chatContentWrapper = chatContainerEl.querySelector('.chat-content-wrapper');
                 const chatHeader = chatContainerEl.querySelector('.chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) {
                     chatContentWrapper.style.display = '';
                 }
                 if (chatHeader) {
                     chatHeader.style.display = '';
+                }
+                if (textInputArea) {
+                    textInputArea.style.display = '';
                 }
 
                 // 同步更新切换按钮的状态（图标和标题）
@@ -4526,44 +4667,28 @@ function init_app() {
 
     // 清空音频队列并停止所有播放
     async function clearAudioQueue() {
-        // 停止所有计划的音频源
         scheduledSources.forEach(source => {
-            try {
-                source.stop();
-            } catch (e) {
-                // 忽略已经停止的源
-            }
+            try { source.stop(); } catch (_) {}
         });
-
-        // 清空队列和计划源列表
         scheduledSources = [];
         audioBufferQueue = [];
         isPlaying = false;
         audioStartTime = 0;
-        nextStartTime = 0; // 新增：重置预调度时间
+        nextChunkTime = 0;
 
-        // 重置 OGG OPUS 流式解码器（等待重置完成，避免竞态条件）
         await resetOggOpusDecoder();
     }
 
     // 清空音频队列但不重置解码器（用于精确打断控制）
-    // 解码器将在收到新 speech_id 的第一个音频包时才重置
     function clearAudioQueueWithoutDecoderReset() {
-        // 停止所有计划的音频源
         scheduledSources.forEach(source => {
-            try {
-                source.stop();
-            } catch (e) {
-                // 忽略已经停止的源
-            }
+            try { source.stop(); } catch (_) {}
         });
-
-        // 清空队列和计划源列表
         scheduledSources = [];
         audioBufferQueue = [];
         isPlaying = false;
         audioStartTime = 0;
-        nextStartTime = 0;
+        nextChunkTime = 0;
 
         // 注意：不调用 resetOggOpusDecoder()！
         // 解码器将在收到新 speech_id 时才重置，避免丢失头信息
@@ -4571,6 +4696,11 @@ function init_app() {
 
 
     function scheduleAudioChunks() {
+        if (scheduleAudioChunksRunning) return;
+        scheduleAudioChunksRunning = true;
+
+        try {
+
         const scheduleAheadTime = 5;
 
         initializeGlobalAnalyser();
@@ -4658,6 +4788,10 @@ function init_app() {
 
         // 继续调度循环
         setTimeout(scheduleAudioChunks, 25); // 25ms间隔检查
+
+        } finally {
+            scheduleAudioChunksRunning = false;
+        }
     }
 
 
@@ -4736,21 +4870,17 @@ function init_app() {
             i--;
         }
 
-        // 如果是第一次，初始化调度
         if (!isPlaying) {
-            nextChunkTime = audioPlayerContext.currentTime + 0.1;
+            const gap = (seqCounter <= 1) ? 0.03 : 0;
+            nextChunkTime = Math.max(
+                audioPlayerContext.currentTime + gap,
+                nextChunkTime
+            );
             isPlaying = true;
-            scheduleAudioChunks(); // 开始调度循环
-        } else {
-            // 若已经在播放，立即尝试补调度，避免卡住
-            setTimeout(() => {
-                try {
-                    scheduleAudioChunks();
-                } catch (e) {
-                    // 静默兜底，避免控制台噪声
-                }
-            }, 0);
+            scheduleAudioChunks();
         }
+        // When isPlaying is already true the scheduler loop is already running via
+        // its own setTimeout; no need to spawn an extra call.
     }
 
     function enqueueIncomingAudioBlob(blob) {
@@ -4921,45 +5051,43 @@ function init_app() {
     // 口型平滑状态闭包变量
     let _lastMouthOpen = 0;
 
+    let _lipSyncSkipCounter = 0;
+    const LIP_SYNC_EVERY_N_FRAMES = 2;
+
     function startLipSync(model, analyser) {
         console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
         if (animationFrameId) {
             cancelAnimationFrame(animationFrameId);
         }
 
-        // 重置平滑状态
         _lastMouthOpen = 0;
+        _lipSyncSkipCounter = 0;
 
-        // 使用时域数据计算 RMS，对干声足够了
         const dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
             if (!analyser) return;
+            animationFrameId = requestAnimationFrame(animate);
+
+            if (++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
+            _lipSyncSkipCounter = 0;
 
             analyser.getByteTimeDomainData(dataArray);
 
-            // 计算 RMS
             let sum = 0;
             for (let i = 0; i < dataArray.length; i++) {
-                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
+                const val = (dataArray[i] - 128) / 128;
                 sum += val * val;
             }
             const rms = Math.sqrt(sum / dataArray.length);
 
-            // 映射到 0~1
             let mouthOpen = Math.min(1, rms * 10);
-
-
-            // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
             mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
             _lastMouthOpen = mouthOpen;
-
 
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
             }
-
-            animationFrameId = requestAnimationFrame(animate);
         }
 
         animate();
@@ -5249,13 +5377,21 @@ function init_app() {
                     }
                     // 取消上一次 VRM canvas 渐入动画
                     if (window._vrmCanvasFadeInId) {
-                        clearInterval(window._vrmCanvasFadeInId);
+                        clearTimeout(window._vrmCanvasFadeInId);
                         window._vrmCanvasFadeInId = null;
+                    }
+                    if (window._vrmCanvasFadeInListener) {
+                        const prevCanvas = document.getElementById('vrm-canvas');
+                        if (prevCanvas) {
+                            prevCanvas.removeEventListener('transitionend', window._vrmCanvasFadeInListener);
+                        }
+                        window._vrmCanvasFadeInListener = null;
                     }
 
                     // 【第一步】在容器可见之前，先将 VRM canvas opacity 设为 0（防止旧帧闪烁）
                     const vrmCanvasInner = document.getElementById('vrm-canvas');
                     if (vrmCanvasInner) {
+                        vrmCanvasInner.style.transition = 'none';
                         vrmCanvasInner.style.opacity = '0';
                     }
 
@@ -5274,26 +5410,35 @@ function init_app() {
                     // 立即恢复 CSS 过渡（以便后续退出动画正常播放）
                     vrmContainer.style.transition = '';
 
-                    // 【第二步】恢复 VRM canvas 可见性并启动渐入动画
+                    // 【第二步】恢复 VRM canvas 可见性并启动 CSS transition 渐入动画
                     if (vrmCanvasInner) {
                         vrmCanvasInner.style.setProperty('visibility', 'visible', 'important');
                         vrmCanvasInner.style.setProperty('pointer-events', 'auto', 'important');
 
-                        // 使用 setInterval 渐入动画（VRM 使用 Three.js，无 model.alpha，用 CSS opacity）
-                        let vrmFadeStep = 0;
-                        const vrmFadeSteps = 30;
-                        const vrmFadeInterval = 16;
-                        window._vrmCanvasFadeInId = setInterval(() => {
-                            vrmFadeStep++;
-                            const progress = Math.min(vrmFadeStep / vrmFadeSteps, 1);
-                            const eased = 1 - Math.pow(1 - progress, 2.5);
-                            vrmCanvasInner.style.opacity = String(eased);
-                            if (vrmFadeStep >= vrmFadeSteps) {
-                                clearInterval(window._vrmCanvasFadeInId);
+                        // 强制浏览器刷新 canvas 的 opacity:0 状态（确保 transition 从 0 开始）
+                        void vrmCanvasInner.offsetWidth;
+
+                        // 使用 CSS transition 渐入（与 Live2D 一致，GPU 加速更流畅）
+                        vrmCanvasInner.style.transition = 'opacity 0.5s ease-out';
+                        vrmCanvasInner.style.opacity = '1';
+
+                        // 过渡完成后清除内联样式，避免干扰后续功能
+                        const cleanupFadeIn = () => {
+                            vrmCanvasInner.removeEventListener('transitionend', window._vrmCanvasFadeInListener);
+                            window._vrmCanvasFadeInListener = null;
+                            if (window._vrmCanvasFadeInId) {
+                                clearTimeout(window._vrmCanvasFadeInId);
                                 window._vrmCanvasFadeInId = null;
-                                vrmCanvasInner.style.opacity = '';
                             }
-                        }, vrmFadeInterval);
+                            vrmCanvasInner.style.transition = '';
+                            vrmCanvasInner.style.opacity = '';
+                        };
+                        window._vrmCanvasFadeInListener = (e) => {
+                            if (e.propertyName === 'opacity') cleanupFadeIn();
+                        };
+                        vrmCanvasInner.addEventListener('transitionend', window._vrmCanvasFadeInListener);
+                        // 安全超时兜底，防止 transitionend 不触发
+                        window._vrmCanvasFadeInId = setTimeout(cleanupFadeIn, 1000);
                     }
                     console.log('[showCurrentModel] 已设置vrmContainer可见（带canvas渐入动画）');
                 }
@@ -5760,12 +5905,14 @@ function init_app() {
             chatContainerEl.classList.add(collapseClass);
             console.log('[App] 折叠后类列表:', chatContainerEl.className);
 
-            // 移动端还需要隐藏内容区
+            // 移动端还需要隐藏内容区和输入区
             if (isMobile) {
                 const chatContentWrapper = document.getElementById('chat-content-wrapper');
                 const chatHeader = document.getElementById('chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) chatContentWrapper.style.display = 'none';
                 if (chatHeader) chatHeader.style.display = 'none';
+                if (textInputArea) textInputArea.style.display = 'none';
             }
 
             // 同步更新切换按钮的状态（图标和标题）
@@ -5862,8 +6009,10 @@ function init_app() {
         }
 
         // 恢复 VRM canvas 的可见性（如果存在）
+        // 注意：如果 return 渐入动画正在播放（_vrmCanvasFadeInId 存在），
+        // 不要用 removeProperty 扰动 canvas 的内联样式，否则可能中断 CSS transition
         const vrmCanvas = document.getElementById('vrm-canvas');
-        if (vrmCanvas) {
+        if (vrmCanvas && !window._vrmCanvasFadeInId) {
             vrmCanvas.style.removeProperty('visibility');
             vrmCanvas.style.removeProperty('pointer-events');
             vrmCanvas.style.visibility = 'visible';
@@ -5990,8 +6139,10 @@ function init_app() {
             if (isMobile) {
                 const chatContentWrapper = document.getElementById('chat-content-wrapper');
                 const chatHeader = document.getElementById('chat-header');
+                const textInputArea = document.getElementById('text-input-area');
                 if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
                 if (chatHeader) chatHeader.style.removeProperty('display');
+                if (textInputArea) textInputArea.style.removeProperty('display');
             }
 
             // 同步更新切换按钮的状态（图标和标题）
@@ -10505,6 +10656,27 @@ window.addEventListener("load", () => {
             window.showStatusToast(window.t ? window.t('app.started', { name: lanlan_config.lanlan_name }) : `${lanlan_config.lanlan_name}已启动`, 3000);
         }
     }, 1000);
+
+    // 拉取待弹重要通知（由后端启动阶段缓冲，前端页面加载后串行展示）
+    // 使用游标确认：只 ack 本次拉取到的通知，避免 peek→ack 之间新入队的通知被误删。
+    setTimeout(async () => {
+        try {
+            const r = await fetch('/api/pending-notices');
+            const data = await r.json();
+            const notices = Array.isArray(data) ? data : (data.notices || []);
+            const cursor = (data && typeof data.cursor === 'number') ? data.cursor : 0;
+            if (notices.length > 0 && typeof window.showProminentNotice === 'function') {
+                for (const n of notices) {
+                    if (n) await window.showProminentNotice(n);
+                }
+                await fetch('/api/pending-notices/ack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cursor }),
+                }).catch(() => {});
+            }
+        } catch (_) {}
+    }, 2000);
 });
 
 // 监听voice_id更新消息和VRM表情预览消息

@@ -874,6 +874,13 @@ class ConfigManager:
             logger.error("保存音色配置失败: %s", e)
             raise
 
+    @staticmethod
+    def is_legacy_cosyvoice_id(voice_id: str) -> bool:
+        """CosyVoice v2 / v3 的克隆音色 ID 已随 CosyVoice 3.5 升级而失效。"""
+        return bool(voice_id) and (
+            voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
+        )
+
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色
         
@@ -890,12 +897,12 @@ class ConfigManager:
         
         if is_local_tts:
             all_voices = voice_storage.get('__LOCAL_TTS__', {})
-            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
         
         tts_api_key = tts_config.get('api_key', '')
         if tts_api_key:
             all_voices = voice_storage.get(tts_api_key, {})
-            return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+            return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
         
         core_config = self.get_core_config()
         audio_api_key = core_config.get('AUDIO_API_KEY', '')
@@ -905,7 +912,7 @@ class ConfigManager:
             return {}
 
         all_voices = voice_storage.get(audio_api_key, {})
-        return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
+        return {k: v for k, v in all_voices.items() if not self.is_legacy_cosyvoice_id(k)}
 
     def save_voice_for_current_api(self, voice_id, voice_data):
         """为当前 AUDIO_API_KEY 保存音色"""
@@ -981,7 +988,7 @@ class ConfigManager:
         """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效。
         
         校验覆盖四类 voice_id：
-          1. "cosyvoice-v2..." → 旧版格式，始终无效
+          1. "cosyvoice-v2/v3..." → 旧版格式，始终无效
           2. "gsv:xxx" → 委托 check_custom_tts_voice_allowed (custom_tts_adapter)
              判定，由适配器根据 tts_custom 配置决定有效性
           3. 普通 ID → 在 voice_storage (CosyVoice 云端克隆音色) 中查找
@@ -992,7 +999,7 @@ class ConfigManager:
         if not voice_id:
             return True
 
-        if voice_id.startswith("cosyvoice-v2"):
+        if self.is_legacy_cosyvoice_id(voice_id):
             return False
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
@@ -1016,7 +1023,7 @@ class ConfigManager:
         if not voice_id:
             return True
 
-        if voice_id.startswith("cosyvoice-v2"):
+        if self.is_legacy_cosyvoice_id(voice_id):
             return False
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
@@ -1041,27 +1048,35 @@ class ConfigManager:
         通过 validate_voice_id 统一判定有效性，不含 provider 专属逻辑。
         注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
+
+        Returns:
+            (cleaned_count, legacy_cosyvoice_names): 清理总数 及 因旧版 CosyVoice 被清理的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
+        legacy_cosyvoice_names: list[str] = []
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
             if voice_id and not self.validate_voice_id(voice_id):
+                is_legacy = self.is_legacy_cosyvoice_id(voice_id)
                 logger.warning(
-                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
+                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除%s",
                     name,
                     voice_id,
+                    "（旧版 CosyVoice 音色）" if is_legacy else "",
                 )
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
+                if is_legacy:
+                    legacy_cosyvoice_names.append(name)
 
         if cleaned_count > 0:
             self.save_characters(character_data)
             logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
 
-        return cleaned_count
+        return cleaned_count, legacy_cosyvoice_names
 
     # --- Character metadata helpers ---
 
@@ -1129,38 +1144,95 @@ class ConfigManager:
 
     # --- Core config helpers ---
 
-    # Cache for region check to avoid repeated calls (None = not checked, True/False = result)
+    # Combined region cache (None = not checked, True = non-mainland, False = mainland)
     _region_cache = None
-    
-    def _check_non_mainland(self) -> bool:
-        """Check if user is non-mainland China (cached, lazy evaluation)."""
-        if ConfigManager._region_cache is not None:
-            return ConfigManager._region_cache
-        
+    # Individual caches for dual check (None = not yet tried, True/False = result,
+    # _GEO_INDETERMINATE = tried but got no usable answer → do not retry)
+    _ip_check_cache = None
+    _steam_check_cache = None
+    # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
+    # re-attempt it (and never pay the timeout again) within the same process.
+    _GEO_INDETERMINATE = object()
+
+    @staticmethod
+    def _check_ip_non_mainland_http():
+        """Independent IP geolocation via China-fast HTTP API (ip-api.com over HTTP)."""
+        cache = ConfigManager._ip_check_cache
+        if cache is not None:
+            # True/False → deterministic result; sentinel → tried-and-failed, skip retry
+            return None if cache is ConfigManager._GEO_INDETERMINATE else cache
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://ip-api.com/json/?fields=countryCode",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            # 显式禁用代理，避免探测到代理服务器所在国家而非用户真实 IP 所在地。
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+            country = (data.get("countryCode") or "").upper()
+            if country:
+                result = country != "CN"
+                ConfigManager._ip_check_cache = result
+                print(f"[GeoIP] HTTP IP check: country={country}, non_mainland={result}", file=sys.stderr)
+                return result
+        except Exception as e:
+            print(f"[GeoIP] HTTP IP check failed: {e}", file=sys.stderr)
+        # Mark as attempted-but-indeterminate so the network probe is never retried.
+        ConfigManager._ip_check_cache = ConfigManager._GEO_INDETERMINATE
+        return None
+
+    @staticmethod
+    def _check_steam_non_mainland():
+        """Steam-based IP country check via Steamworks SDK."""
+        if ConfigManager._steam_check_cache is not None:
+            return ConfigManager._steam_check_cache
         try:
             from main_routers.shared_state import get_steamworks
             steamworks = get_steamworks()
-            
             if steamworks is None:
-                return False  # Don't cache, retry next time
-            
+                return None
             ip_country = steamworks.Utils.GetIPCountry()
             if isinstance(ip_country, bytes):
                 ip_country = ip_country.decode('utf-8')
-            
-            result = (ip_country.upper() != 'CN') if ip_country else False
-            
-            print(f"[GeoIP] _check_non_mainland: country={ip_country}, non_mainland={result}", file=sys.stderr)
-            
-            ConfigManager._region_cache = result
-            return result
-            
+            if ip_country:
+                result = ip_country.upper() != "CN"
+                ConfigManager._steam_check_cache = result
+                print(f"[GeoIP] Steam IP check: country={ip_country}, non_mainland={result}", file=sys.stderr)
+                return result
         except ImportError:
-            return False  # Don't cache, module not available yet
+            pass
         except Exception as e:
-            print(f"[GeoIP] _check_non_mainland exception: {e}", file=sys.stderr)
+            print(f"[GeoIP] Steam IP check failed: {e}", file=sys.stderr)
+        return None
+
+    def _check_non_mainland(self) -> bool:
+        """Dual validation: both HTTP IP geo AND Steam geo must indicate non-mainland."""
+        if ConfigManager._region_cache is not None:
+            return ConfigManager._region_cache
+
+        ip_result = self._check_ip_non_mainland_http()
+        steam_result = self._check_steam_non_mainland()
+
+        if ip_result is True and steam_result is True:
+            ConfigManager._region_cache = True
+            print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
+            return True
+
+        if ip_result is False or steam_result is False:
+            ConfigManager._region_cache = False
+            print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return False
-    
+
+        # Both sources simultaneously indeterminate (e.g. ip-api.com blocked AND Steam not
+        # yet initialised).  Do NOT write to _region_cache: Steam may initialise shortly
+        # after this call, and caching False here would permanently suppress re-evaluation.
+        # Callers that iterate get_core_config() will simply retry the geo check on the
+        # next invocation until at least one source becomes definitive.
+        print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
+        return False
+
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
         """Internal URL adjustment for free API users based on region."""
         if not url or 'lanlan.tech' not in url:
@@ -1422,6 +1494,10 @@ class ConfigManager:
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
                 config[key] = self._adjust_free_api_url(value, True)
+
+        # Agent model always uses international API regardless of region
+        if isinstance(config.get('AGENT_MODEL_URL'), str):
+            config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app')
 
         return config
 

@@ -1148,6 +1148,9 @@
         "addCatgirl": "新增貓娘",
         "switchCatgirl": "切換貓娘",
         "deleteCatgirl": "刪除貓娘",
+        "hideCatgirl": "隱藏此貓娘",
+        "hiddenCatgirls": "已隱藏貓娘",
+        "show": "顯示",
         "advancedSettings": "進階設定",
         "modelSettings": "模型設定",
         "modelNotSet": "未設置",
@@ -2255,6 +2258,11 @@
         "status": {
             "active": "● 已就緒",
             "inactive": "○ 未配置"
+        }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"
         }
     }
 }

@@ -19,7 +19,7 @@ from plugin.server.runs.manager import (
     list_runs as manager_list_runs,
     list_export_for_run as manager_list_export_for_run,
 )
-from plugin.server.runs.storage import blob_store
+from plugin.server.runs.storage import UploadNotFoundError, blob_store
 from plugin.server.runs.tokens import issue_run_token
 
 logger = get_logger("server.application.runs.service")
@@ -212,7 +212,15 @@ class RunService:
                         )
                     await asyncio.to_thread(file_obj.write, bytes(chunk))
 
-            blob_store.finalize_upload(upload_id)
+            try:
+                blob_store.finalize_upload(upload_id)
+            except UploadNotFoundError as exc:
+                raise _to_domain_error(
+                    code="UPLOAD_NOT_FOUND",
+                    message="upload not found",
+                    status_code=404,
+                    details={"upload_id": upload_id},
+                ) from exc
             return {
                 "ok": True,
                 "upload_id": session.upload_id,

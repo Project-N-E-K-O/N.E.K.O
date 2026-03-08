@@ -1288,13 +1288,23 @@ button * {
 
 @media only screen and (max-width: 768px) {
 
-    /* 移动端：折叠（mobile-collapsed）时，聊天框高度为12vh */
+    /* 移动端：折叠时容器完全透明且不拦截触摸事件 */
     #chat-container.mobile-collapsed {
-        height: 12vh;
+        height: 48px;
+        min-height: 48px;
+        max-height: 48px;
+        overflow: hidden;
+        pointer-events: none !important;
+        background: transparent !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        box-shadow: none !important;
+        border: none !important;
     }
 
-    /* 移动端：折叠（mobile-collapsed）时，切换按钮固定到左上角 */
+    /* 移动端：折叠时仅切换按钮可交互 */
     #chat-container.mobile-collapsed #toggle-chat-btn {
+        pointer-events: auto !important;
         left: 8px;
         right: auto;
         top: 8px;
@@ -1302,9 +1312,9 @@ button * {
         position: relative;
     }
 
-    /* 避免按钮覆盖输入区顶边，给输入区微小顶距 */
+    /* 移动端：折叠时隐藏输入区 */
     #chat-container.mobile-collapsed #text-input-area {
-        margin-top: 6px;
+        display: none !important;
     }
 }
 

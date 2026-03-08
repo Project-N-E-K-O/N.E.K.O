@@ -36,6 +36,7 @@ from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code, get_global_language
+import threading
 from threading import Thread
 from queue import Queue
 from uuid import uuid4
@@ -45,6 +46,63 @@ import httpx
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# ---------------------------------------------------------------------------
+# 重要通知缓冲池
+# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
+# 前端通过 GET /api/pending-notices 拉取（返回通知列表和游标），
+# 用户全部确认后通过 POST /api/pending-notices/ack?cursor=N 只删除已展示的通知，
+# 避免 peek→ack 两次 HTTP 往返之间新入队的通知被静默清空（TOCTOU）。
+# ---------------------------------------------------------------------------
+_prominent_notice_queue: list[dict] = []
+_prominent_notice_lock = threading.Lock()
+_prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
+
+
+def enqueue_prominent_notice(notice: "str | dict"):
+    """将一条醒目通知放入缓冲池，等待前端拉取。
+    
+    可传入字符串（自动包装为 {"message": ...}）或结构化字典
+    （建议包含 "code"、"message"、"message_en"、"details" 字段）。
+    """
+    global _prominent_notice_seq
+    if isinstance(notice, str):
+        item: dict = {"message": notice}
+    else:
+        item = dict(notice)
+    with _prominent_notice_lock:
+        _prominent_notice_seq += 1
+        item["_nid"] = _prominent_notice_seq
+        _prominent_notice_queue.append(item)
+
+
+def peek_prominent_notices() -> tuple[list[dict], int]:
+    """返回缓冲池快照和当前游标（供 GET /pending-notices 使用）。
+
+    返回 (notices_without_internal_fields, cursor)；cursor 是本次快照中最大的
+    _nid，调用方将其传给 drain_prominent_notices(cursor) 即可精确删除已展示项。
+    """
+    with _prominent_notice_lock:
+        items = list(_prominent_notice_queue)
+    cursor = items[-1]["_nid"] if items else 0
+    public = [{k: v for k, v in it.items() if k != "_nid"} for it in items]
+    return public, cursor
+
+
+def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
+    """删除 _nid ≤ up_to_cursor 的通知，保留之后新入队的项目。
+
+    返回被删除的通知列表。传入 0 或负数时不删除任何条目。
+    """
+    if up_to_cursor <= 0:
+        return []
+    with _prominent_notice_lock:
+        remaining = [it for it in _prominent_notice_queue if it.get("_nid", 0) > up_to_cursor]
+        drained = [it for it in _prominent_notice_queue if it.get("_nid", 0) <= up_to_cursor]
+        _prominent_notice_queue.clear()
+        _prominent_notice_queue.extend(remaining)
+    return drained
+
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -770,6 +828,17 @@ class LLMSessionManager:
             legacy_keys=('voice_id',),
         )
 
+    def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
+        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。"""
+        if not legacy_names:
+            return
+        enqueue_prominent_notice({
+            "code": "notice.voiceMigration.legacyRemoved",
+            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "details": {"voices": legacy_names},
+        })
+
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()
         text = text.replace("\n", "")
@@ -823,12 +892,13 @@ class LLMSessionManager:
 
         # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
-            cleaned_count = self._config_manager.cleanup_invalid_voice_ids()
+            cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
+            self._enqueue_voice_migration_notice(legacy_names)
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
-        
+
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
@@ -1040,7 +1110,7 @@ class LLMSessionManager:
             _mem_start = time.time()
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             try:
-                async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
+                async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
@@ -1349,7 +1419,7 @@ class LLMSessionManager:
         header = _loc(AGENT_PLUGINS_HEADER, _lang)
         count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
                 r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                 if r.status_code != 200:
                     return ""
@@ -1378,7 +1448,7 @@ class LLMSessionManager:
         if not self._is_agent_enabled():
             return ""
         try:
-            async with httpx.AsyncClient(timeout=1.5, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
                 if resp.status_code != 200:
                     return ""
@@ -1421,6 +1491,15 @@ class LLMSessionManager:
             self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
             self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
             
+            # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
+            try:
+                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                if cleaned_count > 0:
+                    logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
+                self._enqueue_voice_migration_notice(legacy_names)
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
@@ -1493,7 +1572,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)

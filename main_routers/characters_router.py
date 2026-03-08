@@ -1080,7 +1080,7 @@ async def add_catgirl(request: Request):
     
     # 通知记忆服务器重新加载配置
     try:
-            async with httpx.AsyncClient(proxy=None) as client:
+            async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
                         resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
                 result = resp.json()
@@ -1372,7 +1372,6 @@ async def get_voices():
     _config_manager = get_config_manager()
     result = {"voices": _config_manager.get_voices_for_current_api()}
     
-    # 如果是免费版且使用 lanlan.tech，附带免费预设音色
     core_config = _config_manager.get_core_config()
     if core_config.get('IS_FREE_VERSION'):
         core_url = core_config.get('CORE_URL', '')
@@ -1424,9 +1423,9 @@ async def get_voice_preview(voice_id: str):
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
         
         text = "喵喵喵～这里是neko～很高兴见到你～"
-        # 参照 复刻.py 使用 cosyvoice-v3-plus 模型
+        # 参照 复刻.py 使用 cosyvoice-v3.5-plus 模型
         try:
-            synthesizer = SpeechSynthesizer(model="cosyvoice-v3-plus", voice=voice_id)
+            synthesizer = SpeechSynthesizer(model="cosyvoice-v3.5-plus", voice=voice_id)
             # 使用 asyncio.to_thread 包装同步阻塞调用
             audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
@@ -1877,7 +1876,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
             
-            async with httpx.AsyncClient(timeout=60, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
                 
                 if resp.status_code == 200:
@@ -2130,7 +2129,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         
         dashscope.api_key = audio_api_key
         service = VoiceEnrollmentService()
-        target_model = "cosyvoice-v3-plus"
+        target_model = "cosyvoice-v3.5-plus"
         
         # 重试配置
         max_retries = 3

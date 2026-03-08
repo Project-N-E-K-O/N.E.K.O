@@ -282,10 +282,11 @@ async def get_steam_language():
             if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
                 get_steam_language._logged = True
                 logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
-            # Write back to ConfigManager so URL adjustment uses the same result
+            # Write Steam result to ConfigManager's steam-specific cache
             try:
                 from utils.config_manager import ConfigManager
-                ConfigManager._region_cache = not is_mainland_china
+                ConfigManager._steam_check_cache = not is_mainland_china
+                ConfigManager._region_cache = None  # reset combined cache for recomputation
             except Exception:
                 pass
         except Exception as geo_error:
@@ -594,7 +595,7 @@ async def update_core_config(request: Request):
         try:
             import httpx
             from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
                 await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
             logger.info("已通知 agent_server 刷新 CUA 适配器")
         except Exception as notify_err:
