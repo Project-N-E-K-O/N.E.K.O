@@ -69,27 +69,39 @@ function loadAPlayerLibrary() {
     }
 
     aplayerLoadPromise = new Promise((resolve, reject) => {
-        const cssLink = document.createElement('link');
-        cssLink.rel = 'stylesheet';
-        cssLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.css';
-        cssLink.crossOrigin = 'anonymous';
-        cssLink.integrity = 'sha512-CIwaY5DuGKTXq24u2Zf1kS//4E//rS42RruwB2O1kH1S5/5512w/aM7w8jQ2J0X7r5E1pMwJIf73H1mH1E6XmA==';
-        document.head.appendChild(cssLink);
+        if (!document.querySelector('link[href*="APlayer.min.css"]')) {
+            const cssLink = document.createElement('link');
+            cssLink.rel = 'stylesheet';
+            cssLink.href = '/static/libs/APlayer.min.css';
+            document.head.appendChild(cssLink);
+        }
         
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.js';
-        script.crossOrigin = 'anonymous';
-        script.integrity = 'sha512-RWosNn0G8icq6F8yJUzFj4A8qH/I8KzU0KzQ0F2X8xY756S1E3yJmC0RkH66g7O2/5wM9B2GjK/RXYtA==';
-        script.onload = () => {
-            console.log('[APlayer] Library loaded successfully');
+        const existingScript = document.querySelector('script[src*="APlayer.min.js"]');
+        if (existingScript && typeof APlayer !== 'undefined') {
             resolve();
-        };
-        script.onerror = (e) => {
-            console.error('[APlayer] Failed to load library');
-            aplayerLoadPromise = null; // 失败后清空，允许重试
-            reject(e);
-        };
-        document.head.appendChild(script);
+            return;
+        }
+
+        if (!existingScript) {
+            const script = document.createElement('script');
+            script.src = '/static/libs/APlayer.min.js';
+            script.onload = () => {
+                console.log('[APlayer] Library loaded successfully (local)');
+                resolve();
+            };
+            script.onerror = (e) => {
+                console.error('[APlayer] Failed to load library');
+                aplayerLoadPromise = null;
+                reject(e);
+            };
+            document.head.appendChild(script);
+        } else {
+            existingScript.addEventListener('load', () => resolve());
+            existingScript.addEventListener('error', (e) => {
+                aplayerLoadPromise = null;
+                reject(e);
+            });
+        }
     });
 
     return aplayerLoadPromise;

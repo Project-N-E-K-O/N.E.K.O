@@ -1983,7 +1983,7 @@ MUSIC_SEARCH_RESULT_TEXTS = {
 PROACTIVE_MUSIC_TAG_HINT = {
     'zh': '，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊网页话题和音乐)',
     'en': ', or [MUSIC] (music only), or [BOTH] (both web and music)',
-    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音乐の両方)',
+    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音楽の両方)',
     'ko': ', 또는 [MUSIC] (음악만), 또는 [BOTH] (웹과 음악 모두)',
     'ru': ', или [MUSIC] (только музыка), или [BOTH] (и веб, и музыка)',
 }

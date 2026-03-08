@@ -1268,7 +1268,6 @@ window.sendMusicMessage = function(trackInfo) {
         }
     }
     
-    // 动态加载 APlayer 库
     const loadAPlayerLibrary = () => {
         if (aplayerLoadPromise) return aplayerLoadPromise;
         
@@ -1281,9 +1280,7 @@ window.sendMusicMessage = function(trackInfo) {
             if (!document.querySelector('link[href*="APlayer.min.css"]')) {
                 const cssLink = document.createElement('link');
                 cssLink.rel = 'stylesheet';
-                cssLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.css';
-                cssLink.crossOrigin = 'anonymous';
-                cssLink.integrity = 'sha512-CIwaY5DuGKTXq24u2Zf1kS//4E//rS42RruwB2O1kH1S5/5512w/aM7w8jQ2J0X7r5E1pMwJIf73H1mH1E6XmA==';
+                cssLink.href = '/static/libs/APlayer.min.css';
                 cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
                 document.head.appendChild(cssLink);
             }
@@ -1291,11 +1288,9 @@ window.sendMusicMessage = function(trackInfo) {
             const existingScript = document.querySelector('script[src*="APlayer.min.js"]');
             if (!existingScript) {
                 const script = document.createElement('script');
-                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.js';
-                script.crossOrigin = 'anonymous';
-                script.integrity = 'sha512-RWosNnDNw8FxHibJqdFRySIswOUgYhFxnmYO3fp+BgCU7gfo4z0oS7mYFBvaa8qu+axY39BmQOrhW3Tp70XbaQ==';
+                script.src = '/static/libs/APlayer.min.js';
                 script.onload = () => {
-                    console.log('[Common UI] APlayer 库加载成功');
+                    console.log('[Common UI] APlayer 库加载成功 (local)');
                     resolve();
                 };
                 script.onerror = () => {
@@ -1305,7 +1300,6 @@ window.sendMusicMessage = function(trackInfo) {
                 };
                 document.head.appendChild(script);
             } else {
-                // 【核心修复1】如果已有脚本，判断状态并挂载事件，而不是盲等 100ms
                 if (typeof APlayer !== 'undefined') {
                     resolve();
                 } else {
@@ -1315,7 +1309,6 @@ window.sendMusicMessage = function(trackInfo) {
                         aplayerLoadPromise = null; 
                         reject(new Error('APlayer 库加载失败'));
                     };
-                    // 设置一个 10秒 的兜底超时，防止网络卡死
                     const fallbackTimer = setTimeout(() => {
                         cleanup();
                         if (typeof APlayer !== 'undefined') {
@@ -1324,7 +1317,7 @@ window.sendMusicMessage = function(trackInfo) {
                             aplayerLoadPromise = null; 
                             reject(new Error('APlayer 加载超时'));
                         }
-                    }, 10000);
+                    }, 5000);
 
                     const cleanup = () => {
                         existingScript.removeEventListener('load', onLoad);
@@ -1458,30 +1451,53 @@ window.sendMusicMessage = function(trackInfo) {
                 const container = document.getElementById(playerId);
                 const playBtn = document.getElementById(playerId + '-play');
 
-                if (container && typeof window.initializeAPlayer === 'function') {
+                if (!container) {
+                    console.error('[Common UI] 音乐气泡挂载点不存在: playerId=%s', playerId);
+                    if (tempDiv && tempDiv.parentNode) {
+                        tempDiv.parentNode.removeChild(tempDiv);
+                    }
+                    if (currentToken === latestMusicRequestToken) {
+                        currentPlayingTrack = null;
+                    }
+                } else if (typeof window.initializeAPlayer === 'function' || typeof APlayer !== 'undefined') {
                     try {
-                        aplayerInstance = await window.initializeAPlayer({ 
-                            container: container,
-                            theme: '#667eea',
-                            loop: 'none',
-                            preload: 'none',
-                            mutex: true,
-                            volume: 0.7,
-                            listFolded: true,
-                            order: 'normal',
-                            audio: [{
-                                name: trackName,
-                                artist: artistName,
-                                url: trackInfo.url,
-                                cover: hasCover ? trackInfo.cover : ''
-                            }]
-                        });
+                        const audioConfig = [{
+                            name: trackName,
+                            artist: artistName,
+                            url: trackInfo.url,
+                            cover: hasCover ? trackInfo.cover : ''
+                        }];
+
+                        if (typeof window.initializeAPlayer === 'function') {
+                            aplayerInstance = await window.initializeAPlayer({ 
+                                container: container,
+                                theme: '#667eea',
+                                loop: 'none',
+                                preload: 'none',
+                                mutex: true,
+                                volume: 0.7,
+                                listFolded: true,
+                                order: 'normal',
+                                audio: audioConfig
+                            });
+                        } else {
+                            aplayerInstance = new APlayer({
+                                container: container,
+                                theme: '#667eea',
+                                loop: 'none',
+                                preload: 'none',
+                                mutex: true,
+                                volume: 0.7,
+                                listFolded: true,
+                                order: 'normal',
+                                audio: audioConfig
+                            });
+                        }
                         
                         if (!aplayerInstance) {
                             throw new Error("APlayer instance is null after initialization");
                         }
                         
-                        // 第三道防线：APlayer 异步初始化完成后检查
                         if (currentToken !== latestMusicRequestToken) {
                             console.log('[Common UI] APlayer 初始化后发现请求过期，销毁死实例');
                             if (typeof aplayerInstance.destroy === 'function') {
@@ -1492,8 +1508,6 @@ window.sendMusicMessage = function(trackInfo) {
 
                         if (!window.aplayerInjected) window.aplayerInjected = {};
                         window.aplayerInjected.aplayer = aplayerInstance;
-                        
-                        console.log('[Common UI] 音乐气泡通过统一接口初始化成功');
 
                         if (playBtn) {
                             playBtn.addEventListener('click', () => {
@@ -1517,7 +1531,6 @@ window.sendMusicMessage = function(trackInfo) {
                         });
                         
                         aplayerInstance.on('ended', () => {
-                            console.log('[Common UI] 音乐播放结束');
                             if (playBtn) playBtn.textContent = '▶';
                         });
 
@@ -1531,7 +1544,6 @@ window.sendMusicMessage = function(trackInfo) {
                         if (tempDiv && tempDiv.parentNode) {
                             tempDiv.parentNode.removeChild(tempDiv);
                         }
-                        // 【核心修复：防连带伤害】仅在当前失败的是最新请求时，才清空状态
                         if (currentToken === latestMusicRequestToken) {
                             currentPlayingTrack = null;
                         }
@@ -1541,11 +1553,10 @@ window.sendMusicMessage = function(trackInfo) {
                         }
                     }
                 } else {
-                    console.error('[Common UI] 找不到音乐气泡挂载点或 APlayer 未定义');
+                    console.error('[Common UI] APlayer 库未加载，无法创建音乐气泡');
                     if (tempDiv && tempDiv.parentNode) {
                         tempDiv.parentNode.removeChild(tempDiv);
                     }
-                    // 同理，防误删
                     if (currentToken === latestMusicRequestToken) {
                         currentPlayingTrack = null;
                     }
