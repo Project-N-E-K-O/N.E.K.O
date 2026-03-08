@@ -1029,6 +1029,7 @@
         "prefixFormatError": "Ошибка формата префикса: максимум 10 символов, только цифры и латинские буквы",
         "registering": "Регистрация голоса, подождите!",
         "registerSuccess": "Регистрация успешна! voice_id: {{voiceId}}",
+        "reusedExisting": "Использован существующий голос, загрузка пропущена. voice_id: {{voiceId}}",
         "registerFailed": "Ошибка регистрации: {{error}}",
         "requestError": "Ошибка запроса: {{error}}",
         "voiceIdSaveFailed": "Не удалось автоматически сохранить voice_id: {{error}}",
