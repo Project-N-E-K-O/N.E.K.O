@@ -260,9 +260,13 @@ function updateAPlayerConfig(aplayer, config) {
     if (config.ui) {
         initializeAPlayerUI(aplayer, config.ui);
     }
-    if (config.defaultPlaylist && config.defaultPlaylist.length > 0) {
-        aplayer.list.clear(); // 清空旧歌单
-        aplayer.list.add(config.defaultPlaylist); // 注入新歌单
+    // 只要调用方显式传入了 audio 参数（哪怕是 []），就执行清空逻辑
+    if (options.audio !== undefined && Array.isArray(config.defaultPlaylist)) {
+        aplayer.list.clear(); 
+        // 只有当传入的数组真的有数据时，才注入新歌单
+        if (config.defaultPlaylist.length > 0) {
+            aplayer.list.add(config.defaultPlaylist);
+        }
     }
 }
 
