@@ -14,4 +14,4 @@
 ## Notes
 
 - `shared` is available for advanced scenarios; prefer flavor APIs when possible.
-- `public/*` remains an implementation layer and is not required for normal plugin usage.
+- `public/*` is an internal implementation layer and should not be treated as a supported developer import path.

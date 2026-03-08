@@ -1,4 +1,9 @@
-"""Extension runtime contracts for SDK v2."""
+"""Extension runtime contracts for SDK v2.
+
+This module intentionally exposes a smaller runtime surface than full plugins.
+The facade stays local to `extension`, while shared implementations remain the
+single lower dependency.
+"""
 
 from __future__ import annotations
 

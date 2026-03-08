@@ -1,23 +1,112 @@
-"""Plugin flavor decorators exports."""
+"""Plugin flavor decorators.
 
-from plugin.sdk_v2.shared.core import decorators as _shared_dec
+The shared layer owns the metadata model and validation rules. This module keeps
+the plugin-facing namespace small and stable, and defines plugin-specific helper
+objects such as `plugin.entry(...)`.
+"""
 
-for _export_name in _shared_dec.__all__:
-    if _export_name == "plugin":
-        continue
-    globals()[_export_name] = getattr(_shared_dec, _export_name)
+from __future__ import annotations
 
-# Explicit binding for static analyzers; remains monkeypatchable at module scope.
-plugin_entry = _shared_dec.plugin_entry
+from collections.abc import Callable
+from typing import TypeVar
+
+from plugin.sdk_v2.shared.constants import CHECKPOINT_ATTR, EVENT_META_ATTR, HOOK_META_ATTR, PERSIST_ATTR
+from plugin.sdk_v2.shared.core.decorators import (
+    EntryKind,
+    EventDecoratorMeta,
+    HookDecoratorMeta,
+    after_entry as _after_entry,
+    around_entry as _around_entry,
+    before_entry as _before_entry,
+    custom_event as _custom_event,
+    hook as _hook,
+    lifecycle as _lifecycle,
+    message as _message,
+    neko_plugin as _neko_plugin,
+    on_event as _on_event,
+    plugin_entry as _plugin_entry,
+    replace_entry as _replace_entry,
+    timer_interval as _timer_interval,
+)
+
+F = TypeVar("F", bound=Callable[..., object])
+
+
+def neko_plugin(cls: type[F]) -> type[F]:
+    return _neko_plugin(cls)
+
+
+def on_event(**kwargs: object) -> Callable[[F], F]:
+    return _on_event(**kwargs)
+
+
+def plugin_entry(**kwargs: object) -> Callable[[F], F]:
+    return _plugin_entry(**kwargs)
+
+
+def lifecycle(**kwargs: object) -> Callable[[F], F]:
+    return _lifecycle(**kwargs)
+
+
+def message(**kwargs: object) -> Callable[[F], F]:
+    return _message(**kwargs)
+
+
+def timer_interval(**kwargs: object) -> Callable[[F], F]:
+    return _timer_interval(**kwargs)
+
+
+def custom_event(**kwargs: object) -> Callable[[F], F]:
+    return _custom_event(**kwargs)
+
+
+def hook(**kwargs: object) -> Callable[[F], F]:
+    return _hook(**kwargs)
+
+
+def before_entry(**kwargs: object) -> Callable[[F], F]:
+    return _before_entry(**kwargs)
+
+
+def after_entry(**kwargs: object) -> Callable[[F], F]:
+    return _after_entry(**kwargs)
+
+
+def around_entry(**kwargs: object) -> Callable[[F], F]:
+    return _around_entry(**kwargs)
+
+
+def replace_entry(**kwargs: object) -> Callable[[F], F]:
+    return _replace_entry(**kwargs)
 
 
 class _PluginDecorators:
     @staticmethod
-    def entry(**kwargs: object):
-        # Keep plugin.entry() patchable against plugin module symbol.
+    def entry(**kwargs: object) -> Callable[[F], F]:
         return plugin_entry(**kwargs)
 
 
 plugin = _PluginDecorators()
 
-__all__ = [name for name in _shared_dec.__all__ if name != "plugin"] + ["plugin"]
+__all__ = [
+    "EntryKind",
+    "PERSIST_ATTR",
+    "CHECKPOINT_ATTR",
+    "EVENT_META_ATTR",
+    "HOOK_META_ATTR",
+    "EventDecoratorMeta",
+    "HookDecoratorMeta",
+    "neko_plugin",
+    "on_event",
+    "plugin_entry",
+    "lifecycle",
+    "message",
+    "timer_interval",
+    "custom_event",
+    "hook",
+    "before_entry",
+    "after_entry",
+    "around_entry",
+    "replace_entry",
+    "plugin",
+]

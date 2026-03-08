@@ -15,5 +15,5 @@
 
 ## Internal Layers (implementation detail)
 
-- `public/*`: type-oriented composition layers
+- `public/*`: internal composition layers used by outer surfaces; not for plugin authors
 - `shared/*`: reusable core/bus/storage/runtime/transport/models/compat modules

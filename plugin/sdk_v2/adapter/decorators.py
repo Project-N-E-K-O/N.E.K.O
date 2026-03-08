@@ -1,4 +1,4 @@
-"""Adapter decorators contracts for SDK v2."""
+"""Adapter decorators for SDK v2."""
 
 from __future__ import annotations
 

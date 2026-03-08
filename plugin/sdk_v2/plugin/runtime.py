@@ -99,7 +99,7 @@ Envelope = OkEnvelope | ErrEnvelope
 
 
 class Plugins(_SharedPlugins):
-    """Compatibility wrapper for args-named params."""
+    """Plugin-facing cross-plugin call helper."""
 
     async def call_entry(
         self,
@@ -120,9 +120,7 @@ class Plugins(_SharedPlugins):
         return await super().call_event(event_ref=event_ref, params=args, timeout=timeout)
 
 
-# Backward-compatible alias with v1 export surface.
 StatePersistence = PluginStatePersistence
-
 
 __all__ = [
     "SDK_VERSION",
