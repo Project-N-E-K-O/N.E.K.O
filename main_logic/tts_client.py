@@ -1160,7 +1160,7 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 async with aiohttp.ClientSession(
                                     **aiohttp_session_kwargs_for_url(tts_url)
                                 ) as session:
-                                    async with session.post(tts_url, headers=headers, json=payload) as resp:
+                                    async with session.post(tts_url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                                         if resp.status == 200:
                                             # CogTTS返回SSE格式: data: {...JSON...}
                                             # 使用缓冲区逐块读取，避免 "Chunk too big" 错误

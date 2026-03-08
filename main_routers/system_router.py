@@ -1714,7 +1714,7 @@ async def proactive_chat(request: Request):
                 music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
                 print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
                 
-                if re.search(r'^\s*\[pass\]\b', music_keyword_result or '', re.IGNORECASE):
+                if re.match(r'\s*\[\s*pass\s*\](?:\s|$)', music_keyword_result or '', re.IGNORECASE):
                     print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
                     music_content = None
                 else:
@@ -1770,7 +1770,7 @@ async def proactive_chat(request: Request):
                 web_result_text = await _llm_call_with_retry(prompt, "screen_web")
                 print(f"[{lanlan_name}] Phase 1 Web 筛选结果: {web_result_text[:120]}")
                 
-                if "[PASS]" not in web_result_text:
+                if "[PASS]" not in web_result_text.upper():
                     parsed = _parse_web_screening_result(web_result_text)
                     if parsed:
                         matched = _lookup_link_by_title(parsed.get('title', ''), all_web_links)
@@ -1793,7 +1793,7 @@ async def proactive_chat(request: Request):
                                 print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
                             else:
                                 print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
-                    if "[PASS]" not in web_result_text:
+                    if "[PASS]" not in web_result_text.upper():
                         phase1_topics.append(('web', web_result_text.strip()))
                 else:
                     print(f"[{lanlan_name}] Phase 1 Web 通道返回 PASS")
@@ -2004,7 +2004,7 @@ async def proactive_chat(request: Request):
                             cleaned = cleaned[tag_match.end():]
                         tag_parsed = True
                         
-                        if source_tag == 'PASS' or '[PASS]' in cleaned:
+                        if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
                             aborted = True
                             break
@@ -2051,7 +2051,7 @@ async def proactive_chat(request: Request):
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
-            if source_tag == 'PASS' or '[PASS]' in cleaned:
+            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
                 full_text += cleaned
@@ -2092,19 +2092,75 @@ async def proactive_chat(request: Request):
                 primary_channel = 'music'
             else:
                 primary_channel = 'web'
+
+        # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
+        # 即使 source_tag 没有明确标记 MUSIC/BOTH，也尽量补齐可播放曲目。
+        should_try_music_fallback = (
+            primary_channel == 'music'
+            or (has_music_topic and not any(ch in ('vision', 'web') for ch in active_channels))
+        )
+        if should_try_music_fallback:
+            if source_links is None:
+                source_links = []
+            music_raw = music_content.get('raw_data', {}) if music_content else {}
+            if music_raw.get('data'):
+                existing_music_signatures = {
+                    (
+                        (link.get('url') or '').strip(),
+                        (link.get('title') or '').strip(),
+                        (link.get('artist') or '').strip(),
+                    )
+                    for link in source_links
+                    if isinstance(link, dict) and link.get('source') == '音乐推荐'
+                }
+                appended_music_tracks = 0
+                for track in music_raw.get('data', [])[:3]:
+                    track_title = (track.get('name') or '未知曲目').strip()
+                    track_artist = (track.get('artist') or '未知艺术家').strip()
+                    track_url = (track.get('url') or '').strip()
+                    track_signature = (track_url, track_title, track_artist)
+                    if track_signature in existing_music_signatures:
+                        continue
+                    source_links.append({
+                        'title': track_title,
+                        'artist': track_artist,
+                        'url': track_url,
+                        'cover': track.get('cover', ''),
+                        'source': '音乐推荐'
+                    })
+                    existing_music_signatures.add(track_signature)
+                    appended_music_tracks += 1
+                if appended_music_tracks > 0:
+                    is_music_used = True
         
         if is_music_used:
             music_raw = music_content.get('raw_data', {}) if music_content else {}
             if music_raw.get('data'):
                 # 追加音乐链接到 source_links
+                existing_music_signatures = {
+                    (
+                        (link.get('url') or '').strip(),
+                        (link.get('title') or '').strip(),
+                        (link.get('artist') or '').strip(),
+                    )
+                    for link in source_links
+                    if isinstance(link, dict) and link.get('source') == '音乐推荐'
+                }
                 for track in music_raw.get('data', [])[:3]:
+                    track_title = (track.get('name') or '未知曲目').strip()
+                    track_artist = (track.get('artist') or '未知艺术家').strip()
+                    track_url = (track.get('url') or '').strip()
+                    track_signature = (track_url, track_title, track_artist)
+                    if track_signature in existing_music_signatures:
+                        continue
                     source_links.append({
-                        'title': track.get('name', '未知曲目'),
-                        'artist': track.get('artist', '未知艺术家'),
-                        'url': track.get('url', ''),
+                        'title': track_title,
+                        'artist': track_artist,
+                        'url': track_url,
                         'cover': track.get('cover', ''),
                         'source': '音乐推荐'
                     })
+                    existing_music_signatures.add(track_signature)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
