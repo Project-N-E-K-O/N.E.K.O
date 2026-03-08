@@ -8,18 +8,16 @@ from pathlib import Path
 import asyncio
 import inspect
 from typing import TYPE_CHECKING, Optional, Dict, Any, List, Union, Callable
-from functools import wraps
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
-from .hooks import HookMeta, HookHandler, HOOK_META_ATTR
 from .hook_executor import HookExecutorMixin
 from .config import PluginConfig
 from .plugins import Plugins
 from .version import SDK_VERSION
-from .state import StatePersistence
+from .state import PluginStatePersistence
 from .store import PluginStore
 from .database import PluginDatabase
 from plugin.settings import (
-    NEKO_PLUGIN_META_ATTR, 
+    NEKO_PLUGIN_META_ATTR,
     NEKO_PLUGIN_TAG,
     PLUGIN_LOG_LEVEL,
     PLUGIN_LOG_MAX_BYTES,
@@ -30,6 +28,13 @@ from plugin.settings import (
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
     from .router import PluginRouter
+
+__all__ = [
+    "NEKO_PLUGIN_META_ATTR",
+    "NEKO_PLUGIN_TAG",
+    "NekoPluginBase",
+    "PluginMeta",
+]
 
 
 @dataclass
@@ -80,7 +85,7 @@ class NekoPluginBase(HookExecutorMixin):
         # 静态 UI 配置（实例属性，避免类属性共享问题）
         self._static_ui_config: Optional[Dict[str, Any]] = None
         
-        # 初始化冻结 checkpoint 管理器和持久化存储
+        # 初始化状态持久化管理器
         config_path = getattr(ctx, "config_path", None)
         plugin_dir = config_path.parent if config_path else Path.cwd()
         
@@ -107,14 +112,12 @@ class NekoPluginBase(HookExecutorMixin):
         except Exception:
             pass
         
-        self._state_persistence = StatePersistence(
+        self._state_persistence = PluginStatePersistence(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
             logger=getattr(ctx, "logger", None),
             backend=state_backend,
         )
-        # 向后兼容别名（已弃用，将在 v2.0 移除，请使用 _state_persistence）
-        self._freeze_checkpoint = self._state_persistence
         
         # 读取 store 配置（默认禁用，需要在 plugin.toml 中显式启用）
         store_enabled = False

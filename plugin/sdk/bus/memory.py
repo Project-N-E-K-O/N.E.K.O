@@ -67,27 +67,46 @@ class MemoryRecord(BusRecord):
         )
 
     def dump(self) -> Dict[str, Any]:
-        base = super().dump()
+        base = BusRecord.dump(self)
         base["bucket_id"] = self.bucket_id
         return base
 
 
 class MemoryList(BusList[MemoryRecord]):
-    def __init__(self, items: Sequence[MemoryRecord], *, bucket_id: str):
-        super().__init__(items)
+    def __init__(
+        self,
+        items: Sequence[MemoryRecord],
+        *,
+        bucket_id: str = "default",
+        ctx: Optional[Any] = None,
+        trace: Optional[Sequence[Any]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.bucket_id = bucket_id
+
+    def _clone_from(self, source: BusList[MemoryRecord]) -> "MemoryList":
+        return MemoryList(
+            source.dump_records(),
+            bucket_id=self.bucket_id,
+            ctx=getattr(source, "_ctx", None),
+            trace=getattr(source, "_trace", None),
+            plan=getattr(source, "_plan", None),
+            fast_mode=bool(getattr(source, "_fast_mode", False)),
+        )
 
     def filter(self, *args: Any, **kwargs: Any) -> "MemoryList":
         filtered = super().filter(*args, **kwargs)
-        return MemoryList(filtered.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(filtered)
 
     def where(self, predicate: Any) -> "MemoryList":
         filtered = super().where(predicate)
-        return MemoryList(filtered.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(filtered)
 
     def limit(self, n: int) -> "MemoryList":
         limited = super().limit(n)
-        return MemoryList(limited.dump_records(), bucket_id=self.bucket_id)
+        return self._clone_from(limited)
 
 
 @dataclass

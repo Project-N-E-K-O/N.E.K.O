@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "Управление браузером включено, проверка подключения Agent LLM...",
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}"
+        "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL GPT-SoVITS API не настроен. Включите и настройте пользовательский TTS в настройках API.",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "URL GPT-SoVITS API должен быть localhost",
+        "TTS_AUDIO_API_KEY_MISSING": "Аудио API-ключ (AUDIO_API_KEY) не настроен",
+        "TTS_VOICE_NOT_REGISTERED": "У этого персонажа нет зарегистрированного голоса",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "Отсутствуют обязательные параметры",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
+        "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API"
     },
     "camera": {
         "iosPermissionHint": "Проверьте в Настройках iOS → Safari → Камера, что разрешение установлено на «Разрешить»",
@@ -1147,6 +1154,9 @@
         "addCatgirl": "Добавить NEKO",
         "switchCatgirl": "Переключить NEKO",
         "deleteCatgirl": "Удалить NEKO",
+        "hideCatgirl": "Спрятать NEKO",
+        "hiddenCatgirls": "Спрятанные NEKO",
+        "show": "Показать",
         "advancedSettings": "Расширенные настройки",
         "modelSettings": "Настройки модели",
         "modelNotSet": "Не задано",
@@ -1339,6 +1349,10 @@
             "proactiveNewsChatTooltip": "Использовать тренды для проактивного чата",
             "proactiveVideoChat": "Видео чат",
             "proactiveVideoChatTooltip": "Использовать видеоконтент для проактивного чата",
+            "proactivePersonalChat": "Личные обновления",
+            "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
+            "proactiveMusicChat": "Музыкальные рекомендации",
+            "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
             "agentMaster": "Главный переключатель Агента",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -2273,6 +2287,27 @@
                 "waiting": "{{message}}..."
             },
             "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию"
+        }
+    },
+    "music": {
+        "unknownTrack": "Неизвестный трек",
+        "unknownArtist": "Неизвестный исполнитель",
+        "play": "Воспроизвести",
+        "pause": "Пауза",
+        "playing": "Воспроизводится",
+        "paused": "Приостановлено",
+        "searching": "Поиск: {{query}}",
+        "notFound": "Песня не найдена: {{query}}",
+        "nowPlaying": "Сейчас играет: {{name}}",
+        "showPlaylist": "Показать список",
+        "hidePlaylist": "Скрыть список",
+        "searchFailed": "Ошибка поиска музыки",
+        "playError": "Ошибка воспроизведения",
+        "ended": "Завершено"
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
         }
     }
 }

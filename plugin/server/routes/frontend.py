@@ -55,7 +55,7 @@ async def frontend_file(full_path: str):
     candidate = (_FRONTEND_ROOT_DIR / full_path).resolve()
     try:
         candidate.relative_to(_FRONTEND_ROOT_DIR.resolve())
-    except Exception:
+    except ValueError:
         raise HTTPException(status_code=404, detail="Not found")
 
     if candidate.is_file():

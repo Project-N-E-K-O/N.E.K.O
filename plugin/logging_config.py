@@ -150,6 +150,9 @@ def configure_default_logger(level: str = "INFO") -> None:
         return
     
     _loguru_logger.remove()
+    # 同步清理组件配置状态，避免后续出现“默认 sink + 组件 sink”双输出。
+    _configured_components.clear()
+    _configured_console_roots.clear()
     _loguru_logger.add(
         sys.stdout,
         format=FORMAT_CONSOLE_SIMPLE,

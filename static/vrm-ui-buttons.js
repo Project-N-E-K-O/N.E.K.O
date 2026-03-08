@@ -433,21 +433,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
             this._returnButtonContainer.style.display = 'none';
         }
 
-        // 2. 恢复VRM容器和canvas的可见性
-        const vrmContainer = document.getElementById('vrm-container');
-        if (vrmContainer) {
-            vrmContainer.style.removeProperty('visibility');
-            vrmContainer.style.removeProperty('pointer-events');
-            vrmContainer.style.removeProperty('display');
-            vrmContainer.classList.remove('hidden');
-            vrmContainer.classList.remove('minimized');
-        }
-
-        const vrmCanvas = document.getElementById('vrm-canvas');
-        if (vrmCanvas) {
-            vrmCanvas.style.removeProperty('visibility');
-            vrmCanvas.style.removeProperty('pointer-events');
-        }
+        // 2. VRM容器和canvas的可见性恢复由 showCurrentModel() 统一处理（带淡入动画）
+        // 此处不再直接操作容器/canvas样式，避免与 showCurrentModel 的淡入动画竞争导致闪烁
 
         // 3. 检查浮动按钮是否存在，如果不存在则重新创建（防止cleanupUI后按钮丢失）
         const buttonsContainer = document.getElementById('vrm-floating-buttons');

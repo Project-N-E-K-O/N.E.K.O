@@ -10,13 +10,11 @@ import time
 import uuid
 from collections import deque
 import multiprocessing
-from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
-
-from loguru import logger
+from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
 from plugin._types.events import EventHandler
+from plugin.logging_config import get_logger
 from plugin.settings import (
-    BUS_SDK_POLL_INTERVAL_SECONDS,
     EVENT_QUEUE_MAX,
     LIFECYCLE_QUEUE_MAX,
     MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
@@ -41,6 +39,8 @@ MAX_DELETED_BUS_IDS = 20000
 
 # 默认锁超时时间（秒）
 DEFAULT_LOCK_TIMEOUT = 10.0
+
+logger = get_logger("core.state")
 
 
 class RWLock:
@@ -228,24 +228,20 @@ class GlobalState:
         self._plugins_rwlock = RWLock()
         self._plugin_hosts_rwlock = RWLock()
         self._event_handlers_rwlock = RWLock()
-        
-        # 保留原有互斥锁以保持向后兼容（逐步迁移）
-        self.plugins_lock = threading.Lock()  # 保护 plugins 字典的线程安全
-        self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
-        self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
+
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
         self._message_queue: Optional[asyncio.Queue] = None
-        self._plugin_comm_queue: Optional[Any] = None
+        self._plugin_comm_queue: Optional[asyncio.Queue] = None
         self._plugin_response_map: Optional[Any] = None
         self._plugin_response_map_manager: Optional[Any] = None
         self._plugin_response_event_map: Optional[Any] = None
         self._plugin_response_notify_event: Optional[Any] = None
-        # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
 
-        self._plugin_response_queues: Dict[str, Any] = {}
-        self._plugin_response_queues_lock = threading.Lock()
+        # Per-plugin downlink senders for routing plugin-to-plugin responses
+        self._plugin_downlink_senders: Dict[str, Any] = {}
+        self._plugin_downlink_senders_lock = threading.Lock()
 
         self._bus_store_lock = threading.Lock()
         self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
@@ -295,25 +291,6 @@ class GlobalState:
         }
         self._snapshot_cache_ttl: float = 0.5  # 500ms缓存TTL
 
-    # 带超时的锁上下文管理器（用于防止死锁）
-    @contextmanager
-    def acquire_plugins_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugins_lock（带超时）- 已废弃，请使用 acquire_plugins_write_lock"""
-        with self._plugins_rwlock.write_lock(timeout, "plugins_write"):
-            yield
-
-    @contextmanager
-    def acquire_plugin_hosts_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugin_hosts_lock（带超时）- 已废弃，请使用 acquire_plugin_hosts_write_lock"""
-        with self._plugin_hosts_rwlock.write_lock(timeout, "plugin_hosts_write"):
-            yield
-
-    @contextmanager
-    def acquire_event_handlers_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 event_handlers_lock（带超时）- 已废弃，请使用 acquire_event_handlers_write_lock"""
-        with self._event_handlers_rwlock.write_lock(timeout, "event_handlers_write"):
-            yield
-    
     # RWLock 写锁上下文管理器（用于修改操作）
     @contextmanager
     def acquire_plugins_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
@@ -601,35 +578,35 @@ class GlobalState:
         return self._message_queue
     
     @property
-    def plugin_comm_queue(self):
-        """插件间通信队列（用于插件调用其他插件的 custom_event）"""
+    def plugin_comm_queue(self) -> asyncio.Queue:
+        """Central in-process queue for plugin-to-plugin requests (asyncio.Queue)."""
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
                 if self._plugin_comm_queue is None:
-                    # 使用 multiprocessing.Queue 因为需要跨进程
-                    self._plugin_comm_queue = multiprocessing.Queue()
+                    self._plugin_comm_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
         return self._plugin_comm_queue
 
-    def set_plugin_response_queue(self, plugin_id: str, q: Any) -> None:
+    def register_downlink_sender(self, plugin_id: str, sender: Any) -> None:
+        """Register a comm_manager's ``send_plugin_response`` coroutine for routing."""
         pid = str(plugin_id).strip()
         if not pid:
             return
-        with self._plugin_response_queues_lock:
-            self._plugin_response_queues[pid] = q
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders[pid] = sender
 
-    def get_plugin_response_queue(self, plugin_id: str) -> Any:
+    def get_downlink_sender(self, plugin_id: str) -> Any:
         pid = str(plugin_id).strip()
         if not pid:
             return None
-        with self._plugin_response_queues_lock:
-            return self._plugin_response_queues.get(pid)
+        with self._plugin_downlink_senders_lock:
+            return self._plugin_downlink_senders.get(pid)
 
-    def remove_plugin_response_queue(self, plugin_id: str) -> None:
+    def remove_downlink_sender(self, plugin_id: str) -> None:
         pid = str(plugin_id).strip()
         if not pid:
             return
-        with self._plugin_response_queues_lock:
-            self._plugin_response_queues.pop(pid, None)
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders.pop(pid, None)
     
     @property
     def plugin_response_map(self) -> Any:
@@ -1420,9 +1397,6 @@ class GlobalState:
 
         resp_map = self.plugin_response_map
         response_data = resp_map.pop(rid, None)
-        if response_data is None and request_id != rid:
-            # Backward-compatible: tolerate legacy non-string keys stored previously.
-            response_data = resp_map.pop(request_id, None)
 
         if response_data is None:
             return None
@@ -1594,9 +1568,6 @@ class GlobalState:
             return None
 
         response_data = self.plugin_response_map.get(rid, None)
-        if response_data is None and request_id != rid:
-            # Backward-compatible: tolerate legacy non-string keys stored previously.
-            response_data = self.plugin_response_map.get(request_id, None)
         if response_data is None:
             return None
 
@@ -1666,17 +1637,10 @@ class GlobalState:
         - 清理响应映射
         - 关闭 Manager（如果存在）
         """
-        # 清理插件间通信队列
-        if self._plugin_comm_queue is not None:
-            try:
-                self._plugin_comm_queue.cancel_join_thread()  # 防止卡住
-                self._plugin_comm_queue.close()
-                # self._plugin_comm_queue.join_thread() # 不需要 join，已经 cancel 了
-                logger.bind(component="server").debug("Plugin communication queue closed")
-            except Exception as e:
-                logger.bind(component="server").warning(f"Error closing plugin communication queue: {e}")
-            finally:
-                self._plugin_comm_queue = None
+        # Reset the in-process comm queue
+        self._plugin_comm_queue = None
+        with self._plugin_downlink_senders_lock:
+            self._plugin_downlink_senders.clear()
         
         # 清理响应映射和 Manager
         if self._plugin_response_map_manager is not None:
@@ -1691,10 +1655,6 @@ class GlobalState:
             except Exception as e:
                 logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
 
-    def cleanup_plugin_comm_resources(self) -> None:
-        """Backward-compatible alias for shutdown code paths."""
-        self.close_plugin_resources()
-    
     def save_frozen_state_memory(self, plugin_id: str, state_data: bytes) -> None:
         """保存插件的冻结状态到内存"""
         with self._frozen_states_lock:
@@ -1781,10 +1741,5 @@ class GlobalState:
             items = list(dq)[-n:]
             return [dict(x) for x in items if isinstance(x, dict)]
 
-
-# Backward-compatible export name
-PluginRuntimeState = GlobalState
-
 # 全局状态实例
 state = GlobalState()
-
