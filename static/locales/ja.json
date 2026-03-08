@@ -2264,6 +2264,25 @@
         "status": {
             "active": "● 準備完了",
             "inactive": "○ 未設定"
+        },
+        "qrLogin": {
+            "tryQR": "または...QRコードログインを試しますか？",
+            "openQR": "📱 QRログインを開く",
+            "loading": "QRコードを取得中...",
+            "scanTitle": "📱 {{platform}} QRログイン",
+            "waiting": "スキャン待ち...",
+            "validFor": "QRコード有効期限: {{seconds}}秒",
+            "refreshQR": "QRコードを更新",
+            "fetchFailed": "QRコードの取得に失敗しました、後でもう一度お試しください",
+            "retry": "再試行",
+            "networkError": "ネットワークリクエストに失敗しました、接続を確認してください",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}、更新してください",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください"
         }
     },
     "notice": {

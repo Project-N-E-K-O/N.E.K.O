@@ -2264,6 +2264,25 @@
         "status": {
             "active": "● Ready",
             "inactive": "○ Not configured"
+        },
+        "qrLogin": {
+            "tryQR": "Or... try QR code login?",
+            "openQR": "📱 Open QR Login",
+            "loading": "Getting QR code...",
+            "scanTitle": "📱 Scan to Login {{platform}}",
+            "waiting": "Waiting for scan...",
+            "validFor": "QR code valid for: {{seconds}}s",
+            "refreshQR": "Refresh QR Code",
+            "fetchFailed": "Failed to get QR code, please try again",
+            "retry": "Retry",
+            "networkError": "Network request failed, please check connection",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}, please refresh",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration"
         }
     },
     "notice": {

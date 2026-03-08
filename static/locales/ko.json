@@ -2264,6 +2264,25 @@
         "status": {
             "active": "● 준비 완료",
             "inactive": "○ 구성되지 않음"
+        },
+        "qrLogin": {
+            "tryQR": "또는... QR 코드 로그인을 시도해 보시겠습니까?",
+            "openQR": "📱 QR 로그인 열기",
+            "loading": "QR 코드 가져오는 중...",
+            "scanTitle": "📱 {{platform}} QR 로그인",
+            "waiting": "스캔 대기 중...",
+            "validFor": "QR 코드 유효 시간: {{seconds}}초",
+            "refreshQR": "QR 코드 새로고침",
+            "fetchFailed": "QR 코드 가져오기 실패, 나중에 다시 시도하세요",
+            "retry": "재시도",
+            "networkError": "네트워크 요청 실패, 연결을 확인하세요",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}, 새로고침하세요",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요"
         }
     },
     "notice": {

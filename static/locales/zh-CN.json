@@ -2264,6 +2264,25 @@
         "status": {
             "active": "● 已就绪",
             "inactive": "○ 未配置"
+        },
+        "qrLogin": {
+            "tryQR": "或者...试试扫码登录?",
+            "openQR": "📱 打开扫码登录",
+            "loading": "正在获取二维码...",
+            "scanTitle": "📱 扫码登录 {{platform}}",
+            "waiting": "等待扫码...",
+            "validFor": "二维码有效期: {{seconds}}秒",
+            "refreshQR": "刷新二维码",
+            "fetchFailed": "获取二维码失败，请稍后重试",
+            "retry": "重试",
+            "networkError": "网络请求失败，请检查连接",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}，请刷新",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置"
         }
     },
     "notice": {
