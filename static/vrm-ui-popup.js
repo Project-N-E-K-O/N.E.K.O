@@ -1266,12 +1266,20 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
+                // 在用户手势上下文中获取屏幕流（避免定时器中调用 getDisplayMedia 导致 macOS 反复弹窗）
+                if (typeof window.acquireProactiveVisionStream === 'function') {
+                    window.acquireProactiveVisionStream();
+                }
                 if (typeof window.isRecording !== 'undefined' && window.isRecording) {
                     if (typeof window.startProactiveVisionDuringSpeech === 'function') {
                         window.startProactiveVisionDuringSpeech();
                     }
                 }
             } else {
+                // 释放屏幕流
+                if (typeof window.releaseProactiveVisionStream === 'function') {
+                    window.releaseProactiveVisionStream();
+                }
                 if (typeof window.stopProactiveChatSchedule === 'function') {
                     if (!window.proactiveChatEnabled) {
                         window.stopProactiveChatSchedule();
