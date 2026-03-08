@@ -17,10 +17,8 @@ _DEFAULT_LOGGER = logger
 _pending_async_shutdown_tasks: set = set()
 
 
-# _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
-# 为保持向后兼容，_wrap_logger 现在直接返回 logger
 def _wrap_logger(logger: Any) -> Any:
-    """向后兼容函数，现在统一返回 loguru logger"""
+    """向后兼容函数，现在直接返回 logger。"""
     return logger
 
 try:
