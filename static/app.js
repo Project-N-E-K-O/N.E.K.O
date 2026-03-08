@@ -2698,7 +2698,11 @@ function init_app() {
                         }
                     }
                     // 重启主动视觉（如果之前已启用）
+                    // 先检查并重新获取屏幕流（切换麦克风期间流可能已丢失）
                     if (shouldRestartProactiveVision) {
+                        if (typeof acquireProactiveVisionStream === 'function') {
+                            await acquireProactiveVisionStream();
+                        }
                         startProactiveVisionDuringSpeech();
                     }
                 }
@@ -4100,6 +4104,11 @@ function init_app() {
             // 启动语音期间的主动视觉定时（如果已开启主动视觉）
             try {
                 if (proactiveVisionEnabled) {
+                    // 刷新页面后 screenCaptureStream 会丢失，需要在用户手势上下文中重新获取
+                    // 录音按钮点击是一个有效的用户手势上下文
+                    if (typeof acquireProactiveVisionStream === 'function') {
+                        await acquireProactiveVisionStream();
+                    }
                     startProactiveVisionDuringSpeech();
                 }
             } catch (e) {
@@ -9819,9 +9828,16 @@ function init_app() {
                 video.remove();
             }
 
-            // 如果缓存流提取帧失败，或无缓存流，走 captureProactiveChatScreenshot（内含后端兜底）
+            // 如果缓存流提取帧失败，或无缓存流
             if (!dataUrl) {
-                dataUrl = await captureProactiveChatScreenshot();
+                if (isWindowsOS()) {
+                    // Windows 不需要用户手势即可调用 getDisplayMedia，可以走完整的截图流程
+                    dataUrl = await captureProactiveChatScreenshot();
+                } else {
+                    // macOS/Linux: 定时器（非用户手势）上下文中调用 getDisplayMedia 会反复弹窗
+                    // 仅走后端 pyautogui 截图兜底
+                    dataUrl = await fetchBackendScreenshot();
+                }
             }
 
             if (dataUrl && socket && socket.readyState === WebSocket.OPEN) {
