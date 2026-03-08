@@ -9447,14 +9447,14 @@ function init_app() {
         // 策略2: 前端 getDisplayMedia（远程服务器等后端不可用时的备选）
         // 复用缓存的 screenCaptureStream，仅在无有效流时才请求新流
         if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-            try {
-                let captureStream = screenCaptureStream;
+            let captureStream = screenCaptureStream;
 
-                if (!captureStream || !captureStream.active) {
-                    // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
-                    if (screenCaptureAutoPromptFailed) {
-                        console.log('[主动搭话截图] screenCaptureAutoPromptFailed 已标记，跳过 getDisplayMedia');
-                    } else {
+            if (!captureStream || !captureStream.active) {
+                // 注意：如果之前从非用户手势上下文调用 getDisplayMedia 失败过，不再重试（防止刷新后反复弹窗）
+                if (screenCaptureAutoPromptFailed) {
+                    console.log('[主动搭话截图] screenCaptureAutoPromptFailed 已标记，跳过 getDisplayMedia');
+                } else {
+                    try {
                         captureStream = await navigator.mediaDevices.getDisplayMedia({
                             video: { cursor: 'always', frameRate: { max: 1 } },
                             audio: false,
@@ -9475,10 +9475,17 @@ function init_app() {
                                 }
                             });
                         });
+                    } catch (err) {
+                        console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
+                        screenCaptureAutoPromptFailed = true;
+                        console.log('[主动搭话截图] 已标记 screenCaptureAutoPromptFailed，后续不再自动弹窗请求屏幕共享');
+                        captureStream = null;
                     }
                 }
+            }
 
-                if (captureStream && captureStream.active) {
+            if (captureStream && captureStream.active) {
+                try {
                     screenCaptureStreamLastUsed = Date.now();
                     scheduleScreenCaptureIdleCheck();
 
@@ -9494,11 +9501,9 @@ function init_app() {
 
                     console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
                     return dataUrl;
+                } catch (err) {
+                    console.warn('[主动搭话截图] 前端截图提取帧失败:', err);
                 }
-            } catch (err) {
-                console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
-                screenCaptureAutoPromptFailed = true;
-                console.log('[主动搭话截图] 已标记 screenCaptureAutoPromptFailed，后续不再自动弹窗请求屏幕共享');
             }
         }
 
