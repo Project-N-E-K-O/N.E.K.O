@@ -1147,6 +1147,9 @@
         "addCatgirl": "Add NEKO",
         "switchCatgirl": "Switch NEKO",
         "deleteCatgirl": "Delete NEKO",
+        "hideCatgirl": "Hide this NEKO",
+        "hiddenCatgirls": "Hidden NEKOs",
+        "show": "Unhide",
         "advancedSettings": "Advanced Settings",
         "modelSettings": "Model Settings",
         "modelNotSet": "Not Set",
@@ -2255,5 +2258,10 @@
             "active": "● Ready",
             "inactive": "○ Not configured"
         }
-    }   
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices."
+        }
+    }
 }

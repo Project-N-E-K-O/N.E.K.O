@@ -725,7 +725,7 @@ def _parse_single_plugin_config(
     
     # 应用用户配置覆盖
     try:
-        from plugin.server.config_service import _apply_user_config_profiles
+        from plugin.config.service import _apply_user_config_profiles
         if isinstance(conf, dict):
             conf = _apply_user_config_profiles(
                 plugin_id=str(pid),
@@ -971,12 +971,12 @@ def _migrate_plugin_id(
             else:
                 logger.warning("Plugin host for '{}' not found during migration and passed-in host is None; skipping host registration for '{}'", old_pid, new_pid)
     
-    # 迁移 response queue
-    with state._plugin_response_queues_lock:
-        if old_pid in state._plugin_response_queues:
-            q = state._plugin_response_queues.pop(old_pid)
-            state._plugin_response_queues[new_pid] = q
-    
+    # Migrate downlink sender
+    with state._plugin_downlink_senders_lock:
+        sender = state._plugin_downlink_senders.pop(old_pid, None)
+        if sender is not None:
+            state._plugin_downlink_senders[new_pid] = sender
+
     # 迁移 event handlers
     with state.acquire_event_handlers_write_lock():
         handlers_to_migrate = [
@@ -1590,9 +1590,9 @@ def load_plugins_from_toml(
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
         try:
-            from plugin.server.services import _enqueue_lifecycle
+            from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
             from plugin.server.infrastructure.utils import now_iso
 
-            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+            emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
         except Exception:
             logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)

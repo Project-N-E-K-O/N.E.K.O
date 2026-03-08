@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { useConnectionStore } from '@/stores/connection'
 import { API_BASE_URL } from '@/utils/constants'
 
@@ -85,7 +84,6 @@ function buildWsUrl(path: string): string {
 }
 
 export const useRunsStore = defineStore('runs', () => {
-  const authStore = useAuthStore()
   const connectionStore = useConnectionStore()
 
   const ws = ref<WebSocket | null>(null)
@@ -152,21 +150,12 @@ export const useRunsStore = defineStore('runs', () => {
     }
   }
 
-  function ensureAuthCode(): string {
-    const code = authStore.authCode
-    if (!code || !/^[A-Z]{4}$/.test(code)) {
-      throw new Error('auth code missing')
-    }
-    return code
-  }
-
   async function connect(): Promise<void> {
     if (connected.value || connecting.value) return
     connecting.value = true
     lastError.value = null
 
     try {
-      const code = ensureAuthCode()
       const url = buildWsUrl('/ws/admin')
       const sock = new WebSocket(url)
       ws.value = sock
@@ -179,7 +168,6 @@ export const useRunsStore = defineStore('runs', () => {
         } catch (_) {
           // ignore
         }
-        sock.send(JSON.stringify({ type: 'auth', code }))
       }
 
       sock.onmessage = (ev: MessageEvent) => {
@@ -228,18 +216,6 @@ export const useRunsStore = defineStore('runs', () => {
           h.reject(new Error('ws closed'))
         }
 
-        if (ev.code === 1008) {
-          try {
-            authStore.clearAuthCode()
-          } catch (_) {
-            // ignore
-          }
-          try {
-            connectionStore.requireAuth(ev.reason || 'forbidden')
-          } catch (_) {
-            // ignore
-          }
-        }
         try {
           connectionStore.markDisconnected()
         } catch (_) {
@@ -268,11 +244,6 @@ export const useRunsStore = defineStore('runs', () => {
       connecting.value = false
       connected.value = false
       lastError.value = String(e?.message || e || 'connect failed')
-      try {
-        connectionStore.requireAuth(lastError.value)
-      } catch (_) {
-        // ignore
-      }
       throw e
     }
   }

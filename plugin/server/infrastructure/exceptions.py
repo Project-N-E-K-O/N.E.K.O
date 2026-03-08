@@ -1,9 +1,10 @@
 """
-异常处理中间件
+Server exception handlers for FastAPI.
 """
-from fastapi import Request
+from __future__ import annotations
+
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from loguru import logger
 
 from plugin._types.exceptions import (
     PluginError,
@@ -11,60 +12,66 @@ from plugin._types.exceptions import (
     PluginNotRunningError,
     PluginTimeoutError,
 )
+from plugin.logging_config import get_logger
+
+logger = get_logger("server.infrastructure.exceptions")
 
 
-def register_exception_handlers(app):
-    """注册异常处理中间件"""
-    
+def _error_response(status_code: int, payload: dict[str, object]) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    """Register plugin-specific exception handlers on FastAPI app."""
+
     @app.exception_handler(PluginError)
-    async def plugin_error_handler(request: Request, exc: PluginError):
-        """统一处理插件系统异常"""
-        logger.warning(f"Plugin error: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
+    async def plugin_error_handler(_: Request, exc: PluginError) -> JSONResponse:
+        logger.warning(
+            "Plugin error raised: type={}, detail={}",
+            type(exc).__name__,
+            str(exc),
+        )
+        return _error_response(
+            500,
+            {
                 "error": "Plugin error",
                 "detail": str(exc),
-                "type": exc.__class__.__name__
-            }
+                "type": type(exc).__name__,
+            },
         )
 
     @app.exception_handler(PluginNotFoundError)
-    async def plugin_not_found_handler(request: Request, exc: PluginNotFoundError):
-        """处理插件未找到异常"""
-        return JSONResponse(
-            status_code=404,
-            content={
+    async def plugin_not_found_handler(_: Request, exc: PluginNotFoundError) -> JSONResponse:
+        return _error_response(
+            404,
+            {
                 "error": "Plugin not found",
                 "detail": str(exc),
-                "plugin_id": exc.plugin_id
-            }
+                "plugin_id": exc.plugin_id,
+            },
         )
 
     @app.exception_handler(PluginNotRunningError)
-    async def plugin_not_running_handler(request: Request, exc: PluginNotRunningError):
-        """处理插件未运行异常"""
-        return JSONResponse(
-            status_code=503,
-            content={
+    async def plugin_not_running_handler(_: Request, exc: PluginNotRunningError) -> JSONResponse:
+        return _error_response(
+            503,
+            {
                 "error": "Plugin not running",
                 "detail": str(exc),
                 "plugin_id": exc.plugin_id,
-                "status": exc.status
-            }
+                "status": exc.status,
+            },
         )
 
     @app.exception_handler(PluginTimeoutError)
-    async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError):
-        """处理插件超时异常"""
-        return JSONResponse(
-            status_code=504,
-            content={
+    async def plugin_timeout_handler(_: Request, exc: PluginTimeoutError) -> JSONResponse:
+        return _error_response(
+            504,
+            {
                 "error": "Plugin timeout",
                 "detail": str(exc),
                 "plugin_id": exc.plugin_id,
                 "entry_id": exc.entry_id,
-                "timeout": exc.timeout
-            }
+                "timeout": exc.timeout,
+            },
         )
-

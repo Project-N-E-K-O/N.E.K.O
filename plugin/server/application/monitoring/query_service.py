@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import asyncio
+
+from plugin.core.state import state
+from plugin.logging_config import get_logger
+from plugin.server.application.contracts import (
+    AllPluginMetricsResponse,
+    MetricRecord,
+    PluginMetricsHistoryResponse,
+    PluginMetricsResponse,
+)
+from plugin.server.domain import IO_RUNTIME_ERRORS
+from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import (
+    coerce_optional_float,
+    coerce_optional_int,
+    normalize_mapping_list,
+    normalize_optional_iso_datetime,
+)
+from plugin.utils.time_utils import now_iso
+from plugin.server.monitoring.metrics import metrics_collector
+
+logger = get_logger("server.application.monitoring.query")
+
+
+def _to_float(value: object, *, default: float = 0.0) -> float:
+    parsed = coerce_optional_float(value)
+    return parsed if parsed is not None else default
+
+
+def _to_int(value: object, *, default: int = 0) -> int:
+    parsed = coerce_optional_int(value)
+    return parsed if parsed is not None else default
+
+
+def _metrics_snapshot_for_plugin_sync(
+    plugin_id: str,
+) -> tuple[bool, bool, bool, list[str]]:
+    plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+    hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+
+    plugin_registered = plugin_id in plugins_snapshot
+    plugin_running = plugin_id in hosts_snapshot
+    process_alive = False
+
+    if plugin_running:
+        host = hosts_snapshot.get(plugin_id)
+        process_obj = getattr(host, "process", None) if host is not None else None
+        if process_obj is not None and hasattr(process_obj, "is_alive"):
+            try:
+                process_alive = bool(process_obj.is_alive())
+            except IO_RUNTIME_ERRORS:
+                process_alive = False
+
+    running_plugin_ids = [str(pid) for pid in hosts_snapshot.keys()]
+    return plugin_registered, plugin_running, process_alive, running_plugin_ids
+
+
+class MetricsQueryService:
+    async def get_all_plugin_metrics(self) -> AllPluginMetricsResponse:
+        try:
+            raw_metrics = await asyncio.to_thread(metrics_collector.get_current_metrics)
+            if not isinstance(raw_metrics, list):
+                raise ServerDomainError(
+                    code="INVALID_DATA_SHAPE",
+                    message="metrics collector returned non-array",
+                    status_code=500,
+                    details={"result_type": type(raw_metrics).__name__},
+                )
+            metrics: list[MetricRecord] = normalize_mapping_list(raw_metrics, context="plugin_metrics")
+
+            total_cpu = sum(_to_float(metric.get("cpu_percent")) for metric in metrics)
+            total_memory_mb = sum(_to_float(metric.get("memory_mb")) for metric in metrics)
+            total_memory_percent = sum(_to_float(metric.get("memory_percent")) for metric in metrics)
+            total_threads = sum(_to_int(metric.get("num_threads")) for metric in metrics)
+            active_plugins = len([metric for metric in metrics if metric.get("pid") is not None])
+
+            return {
+                "metrics": metrics,
+                "count": len(metrics),
+                "global": {
+                    "total_cpu_percent": round(total_cpu, 2),
+                    "total_memory_mb": round(total_memory_mb, 2),
+                    "total_memory_percent": round(total_memory_percent, 2),
+                    "total_threads": total_threads,
+                    "active_plugins": active_plugins,
+                },
+                "time": now_iso(),
+            }
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_all_plugin_metrics failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="METRICS_QUERY_FAILED",
+                message="Failed to get plugin metrics",
+                status_code=500,
+                details={"error_type": type(exc).__name__},
+            ) from exc
+
+    async def get_plugin_metrics(self, plugin_id: str) -> PluginMetricsResponse:
+        try:
+            plugin_registered, plugin_running, process_alive, running_plugin_ids = await asyncio.to_thread(
+                _metrics_snapshot_for_plugin_sync,
+                plugin_id,
+            )
+
+            if not plugin_registered:
+                raise ServerDomainError(
+                    code="PLUGIN_NOT_FOUND",
+                    message=f"Plugin '{plugin_id}' not found",
+                    status_code=404,
+                    details={"plugin_id": plugin_id},
+                )
+
+            raw_metrics = await asyncio.to_thread(metrics_collector.get_current_metrics, plugin_id)
+            if not isinstance(raw_metrics, list):
+                raise ServerDomainError(
+                    code="INVALID_DATA_SHAPE",
+                    message="metrics collector returned non-array",
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "result_type": type(raw_metrics).__name__,
+                    },
+                )
+            metrics: list[MetricRecord] = normalize_mapping_list(raw_metrics, context=f"plugin_metrics[{plugin_id}]")
+
+            if not metrics:
+                logger.info(
+                    "No metrics for plugin {}: running={}, process_alive={}, running_plugins={}",
+                    plugin_id,
+                    plugin_running,
+                    process_alive,
+                    running_plugin_ids,
+                )
+                if not plugin_running:
+                    message = "Plugin is registered but not running (start the plugin to collect metrics)"
+                elif not process_alive:
+                    message = "Plugin process is not alive (may have crashed or stopped)"
+                else:
+                    message = "Plugin is running but no metrics available yet (may be collecting, check collector status)"
+
+                return {
+                    "plugin_id": plugin_id,
+                    "metrics": None,
+                    "message": message,
+                    "plugin_running": plugin_running,
+                    "process_alive": process_alive,
+                    "time": now_iso(),
+                }
+
+            return {
+                "plugin_id": plugin_id,
+                "metrics": metrics[0],
+                "time": now_iso(),
+            }
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_plugin_metrics failed: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="METRICS_QUERY_FAILED",
+                message=f"Failed to get metrics for plugin {plugin_id}",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": type(exc).__name__,
+                },
+            ) from exc
+
+    async def get_plugin_metrics_history(
+        self,
+        *,
+        plugin_id: str,
+        limit: int,
+        start_time: str | None,
+        end_time: str | None,
+    ) -> PluginMetricsHistoryResponse:
+        try:
+            normalized_start_time = normalize_optional_iso_datetime(start_time, field="start_time")
+            normalized_end_time = normalize_optional_iso_datetime(end_time, field="end_time")
+            raw_history = await asyncio.to_thread(
+                metrics_collector.get_metrics_history,
+                plugin_id,
+                limit,
+                normalized_start_time,
+                normalized_end_time,
+            )
+            if not isinstance(raw_history, list):
+                raise ServerDomainError(
+                    code="INVALID_DATA_SHAPE",
+                    message="metrics history result is not an array",
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "result_type": type(raw_history).__name__,
+                    },
+                )
+
+            history: list[MetricRecord] = normalize_mapping_list(raw_history, context=f"metrics_history[{plugin_id}]")
+            return {
+                "plugin_id": plugin_id,
+                "history": history,
+                "count": len(history),
+                "time": now_iso(),
+            }
+        except ServerDomainError:
+            raise
+        except IO_RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_plugin_metrics_history failed: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="METRICS_HISTORY_QUERY_FAILED",
+                message=f"Failed to get metrics history for plugin {plugin_id}",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": type(exc).__name__,
+                },
+            ) from exc

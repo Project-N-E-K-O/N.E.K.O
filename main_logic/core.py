@@ -36,6 +36,7 @@ from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
 from utils.language_utils import normalize_language_code, get_global_language
+import threading
 from threading import Thread
 from queue import Queue
 from uuid import uuid4
@@ -45,6 +46,63 @@ import httpx
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# ---------------------------------------------------------------------------
+# 重要通知缓冲池
+# 任何模块随时可以调用 enqueue_prominent_notice() 往池里推消息；
+# 前端通过 GET /api/pending-notices 拉取（返回通知列表和游标），
+# 用户全部确认后通过 POST /api/pending-notices/ack?cursor=N 只删除已展示的通知，
+# 避免 peek→ack 两次 HTTP 往返之间新入队的通知被静默清空（TOCTOU）。
+# ---------------------------------------------------------------------------
+_prominent_notice_queue: list[dict] = []
+_prominent_notice_lock = threading.Lock()
+_prominent_notice_seq: int = 0  # 单调递增，每条通知入队时分配
+
+
+def enqueue_prominent_notice(notice: "str | dict"):
+    """将一条醒目通知放入缓冲池，等待前端拉取。
+    
+    可传入字符串（自动包装为 {"message": ...}）或结构化字典
+    （建议包含 "code"、"message"、"message_en"、"details" 字段）。
+    """
+    global _prominent_notice_seq
+    if isinstance(notice, str):
+        item: dict = {"message": notice}
+    else:
+        item = dict(notice)
+    with _prominent_notice_lock:
+        _prominent_notice_seq += 1
+        item["_nid"] = _prominent_notice_seq
+        _prominent_notice_queue.append(item)
+
+
+def peek_prominent_notices() -> tuple[list[dict], int]:
+    """返回缓冲池快照和当前游标（供 GET /pending-notices 使用）。
+
+    返回 (notices_without_internal_fields, cursor)；cursor 是本次快照中最大的
+    _nid，调用方将其传给 drain_prominent_notices(cursor) 即可精确删除已展示项。
+    """
+    with _prominent_notice_lock:
+        items = list(_prominent_notice_queue)
+    cursor = items[-1]["_nid"] if items else 0
+    public = [{k: v for k, v in it.items() if k != "_nid"} for it in items]
+    return public, cursor
+
+
+def drain_prominent_notices(up_to_cursor: int) -> list[dict]:
+    """删除 _nid ≤ up_to_cursor 的通知，保留之后新入队的项目。
+
+    返回被删除的通知列表。传入 0 或负数时不删除任何条目。
+    """
+    if up_to_cursor <= 0:
+        return []
+    with _prominent_notice_lock:
+        remaining = [it for it in _prominent_notice_queue if it.get("_nid", 0) > up_to_cursor]
+        drained = [it for it in _prominent_notice_queue if it.get("_nid", 0) <= up_to_cursor]
+        _prominent_notice_queue.clear()
+        _prominent_notice_queue.extend(remaining)
+    return drained
+
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -280,12 +338,14 @@ class LLMSessionManager:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        # Send turn_end to frontend so processRealisticQueue flushes remaining buffer
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
+                logger.debug("[%s] handle_proactive_complete: turn_end sent to frontend", self.lanlan_name)
+            else:
+                logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
         except Exception as e:
-            logger.debug(f"WS Send Turn End (proactive) error: {e}")
+            logger.warning("[%s] handle_proactive_complete: WS send turn_end error: %s", self.lanlan_name, e)
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -468,16 +528,16 @@ class LLMSessionManager:
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
-                
 
                 message = {
                     "type": "gemini_response",
-                    "text": text,  
-                    "isNewMessage": is_first_chunk  # 标记是否是新消息的第一个chunk
+                    "text": text,
+                    "isNewMessage": is_first_chunk
                 }
                 await self.websocket.send_json(message)
+                if is_first_chunk:
+                    logger.debug("[%s] send_lanlan_response: first chunk sent via WS (len=%d)", self.lanlan_name, len(text))
                 self.sync_message_queue.put({"type": "json", "data": message})
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
@@ -768,6 +828,17 @@ class LLMSessionManager:
             legacy_keys=('voice_id',),
         )
 
+    def _enqueue_voice_migration_notice(self, legacy_names: list) -> None:
+        """将语音迁移通知推入缓冲池（两处调用路径共用同一 payload）。"""
+        if not legacy_names:
+            return
+        enqueue_prominent_notice({
+            "code": "notice.voiceMigration.legacyRemoved",
+            "message": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。",
+            "message_en": "CosyVoice has been upgraded to 3.5. Your old voices are no longer valid — please re-clone your voices.",
+            "details": {"voices": legacy_names},
+        })
+
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()
         text = text.replace("\n", "")
@@ -821,12 +892,13 @@ class LLMSessionManager:
 
         # 每次启动会话前都清理一次无效 voice_id，避免角色配置残留旧音色导致启动异常
         try:
-            cleaned_count = self._config_manager.cleanup_invalid_voice_ids()
+            cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
             if cleaned_count > 0:
                 logger.info(f"🧹 start_session 前已清理 {cleaned_count} 个无效 voice_id")
+            self._enqueue_voice_migration_notice(legacy_names)
         except Exception as e:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
-        
+
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
@@ -1038,7 +1110,7 @@ class LLMSessionManager:
             _mem_start = time.time()
             logger.info(f"[语音会话诊断] 开始获取记忆上下文 (端口 {self.memory_server_port})")
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                     resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                     initial_prompt += resp.text + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
                 logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - _mem_start:.2f}秒)")
@@ -1071,6 +1143,7 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_repetition_detected=self.handle_repetition_detected,
                     on_response_discarded=self.handle_response_discarded,
+                    on_status_message=self.send_status,
                     max_response_length=guard_max_length
                 )
                 # Lightweight callback for stream_proactive (TTS flush + turn_end only)
@@ -1346,7 +1419,7 @@ class LLMSessionManager:
         header = _loc(AGENT_PLUGINS_HEADER, _lang)
         count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
                 r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
                 if r.status_code != 200:
                     return ""
@@ -1375,7 +1448,7 @@ class LLMSessionManager:
         if not self._is_agent_enabled():
             return ""
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
+            async with httpx.AsyncClient(timeout=1.5, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks")
                 if resp.status_code != 200:
                     return ""
@@ -1418,6 +1491,15 @@ class LLMSessionManager:
             self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
             self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']
             
+            # 热切换准备时同样清理无效 voice_id，防止旧版本 voice 残留进入热切换流程
+            try:
+                cleaned_count, legacy_names = self._config_manager.cleanup_invalid_voice_ids()
+                if cleaned_count > 0:
+                    logger.info(f"🧹 热切换准备: 已清理 {cleaned_count} 个无效 voice_id")
+                self._enqueue_voice_migration_notice(legacy_names)
+            except Exception as e:
+                logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
+
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
@@ -1463,6 +1545,7 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_repetition_detected=self.handle_repetition_detected,
                     on_response_discarded=self.handle_response_discarded,
+                    on_status_message=self.send_status,
                     max_response_length=guard_max_length
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
@@ -1489,7 +1572,7 @@ class LLMSessionManager:
             
             initial_prompt = await self._build_initial_prompt()
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=2.0, proxy=None, trust_env=False) as client:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
@@ -1773,7 +1856,13 @@ class LLMSessionManager:
           handle_response_complete() call will retry automatically.
         - Re-entrance guard prevents concurrent deliveries.
         """
+        sess_type = type(self.session).__name__ if self.session else "None"
+        logger.info(
+            "[%s] trigger_agent_callbacks enter: session=%s delivery_in_progress=%s pending=%d",
+            self.lanlan_name, sess_type, self._agent_delivery_in_progress, len(self.pending_agent_callbacks),
+        )
         if self._agent_delivery_in_progress:
+            logger.debug("[%s] trigger_agent_callbacks: skipped — delivery already in progress", self.lanlan_name)
             return
         if not self.pending_agent_callbacks:
             return
@@ -1818,21 +1907,35 @@ class LLMSessionManager:
 
             elif isinstance(self.session, OmniOfflineClient):
                 if getattr(self.session, "_is_responding", False):
-                    # 当前正在响应，等待 handle_response_complete 后重试
-                    logger.debug("[%s] trigger_agent_callbacks: text session busy, re-queuing", self.lanlan_name)
+                    logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
                     return
-                # 文字模式直接走 LLM 重新生成（不经热切换）
-                # 清空 pending_extra_replies 以免热切换被多余触发
+                logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
                 self.pending_agent_callbacks.clear()
-                self.pending_extra_replies.clear()
                 delivered = await self.session.stream_proactive(instruction)
-                if not delivered:
-                    # 被打断/空响应 → 恢复 callbacks，下一轮 handle_response_complete 重试
+                logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
+                if delivered:
+                    self.pending_extra_replies.clear()
+                else:
                     self.pending_agent_callbacks.extend(callbacks_snapshot)
 
             else:
-                # 没有 session；等待 start_session 后触发
-                logger.debug("[%s] trigger_agent_callbacks: no session, keeping for start_session", self.lanlan_name)
+                # 没有 session；尝试启动文本 session 后立即投递
+                ws = self.websocket
+                if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
+                    try:
+                        await self.start_session(ws, new=False, input_mode='text')
+                    except Exception as e:
+                        logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
+                if isinstance(self.session, OmniOfflineClient):
+                    self.pending_agent_callbacks.clear()
+                    delivered = await self.session.stream_proactive(instruction)
+                    if delivered:
+                        self.pending_extra_replies.clear()
+                    else:
+                        self.pending_agent_callbacks.extend(callbacks_snapshot)
+                    logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
+                else:
+                    logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
 
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)

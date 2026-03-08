@@ -1147,6 +1147,9 @@
         "addCatgirl": "NEKO 추가",
         "switchCatgirl": "NEKO 전환",
         "deleteCatgirl": "NEKO 삭제",
+        "hideCatgirl": "이 NEKO 숨기기",
+        "hiddenCatgirls": "숨겨진 NEKO",
+        "show": "숨김 해제",
         "advancedSettings": "고급 설정",
         "modelSettings": "모델 설정",
         "modelNotSet": "설정되지 않음",
@@ -2254,6 +2257,11 @@
         "status": {
             "active": "● 준비 완료",
             "inactive": "○ 구성되지 않음"
+        }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
         }
     }
 }

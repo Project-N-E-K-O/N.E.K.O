@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from loguru import logger
+from plugin.logging_config import get_logger
 
 from plugin.sdk.adapter.gateway_contracts import (
     LoggerLike,
@@ -22,6 +22,8 @@ from plugin.sdk.adapter.gateway_models import (
     GatewayErrorException,
     GatewayRequest,
 )
+
+logger = get_logger("sdk.adapter.gateway_core")
 
 
 class AdapterGatewayCore:
@@ -43,7 +45,7 @@ class AdapterGatewayCore:
         self._router = router
         self._invoker = invoker
         self._serializer = serializer
-        self._logger = logger if logger is not None else globals()["logger"]
+        self._logger = logger if logger is not None else globals().get("logger", get_logger("sdk.adapter.gateway_core"))
         self._running = False
 
     async def start(self) -> None:

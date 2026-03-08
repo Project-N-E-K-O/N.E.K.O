@@ -1147,6 +1147,9 @@
         "addCatgirl": "Добавить NEKO",
         "switchCatgirl": "Переключить NEKO",
         "deleteCatgirl": "Удалить NEKO",
+        "hideCatgirl": "Спрятать NEKO",
+        "hiddenCatgirls": "Спрятанные NEKO",
+        "show": "Показать",
         "advancedSettings": "Расширенные настройки",
         "modelSettings": "Настройки модели",
         "modelNotSet": "Не задано",
@@ -2254,6 +2257,11 @@
         "status": {
             "active": "● Готово",
             "inactive": "○ Не настроено"
+        }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
         }
     }
 }
