@@ -137,6 +137,77 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
     agentToggles.forEach(toggle => {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
+
+        if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
+            const sidePanel = this._createSidePanelContainer();
+            sidePanel.style.flexDirection = 'column';
+            sidePanel.style.alignItems = 'stretch';
+            sidePanel.style.gap = '4px';
+            sidePanel.style.padding = '6px 10px';
+            sidePanel._anchorElement = toggleItem;
+            sidePanel._popupElement = popup;
+
+            const configBtn = document.createElement('div');
+            const LABEL_KEY = 'settings.toggles.pluginManagementPanel';
+            const LABEL_FALLBACK = '管理面板';
+            Object.assign(configBtn.style, {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '5px 8px',
+                cursor: 'pointer',
+                borderRadius: '6px',
+                fontSize: '12px',
+                whiteSpace: 'nowrap',
+                color: 'var(--neko-popup-text, #333)',
+                transition: 'background 0.15s ease'
+            });
+            const configIcon = document.createElement('span');
+            configIcon.textContent = '⚙';
+            configIcon.style.fontSize = '13px';
+            const configLabel = document.createElement('span');
+            configLabel.textContent = window.t ? window.t(LABEL_KEY) : LABEL_FALLBACK;
+            configLabel.setAttribute('data-i18n', LABEL_KEY);
+            configLabel.style.userSelect = 'none';
+            const configArrow = document.createElement('span');
+            configArrow.textContent = '↗';
+            configArrow.style.marginLeft = 'auto';
+            configArrow.style.opacity = '0.5';
+            configArrow.style.fontSize = '11px';
+            configBtn.appendChild(configIcon);
+            configBtn.appendChild(configLabel);
+            configBtn.appendChild(configArrow);
+
+            configBtn.addEventListener('mouseenter', () => {
+                configBtn.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+            });
+            configBtn.addEventListener('mouseleave', () => {
+                configBtn.style.background = 'transparent';
+            });
+
+            let isOpening = false;
+            configBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (isOpening) return;
+                isOpening = true;
+                const dashboardUrl = '/api/agent/user_plugin/dashboard';
+                const width = Math.min(1280, Math.round(screen.width * 0.8));
+                const height = Math.min(900, Math.round(screen.height * 0.8));
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(dashboardUrl, 'neko_plugin_dashboard', features);
+                } else {
+                    window.open(dashboardUrl, 'neko_plugin_dashboard', features);
+                }
+                setTimeout(() => { isOpening = false; }, 500);
+            });
+
+            sidePanel.appendChild(configBtn);
+            document.body.appendChild(sidePanel);
+            this._attachSidePanelHover(toggleItem, sidePanel);
+        }
     });
 
     // 添加适配中的按钮（不可选）

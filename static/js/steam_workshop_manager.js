@@ -1765,12 +1765,12 @@ function renderSubscriptionsPage() {
                     <h3 class="card-title">${formattedItem.name}<img src="/static/icons/paw_ui.png" class="card-title-paw" alt=""></h3>
                     <div class="author-info">
                         <div class="author-avatar">${escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase())}</div>
-                        <span>${window.t ? window.t('steam.author') : '作者'}: ${formattedItem.author}</span>
+                        <span>${window.t ? window.t('steam.author') : '作者:'} ${formattedItem.author}</span>
                     </div>
                     <div class="card-info-grid">
-                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期'}:</span> <span class="info-value">${formattedItem.subscribedDate}</span></div>
-                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.last_updated') : '最后更新'}:</span> <span class="info-value">${formattedItem.lastUpdated}</span></div>
-                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小'}:</span> <span class="info-value">${formattedItem.size}</span></div>
+                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期:'}</span> <span class="info-value">${formattedItem.subscribedDate}</span></div>
+                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.last_updated') : '上次更新:'}</span> <span class="info-value">${formattedItem.lastUpdated}</span></div>
+                        <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小:'}</span> <span class="info-value">${formattedItem.size}</span></div>
                     </div>
                     ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
                 `<div class="download-progress">
@@ -1973,7 +1973,7 @@ function openModal() {
     const modal = document.getElementById('itemDetailsModal');
     modal.style.display = 'flex';
     // 阻止页面滚动
-    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflowY = 'hidden';
 }
 
 // 关闭模态框
@@ -1981,7 +1981,7 @@ function closeModal() {
     const modal = document.getElementById('itemDetailsModal');
     modal.style.display = 'none';
     // 恢复页面滚动
-    document.body.style.overflow = 'auto';
+    document.documentElement.style.overflowY = '';
 }
 
 // 点击模态框外部关闭
@@ -2053,20 +2053,20 @@ function viewItemDetails(itemId) {
 
             <div class="item-info-grid">
                 <p class="item-info-item">
-                    <span class="item-info-label">${window.t ? window.t('steam.author') : '作者'}:</span>
+                    <span class="item-info-label">${window.t ? window.t('steam.author') : '作者:'}</span>
                     <div class="author-info">
                         <div class="author-avatar">${authorInitial}</div>
                         <span>${formattedItem.author}</span>
                     </div>
                 </p>
-                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期'}:</span> ${formattedItem.subscribedDate}</p>
-                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.last_updated') : '最后更新'}:</span> ${formattedItem.lastUpdated}</p>
-                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.size') : '大小'}:</span> ${formattedItem.size}</p>
+                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.subscribed_date') : '订阅日期:'}</span> ${formattedItem.subscribedDate}</p>
+                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.last_updated') : '上次更新:'}</span> ${formattedItem.lastUpdated}</p>
+                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.size') : '大小:'}</span> ${formattedItem.size}</p>
                 <p class="item-info-item">
-                    <span class="item-info-label">${window.t ? window.t('steam.status_label') : '状态'}:</span>
+                    <span class="item-info-label">${window.t ? window.t('steam.status_label') : '状态:'}</span>
                     <span class="status-badge ${statusClass}">${statusText}</span>
                 </p>
-                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.download_count') : '下载次数'}:</span> ${formattedItem.downloadCount}</p>
+                <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.download_count') : '下载次数:'}</span> ${formattedItem.downloadCount}</p>
                 ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
                     `<p class="item-info-item" style="grid-column: span 2;">
                         <div class="download-progress">

@@ -1,13 +1,21 @@
 @import url('base.css');
 
-html, body {
+html {
+min-height: 100vh;
+margin: 0;
+padding: 0;
+overflow-x: hidden;
+overflow-y: auto;
+}
+
+body {
 min-height: 100vh;
 margin: 0;
 padding: 0;
 background: #e1f4ff;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
-overflow-x: hidden;
+overflow: visible;
 }
 
 /* 页面标题栏 - 支持窗口拖动 */
@@ -32,12 +40,13 @@ body .page-title-bar {
 .page-title-bar h1,
 .page-title-bar h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font-size: clamp(0.9rem, 2.5vw, 1.5rem);
     font-weight: 600;
     position: relative;
     font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
     letter-spacing: 1px;
     color: transparent;
+    white-space: nowrap;
     --button-text-stroke-color: #22b3ff;
 }
 
@@ -359,21 +368,23 @@ box-sizing: border-box;
 /* 刷新按钮图标容器 - 样式参考取消订阅按钮 */
 .filter-group .refresh-button-wrapper {
     position: relative;
-    display: inline-flex;
+    display: flex;
     align-items: center;
     background-color: #bcf1ff;
     padding: 4px;
     border-radius: 50px;
     flex-shrink: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .filter-group .refresh-button-wrapper .btn {
-    padding: 8px 32px 8px 16px;
+     padding: 8px 44px 8px 18px;
     background: #17A7FF;
     border: none;
     border-radius: 50px;
     color: white;
-    font-size: 16px;
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 1px;
     cursor: pointer;
@@ -382,8 +393,12 @@ box-sizing: border-box;
     white-space: nowrap;
     width: 100%;
     text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .filter-group .refresh-button-wrapper .btn:hover {
@@ -411,7 +426,11 @@ box-sizing: border-box;
     min-width: 280px;
 }
 
-.filter-group.action-group .sort-wrapper,
+.filter-group.action-group .sort-wrapper {
+    flex: 1;
+    min-width: 0;
+}
+
 .filter-group.action-group .refresh-button-wrapper {
     flex: 1;
     min-width: 0;
@@ -660,7 +679,8 @@ overflow: hidden;
 
 .description-title-area {
 position: relative;
-width: 25%;
+width: fit-content;
+min-width: 25%;
 height: 46px;
 background: linear-gradient(to right, #e8f7ff 0%, #f5fbff 70%, transparent 100%);
 display: flex;
@@ -669,6 +689,7 @@ justify-content: space-between;
 padding: 0 16px 0 16px;
 overflow: hidden;
 border-radius: 16px 16px 0 0;
+white-space: nowrap;
 }
 
 .description-header-text {
@@ -707,7 +728,8 @@ clip-path: polygon(0% 16%, 0.5% 8%, 1.5% 3%, 3% 0%, 39% 0%, 40.5% 1%, 42% 8%, 43
 .tags-title-area {
 position: relative;
 z-index: 1;
-width: 40%;
+width: fit-content;
+min-width: 40%;
 height: 46px;
 margin: 3px;
 border-radius: 16px 16px 0 0;
@@ -717,6 +739,7 @@ align-items: center;
 justify-content: space-between;
 padding: 0 16px 0 16px;
 overflow: hidden;
+white-space: nowrap;
 }
 
 .tags-header-text {
@@ -1378,7 +1401,7 @@ padding: 0;
 width: 94%;
 max-width: 100%;
 margin: 0 3%;
-height: 100%;
+min-height: 100%;
 background-image: url('/static/icons/subscriptions-content_bg.png');
 background-size: cover;
 background-position: center;

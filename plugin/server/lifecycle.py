@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -21,8 +22,14 @@ from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_messa
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
 from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
+from utils.logger_config import get_module_logger
 
-logger = get_logger("server.lifecycle")
+_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
+
+if _EMBEDDED_BY_AGENT:
+    logger = get_module_logger(__name__, "Agent")
+else:
+    logger = get_logger("server.lifecycle")
 
 
 @runtime_checkable
@@ -172,7 +179,7 @@ class ServerLifecycleService:
         self._clear_runtime_state()
 
         await plugin_router.start()
-        logger.info("plugin router started")
+        logger.debug("plugin router started")
 
         try:
             await self._start_message_plane()
@@ -187,7 +194,7 @@ class ServerLifecycleService:
         load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, self._plugin_factory)
 
         await bus_subscription_manager.start()
-        logger.info("bus subscription manager started")
+        logger.debug("bus subscription manager started")
 
         try:
             start_bridge()
@@ -213,10 +220,10 @@ class ServerLifecycleService:
             return self._get_plugin_hosts_snapshot()
 
         await status_manager.start_status_consumer(plugin_hosts_getter=_get_hosts)
-        logger.info("status consumer started")
+        logger.debug("status consumer started")
 
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
-        logger.info("metrics collector started")
+        logger.debug("metrics collector started")
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -347,6 +354,18 @@ class ServerLifecycleService:
             had_errors = True
             logger.warning("failed to cleanup plugin communication resources: {}", exc)
 
+        # Phase 4: clear registry so next startup() / manual start_plugin() is clean
+        try:
+            with state.acquire_plugin_hosts_write_lock():
+                state.plugin_hosts.clear()
+            with state.acquire_plugins_write_lock():
+                state.plugins.clear()
+            with state.acquire_event_handlers_write_lock():
+                state.event_handlers.clear()
+        except Exception as exc:
+            had_errors = True
+            logger.warning("failed to clear plugin registry during shutdown: {}", exc)
+
         try:
             emit_lifecycle_event({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -372,7 +391,7 @@ class ServerLifecycleService:
         if result.had_errors:
             logger.warning("server shutdown completed with errors")
         else:
-            logger.info("server shutdown completed")
+            logger.debug("server shutdown completed")
 
 
 _service = ServerLifecycleService()
@@ -380,7 +399,7 @@ _service = ServerLifecycleService()
 
 def _final_log_flush() -> None:
     try:
-        logger.info("final log flush before process exit")
+        logger.debug("final log flush before process exit")
     except (RuntimeError, ValueError, TypeError, OSError, AttributeError):
         return
 

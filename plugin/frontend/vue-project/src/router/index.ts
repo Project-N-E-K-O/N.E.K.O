@@ -7,11 +7,6 @@ import { i18n } from '@/i18n'
 
 const routes: RouteRecordRaw[] = [
   {
-    path: '/login',
-    name: 'Login',
-    redirect: '/'
-  },
-  {
     path: '/',
     component: () => import('@/components/layout/AppLayout.vue'),
     children: [

@@ -18,20 +18,25 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from config.prompts_sys import (
     _loc,
-    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT_DYNAMIC,
-    AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
-    AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
+    SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
-    AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
     SYSTEM_NOTIFICATION_TASKS_DONE,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
     AGENT_CALLBACK_NOTIFICATION,
 )
+# Historical imports kept here (commented) for easy rollback:
+# from config import USER_PLUGIN_SERVER_PORT
+# from config.prompts_sys import (
+#     SESSION_INIT_PROMPT_AGENT_DYNAMIC,
+#     AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
+#     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
+#     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
+# )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.api_config_loader import get_free_voices
@@ -244,12 +249,12 @@ class LLMSessionManager:
 
     def _get_text_guard_max_length(self) -> int:
         try:
-            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 400))
+            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 300))
             if value <= 0:
                 raise ValueError
             return value
         except Exception:
-            return 400
+            return 300
 
     async def _clear_tts_pipeline(self):
         """清空 TTS 请求/响应队列和待处理缓存，停止当前合成。"""
@@ -337,7 +342,9 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            # Dedicated channel for agent-callback proactive completion.
+            # cross_server uses this tag to avoid re-triggering analyze_request.
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
@@ -1367,32 +1374,41 @@ class LLMSessionManager:
         return res
 
     async def _build_initial_prompt(self) -> str:
-        """Build the system prompt with dynamic capability descriptions and plugin summary."""
+        """Build the system prompt and inject active task summary when agent is enabled."""
         _lang = normalize_language_code(self.user_language, format='short')
         if self._is_agent_enabled():
-            capability_parts = []
-            if self.agent_flags.get('computer_use_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
-            if self.agent_flags.get('browser_use_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-            if self.agent_flags.get('user_plugin_enabled'):
-                capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
-            caps_text = (
-                _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
-                if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
-            )
-            prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
-                name=self.lanlan_name,
-                capabilities=caps_text,
-            ) + self.lanlan_prompt
+            # Keep the current wrapper structure but revert prompt semantics:
+            # do not distinguish browser/computer/plugin in the initial capability text.
+            # Historical dynamic capability block kept for rollback:
+            # capability_parts = []
+            # if self.agent_flags.get('computer_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
+            # if self.agent_flags.get('browser_use_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
+            # if self.agent_flags.get('user_plugin_enabled'):
+            #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
+            # caps_text = (
+            #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
+            #     if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
+            # )
+            # prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
+            #     name=self.lanlan_name,
+            #     capabilities=caps_text,
+            # ) + self.lanlan_prompt
+            prompt = _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         else:
             prompt = _loc(SESSION_INIT_PROMPT, _lang).format(name=self.lanlan_name) + self.lanlan_prompt
         if self._is_agent_enabled():
-            plugin_prompt, active_tasks_prompt = await asyncio.gather(
-                self._fetch_plugin_summary_prompt(),
-                self._fetch_active_agent_tasks_prompt(),
-            )
-            prompt += plugin_prompt
+            # Plugin summary (with plugin ids) is intentionally disabled to avoid
+            # exposing implementation identifiers in the general agent prompt.
+            # Keep method call removed here for deterministic prompt content.
+            # Historical prompt merge kept for rollback:
+            # plugin_prompt, active_tasks_prompt = await asyncio.gather(
+            #     self._fetch_plugin_summary_prompt(),
+            #     self._fetch_active_agent_tasks_prompt(),
+            # )
+            # prompt += plugin_prompt
+            active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
         return prompt
 
@@ -1408,39 +1424,38 @@ class LLMSessionManager:
         )
 
     async def _fetch_plugin_summary_prompt(self) -> str:
-        """Fetch installed plugin list and return a concise prompt snippet.
-
-        - ≤5 plugins: list each plugin's id (~200 tokens)
-        - >5 plugins: just mention the count (~20 tokens)
-        """
-        if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
-            return ""
-        _lang = normalize_language_code(self.user_language, format='short')
-        header = _loc(AGENT_PLUGINS_HEADER, _lang)
-        count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
-                r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-                if r.status_code != 200:
-                    return ""
-                data = r.json()
-                plugins = data.get("plugins", []) if isinstance(data, dict) else []
-                if not plugins:
-                    return ""
-                if len(plugins) <= 5:
-                    lines = []
-                    for p in plugins:
-                        if not isinstance(p, dict):
-                            continue
-                        pid = p.get("id", "")
-                        if pid:
-                            lines.append(f"  - {pid}")
-                    if lines:
-                        return header + "\n".join(lines) + "\n"
-                else:
-                    return count_tmpl.format(count=len(plugins))
-        except Exception as e:
-            logger.debug(f"获取插件摘要失败，已忽略: {e}")
+        """Plugin prompt segment is intentionally disabled for chat prompt minimalism."""
+        # This hook is kept for compatibility with older call sites.
+        # Disabled by product decision: do not include plugin IDs in agent prompt.
+        # Historical implementation kept for rollback:
+        # if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
+        #     return ""
+        # _lang = normalize_language_code(self.user_language, format='short')
+        # header = _loc(AGENT_PLUGINS_HEADER, _lang)
+        # count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
+        # try:
+        #     async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
+        #         r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+        #         if r.status_code != 200:
+        #             return ""
+        #         data = r.json()
+        #         plugins = data.get("plugins", []) if isinstance(data, dict) else []
+        #         if not plugins:
+        #             return ""
+        #         if len(plugins) <= 5:
+        #             lines = []
+        #             for p in plugins:
+        #                 if not isinstance(p, dict):
+        #                     continue
+        #                 pid = p.get("id", "")
+        #                 if pid:
+        #                     lines.append(f"  - {pid}")
+        #             if lines:
+        #                 return header + "\n".join(lines) + "\n"
+        #         else:
+        #             return count_tmpl.format(count=len(plugins))
+        # except Exception as e:
+        #     logger.debug(f"获取插件摘要失败，已忽略: {e}")
         return ""
 
     async def _fetch_active_agent_tasks_prompt(self) -> str:

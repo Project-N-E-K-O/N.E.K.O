@@ -1,3 +1,7 @@
+/**
+ * 主页模块
+ * 负责初始化主页相关功能，包括页面配置加载、VRM 路径缓存等
+ */
 // 页面配置 - 从 URL 或 API 获取
 let lanlan_config = {
     lanlan_name: ""

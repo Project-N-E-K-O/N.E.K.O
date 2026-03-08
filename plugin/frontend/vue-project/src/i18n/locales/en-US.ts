@@ -40,28 +40,8 @@ export default {
     adapterUI: 'Adapter UI'
   },
   auth: {
-    login: 'Login',
-    logout: 'Logout',
-    loggingIn: 'Verifying...',
-    loginTitle: 'N.E.K.O Plugin Manager',
-    loginSubtitle: 'Enter the admin verification code',
-    codePlaceholder: 'Enter 4-letter code',
-    codeHint: 'Code is displayed in terminal when server starts',
-    codeFormat: 'Format: 4 uppercase letters (e.g., ABCD)',
-    loginSuccess: 'Login successful',
-    loginFailed: 'Login failed',
-    codeError: 'Invalid code, please try again',
-    pasteFromClipboard: 'Paste from Clipboard',
-    clipboardUnsupported: 'Clipboard read is not supported in this environment',
-    clipboardNoCodeFound: 'No 4-letter code found in clipboard',
-    clipboardReadFailed: 'Failed to read clipboard. Please check browser permissions',
-    networkError: 'Network error, but code saved',
-    unauthorized: 'Unauthorized, please login',
-    forbidden: 'Access denied: Invalid or expired code',
-    logoutConfirm: 'Are you sure you want to logout?',
-    logoutSuccess: 'Logged out',
-    reAuthRequired: 'Authentication expired. Please enter the admin code again.',
-    goToLogin: 'Go to Login'
+    unauthorized: 'Unauthorized access',
+    forbidden: 'Access denied'
   },
   plugin: {
     addProfile: {
@@ -234,7 +214,7 @@ export default {
   runs: {
     title: 'Runs',
     detail: 'Run Detail',
-    wsDisconnected: 'Realtime connection is not established. Please check the admin code and server status.',
+    wsDisconnected: 'Realtime connection is not established. Please check the server status.',
     noRuns: 'No runs',
     selectRun: 'Select a run to view details',
     runId: 'Run ID',
