@@ -104,7 +104,7 @@ class DirectTaskExecutor:
                 url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
                 # increase timeout and avoid awaiting a non-awaitable .json()
                 timeout = httpx.Timeout(5.0, connect=2.0)
-                async with httpx.AsyncClient(timeout=timeout, proxy=None) as _client:
+                async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as _client:
                     resp = await _client.get(url)
                     try:
                         data = resp.json()
@@ -1015,7 +1015,7 @@ Return only the JSON object, nothing else.
             }
 
             timeout = httpx.Timeout(10.0, connect=2.0)
-            async with httpx.AsyncClient(timeout=timeout, proxy=None) as client:
+            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
                     logger.warning(
@@ -1146,7 +1146,7 @@ Return only the JSON object, nothing else.
         _consecutive_errors = 0
         _MAX_CONSECUTIVE_ERRORS = 3
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0), proxy=None) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=2.0), proxy=None, trust_env=False) as client:
             # ── Phase 1: poll until terminal ──
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()

@@ -2255,5 +2255,10 @@
             "active": "● 已就绪",
             "inactive": "○ 未配置"
         }
+    },
+    "notice": {
+        "voiceMigration": {
+            "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
+        }
     }
 }
