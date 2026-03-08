@@ -1162,21 +1162,18 @@ const shouldCleanupOldMusicPlayer = () => {
 
 // 统一的销毁音乐函数（完全销毁实例，释放资源）
 const destroyMusicPlayer = () => {
-    const player = getMusicPlayerInstance();
-    if (player) {
-        if (typeof player.pause === 'function') {
-            player.pause();
+    if (typeof window.destroyAPlayer === 'function') {
+        window.destroyAPlayer();
+    } else {
+        const player = getMusicPlayerInstance();
+        if (player) {
+            if (typeof player.pause === 'function') player.pause();
+            if (typeof player.destroy === 'function') player.destroy();
         }
-        if (typeof player.destroy === 'function') {
-            player.destroy();
+        if (window.aplayer) window.aplayer = null;
+        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
+            window.aplayerInjected.aplayer = null;
         }
-    }
-    // 清理所有实例引用
-    if (window.aplayer) {
-        window.aplayer = null;
-    }
-    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-        window.aplayerInjected.aplayer = null;
     }
     // 移除音乐消息根节点（整块移除，避免残留）
     document.querySelectorAll('.music-message-root').forEach(root => {

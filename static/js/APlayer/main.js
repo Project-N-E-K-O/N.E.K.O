@@ -184,18 +184,22 @@ export async function initializeAPlayer(options = {}, onReady = null) {
             console.error('[APlayer] Error:', e);
         });
 
-        window.aplayer = ap;
-        console.log('[APlayer] Initialized successfully');
-
         initializeAPlayerUI(ap, config.ui);
         setupGlobalControls(ap);
         setupKeyboardShortcuts(ap);
         initEventListeners(ap);
 
+        window.aplayer = ap;
+        console.log('[APlayer] Initialized successfully');
+
         if (onReady) onReady(ap);
         return ap;
     } catch (e) {
         console.error('[APlayer] Failed to create instance:', e);
+        if (window.aplayer === ap) {
+            window.aplayer = null;
+        }
+        try { ap.destroy(); } catch (_) { /* best-effort cleanup */ }
         return null;
     }
 }
@@ -389,3 +393,4 @@ function setupGlobalControls(aplayer) {
     };
 }
 window.initializeAPlayer = initializeAPlayer;
+window.destroyAPlayer = destroyAPlayer;
