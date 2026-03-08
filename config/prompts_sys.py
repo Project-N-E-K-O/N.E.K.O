@@ -717,9 +717,9 @@ proactive_chat_prompt_video_ko = """당신은 {lanlan_name}입니다. 방금 동
 
 proactive_chat_rewrite_prompt_ko = """당신은 텍스트 정리 전문가입니다. LLM이 생성한 능동적 대화 내용을 정리하고 다듬어 주세요.
 
-======이하 원본 출력======
+======以下为对话======
 {raw_output}
-======이상 원본 출력======
+======以上为对话======
 
 규칙:
 1. '|' 문자를 제거하세요. '|'가 포함된 경우 마지막 '|' 뒤의 실제 발화 내용만 남기세요. 여러 턴이 있으면 첫 번째 부분만 남기세요.
@@ -780,9 +780,9 @@ Reply:
 
 proactive_chat_prompt_music_ja = """あなたは{lanlan_name}です。今、{master_name}が音楽を聴きたがっているかもしれません。会話履歴と現在の会話内容に基づき、{master_name}のために音楽を再生するかどうかを判断してください。
 
-======会話履歴======
+======以下为对话历史======
 {memory_context}
-======会話履歴ここまで======
+======以上为对话历史======
 
 ======現在の会話======
 {current_chat}
@@ -801,9 +801,9 @@ proactive_chat_prompt_music_ja = """あなたは{lanlan_name}です。今、{mas
 
 proactive_chat_prompt_music_ko = """당신은 {lanlan_name}이고, {master_name}이 음악을 듣고 싶어할지도 모릅니다. 대화 기록과 현재 대화를 바탕으로 {master_name}을 위해 음악을 재생할지 결정하세요.
 
-======대화 기록======
+======以下为对话历史======
 {memory_context}
-======대화 기록 끝======
+======以上为对话历史======
 
 ======현재 대화======
 {current_chat}
@@ -1567,6 +1567,23 @@ RECENT_PROACTIVE_CHATS_FOOTER = {
     'ru': '======Конец записей (НЕ повторяйте вышесказанное!) ======',
 }
 
+# ---------- 近期搭话时间/来源标签 ----------
+RECENT_PROACTIVE_TIME_LABELS = {
+    'zh': {0: '刚刚', 'm': '{}分钟前', 'h': '{}小时前'},
+    'en': {0: 'just now', 'm': '{}min ago', 'h': '{}h ago'},
+    'ja': {0: 'たった今', 'm': '{}分前', 'h': '{}時間前'},
+    'ko': {0: '방금', 'm': '{}분 전', 'h': '{}시간 전'},
+    'ru': {0: 'только что', 'm': '{} мин назад', 'h': '{} ч назад'},
+}
+
+RECENT_PROACTIVE_CHANNEL_LABELS = {
+    'zh': {'vision': '屏幕', 'web': '网络'},
+    'en': {'vision': 'screen', 'web': 'web'},
+    'ja': {'vision': '画面', 'web': 'ネット'},
+    'ko': {'vision': '화면', 'web': '웹'},
+    'ru': {'vision': 'экран', 'web': 'веб'},
+}
+
 # ---------- 主人屏幕区块 ----------
 SCREEN_SECTION_HEADER = {
     'zh': '======主人的屏幕======',
@@ -1599,6 +1616,74 @@ EXTERNAL_TOPIC_FOOTER = {
     'ja': '======外部話題ここまで======',
     'ko': '======외부 주제 끝======',
     'ru': '======Конец внешней темы======',
+}
+
+# ---------- 主动搭话信息源标签 ----------
+PROACTIVE_SOURCE_LABELS = {
+    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
+    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
+    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
+    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
+    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'},
+}
+
+# ---------- 音乐搜索结果格式化 ----------
+MUSIC_SEARCH_RESULT_TEXTS = {
+    'zh': {
+        'title': '【音乐搜索结果】',
+        'album': '专辑',
+        'unknown_track': '未知曲目',
+        'unknown_artist': '未知艺术家',
+    },
+    'en': {
+        'title': '[Music Search Results]',
+        'album': 'Album',
+        'unknown_track': 'Unknown Track',
+        'unknown_artist': 'Unknown Artist',
+    },
+    'ja': {
+        'title': '【音楽検索結果】',
+        'album': 'アルバム',
+        'unknown_track': '不明な曲',
+        'unknown_artist': '不明なアーティスト',
+    },
+    'ko': {
+        'title': '[음악 검색 결과]',
+        'album': '앨범',
+        'unknown_track': '알 수 없는 곡',
+        'unknown_artist': '알 수 없는 아티스트',
+    },
+    'ru': {
+        'title': '[Результаты поиска музыки]',
+        'album': 'Альбом',
+        'unknown_track': 'Неизвестный трек',
+        'unknown_artist': 'Неизвестный исполнитель',
+    },
+}
+
+# ---------- 主动搭话中的音乐标签提示 ----------
+PROACTIVE_MUSIC_TAG_HINT = {
+    'zh': '，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊网页话题和音乐)',
+    'en': ', or [MUSIC] (music only), or [BOTH] (both web and music)',
+    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音乐の両方)',
+    'ko': ', 또는 [MUSIC] (음악만), 또는 [BOTH] (웹과 음악 모두)',
+    'ru': ', или [MUSIC] (только музыка), или [BOTH] (и веб, и музыка)',
+}
+
+PROACTIVE_BOTH_TAG_INSTRUCTIONS = {
+    'zh': '\n（注意：如果你同时参考了网页搜索和音乐推荐，请务必使用 [BOTH] 标签作为第一行；如果最终只聊音乐，请使用 [MUSIC] 标签！）',
+    'en': '\n(Note: If you use both web search and music recommendations, you MUST use the [BOTH] tag as the first line; if only music, use the [MUSIC] tag!)',
+    'ja': '\n（注意：ウェブ検索と音楽のおすすめを両方使用する場合は、最初の行に必ず [BOTH] タグを使用してください。音楽のみの場合は [MUSIC] タグを使用してください！）',
+    'ko': '\n(주의: 웹 검색과 음악 추천을 모두 사용하는 경우 첫 줄에 반드시 [BOTH] 태그를 사용해야 합니다. 음악만 이야기할 경우 [MUSIC] 태그를 사용하세요!)',
+    'ru': '\n(Примечание: если вы используете как веб-поиск, так и музыкальные рекомендации, ОБЯЗАТЕЛЬНО используйте тег [BOTH] в первой строке; если только музыку — тег [MUSIC]!)',
+}
+
+PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
+    'zh': '\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）',
+    'en': '\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB]!)',
+    'ja': '\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] ではなく必ず [MUSIC] タグを使用してください！）',
+    'ko': '\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)',
+    'ru': '\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)',
 }
 
 # ---------- 语音会话初始 prompt ----------

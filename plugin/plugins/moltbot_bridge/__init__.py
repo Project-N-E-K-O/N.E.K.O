@@ -18,6 +18,7 @@ import uvicorn
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
 from plugin.sdk import ok
+from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 
 
 @neko_plugin
@@ -489,7 +490,9 @@ class MoltbotBridgePlugin(NekoPluginBase):
             
             # 发送请求获取 runId
             run_id = None
-            async with aiohttp.ClientSession(trust_env=True) as http_session:
+            async with aiohttp.ClientSession(
+                **aiohttp_session_kwargs_for_url(url)
+            ) as http_session:
                 async with http_session.post(
                     url,
                     json={

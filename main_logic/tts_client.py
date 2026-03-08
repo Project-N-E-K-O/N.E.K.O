@@ -14,6 +14,7 @@ import aiohttp
 import asyncio
 from functools import partial
 from config import GSV_VOICE_PREFIX
+from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -1156,7 +1157,9 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 }
                                 
                                 # 使用异步HTTP客户端流式接收SSE响应
-                                async with aiohttp.ClientSession(trust_env=True) as session:
+                                async with aiohttp.ClientSession(
+                                    **aiohttp_session_kwargs_for_url(tts_url)
+                                ) as session:
                                     async with session.post(tts_url, headers=headers, json=payload) as resp:
                                         if resp.status == 200:
                                             # CogTTS返回SSE格式: data: {...JSON...}

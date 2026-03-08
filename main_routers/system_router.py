@@ -34,13 +34,18 @@ from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_format_sections,
-    get_proactive_chat_prompt,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
+    RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    PROACTIVE_SOURCE_LABELS,
+    MUSIC_SEARCH_RESULT_TEXTS,
+    PROACTIVE_MUSIC_TAG_HINT,
+    PROACTIVE_BOTH_TAG_INSTRUCTIONS,
+    PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -269,20 +274,8 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     if not recent:
         return ""
 
-    _time_labels = {
-        'zh': {0: '刚刚', 'm': '{}分钟前', 'h': '{}小时前'},
-        'en': {0: 'just now', 'm': '{}min ago', 'h': '{}h ago'},
-        'ja': {0: 'たった今', 'm': '{}分前', 'h': '{}時間前'},
-        'ko': {0: '방금', 'm': '{}분 전', 'h': '{}시간 전'},
-    }
-    _ch_labels = {
-        'zh': {'vision': '屏幕', 'web': '网络'},
-        'en': {'vision': 'screen', 'web': 'web'},
-        'ja': {'vision': '画面', 'web': 'ネット'},
-        'ko': {'vision': '화면', 'web': '웹'},
-    }
-    tl = _time_labels.get(lang, _time_labels['zh'])
-    cl = _ch_labels.get(lang, _ch_labels['zh'])
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['zh'])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['zh'])
 
     def _rel(ts):
         """
@@ -555,39 +548,7 @@ def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
     if not music_content.get('success'):
         return ""
     
-    _texts = {
-        'zh': {
-            'title': '【音乐搜索结果】', 
-            'album': '专辑', 
-            'unknown_track': '未知曲目', 
-            'unknown_artist': '未知艺术家'
-        },
-        'en': {
-            'title': '[Music Search Results]', 
-            'album': 'Album', 
-            'unknown_track': 'Unknown Track', 
-            'unknown_artist': 'Unknown Artist'
-        },
-        'ja': {
-            'title': '【音楽検索結果】', 
-            'album': 'アルバム', 
-            'unknown_track': '不明な曲', 
-            'unknown_artist': '不明なアーティスト'
-        },
-        'ko': {
-            'title': '[음악 검색 결과]', 
-            'album': '앨범', 
-            'unknown_track': '알 수 없는 곡', 
-            'unknown_artist': '알 수 없는 아티스트'
-        },
-        'ru': {
-            'title': '[Результаты поиска музыки]', 
-            'album': 'Альбом', 
-            'unknown_track': 'Неизвестный трек', 
-            'unknown_artist': 'Неизвестный исполнитель'
-        }
-    }
-    t = _texts.get(lang, _texts['zh'])
+    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['zh'])
     
     output_lines = [t['title']]
     tracks = music_content.get('data', [])
@@ -1684,14 +1645,7 @@ async def proactive_chat(request: Request):
                 if remaining_total <= 0:
                     break
                 src = sources[m]
-                _label_maps = {
-                    'zh': {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态', 'music': '音乐推荐'},
-                    'en': {'news': 'Trending Topics', 'video': 'Video Recommendations', 'home': 'Home Recommendations', 'window': 'Window Context', 'personal': 'Personal Updates', 'music': 'Music Recommendations'},
-                    'ja': {'news': 'トレンド話題', 'video': '動画のおすすめ', 'home': 'ホームおすすめ', 'window': 'ウィンドウコンテキスト', 'personal': '個人の動向', 'music': '音楽のおすすめ'},
-                    'ko': {'news': '화제의 토픽', 'video': '동영상 추천', 'home': '홈 추천', 'window': '창 컨텍스트', 'personal': '개인 소식', 'music': '음악 추천'},
-                    'ru': {'news': 'Горячие темы', 'video': 'Видео рекомендации', 'home': 'Рекомендации на главной', 'window': 'Контекст окна', 'personal': 'Личные новости', 'music': 'Музыкальные рекомендации'}
-                }
-                label_map = _label_maps.get(proactive_lang, _label_maps['zh'])
+                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
                 label = label_map.get(m, m)
                 links = src.get('links', []) or []
 
@@ -1962,13 +1916,7 @@ async def proactive_chat(request: Request):
         )
         #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
         if music_section and external_section:
-            music_tag_hint = {
-                'zh': "，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊网页话题和音乐)",
-                'en': ", or [MUSIC] (music only), or [BOTH] (both web and music)",
-                'ja': "、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音乐の両方)",
-                'ko': ", 또는 [MUSIC] (음악만), 또는 [BOTH] (웹과 음악 모두)",
-                'ru': ", или [MUSIC] (только музыка), или [BOTH] (и веб, и музыка)"
-            }.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
             # 在第一行标签选择中注入 [MUSIC] 和 [BOTH]
             output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
 
@@ -1985,26 +1933,17 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
-            current_lang = proactive_lang
             # 判断上下文中是否同时存在外部网页搜索内容
             if 'external_section' in locals() and external_section:
-                both_tag_instructions = {
-                    'zh': "\n（注意：如果你同时参考了网页搜索和音乐推荐，请务必使用 [BOTH] 标签作为第一行；如果最终只聊音乐，请使用 [MUSIC] 标签！）",
-                    'en': "\n(Note: If you use both web search and music recommendations, you MUST use the [BOTH] tag as the first line; if only music, use the [MUSIC] tag!)",
-                    'ja': "\n（注意：ウェブ検索と音楽のおすすめを両方使用する場合は、最初の行に必ず [BOTH] タグを使用してください。音楽のみの場合は [MUSIC] タグを使用してください！）",
-                    'ko': "\n(주의: 웹 검색과 음악 추천을 모두 사용하는 경우 첫 줄에 반드시 [BOTH] 태그를 사용해야 합니다. 음악만 이야기할 경우 [MUSIC] 태그를 사용하세요!)",
-                    'ru': "\n(Примечание: если вы используете как веб-поиск, так и музыкальные рекомендации, ОБЯЗАТЕЛЬНО используйте тег [BOTH] в первой строке; если только музыку — тег [MUSIC]!)"
-                }
-                generate_prompt += both_tag_instructions.get(current_lang, both_tag_instructions.get('en', both_tag_instructions['zh']))
+                generate_prompt += PROACTIVE_BOTH_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_BOTH_TAG_INSTRUCTIONS.get('en', PROACTIVE_BOTH_TAG_INSTRUCTIONS['zh']),
+                )
             else:
-                music_tag_instructions = {
-                    'zh': "\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）",
-                    'en': "\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB]!)",
-                    'ja': "\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] ではなく必ず [MUSIC] タグを使用してください！）",
-                    'ko': "\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)",
-                    'ru': "\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)"
-                }
-                generate_prompt += music_tag_instructions.get(current_lang, music_tag_instructions.get('en', music_tag_instructions['zh']))
+                generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
+                )
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
