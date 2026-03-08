@@ -10,6 +10,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Union, overload
 
+from ._deprecation import warn_sync_deprecated
+
 if TYPE_CHECKING:
     from .types import PluginContextProtocol
 
@@ -103,6 +105,7 @@ class PluginConfig:
         It is intentionally strict: if called while an event loop is running,
         we raise to avoid deadlocks and "coroutine was never awaited" mistakes.
         """
+        warn_sync_deprecated("PluginConfig", f"{operation}_sync", operation)
 
         try:
             asyncio.get_running_loop()

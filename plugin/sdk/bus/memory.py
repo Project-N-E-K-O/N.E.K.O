@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union, Coroutine
 
 from plugin.core.state import state
+from plugin.sdk._deprecation import warn_sync_deprecated
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 
 if TYPE_CHECKING:
@@ -123,6 +124,7 @@ class MemoryClient:
 
     def get_sync(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
         """同步版本:获取内存数据"""
+        warn_sync_deprecated("MemoryClient", "get_sync", "get_async")
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.memory.get")
 
@@ -357,4 +359,5 @@ class MemoryClient:
         """
         if self._is_in_event_loop():
             return self.get_async(bucket_id=bucket_id, limit=limit, timeout=timeout)
+        warn_sync_deprecated("MemoryClient", "get", "get_async")
         return self.get_sync(bucket_id=bucket_id, limit=limit, timeout=timeout)

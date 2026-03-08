@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from ._deprecation import suppress_sync_deprecation, warn_sync_deprecated
+
 try:
     import ormsgpack as msgpack
     _USE_ORMSGPACK = True
@@ -117,6 +119,7 @@ class PluginStore:
         Returns:
             存储的值，如果不存在则返回 default
         """
+        warn_sync_deprecated("PluginStore", "get", "get_async")
         if not self.enabled:
             return default
         conn = self._get_conn()
@@ -136,7 +139,8 @@ class PluginStore:
 
     async def get_async(self, key: str, default: Any = None) -> Any:
         """异步获取值（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.get, key, default)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.get, key, default)
     
     def set(self, key: str, value: Any) -> None:
         """
@@ -146,6 +150,7 @@ class PluginStore:
             key: 键名
             value: 值（必须可序列化）
         """
+        warn_sync_deprecated("PluginStore", "set", "set_async")
         if not self.enabled:
             if self.logger:
                 self.logger.warning(f"[Store] Attempted to set key '{key}' but store is disabled")
@@ -165,7 +170,8 @@ class PluginStore:
 
     async def set_async(self, key: str, value: Any) -> None:
         """异步设置值（在线程池中执行同步 I/O）。"""
-        await asyncio.to_thread(self.set, key, value)
+        with suppress_sync_deprecation():
+            await asyncio.to_thread(self.set, key, value)
     
     def delete(self, key: str) -> bool:
         """
@@ -177,6 +183,7 @@ class PluginStore:
         Returns:
             True 如果删除成功，False 如果键不存在
         """
+        warn_sync_deprecated("PluginStore", "delete", "delete_async")
         if not self.enabled:
             return False
         conn = self._get_conn()
@@ -189,7 +196,8 @@ class PluginStore:
 
     async def delete_async(self, key: str) -> bool:
         """异步删除键（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.delete, key)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.delete, key)
     
     def exists(self, key: str) -> bool:
         """
@@ -201,6 +209,7 @@ class PluginStore:
         Returns:
             True 如果存在
         """
+        warn_sync_deprecated("PluginStore", "exists", "exists_async")
         if not self.enabled:
             return False
         conn = self._get_conn()
@@ -212,7 +221,8 @@ class PluginStore:
 
     async def exists_async(self, key: str) -> bool:
         """异步检查键是否存在（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.exists, key)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.exists, key)
     
     def keys(self, prefix: str = "") -> List[str]:
         """
@@ -224,6 +234,7 @@ class PluginStore:
         Returns:
             键名列表
         """
+        warn_sync_deprecated("PluginStore", "keys", "keys_async")
         if not self.enabled:
             return []
         conn = self._get_conn()
@@ -238,7 +249,8 @@ class PluginStore:
 
     async def keys_async(self, prefix: str = "") -> List[str]:
         """异步获取键列表（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.keys, prefix)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.keys, prefix)
     
     def clear(self) -> int:
         """
@@ -247,6 +259,7 @@ class PluginStore:
         Returns:
             删除的记录数
         """
+        warn_sync_deprecated("PluginStore", "clear", "clear_async")
         if not self.enabled:
             return 0
         conn = self._get_conn()
@@ -256,7 +269,8 @@ class PluginStore:
 
     async def clear_async(self) -> int:
         """异步清空数据（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.clear)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.clear)
     
     def count(self) -> int:
         """
@@ -265,6 +279,7 @@ class PluginStore:
         Returns:
             记录数量
         """
+        warn_sync_deprecated("PluginStore", "count", "count_async")
         if not self.enabled:
             return 0
         conn = self._get_conn()
@@ -274,7 +289,8 @@ class PluginStore:
 
     async def count_async(self) -> int:
         """异步获取记录数（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.count)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.count)
     
     def dump(self) -> Dict[str, Any]:
         """
@@ -283,6 +299,7 @@ class PluginStore:
         Returns:
             所有键值对的字典
         """
+        warn_sync_deprecated("PluginStore", "dump", "dump_async")
         if not self.enabled:
             return {}
         conn = self._get_conn()
@@ -297,7 +314,8 @@ class PluginStore:
 
     async def dump_async(self) -> Dict[str, Any]:
         """异步导出全部数据（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.dump)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.dump)
     
     # 便捷语法支持
     def __getitem__(self, key: str) -> Any:
@@ -321,6 +339,7 @@ class PluginStore:
     
     def close(self) -> None:
         """关闭数据库连接"""
+        warn_sync_deprecated("PluginStore", "close", "close_async")
         if hasattr(self._local, "conn") and self._local.conn is not None:
             try:
                 self._local.conn.close()
@@ -330,4 +349,5 @@ class PluginStore:
 
     async def close_async(self) -> None:
         """异步关闭数据库连接（在线程池中执行同步 I/O）。"""
-        await asyncio.to_thread(self.close)
+        with suppress_sync_deprecation():
+            await asyncio.to_thread(self.close)

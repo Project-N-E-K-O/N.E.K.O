@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import warnings
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+from ._deprecation import warn_sync_deprecated
 
 if TYPE_CHECKING:
     from .types import PluginContextProtocol
@@ -61,12 +62,7 @@ class Plugins:
 
     @staticmethod
     def _warn_sync_deprecated(name: str) -> None:
-        warnings.warn(
-            f"Plugins.{name}() is deprecated and will be removed in a future version; "
-            f"use Plugins.{name}_async() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warn_sync_deprecated("Plugins", name, f"{name}_async")
 
     async def list_async(self, filters: Optional[Dict[str, Any]] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
         if hasattr(self.ctx, "query_plugins_async"):

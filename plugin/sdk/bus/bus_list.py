@@ -5,6 +5,8 @@ import asyncio
 from contextlib import suppress
 from typing import Any, Callable, Sequence, Union, cast
 
+from plugin.sdk._deprecation import suppress_sync_deprecation, warn_sync_deprecated
+
 __all__ = [
     "_dedupe_key_from_record",
     "_sort_bus_value",
@@ -390,6 +392,7 @@ class BusListCore:
         return _cast_bus_value(v, cast)
 
     def reload(self, ctx: Any = None, *, incremental: bool = False) -> Any:
+        warn_sync_deprecated(self.__class__.__name__, "reload", "reload_async")
         return self.reload_with(ctx, incremental=bool(incremental))
 
     async def reload_async(
@@ -398,16 +401,17 @@ class BusListCore:
         *,
         incremental: bool = False,
     ) -> Any:
-        if ctx is None:
+        with suppress_sync_deprecation():
+            if ctx is None:
+                return await asyncio.to_thread(
+                    self.reload,
+                    incremental=incremental,
+                )
             return await asyncio.to_thread(
                 self.reload,
+                ctx,
                 incremental=incremental,
             )
-        return await asyncio.to_thread(
-            self.reload,
-            ctx,
-            incremental=incremental,
-        )
 
     async def reload_with_async(
         self,
@@ -476,6 +480,7 @@ class BusListWatcherCore:
         return _decorator
 
     def start(self) -> Any:
+        warn_sync_deprecated(self.__class__.__name__, "start", "start_async")
         if self._unsub is not None or self._sub_id is not None:
             return self
 
@@ -504,9 +509,11 @@ class BusListWatcherCore:
         return self
 
     async def start_async(self) -> Any:
-        return await asyncio.to_thread(self.start)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.start)
 
     def stop(self) -> None:
+        warn_sync_deprecated(self.__class__.__name__, "stop", "stop_async")
         if self._sub_id is not None:
             sid = self._sub_id
             self._sub_id = None
@@ -531,7 +538,8 @@ class BusListWatcherCore:
             self._unsub = None
 
     async def stop_async(self) -> None:
-        await asyncio.to_thread(self.stop)
+        with suppress_sync_deprecation():
+            await asyncio.to_thread(self.stop)
 
 
 def _build_bus_subscribe_request(bus: str, plan_dump: Any) -> dict[str, Any]:

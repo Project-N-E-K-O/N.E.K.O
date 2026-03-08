@@ -16,6 +16,8 @@ from datetime import datetime, date, timedelta
 from enum import Enum
 import time
 
+from ._deprecation import suppress_sync_deprecation, warn_sync_deprecated
+
 try:
     import ormsgpack as msgpack
     _USE_ORMSGPACK = True
@@ -278,6 +280,7 @@ class PluginStatePersistence:
         freezable_keys: List[str],
     ) -> Dict[str, Any]:
         """从插件实例收集 __freezable__ 声明的属性（支持扩展类型）"""
+        warn_sync_deprecated("PluginStatePersistence", "collect_attrs", "collect_attrs_async")
         snapshot = {}
         for key in freezable_keys:
             if not hasattr(instance, key):
@@ -304,7 +307,8 @@ class PluginStatePersistence:
         freezable_keys: List[str],
     ) -> Dict[str, Any]:
         """异步收集 freezable 属性（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.collect_attrs, instance, freezable_keys)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.collect_attrs, instance, freezable_keys)
     
     def restore_attrs(
         self,
@@ -312,6 +316,7 @@ class PluginStatePersistence:
         snapshot: Dict[str, Any],
     ) -> int:
         """将 snapshot 中的属性恢复到插件实例（支持扩展类型）"""
+        warn_sync_deprecated("PluginStatePersistence", "restore_attrs", "restore_attrs_async")
         restored_count = 0
         for key, value in snapshot.items():
             try:
@@ -332,7 +337,8 @@ class PluginStatePersistence:
         snapshot: Dict[str, Any],
     ) -> int:
         """异步恢复属性（在线程池中执行同步逻辑）。"""
-        return await asyncio.to_thread(self.restore_attrs, instance, snapshot)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.restore_attrs, instance, snapshot)
     
     def save(
         self,
@@ -350,6 +356,7 @@ class PluginStatePersistence:
         Returns:
             是否保存成功
         """
+        warn_sync_deprecated("PluginStatePersistence", "save", "save_async")
         # off 模式：不执行任何操作
         if self.backend == "off":
             return True
@@ -406,7 +413,8 @@ class PluginStatePersistence:
         reason: str = "manual",
     ) -> bool:
         """异步保存插件状态（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.save, instance, freezable_keys, reason)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.save, instance, freezable_keys, reason)
     
     def load(self, instance: Any) -> bool:
         """加载并恢复插件状态
@@ -417,6 +425,7 @@ class PluginStatePersistence:
         Returns:
             是否成功恢复
         """
+        warn_sync_deprecated("PluginStatePersistence", "load", "load_async")
         # off 模式：不执行任何操作
         if self.backend == "off":
             return False
@@ -467,10 +476,12 @@ class PluginStatePersistence:
 
     async def load_async(self, instance: Any) -> bool:
         """异步加载状态（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.load, instance)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.load, instance)
     
     def clear(self) -> bool:
         """清除保存的状态"""
+        warn_sync_deprecated("PluginStatePersistence", "clear", "clear_async")
         try:
             if self.backend == "memory":
                 from plugin.core.state import state
@@ -489,10 +500,12 @@ class PluginStatePersistence:
 
     async def clear_async(self) -> bool:
         """异步清理状态（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.clear)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.clear)
     
     def has_saved_state(self) -> bool:
         """检查是否有保存的状态"""
+        warn_sync_deprecated("PluginStatePersistence", "has_saved_state", "has_saved_state_async")
         if self.backend == "off":
             return False
         if self.backend == "memory":
@@ -502,10 +515,12 @@ class PluginStatePersistence:
 
     async def has_saved_state_async(self) -> bool:
         """异步检查是否存在保存状态（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.has_saved_state)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.has_saved_state)
     
     def get_state_info(self) -> Optional[Dict[str, Any]]:
         """获取保存状态的元信息（不加载数据）"""
+        warn_sync_deprecated("PluginStatePersistence", "get_state_info", "get_state_info_async")
         if self.backend == "off":
             return None
         
@@ -534,4 +549,5 @@ class PluginStatePersistence:
 
     async def get_state_info_async(self) -> Optional[Dict[str, Any]]:
         """异步读取状态元信息（在线程池中执行同步 I/O）。"""
-        return await asyncio.to_thread(self.get_state_info)
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.get_state_info)

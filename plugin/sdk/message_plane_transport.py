@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Union, Coroutine, cast
 
 import ormsgpack
+from ._deprecation import warn_sync_deprecated
 
 try:
     import zmq
@@ -260,6 +261,7 @@ class MessagePlaneRpcClient:
     
     def request_sync(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
         """同步版本的 RPC 请求 (原 request 方法)"""
+        warn_sync_deprecated("MessagePlaneRpcClient", "request_sync", "request_async")
         if zmq is None:
             return None
         sock = self._get_sock()
@@ -321,6 +323,7 @@ class MessagePlaneRpcClient:
         """
         if self._is_in_event_loop():
             return self.request_async(op=op, args=args, timeout=timeout)
+        warn_sync_deprecated("MessagePlaneRpcClient", "request", "request_async")
         return self.request_sync(op=op, args=args, timeout=timeout)
     
     async def batch_request_async(self, requests: List[Dict[str, Any]], *, timeout: float = 5.0) -> List[Optional[Dict[str, Any]]]:

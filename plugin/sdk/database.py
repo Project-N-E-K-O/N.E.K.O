@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
+from ._deprecation import suppress_sync_deprecation, warn_sync_deprecated
 
 if TYPE_CHECKING:
     from loguru import Logger as LoguruLogger
@@ -163,6 +164,7 @@ class PluginDatabase:
         
         如果在事件循环中调用会抛出异常，避免死锁。
         """
+        warn_sync_deprecated("PluginDatabase", "sync_call", "async")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -178,6 +180,7 @@ class PluginDatabase:
         根据已定义的模型创建数据库表。
         如果表已存在，则不会重复创建。
         """
+        warn_sync_deprecated("PluginDatabase", "create_all_sync", "create_all_async")
         if not self.enabled:
             if self.logger:
                 self.logger.warning("[Database] Cannot create tables: database is disabled")
@@ -225,6 +228,10 @@ class PluginDatabase:
         if self._is_in_event_loop():
             return coro
         return self._run_sync(coro)
+
+    async def create_all_async(self) -> None:
+        """创建所有表（显式异步 API）。"""
+        await self._create_all_async()
     
     def drop_all_sync(self) -> None:
         """
@@ -232,6 +239,7 @@ class PluginDatabase:
         
         警告：这会删除所有数据！
         """
+        warn_sync_deprecated("PluginDatabase", "drop_all_sync", "drop_all_async")
         if not self.enabled:
             if self.logger:
                 self.logger.warning("[Database] Cannot drop tables: database is disabled")
@@ -280,6 +288,10 @@ class PluginDatabase:
         if self._is_in_event_loop():
             return coro
         return self._run_sync(coro)
+
+    async def drop_all_async(self) -> None:
+        """删除所有表（显式异步 API）。"""
+        await self._drop_all_async()
     
     @contextmanager
     def session(self):
@@ -368,6 +380,7 @@ class PluginDatabase:
         
         清理所有引擎和连接池。
         """
+        warn_sync_deprecated("PluginDatabase", "close", "close_async")
         if self._engine:
             self._engine.dispose()
             self._engine = None
@@ -506,6 +519,7 @@ class PluginKVStore:
     
     def get(self, key: str, default: Any = None) -> Any:
         """获取值"""
+        warn_sync_deprecated("PluginKVStore", "get")
         if not self._db.enabled:
             return default
         self._ensure_table()
@@ -521,9 +535,14 @@ class PluginKVStore:
                 return self._deserialize(result[0])
             except Exception:
                 return default
+
+    async def get_async(self, key: str, default: Any = None) -> Any:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.get, key, default)
     
     def set(self, key: str, value: Any) -> None:
         """设置值"""
+        warn_sync_deprecated("PluginKVStore", "set")
         if not self._db.enabled:
             return
         self._ensure_table()
@@ -543,9 +562,14 @@ class PluginKVStore:
                 {"key": key, "value": data, "now": now}
             )
             session.commit()
+
+    async def set_async(self, key: str, value: Any) -> None:
+        with suppress_sync_deprecation():
+            await asyncio.to_thread(self.set, key, value)
     
     def delete(self, key: str) -> bool:
         """删除键"""
+        warn_sync_deprecated("PluginKVStore", "delete")
         if not self._db.enabled:
             return False
         self._ensure_table()
@@ -563,9 +587,14 @@ class PluginKVStore:
                 )
                 session.commit()
             return exists
+
+    async def delete_async(self, key: str) -> bool:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.delete, key)
     
     def exists(self, key: str) -> bool:
         """检查键是否存在"""
+        warn_sync_deprecated("PluginKVStore", "exists")
         if not self._db.enabled:
             return False
         self._ensure_table()
@@ -576,9 +605,14 @@ class PluginKVStore:
                 {"key": key}
             ).fetchone()
             return result is not None
+
+    async def exists_async(self, key: str) -> bool:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.exists, key)
     
     def keys(self, prefix: str = "") -> list:
         """获取所有键"""
+        warn_sync_deprecated("PluginKVStore", "keys")
         if not self._db.enabled:
             return []
         self._ensure_table()
@@ -594,9 +628,14 @@ class PluginKVStore:
                     text(f"SELECT key FROM {self._TABLE_NAME}")
                 ).fetchall()
             return [row[0] for row in result]
+
+    async def keys_async(self, prefix: str = "") -> list:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.keys, prefix)
     
     def clear(self) -> int:
         """清空所有数据"""
+        warn_sync_deprecated("PluginKVStore", "clear")
         if not self._db.enabled:
             return 0
         self._ensure_table()
@@ -609,9 +648,14 @@ class PluginKVStore:
             session.execute(text(f"DELETE FROM {self._TABLE_NAME}"))
             session.commit()
             return count
+
+    async def clear_async(self) -> int:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.clear)
     
     def count(self) -> int:
         """获取记录数"""
+        warn_sync_deprecated("PluginKVStore", "count")
         if not self._db.enabled:
             return 0
         self._ensure_table()
@@ -621,6 +665,10 @@ class PluginKVStore:
                 text(f"SELECT COUNT(*) FROM {self._TABLE_NAME}")
             ).fetchone()
             return result[0] if result else 0
+
+    async def count_async(self) -> int:
+        with suppress_sync_deprecation():
+            return await asyncio.to_thread(self.count)
     
     # 便捷语法
     def __getitem__(self, key: str) -> Any:

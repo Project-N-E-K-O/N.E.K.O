@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Sequence, TypeVar, Union
 
+from plugin.sdk._deprecation import warn_sync_deprecated
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode
 
@@ -220,6 +221,7 @@ class BusRpcClientBase:
                 plugin_id=plugin_id, max_count=max_count, filter=filter,
                 strict=strict, since_ts=since_ts, timeout=timeout,
             )
+        warn_sync_deprecated(self.__class__.__name__, "get", "get_async")
         self._enforce("get")
         op, args = self._build_query_args(plugin_id=plugin_id, max_count=max_count, filter=filter, since_ts=since_ts)
         resp = _ensure_rpc(self.ctx).request(op=op, args=args, timeout=float(timeout))
@@ -285,6 +287,7 @@ class BusDeletableClientBase(BusRpcClientBase):
     def delete(self, record_id: str, timeout: float = 5.0) -> Union[bool, Coroutine[Any, Any, bool]]:
         if _is_in_event_loop():
             return self.delete_async(record_id=record_id, timeout=timeout)
+        warn_sync_deprecated(self.__class__.__name__, "delete", "delete_async")
         from plugin.core.state import state
         req_id, request = self._prepare_delete(record_id, timeout)
         resp = self._try_zmq_delete(request, timeout)

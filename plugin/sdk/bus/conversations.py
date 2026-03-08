@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Union
 
+from plugin.sdk._deprecation import warn_sync_deprecated
 from .types import BusList, BusRecord
 from ._client_base import _is_in_event_loop, _ensure_rpc, _validate_rpc_response, _parse_bus_items
 
@@ -158,6 +159,7 @@ class ConversationClient:
                 conversation_id=conversation_id, max_count=max_count,
                 since_ts=since_ts, timeout=timeout,
             )
+        warn_sync_deprecated("ConversationClient", "get", "get_async")
         return self._get_impl(
             conversation_id=conversation_id, max_count=max_count,
             since_ts=since_ts, timeout=timeout,

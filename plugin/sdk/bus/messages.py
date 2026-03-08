@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Union
 
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
+from plugin.sdk._deprecation import warn_sync_deprecated
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 from ._client_base import (
     _is_in_event_loop, _ensure_rpc, _validate_rpc_response, _parse_bus_items, _PluginBusList,
@@ -348,6 +349,7 @@ class MessageClient:
                 source=source, filter=filter, strict=strict, since_ts=since_ts,
                 timeout=timeout, raw=raw, no_fallback=no_fallback,
             )
+        warn_sync_deprecated("MessageClient", "get", "get_async")
         if not no_fallback:
             cached = self._try_local_cache(
                 plugin_id=plugin_id, max_count=max_count, priority_min=priority_min,
@@ -418,6 +420,7 @@ class MessageClient:
         raw: bool = False,
         topic: str = "*",
     ) -> MessageList:
+        warn_sync_deprecated("MessageClient", "get_message_plane_all", "get_message_plane_all_async")
         pid_norm: Optional[str] = None
         if isinstance(plugin_id, str):
             pid_norm = plugin_id.strip()
