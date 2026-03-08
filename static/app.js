@@ -199,7 +199,6 @@ function init_app() {
 
     // 【补充声明】修复未声明变量导致的隐式全局或 ReferenceError
     let subtitleCheckDebounceTimer = null; 
-    let nextChunkTime = 0; // 统一用于音频预调度的时间戳
 
     // 屏幕流闲置释放的统一 helper 函数
     function scheduleScreenCaptureIdleCheck() {
@@ -2292,7 +2291,6 @@ function init_app() {
                 if (isPlayMusicPrefix) {
                     window._pendingMusicCommand = partialText;
                     incoming = incoming.slice(0, openBracketMatch.index);
-                }
                     console.log(`[Music] 拦截到不完整指令片段: ${partialText}`);
                 }
             }
@@ -2309,7 +2307,7 @@ function init_app() {
                 window._realisticGeminiQueue.push(...sentences);
                 processRealisticQueue(window._realisticGeminiVersion || 0);
             }
-        else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
