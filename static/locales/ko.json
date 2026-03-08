@@ -2285,6 +2285,7 @@
         "searchFailed": "음악 검색 실패",
         "playError": "재생 오류",
         "ended": "종료"
+    },
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."

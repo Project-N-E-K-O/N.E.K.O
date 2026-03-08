@@ -2285,6 +2285,7 @@
         "searchFailed": "音樂搜尋失敗",
         "playError": "播放出錯",
         "ended": "已結束"
+    },
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"

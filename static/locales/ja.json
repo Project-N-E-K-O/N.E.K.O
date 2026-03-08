@@ -2285,6 +2285,7 @@
         "searchFailed": "音楽検索に失敗しました",
         "playError": "再生エラー",
         "ended": "終了"
+    },
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"

@@ -2285,6 +2285,7 @@
         "searchFailed": "音乐搜索失败",
         "playError": "播放出错",
         "ended": "已结束"
+    },
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"

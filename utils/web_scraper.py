@@ -24,6 +24,38 @@ import sys
 logger = get_module_logger(__name__)
 
 
+def _extract_llm_text_content(content: Any) -> str:
+    """
+    尽量从不同形态的 LLM content 中提取可用文本。
+    返回空字符串表示空包或无有效文本。
+    """
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            text = ""
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content") or ""
+            else:
+                text = getattr(item, "text", "") or getattr(item, "content", "") or ""
+
+            if isinstance(text, str):
+                text = text.strip()
+                if text:
+                    parts.append(text)
+
+        return "\n".join(parts).strip()
+
+    return str(content).strip()
+
+
 def _fix_bilibili_api_env():
     """
     针对 Nuitka 打包环境的修复函数：
@@ -1250,12 +1282,17 @@ keyword one
 keyword two
 keyword three"""
 
-        # 使用异步调用
+        # 使用异步调用，并显式检测空包/空内容，避免后续继续按正常响应解析
         response = await llm.ainvoke([SystemMessage(content=prompt)])
-        
+        response_text = _extract_llm_text_content(getattr(response, 'content', None))
+        if not response_text:
+            logger.warning(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包，使用默认清理方法回退")
+            clean_title = clean_window_title(window_title)
+            return [clean_title, clean_title, clean_title] if clean_title else []
+
         # 解析响应，提取3个关键词
         queries = []
-        lines = response.content.strip().split('\n')
+        lines = response_text.split('\n')
         for line in lines:
             line = line.strip()
             # 移除可能的序号、标点等
