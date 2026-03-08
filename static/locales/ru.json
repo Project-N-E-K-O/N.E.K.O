@@ -2268,6 +2268,25 @@
         "status": {
             "active": "● Готово",
             "inactive": "○ Не настроено"
+        },
+        "qrLogin": {
+            "tryQR": "Или... попробовать вход по QR-коду?",
+            "openQR": "📱 Открыть QR-вход",
+            "loading": "Получение QR-кода...",
+            "scanTitle": "📱 Вход по QR {{platform}}",
+            "waiting": "Ожидание сканирования...",
+            "validFor": "QR-код действителен: {{seconds}}сек",
+            "refreshQR": "Обновить QR-код",
+            "fetchFailed": "Не удалось получить QR-код, попробуйте позже",
+            "retry": "Повторить",
+            "networkError": "Ошибка сети, проверьте подключение",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}, обновите",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию"
         }
     },
     "music": {

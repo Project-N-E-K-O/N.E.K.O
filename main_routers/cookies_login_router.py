@@ -7,9 +7,13 @@ unified logic for credential management.
 """
 
 import re
+import io
+import base64
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Request, HTTPException, status, Depends
+import qrcode
+import httpx
+from fastapi import APIRouter, Request, HTTPException, status, Depends, Body
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
@@ -66,6 +70,7 @@ class CookieSubmit(BaseModel):
             logger.warning(f"🚨 检测到恶意内容注入尝试！恶意内容注入，length={len(v)}")
             raise ValueError("检测到非法或危险字符，请求已被系统拦截。")
         return v
+
 
 # ============ 1. 内部辅助逻辑 ============
 
@@ -240,3 +245,219 @@ async def api_save_cookie_legacy(data: CookieSubmit):
         logger.error(f"❌ 兼容性cookies保存失败 | 平台: {data.platform} | 错误: {type(e).__name__}")
         logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         return {"success": False, "msg": "❌ 系统异常,请稍后尝试"}
+
+
+
+
+
+
+@router.get("/get_CanQRLoginList")
+async def get_CanQRLoginLists():
+    return list(NetworkQRLoginInfo.keys())
+
+
+
+
+
+def get_nested_value(data: dict, path: str ,default=None):
+    value = data
+    for key in path.split("."):
+        if isinstance(value, dict) and key in value:
+            value = value[key]
+        else:
+            return default
+    return value
+
+
+@router.post("/get_QR", summary="获取登陆二维码")
+async def api_get_qr_code(
+    platform: str = Body(..., min_length=2, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$", embed=True)
+):
+    if platform not in NetworkQRLoginInfo:
+        raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+    
+    config = NetworkQRLoginInfo[platform]
+    response_config = config.get("response", {})
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url=config["get"], headers=config["headers"], timeout=10)
+            response.raise_for_status()
+            resp_data = response.json()
+        
+        success_code = response_config.get("success_code", 0)
+        if resp_data.get("code") != success_code:
+            raise HTTPException(status_code=500, detail="获取二维码失败")
+        
+        data_path = response_config.get("data_path", "data")
+        data = get_nested_value(resp_data, data_path, {})
+        
+        qrcode_key_path = response_config.get("qrcode_key_path", "qrcode_key")
+        qrcode_url_path = response_config.get("qrcode_url_path", "url")
+        
+        qrcode_key = get_nested_value(data, qrcode_key_path) if "." in qrcode_key_path else data.get(qrcode_key_path)
+        qrcode_url = get_nested_value(data, qrcode_url_path) if "." in qrcode_url_path else data.get(qrcode_url_path)
+        
+        if not qrcode_key or not qrcode_url:
+            raise HTTPException(status_code=500, detail="二维码数据解析失败")
+        
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_H,
+            box_size=10,
+            border=4
+        )
+        qr.add_data(qrcode_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        logger.info(f"✅ {platform} 二维码生成成功")
+        
+        return {
+            "success": True,
+            "data": {
+                "qrcode_key": qrcode_key,
+                "qrcode_url": qrcode_url,
+                "qrcode_image": f"data:image/png;base64,{img_base64}",
+                "timeout": config.get("timeout", 180)
+            }
+        }
+    except httpx.HTTPError as e:
+        logger.error(f"获取二维码网络请求失败: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="网络请求失败，请稍后重试")
+    except Exception as e:
+        logger.error(f"获取二维码失败: {type(e).__name__}")
+        logger.debug(f"详细错误: {e}")
+        raise HTTPException(status_code=500, detail="获取二维码失败")
+
+@router.post("/QRLogin", summary="二维码登陆")
+async def api_qr_login_poll(
+    platform: str = Body(..., min_length=2, max_length=20, pattern=r"^[a-zA-Z0-9_-]+$", embed=True),
+    qrcode_key: str = Body(..., min_length=10, max_length=100, embed=True)
+):
+    if platform not in NetworkQRLoginInfo:
+        raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+    
+    config = NetworkQRLoginInfo[platform]
+    response_config = config.get("response", {})
+    status_codes = config.get("status_codes", {})
+    cookie_fields = config.get("cookie_fields", [])
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url=config["login"], 
+                params={"qrcode_key": qrcode_key}, 
+                headers=config["headers"],
+                timeout=10
+            )
+            resp_data = response.json()
+        
+        poll_code_path = response_config.get("poll_code_path", "data.code")
+        poll_message_path = response_config.get("poll_message_path", "data.message")
+        
+        code = get_nested_value(resp_data, poll_code_path)
+        raw_message = get_nested_value(resp_data, poll_message_path, "")
+        
+        if code is None:
+            raise HTTPException(status_code=500, detail="HTTP响应数据解析失败")
+        
+        status_info = status_codes.get(code, {"status": "unknown", "message": raw_message})
+        
+        if code == 0:
+            cookies = dict(response.cookies)
+            cookie_string = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            
+            logger.info(f"✅ {platform} 二维码登录成功")
+            
+            ret = {
+                "success": True,
+                "data": {
+                    "code": code,
+                    "status": status_info["status"],
+                    "message": status_info["message"],
+                    "cookies": cookies,
+                    "cookie_string": cookie_string,
+                    "cookie_fields": cookie_fields
+                }
+            }
+            return ret
+            
+        else:
+            ret = {
+                "success": False,
+                "data": {
+                    "code": code,
+                    "status": status_info["status"],
+                    "message": status_info["message"]
+                }
+            }
+            return ret
+    except httpx.HTTPError as e:
+        logger.error(f"轮询登录状态网络请求失败: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail="网络请求失败")
+    except Exception as e:
+        logger.error(f"轮询登录状态失败: {type(e).__name__}")
+        logger.debug(f"详细错误: {e}")
+        raise HTTPException(status_code=500, detail="轮询登录状态失败")
+
+#存在用于直接复制后替换内容的方便示例,不需要检查NetworkQRLoginInfo["示例"]内部的东西
+NetworkQRLoginInfo = {
+    "Bilibili": {
+        "get": "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
+        "login": "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
+        "timeout": 180,
+        "cookie_fields": ["SESSDATA", "bili_jct", "DedeUserID", "buvid3"],
+        "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://passport.bilibili.com/",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin"
+            },
+        "response": {
+            "success_code": 0,
+            "data_path": "data",
+            "qrcode_key_path": "qrcode_key",
+            "qrcode_url_path": "url",
+            "poll_code_path": "data.code",
+            "poll_message_path": "data.message"
+        },
+        "status_codes": {
+            0: {"status": "success", "message": "登录成功"},
+            86101: {"status": "waiting", "message": "未扫码"},
+            86090: {"status": "scanned", "message": "已扫码,等待确认"},
+            86038: {"status": "expired", "message": "二维码已失效"}
+        }
+    },
+    "示例": {
+        "get": "获取二维码的地址",
+        "login": "登录的地址",
+        "timeout": "二维码有效期(秒):int",
+        "cookie_fields": ["需要提取的cookie字段1", "需要提取的cookie字段2", "需要提取的cookie字段n"],
+        "headers": "以字典的形式在这里塞一个请求头:dict",
+        "response": {
+                "success_code": "成功状态:int",
+                "data_path": "返回结果JSON中数据的路径",
+                "qrcode_key_path": "数据中key的字段名",
+                "qrcode_url_path": "数据中URL的字段名",
+                "poll_code_path": "轮询中状态码的路径",
+                "poll_message_path": "轮询响应中msg的路径"
+            },
+        "status_codes": {
+                0: {"status": "成功登录", "message": "显示的消息"},
+                86101: {"status": "等待扫码", "message": "显示的消息"},
+                86090: {"status": "已扫码,待确认", "message": "显示的消息"},
+                86038: {"status": "二维码过期", "message": "显示的消息"}
+            }
+    },
+}

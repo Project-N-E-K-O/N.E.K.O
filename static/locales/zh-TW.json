@@ -2268,6 +2268,25 @@
         "status": {
             "active": "● 已就緒",
             "inactive": "○ 未配置"
+        },
+        "qrLogin": {
+            "tryQR": "或者...試試掃碼登入？",
+            "openQR": "📱 開啟掃碼登入",
+            "loading": "正在取得二維碼...",
+            "scanTitle": "📱 掃碼登入 {{platform}}",
+            "waiting": "等待掃碼...",
+            "validFor": "二維碼有效期: {{seconds}}秒",
+            "refreshQR": "重新整理二維碼",
+            "fetchFailed": "取得二維碼失敗，請稍後重試",
+            "retry": "重試",
+            "networkError": "網路請求失敗，請檢查連線",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}，請重新整理",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定"
         }
     },
     "music": {
