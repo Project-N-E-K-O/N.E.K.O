@@ -9,7 +9,10 @@ router = APIRouter()
 logger = get_module_logger(__name__, "Music")
 
 @router.get("/api/music/search")
-async def search_music(query: str = Query(default="", max_length=200)):
+async def search_music(
+    query: str = Query(default="", max_length=200),
+    limit: int = Query(default=10, ge=1, le=50)
+):
     """
     智能音乐分发路由，统一调用 music_crawlers 中的 fetch_music_content。
     """

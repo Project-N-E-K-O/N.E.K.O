@@ -1273,7 +1273,7 @@ window.sendMusicMessage = function(trackInfo) {
                 const script = document.createElement('script');
                 script.src = 'https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.js';
                 script.crossOrigin = 'anonymous';
-                script.integrity = 'sha512-RWosNn0G8icq6F8yJUzFj4A8qH/I8KzU0KzQ0F2X8xY756S1E3yJmC0RkH66g7O2/5wM9B2GjK/RXYtA==';
+                script.integrity = 'sha512-RWosNnDNw8FxHibJqdFRySIswOUgYhFxnmYO3fp+BgCU7gfo4z0oS7mYFBvaa8qu+axY39BmQOrhW3Tp70XbaQ==';
                 script.onload = () => {
                     console.log('[Common UI] APlayer 库加载成功');
                     resolve();

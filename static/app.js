@@ -2280,11 +2280,13 @@ function init_app() {
             const openBracketMatch = incoming.match(/\[[^\]]*$/);
             if (openBracketMatch) {
                 const partialText = openBracketMatch[0];
-                const normalizedPartial = normalizeGeminiText(partialText);
-        
-                // 这样即使只收到 "[" 或 "[pl"，只要它是指令前缀的一部分，就会被正确拦截并存入缓冲区
+                const normalizedPartial = normalizeGeminiText(partialText).toLowerCase();
+
+                // 这样即使只收到 "[" 或 "[pl"，或者已经包含了部分 JSON 体
                 const targetPrefix = "[play_music:";
-                const isPlayMusicPrefix = targetPrefix.startsWith(normalizedPartial);
+                const isPlayMusicPrefix = 
+                    normalizedPartial.startsWith(targetPrefix) || 
+                    targetPrefix.startsWith(normalizedPartial);
 
                 if (isPlayMusicPrefix) {
                     window._pendingMusicCommand = partialText;
@@ -9312,8 +9314,9 @@ function init_app() {
                     }
                     
                     // 如果模式包含音乐信号，尝试播放第一条音轨
-                    if (result.source_mode === 'music' && result.source_links && result.source_links.length > 0) {
-                        const musicLink = result.source_links[0];
+                    if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && result.source_links.length > 0) {
+                        // 优先寻找有 artist 字段或标记为音乐推荐的真实音轨
+                        const musicLink = result.source_links.find(link => link.artist || link.source === '音乐推荐') || result.source_links[0];
                         console.log('[ProactiveChat] 收到音乐链接:', musicLink);
                         if (musicLink.url) {
                             const track = {

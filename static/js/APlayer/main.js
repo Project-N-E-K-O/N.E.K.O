@@ -116,7 +116,7 @@ export async function initializeAPlayer(options = {}, onReady = null) {
             ...extractedPlayerOptions,
             ...(options.player || {}) 
         },
-        defaultPlaylist: options.audio || APLAYER_CONFIG.defaultPlaylist
+        defaultPlaylist: options.audio !== undefined ? options.audio : APLAYER_CONFIG.defaultPlaylist
     };
 
     try {
@@ -141,11 +141,24 @@ export async function initializeAPlayer(options = {}, onReady = null) {
         }
     }
 
-    const playerContainer = options.container || createPlayerContainer(config);
-    let mountPoint = playerContainer;
-    
-    if (playerContainer.id === 'aplayer-container' && document.getElementById('aplayer-core')) {
-        mountPoint = document.getElementById('aplayer-core');
+    let playerContainer = options.container;
+    let mountPoint;
+
+    if (playerContainer) {
+        // 外部容器模式：如果内部没有 aplayer-core，说明缺乏我们的自定义 UI 结构，需主动补齐
+        if (!playerContainer.querySelector('#aplayer-core')) {
+            const generatedUI = createPlayerContainer(config);
+            while (generatedUI.firstChild) {
+                playerContainer.appendChild(generatedUI.firstChild);
+            }
+        }
+        mountPoint = playerContainer.querySelector('#aplayer-core') || playerContainer;
+    } else {
+        // 默认模式
+        playerContainer = createPlayerContainer(config);
+        mountPoint = playerContainer.id === 'aplayer-container' && document.getElementById('aplayer-core') 
+            ? document.getElementById('aplayer-core') 
+            : playerContainer;
     }
 
     try {

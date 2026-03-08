@@ -2217,13 +2217,19 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
             dynamic_list = []
             # 兼容不同的数据返回结构，归一化为 list
-            raw_data = data.get("data") or data.get("aweme_list") or []
+            raw_data = data.get("data")
             if isinstance(raw_data, list):
                 aweme_list = raw_data
             elif isinstance(raw_data, dict):
-                aweme_list = raw_data.get("list", [])
+                aweme_list = (
+                    raw_data.get("list")
+                    or raw_data.get("aweme_list")
+                    or raw_data.get("items")
+                    or data.get("aweme_list")
+                    or []
+                )
             else:
-                aweme_list = []
+                aweme_list = data.get("aweme_list") or []
 
             for item in aweme_list[:limit]:
                 try:

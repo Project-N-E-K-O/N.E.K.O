@@ -13,7 +13,7 @@ export function t(key, fallback) {
     
     // 作为最后一道防线：如果 safeT 还没就绪，按 i18next 的标准格式传入 defaultValue
     if (typeof window.t === 'function') {
-        const res = window.t(key, { defaultValue: fallback });
+        const res = window.t(key, fallback);
         return typeof res === 'string' ? res : (fallback || key);
     }
     

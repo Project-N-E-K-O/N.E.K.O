@@ -44,7 +44,13 @@ export async function injectAPlayerToChatContainer(options = {}) {
         // 异步等待实例加载
         aplayer = await initializeAPlayer({
             ...options,
-            container: aplayerContainer
+            container: aplayerContainer,
+            ui: {
+                position: config.defaultPosition,
+                theme: config.defaultTheme,
+                autoHide: config.defaultAutoHide,
+                ...(options.ui || {})
+            }
         });
 
         if (aplayer) {
