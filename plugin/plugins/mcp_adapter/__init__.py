@@ -29,6 +29,7 @@ from plugin.plugins.mcp_adapter.normalizer import MCPRequestNormalizer
 from plugin.plugins.mcp_adapter.serializer import MCPResponseSerializer
 from plugin.plugins.mcp_adapter.router import MCPRouteEngine
 from plugin.plugins.mcp_adapter.invoker import MCPPluginInvoker
+from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 
 
 class _MCPInternalTransport:
@@ -227,7 +228,9 @@ class MCPClient:
                 self.logger.info(f"Connecting to MCP server '{self.config.name}' via HTTP: {url}")
             
             # 创建 HTTP session
-            self._http_session = aiohttp.ClientSession(trust_env=True)
+            self._http_session = aiohttp.ClientSession(
+                **aiohttp_session_kwargs_for_url(url)
+            )
             
             # 发送 initialize 请求
             init_payload = {
@@ -415,7 +418,9 @@ class MCPClient:
         import aiohttp
         
         # 每次请求都创建新的 session，避免事件循环问题
-        async with aiohttp.ClientSession(trust_env=True) as session:
+        async with aiohttp.ClientSession(
+            **aiohttp_session_kwargs_for_url(self.config.url or "")
+        ) as session:
             return await self._do_http_request(session, method, params)
     
     async def _do_http_request(

@@ -71,14 +71,19 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
                 return False
     return True
 
-def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool = True) -> bool:
-    """保存Cookie，可选择是否加密"""
+def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
+    """保存Cookie，包含规范化校验与加密逻辑"""
     try:
         if platform not in COOKIE_FILES:
             return False
+
+        # 【核心修复】增加防御性调用，确保即便从程序化接口传入的 dict 也能通过值类型校验
+        cookies = _normalize_cookies(cookies, platform)
+        if not cookies:
+            return False
             
         if not validate_cookies(platform, cookies):
-            print(f"❌ 凭证格式异常，{platform} Cookie 保存已取消。")
+            logger.error(f"❌ 凭证核心字段校验失败，{platform} Cookie 保存已取消。")
             return False
             
         cookie_file = COOKIE_FILES[platform]
@@ -129,15 +134,39 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, str], encrypt: bool =
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
-        # 打印脱敏后的摘要，让用户安心
-        logger.info(f"\n🔐 【{platform.capitalize()} 凭证摘要】:")
+        logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
         for k, v in list(cookies.items())[:3]: # 仅展示前三个键
-            print(f"   - {k}: {mask_string(v)}")
+            logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
     except Exception as e:
         logger.error(f"❌ 保存 Cookie 失败: {e}")
         return False
+
+def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]:
+    """
+    规范化 Cookie 结构：
+    - 强制要求键和值必须全部为字符串类型
+    - 杜绝 int/bool/None 等非字符串值被意外转换为非空字符串（如 "False"）
+    """
+    valid_cookies: Dict[str, str] = {}
+    
+    for k, v in cookies.items():
+        # 1. 校验键必须为字符串
+        if not isinstance(k, str):
+            logger.warning(f"[{platform}] Cookie 键格式错误：'{k}' 必须为字符串类型")
+            return {}
+        
+        # 2. 【核心修复】校验值必须为字符串。
+        # 移除对 dict/list/int/bool 的分段判断，统一实行“非字符即非法”策略
+        if isinstance(v, str):
+            valid_cookies[k] = v
+        else:
+            logger.warning(f"[{platform}] Cookie 格式非法：键 '{k}' 的值必须为字符串，当前类型为 {type(v).__name__}")
+            # 只要发现一个字段不是字符串（如 bool、int 或 None），即认为整组凭证无效，防止绕过验证
+            return {}
+    
+    return valid_cookies
 
 def load_cookies_from_file(platform: str) -> Dict[str, str]:
     """从文件加载Cookie，自动检测是否加密"""
@@ -167,8 +196,19 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                 decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
                 cookies = json.loads(decrypted_data)
                 
-                logger.info(f"✅ 已解密加载 {platform} 凭证")
-                return cookies if isinstance(cookies, dict) else {}
+                # 校验 Cookie 结构: 确保所有值都是字符串
+                if isinstance(cookies, dict):
+                    valid_cookies = _normalize_cookies(cookies, platform)
+                    # 【新增】判断归一化后是否为空，并进行核心必填字段校验
+                    if not valid_cookies or not validate_cookies(platform, valid_cookies):
+                        logger.warning(f"{platform} Cookie 解密后核心字段校验不通过，拒绝加载")
+                        return {}
+                        
+                    logger.info(f"✅ 已解密加载 {platform} 凭证")
+                    return valid_cookies
+                else:
+                    logger.warning(f"{platform} Cookie 解密后不是对象")
+                    return {}
             else:
                 # 密钥文件不存在，可能是明文文件
                 raise FileNotFoundError("密钥文件不存在")
@@ -178,11 +218,7 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
             logger.debug(f"解密 {platform} Cookie 失败，尝试明文加载: {decrypt_error}")
             
             try:
-                # 先检查文件是否存在以及是否有内容
-                if not cookie_file.exists():
-                    logger.warning(f"{platform} Cookie 文件不存在: {cookie_file}")
-                    return {}
-                
+                # 【清理】移除重复的 exists() 检查，函数入口已做保护
                 if cookie_file.stat().st_size == 0:
                     logger.info(f"{platform} Cookie 文件为空: {cookie_file}")
                     return {}
@@ -192,21 +228,27 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
                     if not content:
                         logger.warning(f"{platform} Cookie 文件内容为空或只有空白字符: {cookie_file}")
                         return {}
-                    
-                    # 尝试解析JSON
-                    try:
-                        cookies = json.loads(content)
-                    except json.JSONDecodeError as json_error:
-                        logger.error(f"{platform} Cookie 文件JSON格式错误: {json_error}")
-                        logger.debug(f"错误的JSON内容预览: {content[:200]}...")
-                        return {}
-
+                
+                cookies = json.loads(content)
+                if not isinstance(cookies, dict):
+                    logger.warning(f"{platform} Cookie 明文内容不是对象: {cookie_file}")
+                    return {}
+                
+                # 校验 Cookie 结构：确保所有值都是字符串
+                valid_cookies = _normalize_cookies(cookies, platform)
+                # 【新增】判断归一化后是否为空（被判定为不合法）
+                # 同样补上 validate_cookies 校验
+                if not valid_cookies or not validate_cookies(platform, valid_cookies):
+                    logger.warning(f"{platform} Cookie 明文内容核心字段校验不通过，拒绝加载: {cookie_file}")
+                    return {}
+                
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
-                return cookies if isinstance(cookies, dict) else {}
+                return valid_cookies
+                
             except Exception as plain_error:
-                logger.error(f"明文加载 {platform} Cookie 也失败: {plain_error}")
+                logger.error(f"明文加载 {platform} Cookie 失败: {plain_error}")
                 return {}
-        
+                
     except Exception as e:
         logger.error(f"❌ 加载 {platform} Cookie 失败: {e}")
         return {}
@@ -313,8 +355,11 @@ class PlatformLoginManager:
             result[platform] = {
                 "name": info['name'],
                 "methods": info['methods'],
-                "default_method": info['methods'][0] if info['methods'] else None
             }
+            if info['methods']:
+                result[platform]['default_method'] = info['methods'][0]
+            else:
+                result[platform]['default_method'] = None
         return result
 
 async def interactive_login():

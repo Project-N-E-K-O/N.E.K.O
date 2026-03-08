@@ -134,7 +134,7 @@ async def analyze_image_with_vision_model(
 
         client = AsyncOpenAI(
             api_key=vision_api_key,
-            base_url=vision_base_url if vision_base_url else None,
+            base_url=vision_base_url or None,
             max_retries=0,
         )
         

@@ -1349,6 +1349,10 @@
             "proactiveNewsChatTooltip": "Использовать тренды для проактивного чата",
             "proactiveVideoChat": "Видео чат",
             "proactiveVideoChatTooltip": "Использовать видеоконтент для проактивного чата",
+            "proactivePersonalChat": "Личные обновления",
+            "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
+            "proactiveMusicChat": "Музыкальные рекомендации",
+            "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
             "agentMaster": "Главный переключатель Агента",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -2266,6 +2270,21 @@
             "inactive": "○ Не настроено"
         }
     },
+    "music": {
+        "unknownTrack": "Неизвестный трек",
+        "unknownArtist": "Неизвестный исполнитель",
+        "play": "Воспроизвести",
+        "pause": "Пауза",
+        "playing": "Воспроизводится",
+        "paused": "Приостановлено",
+        "searching": "Поиск: {{query}}",
+        "notFound": "Песня не найдена: {{query}}",
+        "nowPlaying": "Сейчас играет: {{name}}",
+        "showPlaylist": "Показать список",
+        "hidePlaylist": "Скрыть список",
+        "searchFailed": "Ошибка поиска музыки",
+        "playError": "Ошибка воспроизведения",
+        "ended": "Завершено"
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."

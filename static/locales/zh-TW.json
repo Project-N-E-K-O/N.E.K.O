@@ -1349,6 +1349,10 @@
             "proactiveNewsChatTooltip": "使用熱議話題進行搭話",
             "proactiveVideoChat": "影片網站",
             "proactiveVideoChatTooltip": "使用視頻內容進行搭話",
+            "proactivePersonalChat": "個人動態",
+            "proactivePersonalChatTooltip": "使用已連接平台的個人動態進行搭話",
+            "proactiveMusicChat": "音樂推薦",
+            "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
             "agentMaster": "Agent總開關",
             "keyboardControl": "鍵鼠控製",
             "userPlugin": "用戶插件",
@@ -2266,6 +2270,21 @@
             "inactive": "○ 未配置"
         }
     },
+    "music": {
+        "unknownTrack": "未知曲目",
+        "unknownArtist": "未知藝術家",
+        "play": "播放",
+        "pause": "暫停",
+        "playing": "播放中",
+        "paused": "已暫停",
+        "searching": "正在為您搜尋: {{query}}",
+        "notFound": "找不到歌曲: {{query}}",
+        "nowPlaying": "為您播放: {{name}}",
+        "showPlaylist": "顯示播放列表",
+        "hidePlaylist": "隱藏播放列表",
+        "searchFailed": "音樂搜尋失敗",
+        "playError": "播放出錯",
+        "ended": "已結束"
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 已升級至 3.5，您的舊語音已失效，請重新克隆語音。"

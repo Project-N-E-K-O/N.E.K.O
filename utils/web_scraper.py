@@ -241,7 +241,10 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
                 
                 # 提取推荐理由（如果有）
                 rcmd_reason = item.get('rcmd_reason', {})
-                rcmd_reason_text = rcmd_reason.get('content', '') if isinstance(rcmd_reason, dict) else ''
+                if isinstance(rcmd_reason, dict):
+                    rcmd_reason_text = rcmd_reason.get('content', '')
+                else:
+                    rcmd_reason_text = ''
                     
                 videos.append({
                     'title': item.get('title', ''),
@@ -336,8 +339,11 @@ async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
                     'subreddit': f"r/{subreddit}",
                     'score': _format_score(score),
                     'comments': _format_score(num_comments),
-                    'url': f"https://www.reddit.com{permalink}" if permalink else ''
                 })
+                if permalink:
+                    posts[-1]['url'] = f"https://www.reddit.com{permalink}"
+                else:
+                    posts[-1]['url'] = ''
             
             if posts:
                 logger.info(f"从Reddit获取到{len(posts)}条热门帖子")
@@ -385,12 +391,15 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     优先使用s.weibo.com热搜榜页面（刷新频率更高），需要Cookie
     如果失败则回退到公开API
     """
-    from bs4 import BeautifulSoup
-    
-    # 微博Cookie配置 - 用于访问热搜页面
-    WEIBO_COOKIE = "SUB=_2AkMWJrkXf8NxqwJRmP8SxWjnaY12zwnEieKgekjMJRMxHRl-yj9jqmtbtRB6PaaX-IGp-AjmO6k5cS-OH2X9CayaTzVD"
-    
     try:
+        # 动态获取平台 Cookie，拒绝硬编码
+        weibo_cookies = _get_platform_cookies('weibo')
+        sub_cookie = weibo_cookies.get('SUB') or weibo_cookies.get('sub', '')
+        if sub_cookie:
+            cookie_header = f"SUB={sub_cookie}"
+        else:
+            cookie_header = ""
+        
         # 优先使用s.weibo.com热搜页面（刷新频率更高）
         url = "https://s.weibo.com/top/summary?cate=realtimehot"
         
@@ -399,8 +408,9 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             'Referer': 'https://s.weibo.com/',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Cookie': WEIBO_COOKIE,
         }
+        if cookie_header:
+            headers['Cookie'] = cookie_header
         
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.1, 0.5))
@@ -444,14 +454,23 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                         href = f"https://s.weibo.com{href}"
                     
                     # 解析热度值
-                    hot_text = span.get_text(strip=True) if span else ''
+                    if span:
+                        hot_text = span.get_text(strip=True)
+                    else:
+                        hot_text = ''
                     # 热度可能包含类型标签如"剧集 336075"，需要提取数字
                     import re
                     hot_match = re.search(r'(\d+)', hot_text)
-                    raw_hot = int(hot_match.group(1)) if hot_match else 0
+                    if hot_match:
+                        raw_hot = int(hot_match.group(1))
+                    else:
+                        raw_hot = 0
                     
                     # 提取标签（如"剧集"、"晚会"等）
-                    note = re.sub(r'\d+', '', hot_text).strip() if hot_text else ''
+                    if hot_text:
+                        note = re.sub(r'\d+', '', hot_text).strip()
+                    else:
+                        note = ''
                     
                     trending_list.append({
                         'word': word,
@@ -511,7 +530,10 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
                     
                     word = item.get('word', '')
                     # 构建搜索URL
-                    search_url = f"https://s.weibo.com/weibo?q={quote(word)}" if word else ''
+                    if word:
+                        search_url = f"https://s.weibo.com/weibo?q={quote(word)}"
+                    else:
+                        search_url = ''
                     
                     trending_list.append({
                         'word': word,
@@ -589,18 +611,25 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
             
             for i, trend in enumerate(trends[:limit]):
                 if trend and not trend.startswith('#'):
-                    trend = '#' + trend if not trend.startswith('@') else trend
+                    if not trend.startswith('@'):
+                        trend = '#' + trend
                 
                 # 构建搜索URL
-                search_url = f"https://twitter.com/search?q={quote(trend)}" if trend else ''
+                if trend:
+                    search_url = f"https://twitter.com/search?q={quote(trend)}"
+                else:
+                    search_url = ''
                 
                 trending_list.append({
                     'word': trend,
-                    'tweet_count': tweet_counts[i] if i < len(tweet_counts) else 'N/A',
-                    'note': '',
-                    'rank': i + 1,
-                    'url': search_url
                 })
+                if i < len(tweet_counts):
+                    trending_list[-1]['tweet_count'] = tweet_counts[i]
+                else:
+                    trending_list[-1]['tweet_count'] = 'N/A'
+                trending_list[-1]['note'] = ''
+                trending_list[-1]['rank'] = i + 1
+                trending_list[-1]['url'] = search_url
             
             if trending_list:
                 return {
@@ -845,7 +874,10 @@ async def _fetch_content_by_region(
         包含成功状态和内容的字典
     """
     china_region = is_china_region()
-    region = 'china' if china_region else 'non-china'
+    if china_region:
+        region = 'china'
+    else:
+        region = 'non-china'
     
     try:
         if china_region:
@@ -1122,7 +1154,10 @@ def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Di
         if active_window:
             raw_title = active_window.title
             # 截断标题以避免记录敏感信息
-            sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
+            if len(raw_title) > 30:
+                sanitized_title = raw_title[:30] + '...'
+            else:
+                sanitized_title = raw_title
             logger.info(f"获取到活跃窗口标题: {sanitized_title}")
             
             if include_raw:
@@ -1176,7 +1211,10 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         )
         
         # 清理/脱敏窗口标题用于日志显示
-        sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
+        if len(window_title) > 30:
+            sanitized_title = window_title[:30] + '...'
+        else:
+            sanitized_title = window_title
         
         # 检测区域并使用适当的提示词
         china_region = is_china_region()
@@ -1243,7 +1281,10 @@ keyword three"""
         
     except Exception as e:
         # 异常日志中也使用脱敏标题
-        sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
+        if len(window_title) > 30:
+            sanitized_title = window_title[:30] + '...'
+        else:
+            sanitized_title = window_title
         if is_china_region():
             logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
         else:
@@ -1564,13 +1605,8 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                     # 提取 URL（处理相对和绝对 URL）
                     href = link.get('href', '')
                     if href:
-                        # 如果是相对 URL，转换为绝对 URL
-                        if href.startswith('/'):
-                            url = urljoin('https://www.baidu.com', href)
-                        elif not href.startswith('http'):
-                            url = urljoin('https://www.baidu.com/', href)
-                        else:
-                            url = href
+                        # urljoin 能够自动处理绝对URL、相对URL以及以 '/' 开头的根URL
+                        url = urljoin('https://www.baidu.com', href)
                     else:
                         url = ''
                     
@@ -1650,7 +1686,8 @@ def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
         output_lines.append(f"{i}. {title}")
         if abstract:
             # 限制摘要长度
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         output_lines.append("")
     
@@ -1695,7 +1732,8 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
         
         output_lines.append(f"{i}. {title}")
         if abstract:
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         output_lines.append("")
     
@@ -1776,7 +1814,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         successful_queries = []
         
         # 根据区域选择搜索函数
-        search_func = search_baidu if china_region else search_google
+        if china_region:
+            search_func = search_baidu
+        else:
+            search_func = search_google
         
         for query in search_queries:
             if not query or len(query) < 2:
@@ -1801,7 +1842,10 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
             title = result.get('title', '')
             
             # 优先使用URL进行去重，回退到title
-            dedup_key = url if url else title
+            if url:
+                dedup_key = url
+            else:
+                dedup_key = title
             
             if dedup_key and dedup_key not in seen_keys:
                 seen_keys.add(dedup_key)
@@ -1829,10 +1873,14 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         return {
             'success': True,
             'window_title': sanitized_title,
+            'region': '',
             'search_queries': successful_queries,
             'search_results': unique_results,
-            'region': 'china' if china_region else 'non-china'
         }
+        if china_region:
+            result['region'] = 'china'
+        else:
+            result['region'] = 'non-china'
         
     except Exception as e:
         if is_china_region():
@@ -1900,7 +1948,8 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
         
         output_lines.append(f"{i}. {title}")
         if abstract:
-            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            if len(abstract) > 150:
+                abstract = abstract[:150] + '...'
             output_lines.append(f"   {abstract}")
         if url:
             if china_region:
@@ -1915,173 +1964,6 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
             output_lines.append("No related information found")
     
     return "\n".join(output_lines)
-
-# =======================================================
-# 自动搜索歌曲，弹出嵌入式浏览器播放
-# =======================================================
-async def search_and_play_song(song_name: str) -> Dict[str, Any]:
-    """
-    搜索歌曲并在嵌入式浏览器中播放
-    
-    根据区域自动选择平台：
-    - 中文区域：优先使用B站搜索并播放
-    - 非中文区域：优先使用YouTube搜索并播放
-    
-    Args:
-        song_name: 歌曲名称
-    
-    Returns:
-        包含播放结果的字典，结构：
-        {
-            'success': bool,
-            'error': str (可选),
-            'url': str (嵌入式播放URL),
-            'platform': str ('bilibili'/'youtube'),
-            'region': str ('china'/'non-china')
-        }
-    """
-    if not song_name or not song_name.strip():
-        logger.error("歌曲名称不能为空")
-        return {
-            'success': False,
-            'error': '歌曲名称不能为空',
-            'platform': '',
-            'region': ''
-        }
-    
-    # 检测用户区域
-    china_region = is_china_region()
-    region = 'china' if china_region else 'non-china'
-    platform = 'bilibili' if china_region else 'youtube'
-    
-    # 编码歌曲名称用于URL
-    encoded_song_name = quote(song_name.strip())
-    
-    headers = {
-        'User-Agent': get_random_user_agent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' if china_region else 'en-US,en;q=0.9',
-    }
-    
-    try:
-        # 添加随机延迟，避免请求过快被限制
-        await asyncio.sleep(random.uniform(0.2, 0.8))
-        
-        if china_region:
-            # 中文区域：B站搜索歌曲
-            search_url = f"https://search.bilibili.com/all?keyword={encoded_song_name}&order=click&duration=0&tids_1=0"
-            logger.info(f"B站搜索歌曲: {song_name}, URL: {search_url}")
-            
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(search_url, headers=headers)
-                response.raise_for_status()
-                
-                # 解析搜索结果，提取第一个视频的播放URL
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # 查找第一个视频链接（B站搜索结果的视频项）
-                video_item = soup.find('a', class_='video-item__title') or soup.find('a', attrs={'href': re.compile(r'/video/')})
-                
-                if not video_item:
-                    logger.warning(f"B站未找到歌曲相关视频: {song_name}")
-                    return {
-                        'success': False,
-                        'error': f'B站未找到"{song_name}"相关视频',
-                        'platform': platform,
-                        'region': region
-                    }
-                
-                # 提取视频链接并构造嵌入式播放URL
-                video_href = video_item.get('href', '')
-                if not video_href.startswith('http'):
-                    video_href = f"https:{video_href}" if video_href.startswith('//') else f"https://www.bilibili.com{video_href}"
-                
-                # B站嵌入式播放URL（支持iframe嵌入）
-                # 提取BV号用于构造embed URL
-                bv_match = re.search(r'(BV\w+)', video_href)
-                if bv_match:
-                    embed_url = f"https://player.bilibili.com/player.html?bvid={bv_match.group(1)}&page=1"
-                else:
-                    embed_url = video_href
-                
-                logger.info(f"成功找到B站歌曲播放链接: {embed_url}")
-                return {
-                    'success': True,
-                    'url': embed_url,
-                    'platform': platform,
-                    'region': region
-                }
-        
-        else:
-            # 非中文区域：YouTube搜索歌曲
-            search_url = f"https://www.youtube.com/results?search_query={encoded_song_name}"
-            logger.info(f"YouTube搜索歌曲: {song_name}, URL: {search_url}")
-            
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(search_url, headers=headers)
-                response.raise_for_status()
-                
-                # 解析YouTube搜索结果，提取第一个视频的ID
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # YouTube搜索结果的视频项匹配（适配不同页面结构）
-                video_script = soup.find('script', string=re.compile(r'"videoId":"[\w-]+"'))
-                video_id = None
-                
-                if video_script:
-                    # 从JSON数据中提取第一个视频ID
-                    vid_match = re.search(r'"videoId":"([\w-]+)"', video_script.string)
-                    if vid_match:
-                        video_id = vid_match.group(1)
-                else:
-                    # 备用解析方式：查找视频链接的a标签
-                    video_link = soup.find('a', attrs={'href': re.compile(r'/watch\?v=')})
-                    if video_link:
-                        vid_match = re.search(r'v=([\w-]+)', video_link.get('href', ''))
-                        if vid_match:
-                            video_id = vid_match.group(1)
-                
-                if not video_id:
-                    logger.warning(f"YouTube未找到歌曲相关视频: {song_name}")
-                    return {
-                        'success': False,
-                        'error': f'YouTube未找到"{song_name}"相关视频',
-                        'platform': platform,
-                        'region': region
-                    }
-                
-                # YouTube嵌入式播放URL
-                embed_url = f"https://www.youtube.com/embed/{video_id}"
-                logger.info(f"成功找到YouTube歌曲播放链接: {embed_url}")
-                return {
-                    'success': True,
-                    'url': embed_url,
-                    'platform': platform,
-                    'region': region
-                }
-    
-    except httpx.TimeoutException:
-        logger.error(f"{platform}搜索歌曲超时: {song_name}")
-        return {
-            'success': False,
-            'error': f'{platform}请求超时，请稍后重试',
-            'platform': platform,
-            'region': region
-        }
-    except httpx.HTTPStatusError as e:
-        logger.error(f"{platform}搜索歌曲HTTP错误: {song_name}, 状态码: {e.response.status_code}")
-        return {
-            'success': False,
-            'error': f'{platform}请求失败（状态码：{e.response.status_code}）',
-            'platform': platform,
-            'region': region
-        }
-    except Exception as e:
-        logger.error(f"搜索并播放歌曲失败: {song_name}, 错误: {e}", exc_info=True)
-        return {
-            'success': False,
-            'error': f'播放失败：{str(e)}',
-            'platform': platform,
-            'region': region
-        }
 
 # =======================================================
 # 个人动态（基于用户兴趣和区域）
@@ -2162,11 +2044,17 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             if not isinstance(d, dict):
                 return {}
             v = d.get(key)
-            return v if isinstance(v, dict) else {}
+            if isinstance(v, dict):
+                return v
+            else:
+                return {}
 
         dynamic_list = []
         items = data.get("data")
-        items = items.get("items", []) if isinstance(items, dict) else []
+        if isinstance(items, dict):
+            items = items.get("items", [])
+        else:
+            items = []
 
         for item in items:
             if not isinstance(item, dict):
@@ -2206,7 +2094,10 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                         
                     case "MAJOR_TYPE_DRAW": 
                         # 图文动态：保持动态页面链接
-                        content = f"[图文动态] {raw_text}" if raw_text else "[分享了图片]"
+                        if raw_text:
+                            content = f"[图文动态] {raw_text}"
+                        else:
+                            content = "[分享了图片]"
                         
                     case "MAJOR_TYPE_ARTICLE":
                         # 专栏文章：添加文章链接
@@ -2250,7 +2141,10 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                                 specific_url = f"https://live.bilibili.com/{room_match.group(1)}"
                                 
                         elif dynamic_type == "DYNAMIC_TYPE_FORWARD":
-                            content = f"[转发动态] {raw_text}" if raw_text else "[转发了动态]"
+                            if raw_text:
+                                content = f"[转发动态] {raw_text}"
+                            else:
+                                content = "[转发了动态]"
                         else:
                             content = raw_text or "发布了新动态"
 
@@ -2280,11 +2174,178 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         return {'success': False, 'error': str(e)}
         
 async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
-    pass
+    """
+    获取抖音个人关注动态
+    依赖: 需在配置中提供含有真实有效会话的 Cookie (douyin_cookies.json)
+    注意: 抖音接口通常需要 X-Bogus 等签名参数，这里主要依赖有效 Cookie 和基础参数尝试获取
+    """
+    try:
+        from utils.cookies_login import validate_cookies
+        
+        cookies = _get_platform_cookies('douyin')
+        if not cookies:
+            return {'success': False, 'error': '未找到抖音 Cookie 配置'}
+        
+        if not validate_cookies('douyin', cookies):
+            return {'success': False, 'error': '抖音 Cookie 核心字段缺失，请检查配置'}
+
+        # 抖音 Web 端关注流接口
+        url = "https://www.douyin.com/aweme/v1/web/aweme/following/request/"
+        headers = {
+            "User-Agent": get_random_user_agent(),
+            "Referer": "https://www.douyin.com/",
+            "Accept": "application/json, text/plain, */*"
+        }
+
+        # 基础参数，实际环境中如果触发风控，可能需要在 URL 中追加抓包获取的 X-Bogus 和 a_bogus
+        params = {
+            "count": limit,
+            "device_platform": "webapp",
+            "aid": "6383"
+        }
+
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, params=params, headers=headers, cookies=cookies)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("status_code") != 0:
+                logger.error(f"抖音API返回异常，可能触发风控: {data}")
+                return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
+
+            dynamic_list = []
+            # 兼容不同的数据返回结构，归一化为 list
+            raw_data = data.get("data")
+            if isinstance(raw_data, list):
+                aweme_list = raw_data
+            elif isinstance(raw_data, dict):
+                aweme_list = (
+                    raw_data.get("list")
+                    or raw_data.get("aweme_list")
+                    or raw_data.get("items")
+                    or data.get("aweme_list")
+                    or []
+                )
+            else:
+                aweme_list = data.get("aweme_list") or []
+
+            for item in aweme_list[:limit]:
+                try:
+                    if not isinstance(item, dict):
+                        logger.warning(f"抖音动态数据项类型异常: {type(item).__name__}，跳过")
+                        continue
+                    author = item.get("author", {}).get("nickname", "未知博主")
+                    desc = item.get("desc") or "[分享了视频]"
+                    aweme_id = item.get("aweme_id", "")
+                    
+                    clean_desc = desc.replace('\n', ' ').strip()
+                    final_content = f"博主【{author}】: {clean_desc}"
+
+                    dynamic_list.append({
+                        'author': author,
+                        'content': final_content,
+                        'timestamp': item.get("create_time", "刚刚"),
+                    })
+                    if aweme_id:
+                        dynamic_list[-1]['url'] = f"https://www.douyin.com/video/{aweme_id}"
+                    else:
+                        dynamic_list[-1]['url'] = "https://www.douyin.com/"
+                except Exception as item_err:
+                    logger.warning(f"解析抖音动态项失败，跳过: {item_err}")
+                    continue
+
+            if dynamic_list:
+                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条抖音关注动态")
+                return {'success': True, 'dynamics': dynamic_list}
+            return {'success': False, 'error': '未解析到抖音动态数据'}
+
+    except Exception as e:
+        logger.error(f"获取抖音动态失败: {e}")
+        return {'success': False, 'error': str(e)}
+
 
 async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
-    """获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)"""
-    pass
+    """
+    获取快手个人关注动态 (GraphQL 接口 + 严格 Cookie)
+    依赖: 需在配置中提供含有真实有效会话的 Cookie (kuaishou_cookies.json)
+    """
+    try:
+        from utils.cookies_login import validate_cookies
+        
+        cookies = _get_platform_cookies('kuaishou')
+        if not cookies:
+            return {'success': False, 'error': '未找到快手 Cookie 配置'}
+        
+        if not validate_cookies('kuaishou', cookies):
+            return {'success': False, 'error': '快手 Cookie 核心字段缺失，请检查配置'}
+
+        url = "https://www.kuaishou.com/graphql"
+        headers = {
+            "User-Agent": get_random_user_agent(),
+            "Referer": "https://www.kuaishou.com/",
+            "Content-Type": "application/json",
+            "Accept": "*/*"
+        }
+
+        # 快手 GraphQL 查询 Payload: visionFollowFeed (关注流)
+        payload = {
+            "operationName": "visionFollowFeed",
+            "variables": {
+                "limit": limit
+            },
+            "query": "fragment photoContent on PhotoEntity {\n  id\n  caption\n  timestamp\n  __typename\n}\n\nfragment feedContent on Feed {\n  type\n  author {\n    id\n    name\n    __typename\n  }\n  photo {\n    ...photoContent\n    __typename\n  }\n  __typename\n}\n\nquery visionFollowFeed($pcursor: String, $limit: Int) {\n  visionFollowFeed(pcursor: $pcursor, limit: $limit) {\n    pcursor\n    feeds {\n      ...feedContent\n      __typename\n    }\n    __typename\n  }\n}\n"
+        }
+
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.post(url, headers=headers, json=payload, cookies=cookies)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("errors"):
+                logger.error(f"快手GraphQL返回异常: {data['errors']}")
+                return {'success': False, 'error': "GraphQL查询报错，可能是 Cookie 失效"}
+
+            feeds = data.get("data", {}).get("visionFollowFeed", {}).get("feeds", [])
+            dynamic_list = []
+
+            for item in feeds[:limit]:
+                try:
+                    if not isinstance(item, dict):
+                        logger.warning(f"快手动态数据项类型异常: {type(item).__name__}，跳过")
+                        continue
+                    author = item.get("author", {}).get("name", "未知老铁")
+                    photo = item.get("photo", {})
+                    caption = photo.get("caption") or "[分享了作品]"
+                    photo_id = photo.get("id", "")
+                    
+                    clean_caption = caption.replace('\n', ' ').strip()
+                    final_content = f"老铁【{author}】: {clean_caption}"
+
+                    dynamic_list.append({
+                        'author': author,
+                        'content': final_content,
+                        'timestamp': photo.get("timestamp", "刚刚"),
+                    })
+                    if photo_id:
+                        dynamic_list[-1]['url'] = f"https://www.kuaishou.com/short-video/{photo_id}"
+                    else:
+                        dynamic_list[-1]['url'] = "https://www.kuaishou.com/"
+                except Exception as item_err:
+                    logger.warning(f"解析快手动态项失败，跳过: {item_err}")
+                    continue
+
+            if dynamic_list:
+                logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条快手关注动态")
+                return {'success': True, 'dynamics': dynamic_list}
+            return {'success': False, 'error': '未解析到快手动态数据'}
+
+    except Exception as e:
+        logger.error(f"获取快手动态失败: {e}")
+        return {'success': False, 'error': str(e)}
 
 async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
@@ -2295,15 +2356,15 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     - 目标变更为：移动端首页关注流的固定 Container ID
     - 必须伪装成手机浏览器的 User-Agent
     """
-    import re
-    import random
-    import asyncio
-    import httpx
-    
     try:
+        from utils.cookies_login import validate_cookies
+        
         weibo_cookies = _get_platform_cookies('weibo')
         if not weibo_cookies:
             return {'success': False, 'error': '未找到 config/weibo_cookies.json'}
+        
+        if not validate_cookies('weibo', weibo_cookies):
+            return {'success': False, 'error': '微博 Cookie 核心字段缺失，请检查配置'}
         
         # 1. 只需要最核心的 SUB，其他全都不需要！
         sub = weibo_cookies.get('SUB') or weibo_cookies.get('sub')
@@ -2372,7 +2433,10 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                     rt_clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', rt_text)).strip()
                     clean_text = f"{clean_text} // [转发动态] @{rt_author}: {rt_clean_text}"
                 
-                display_text = clean_text if clean_text else "[分享了图片/动态]"
+                if clean_text:
+                    display_text = clean_text
+                else:
+                    display_text = "[分享了图片/动态]"
                 final_content = f"博主【{author}】: {display_text}"
                 mid = mblog.get('mid') or mblog.get('id', '')
                 
@@ -2456,13 +2520,20 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
             
             for i, text in enumerate(tweet_texts[:limit]):
                 clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
+                if i < len(screen_names):
+                    author_str = screen_names[i]
+                else:
+                    author_str = 'Unknown'
                 tweets.append({
-                    'author': f"@{screen_names[i] if i<len(screen_names) else 'Unknown'}", 
+                    'author': f"@{author_str}", 
                     'content': clean_text,
                     'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
                 })
                 
-            return {'success': True, 'tweets': tweets} if tweets else {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
+            if tweets:
+                return {'success': True, 'tweets': tweets}
+            else:
+                return {'success': False, 'error': '网页正则抓取失败，页面结构可能已变更'}
     except Exception as e: 
         logger.error(f"Twitter 网页抓取 fallback 失败: {e}")
         return {'success': False, 'error': str(e)}
@@ -2473,9 +2544,14 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
     
     try:
+        from utils.cookies_login import validate_cookies
+        
         twitter_cookies = _get_platform_cookies('twitter')
         if not twitter_cookies:
              return {'success': False, 'error': '未配置 config/twitter_cookies.json'}
+        
+        if not validate_cookies('twitter', twitter_cookies):
+            return {'success': False, 'error': 'Twitter Cookie 核心字段缺失，请检查配置'}
              
         # 提取防伪 CSRF Token。Twitter 必须，否则哪怕有合法 Cookie 也会立刻 401/403
         ct0 = twitter_cookies.get('ct0') or twitter_cookies.get('CT0', '')
@@ -2496,11 +2572,14 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             'User-Agent': get_random_user_agent(), 
             'Accept': 'application/json',
             'Authorization': f'Bearer {bearer_token}',
-            'x-twitter-auth-type': 'OAuth2Session' if 'auth_token' in twitter_cookies else '',
-            'x-csrf-token': ct0,  # <-- 防火墙放行的关键钥匙
             'x-twitter-active-user': 'yes',
             'x-twitter-client-language': 'zh-cn'
         }
+        if 'auth_token' in twitter_cookies:
+            headers['x-twitter-auth-type'] = 'OAuth2Session'
+        else:
+            headers['x-twitter-auth-type'] = ''
+        headers['x-csrf-token'] = ct0
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
@@ -2557,19 +2636,64 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
     try:
         china_region = is_china_region()
         if china_region:
-            logger.info("检测到中文区域，获取B站和微博个人动态")
-            b_dyn, w_dyn = await asyncio.gather(
+            logger.info("检测到中文区域，获取B站、微博、抖音和快手个人动态")
+            
+            # 1. 将抖音和快手加入并发任务列表
+            b_dyn, w_dyn, d_dyn, k_dyn = await asyncio.gather(
                 fetch_bilibili_personal_dynamic(limit),
                 fetch_weibo_personal_dynamic(limit),
+                fetch_douyin_personal_dynamic(limit),
+                fetch_kuaishou_personal_dynamic(limit),
                 return_exceptions=True
             )
-            # 异常隔离与安全降级
-            b_dyn = {'success': False, 'error': str(b_dyn)} if isinstance(b_dyn, Exception) else b_dyn
-            w_dyn = {'success': False, 'error': str(w_dyn)} if isinstance(w_dyn, Exception) else w_dyn
+            
+            # 2. 增加对抖音和快手的异常隔离与安全降级
+            if isinstance(b_dyn, Exception):
+                b_dyn = {'success': False, 'error': str(b_dyn)}
+            if isinstance(w_dyn, Exception):
+                w_dyn = {'success': False, 'error': str(w_dyn)}
+            if isinstance(d_dyn, Exception):
+                d_dyn = {'success': False, 'error': str(d_dyn)}
+            if isinstance(k_dyn, Exception):
+                k_dyn = {'success': False, 'error': str(k_dyn)}
 
-            top_success = b_dyn.get('success', False) or w_dyn.get('success', False)
-            return {'success': top_success, 'region': 'china', 
-                    'bilibili_dynamic': b_dyn, 'weibo_dynamic': w_dyn}
+            # 3. 只要有一个平台成功，就判定为总体成功
+            top_success = any([
+                b_dyn.get('success', False), 
+                w_dyn.get('success', False),
+                d_dyn.get('success', False),
+                k_dyn.get('success', False)
+            ])
+            
+            # 4. 封装返回字典
+            result = {
+                'success': top_success, 
+                'region': 'china', 
+                'bilibili_dynamic': b_dyn, 
+                'weibo_dynamic': w_dyn,
+                'douyin_dynamic': d_dyn,
+                'kuaishou_dynamic': k_dyn
+            }
+            
+            # 【新增】汇总全平台失败的错误信息给顶层
+            if not top_success:
+                errors = []
+                if b_dyn.get('error'):
+                    errors.append(f"B站: {b_dyn.get('error')}")
+                if w_dyn.get('error'):
+                    errors.append(f"微博: {w_dyn.get('error')}")
+                if d_dyn.get('error'):
+                    errors.append(f"抖音: {d_dyn.get('error')}")
+                if k_dyn.get('error'):
+                    errors.append(f"快手: {k_dyn.get('error')}")
+                
+                if errors:
+                    result['error'] = " | ".join(errors)
+                else:
+                    result['error'] = "所有中文平台均获取失败"
+                
+            return result
+            
         else:
             logger.info("检测到非中文区域，获取Reddit和Twitter个人动态")
             r_dyn, t_dyn = await asyncio.gather(
@@ -2577,17 +2701,43 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 fetch_twitter_personal_dynamic(limit),
                 return_exceptions=True
             )
-            r_dyn = {'success': False, 'error': str(r_dyn)} if isinstance(r_dyn, Exception) else r_dyn
-            t_dyn = {'success': False, 'error': str(t_dyn)} if isinstance(t_dyn, Exception) else t_dyn
+            if isinstance(r_dyn, Exception):
+                r_dyn = {'success': False, 'error': str(r_dyn)}
+            if isinstance(t_dyn, Exception):
+                t_dyn = {'success': False, 'error': str(t_dyn)}
             
             top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
-            return {'success': top_success, 'region': 'non-china', 'reddit_dynamic': r_dyn, 'twitter_dynamic': t_dyn}
+            
+            result = {
+                'success': top_success, 
+                'region': 'non-china', 
+                'reddit_dynamic': r_dyn, 
+                'twitter_dynamic': t_dyn
+            }
+            
+            # 【新增】汇总海外平台失败的错误信息给顶层
+            # 【新增】汇总海外平台失败的错误信息给顶层
+            if not top_success:
+                errors = []
+                if r_dyn.get('error'):
+                    errors.append(f"Reddit: {r_dyn.get('error')}")
+                if t_dyn.get('error'):
+                    errors.append(f"Twitter: {t_dyn.get('error')}")
+                if errors:
+                    result['error'] = " | ".join(errors)
+                else:
+                    result['error'] = "所有海外平台均获取失败"
+                
+            return result
+            
     except Exception as e:
         logger.error(f"获取个人动态内容失败: {e}")
         return {'success': False, 'error': str(e)}
-
+        
 def format_personal_dynamics(data: Dict[str, Any]) -> str:
-    """格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)"""
+    """
+    格式化个人动态 (结构优化版：全配置表驱动 + 层级排版)
+    """
     output_lines = []
     region = data.get('region', 'china')
     
@@ -2595,7 +2745,9 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         # 配置表：(数据字典键名, 展示标题, 列表的键名)
         platforms = [
             ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
-            ('weibo_dynamic', '微博个人关注动态', 'statuses')
+            ('weibo_dynamic', '微博个人关注动态', 'statuses'),
+            ('douyin_dynamic', '抖音关注动态', 'dynamics'),
+            ('kuaishou_dynamic', '快手关注动态', 'dynamics')
         ]
         
         for key, title, list_key in platforms:
@@ -2678,4 +2830,5 @@ async def main():
 
 
 if __name__ == "__main__":
+
     asyncio.run(main())

@@ -1349,6 +1349,10 @@
             "proactiveNewsChatTooltip": "使用热议话题进行搭话",
             "proactiveVideoChat": "视频网站",
             "proactiveVideoChatTooltip": "使用视频内容进行搭话",
+            "proactivePersonalChat": "个人动态",
+            "proactivePersonalChatTooltip": "使用已连接平台的个人动态进行搭话",
+            "proactiveMusicChat": "音乐推荐",
+            "proactiveMusicChatTooltip": "使用推荐音乐进行搭话",
             "agentMaster": "Agent总开关",
             "keyboardControl": "键鼠控制",
             "userPlugin": "用户插件",
@@ -2266,6 +2270,21 @@
             "inactive": "○ 未配置"
         }
     },
+    "music": {
+        "unknownTrack": "未知曲目",
+        "unknownArtist": "未知艺术家",
+        "play": "播放",
+        "pause": "暂停",
+        "playing": "播放中",
+        "paused": "已暂停",
+        "searching": "正在为您搜索: {{query}}",
+        "notFound": "找不到歌曲: {{query}}",
+        "nowPlaying": "为您播放: {{name}}",
+        "showPlaylist": "显示播放列表",
+        "hidePlaylist": "隐藏播放列表",
+        "searchFailed": "音乐搜索失败",
+        "playError": "播放出错",
+        "ended": "已结束"
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"

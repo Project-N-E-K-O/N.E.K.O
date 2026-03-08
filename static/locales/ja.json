@@ -1349,6 +1349,10 @@
             "proactiveNewsChatTooltip": "トレンド話題を使用してチャット",
             "proactiveVideoChat": "動画サイト",
             "proactiveVideoChatTooltip": "動画コンテンツを使用してチャット",
+            "proactivePersonalChat": "アクティビティ更新",
+            "proactivePersonalChatTooltip": "連携しているプラットフォームの更新情報をもとに話しかける",
+            "proactiveMusicChat": "音楽提案",
+            "proactiveMusicChatTooltip": "おすすめの音楽を提案しながら話しかける",
             "agentMaster": "Agentマスタースイッチ",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
@@ -2266,6 +2270,21 @@
             "inactive": "○ 未設定"
         }
     },
+    "music": {
+        "unknownTrack": "不明な曲",
+        "unknownArtist": "不明なアーティスト",
+        "play": "再生",
+        "pause": "一時停止",
+        "playing": "再生中",
+        "paused": "一時停止",
+        "searching": "検索中: {{query}}",
+        "notFound": "曲が見つかりません: {{query}}",
+        "nowPlaying": "再生中: {{name}}",
+        "showPlaylist": "プレイリストを表示",
+        "hidePlaylist": "プレイリストを非表示",
+        "searchFailed": "音楽検索に失敗しました",
+        "playError": "再生エラー",
+        "ended": "終了"
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
