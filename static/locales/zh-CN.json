@@ -488,7 +488,14 @@
         "AGENT_BU_ENABLED_CHECKING": "浏览器控制已开启，Agent LLM 连接确认中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
-        "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}"
+        "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
+        "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
+        "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
+        "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",
+        "TTS_VOICE_NOT_REGISTERED": "该角色未注册声音",
+        "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要参数",
+        "TTS_GPT_SOVITS_URL_REQUIRED": "请填写 GPT-SoVITS API URL",
+        "TTS_GPT_SOVITS_URL_INVALID": "无效的 GPT-SoVITS API URL"
     },
     "camera": {
         "iosPermissionHint": "请检查 iOS 设置 → Safari → 摄像头 权限是否为「允许」",
@@ -1147,6 +1154,9 @@
         "addCatgirl": "新增猫娘",
         "switchCatgirl": "切换猫娘",
         "deleteCatgirl": "删除猫娘",
+        "hideCatgirl": "隐藏此猫娘",
+        "hiddenCatgirls": "已隐藏猫娘",
+        "show": "显示",
         "advancedSettings": "进阶设定",
         "modelSettings": "模型设定",
         "modelNotSet": "未设置",

@@ -38,10 +38,13 @@ function autoResizeTextarea(textarea) {
     textarea.style.height = newHeight + 'px';
 
     // 根据内容是否超过三行来决定是否显示滚动条
+    const fieldRow = textarea.closest('.field-row');
     if (contentHeight > maxContentHeight) {
         textarea.style.overflowY = 'auto';
+        if (fieldRow) fieldRow.classList.add('has-scrollbar');
     } else {
         textarea.style.overflowY = 'hidden';
+        if (fieldRow) fieldRow.classList.remove('has-scrollbar');
     }
 }
 
@@ -375,6 +378,8 @@ if (!window._charaManagerFoldHandler) {
 
 // 角色数据缓存
 let characterData = null;
+let currentRequestId = 0;
+let updateSwitchButtonsReqId = 0;
 // 共用工具由 reserved_fields_utils.js 提供（ReservedFieldsUtils）
 let characterReservedFieldsConfig = ReservedFieldsUtils.emptyConfig();
 
@@ -501,12 +506,60 @@ function scrollToElementCentered(element, delay = 100) {
 }
 
 async function loadCharacterData() {
+    const thisRequestId = ++currentRequestId;
+    
     try {
         const resp = await fetch('/api/characters');
         if (!resp.ok) {
             throw new Error(`HTTP error! status: ${resp.status}`);
         }
-        characterData = await resp.json();
+        
+        const fetchedData = await resp.json();
+        
+        if (thisRequestId !== currentRequestId) {
+            return;
+        }
+        
+        characterData = fetchedData;
+        
+        let fetchedCurrentCatgirl;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        try {
+            const currentResp = await fetch('/api/characters/current_catgirl', { signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (currentResp.ok) {
+                const currentData = await currentResp.json();
+                fetchedCurrentCatgirl = currentData.current_catgirl || undefined;
+            } else {
+                fetchedCurrentCatgirl = undefined;
+            }
+        } catch (e) {
+            fetchedCurrentCatgirl = undefined;
+        }
+        
+        if (thisRequestId !== currentRequestId) {
+            return;
+        }
+        
+        window._currentCatgirl = fetchedCurrentCatgirl;
+        
+        const hiddenKeys = getHiddenCatgirlKeys();
+        const catgirlKeys = Object.keys(characterData['猫娘'] || {});
+        
+        if (fetchedCurrentCatgirl) {
+            const updatedKeys = hiddenKeys.filter(k => catgirlKeys.includes(k) && k !== fetchedCurrentCatgirl);
+            if (updatedKeys.length !== hiddenKeys.length) {
+                localStorage.setItem('hidden_catgirls', JSON.stringify(updatedKeys));
+            }
+        } else {
+            const updatedKeys = hiddenKeys.filter(k => catgirlKeys.includes(k));
+            if (updatedKeys.length !== hiddenKeys.length) {
+                localStorage.setItem('hidden_catgirls', JSON.stringify(updatedKeys));
+            }
+        }
+        
         renderMaster();
         renderCatgirls();
         updateSwitchButtons();
@@ -872,10 +925,14 @@ function renderCatgirls() {
     const list = document.getElementById('catgirl-list');
     list.innerHTML = '';
     const catgirls = characterData['猫娘'] || {};
+    const hiddenKeys = getHiddenCatgirlKeys();
     Object.keys(catgirls).forEach(key => {
+        if (hiddenKeys.includes(key)) return;
+        
         const cat = catgirls[key];
         const block = document.createElement('div');
         block.className = 'catgirl-block';
+        block.dataset.key = key;
 
         // header
         const header = document.createElement('div');
@@ -893,6 +950,23 @@ function renderCatgirls() {
         expandBtn.style.transition = 'transform 0.2s';
         expandBtn.style.transform = 'rotate(-90deg)';
         header.appendChild(expandBtn);
+
+        const currentCatgirl = window._currentCatgirl;
+        if (currentCatgirl && key !== currentCatgirl) {
+            const hideBtn = document.createElement('span');
+            hideBtn.className = 'catgirl-hide';
+            hideBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#40C5F1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;cursor:pointer;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+            hideBtn.title = window.t ? window.t('character.hideCatgirl') : '隐藏此猫娘';
+            hideBtn.style.marginRight = '8px';
+            hideBtn.style.userSelect = 'none';
+            hideBtn.dataset.catgirlKey = key;
+            hideBtn.onclick = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.hideCatgirl(key);
+            };
+            header.appendChild(hideBtn);
+        }
 
         const titleSpan = document.createElement('span');
         titleSpan.className = 'catgirl-title';
@@ -914,6 +988,14 @@ function renderCatgirls() {
         const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
         switchBtn.innerHTML = switchText;
         switchBtn.addEventListener('click', function () { switchCatgirl(key); });
+        
+        if (window._currentCatgirl && key === window._currentCatgirl) {
+            const currentText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.currentCatgirl">${window.t('character.currentCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 当前猫娘';
+            switchBtn.innerHTML = currentText;
+            switchBtn.style.color = '#fff';
+            switchBtn.disabled = true;
+        }
+        
         actionsDiv.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
@@ -973,6 +1055,192 @@ function renderCatgirls() {
         };
         list.appendChild(block);
     });
+
+    renderHiddenCatgirls();
+}
+
+// 获取隐藏猫娘键的辅助函数，带错误处理
+function getHiddenCatgirlKeys() {
+    try {
+        const stored = localStorage.getItem('hidden_catgirls');
+        if (!stored) return [];
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(x => typeof x === 'string');
+    } catch (e) {
+        return [];
+    }
+}
+
+// 创建隐藏猫娘列表项的辅助函数
+function createHiddenCatgirlItem(key) {
+    const item = document.createElement('div');
+    item.className = 'hidden-catgirl-item';
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'catgirl-name';
+    nameSpan.textContent = key;
+    
+    const unhideBtn = document.createElement('button');
+    unhideBtn.className = 'btn sm unhide';
+    unhideBtn.innerHTML = `<span data-i18n="character.show">${window.t ? window.t('character.show') : '显示'}</span>`;
+    unhideBtn.onclick = function() {
+        window.unhideCatgirl(key);
+    };
+    
+    item.appendChild(nameSpan);
+    item.appendChild(unhideBtn);
+    
+    return item;
+}
+
+// 渲染已隐藏的猫娘列表
+function renderHiddenCatgirls(forceExpand = false) {
+    const hiddenArea = document.getElementById('hidden-catgirl-area');
+    const hiddenList = document.getElementById('hidden-catgirl-list');
+    const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
+    
+    if (!hiddenArea || !hiddenList) {
+        return;
+    }
+    
+    const hiddenKeys = getHiddenCatgirlKeys();
+    
+    if (hiddenKeys.length === 0) {
+        hiddenArea.style.display = 'none';
+        return;
+    }
+    
+    if (hiddenCountSpan) {
+        const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
+        hiddenCountSpan.textContent = `${hiddenText} (${hiddenKeys.length})`;
+    }
+    
+    hiddenArea.style.display = 'block';
+    hiddenList.innerHTML = '';
+    
+    const currentDisplay = hiddenList.style.display;
+    const isCurrentlyExpanded = currentDisplay === 'block';
+    
+    if (!isCurrentlyExpanded && !forceExpand) {
+        hiddenList.style.display = 'none';
+    }
+    
+    const hiddenHeader = hiddenArea.querySelector('.hidden-catgirl-header');
+    if (hiddenHeader) {
+        const arrow = hiddenHeader.querySelector('.hidden-catgirl-arrow');
+        if (isCurrentlyExpanded || forceExpand) {
+            hiddenList.style.display = 'block';
+            if (arrow) arrow.classList.add('expanded');
+        } else {
+            if (arrow) arrow.classList.remove('expanded');
+        }
+        
+        if (!hiddenHeader.dataset.bound) {
+            hiddenHeader.dataset.bound = 'true';
+            hiddenHeader.onclick = function() {
+                if (hiddenList.style.display !== 'none') {
+                    hiddenList.style.display = 'none';
+                    if (arrow) arrow.classList.remove('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'false');
+                } else {
+                    hiddenList.innerHTML = '';
+                    const freshHiddenKeys = getHiddenCatgirlKeys();
+                    const catgirls = characterData['猫娘'] || {};
+                    freshHiddenKeys.forEach(k => {
+                        if (!catgirls[k]) return;
+                        hiddenList.appendChild(createHiddenCatgirlItem(k));
+                    });
+                    
+                    hiddenList.style.display = 'block';
+                    if (arrow) arrow.classList.add('expanded');
+                    hiddenHeader.setAttribute('aria-expanded', 'true');
+                }
+            };
+        }
+    }
+    
+    if (isCurrentlyExpanded || forceExpand) {
+        const catgirls = characterData['猫娘'] || {};
+        
+        hiddenKeys.forEach(key => {
+            if (!catgirls[key]) return;
+            hiddenList.appendChild(createHiddenCatgirlItem(key));
+        });
+    }
+}
+
+// 隐藏猫娘函数
+window.hideCatgirl = async function(key) {
+    if (key === window._currentCatgirl) {
+        return;
+    }
+    
+    let block = null;
+    const blocks = document.querySelectorAll('.catgirl-block');
+    blocks.forEach(b => {
+        if (b.dataset.key === key) {
+            block = b;
+        } else {
+            const title = b.querySelector('.catgirl-title');
+            if (title && title.textContent === key) {
+                block = b;
+            }
+        }
+    });
+    
+    if (!block) return;
+    
+    const hiddenArea = document.getElementById('hidden-catgirl-area');
+    const hiddenList = document.getElementById('hidden-catgirl-list');
+    
+    if (!hiddenArea || !hiddenList) return;
+    
+    const wasHidden = hiddenArea.style.display === 'none';
+    if (wasHidden) {
+        hiddenArea.style.display = 'block';
+        hiddenList.style.display = 'none';
+    }
+    
+    const hiddenAreaRect = hiddenArea.getBoundingClientRect();
+    const blockRect = block.getBoundingClientRect();
+    
+    const deltaX = hiddenAreaRect.left - blockRect.left;
+    const deltaY = hiddenAreaRect.top - blockRect.top;
+    
+    block.style.transition = 'transform 0.5s ease, opacity 0.5s ease';
+    block.style.transform = `translate(${deltaX}px, ${deltaY}px) scale(0.8)`;
+    block.style.opacity = '0';
+    
+    const hiddenKeys = getHiddenCatgirlKeys();
+    if (key !== window._currentCatgirl && !hiddenKeys.includes(key)) {
+        hiddenKeys.push(key);
+        localStorage.setItem('hidden_catgirls', JSON.stringify(hiddenKeys));
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    block.style.display = 'none';
+    block.style.transform = '';
+    block.style.opacity = '';
+    block.style.transition = '';
+    
+    const hiddenCountSpan = document.getElementById('hidden-catgirl-count');
+    if (hiddenCountSpan) {
+        const hiddenText = window.t ? window.t('character.hiddenCatgirls') : '已隐藏猫娘';
+        hiddenCountSpan.textContent = `${hiddenText} (${hiddenKeys.length})`;
+    }
+    
+    renderHiddenCatgirls();
+}
+
+// 取消隐藏猫娘函数
+window.unhideCatgirl = function(key) {
+    const hiddenKeys = getHiddenCatgirlKeys();
+    const newHiddenKeys = hiddenKeys.filter(k => k !== key);
+    localStorage.setItem('hidden_catgirls', JSON.stringify(newHiddenKeys));
+    
+    renderCatgirls();
 }
 
 // 随机颜色函数
@@ -1126,14 +1394,14 @@ function showCatgirlForm(key, container) {
             textareaEl.value = cat[k];
             fieldRow.appendChild(textareaEl);
 
+            wrapper.appendChild(fieldRow);
+
             const delBtn = document.createElement('button');
             delBtn.type = 'button';
             delBtn.className = 'btn sm delete';
             delBtn.innerHTML = deleteFieldText;
             delBtn.addEventListener('click', function () { deleteCatgirlField(this); });
-            fieldRow.appendChild(delBtn);
-
-            wrapper.appendChild(fieldRow);
+            wrapper.appendChild(delBtn);
             form.appendChild(wrapper);
 
             // 为渲染的textarea添加自动调整高度功能
@@ -1468,14 +1736,14 @@ function showCatgirlForm(key, container) {
         textareaEl.placeholder = '可输入详细描述';
         fieldRow.appendChild(textareaEl);
 
+        wrapper.appendChild(fieldRow);
+
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'btn sm delete';
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () { deleteCatgirlField(this); });
-        fieldRow.appendChild(delBtn);
-
-        wrapper.appendChild(fieldRow);
+        wrapper.appendChild(delBtn);
         form.insertBefore(wrapper, form.querySelector('.add-field-area'));
 
         // 新增字段后显示操作按钮
@@ -1489,8 +1757,7 @@ function showCatgirlForm(key, container) {
         // 为新增的textarea添加自动调整高度功能
         attachTextareaAutoResize(newTextarea);
 
-        const newDeleteBtn = fieldRow.querySelector('button');
-        newDeleteBtn.addEventListener('click', formShowActionButtons);
+        delBtn.addEventListener('click', formShowActionButtons);
     };
 
     // 设置删除字段的全局函数
@@ -2124,7 +2391,8 @@ window.unregisterVoice = async function (catgirlName) {
             await showAlert(window.t ? window.t('character.voiceUnregistered') : '声音注册已解除');
             await loadCharacterData(); // 刷新数据
         } else {
-            await showAlert(translateBackendError(result.error) || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
+            const _errMsg = (result.code && window.t) ? window.t('errors.' + result.code, result.details || {}) : translateBackendError(result.error);
+            await showAlert(_errMsg || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
         }
     } catch (error) {
         console.error('解除注册出错:', error);
@@ -2250,10 +2518,17 @@ window.addEventListener('unload', sendBeacon);
 
 // 更新切换按钮状态
 function updateSwitchButtons() {
+    const thisReqId = ++updateSwitchButtonsReqId;
+    
     fetch('/api/characters/current_catgirl')
         .then(response => response.json())
         .then(data => {
-            const currentCatgirl = data.current_catgirl || '';
+            if (thisReqId !== updateSwitchButtonsReqId) {
+                return;
+            }
+            
+            const currentCatgirl = data.current_catgirl || undefined;
+            window._currentCatgirl = currentCatgirl;
             const catgirls = characterData['猫娘'] || {};
 
             Object.keys(catgirls).forEach(name => {
