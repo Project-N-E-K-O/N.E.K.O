@@ -237,7 +237,7 @@ async def proxy_mcp_availability():
 
 @router.get('/user_plugin/dashboard')
 async def redirect_plugin_dashboard():
-    return RedirectResponse(f"{USER_PLUGIN_BASE}/")
+    return RedirectResponse(f"{USER_PLUGIN_BASE}/ui")
 
 
 @router.get('/user_plugin/availability')

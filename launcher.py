@@ -87,6 +87,36 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
 }
 
 
+def _install_logging_brace_compat() -> None:
+    if getattr(logging, "_neko_brace_compat_installed", False):
+        return
+
+    original_get_message = logging.LogRecord.getMessage
+
+    def _compat_get_message(record: logging.LogRecord) -> str:
+        try:
+            return original_get_message(record)
+        except TypeError:
+            msg = str(record.msg)
+            args = record.args
+            if not args or "%" in msg or "{" not in msg or "}" not in msg:
+                raise
+            try:
+                if isinstance(args, dict):
+                    return msg.format(**args)
+                if not isinstance(args, tuple):
+                    args = (args,)
+                return msg.format(*args)
+            except Exception:
+                return f"{msg} | args={record.args!r}"
+
+    logging.LogRecord.getMessage = _compat_get_message
+    logging._neko_brace_compat_installed = True
+
+
+_install_logging_brace_compat()
+
+
 def _show_error_dialog(message: str):
     """在 Windows 打包场景显示错误弹窗。"""
     if sys.platform != 'win32':
