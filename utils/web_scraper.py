@@ -53,6 +53,12 @@ def _extract_llm_text_content(content: Any) -> str:
 
         return "\n".join(parts).strip()
 
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("content") or ""
+        if isinstance(text, str):
+            text = text.strip()
+        return text if text else ""
+
     return str(content).strip()
 
 

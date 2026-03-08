@@ -2205,6 +2205,24 @@ function init_app() {
             return (s || '').replace(/\r\n/g, '\n');
         }
 
+        function cleanMusicFromChunk(rawText) {
+            let s = normalizeGeminiText(rawText);
+            if (window._pendingMusicCommand) {
+                s = window._pendingMusicCommand + s;
+                window._pendingMusicCommand = '';
+            }
+            const m = s.match(/\[[^\]]*$/);
+            if (m) {
+                const partial = m[0].toLowerCase();
+                const target = "[play_music:";
+                if (partial.startsWith(target) || target.startsWith(partial)) {
+                    window._pendingMusicCommand = m[0];
+                    s = s.slice(0, m.index);
+                }
+            }
+            return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        }
+
         function splitIntoSentences(buffer) {
             // 逐字符扫描，尽量兼容中英文标点与流式输入
             const sentences = [];
@@ -2312,10 +2330,9 @@ function init_app() {
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
-            window._pendingMusicCommand = '';
 
-            // 1. 先清洗文本
-            const cleanNewText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            // 1. 清洗文本（含未闭合指令片段的拦截）
+            const cleanNewText = cleanMusicFromChunk(text);
             
             // 2. 只有当清洗后还有实质性文本时，才去创建气泡 DOM；否则清空指针以避免误追加
             if (cleanNewText.trim()) {
@@ -2344,8 +2361,8 @@ function init_app() {
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             // 【核心重构】不再依赖 isNewMessage 标志，而是根据“本轮是否已有气泡”来决策。
             // 解决首个 chunk 被清洗为空（纯指令）时导致的渲染坠落 Bug
-            const cleanText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
-            
+            const cleanText = cleanMusicFromChunk(text);
+
             // 场景 A: 本轮尚未创建气泡（可能是首个带文本的块，也可能是被指令切断后的后续块）
             if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) {
                 if (cleanText.trim()) {

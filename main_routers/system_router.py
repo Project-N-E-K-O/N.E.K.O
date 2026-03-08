@@ -46,6 +46,8 @@ from config.prompts_sys import (
     PROACTIVE_MUSIC_TAG_HINT,
     PROACTIVE_BOTH_TAG_INSTRUCTIONS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
+    PROACTIVE_SCREEN_MUSIC_TAG_HINT,
+    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -569,6 +571,51 @@ def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
         
     # 删除了原来的 desc 尾注，保持素材的客观中立
     return "\n".join(output_lines)
+
+
+def _append_music_recommendations(
+    source_links: list[dict],
+    music_content: dict | None,
+    limit: int = 3,
+) -> int:
+    """Deduplicate and append music tracks from *music_content* into *source_links*.
+
+    Returns the number of tracks actually appended (0 when nothing new).
+    """
+    music_raw = music_content.get('raw_data', {}) if music_content else {}
+    tracks = music_raw.get('data')
+    if not tracks:
+        return 0
+
+    existing_signatures = {
+        (
+            (link.get('url') or '').strip(),
+            (link.get('title') or '').strip(),
+            (link.get('artist') or '').strip(),
+        )
+        for link in source_links
+        if isinstance(link, dict) and link.get('source') == '音乐推荐'
+    }
+
+    appended = 0
+    for track in tracks[:limit]:
+        title = (track.get('name') or '未知曲目').strip()
+        artist = (track.get('artist') or '未知艺术家').strip()
+        url = (track.get('url') or '').strip()
+        sig = (url, title, artist)
+        if sig in existing_signatures:
+            continue
+        source_links.append({
+            'title': title,
+            'artist': artist,
+            'url': url,
+            'cover': track.get('cover', ''),
+            'source': '音乐推荐',
+        })
+        existing_signatures.add(sig)
+        appended += 1
+    return appended
+
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
     """
@@ -1714,17 +1761,14 @@ async def proactive_chat(request: Request):
                 music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
                 print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
                 
-                if re.match(r'\s*\[\s*pass\s*\](?:\s|$)', music_keyword_result or '', re.IGNORECASE):
+                keyword = (music_keyword_result or '').strip()
+                keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
+                keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
+
+                if re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
                     print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
                     music_content = None
                 else:
-                    keyword = (music_keyword_result or '').strip()
-                    # 匹配 "关键词：xxx" 或 "搜索：xxx"，并忽略前面的换行或客套话
-                    keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
-                    # 清洗各类成对的符号、引号及换行
-                    keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
-                    # ----------------------------------------------------
-                    
                     music_raw = None
                     if keyword:
                         music_raw = await fetch_music_content(keyword=keyword, limit=5)
@@ -1917,8 +1961,10 @@ async def proactive_chat(request: Request):
         #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
         if music_section and external_section:
             music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
-            # 在第一行标签选择中注入 [MUSIC] 和 [BOTH]
             output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
+        elif music_section and screen_section:
+            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
 
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
@@ -1933,11 +1979,15 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
-            # 判断上下文中是否同时存在外部网页搜索内容
-            if 'external_section' in locals() and external_section:
+            if external_section:
                 generate_prompt += PROACTIVE_BOTH_TAG_INSTRUCTIONS.get(
                     proactive_lang,
                     PROACTIVE_BOTH_TAG_INSTRUCTIONS.get('en', PROACTIVE_BOTH_TAG_INSTRUCTIONS['zh']),
+                )
+            elif screen_section:
+                generate_prompt += PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS['zh']),
                 )
             else:
                 generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
@@ -2102,65 +2152,11 @@ async def proactive_chat(request: Request):
         if should_try_music_fallback:
             if source_links is None:
                 source_links = []
-            music_raw = music_content.get('raw_data', {}) if music_content else {}
-            if music_raw.get('data'):
-                existing_music_signatures = {
-                    (
-                        (link.get('url') or '').strip(),
-                        (link.get('title') or '').strip(),
-                        (link.get('artist') or '').strip(),
-                    )
-                    for link in source_links
-                    if isinstance(link, dict) and link.get('source') == '音乐推荐'
-                }
-                appended_music_tracks = 0
-                for track in music_raw.get('data', [])[:3]:
-                    track_title = (track.get('name') or '未知曲目').strip()
-                    track_artist = (track.get('artist') or '未知艺术家').strip()
-                    track_url = (track.get('url') or '').strip()
-                    track_signature = (track_url, track_title, track_artist)
-                    if track_signature in existing_music_signatures:
-                        continue
-                    source_links.append({
-                        'title': track_title,
-                        'artist': track_artist,
-                        'url': track_url,
-                        'cover': track.get('cover', ''),
-                        'source': '音乐推荐'
-                    })
-                    existing_music_signatures.add(track_signature)
-                    appended_music_tracks += 1
-                if appended_music_tracks > 0:
-                    is_music_used = True
-        
+            if _append_music_recommendations(source_links, music_content) > 0:
+                is_music_used = True
+
         if is_music_used:
-            music_raw = music_content.get('raw_data', {}) if music_content else {}
-            if music_raw.get('data'):
-                # 追加音乐链接到 source_links
-                existing_music_signatures = {
-                    (
-                        (link.get('url') or '').strip(),
-                        (link.get('title') or '').strip(),
-                        (link.get('artist') or '').strip(),
-                    )
-                    for link in source_links
-                    if isinstance(link, dict) and link.get('source') == '音乐推荐'
-                }
-                for track in music_raw.get('data', [])[:3]:
-                    track_title = (track.get('name') or '未知曲目').strip()
-                    track_artist = (track.get('artist') or '未知艺术家').strip()
-                    track_url = (track.get('url') or '').strip()
-                    track_signature = (track_url, track_title, track_artist)
-                    if track_signature in existing_music_signatures:
-                        continue
-                    source_links.append({
-                        'title': track_title,
-                        'artist': track_artist,
-                        'url': track_url,
-                        'cover': track.get('cover', ''),
-                        'source': '音乐推荐'
-                    })
-                    existing_music_signatures.add(track_signature)
+            _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)

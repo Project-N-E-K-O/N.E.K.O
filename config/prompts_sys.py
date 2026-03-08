@@ -2004,6 +2004,22 @@ PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
     'ru': '\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)',
 }
 
+PROACTIVE_SCREEN_MUSIC_TAG_HINT = {
+    'zh': '，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊屏幕内容和音乐)',
+    'en': ', or [MUSIC] (music only), or [BOTH] (both screen and music)',
+    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (画面と音楽の両方)',
+    'ko': ', 또는 [MUSIC] (음악만), 또는 [BOTH] (화면과 음악 모두)',
+    'ru': ', или [MUSIC] (только музыка), или [BOTH] (и экран, и музыка)',
+}
+
+PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS = {
+    'zh': '\n（注意：如果你同时参考了屏幕内容和音乐推荐，请务必使用 [BOTH] 标签作为第一行；如果最终只聊音乐，请使用 [MUSIC] 标签！）',
+    'en': '\n(Note: If you use both screen content and music recommendations, you MUST use the [BOTH] tag as the first line; if only music, use the [MUSIC] tag!)',
+    'ja': '\n（注意：画面の内容と音楽のおすすめを両方使用する場合は、最初の行に必ず [BOTH] タグを使用してください。音楽のみの場合は [MUSIC] タグを使用してください！）',
+    'ko': '\n(주의: 화면 내용과 음악 추천을 모두 사용하는 경우 첫 줄에 반드시 [BOTH] 태그를 사용해야 합니다. 음악만 이야기할 경우 [MUSIC] 태그를 사용하세요!)',
+    'ru': '\n(Примечание: если вы используете как содержимое экрана, так и музыкальные рекомендации, ОБЯЗАТЕЛЬНО используйте тег [BOTH] в первой строке; если только музыку — тег [MUSIC]!)',
+}
+
 # ---------- 语音会话初始 prompt ----------
 SESSION_INIT_PROMPT = {
     'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
