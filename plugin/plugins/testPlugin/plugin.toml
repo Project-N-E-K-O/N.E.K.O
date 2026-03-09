@@ -3,7 +3,7 @@ name = "Test Plugin"
 description = "Minimal plugin used for local testing, no required input"
 version = "0.1.0"
 id = "testPlugin"
-entry = "plugins.testPlugin:HelloPlugin"
+entry = "plugin.plugins.testPlugin:HelloPlugin"
 
 [plugin.author]
 name = "Test Author"

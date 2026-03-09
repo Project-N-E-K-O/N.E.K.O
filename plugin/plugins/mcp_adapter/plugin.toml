@@ -4,7 +4,7 @@ type = "adapter"
 description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
 version = "0.1.0"
 id = "mcp_adapter"
-entry = "plugins.mcp_adapter:MCPAdapterPlugin"
+entry = "plugin.plugins.mcp_adapter:MCPAdapterPlugin"
 
 [plugin.author]
 name = "NEKO Team"

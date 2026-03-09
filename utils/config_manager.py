@@ -340,6 +340,7 @@ class ConfigManager:
         self.app_docs_dir = self.docs_dir / self.app_name
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
         self.vrm_dir = self.app_docs_dir / "vrm"
@@ -595,6 +596,18 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create memory directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_plugins_directory(self):
+        """确保我的文档下的plugins目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+
+            self.plugins_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create plugins directory: {e}", file=sys.stderr)
             return False
     
     def ensure_live2d_directory(self):
@@ -1815,6 +1828,7 @@ class ConfigManager:
             "app_dir": str(self.app_docs_dir),
             "config_dir": str(self.config_dir),
             "memory_dir": str(self.memory_dir),
+            "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
@@ -2057,6 +2071,13 @@ def get_config_manager(app_name=None):
 def get_config_path(filename):
     """获取配置文件路径"""
     return get_config_manager().get_config_path(filename)
+
+
+def get_plugins_directory(app_name=None):
+    """获取用户插件根目录，默认位于应用文档目录下的 ``plugins``。"""
+    manager = ConfigManager(app_name)
+    manager.ensure_plugins_directory()
+    return manager.plugins_dir
 
 
 def load_json_config(filename, default_value=None):

@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+from utils.config_manager import get_plugins_directory
+
 
 def _get_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -32,24 +34,41 @@ def _get_float_env(name: str, default: float) -> float:
 
 # ========== 路径配置 ==========
 
-def get_plugin_config_root() -> Path:
-    """获取插件配置根目录.
+def get_builtin_plugin_config_root() -> Path:
+    """获取内置插件根目录（仓库内 ``plugin/plugins``）。"""
+    return (Path(__file__).parent / "plugins").resolve()
 
-    - 默认：``plugin/plugins``（相对于当前 ``plugin`` 包所在目录）
+
+def get_user_plugin_config_root() -> Path:
+    """获取用户插件根目录。
+
     - Env: ``PLUGIN_CONFIG_ROOT``
-
-    ``PLUGIN_CONFIG_ROOT`` 可以是绝对路径，也可以是相对路径/``~``，
-    最终会被解析为绝对路径。
+    - 默认：``我的文档/{APP_NAME}/plugins``
     """
     custom_path = os.getenv("PLUGIN_CONFIG_ROOT")
     if custom_path:
-        # 支持 ~ 和相对路径，统一解析为绝对路径
         return Path(custom_path).expanduser().resolve()
-    # 默认路径：相对于 plugin 目录
-    return Path(__file__).parent / "plugins"
+    return Path(get_plugins_directory()).resolve()
 
 
-PLUGIN_CONFIG_ROOT = get_plugin_config_root()
+def get_plugin_config_root() -> Path:
+    """兼容旧调用：返回用户插件根目录。"""
+    return get_user_plugin_config_root()
+
+
+def get_plugin_config_roots() -> tuple[Path, ...]:
+    """获取插件配置根目录列表：内置优先，用户目录其次。"""
+    roots: list[Path] = []
+    for root in (get_builtin_plugin_config_root(), get_user_plugin_config_root()):
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
+BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
+USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
+PLUGIN_CONFIG_ROOT = USER_PLUGIN_CONFIG_ROOT
+PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
 
 
 # ========== 队列容量配置 ==========
@@ -484,8 +503,14 @@ validate_config()
 
 __all__ = [
     # 路径配置
+    "BUILTIN_PLUGIN_CONFIG_ROOT",
+    "USER_PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOT",
+    "PLUGIN_CONFIG_ROOTS",
+    "get_builtin_plugin_config_root",
     "get_plugin_config_root",
+    "get_plugin_config_roots",
+    "get_user_plugin_config_root",
     
     # 队列配置
     "EVENT_QUEUE_MAX",
@@ -562,7 +587,10 @@ __all__ = [
 
 # Admin API: explicit allowlist for externally exposable system settings.
 PUBLIC_SYSTEM_CONFIG_KEYS = (
+    "BUILTIN_PLUGIN_CONFIG_ROOT",
+    "USER_PLUGIN_CONFIG_ROOT",
     "PLUGIN_CONFIG_ROOT",
+    "PLUGIN_CONFIG_ROOTS",
     "EVENT_QUEUE_MAX",
     "LIFECYCLE_QUEUE_MAX",
     "MESSAGE_QUEUE_MAX",
