@@ -23,6 +23,51 @@
     let availableExpressions = [];
     let currentSelectionId = 0;
 
+    // 下拉菜单位置计算辅助函数
+    function computeDropdownPlacement(header, options, maxHeight = 250) {
+        const viewportHeight = window.innerHeight;
+        const headerRect = header.getBoundingClientRect();
+        const optionsHeight = Math.min(options.scrollHeight, maxHeight);
+        const gap = 8;
+        const spaceBelow = viewportHeight - headerRect.bottom - gap;
+        const spaceAbove = headerRect.top - gap;
+        
+        let placement, maxHeightValue;
+        
+        if (spaceBelow >= optionsHeight) {
+            placement = 'open-down';
+            maxHeightValue = maxHeight;
+        } else if (spaceAbove >= optionsHeight) {
+            placement = 'open-up';
+            maxHeightValue = maxHeight;
+        } else if (spaceBelow > spaceAbove) {
+            placement = 'open-down';
+            maxHeightValue = Math.floor(spaceBelow);
+        } else {
+            placement = 'open-up';
+            maxHeightValue = Math.floor(spaceAbove);
+        }
+        
+        return { placement, maxHeight: maxHeightValue };
+    }
+
+    // 应用下拉菜单位置
+    function applyDropdownDirection(container, header, options, maxHeight = 250) {
+        const { placement, maxHeight: computedMaxHeight } = computeDropdownPlacement(header, options, maxHeight);
+        
+        container.classList.toggle('open-up', placement === 'open-up');
+        container.classList.toggle('open-down', placement === 'open-down');
+        options.style.maxHeight = `${computedMaxHeight}px`;
+        
+        requestAnimationFrame(() => {
+            if (options.scrollHeight > options.clientHeight) {
+                options.classList.add('has-scrollbar');
+            } else {
+                options.classList.remove('has-scrollbar');
+            }
+        });
+    }
+
     // i18n 辅助函数
     function t(key, paramsOrFallback, fallback) {
         if (typeof i18next !== 'undefined' && i18next.isInitialized) {
@@ -151,39 +196,7 @@
             modelSingleselectHeader.setAttribute('aria-expanded', 'true');
             
             // 检测下拉菜单是否超出视口，选择展开方向
-            const viewportHeight = window.innerHeight;
-            const headerRect = modelSingleselectHeader.getBoundingClientRect();
-            const optionsHeight = Math.min(modelSingleselectOptions.scrollHeight, 250);
-            const spaceBelow = viewportHeight - headerRect.bottom - 8;
-            const spaceAbove = headerRect.top - 8;
-            
-            if (spaceBelow >= optionsHeight) {
-                modelSingleselect.classList.add('open-down');
-                modelSingleselect.classList.remove('open-up');
-                modelSingleselectOptions.style.maxHeight = '250px';
-            } else if (spaceAbove >= optionsHeight) {
-                modelSingleselect.classList.add('open-up');
-                modelSingleselect.classList.remove('open-down');
-                modelSingleselectOptions.style.maxHeight = '250px';
-            } else {
-                if (spaceBelow > spaceAbove) {
-                    modelSingleselect.classList.add('open-down');
-                    modelSingleselect.classList.remove('open-up');
-                    modelSingleselectOptions.style.maxHeight = `${spaceBelow}px`;
-                } else {
-                    modelSingleselect.classList.add('open-up');
-                    modelSingleselect.classList.remove('open-down');
-                    modelSingleselectOptions.style.maxHeight = `${spaceAbove}px`;
-                }
-            }
-            
-            requestAnimationFrame(() => {
-                if (modelSingleselectOptions.scrollHeight > modelSingleselectOptions.clientHeight) {
-                    modelSingleselectOptions.classList.add('has-scrollbar');
-                } else {
-                    modelSingleselectOptions.classList.remove('has-scrollbar');
-                }
-            });
+            applyDropdownDirection(modelSingleselect, modelSingleselectHeader, modelSingleselectOptions, 250);
         }
 
         event.stopPropagation();
@@ -387,40 +400,7 @@
             
             // 检测下拉菜单是否超出视口，选择展开方向
             if (options) {
-                const viewportHeight = window.innerHeight;
-                const headerRect = header.getBoundingClientRect();
-                const optionsHeight = Math.min(options.scrollHeight, 250);
-                const spaceBelow = viewportHeight - headerRect.bottom - 8;
-                const spaceAbove = headerRect.top - 8;
-                
-                if (spaceBelow >= optionsHeight) {
-                    multiselect.classList.add('open-down');
-                    multiselect.classList.remove('open-up');
-                    options.style.maxHeight = '250px';
-                } else if (spaceAbove >= optionsHeight) {
-                    multiselect.classList.add('open-up');
-                    multiselect.classList.remove('open-down');
-                    options.style.maxHeight = '250px';
-                } else {
-                    if (spaceBelow > spaceAbove) {
-                        multiselect.classList.add('open-down');
-                        multiselect.classList.remove('open-up');
-                        options.style.maxHeight = `${spaceBelow}px`;
-                    } else {
-                        multiselect.classList.add('open-up');
-                        multiselect.classList.remove('open-down');
-                        options.style.maxHeight = `${spaceAbove}px`;
-                    }
-                }
-                
-                // 检测是否显示滚动条
-                requestAnimationFrame(() => {
-                    if (options.scrollHeight > options.clientHeight) {
-                        options.classList.add('has-scrollbar');
-                    } else {
-                        options.classList.remove('has-scrollbar');
-                    }
-                });
+                applyDropdownDirection(multiselect, header, options, 250);
             }
         }
 

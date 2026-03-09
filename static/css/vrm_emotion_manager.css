@@ -245,16 +245,16 @@ body {
     display: block;
 }
 
-.custom-singleselect.open-up .singleselect-options {
+.custom-singleselect.active.open-up .singleselect-options {
     top: auto;
     bottom: calc(100% + 8px);
 }
 
-.custom-singleselect.open-up .singleselect-header::after {
+.custom-singleselect.active.open-up .singleselect-header::after {
     transform: rotate(180deg);
 }
 
-.custom-singleselect.open-down .singleselect-header::after {
+.custom-singleselect.active.open-down .singleselect-header::after {
     transform: rotate(0deg);
 }
 
@@ -364,16 +364,16 @@ body {
     display: block;
 }
 
-.custom-multiselect.open-up .multiselect-options {
+.custom-multiselect.active.open-up .multiselect-options {
     top: auto;
     bottom: calc(100% + 8px);
 }
 
-.custom-multiselect.open-up .multiselect-header::after {
+.custom-multiselect.active.open-up .multiselect-header::after {
     transform: rotate(180deg);
 }
 
-.custom-multiselect.open-down .multiselect-header::after {
+.custom-multiselect.active.open-down .multiselect-header::after {
     transform: rotate(0deg);
 }
 
