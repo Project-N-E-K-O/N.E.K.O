@@ -1304,7 +1304,7 @@
     "buttons": {
         "voiceControl": "음성 제어",
         "screenShare": "화면 공유",
-        "agentTools": "에이전트 도구",
+        "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
         "return": "복귀"
@@ -1620,8 +1620,8 @@
             "desc": "화면/창/탭을 동료와 공유하세요~"
         },
         "step8": {
-            "title": "🔨 에이전트 도구",
-            "desc": "다양한 도우미 기능을 갖춘 오픈 에이전트 도구 패널~"
+            "title": "🔨 네코클로",
+            "desc": "네코클로 패널을 열어 computer use, browser use, plugin 등의 기능을 사용하세요~"
         },
         "step9": {
             "title": "💤 그녀에게 떠나라고 요청하세요",

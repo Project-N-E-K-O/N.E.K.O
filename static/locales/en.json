@@ -1304,7 +1304,7 @@
     "buttons": {
         "voiceControl": "Voice Control",
         "screenShare": "Screen Share",
-        "agentTools": "Agent Tools",
+        "agentTools": "NekoClaw",
         "settings": "Settings",
         "leave": "Leave",
         "return": "Return"
@@ -1620,8 +1620,8 @@
             "desc": "Share your screen/window/tab with your Neko~"
         },
         "step8": {
-            "title": "🔨 Agent Tools",
-            "desc": "Open Agent tool panel with various helper functions~"
+            "title": "🔨 NekoClaw",
+            "desc": "Open the NekoClaw panel for computer use, browser use, plugin, and more~"
         },
         "step9": {
             "title": "💤 Ask Her to Leave",

@@ -1304,7 +1304,7 @@
     "buttons": {
         "voiceControl": "音声制御",
         "screenShare": "画面共有",
-        "agentTools": "エージェントツール",
+        "agentTools": "ネコクロー",
         "settings": "設定",
         "leave": "退出",
         "return": "戻る"
@@ -1620,8 +1620,8 @@
             "desc": "画面/ウィンドウ/タブをネコと共有~"
         },
         "step8": {
-            "title": "🔨 Agentツール",
-            "desc": "Agentツールパネルを開いて各種ヘルパー機能を使用~"
+            "title": "🔨 ネコクロー",
+            "desc": "ネコクローのパネルを開いて、computer use・browser use・plugin などの機能を使えます~"
         },
         "step9": {
             "title": "💤 ネコを去らせる",

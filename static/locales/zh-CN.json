@@ -1304,7 +1304,7 @@
     "buttons": {
         "voiceControl": "语音控制",
         "screenShare": "屏幕分享",
-        "agentTools": "Agent工具",
+        "agentTools": "喵爪",
         "settings": "设置",
         "leave": "请她离开",
         "return": "请她回来"
@@ -1620,8 +1620,8 @@
             "desc": "分享屏幕/窗口/标签页，让猫娘看到你的画面~"
         },
         "step8": {
-            "title": "🔨 Agent工具",
-            "desc": "打开 Agent 工具面板，使用各类辅助功能~"
+            "title": "🔨 喵爪",
+            "desc": "打开喵爪面板，使用 computer use、browser use 和 plugin 等功能~"
         },
         "step9": {
             "title": "💤 请她离开",
