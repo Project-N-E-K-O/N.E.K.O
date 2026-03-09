@@ -9,15 +9,15 @@ N.E.K.O/
 ├── monitor.py                  # モニターサービス
 │
 ├── brain/                      # エージェント＆タスク実行
-│   ├── task_executor.py        # メインタスク実行エンジン
-│   ├── computer_use.py         # コンピュータビジョン/インタラクション
+│   ├── task_executor.py        # DirectTaskExecutor — 並列機能評価
+│   ├── computer_use.py         # コンピュータビジョン/インタラクション（Thought→Action→Code）
 │   ├── browser_use_adapter.py  # ブラウザ自動化アダプター
-│   ├── mcp_client.py           # Model Context Protocolクライアント
-│   ├── planner.py              # タスク計画＆分解
+│   ├── mcp_client.py           # Model Context Protocolクライアント（JSON-RPC 2.0）
 │   ├── analyzer.py             # 結果分析
 │   ├── deduper.py              # 重複検出
 │   ├── processor.py            # タスク処理パイプライン
-│   └── agent_session.py        # エージェントセッション管理
+│   ├── agent_session.py        # エージェントセッション管理
+│   └── cua/                    # Computer Use エージェントモデル
 │
 ├── config/                     # 設定
 │   ├── __init__.py             # 定数、デフォルト値、ポート定義
@@ -29,9 +29,10 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager（中央セッションハンドラー）
 │   ├── omni_realtime_client.py # Realtime API WebSocketクライアント
 │   ├── omni_offline_client.py  # テキスト/レスポンスAPIクライアント（オフラインフォールバック）
-│   ├── tts_client.py           # TTSエンジンアダプター（CosyVoice、GPT-SoVITS）
-│   ├── cross_server.py         # サーバー間通信
-│   └── agent_event_bus.py      # ZeroMQイベントブリッジ（Main ↔ Agent）
+│   ├── tts_client.py           # TTSエンジンアダプター（マルチプロバイダー）
+│   ├── cross_server.py         # サーバー間メッセージ転送
+│   ├── agent_event_bus.py      # ZeroMQイベントブリッジ（Main ↔ Agent）
+│   └── agent_bridge.py         # 軽量TCPメッセージ送信
 │
 ├── main_routers/               # FastAPIルートハンドラー
 │   ├── websocket_router.py     # WebSocket /ws/{lanlan_name}
@@ -42,11 +43,17 @@ N.E.K.O/
 │   ├── memory_router.py        # /api/memory/*
 │   ├── agent_router.py         # /api/agent/*
 │   ├── workshop_router.py      # /api/steam/workshop/*
+│   ├── cookies_login_router.py # /api/auth/*
 │   ├── system_router.py        # /api/*（その他のシステムエンドポイント）
 │   ├── pages_router.py         # HTMLページ配信
 │   └── shared_state.py         # ルーター間で共有されるグローバル状態
 │
 ├── memory/                     # メモリ管理
+│   ├── recent.py               # 最近のメッセージバッファ（JSON）
+│   ├── semantic.py             # セマンティックベクトル検索
+│   ├── timeindex.py            # 時間インデックス付きSQLiteストレージ
+│   ├── settings.py             # ImportantSettingsManager
+│   ├── router.py               # メモリサーバーFastAPIルーター
 │   └── store/                  # メモリデータストレージ（SQLite）
 │
 ├── plugin/                     # プラグインシステム
@@ -101,8 +108,8 @@ N.E.K.O/
 
 | ファイル | 行数 | 役割 |
 |---------|------|------|
-| `main_logic/core.py` | 約2300 | 中央セッションマネージャー — システムの心臓部 |
-| `utils/config_manager.py` | 約1500 | 設定の読み込み、検証、永続化 |
+| `main_logic/core.py` | 約2460 | 中央セッションマネージャー — システムの心臓部 |
+| `utils/config_manager.py` | 約1490 | 設定の読み込み、検証、永続化 |
 | `main_logic/tts_client.py` | 約2300 | マルチプロバイダー対応TTS合成 |
 | `brain/task_executor.py` | 約1600 | エージェントのタスク計画と実行 |
 | `utils/web_scraper.py` | 約1900 | プロアクティブチャット用Webコンテンツスクレイピング |

@@ -9,15 +9,15 @@ N.E.K.O/
 ├── monitor.py                  # Monitor service
 │
 ├── brain/                      # Agent & task execution
-│   ├── task_executor.py        # Main task execution engine
-│   ├── computer_use.py         # Computer vision/interaction
+│   ├── task_executor.py        # DirectTaskExecutor — parallel capability assessment
+│   ├── computer_use.py         # Computer vision/interaction (Thought→Action→Code)
 │   ├── browser_use_adapter.py  # Browser automation adapter
-│   ├── mcp_client.py           # Model Context Protocol client
-│   ├── planner.py              # Task planning & decomposition
+│   ├── mcp_client.py           # Model Context Protocol client (JSON-RPC 2.0)
 │   ├── analyzer.py             # Result analysis
 │   ├── deduper.py              # Duplicate detection
 │   ├── processor.py            # Task processing pipeline
-│   └── agent_session.py        # Agent session management
+│   ├── agent_session.py        # Agent session management
+│   └── cua/                    # Computer Use agent models
 │
 ├── config/                     # Configuration
 │   ├── __init__.py             # Constants, defaults, port definitions
@@ -29,9 +29,10 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager (central session handler)
 │   ├── omni_realtime_client.py # Realtime API WebSocket client
 │   ├── omni_offline_client.py  # Text/Response API client (offline fallback)
-│   ├── tts_client.py           # TTS engine adapter (CosyVoice, GPT-SoVITS)
-│   ├── cross_server.py         # Inter-server communication
-│   └── agent_event_bus.py      # ZeroMQ event bridge (main ↔ agent)
+│   ├── tts_client.py           # TTS engine adapter (multi-provider)
+│   ├── cross_server.py         # Inter-server message forwarding
+│   ├── agent_event_bus.py      # ZeroMQ event bridge (main ↔ agent)
+│   └── agent_bridge.py         # Lightweight TCP message sender
 │
 ├── main_routers/               # FastAPI route handlers
 │   ├── websocket_router.py     # WebSocket /ws/{lanlan_name}
@@ -42,11 +43,17 @@ N.E.K.O/
 │   ├── memory_router.py        # /api/memory/*
 │   ├── agent_router.py         # /api/agent/*
 │   ├── workshop_router.py      # /api/steam/workshop/*
+│   ├── cookies_login_router.py # /api/auth/*
 │   ├── system_router.py        # /api/* (misc system endpoints)
 │   ├── pages_router.py         # HTML page serving
 │   └── shared_state.py         # Global state shared across routers
 │
 ├── memory/                     # Memory management
+│   ├── recent.py               # Recent message buffer (JSON)
+│   ├── semantic.py             # Semantic vector search
+│   ├── timeindex.py            # Time-indexed SQLite storage
+│   ├── settings.py             # ImportantSettingsManager
+│   ├── router.py               # Memory server FastAPI router
 │   └── store/                  # Memory data storage (SQLite)
 │
 ├── plugin/                     # Plugin system
@@ -101,8 +108,8 @@ N.E.K.O/
 
 | File | Lines | Role |
 |------|-------|------|
-| `main_logic/core.py` | ~2300 | Central session manager — the heart of the system |
-| `utils/config_manager.py` | ~1500 | Configuration loading, validation, persistence |
+| `main_logic/core.py` | ~2460 | Central session manager — the heart of the system |
+| `utils/config_manager.py` | ~1490 | Configuration loading, validation, persistence |
 | `main_logic/tts_client.py` | ~2300 | TTS synthesis with multi-provider support |
 | `brain/task_executor.py` | ~1600 | Agent task planning and execution |
 | `utils/web_scraper.py` | ~1900 | Web content scraping for proactive chat |

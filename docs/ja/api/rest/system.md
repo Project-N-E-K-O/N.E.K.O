@@ -2,11 +2,11 @@
 
 **プレフィックス:** `/api`
 
-感情分析、ファイルユーティリティ、スクリーンショット、プロアクティブチャットのための各種システムエンドポイント。
+感情分析、ファイルユーティリティ、Steam 連携、プロアクティブチャット、翻訳のための各種システムエンドポイント。
 
 ## 感情分析
 
-### `POST /api/analyze_emotion`
+### `POST /api/emotion/analysis`
 
 テキストの感情トーンを分析します。
 
@@ -15,11 +15,20 @@
 ```json
 {
   "text": "I'm so happy to see you!",
-  "lanlan_name": "character_name"
+  "lanlan_name": "character_name",
+  "api_key": "optional",
+  "model": "optional"
 }
 ```
 
-**レスポンス:** Live2D/VRM の表情マッピングに使用される感情ラベル。
+**レスポンス:**
+
+```json
+{
+  "emotion": "happy",
+  "confidence": 0.95
+}
+```
 
 ## ファイルユーティリティ
 
@@ -31,59 +40,84 @@
 
 ### `GET /api/find-first-image`
 
-ディレクトリ内の最初の画像ファイルを検索します。
+フォルダ内の最初のプレビュー画像ファイルを検索します。
 
-**クエリ:** `directory` — 検索するディレクトリパス。
+**クエリ:** `folder` — 検索するフォルダパス。
 
-### `GET /api/proxy-image`
+### `GET /api/steam/proxy-image`
 
-CORS 制限を回避するための画像リクエストのプロキシ。
+ローカルファイルアクセスのための画像リクエストのプロキシ。
 
-**クエリ:** `url` — プロキシする画像 URL。
+**クエリ:** `image_path` — ローカル画像ファイルパス。
 
-## Steam 実績
+## Steam 連携
 
-### `POST /api/steam_achievement`
+### `POST /api/steam/set-achievement-status/{name}`
 
-Steam 実績をアンロックします。
+Steam 実績のアンロック状態を設定します。
+
+**パス:** `name` — 実績識別子。
+
+### `GET /api/steam/list-achievements`
+
+すべての Steam 実績とそのステータスを一覧表示します。
+
+### `POST /api/steam/update-playtime`
+
+トラッキングされたゲームプレイ時間を更新します。
 
 **ボディ:**
 
 ```json
-{ "achievement_id": "ACHIEVEMENT_NAME" }
+{ "seconds": 3600 }
 ```
 
 ## プロアクティブチャット
 
 ### `POST /api/proactive_chat`
 
-キャラクターからのプロアクティブメッセージを生成します（アイドル会話に使用されます）。
+キャラクターからのプロアクティブメッセージを生成します（二段階アーキテクチャ）。
 
 **ボディ:**
 
 ```json
 {
   "lanlan_name": "character_name",
-  "context": "optional context about what's happening"
+  "enabled_modes": ["vision", "news", "video", "home", "window", "personal"],
+  "screenshot_data": "optional base64",
+  "language": "zh"
 }
 ```
 
-::: info
-プロアクティブメッセージにはレート制限があります：キャラクターごとに1時間あたり最大10件。
-:::
+## 翻訳
 
-## Web スクリーニング
+### `POST /api/translate`
 
-### `POST /api/web_screening`
+言語間のテキスト翻訳。
 
-AI レビューによる Web コンテンツのスクリーニング（コンテンツフィルタリングと関連性ランキング用）。
+**ボディ:**
 
-**ボディ:** スクリーニングモード付きの Web コンテンツデータ。
+```json
+{
+  "text": "Hello",
+  "target_lang": "zh",
+  "source_lang": "en",
+  "skip_google": false
+}
+```
 
-## スクリーンショット分析
+## その他のエンドポイント
 
-### `POST /api/screenshot_analysis`
+### `POST /api/personal_dynamics`
 
-ビジョンモデルを使用してスクリーンショットを分析します。
+パーソナライズされたコンテンツデータを取得します。
 
-**ボディ:** オプションのコンテキスト付き Base64 エンコード画像データ。
+**ボディ:**
+
+```json
+{ "limit": 10 }
+```
+
+### `GET /api/get_window_title`
+
+現在アクティブなウィンドウタイトルを取得します（Windows のみ）。

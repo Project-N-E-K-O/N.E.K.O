@@ -35,6 +35,8 @@
 { "action": "stream_data", "input_type": "audio", "data": "<base64 PCM>" }
 { "action": "stream_data", "input_type": "text", "data": "Hello!" }
 { "action": "end_session" }
+{ "action": "pause_session" }
+{ "action": "screenshot_response", "data": "<base64 image>" }
 { "action": "ping" }
 ```
 
@@ -46,6 +48,7 @@
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
 { "type": "agent_notification", "text": "...", "source": "...", "status": "..." }
+{ "type": "catgirl_switched", "data": { ... } }
 { "type": "pong" }
 ```
 
@@ -67,11 +70,13 @@
 LLMSessionManager                  智能体服务器
   │                                    │
   │── ZMQ PUB (analyze request) ──────>│
-  │                                    │── Planner：创建任务计划
-  │                                    │── Executor：执行动作
-  │                                    │   ├── MCP tool calls
-  │                                    │   ├── Computer Use
-  │                                    │   └── Browser Use
+  │                                    │── DirectTaskExecutor:
+  │                                    │   并行评估:
+  │                                    │   ├── _assess_mcp()
+  │                                    │   ├── _assess_browser_use()
+  │                                    │   ├── _assess_computer_use()
+  │                                    │   └── _assess_user_plugin()
+  │                                    │   优先级选择 & 执行
   │                                    │── Analyzer：评估结果
   │<── ZMQ PUSH (task_result) ────────│
   │                                    │
@@ -83,15 +88,20 @@ LLMSessionManager                  智能体服务器
 ```
 LLM 文本输出 ──> TTS 请求队列 ──> TTS 工作线程
                                               │
-                                              ├── DashScope CosyVoice
-                                              ├── GPT-SoVITS（本地）
-                                              └── 自定义端点
+                                     ┌────────┼──────────────┐
+                                     │        │              │
+                                     ▼        ▼              ▼
+                                CosyVoice  GPT-SoVITS   StepFun RT
+                               (DashScope) (本地)       (WebSocket)
+                                     │        │              │
+                                     └────────┼──────────────┘
                                               │
                                          TTS 响应队列
                                               │
-                                         音频重采样器（24→48kHz）
+                                    soxr ResampleStream（24→48kHz）
+                                        （状态化，按消息）
                                               │
                                          WebSocket 发送至浏览器
 ```
 
-TTS 流水线完全支持中断 —— 当用户开始说话（中断事件）时，待处理的 TTS 输出会被立即丢弃。
+TTS 流水线完全支持中断 —— 当用户开始说话（中断事件）时，待处理的 TTS 输出会被立即丢弃。`soxr` 重采样器在块之间维护内部状态以防止不连续性，并在每条新消息时重置状态以避免伪影。

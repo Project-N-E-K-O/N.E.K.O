@@ -9,7 +9,7 @@ N.E.K.O. はAIコンパニオンのためのUGC（ユーザー生成コンテン
 - **リアルタイム音声会話** — Realtime APIプロバイダー（Qwen、OpenAI、Gemini、Step、GLM）を使用したWebSocket経由の通信
 - **Live2DおよびVRMモデルレンダリング** — 感情マッピングされたアニメーション付き
 - **永続的メモリ** — セマンティック検索と時間インデックス付き履歴によるセッション間の記憶保持
-- **バックグラウンドエージェント実行** — MCP、Computer Use、Browser Useアダプター経由
+- **バックグラウンドエージェント実行** — MCP、Computer Use、Browser Use、User Pluginアダプター経由
 - **音声クローン** — カスタムTTSボイス対応
 - **Steam Workshop連携** — コンテンツ共有機能
 - **プラグインシステム** — 開発者向け拡張機能
@@ -43,7 +43,7 @@ N.E.K.O. はAIコンパニオンのためのUGC（ユーザー生成コンテン
 | リアルタイム通信 | WebSocket（ネイティブ + Alibaba DashScope） |
 | サービス間メッセージング | ZeroMQ（PUB/SUB + PUSH/PULL） |
 | LLM連携 | LangChain + OpenAI互換API |
-| TTS | DashScope CosyVoice、GPT-SoVITS |
+| TTS | DashScope CosyVoice、StepFun、Gemini、OpenAI、GPT-SoVITS、Local CosyVoice |
 | フロントエンド | Vanilla JS、Pixi.js（Live2D）、Three.js（VRM） |
 | メモリストレージ | SQLite + テキストEmbedding |
 | パッケージ管理 | uv（Python 3.11） |

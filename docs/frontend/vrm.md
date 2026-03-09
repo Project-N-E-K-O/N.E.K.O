@@ -7,7 +7,7 @@ N.E.K.O. supports VRM (Virtual Reality Model) format for 3D character rendering 
 ## Model management
 
 - Upload VRM files via `/api/model/vrm/upload` (max 200MB)
-- Upload animations separately via `/api/model/vrm/animation/upload`
+- Upload animations separately via `/api/model/vrm/upload_animation`
 - Configure emotion mappings via `/vrm_emotion_manager`
 
 ## Lighting configuration

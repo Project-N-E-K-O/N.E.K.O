@@ -2,7 +2,7 @@
 
 **Prefix:** `/api/memory`
 
-Manages conversation memory files and review configuration.
+Manages conversation memory files and review configuration (proxied through the main server).
 
 ## Recent memory files
 
@@ -25,16 +25,15 @@ Save an updated memory file.
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "user", "text": "Hello!" },
+    { "role": "assistant", "text": "Hi there!" }
   ]
 }
 ```
 
 ::: info
-Character names are validated with regex supporting CJK characters. Chat history entries are validated for required fields.
+Character names are validated with regex supporting CJK characters. Chat entries require `role` and `text` fields.
 :::
 
 ## Name management
@@ -56,8 +55,14 @@ Update a character's name across all memory files.
 
 ### `GET /api/memory/review_config`
 
-Get the memory review configuration (compression schedule, retention settings).
+Get the memory review configuration (whether automatic review is enabled).
 
 ### `POST /api/memory/review_config`
 
 Update memory review configuration.
+
+**Body:**
+
+```json
+{ "enabled": true }
+```

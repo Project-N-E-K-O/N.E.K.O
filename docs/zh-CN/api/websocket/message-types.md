@@ -12,7 +12,8 @@
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
@@ -47,6 +48,15 @@
 }
 ```
 
+**摄像头数据：**
+```json
+{
+  "action": "stream_data",
+  "input_type": "camera",
+  "data": "<base64 encoded camera frame>"
+}
+```
+
 ### `end_session`
 
 关闭当前会话。
@@ -69,6 +79,17 @@
 
 ```json
 { "action": "ping" }
+```
+
+### `screenshot_response`
+
+前端响应服务器请求返回捕获的屏幕数据。
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "data:image/png;base64,..."
+}
 ```
 
 ## 服务器 → 客户端

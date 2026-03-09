@@ -25,16 +25,15 @@
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "user", "text": "Hello!" },
+    { "role": "assistant", "text": "Hi there!" }
   ]
 }
 ```
 
 ::: info
-キャラクター名は CJK 文字をサポートする正規表現で検証されます。チャット履歴エントリは必須フィールドが検証されます。
+キャラクター名は CJK 文字をサポートする正規表現で検証されます。チャットエントリには `role` と `text` フィールドが必要です。
 :::
 
 ## 名前管理
@@ -56,8 +55,14 @@
 
 ### `GET /api/memory/review_config`
 
-メモリレビュー設定（圧縮スケジュール、保持設定）を取得します。
+メモリレビュー設定（自動レビューが有効かどうか）を取得します。
 
 ### `POST /api/memory/review_config`
 
 メモリレビュー設定を更新します。
+
+**ボディ:**
+
+```json
+{ "enabled": true }
+```

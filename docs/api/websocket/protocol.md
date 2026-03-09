@@ -42,15 +42,17 @@ Server responds with:
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `action` | `"start_session"` | Required |
-| `input_type` | `"audio"` \| `"text"` | Input mode |
+| `input_type` | `"audio"` \| `"text"` \| `"screen"` \| `"camera"` | Input mode |
 | `new_session` | boolean | Whether to create a fresh session |
+| `language` | string | Optional language code (zh/en/ja) |
 
 ### End session
 
@@ -66,7 +68,18 @@ Triggers the hot-swap mechanism: the current LLM session is closed and replaced 
 { "action": "pause_session" }
 ```
 
-Keeps the WebSocket connected but pauses LLM processing.
+Keeps the WebSocket connected but marks the session as idle, pausing LLM processing.
+
+### Screenshot response
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "data:image/png;base64,..."
+}
+```
+
+Sent by the frontend in response to a server screenshot request. Contains the captured screen data.
 
 ## Error handling
 

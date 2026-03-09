@@ -2,7 +2,7 @@
 
 **Prefix:** `/api/agent`
 
-Manages the background agent system — capability flags, task state, and health monitoring.
+Manages the background agent system — capability flags, task state, and health monitoring. All requests are proxied to the Agent Server (port 48915).
 
 ## Flags
 
@@ -17,13 +17,14 @@ Get current agent capability flags.
   "agent_enabled": false,
   "computer_use_enabled": false,
   "mcp_enabled": false,
-  "browser_use_enabled": false
+  "browser_use_enabled": false,
+  "user_plugin_enabled": false
 }
 ```
 
 ### `POST /api/agent/flags`
 
-Update agent flags. Changes are forwarded to the tool server.
+Update agent flags. Changes are cascaded to the session manager and forwarded to the tool server.
 
 **Body:**
 
@@ -32,7 +33,8 @@ Update agent flags. Changes are forwarded to the tool server.
   "lanlan_name": "character_name",
   "flags": {
     "agent_enabled": true,
-    "mcp_enabled": true
+    "mcp_enabled": true,
+    "user_plugin_enabled": false
   }
 }
 ```
@@ -41,11 +43,11 @@ Update agent flags. Changes are forwarded to the tool server.
 
 ### `GET /api/agent/state`
 
-Get a snapshot of the agent's current state (running tasks, pending requests).
+Get the agent's authoritative state snapshot including revision number, flags, and capabilities.
 
 ### `GET /api/agent/health`
 
-Agent health check endpoint.
+Agent health check endpoint (proxied to tool server).
 
 ## Capability checks
 
@@ -59,7 +61,7 @@ Check if MCP (Model Context Protocol) is available.
 
 ### `GET /api/agent/user_plugin/availability`
 
-Check if user plugins are available.
+Check if User Plugin is available.
 
 ### `GET /api/agent/browser_use/availability`
 
@@ -79,7 +81,7 @@ Get details for a specific task.
 
 ### `POST /api/agent/command`
 
-Send a control command to the agent.
+Unified command entry point for controlling the agent from the frontend.
 
 **Body:**
 
@@ -87,18 +89,29 @@ Send a control command to the agent.
 {
   "lanlan_name": "character_name",
   "command": "pause",
-  "task_id": "optional_task_id"
+  "request_id": "optional_request_id",
+  "enabled": true,
+  "key": "optional_key",
+  "value": "optional_value"
 }
 ```
-
-**Available commands:** `pause`, `resume`, `cancel`
 
 ## Internal endpoints
 
 ### `POST /api/agent/internal/analyze_request`
 
-Internal endpoint for submitting analyze requests. Used by the main server's session manager.
+Internal bridge endpoint: receives analyze requests from sub-processes and publishes them through the EventBus.
+
+**Body:**
+
+```json
+{
+  "trigger": "conversation",
+  "lanlan_name": "character_name",
+  "messages": [ ... ]
+}
+```
 
 ### `POST /api/agent/admin/control`
 
-Admin control commands (e.g., kill process). Use with caution.
+Admin control commands proxied to the tool server. Use with caution.

@@ -7,7 +7,7 @@ N.E.K.O. 支持 VRM（Virtual Reality Model）格式，使用 Three.js 和 `@pix
 ## 模型管理
 
 - 通过 `/api/model/vrm/upload` 上传 VRM 文件（最大 200MB）
-- 通过 `/api/model/vrm/animation/upload` 单独上传动画
+- 通过 `/api/model/vrm/upload_animation` 单独上传动画
 - 通过 `/vrm_emotion_manager` 配置情感映射
 
 ## 灯光配置

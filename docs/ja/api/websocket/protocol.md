@@ -42,15 +42,17 @@ ws://localhost:48911/ws/{lanlan_name}
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
 | フィールド | 型 | 説明 |
 |-------|------|-------------|
 | `action` | `"start_session"` | 必須 |
-| `input_type` | `"audio"` \| `"text"` | 入力モード |
+| `input_type` | `"audio"` \| `"text"` \| `"screen"` \| `"camera"` | 入力モード |
 | `new_session` | boolean | 新しいセッションを作成するかどうか |
+| `language` | string | ユーザー言語（例：`"zh"`、`"en"`、`"ja"`） |
 
 ### セッション終了
 
@@ -71,3 +73,16 @@ WebSocket 接続を維持したまま LLM の処理を一時停止します。
 ## エラーハンドリング
 
 キャラクター名が無効な場合、サーバーは適切なクローズコードで WebSocket を閉じます。サーバー側でキャラクターが切り替えられた場合、サーバーはクライアントに再接続を指示する `catgirl_switched` メッセージを送信します。
+
+## スクリーンショットレスポンス
+
+サーバーがスクリーンショットを要求した場合、クライアントは以下で応答します：
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "<base64 encoded screenshot>"
+}
+```
+
+このメカニズムにより、プロアクティブチャットなどの機能でサーバーがクライアントから最新のスクリーンショットをオンデマンドで取得できます。

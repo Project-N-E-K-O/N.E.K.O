@@ -6,7 +6,8 @@ Serves HTML pages for the Web UI. All pages are rendered with Jinja2 templates.
 
 | Path | Template | Description |
 |------|----------|-------------|
-| `/` | `index.html` | Main chat interface |
+| `/` | `index.html` | Main chat interface (default character) |
+| `/l2d` | `model_manager.html` | Model management (legacy alias) |
 | `/model_manager` | `model_manager.html` | Live2D/VRM model management |
 | `/live2d_parameter_editor` | `live2d_parameter_editor.html` | Live2D parameter fine-tuning |
 | `/live2d_emotion_manager` | `live2d_emotion_manager.html` | Live2D emotion-animation mapping |
@@ -16,8 +17,9 @@ Serves HTML pages for the Web UI. All pages are rendered with Jinja2 templates.
 | `/api_key` | `api_key_settings.html` | API key configuration |
 | `/steam_workshop_manager` | `steam_workshop_manager.html` | Steam Workshop management |
 | `/memory_browser` | `memory_browser.html` | Memory browsing and editing |
+| `/cookies_login` | `cookies_login.html` | Media credential management |
 | `/{lanlan_name}` | `index.html` | Character-specific chat (catch-all) |
 
 ::: info
-The `/{lanlan_name}` catch-all route serves the same main interface but pre-selects a specific character.
+The `/{lanlan_name}` catch-all route serves the same main interface but pre-selects a specific character. The `/steam_workshop_manager` page accepts a `?lanlan_name=` query parameter.
 :::

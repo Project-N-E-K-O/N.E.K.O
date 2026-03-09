@@ -12,7 +12,8 @@ LLM セッションを初期化します。
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
@@ -47,6 +48,15 @@ LLM セッションを初期化します。
 }
 ```
 
+**カメラ入力:**
+```json
+{
+  "action": "stream_data",
+  "input_type": "camera",
+  "data": "<base64 encoded camera frame>"
+}
+```
+
 ### `end_session`
 
 現在のセッションを終了します。
@@ -69,6 +79,17 @@ LLM セッションを初期化します。
 
 ```json
 { "action": "ping" }
+```
+
+### `screenshot_response`
+
+サーバーのリクエストに応じて、フロントエンドがキャプチャした画面データを返します。
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "data:image/png;base64,..."
+}
 ```
 
 ## サーバー → クライアント

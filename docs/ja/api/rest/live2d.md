@@ -2,37 +2,25 @@
 
 **プレフィックス:** `/api/live2d`
 
-Live2D モデルを管理します — 一覧表示、設定、感情マッピング、ファイルアップロード、パラメータ編集。
+Live2D モデルを管理します — 一覧表示、設定、感情マッピング、パラメータ編集。
 
 ## モデル一覧
 
 ### `GET /api/live2d/models`
 
-利用可能なすべての Live2D モデルを一覧表示します。
+利用可能なすべての Live2D モデルを一覧表示します（Steam Workshop モデルを含む）。
 
 **クエリ:** `simple`（オプション、boolean） — true の場合、完全な設定なしでモデル名のみを返します。
-
-### `GET /api/live2d/user_models`
-
-ユーザーがインポートしたモデル（ビルトインや Workshop モデルとは異なる）を一覧表示します。
 
 ## モデル設定
 
 ### `GET /api/live2d/model_config/{model_name}`
 
-モデルの完全な設定（位置、スケール、表情マッピング）を取得します。
+モデルの完全な `model3.json` 設定を取得します。
 
 ### `POST /api/live2d/model_config/{model_name}`
 
-モデル設定を保存します。
-
-### `GET /api/live2d/model_config_by_id/{model_id}`
-
-Steam Workshop アイテム ID で設定を取得します。
-
-### `POST /api/live2d/model_config_by_id/{model_id}`
-
-Workshop アイテム ID で設定を保存します。
+モデル設定を更新します（モーション/エクスプレッション）。
 
 ## 感情マッピング
 
@@ -51,44 +39,28 @@ Workshop アイテム ID で設定を保存します。
 
 ### `POST /api/live2d/emotion_mapping/{model_name}`
 
-感情マッピングを更新します。
+感情マッピングを更新します。EmotionMapping と FileReferences の両方を同期します。
 
 ## パラメータ
 
 ### `GET /api/live2d/model_parameters/{model_name}`
 
-利用可能なすべてのモデルパラメータ（パラメータエディタ用）を取得します。
+`.cdi3.json` ファイルから利用可能なすべてのモデルパラメータを取得します（パラメータエディタ用）。
 
 ### `POST /api/live2d/save_model_parameters/{model_name}`
 
-調整済みのモデルパラメータを保存します。
+調整済みのモデルパラメータを `parameters.json` に保存します。
 
-### `GET /api/live2d/load_model_parameters/{model_name}`
+**ボディ:**
 
-以前に保存したモデルパラメータを読み込みます。
+```json
+{
+  "parameters": { ... }
+}
+```
 
 ## ファイル管理
 
 ### `GET /api/live2d/model_files/{model_name}`
 
-モデルに属するすべてのファイルを一覧表示します。
-
-### `GET /api/live2d/model_files_by_id/{model_id}`
-
-Workshop アイテム ID でファイルを一覧表示します。
-
-### `POST /api/live2d/upload_model`
-
-新しい Live2D モデルをアップロードします（モデルアーカイブを含むマルチパートフォーム）。
-
-### `POST /api/live2d/upload_file/{model_name}`
-
-既存のモデルに追加ファイルをアップロードします。
-
-### `DELETE /api/live2d/model/{model_name}`
-
-モデルとそのすべてのファイルを削除します。
-
-### `GET /api/live2d/open_model_directory/{model_name}`
-
-システムのファイルエクスプローラーでモデルのディレクトリを開きます。
+モデルに属するモーションファイル（`.motion3.json`）とエクスプレッションファイル（`.exp3.json`）を一覧表示します。

@@ -11,3 +11,11 @@
 | [Offline Client](./omni-offline) | `main_logic/omni_offline_client.py` | テキストベース LLM クライアント（フォールバック） |
 | [TTS Client](./tts-client) | `main_logic/tts_client.py` | テキスト音声合成 |
 | [Config Manager](./config-manager) | `utils/config_manager.py` | 設定の読み込みと永続化 |
+
+## サポートモジュール
+
+| モジュール | ファイル | 用途 |
+|-----------|---------|------|
+| Agent Event Bus | `main_logic/agent_event_bus.py` | Main/Agent サーバー間の ZeroMQ 双方向ブリッジ |
+| Agent Bridge | `main_logic/agent_bridge.py` | 軽量 TCP ファイア＆フォーゲットメッセージ送信 |
+| Cross Server | `main_logic/cross_server.py` | Monitor、Memory、Bullet サーバーへの一方向メッセージ転送 |

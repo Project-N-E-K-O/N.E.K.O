@@ -4,23 +4,40 @@
 
 记忆服务器作为独立进程运行，处理所有持久化记忆操作。它不面向外部直接访问 — 主服务器代理记忆相关的请求。
 
-## 内部端点
+## REST 端点
 
-记忆服务器提供以下功能的端点：
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `/health` | GET | 服务健康检查（N.E.K.O. 签名） |
+| `/cache/{lanlan_name}` | POST | 轻量追加（无 LLM 处理） |
+| `/process/{lanlan_name}` | POST | 完整处理（近期 + 时间 + 语义 + 审阅） |
+| `/renew/{lanlan_name}` | POST | 热切换续期 |
+| `/get_recent_history/{lanlan_name}` | GET | 格式化的 LLM 提示词上下文 |
+| `/search_for_memory/{lanlan_name}/{query}` | GET | 语义搜索 |
+| `/get_settings/{lanlan_name}` | GET | 角色设置 JSON |
+| `/new_dialog/{lanlan_name}` | GET | 新对话上下文（清理括号） |
+| `/reload` | POST | 重新加载所有组件 |
+| `/cancel_correction/{lanlan_name}` | POST | 中止审阅任务 |
 
-- **存储**带有时间戳和嵌入向量的新对话轮次
-- **查询**用于 LLM 提示词构建的近期上下文
-- **搜索**语义相似的历史对话
-- **压缩**旧对话为摘要
-- **管理**记忆回顾设置
+## 存储层级
 
-## 存储后端
+| 层级 | 用途 |
+|------|------|
+| 近期记忆 | 每个角色最近 N 条消息（JSON 文件） |
+| `time_indexed_original` | 完整对话历史（SQLite） |
+| `time_indexed_compressed` | 压缩后的对话历史（SQLite） |
+| 向量嵌入 | 用于语义搜索的 Embedding 存储 |
+| 重要设置 | LLM 提取的角色偏好（JSON 文件） |
 
-| 表 | 用途 |
-|----|------|
-| `time_indexed_original` | 完整对话历史 |
-| `time_indexed_compressed` | 压缩后的对话历史 |
-| Embedding store | 用于语义搜索的向量嵌入 |
+## 关键组件
+
+| 组件 | 用途 |
+|------|------|
+| `RecentHistoryManager` | 滑动窗口近期记忆管理 |
+| `CompressedRecentHistoryManager` | LLM 压缩和摘要 |
+| `SemanticMemory` | 向量嵌入和混合搜索 |
+| `TimeIndexManager` | SQLite 时间索引存储 |
+| `ImportantSettingsManager` | LLM 提议/验证角色设置 |
 
 ## 使用的模型
 

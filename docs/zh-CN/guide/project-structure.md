@@ -9,15 +9,15 @@ N.E.K.O/
 ├── monitor.py                  # 监控服务
 │
 ├── brain/                      # 智能体与任务执行
-│   ├── task_executor.py        # 主任务执行引擎
-│   ├── computer_use.py         # 计算机视觉/交互
+│   ├── task_executor.py        # DirectTaskExecutor —— 并行能力评估
+│   ├── computer_use.py         # 计算机视觉/交互（Thought→Action→Code）
 │   ├── browser_use_adapter.py  # 浏览器自动化适配器
-│   ├── mcp_client.py           # Model Context Protocol 客户端
-│   ├── planner.py              # 任务规划与分解
+│   ├── mcp_client.py           # Model Context Protocol 客户端（JSON-RPC 2.0）
 │   ├── analyzer.py             # 结果分析
 │   ├── deduper.py              # 重复检测
 │   ├── processor.py            # 任务处理流水线
-│   └── agent_session.py        # 智能体会话管理
+│   ├── agent_session.py        # 智能体会话管理
+│   └── cua/                    # Computer Use 智能体模型
 │
 ├── config/                     # 配置
 │   ├── __init__.py             # 常量、默认值、端口定义
@@ -29,9 +29,10 @@ N.E.K.O/
 │   ├── core.py                 # LLMSessionManager（中央会话处理器）
 │   ├── omni_realtime_client.py # Realtime API WebSocket 客户端
 │   ├── omni_offline_client.py  # 文本/Response API 客户端（离线回退）
-│   ├── tts_client.py           # TTS 引擎适配器（CosyVoice、GPT-SoVITS）
-│   ├── cross_server.py         # 服务间通信
-│   └── agent_event_bus.py      # ZeroMQ 事件桥（主服务器 ↔ 智能体）
+│   ├── tts_client.py           # TTS 引擎适配器（多提供商）
+│   ├── cross_server.py         # 服务间消息转发
+│   ├── agent_event_bus.py      # ZeroMQ 事件桥（主服务器 ↔ 智能体）
+│   └── agent_bridge.py         # 轻量级 TCP 消息发送器
 │
 ├── main_routers/               # FastAPI 路由处理器
 │   ├── websocket_router.py     # WebSocket /ws/{lanlan_name}
@@ -42,11 +43,17 @@ N.E.K.O/
 │   ├── memory_router.py        # /api/memory/*
 │   ├── agent_router.py         # /api/agent/*
 │   ├── workshop_router.py      # /api/steam/workshop/*
+│   ├── cookies_login_router.py # /api/auth/*
 │   ├── system_router.py        # /api/*（杂项系统端点）
 │   ├── pages_router.py         # HTML 页面服务
 │   └── shared_state.py         # 跨路由共享的全局状态
 │
 ├── memory/                     # 记忆管理
+│   ├── recent.py               # 最近消息缓冲区（JSON）
+│   ├── semantic.py             # 语义向量搜索
+│   ├── timeindex.py            # 时间索引 SQLite 存储
+│   ├── settings.py             # ImportantSettingsManager
+│   ├── router.py               # 记忆服务器 FastAPI 路由
 │   └── store/                  # 记忆数据存储（SQLite）
 │
 ├── plugin/                     # 插件系统
@@ -101,8 +108,8 @@ N.E.K.O/
 
 | 文件 | 行数 | 作用 |
 |------|------|------|
-| `main_logic/core.py` | ~2300 | 中央会话管理器 —— 系统的核心 |
-| `utils/config_manager.py` | ~1500 | 配置加载、验证、持久化 |
+| `main_logic/core.py` | ~2460 | 中央会话管理器 —— 系统的核心 |
+| `utils/config_manager.py` | ~1490 | 配置加载、验证、持久化 |
 | `main_logic/tts_client.py` | ~2300 | 多提供商 TTS 合成 |
 | `brain/task_executor.py` | ~1600 | 智能体任务规划与执行 |
 | `utils/web_scraper.py` | ~1900 | 用于主动聊天的网页内容抓取 |

@@ -24,6 +24,7 @@ http://localhost:48911
 | [智能体](/zh-CN/api/rest/agent) | `/api/agent` | 智能体标志位、任务、健康检查 |
 | [创意工坊](/zh-CN/api/rest/workshop) | `/api/steam/workshop` | Steam 创意工坊物品、发布 |
 | [系统](/zh-CN/api/rest/system) | `/api` | 情感分析、截图、实用工具 |
+| [页面](/zh-CN/api/rest/pages) | `/l2d`, `/cookies_login` | HTML 页面渲染 |
 
 ## WebSocket
 
@@ -41,6 +42,7 @@ http://localhost:48911
 |--------|------|
 | [记忆服务器](/zh-CN/api/memory-server) | 记忆存储与检索（端口 48912） |
 | [智能体服务器](/zh-CN/api/agent-server) | 智能体任务执行（端口 48915） |
+| [监控服务器](/zh-CN/architecture/three-servers#监控服务器-monitor-py-端口-48913) | 健康检查与启动器协调（端口 48913） |
 
 ## 响应格式
 

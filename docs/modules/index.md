@@ -11,3 +11,11 @@ This section provides deep dives into N.E.K.O.'s core Python modules for develop
 | [Offline Client](./omni-offline) | `main_logic/omni_offline_client.py` | Text-based LLM client (fallback) |
 | [TTS Client](./tts-client) | `main_logic/tts_client.py` | Text-to-Speech synthesis |
 | [Config Manager](./config-manager) | `utils/config_manager.py` | Configuration loading and persistence |
+
+## Supporting modules
+
+| Module | File | Purpose |
+|--------|------|---------|
+| Agent Event Bus | `main_logic/agent_event_bus.py` | ZeroMQ bidirectional bridge between Main and Agent servers |
+| Agent Bridge | `main_logic/agent_bridge.py` | Lightweight TCP fire-and-forget message sender |
+| Cross Server | `main_logic/cross_server.py` | Unidirectional message forwarder to Monitor, Memory, and Bullet servers |

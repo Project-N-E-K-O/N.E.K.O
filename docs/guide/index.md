@@ -9,7 +9,7 @@ N.E.K.O. is a UGC (User-Generated Content) platform for AI companions. Users can
 - **Real-time voice conversation** via WebSocket with Realtime API providers (Qwen, OpenAI, Gemini, Step, GLM)
 - **Live2D and VRM model rendering** with emotion-mapped animations
 - **Persistent memory** across sessions with semantic recall and time-indexed history
-- **Background agent execution** via MCP, Computer Use, and Browser Use adapters
+- **Background agent execution** via MCP, Computer Use, Browser Use, and User Plugin adapters
 - **Voice cloning** with custom TTS voices
 - **Steam Workshop integration** for content sharing
 - **Plugin system** for developer extensions
@@ -43,7 +43,7 @@ This documentation is written for **developers** who want to:
 | Realtime communication | WebSocket (native + Alibaba DashScope) |
 | Inter-service messaging | ZeroMQ (PUB/SUB + PUSH/PULL) |
 | LLM integration | LangChain + OpenAI-compatible APIs |
-| TTS | DashScope CosyVoice, GPT-SoVITS |
+| TTS | DashScope CosyVoice, StepFun, Gemini, OpenAI, GPT-SoVITS, Local CosyVoice |
 | Frontend | Vanilla JS, Pixi.js (Live2D), Three.js (VRM) |
 | Memory storage | SQLite + text embeddings |
 | Package management | uv (Python 3.11) |

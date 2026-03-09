@@ -2,7 +2,20 @@
 
 **Port:** 48915 (internal)
 
-The agent server handles background task execution. It communicates with the main server through ZeroMQ sockets rather than HTTP.
+The agent server handles background task execution. It communicates with the main server through both ZeroMQ sockets (for real-time event streaming) and HTTP REST endpoints (for management and control).
+
+## REST endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health check with N.E.K.O. signature |
+| `/status` | GET | Agent state snapshot (tasks, flags, capabilities) |
+| `/flag_set/{flag_name}/{value}` | POST | Set agent feature flags |
+| `/capabilities` | GET | List available agent capabilities |
+| `/task/spawn_computer_use` | POST | Queue a Computer Use task |
+| `/task/{task_id}` | GET | Get task status and result |
+| `/task/{task_id}` | DELETE | Cancel/delete a task |
+| `/reload_config` | POST | Reload API configurations |
 
 ## ZeroMQ interface
 
@@ -19,6 +32,15 @@ The agent server handles background task execution. It communicates with the mai
 **Analyze request:**
 
 Published when the main server detects an actionable conversation context.
+
+```json
+{
+  "type": "analyze_request",
+  "lanlan_name": "character_name",
+  "messages": [ ... ],
+  "agent_flags": { ... }
+}
+```
 
 ### Agent → Main
 
@@ -45,14 +67,36 @@ Published when the main server detects an actionable conversation context.
 }
 ```
 
-## Execution adapters
+**Agent status update:**
 
-The agent server uses three adapters for task execution:
+```json
+{
+  "type": "agent_status_update",
+  "capabilities": { ... },
+  "flags": { ... }
+}
+```
+
+**Analyze ACK:**
+
+```json
+{
+  "type": "analyze_ack",
+  "lanlan_name": "character_name"
+}
+```
+
+## Execution engine
+
+The agent server uses the `DirectTaskExecutor` for parallel capability assessment and priority-based execution:
 
 | Adapter | Module | Capabilities |
 |---------|--------|-------------|
-| MCP Client | `brain/mcp_client.py` | External tool calls via Model Context Protocol |
-| Computer Use | `brain/computer_use.py` | Screenshot analysis, mouse/keyboard automation |
+| MCP Client | `brain/mcp_client.py` | External tool calls via Model Context Protocol (JSON-RPC 2.0 over HTTP+SSE) |
+| Computer Use | `brain/computer_use.py` | Vision-based desktop automation (Thought→Action→Code loop) |
 | Browser Use | `brain/browser_use_adapter.py` | Web browsing, form filling, content extraction |
+| User Plugin | Plugin system | Local plugin execution via `POST /plugin/trigger` |
+
+Execution priority: **MCP → Browser Use → Computer Use → User Plugin**
 
 See [Agent System](/architecture/agent-system) for the detailed architecture.

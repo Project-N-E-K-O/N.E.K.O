@@ -10,19 +10,20 @@ LLM text output
       ▼
 TTS Request Queue ──> TTS Worker Thread
                            │
-                      ┌────┼────────────┐
-                      │    │            │
-                      ▼    ▼            ▼
-                  CosyVoice  GPT-SoVITS  Custom
-                  (DashScope) (Local)     Endpoint
-                      │    │            │
-                      └────┼────────────┘
+                  ┌────────┼──────────────┐
+                  │        │              │
+                  ▼        ▼              ▼
+             CosyVoice  GPT-SoVITS   StepFun RT
+            (DashScope)  (Local)     (WebSocket)
+                  │        │              │
+                  └────────┼──────────────┘
                            │
-                      TTS Response Queue
+                  TTS Response Queue
                            │
-                      Audio Resampler (24→48 kHz)
+                  soxr ResampleStream (24→48 kHz)
+                      (stateful, per-message)
                            │
-                      WebSocket ──> Browser
+                  WebSocket ──> Browser
 ```
 
 ## Supported providers
@@ -31,7 +32,9 @@ TTS Request Queue ──> TTS Worker Thread
 |----------|------|----------|
 | **DashScope CosyVoice** | Cloud API | High quality, voice cloning, multiple voice tones |
 | **DashScope TTS V2** | Cloud API | Faster, lower latency |
-| **GPT-SoVITS** | Local service | Fully offline, customizable |
+| **StepFun Real-Time** | WebSocket (`wss://api.stepfun.com/v1/realtime/audio`) | Real-time streaming, low latency |
+| **Qwen CosyVoice 3** | Cloud API (Aliyun) | Custom speaker voice synthesis, flash model |
+| **GPT-SoVITS** | Local service | Fully offline, customizable, v3 API support |
 | **Custom endpoint** | User-defined | Any OpenAI-compatible TTS API |
 
 ## Queue-based streaming
@@ -41,6 +44,8 @@ The TTS pipeline uses a producer-consumer pattern:
 1. **Producer** (main thread): As the LLM streams text output, complete sentences are enqueued to `tts_request_queue`.
 2. **Consumer** (TTS worker thread): Dequeues text, synthesizes audio, enqueues PCM chunks to `tts_response_queue`.
 3. **Sender** (main thread): Dequeues audio chunks, resamples from 24kHz to 48kHz, and sends via WebSocket.
+
+The resampler uses `soxr` `ResampleStream` which maintains internal state across audio chunks within a single message. State is reset at each new message boundary to prevent cross-message artifacts.
 
 ## Interruption handling
 
@@ -56,9 +61,10 @@ When the user starts speaking while the character is still talking:
 Users can create custom voices by uploading a ~15-second clean audio sample:
 
 1. Upload audio via `/api/characters/voice_clone` (multipart form)
-2. The audio is sent to DashScope's voice cloning API
-3. A unique `voice_id` is returned and stored in the character config
-4. All subsequent TTS requests for that character use the cloned voice
+2. The system tries local TTS first (`/v1/speakers/register`) if available
+3. Falls back to Aliyun CosyVoice cloud API for voice cloning
+4. A unique `voice_id` is returned and stored in the character config
+5. All subsequent TTS requests for that character use the cloned voice
 
 ## Audio format
 
@@ -68,7 +74,7 @@ Users can create custom voices by uploading a ~15-second clean audio sample:
 | Browser playback rate | 48,000 Hz |
 | Format | PCM 16-bit signed little-endian |
 | Channels | Mono |
-| Resampler | soxr (high quality) |
+| Resampler | soxr `ResampleStream` (stateful, high quality) |
 
 ## Free voices
 

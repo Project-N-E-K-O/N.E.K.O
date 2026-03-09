@@ -12,6 +12,7 @@ Core providers must support **Realtime API** (WebSocket-based streaming).
 | `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3-omni-flash-realtime` |
 | `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-mini` |
 | `step` | `wss://api.stepfun.com/v1/realtime` | `step-audio-2` |
+| `glm` | `wss://open.bigmodel.cn/...` | GLM Realtime (tongtong voice) |
 | `gemini` | Google GenAI SDK | `gemini-2.5-flash-native-audio-preview-12-2025` |
 
 ::: tip

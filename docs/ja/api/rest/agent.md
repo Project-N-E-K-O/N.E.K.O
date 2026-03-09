@@ -2,7 +2,7 @@
 
 **プレフィックス:** `/api/agent`
 
-バックグラウンドエージェントシステムを管理します — 機能フラグ、タスク状態、ヘルス監視。
+バックグラウンドエージェントシステムを管理します — 機能フラグ、タスク状態、ヘルス監視。すべてのリクエストは Agent Server（ポート 48915）にプロキシされます。
 
 ## フラグ
 
@@ -17,13 +17,14 @@
   "agent_enabled": false,
   "computer_use_enabled": false,
   "mcp_enabled": false,
-  "browser_use_enabled": false
+  "browser_use_enabled": false,
+  "user_plugin_enabled": false
 }
 ```
 
 ### `POST /api/agent/flags`
 
-エージェントフラグを更新します。変更はツールサーバーに転送されます。
+エージェントフラグを更新します。変更はセッションマネージャーに反映され、ツールサーバーに転送されます。
 
 **ボディ:**
 
@@ -32,7 +33,8 @@
   "lanlan_name": "character_name",
   "flags": {
     "agent_enabled": true,
-    "mcp_enabled": true
+    "mcp_enabled": true,
+    "user_plugin_enabled": false
   }
 }
 ```
@@ -41,11 +43,11 @@
 
 ### `GET /api/agent/state`
 
-エージェントの現在の状態（実行中のタスク、保留中のリクエスト）のスナップショットを取得します。
+エージェントのリビジョン番号、フラグ、機能を含む権威ある状態スナップショットを取得します。
 
 ### `GET /api/agent/health`
 
-エージェントのヘルスチェックエンドポイント。
+エージェントのヘルスチェックエンドポイント（ツールサーバーにプロキシ）。
 
 ## 機能チェック
 
@@ -79,7 +81,7 @@ Browser Use が利用可能かどうかを確認します。
 
 ### `POST /api/agent/command`
 
-エージェントに制御コマンドを送信します。
+フロントエンドからエージェントを制御するための統一コマンドエントリポイント。
 
 **ボディ:**
 
@@ -87,18 +89,29 @@ Browser Use が利用可能かどうかを確認します。
 {
   "lanlan_name": "character_name",
   "command": "pause",
-  "task_id": "optional_task_id"
+  "request_id": "optional_request_id",
+  "enabled": true,
+  "key": "optional_key",
+  "value": "optional_value"
 }
 ```
-
-**利用可能なコマンド:** `pause`、`resume`、`cancel`
 
 ## 内部エンドポイント
 
 ### `POST /api/agent/internal/analyze_request`
 
-分析リクエストを送信するための内部エンドポイント。メインサーバーのセッションマネージャーによって使用されます。
+内部ブリッジエンドポイント：サブプロセスからの分析リクエストを受信し、EventBus を通じてパブリッシュします。
+
+**ボディ:**
+
+```json
+{
+  "trigger": "conversation",
+  "lanlan_name": "character_name",
+  "messages": [ ... ]
+}
+```
 
 ### `POST /api/agent/admin/control`
 
-管理者制御コマンド（例：プロセスの強制終了）。使用時は注意してください。
+ツールサーバーにプロキシされる管理者制御コマンド。使用時は注意してください。

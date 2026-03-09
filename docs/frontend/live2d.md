@@ -24,7 +24,7 @@ Each Live2D model can define mappings from emotion labels to expressions and mot
 }
 ```
 
-Emotions are detected by the backend (`/api/analyze_emotion`) and sent to the frontend via WebSocket.
+Emotions are detected by the backend (`/api/emotion/analysis`) and sent to the frontend via WebSocket.
 
 ## UI components
 

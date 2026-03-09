@@ -35,6 +35,8 @@ Browser                    Main Server                   LLM Provider
 { "action": "stream_data", "input_type": "audio", "data": "<base64 PCM>" }
 { "action": "stream_data", "input_type": "text", "data": "Hello!" }
 { "action": "end_session" }
+{ "action": "pause_session" }
+{ "action": "screenshot_response", "data": "<base64 image>" }
 { "action": "ping" }
 ```
 
@@ -46,6 +48,7 @@ Browser                    Main Server                   LLM Provider
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
 { "type": "agent_notification", "text": "...", "source": "...", "status": "..." }
+{ "type": "catgirl_switched", "data": { ... } }
 { "type": "pong" }
 ```
 
@@ -67,11 +70,13 @@ Browser ──── GET /api/characters/ ────> FastAPI Router
 LLMSessionManager                  Agent Server
   │                                    │
   │── ZMQ PUB (analyze request) ──────>│
-  │                                    │── Planner: タスクプランを作成
-  │                                    │── Executor: アクションを実行
-  │                                    │   ├── MCP tool calls
-  │                                    │   ├── Computer Use
-  │                                    │   └── Browser Use
+  │                                    │── DirectTaskExecutor:
+  │                                    │   parallel assess:
+  │                                    │   ├── _assess_mcp()
+  │                                    │   ├── _assess_browser_use()
+  │                                    │   ├── _assess_computer_use()
+  │                                    │   └── _assess_user_plugin()
+  │                                    │   priority select & execute
   │                                    │── Analyzer: 結果を評価
   │<── ZMQ PUSH (task_result) ────────│
   │                                    │
@@ -83,15 +88,20 @@ LLMSessionManager                  Agent Server
 ```
 LLM text output ──> TTS request queue ──> TTS worker thread
                                               │
-                                              ├── DashScope CosyVoice
-                                              ├── GPT-SoVITS（ローカル）
-                                              └── Custom endpoint
+                                     ┌────────┼──────────────┐
+                                     │        │              │
+                                     ▼        ▼              ▼
+                                CosyVoice  GPT-SoVITS   StepFun RT
+                               (DashScope) (Local)      (WebSocket)
+                                     │        │              │
+                                     └────────┼──────────────┘
                                               │
-                                         TTS response queue
+                                    TTS response queue
                                               │
-                                         Audio resampler（24→48kHz）
+                                    soxr ResampleStream (24→48kHz)
+                                        (stateful, per-message)
                                               │
-                                         WebSocket send to browser
+                                    WebSocket ──> Browser
 ```
 
-TTSパイプラインは完全に中断可能です — ユーザーが話し始めると（割り込みイベント）、保留中のTTS出力は即座に破棄されます。
+TTSパイプラインは完全に中断可能です — ユーザーが話し始めると（割り込みイベント）、保留中のTTS出力は即座に破棄されます。`soxr` リサンプラーはチャンク境界での不連続を防ぐためチャンク間で内部状態を保持し、アーティファクトを避けるため新しいメッセージごとに状態をリセットします。

@@ -2,11 +2,11 @@
 
 **Prefix:** `/api`
 
-Miscellaneous system endpoints for emotion analysis, file utilities, screenshots, and proactive chat.
+Miscellaneous system endpoints for emotion analysis, file utilities, Steam integration, proactive chat, and translation.
 
 ## Emotion analysis
 
-### `POST /api/analyze_emotion`
+### `POST /api/emotion/analysis`
 
 Analyze the emotional tone of text.
 
@@ -15,11 +15,20 @@ Analyze the emotional tone of text.
 ```json
 {
   "text": "I'm so happy to see you!",
-  "lanlan_name": "character_name"
+  "lanlan_name": "character_name",
+  "api_key": "optional",
+  "model": "optional"
 }
 ```
 
-**Response:** Emotion label used for Live2D/VRM expression mapping.
+**Response:**
+
+```json
+{
+  "emotion": "happy",
+  "confidence": 0.95
+}
+```
 
 ## File utilities
 
@@ -31,59 +40,84 @@ Check if a file exists at the given path.
 
 ### `GET /api/find-first-image`
 
-Find the first image file in a directory.
+Find the first preview image file in a folder.
 
-**Query:** `directory` — Directory path to search.
+**Query:** `folder` — Folder path to search.
 
-### `GET /api/proxy-image`
+### `GET /api/steam/proxy-image`
 
-Proxy an image request to bypass CORS restrictions.
+Proxy an image request for local file access.
 
-**Query:** `url` — Image URL to proxy.
+**Query:** `image_path` — Local image file path.
 
-## Steam achievements
+## Steam integration
 
-### `POST /api/steam_achievement`
+### `POST /api/steam/set-achievement-status/{name}`
 
-Unlock a Steam achievement.
+Set a Steam achievement's unlock status.
+
+**Path:** `name` — Achievement identifier.
+
+### `GET /api/steam/list-achievements`
+
+List all Steam achievements and their status.
+
+### `POST /api/steam/update-playtime`
+
+Update the tracked game playtime.
 
 **Body:**
 
 ```json
-{ "achievement_id": "ACHIEVEMENT_NAME" }
+{ "seconds": 3600 }
 ```
 
 ## Proactive chat
 
 ### `POST /api/proactive_chat`
 
-Generate a proactive message from the character (used for idle conversation).
+Generate a proactive message from the character (two-stage architecture).
 
 **Body:**
 
 ```json
 {
   "lanlan_name": "character_name",
-  "context": "optional context about what's happening"
+  "enabled_modes": ["vision", "news", "video", "home", "window", "personal"],
+  "screenshot_data": "optional base64",
+  "language": "zh"
 }
 ```
 
-::: info
-Proactive messages are rate-limited: maximum 10 per character per hour.
-:::
+## Translation
 
-## Web screening
+### `POST /api/translate`
 
-### `POST /api/web_screening`
+Translate text between languages.
 
-Screen web content through AI review (for content filtering and relevance ranking).
+**Body:**
 
-**Body:** Web content data with screening mode.
+```json
+{
+  "text": "Hello",
+  "target_lang": "zh",
+  "source_lang": "en",
+  "skip_google": false
+}
+```
 
-## Screenshot analysis
+## Other endpoints
 
-### `POST /api/screenshot_analysis`
+### `POST /api/personal_dynamics`
 
-Analyze a screenshot using a vision model.
+Get personalised content data.
 
-**Body:** Base64-encoded image data with optional context.
+**Body:**
+
+```json
+{ "limit": 10 }
+```
+
+### `GET /api/get_window_title`
+
+Get the currently active window title (Windows only).

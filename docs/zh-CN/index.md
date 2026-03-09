@@ -22,7 +22,7 @@ hero:
 features:
   - icon: "\U0001F3D7\uFE0F"
     title: 微服务架构
-    details: 三服务器设计（主服务器、记忆服务器、智能体服务器），支持 WebSocket 实时通信、ZeroMQ 事件总线和 LLM 会话热切换。
+    details: 四服务器设计（主服务器、记忆服务器、监控服务器、智能体服务器），支持 WebSocket 实时通信、ZeroMQ 事件总线和 LLM 会话热切换。
     link: /zh-CN/architecture/
     linkText: 了解更多
   - icon: "\U0001F50C"
@@ -32,7 +32,7 @@ features:
     linkText: 构建插件
   - icon: "\U0001F310"
     title: REST 与 WebSocket API
-    details: 全面的 API 接口 —— 10 个 REST 路由，覆盖角色、模型、记忆、智能体，以及用于实时语音/文字聊天的 WebSocket 流式协议。
+    details: 全面的 API 接口 —— 11 个 REST 路由，覆盖角色、模型、记忆、智能体，以及用于实时语音/文字聊天的 WebSocket 流式协议。
     link: /zh-CN/api/
     linkText: API 参考
   - icon: "\U0001F9E0"

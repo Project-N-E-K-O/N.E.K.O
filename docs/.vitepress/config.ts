@@ -41,19 +41,19 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       group: 'Architecture',
-      overview: 'Overview', three: 'Three-Server Design', data: 'Data Flow',
+      overview: 'Overview', three: 'Server Architecture', data: 'Data Flow',
       session: 'Session Management', memory: 'Memory System', agent: 'Agent System',
       tts: 'TTS Pipeline',
     },
     'zh-CN': {
       group: '架构设计',
-      overview: '概览', three: '三服务器架构', data: '数据流',
+      overview: '概览', three: '服务架构', data: '数据流',
       session: '会话管理', memory: '记忆系统', agent: 'Agent 系统',
       tts: 'TTS 流水线',
     },
     ja: {
       group: 'アーキテクチャ',
-      overview: '概要', three: '3サーバー設計', data: 'データフロー',
+      overview: '概要', three: 'サーバーアーキテクチャ', data: 'データフロー',
       session: 'セッション管理', memory: 'メモリシステム', agent: 'エージェントシステム',
       tts: 'TTS パイプライン',
     },
@@ -483,7 +483,7 @@ export default defineConfig({
 
   /* ---- Default (English) theme ---- */
   themeConfig: {
-    logo: '/logo.jpg',
+    logo: '/logo.png',
     siteTitle: 'N.E.K.O. Docs',
 
     nav: buildNav('en'),

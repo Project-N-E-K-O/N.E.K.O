@@ -10,7 +10,7 @@ Manages AI characters (referred to as "catgirls" or "lanlan" internally), includ
 
 List all characters with optional language localization.
 
-**Query:** `language` (optional) — Locale code for translated field names.
+**Query:** `language` (optional) — Locale code for translated field names. Also respects `Accept-Language` header.
 
 ---
 
@@ -18,7 +18,7 @@ List all characters with optional language localization.
 
 Create a new character.
 
-**Body:** Character data object with personality fields.
+**Body:** Character data object with personality fields (档案名, 昵称, 性格, system_prompt, voice_id, etc.).
 
 ---
 
@@ -28,13 +28,13 @@ Update an existing character's settings.
 
 **Path:** `name` — Character identifier.
 
-**Body:** Updated character data.
+**Body:** Updated character data (昵称, 性别, voice_id, etc.).
 
 ---
 
 ### `DELETE /api/characters/catgirl/{name}`
 
-Delete a character.
+Delete a character. Cannot delete the currently active character.
 
 ---
 
@@ -52,7 +52,7 @@ Rename a character. Updates all references including memory files.
 
 ### `GET /api/characters/current_catgirl`
 
-Get the currently active character.
+Get the currently active character name.
 
 ### `POST /api/characters/current_catgirl`
 
@@ -68,30 +68,35 @@ Switch the active character.
 
 ### `POST /api/characters/reload`
 
-Reload character configuration from disk.
+Reload character configuration from disk (hot-reload).
 
 ### `POST /api/characters/master`
 
 Update the master (owner/player) information.
 
-## Live2D model binding
+**Body:** Master data object (档案名, 昵称, etc.).
+
+## Model binding
 
 ### `GET /api/characters/current_live2d_model`
 
-Get the current character's Live2D model info.
+Get the current character's model info.
 
-**Query:** `catgirl_name` (optional), `item_id` (optional)
+**Query:** `catgirl_name` (optional), `item_id` (optional Workshop item ID)
 
 ### `PUT /api/characters/catgirl/l2d/{name}`
 
-Update a character's Live2D model binding.
+Update a character's model binding (Live2D or VRM).
 
 **Body:**
 
 ```json
 {
   "live2d": "model_directory_name",
-  "live2d_item_id": "workshop_item_id"
+  "vrm": "vrm_model_name",
+  "model_type": "live2d",
+  "item_id": "workshop_item_id",
+  "vrm_animation": "animation_name"
 }
 ```
 
@@ -102,7 +107,10 @@ Update character's VRM lighting configuration.
 **Body:**
 
 ```json
-{ "brightness": 0.8 }
+{
+  "lighting": { ... },
+  "apply_runtime": true
+}
 ```
 
 ## Voice settings
@@ -127,29 +135,17 @@ Remove the custom voice from a character.
 
 ### `GET /api/characters/voices`
 
-List available TTS voices.
-
-**Query:** `voice_provider` (optional) — Filter by provider.
+List all registered voice tones for the current API key.
 
 ### `GET /api/characters/voice_preview`
 
 Preview a voice (returns audio stream).
 
-**Query:** `voice_id`, `text`, `provider`
+**Query:** `voice_id`
 
-### `POST /api/characters/voices`
+### `POST /api/characters/clear_voice_ids`
 
-Add a custom voice configuration.
-
-### `DELETE /api/characters/voices/{voice_id}`
-
-Delete a custom voice.
-
-### `POST /api/characters/voice_clone`
-
-Clone a voice from audio samples.
-
-**Body:** `multipart/form-data` with audio file(s).
+Clear all saved voice ID records across all characters.
 
 ## Microphone
 
@@ -160,26 +156,9 @@ Set the input microphone device.
 **Body:**
 
 ```json
-{
-  "device_name": "Built-in Microphone",
-  "device_id": "default"
-}
+{ "microphone_id": "device_id" }
 ```
 
 ### `GET /api/characters/get_microphone`
 
-Get the current microphone settings.
-
-## Character cards
-
-### `GET /api/characters/character-card/list`
-
-List character card files.
-
-### `POST /api/characters/character-card/save`
-
-Save a character card.
-
-### `POST /api/characters/catgirl/save-to-model-folder`
-
-Save character data to the model folder for Workshop publishing.
+Get the current microphone selection.

@@ -42,15 +42,17 @@ ws://localhost:48911/ws/{lanlan_name}
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
 | 字段 | 类型 | 描述 |
 |------|------|------|
 | `action` | `"start_session"` | 必填 |
-| `input_type` | `"audio"` \| `"text"` | 输入模式 |
+| `input_type` | `"audio"` \| `"text"` \| `"screen"` \| `"camera"` | 输入模式 |
 | `new_session` | boolean | 是否创建全新会话 |
+| `language` | string | 可选语言代码（zh/en/ja） |
 
 ### 结束会话
 
@@ -67,6 +69,15 @@ ws://localhost:48911/ws/{lanlan_name}
 ```
 
 保持 WebSocket 连接但暂停 LLM 处理。
+
+### 截图响应
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "data:image/png;base64,..."
+}
+```
 
 ## 错误处理
 

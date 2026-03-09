@@ -10,19 +10,20 @@ LLM 文本输出
       ▼
 TTS 请求队列 ──> TTS 工作线程
                            │
-                      ┌────┼────────────┐
-                      │    │            │
-                      ▼    ▼            ▼
-                  CosyVoice  GPT-SoVITS  自定义
-                  (DashScope) (本地)      端点
-                      │    │            │
-                      └────┼────────────┘
+                  ┌────────┼──────────────┐
+                  │        │              │
+                  ▼        ▼              ▼
+             CosyVoice  GPT-SoVITS   StepFun RT
+            (DashScope)  (本地)      (WebSocket)
+                  │        │              │
+                  └────────┼──────────────┘
                            │
-                      TTS 响应队列
+                  TTS 响应队列
                            │
-                      音频重采样器（24→48 kHz）
+                  soxr ResampleStream（24→48 kHz）
+                      （状态化，按消息）
                            │
-                      WebSocket ──> 浏览器
+                  WebSocket ──> 浏览器
 ```
 
 ## 支持的提供商
@@ -31,7 +32,9 @@ TTS 请求队列 ──> TTS 工作线程
 |--------|------|------|
 | **DashScope CosyVoice** | 云端 API | 高质量、语音克隆、多种音色 |
 | **DashScope TTS V2** | 云端 API | 更快速、更低延迟 |
-| **GPT-SoVITS** | 本地服务 | 完全离线、可自定义 |
+| **StepFun 实时** | WebSocket (`wss://api.stepfun.com/v1/realtime/audio`) | 实时流式、低延迟 |
+| **通义千问 CosyVoice 3** | 云端 API（阿里云） | 自定义说话人声音合成、Flash 模型 |
+| **GPT-SoVITS** | 本地服务 | 完全离线、可自定义、v3 API 支持 |
 | **自定义端点** | 用户自定义 | 任何 OpenAI 兼容的 TTS API |
 
 ## 基于队列的流式传输
@@ -41,6 +44,8 @@ TTS 流水线使用生产者-消费者模式：
 1. **生产者**（主线程）：随着 LLM 流式输出文本，完整的句子被加入 `tts_request_queue`。
 2. **消费者**（TTS 工作线程）：从队列取出文本，合成音频，将 PCM 数据块加入 `tts_response_queue`。
 3. **发送者**（主线程）：从队列取出音频数据块，从 24kHz 重采样到 48kHz，通过 WebSocket 发送。
+
+重采样器使用 `soxr` `ResampleStream`，在单条消息内的音频块之间维护内部状态。每条新消息边界时重置状态，以避免跨消息伪影。
 
 ## 中断处理
 
@@ -56,9 +61,10 @@ TTS 流水线使用生产者-消费者模式：
 用户可以通过上传约 15 秒的干净音频样本来创建自定义声音：
 
 1. 通过 `/api/characters/voice_clone` 上传音频（multipart 表单）
-2. 音频被发送到 DashScope 的语音克隆 API
-3. 返回唯一的 `voice_id` 并存储在角色配置中
-4. 该角色后续所有的 TTS 请求都使用克隆的声音
+2. 系统优先尝试本地 TTS（`/v1/speakers/register`）如果可用
+3. 回退到阿里云 CosyVoice 云 API 进行语音克隆
+4. 返回唯一的 `voice_id` 并存储在角色配置中
+5. 该角色后续所有的 TTS 请求都使用克隆的声音
 
 ## 音频格式
 
@@ -68,7 +74,7 @@ TTS 流水线使用生产者-消费者模式：
 | 浏览器播放采样率 | 48,000 Hz |
 | 格式 | PCM 16 位有符号小端序 |
 | 声道 | 单声道 |
-| 重采样器 | soxr（高质量） |
+| 重采样器 | soxr `ResampleStream`（状态化，高质量） |
 
 ## 免费声音
 

@@ -8,7 +8,7 @@ Manages API provider configuration, user preferences, and page settings.
 
 ### `GET /api/config/page_config`
 
-Get page configuration (model path, model type).
+Get page configuration (model path, model type, character name).
 
 **Query parameters:**
 
@@ -30,7 +30,20 @@ Get user preferences (model choices, display settings).
 
 Update user preferences.
 
-**Body:** JSON object with preference key-value pairs.
+**Body:**
+
+```json
+{
+  "model_path": "/path/to/model",
+  "position": { ... },
+  "scale": 1.0,
+  "parameters": { ... },
+  "display": { ... },
+  "rotation": { ... },
+  "viewport": { ... },
+  "camera_position": { ... }
+}
+```
 
 ---
 
@@ -42,7 +55,6 @@ Set the preferred model for a character.
 
 ```json
 {
-  "model_name": "model_name_here",
   "model_path": "/path/to/model"
 }
 ```
@@ -51,13 +63,23 @@ Set the preferred model for a character.
 
 ### `GET /api/config/steam_language`
 
-Get the Steam client's language setting. Used for automatic locale detection.
+Get the Steam client's language setting and GeoIP information.
+
+**Response:**
+
+```json
+{
+  "i18n_language": "zh",
+  "ip_country": "CN",
+  "is_mainland_china": true
+}
+```
 
 ---
 
 ### `GET /api/config/user_language`
 
-Get the user's configured language preference.
+Get the user's configured language preference (zh/en/ja).
 
 ---
 
@@ -82,7 +104,9 @@ Update core API configuration.
   "coreApiKey": "sk-xxxxx",
   "coreApi": "qwen",
   "assistApi": "qwen",
-  "assistApiKeyQwen": "sk-xxxxx"
+  "enableCustomApi": false,
+  "conversationModel": "model-name",
+  "summaryModel": "model-name"
 }
 ```
 
@@ -92,12 +116,22 @@ See [API Providers](/config/api-providers) for available provider values.
 
 ### `GET /api/config/api_providers`
 
-Get the list of all available API providers and their configurations.
+Get the list of all available API providers and their configurations (core + assist providers for frontend dropdowns).
 
 ---
 
 ### `POST /api/config/gptsovits/list_voices`
 
-List available GPT-SoVITS voices from a local service.
+List available GPT-SoVITS v3 voices from a local service.
 
-**Body:** Voice service connection settings.
+**Body:**
+
+```json
+{
+  "api_url": "http://localhost:9880"
+}
+```
+
+::: warning
+Only localhost URLs are accepted for security.
+:::

@@ -37,7 +37,10 @@
 
 /* Logo styling */
 .VPNavBarTitle .logo {
-  border-radius: 50%;
+  border-radius: 0;
+  height: 32px;
+  width: auto;
+  object-fit: contain;
 }
 
 /* Feature card hover effect */

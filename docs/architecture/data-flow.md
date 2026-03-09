@@ -35,6 +35,8 @@ Browser                    Main Server                   LLM Provider
 { "action": "stream_data", "input_type": "audio", "data": "<base64 PCM>" }
 { "action": "stream_data", "input_type": "text", "data": "Hello!" }
 { "action": "end_session" }
+{ "action": "pause_session" }
+{ "action": "screenshot_response", "data": "<base64 image>" }
 { "action": "ping" }
 ```
 
@@ -46,6 +48,7 @@ Browser                    Main Server                   LLM Provider
 { "type": "status", "message": "Session started" }
 { "type": "emotion", "emotion": "happy" }
 { "type": "agent_notification", "text": "...", "source": "...", "status": "..." }
+{ "type": "catgirl_switched", "data": { ... } }
 { "type": "pong" }
 ```
 
@@ -67,11 +70,13 @@ All REST endpoints follow standard FastAPI patterns. Routers access global state
 LLMSessionManager                  Agent Server
   │                                    │
   │── ZMQ PUB (analyze request) ──────>│
-  │                                    │── Planner: create task plan
-  │                                    │── Executor: run actions
-  │                                    │   ├── MCP tool calls
-  │                                    │   ├── Computer Use
-  │                                    │   └── Browser Use
+  │                                    │── DirectTaskExecutor:
+  │                                    │   parallel assess:
+  │                                    │   ├── _assess_mcp()
+  │                                    │   ├── _assess_browser_use()
+  │                                    │   ├── _assess_computer_use()
+  │                                    │   └── _assess_user_plugin()
+  │                                    │   priority select & execute
   │                                    │── Analyzer: evaluate results
   │<── ZMQ PUSH (task_result) ────────│
   │                                    │
@@ -83,15 +88,20 @@ LLMSessionManager                  Agent Server
 ```
 LLM text output ──> TTS request queue ──> TTS worker thread
                                               │
-                                              ├── DashScope CosyVoice
-                                              ├── GPT-SoVITS (local)
-                                              └── Custom endpoint
+                                     ┌────────┼──────────────┐
+                                     │        │              │
+                                     ▼        ▼              ▼
+                                CosyVoice  GPT-SoVITS   StepFun RT
+                               (DashScope) (Local)      (WebSocket)
+                                     │        │              │
+                                     └────────┼──────────────┘
                                               │
-                                         TTS response queue
+                                    TTS response queue
                                               │
-                                         Audio resampler (24→48kHz)
+                                    soxr ResampleStream (24→48kHz)
+                                        (stateful, per-message)
                                               │
-                                         WebSocket send to browser
+                                    WebSocket send to browser
 ```
 
-The TTS pipeline is fully interruptible — when the user starts speaking (interrupt event), pending TTS output is discarded immediately.
+The TTS pipeline is fully interruptible — when the user starts speaking (interrupt event), pending TTS output is discarded immediately. The `soxr` resampler maintains internal state across chunks to prevent discontinuities at chunk boundaries, and resets its state at each new message to avoid artifacts.

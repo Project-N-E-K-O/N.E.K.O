@@ -16,14 +16,15 @@ http://localhost:48911
 
 | ルーター | プレフィックス | 説明 |
 |--------|--------|-------------|
-| [Config](/ja/api/rest/config) | `/api/config` | API キー、ユーザー設定、プロバイダー設定 |
-| [Characters](/ja/api/rest/characters) | `/api/characters` | キャラクターの CRUD、音声設定、マイク |
+| [Config](/ja/api/rest/config) | `/api/config` | API キー、ユーザー設定、プロバイダー設定、言語 |
+| [Characters](/ja/api/rest/characters) | `/api/characters` | キャラクターの CRUD、音声設定、音声クローン、キャラクターカード |
 | [Live2D](/ja/api/rest/live2d) | `/api/live2d` | Live2D モデル管理、感情マッピング |
-| [VRM](/ja/api/rest/vrm) | `/api/model/vrm` | VRM モデル管理、アニメーション |
+| [VRM](/ja/api/rest/vrm) | `/api/model/vrm` | VRM モデル管理、アニメーション、ライティング |
 | [Memory](/ja/api/rest/memory) | `/api/memory` | メモリファイル、レビュー設定 |
-| [Agent](/ja/api/rest/agent) | `/api/agent` | エージェントフラグ、タスク、ヘルスチェック |
-| [Workshop](/ja/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop アイテム、パブリッシュ |
-| [System](/ja/api/rest/system) | `/api` | 感情分析、スクリーンショット、ユーティリティ |
+| [Agent](/ja/api/rest/agent) | `/api/agent` | エージェントフラグ、機能チェック、タスク、ヘルスチェック |
+| [Workshop](/ja/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop サブスクリプション、パブリッシュ、メタデータ |
+| [System](/ja/api/rest/system) | `/api` | 感情分析、Steam 連携、翻訳、ユーティリティ |
+| [Pages](/ja/api/rest/pages) | — | Jinja2 テンプレートによる HTML ページ配信 |
 
 ## WebSocket
 
@@ -37,10 +38,11 @@ http://localhost:48911
 
 これらはサービス間 API であり、外部からの使用を意図していません：
 
-| サーバー | 説明 |
-|--------|-------------|
-| [Memory Server](/ja/api/memory-server) | メモリの保存と取得（ポート 48912） |
-| [Agent Server](/ja/api/agent-server) | エージェントタスクの実行（ポート 48915） |
+| サーバー | ポート | 説明 |
+|--------|------|-------------|
+| [Memory Server](/ja/api/memory-server) | 48912 | メモリの保存、取得、設定抽出、レビュー |
+| [Agent Server](/ja/api/agent-server) | 48915 | エージェントタスクの実行、機能フラグ |
+| Monitor Server | 48913 | ヘルスチェック、ランチャーへの設定リレー |
 
 ## レスポンスフォーマット
 

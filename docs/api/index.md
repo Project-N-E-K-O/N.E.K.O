@@ -16,14 +16,15 @@ The API does not require authentication for local access. API keys for LLM provi
 
 | Router | Prefix | Description |
 |--------|--------|-------------|
-| [Config](/api/rest/config) | `/api/config` | API keys, preferences, provider settings |
-| [Characters](/api/rest/characters) | `/api/characters` | Character CRUD, voice settings, microphone |
+| [Config](/api/rest/config) | `/api/config` | API keys, preferences, provider settings, language |
+| [Characters](/api/rest/characters) | `/api/characters` | Character CRUD, voice settings, voice cloning, character cards |
 | [Live2D](/api/rest/live2d) | `/api/live2d` | Live2D model management, emotion mapping |
-| [VRM](/api/rest/vrm) | `/api/model/vrm` | VRM model management, animations |
+| [VRM](/api/rest/vrm) | `/api/model/vrm` | VRM model management, animations, lighting |
 | [Memory](/api/rest/memory) | `/api/memory` | Memory files, review configuration |
-| [Agent](/api/rest/agent) | `/api/agent` | Agent flags, tasks, health checks |
-| [Workshop](/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop items, publishing |
+| [Agent](/api/rest/agent) | `/api/agent` | Agent flags, capabilities, tasks, health checks |
+| [Workshop](/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop subscriptions, publishing, metadata |
 | [System](/api/rest/system) | `/api` | Emotion analysis, screenshots, utilities |
+| Pages | `/pages` | Static page serving via Jinja2 templates |
 
 ## WebSocket
 
@@ -37,10 +38,11 @@ The API does not require authentication for local access. API keys for LLM provi
 
 These are inter-service APIs not intended for external use:
 
-| Server | Description |
-|--------|-------------|
-| [Memory Server](/api/memory-server) | Memory storage and retrieval (port 48912) |
-| [Agent Server](/api/agent-server) | Agent task execution (port 48915) |
+| Server | Port | Description |
+|--------|------|-------------|
+| [Memory Server](/api/memory-server) | 48912 | Memory storage, retrieval, settings extraction, review |
+| [Agent Server](/api/agent-server) | 48915 | Agent task execution, capability flags |
+| Monitor Server | 48913 | Health checks, configuration relay for launcher |
 
 ## Response format
 

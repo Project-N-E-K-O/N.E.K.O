@@ -9,7 +9,7 @@ N.E.K.O. 是一个面向 AI 伙伴的 UGC（用户生成内容）平台。用户
 - **实时语音对话** —— 通过 WebSocket 连接 Realtime API 提供商（Qwen、OpenAI、Gemini、Step、GLM）
 - **Live2D 和 VRM 模型渲染** —— 带有情绪映射动画
 - **持久化记忆** —— 跨会话记忆，支持语义召回和时间索引历史
-- **后台智能体执行** —— 通过 MCP、Computer Use 和 Browser Use 适配器
+- **后台智能体执行** —— 通过 MCP、Computer Use、Browser Use 和 User Plugin 适配器
 - **语音克隆** —— 自定义 TTS 声音
 - **Steam 创意工坊集成** —— 内容分享
 - **插件系统** —— 开发者扩展
@@ -43,7 +43,7 @@ N.E.K.O. 是一个面向 AI 伙伴的 UGC（用户生成内容）平台。用户
 | 实时通信 | WebSocket（原生 + 阿里云 DashScope） |
 | 服务间通信 | ZeroMQ（PUB/SUB + PUSH/PULL） |
 | LLM 集成 | LangChain + OpenAI 兼容 API |
-| TTS | DashScope CosyVoice、GPT-SoVITS |
+| TTS | DashScope CosyVoice、StepFun、Gemini、OpenAI、GPT-SoVITS、Local CosyVoice |
 | 前端 | Vanilla JS、Pixi.js（Live2D）、Three.js（VRM） |
 | 记忆存储 | SQLite + 文本嵌入向量 |
 | 包管理 | uv（Python 3.11） |

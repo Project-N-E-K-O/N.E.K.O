@@ -74,24 +74,27 @@
 
 更新主人（所有者/玩家）信息。
 
-## Live2D 模型绑定
+## 模型绑定
 
 ### `GET /api/characters/current_live2d_model`
 
-获取当前角色的 Live2D 模型信息。
+获取当前角色的模型信息。
 
-**查询参数：** `catgirl_name`（可选）、`item_id`（可选）
+**查询参数：** `catgirl_name`（可选）、`item_id`（可选，创意工坊物品 ID）
 
 ### `PUT /api/characters/catgirl/l2d/{name}`
 
-更新角色的 Live2D 模型绑定。
+更新角色的模型绑定（Live2D 或 VRM）。
 
 **请求体：**
 
 ```json
 {
   "live2d": "model_directory_name",
-  "live2d_item_id": "workshop_item_id"
+  "vrm": "vrm_model_name",
+  "model_type": "live2d",
+  "item_id": "workshop_item_id",
+  "vrm_animation": "animation_name"
 }
 ```
 
@@ -102,7 +105,10 @@
 **请求体：**
 
 ```json
-{ "brightness": 0.8 }
+{
+  "lighting": { ... },
+  "apply_runtime": true
+}
 ```
 
 ## 语音设置
@@ -127,29 +133,17 @@
 
 ### `GET /api/characters/voices`
 
-列出可用的 TTS 语音。
-
-**查询参数：** `voice_provider`（可选）— 按提供商筛选。
+列出当前 API 密钥下所有已注册的语音音色。
 
 ### `GET /api/characters/voice_preview`
 
 预览语音（返回音频流）。
 
-**查询参数：** `voice_id`、`text`、`provider`
+**查询参数：** `voice_id`
 
-### `POST /api/characters/voices`
+### `POST /api/characters/clear_voice_ids`
 
-添加自定义语音配置。
-
-### `DELETE /api/characters/voices/{voice_id}`
-
-删除自定义语音。
-
-### `POST /api/characters/voice_clone`
-
-从音频样本克隆语音。
-
-**请求体：** 包含音频文件的 `multipart/form-data`。
+清除所有角色中已保存的语音 ID 记录。
 
 ## 麦克风
 
@@ -160,26 +154,9 @@
 **请求体：**
 
 ```json
-{
-  "device_name": "Built-in Microphone",
-  "device_id": "default"
-}
+{ "microphone_id": "device_id" }
 ```
 
 ### `GET /api/characters/get_microphone`
 
 获取当前麦克风设置。
-
-## 角色卡片
-
-### `GET /api/characters/character-card/list`
-
-列出角色卡片文件。
-
-### `POST /api/characters/character-card/save`
-
-保存角色卡片。
-
-### `POST /api/characters/catgirl/save-to-model-folder`
-
-将角色数据保存到模型文件夹，用于创意工坊发布。

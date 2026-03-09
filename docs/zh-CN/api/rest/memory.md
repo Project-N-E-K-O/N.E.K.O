@@ -25,16 +25,15 @@
 ```json
 {
   "filename": "recent_character_name.json",
-  "catgirl_name": "character_name",
-  "chat_history": [
-    { "role": "user", "content": "Hello!" },
-    { "role": "assistant", "content": "Hi there!" }
+  "chat": [
+    { "role": "user", "text": "Hello!" },
+    { "role": "assistant", "text": "Hi there!" }
   ]
 }
 ```
 
 ::: info
-角色名称通过支持 CJK 字符的正则表达式进行验证。聊天记录条目会验证必填字段。
+角色名称通过支持 CJK 字符的正则表达式进行验证。聊天记录条目需要 `role` 和 `text` 字段。
 :::
 
 ## 名称管理
@@ -56,8 +55,14 @@
 
 ### `GET /api/memory/review_config`
 
-获取记忆回顾配置（压缩计划、保留设置）。
+获取记忆回顾配置（是否启用自动审阅）。
 
 ### `POST /api/memory/review_config`
 
 更新记忆回顾配置。
+
+**请求体：**
+
+```json
+{ "enabled": true }
+```

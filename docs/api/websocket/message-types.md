@@ -12,7 +12,8 @@ Initialize an LLM session.
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": true,
+  "language": "zh"
 }
 ```
 
@@ -47,6 +48,15 @@ Send user input (audio chunks or text).
 }
 ```
 
+**Camera data:**
+```json
+{
+  "action": "stream_data",
+  "input_type": "camera",
+  "data": "<base64 encoded camera frame>"
+}
+```
+
 ### `end_session`
 
 Close the current session.
@@ -69,6 +79,17 @@ Keep-alive heartbeat.
 
 ```json
 { "action": "ping" }
+```
+
+### `screenshot_response`
+
+Frontend returns captured screen data in response to a server request.
+
+```json
+{
+  "action": "screenshot_response",
+  "data": "data:image/png;base64,..."
+}
 ```
 
 ## Server → Client

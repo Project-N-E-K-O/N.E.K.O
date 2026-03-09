@@ -22,7 +22,7 @@ hero:
 features:
   - icon: 🏗️
     title: Microservice Architecture
-    details: Three-server design (Main, Memory, Agent) with WebSocket real-time communication, ZeroMQ event bus, and hot-swappable LLM sessions.
+    details: Four-server design (Main, Memory, Agent, Monitor) with WebSocket real-time communication, ZeroMQ event bus, hot-swappable LLM sessions, and unified launcher.
     link: /architecture/
     linkText: Learn more
   - icon: 🔌
@@ -32,17 +32,17 @@ features:
     linkText: Build a plugin
   - icon: 🌐
     title: REST & WebSocket API
-    details: Comprehensive API surface — 10 REST routers covering characters, models, memory, agents, and a streaming WebSocket protocol for real-time voice/text chat.
+    details: Comprehensive API surface — 11 REST routers covering characters, models, memory, agents, workshop, and a streaming WebSocket protocol for real-time voice/text chat.
     link: /api/
     linkText: API reference
   - icon: 🧠
     title: Memory System
-    details: Semantic recall via embeddings, time-indexed history, compressed recent memory with sliding window, and persistent user preferences.
+    details: Semantic recall via embeddings, time-indexed history, compressed recent memory with sliding window, persistent user preferences, and LLM-based settings extraction.
     link: /architecture/memory-system
     linkText: How it works
   - icon: 🤖
     title: Agent Framework
-    details: Background task execution via MCP, Computer Use, and Browser Use adapters. Automatic task planning, deduplication, and parallel capability assessment.
+    details: Background task execution via MCP, Computer Use, Browser Use, and User Plugin adapters. Parallel capability assessment with priority-based execution.
     link: /architecture/agent-system
     linkText: Explore agents
   - icon: 🎨
