@@ -7,10 +7,10 @@ from typing import Awaitable, Protocol
 
 from plugin.sdk_v2.public.bus.watchers import Watchers as _ImplWatchers
 from plugin.sdk_v2.shared.core.types import JsonObject
-from plugin.sdk_v2.shared.models import Err, Ok, Result
+from plugin.sdk_v2.shared.models import Ok, Result
 
-from ._client_base import BusClientBase
-from .types import BusEvent, BusList
+from ._facade import BusFacadeMixin
+from .types import BusEvent, BusList, BusRecord
 
 
 class WatchEventHandler(Protocol):
@@ -26,7 +26,7 @@ class BusListDelta:
     current: BusList[object]
 
 
-class BusListWatcher:
+class BusListWatcherCore:
     @staticmethod
     def _item_key(item: object) -> str:
         key_fn = getattr(item, "key", None)
@@ -81,7 +81,7 @@ class BusListWatcher:
 
     async def poll(self) -> Result[list[BusEvent], Exception]:
         result = await self.bus_client.poll(self.channel)
-        if isinstance(result, Err):
+        if not self.bus_client._is_ok(result):
             return result
         if self._started:
             for event in result.value:
@@ -96,10 +96,9 @@ class BusListWatcher:
 
     async def poll_delta(self) -> Result[BusListDelta, Exception]:
         polled = await self.poll()
-        if isinstance(polled, Err):
+        if not self.bus_client._is_ok(polled):
             return polled
         if self.channel.startswith("records:") or self.channel == "records":
-            from .types import BusRecord
             current_map = {self._item_key(item): item for item in self._current.items}
             added_items: list[object] = []
             changed_items: list[object] = []
@@ -153,28 +152,33 @@ class BusListWatcher:
         return Ok(delta)
 
 
-class Watchers(BusClientBase):
+class BusListWatcher(BusListWatcherCore):
+    pass
+
+
+class Watchers(BusFacadeMixin):
     def __init__(self, _transport=None):
-        super().__init__(_transport, namespace="watchers")
-        self._impl = _ImplWatchers(self._transport)
-        self._state = self._impl._state
+        self._setup_impl(_ImplWatchers, _transport, namespace="watchers")
 
     async def watch(self, channel: str, handler: WatchEventHandler, *, options: JsonObject | None = None, timeout: float = 5.0) -> Result[str, Exception]:
-        if not isinstance(channel, str) or channel.strip() == "":
-            return Err(ValueError("channel must be non-empty"))
+        channel_ok = self._require_non_empty_str("channel", channel)
+        if not self._is_ok(channel_ok):
+            return channel_ok
         if not callable(handler):
-            return Err(TypeError("handler must be callable"))
-        return await self._forward_bus_result("bus.watchers.watch", self._impl.watch, channel, handler, options=options, timeout=timeout)
+            return self._type_error("handler", "callable")
+        return await self._call("bus.watchers.watch", self._impl.watch, channel_ok, handler, options=options, timeout=timeout)
 
     async def unwatch(self, watcher_id: str, *, timeout: float = 5.0) -> Result[bool, Exception]:
-        if not isinstance(watcher_id, str) or watcher_id.strip() == "":
-            return Err(ValueError("watcher_id must be non-empty"))
-        return await self._forward_bus_result("bus.watchers.unwatch", self._impl.unwatch, watcher_id, timeout=timeout)
+        watcher_ok = self._require_non_empty_str("watcher_id", watcher_id)
+        if not self._is_ok(watcher_ok):
+            return watcher_ok
+        return await self._call("bus.watchers.unwatch", self._impl.unwatch, watcher_ok, timeout=timeout)
 
     async def poll(self, channel: str, *, timeout: float = 5.0) -> Result[list[BusEvent], Exception]:
-        if not isinstance(channel, str) or channel.strip() == "":
-            return Err(ValueError("channel must be non-empty"))
-        return await self._forward_bus_result("bus.watchers.poll", self._impl.poll, channel, timeout=timeout)
+        channel_ok = self._require_non_empty_str("channel", channel)
+        if not self._is_ok(channel_ok):
+            return channel_ok
+        return await self._call("bus.watchers.poll", self._impl.poll, channel_ok, timeout=timeout)
 
 
 def list_subscription(watcher: BusListWatcher, *, on: str = "poll") -> BusListWatcher:
@@ -191,4 +195,4 @@ async def list_subscription_async(watcher: BusListWatcher, *, on: str = "poll") 
 
 list_Subscription = list_subscription
 
-__all__ = ["Watchers", "WatchEventHandler", "BusListDelta", "BusListWatcher", "list_subscription", "list_subscription_async", "list_Subscription"]
+__all__ = ["Watchers", "WatchEventHandler", "BusListDelta", "BusListWatcher", "BusListWatcherCore", "list_subscription", "list_subscription_async", "list_Subscription"]

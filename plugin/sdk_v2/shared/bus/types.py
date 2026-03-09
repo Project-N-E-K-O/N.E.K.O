@@ -369,28 +369,80 @@ class BusList(Generic[TBusRecord]):
     def limit(self, size: int) -> "BusList[TBusRecord]":
         return BusList(items=list(self.items[:size]), trace=list(self.trace), fast_mode=self.fast_mode, _reload_factory=self._reload_factory)
 
+    def query(self) -> "BusQuery[TBusRecord]":
+        return BusQuery(self)
+
     def reload(self, ctx=None) -> "BusList[TBusRecord]":
-        factory = self._reload_factory
+        return self.query().reload(ctx)
+
+    async def reload_async(self, ctx=None) -> "BusList[TBusRecord]":
+        return await self.query().reload_async(ctx)
+
+    def reload_with(self, factory) -> "BusList[TBusRecord]":
+        return self.query().reload_with(factory)
+
+    async def reload_with_async(self, factory) -> "BusList[TBusRecord]":
+        return await self.query().reload_with_async(factory)
+
+    def watch(self, bus_client, channel: str = "*"):
+        return self.query().watch(bus_client, channel)
+
+    async def watch_async(self, bus_client, channel: str = "*"):
+        return await self.query().watch_async(bus_client, channel)
+
+
+@dataclass(frozen=True)
+class BusQueryPlan:
+    trace: tuple[BusOp, ...] = ()
+
+    def dump(self) -> JsonObject:
+        return {"kind": "query_plan", "ops": [{"name": op.name, "params": dict(op.params), "at": op.at} for op in self.trace]}
+
+    def explain(self) -> str:
+        if not self.trace:
+            return "query_plan()"
+        return " -> ".join(op.name for op in self.trace)
+
+
+class BusWatcher:
+    def __init__(self, watcher):
+        self._watcher = watcher
+
+    def __getattr__(self, name: str):
+        return getattr(self._watcher, name)
+
+
+class BusQuery(Generic[TBusRecord]):
+    def __init__(self, source: BusList[TBusRecord]):
+        self._source = source
+        self._plan = BusQueryPlan(tuple(source.trace))
+
+    @property
+    def plan(self) -> BusQueryPlan:
+        return self._plan
+
+    def reload(self, ctx=None) -> BusList[TBusRecord]:
+        factory = self._source._reload_factory
         if callable(factory):
             result = factory(ctx)
             if isinstance(result, BusList):
                 return result
-        return BusList(items=list(self.items), trace=list(self.trace), fast_mode=self.fast_mode, _reload_factory=self._reload_factory)
+        return BusList(items=list(self._source.items), trace=list(self._source.trace), fast_mode=self._source.fast_mode, _reload_factory=self._source._reload_factory)
 
-    async def reload_async(self, ctx=None) -> "BusList[TBusRecord]":
+    async def reload_async(self, ctx=None) -> BusList[TBusRecord]:
         return self.reload(ctx)
 
-    def reload_with(self, factory) -> "BusList[TBusRecord]":
-        return BusList(items=list(self.items), trace=list(self.trace), fast_mode=self.fast_mode, _reload_factory=factory)
+    def reload_with(self, factory) -> BusList[TBusRecord]:
+        return BusList(items=list(self._source.items), trace=list(self._source.trace), fast_mode=self._source.fast_mode, _reload_factory=factory)
 
-    async def reload_with_async(self, factory) -> "BusList[TBusRecord]":
+    async def reload_with_async(self, factory) -> BusList[TBusRecord]:
         return self.reload_with(factory)
 
-    def watch(self, bus_client, channel: str = "*"):
+    def watch(self, bus_client, channel: str = "*") -> BusWatcher:
         from .watchers import BusListWatcher
-        return BusListWatcher("watch:list", bus_client, channel)
+        return BusWatcher(BusListWatcher("watch:list", bus_client, channel))
 
-    async def watch_async(self, bus_client, channel: str = "*"):
+    async def watch_async(self, bus_client, channel: str = "*") -> BusWatcher:
         return self.watch(bus_client, channel)
 
 
@@ -412,4 +464,7 @@ __all__ = [
     "BinaryNode",
     "BusReplayContext",
     "BusList",
+    "BusQueryPlan",
+    "BusQuery",
+    "BusWatcher",
 ]

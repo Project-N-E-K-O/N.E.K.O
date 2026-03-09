@@ -6,7 +6,6 @@ from plugin.sdk_v2.public.bus.events import Events as _ImplEvents
 from plugin.sdk_v2.shared.core.types import JsonObject
 from plugin.sdk_v2.shared.models import Err, Result
 
-from ._client_base import BusClientBase
 from ._facade import BusFacadeMixin
 from .types import BusEvent, BusList
 
@@ -23,24 +22,21 @@ class EventList(BusList[EventRecord]):
     pass
 
 
-class Events(BusFacadeMixin, BusClientBase):
+class Events(BusFacadeMixin):
     def __init__(self, _transport=None):
-        super().__init__(_transport, namespace="events")
-        self._impl = _ImplEvents(self._transport)
-        self._state = self._impl._state
+        self._setup_impl(_ImplEvents, _transport, namespace="events")
 
     async def publish(self, event_type: str, payload: JsonObject, *, timeout: float = 5.0) -> Result[BusEvent, Exception]:
-        if not isinstance(event_type, str) or event_type.strip() == "":
-            return Err(EventPublishError("event_type must be non-empty"))
-        result = await self._call("bus.events.publish", self._impl.publish, event_type, dict(payload), timeout=timeout)
-        if isinstance(result, Err):
-            return Err(EventPublishError(str(result.error)))
-        return result
+        event_ok = self._require_non_empty_str("event_type", event_type, EventPublishError)
+        if isinstance(event_ok, Err):
+            return event_ok
+        return await self._call("bus.events.publish", self._impl.publish, event_ok, dict(payload), timeout=timeout, error_mapper=lambda e: EventPublishError(str(e)))
 
     async def list(self, event_type: str | None = None, *, limit: int = 100, timeout: float = 10.0) -> Result[list[BusEvent], Exception]:
-        if limit <= 0:
-            return Err(ValueError("limit must be > 0"))
-        return await self._call("bus.events.list", self._impl.list, event_type, limit=limit, timeout=timeout)
+        limit_ok = self._require_positive_int("limit", limit)
+        if isinstance(limit_ok, Err):
+            return limit_ok
+        return await self._call("bus.events.list", self._impl.list, event_type, limit=limit_ok, timeout=timeout)
 
 
 class EventClient:

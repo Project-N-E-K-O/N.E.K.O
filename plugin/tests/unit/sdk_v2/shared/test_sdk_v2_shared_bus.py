@@ -301,3 +301,22 @@ def test_bus_item_key_and_version_protocol() -> None:
     assert msg.key() == "m1" and msg.version() == 3
     assert evt.key() == "e1" and evt.version() == 4
     assert rec.key() == "ns:r1" and rec.version() == 2
+
+
+def test_bus_query_and_plan_objects() -> None:
+    op = types.BusOp(name="get", params={"ns": "x"}, at=1.0)
+    items = types.BusList([types.BusConversation(id="c1", topic="demo")], trace=[op])
+    query = items.query()
+    assert query.plan.explain() == "get"
+    assert query.plan.dump()["kind"] == "query_plan"
+    assert query.reload().count() == 1
+
+
+@pytest.mark.asyncio
+async def test_bus_query_watch_wrapper() -> None:
+    aggregate = bus_list.Bus()
+    items = types.BusList([types.BusEvent(id="e1", event_type="created")])
+    wrapped = items.query().watch(aggregate.watchers, "created")
+    assert wrapped.channel == "created"
+    async_wrapped = await items.query().watch_async(aggregate.watchers, "created")
+    assert async_wrapped.channel == "created"

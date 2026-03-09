@@ -7,9 +7,8 @@ from typing import Any
 
 from plugin.sdk_v2.public.bus.records import Records as _ImplRecords
 from plugin.sdk_v2.shared.core.types import JsonObject
-from plugin.sdk_v2.shared.models import Err, Result
+from plugin.sdk_v2.shared.models import Result
 
-from ._client_base import BusClientBase
 from ._facade import BusFacadeMixin
 from .types import BusRecord
 
@@ -40,39 +39,67 @@ def parse_iso_timestamp(value: Any) -> float | None:
         return None
 
 
-class Records(BusFacadeMixin, BusClientBase):
+class Records(BusFacadeMixin):
     def __init__(self, _transport=None):
-        super().__init__(_transport, namespace="records")
-        self._impl = _ImplRecords(self._transport)
-        self._state = self._impl._state
+        self._setup_impl(_ImplRecords, _transport, namespace="records")
 
     async def list(self, namespace: str, *, limit: int = 100, timeout: float = 10.0) -> Result[list[BusRecord], Exception]:
-        if not isinstance(namespace, str) or namespace.strip() == "":
-            return Err(ValueError("namespace must be non-empty"))
-        if limit <= 0:
-            return Err(ValueError("limit must be > 0"))
-        return await self._call("bus.records.list", self._impl.list, namespace, limit=limit, timeout=timeout, error_mapper=lambda error: RecordConflictError(str(error)))
+        namespace_ok = self._require_non_empty_str("namespace", namespace)
+        if not self._is_ok(namespace_ok):
+            return namespace_ok
+        limit_ok = self._require_positive_int("limit", limit)
+        if not self._is_ok(limit_ok):
+            return limit_ok
+        return await self._call("bus.records.list", self._impl.list, namespace_ok, limit=limit_ok, timeout=timeout)
 
     async def get(self, namespace: str, record_id: str, *, timeout: float = 10.0) -> Result[BusRecord, Exception]:
-        if not isinstance(namespace, str) or namespace.strip() == "":
-            return Err(RecordConflictError("namespace must be non-empty"))
-        if not isinstance(record_id, str) or record_id.strip() == "":
-            return Err(RecordConflictError("record_id must be non-empty"))
-        return await self._call("bus.records.get", self._impl.get, namespace, record_id, timeout=timeout, error_mapper=lambda error: RecordConflictError(str(error)))
+        namespace_ok = self._require_non_empty_str("namespace", namespace, RecordConflictError)
+        if not self._is_ok(namespace_ok):
+            return namespace_ok
+        record_ok = self._require_non_empty_str("record_id", record_id, RecordConflictError)
+        if not self._is_ok(record_ok):
+            return record_ok
+        return await self._call(
+            "bus.records.get",
+            self._impl.get,
+            namespace_ok,
+            record_ok,
+            timeout=timeout,
+            error_mapper=lambda error: RecordConflictError(str(error)),
+        )
 
     async def put(self, namespace: str, record_id: str, payload: JsonObject, *, timeout: float = 10.0) -> Result[BusRecord, Exception]:
-        if not isinstance(namespace, str) or namespace.strip() == "":
-            return Err(RecordConflictError("namespace must be non-empty"))
-        if not isinstance(record_id, str) or record_id.strip() == "":
-            return Err(RecordConflictError("record_id must be non-empty"))
-        return await self._call("bus.records.put", self._impl.put, namespace, record_id, dict(payload), timeout=timeout, error_mapper=lambda error: RecordConflictError(str(error)))
+        namespace_ok = self._require_non_empty_str("namespace", namespace, RecordConflictError)
+        if not self._is_ok(namespace_ok):
+            return namespace_ok
+        record_ok = self._require_non_empty_str("record_id", record_id, RecordConflictError)
+        if not self._is_ok(record_ok):
+            return record_ok
+        return await self._call(
+            "bus.records.put",
+            self._impl.put,
+            namespace_ok,
+            record_ok,
+            dict(payload),
+            timeout=timeout,
+            error_mapper=lambda error: RecordConflictError(str(error)),
+        )
 
     async def delete(self, namespace: str, record_id: str, *, timeout: float = 10.0) -> Result[bool, Exception]:
-        if not isinstance(namespace, str) or namespace.strip() == "":
-            return Err(RecordConflictError("namespace must be non-empty"))
-        if not isinstance(record_id, str) or record_id.strip() == "":
-            return Err(RecordConflictError("record_id must be non-empty"))
-        return await self._call("bus.records.delete", self._impl.delete, namespace, record_id, timeout=timeout, error_mapper=lambda error: RecordConflictError(str(error)))
+        namespace_ok = self._require_non_empty_str("namespace", namespace, RecordConflictError)
+        if not self._is_ok(namespace_ok):
+            return namespace_ok
+        record_ok = self._require_non_empty_str("record_id", record_id, RecordConflictError)
+        if not self._is_ok(record_ok):
+            return record_ok
+        return await self._call(
+            "bus.records.delete",
+            self._impl.delete,
+            namespace_ok,
+            record_ok,
+            timeout=timeout,
+            error_mapper=lambda error: RecordConflictError(str(error)),
+        )
 
 
 __all__ = ["Records", "RecordConflictError", "parse_iso_timestamp"]

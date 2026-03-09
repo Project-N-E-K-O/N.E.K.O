@@ -6,7 +6,6 @@ from plugin.sdk_v2.public.bus.messages import Messages as _ImplMessages
 from plugin.sdk_v2.shared.core.types import JsonObject, JsonValue
 from plugin.sdk_v2.shared.models import Err, Result
 
-from ._client_base import BusClientBase
 from ._facade import BusFacadeMixin
 from .types import BusList, BusMessage
 
@@ -34,41 +33,39 @@ class _LocalMessageCache:
         return list(self._items[-count:])
 
 
-class Messages(BusFacadeMixin, BusClientBase):
+class Messages(BusFacadeMixin):
     def __init__(self, _transport=None):
-        super().__init__(_transport, namespace="messages")
-        self._impl = _ImplMessages(self._transport)
-        self._state = self._impl._state
+        self._setup_impl(_ImplMessages, _transport, namespace="messages")
 
     async def list(self, conversation_id: str, *, limit: int = 100, cursor: str | None = None, timeout: float = 10.0) -> Result[list[BusMessage], Exception]:
-        if not isinstance(conversation_id, str) or conversation_id.strip() == "":
-            return Err(MessageValidationError("conversation_id must be non-empty"))
-        if limit <= 0:
-            return Err(MessageValidationError("limit must be > 0"))
-        return await self._call("bus.messages.list", self._impl.list, conversation_id, limit=limit, cursor=cursor, timeout=timeout)
+        conv_ok = self._require_non_empty_str("conversation_id", conversation_id, MessageValidationError)
+        if isinstance(conv_ok, Err):
+            return conv_ok
+        limit_ok = self._require_positive_int("limit", limit, MessageValidationError)
+        if isinstance(limit_ok, Err):
+            return limit_ok
+        return await self._call("bus.messages.list", self._impl.list, conv_ok, limit=limit_ok, cursor=cursor, timeout=timeout)
 
     async def get(self, message_id: str, *, timeout: float = 10.0) -> Result[BusMessage, Exception]:
-        if not isinstance(message_id, str) or message_id.strip() == "":
-            return Err(MessageValidationError("message_id must be non-empty"))
-        result = await self._call("bus.messages.get", self._impl.get, message_id, timeout=timeout)
-        if isinstance(result, Err):
-            return Err(MessageValidationError(str(result.error)))
-        return result
+        msg_ok = self._require_non_empty_str("message_id", message_id, MessageValidationError)
+        if isinstance(msg_ok, Err):
+            return msg_ok
+        return await self._call("bus.messages.get", self._impl.get, msg_ok, timeout=timeout, error_mapper=lambda e: MessageValidationError(str(e)))
 
     async def append(self, conversation_id: str, *, role: str, content: JsonValue, metadata: JsonObject | None = None, timeout: float = 10.0) -> Result[BusMessage, Exception]:
-        if not isinstance(conversation_id, str) or conversation_id.strip() == "":
-            return Err(MessageValidationError("conversation_id must be non-empty"))
-        if not isinstance(role, str) or role.strip() == "":
-            return Err(MessageValidationError("role must be non-empty"))
-        result = await self._call("bus.messages.append", self._impl.append, conversation_id, role=role, content=content, metadata=metadata, timeout=timeout)
-        if isinstance(result, Err):
-            return Err(MessageValidationError(str(result.error)))
-        return result
+        conv_ok = self._require_non_empty_str("conversation_id", conversation_id, MessageValidationError)
+        if isinstance(conv_ok, Err):
+            return conv_ok
+        role_ok = self._require_non_empty_str("role", role, MessageValidationError)
+        if isinstance(role_ok, Err):
+            return role_ok
+        return await self._call("bus.messages.append", self._impl.append, conv_ok, role=role_ok, content=content, metadata=metadata, timeout=timeout, error_mapper=lambda e: MessageValidationError(str(e)))
 
     async def delete(self, message_id: str, *, timeout: float = 10.0) -> Result[bool, Exception]:
-        if not isinstance(message_id, str) or message_id.strip() == "":
-            return Err(MessageValidationError("message_id must be non-empty"))
-        return await self._call("bus.messages.delete", self._impl.delete, message_id, timeout=timeout)
+        msg_ok = self._require_non_empty_str("message_id", message_id, MessageValidationError)
+        if isinstance(msg_ok, Err):
+            return msg_ok
+        return await self._call("bus.messages.delete", self._impl.delete, msg_ok, timeout=timeout)
 
     async def get_by_conversation(self, conversation_id: str, *, limit: int = 100, timeout: float = 10.0) -> Result[list[BusMessage], Exception]:
         return await self.list(conversation_id, limit=limit, timeout=timeout)
@@ -86,10 +83,7 @@ class MessageClient:
         return await self.get(**kwargs)
 
     async def get_message_plane_all(self, *, max_count: int = 100, timeout: float = 5.0) -> MessageList:
-        items: list[MessageRecord] = []
-        for message in self._impl._state.messages.values():
-            items.append(MessageRecord(**message.dump()))
-        return MessageList(items[:max_count])
+        return MessageList([MessageRecord(**message.dump()) for message in list(self._impl._state.messages.values())[:max_count]])
 
     async def get_message_plane_all_async(self, **kwargs) -> MessageList:
         return await self.get_message_plane_all(**kwargs)

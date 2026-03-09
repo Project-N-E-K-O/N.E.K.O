@@ -7,7 +7,6 @@ from typing import Any, Mapping
 from plugin.sdk_v2.public.bus.memory import Memory as _ImplMemory
 from plugin.sdk_v2.shared.models import Err, Result
 
-from ._client_base import BusClientBase
 from ._facade import BusFacadeMixin
 from .types import BusList, BusRecord
 
@@ -23,25 +22,27 @@ class MemoryList(BusList[MemoryRecord]):
     pass
 
 
-class Memory(BusFacadeMixin, BusClientBase):
+class Memory(BusFacadeMixin):
     def __init__(self, _transport=None):
-        super().__init__(_transport, namespace="memory")
-        self._impl = _ImplMemory(self._transport)
-        self._state = self._impl._state
+        self._setup_impl(_ImplMemory, _transport, namespace="memory")
 
     async def query(self, bucket_id: str, query: str, *, timeout: float = 5.0) -> Result[Any, Exception]:
-        if not isinstance(bucket_id, str) or bucket_id.strip() == "":
-            return Err(ValueError("bucket_id must be non-empty"))
-        if not isinstance(query, str) or query.strip() == "":
-            return Err(ValueError("query must be non-empty"))
-        return await self._call("bus.memory.query", self._impl.query, bucket_id, query, timeout=timeout)
+        bucket_ok = self._require_non_empty_str("bucket_id", bucket_id)
+        if isinstance(bucket_ok, Err):
+            return bucket_ok
+        query_ok = self._require_non_empty_str("query", query)
+        if isinstance(query_ok, Err):
+            return query_ok
+        return await self._call("bus.memory.query", self._impl.query, bucket_ok, query_ok, timeout=timeout)
 
     async def get(self, bucket_id: str, *, limit: int = 20, timeout: float = 5.0) -> Result[list[Mapping[str, Any]], Exception]:
-        if not isinstance(bucket_id, str) or bucket_id.strip() == "":
-            return Err(ValueError("bucket_id must be non-empty"))
-        if limit <= 0:
-            return Err(ValueError("limit must be > 0"))
-        return await self._call("bus.memory.get", self._impl.get, bucket_id, limit=limit, timeout=timeout)
+        bucket_ok = self._require_non_empty_str("bucket_id", bucket_id)
+        if isinstance(bucket_ok, Err):
+            return bucket_ok
+        limit_ok = self._require_positive_int("limit", limit)
+        if isinstance(limit_ok, Err):
+            return limit_ok
+        return await self._call("bus.memory.get", self._impl.get, bucket_ok, limit=limit_ok, timeout=timeout)
 
     async def fetch(self, bucket_id: str, *, limit: int = 20, timeout: float = 5.0) -> Result[list[Mapping[str, Any]], Exception]:
         return await self.get(bucket_id, limit=limit, timeout=timeout)
