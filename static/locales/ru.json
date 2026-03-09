@@ -1435,7 +1435,7 @@
             "cancelAll": "Отменить все задачи",
             "cancelConfirm": "Отменить все выполняемые задачи?",
             "typeUserPlugin": "Пользовательский плагин",
-            "typeComputerUse": "Управление компьютером",
+            "typeComputerUse": "Управление клавиатурой/мышью",
             "typeBrowserUse": "Управление браузером",
             "typeMCP": "Инструмент MCP"
         },

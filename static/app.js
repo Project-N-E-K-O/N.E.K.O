@@ -554,10 +554,15 @@ function init_app() {
                 }
                 // Restore active tasks from state snapshot (covers page refresh / reconnect)
                 if (stateResp && stateResp.success && stateResp.snapshot) {
+                    const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     const activeTasks = stateResp.snapshot.active_tasks || [];
+                    // Filter by current session/role (lanlan_name) to avoid cross-session task leakage
+                    const filteredTasks = currentLanlanName
+                        ? activeTasks.filter(t => !t.lanlan_name || t.lanlan_name === currentLanlanName)
+                        : activeTasks;
                     // Replace map contents with snapshot (clear stale tasks)
                     window._agentTaskMap = new Map();
-                    activeTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    filteredTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
                     const tasks = Array.from(window._agentTaskMap.values());
                     const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
                     if (hasRunning && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
@@ -1000,14 +1005,37 @@ function init_app() {
                             window.startAgentTaskPolling();
                         }
                         // Restore active tasks from snapshot (covers page refresh / reconnect)
+                        const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         const snapshotTasks = snapshot.active_tasks || [];
-                        // Replace map contents with snapshot (clear stale/ghost tasks)
-                        window._agentTaskMap = new Map();
-                        snapshotTasks.forEach(t => {
-                            if (t && t.id) window._agentTaskMap.set(t.id, t);
+                        // Filter by current session/role (lanlan_name) to avoid cross-session task leakage
+                        const filteredSnapshotTasks = currentLanlanName
+                            ? snapshotTasks.filter(t => !t.lanlan_name || t.lanlan_name === currentLanlanName)
+                            : snapshotTasks;
+                        // Merge snapshot with existing tasks: preserve terminal tasks still in linger window
+                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        const now = Date.now();
+                        const LINGER_MS = 10000; // Same as MIN_DISPLAY_MS in common-ui-hud.js
+                        // Build new map: filtered snapshot tasks + lingering terminal tasks
+                        const newMap = new Map();
+                        filteredSnapshotTasks.forEach(t => {
+                            if (t && t.id) newMap.set(t.id, t);
                         });
-                        if (snapshotTasks.length > 0) {
-                            const tasks = Array.from(window._agentTaskMap.values());
+                        // Preserve terminal tasks still within linger window (also filter by role)
+                        window._agentTaskMap.forEach((t, id) => {
+                            if (!newMap.has(id)) {
+                                // Skip tasks from other roles
+                                if (currentLanlanName && t.lanlan_name && t.lanlan_name !== currentLanlanName) {
+                                    return;
+                                }
+                                const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                                if (isTerminal && t.terminal_at && (now - t.terminal_at < LINGER_MS)) {
+                                    newMap.set(id, t);
+                                }
+                            }
+                        });
+                        window._agentTaskMap = newMap;
+                        const tasks = Array.from(window._agentTaskMap.values());
+                        if (tasks.length > 0) {
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                 window.AgentHUD.updateAgentTaskHUD({
                                     success: true,

@@ -10,8 +10,8 @@ import uuid
 import logging
 import time
 import hashlib
-from typing import Dict, Any, Optional, ClassVar
-from datetime import datetime
+from typing import Dict, Any, Optional, ClassVar, List
+from datetime import datetime, timezone
 import httpx
 
 from fastapi import FastAPI, HTTPException
@@ -663,6 +663,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
                     "start_time": info.get("start_time"),
                     "params": info.get("params", {}),
                     "session_id": info.get("session_id"),
+                    "lanlan_name": info.get("lanlan_name"),
                 })
         except Exception:
             continue
@@ -1189,7 +1190,6 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 _reg["deferred_timeout"] = time.time() + DEFERRED_TASK_TIMEOUT
                             if reminder_id:
                                 # 在线程中执行（含 HTTP 轮询，避免阻塞事件循环）
-                                import concurrent.futures as _cf
                                 loop = asyncio.get_event_loop()
                                 loop.run_in_executor(None, _bind_deferred_task, plugin_id, reminder_id, result.task_id)
                             # 不进入后续 completed/failed 流程
