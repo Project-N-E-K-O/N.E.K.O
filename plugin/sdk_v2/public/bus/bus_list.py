@@ -1,7 +1,8 @@
-"""Unified bus namespace facade."""
-
 from __future__ import annotations
 
+from typing import Any
+
+from ._state import ensure_transport
 from .conversations import Conversations
 from .events import Events
 from .lifecycle import Lifecycle
@@ -12,12 +13,8 @@ from .rev import Revision
 from .watchers import Watchers
 
 
-from plugin.sdk_v2.public.bus._state import ensure_transport
-
 class Bus:
-    """Aggregate shared bus facades under one namespace."""
-
-    def __init__(self, _transport=None):
+    def __init__(self, _transport=None, *args: Any, **kwargs: Any):
         transport = ensure_transport(_transport)
         self.conversations = Conversations(transport)
         self.messages = Messages(transport)

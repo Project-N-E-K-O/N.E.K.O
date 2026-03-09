@@ -1,6 +1,6 @@
 """Shared bus building blocks for SDK v2.
 
-This package is currently contract-only.
+Thin shared facades over `public.bus` implementations.
 """
 
 from ._client_base import BusClientBase
