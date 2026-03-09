@@ -53,20 +53,8 @@ def get_user_plugin_config_root() -> Path:
 
 
 def get_plugin_config_root() -> Path:
-    """Deprecated compatibility helper for the legacy single-root API.
-
-    Returns the legacy built-in plugin root for callers that still expect a
-    single ``Path``. New code should use ``PLUGIN_CONFIG_ROOTS`` when it needs
-    to search all plugin roots, or ``USER_PLUGIN_CONFIG_ROOT`` when it
-    specifically needs the writable user plugin directory.
-    """
-    warnings.warn(
-        "plugin.settings.get_plugin_config_root() is deprecated; use "
-        "PLUGIN_CONFIG_ROOTS or USER_PLUGIN_CONFIG_ROOT instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return BUILTIN_PLUGIN_CONFIG_ROOT
+    """兼容旧调用：返回用户插件根目录。"""
+    return get_user_plugin_config_root()
 
 
 def get_plugin_config_roots() -> tuple[Path, ...]:
@@ -80,15 +68,8 @@ def get_plugin_config_roots() -> tuple[Path, ...]:
 
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
-# Deprecated compatibility alias for older single-root callers.
-PLUGIN_CONFIG_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
+PLUGIN_CONFIG_ROOT = USER_PLUGIN_CONFIG_ROOT
 PLUGIN_CONFIG_ROOTS = get_plugin_config_roots()
-warnings.warn(
-    "plugin.settings.PLUGIN_CONFIG_ROOT is deprecated; use PLUGIN_CONFIG_ROOTS "
-    "or USER_PLUGIN_CONFIG_ROOT instead.",
-    DeprecationWarning,
-    stacklevel=2,
-)
 
 
 # ========== 队列容量配置 ==========
