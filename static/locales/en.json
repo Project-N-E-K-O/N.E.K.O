@@ -1435,7 +1435,10 @@
             "statusFailed": "Failed",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
-            "cancelConfirm": "Cancel all running tasks?"
+            "cancelConfirm": "Cancel all running tasks?",
+            "typeUserPlugin": "User Plugin",
+            "typeComputerUse": "Computer Use",
+            "typeMCP": "MCP Tool"
         }
     },
     "vrm": {

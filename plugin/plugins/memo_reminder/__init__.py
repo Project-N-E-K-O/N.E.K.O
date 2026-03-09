@@ -269,6 +269,17 @@ class MemoReminderPlugin(NekoPluginBase):
             target_lanlan=r.get("lanlan_name"),
         )
 
+        # 通知 agent_server deferred 任务已完成
+        agent_task_id = r.get("agent_task_id")
+        if agent_task_id:
+            try:
+                import httpx as _httpx
+                from config import TOOL_SERVER_PORT
+                with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
+                    c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
+            except Exception:
+                self.logger.warning("Failed to notify agent task completion for reminder {}", rid)
+
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
         repeat = str(r.get("repeat", "once")).strip().lower()
@@ -400,6 +411,7 @@ class MemoReminderPlugin(NekoPluginBase):
             "created_at": now.isoformat(),
             "repeat": repeat,
             "lanlan_name": lanlan_name,
+            "agent_task_id": None,  # agent_server 会回写，用于 deferred 完成通知
         }
 
         with self._reminders_lock:
@@ -424,6 +436,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         return ok(data={
             "status": "scheduled",
+            "deferred": True,
             "reminder_id": rid,
             "trigger_at_local": local_str,
             "repeat": repeat,
@@ -436,6 +449,24 @@ class MemoReminderPlugin(NekoPluginBase):
                 "the system will push it automatically when the time comes."
             ),
         })
+
+    @plugin_entry(
+        id="bind_task",
+        name="绑定Agent任务ID",
+        description="内部接口：将 agent_task_id 关联到提醒记录，用于 deferred 完成通知",
+    )
+    async def bind_task(self, reminder_id: str, agent_task_id: str, **kwargs):
+        """将 agent_task_id 写回到对应的提醒记录，供 daemon 触发时回调使用"""
+        from plugin.sdk.responses import ok, fail
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            for r in reminders:
+                if r.get("id") == reminder_id:
+                    r["agent_task_id"] = agent_task_id
+                    self._save_reminders_unlocked(reminders)
+                    self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
+                    return ok(data={"bound": True})
+        return fail("NOT_FOUND", f"Reminder {reminder_id} not found")
 
     @plugin_entry(
         id="list_reminders",

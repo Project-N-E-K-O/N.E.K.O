@@ -534,8 +534,9 @@ function init_app() {
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
                 fetch('/api/agent/health').then(r => r.ok).catch(() => false),
-                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null)
-            ]).then(([healthOk, flagsResp]) => {
+                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/agent/state').then(r => r.ok ? r.json() : null).catch(() => null)
+            ]).then(([healthOk, flagsResp, stateResp]) => {
                 if (flagsResp && flagsResp.success) {
                     window._agentStatusSnapshot = {
                         server_online: !!healthOk,
@@ -549,6 +550,27 @@ function init_app() {
                         const warmFlags = flagsResp.agent_flags || {};
                         warmFlags.agent_enabled = !!flagsResp.analyzer_enabled;
                         window.agentStateMachine.updateCache(!!healthOk, warmFlags);
+                    }
+                }
+                // Restore active tasks from state snapshot (covers page refresh / reconnect)
+                if (stateResp && stateResp.success && stateResp.snapshot) {
+                    const activeTasks = stateResp.snapshot.active_tasks;
+                    if (Array.isArray(activeTasks) && activeTasks.length > 0) {
+                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        activeTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                        const tasks = Array.from(window._agentTaskMap.values());
+                        const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
+                        if (hasRunning && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                            window.AgentHUD.showAgentTaskHUD();
+                            window.AgentHUD.updateAgentTaskHUD({
+                                success: true, tasks,
+                                running_count: tasks.filter(t => t.status === 'running').length,
+                                queued_count: tasks.filter(t => t.status === 'queued').length,
+                            });
+                            if (!agentTaskTimeUpdateInterval) {
+                                agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
+                            }
+                        }
                     }
                 }
             }).catch(() => { });
@@ -1011,7 +1033,14 @@ function init_app() {
                         if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
                         const task = response.task || {};
                         if (task.id) {
-                            window._agentTaskMap.set(task.id, task);
+                            // Merge with existing task data to preserve params from earlier updates
+                            const existing = window._agentTaskMap.get(task.id);
+                            const merged = existing ? { ...existing, ...task } : task;
+                            // Preserve params: don't let an empty/missing params overwrite existing ones
+                            if (existing && existing.params && (!task.params || Object.keys(task.params).length === 0)) {
+                                merged.params = existing.params;
+                            }
+                            window._agentTaskMap.set(task.id, merged);
                             if (['completed', 'failed', 'cancelled'].includes(task.status)) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.set(task.id, setTimeout(() => {
@@ -1031,6 +1060,18 @@ function init_app() {
                             }
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
+                        const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
+                        // Force-show HUD and start timer when running tasks arrive via WebSocket
+                        // This overrides checkAndToggleTaskHUD which may have hidden the HUD during page load
+                        if (hasRunning && window.AgentHUD) {
+                            if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                                window.AgentHUD.showAgentTaskHUD();
+                            }
+                            // Ensure the time-update interval is running
+                            if (!agentTaskTimeUpdateInterval) {
+                                agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
+                            }
+                        }
                         if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                             window.AgentHUD.updateAgentTaskHUD({
                                 success: true,
@@ -8187,7 +8228,25 @@ function init_app() {
     // 更新运行中任务的时间显示
     function updateTaskRunningTimes() {
         const taskList = document.getElementById('agent-task-list');
-        if (!taskList) return;
+        if (!taskList) {
+            // DOM gone — nothing to update, stop the interval
+            if (agentTaskTimeUpdateInterval) {
+                clearInterval(agentTaskTimeUpdateInterval);
+                agentTaskTimeUpdateInterval = null;
+            }
+            return;
+        }
+
+        // Auto-stop when no running/queued tasks remain
+        const hasRunning = window._agentTaskMap && Array.from(window._agentTaskMap.values())
+            .some(t => t.status === 'running' || t.status === 'queued');
+        if (!hasRunning) {
+            if (agentTaskTimeUpdateInterval) {
+                clearInterval(agentTaskTimeUpdateInterval);
+                agentTaskTimeUpdateInterval = null;
+            }
+            return;
+        }
 
         const timeElements = taskList.querySelectorAll('[id^="task-time-"]');
         timeElements.forEach(timeEl => {
@@ -8265,8 +8324,15 @@ function init_app() {
             console.log('[DEBUG HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.startAgentTaskPolling();
         } else {
-            console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
-            window.stopAgentTaskPolling();
+            // Don't hide HUD if there are still active tasks being tracked via WebSocket
+            const hasActiveTasks = window._agentTaskMap && window._agentTaskMap.size > 0 &&
+                Array.from(window._agentTaskMap.values()).some(t => t.status === 'running' || t.status === 'queued');
+            if (hasActiveTasks) {
+                console.log('[DEBUG HUD] Flags off but active tasks exist, keeping HUD visible. Master:', isMasterOn, 'Child:', isChildOn);
+            } else {
+                console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
+                window.stopAgentTaskPolling();
+            }
         }
     }
 

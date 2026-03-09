@@ -1435,7 +1435,10 @@
             "statusFailed": "失敗",
             "minimize": "折りたたみ/展開",
             "cancelAll": "すべてのタスクをキャンセル",
-            "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？"
+            "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
+            "typeUserPlugin": "ユーザープラグイン",
+            "typeComputerUse": "コンピュータ制御",
+            "typeMCP": "MCPツール"
         }
     },
     "vrm": {

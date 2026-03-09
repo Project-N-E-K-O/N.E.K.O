@@ -84,6 +84,154 @@ class Modules:
     task_async_handles: ClassVar[Dict[str, asyncio.Task]] = {}
 
 
+# 插件名称缓存（避免频繁 HTTP 调用）
+import threading
+_plugin_name_cache: Dict[str, str] = {}
+_plugin_name_cache_time: float = 0.0
+_plugin_name_cache_lock = threading.Lock()
+PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
+TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
+DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
+_task_registry_last_cleanup: float = 0.0
+
+
+def _cleanup_task_registry() -> None:
+    """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时"""
+    from datetime import datetime, timezone
+    global _task_registry_last_cleanup
+    now = time.time()
+    if now - _task_registry_last_cleanup < 60:  # 最多每 60 秒清理一次
+        return
+    _task_registry_last_cleanup = now
+    to_remove = []
+    for tid, info in Modules.task_registry.items():
+        st = info.get("status")
+
+        # 检查 deferred 任务是否超时（防止绑定失败导致任务永远卡在 running）
+        if st == "running" and info.get("deferred_timeout"):
+            if now > info.get("deferred_timeout", float('inf')):
+                logger.warning("[TaskRegistry] Deferred task %s timed out, marking as failed", tid)
+                info["status"] = "failed"
+                info["end_time"] = _now_iso()
+                info["error"] = "Deferred task timeout (callback not received)"
+                # 不删除，让它自然清理
+                continue
+
+        if st not in ("completed", "failed", "cancelled"):
+            continue
+        end_time_str = info.get("end_time")
+        if end_time_str:
+            try:
+                end_dt = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - end_dt).total_seconds()
+                if age > TASK_REGISTRY_CLEANUP_TTL:
+                    to_remove.append(tid)
+            except Exception:
+                to_remove.append(tid)  # 解析失败的旧条目直接清理
+        else:
+            # 没有 end_time 的终态任务，用 start_time 估算
+            start_str = info.get("start_time", "")
+            try:
+                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                if age > TASK_REGISTRY_CLEANUP_TTL * 2:  # 宽松一点
+                    to_remove.append(tid)
+            except Exception:
+                pass
+    for tid in to_remove:
+        del Modules.task_registry[tid]
+    if to_remove:
+        logger.debug("[TaskRegistry] Cleaned up %d completed tasks", len(to_remove))
+
+
+def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) -> None:
+    """通过插件服务将 agent_task_id 关联到提醒记录，供 daemon 触发时回调使用。
+    bind_task 是快速操作（只写文件），触发 run 后短暂轮询等待完成。"""
+    try:
+        import httpx
+        import time as _time
+        with httpx.Client(timeout=5.0, proxy=None, trust_env=False) as client:
+            # 1. 触发 bind_task entry
+            resp = client.post(
+                f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs",
+                json={
+                    "plugin_id": plugin_id,
+                    "entry_id": "bind_task",
+                    "args": {"reminder_id": reminder_id, "agent_task_id": agent_task_id},
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning("[Deferred] bind_task start HTTP %s", resp.status_code)
+                return
+            run_id = resp.json().get("run_id")
+            if not run_id:
+                return
+            # 2. 短暂轮询等待完成（bind_task 应在 <1s 内完成）
+            for _ in range(20):
+                _time.sleep(0.1)
+                r = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs/{run_id}")
+                if r.status_code == 200:
+                    if r.json().get("status", "") in ("succeeded", "failed", "canceled", "timeout"):
+                        break
+            logger.info("[Deferred] bind_task done: plugin=%s reminder=%s agent_task=%s", plugin_id, reminder_id, agent_task_id)
+    except Exception as e:
+        logger.warning("[Deferred] bind failed: plugin=%s reminder=%s error=%s", plugin_id, reminder_id, e)
+
+
+def _get_plugin_friendly_name(plugin_id: str) -> str | None:
+    """获取插件的友好名称（用于 HUD 显示）
+
+    通过 HTTP 调用嵌入式插件服务的 /plugins 端点获取插件列表，
+    并使用缓存减少请求次数。使用线程锁保证多线程安全。
+    """
+    global _plugin_name_cache, _plugin_name_cache_time
+
+    # 检查缓存（加锁读取）
+    now = time.time()
+    with _plugin_name_cache_lock:
+        if _plugin_name_cache and (now - _plugin_name_cache_time) < PLUGIN_NAME_CACHE_TTL:
+            return _plugin_name_cache.get(plugin_id)
+
+    # 缓存过期或为空，从嵌入式插件服务获取
+    new_cache = {}
+    cache_time = now
+    try:
+        import httpx
+        with httpx.Client(timeout=1.0, proxy=None, trust_env=False) as client:
+            resp = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+            if resp.status_code == 200:
+                data = resp.json()
+                plugins = data.get("plugins", [])
+                # 构建新缓存
+                for p in plugins:
+                    if isinstance(p, dict):
+                        pid = p.get("id")
+                        pname = p.get("name")
+                        if pid and pname:
+                            new_cache[pid] = pname
+                        elif pid:
+                            new_cache[pid] = pid
+                # 更新全局缓存（加锁写入）
+                with _plugin_name_cache_lock:
+                    _plugin_name_cache = new_cache
+                    _plugin_name_cache_time = cache_time
+                return new_cache.get(plugin_id)
+    except Exception as e:
+        logger.warning("[AgentServer] Failed to fetch plugin names from port %s: %s", USER_PLUGIN_SERVER_PORT, e)
+
+    # HTTP 调用失败，尝试本地 state（兼容某些部署场景）
+    try:
+        from plugin.core.state import state
+        with state.acquire_plugins_read_lock():
+            meta = state.plugins.get(plugin_id)
+            if isinstance(meta, dict):
+                return meta.get("name") or meta.get("id")
+    except Exception:
+        pass
+
+    return None
+
+
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
     try:
@@ -487,6 +635,8 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _check_agent_api_gate()
     flags = dict(Modules.agent_flags or {})
     capabilities = dict(Modules.capability_cache or {})
+    # Periodic cleanup of completed tasks to prevent memory leak
+    _cleanup_task_registry()
     # Include active (queued/running) tasks so frontend can restore after page refresh
     active_tasks = []
     for tid, info in Modules.task_registry.items():
@@ -685,6 +835,7 @@ async def _run_computer_use_task(
         logger.error("[ComputerUse] Task %s failed: %s", task_id, e)
     finally:
         info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
+        info["end_time"] = _now_iso()
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
@@ -916,17 +1067,25 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 plugin_args = result.tool_args or {}
                 entry_id = result.entry_id
                 up_start = _now_iso()
+                # 获取插件友好名称（用于 HUD 显示）
+                plugin_name = _get_plugin_friendly_name(plugin_id)
                 logger.info(
-                    "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s",
-                    plugin_id, entry_id,
+                    "[TaskExecutor] Dispatching UserPlugin: plugin_id=%s, entry_id=%s, plugin_name=%s",
+                    plugin_id, entry_id, plugin_name,
                 )
+                # 构建任务参数（包含友好名称）
+                task_params = {"plugin_id": plugin_id, "entry_id": entry_id}
+                if plugin_name:
+                    task_params["plugin_name"] = plugin_name
+                if result.task_description:
+                    task_params["description"] = result.task_description
                 # Register in task_registry (mirrors CU _spawn_task) so GET /tasks can recover on refresh
                 Modules.task_registry[result.task_id] = {
                     "id": result.task_id,
                     "type": "user_plugin",
                     "status": "running",
                     "start_time": up_start,
-                    "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                    "params": task_params,
                     "lanlan_name": lanlan_name,
                     "result": None,
                     "error": None,
@@ -937,7 +1096,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         "task_update", lanlan_name,
                         task={"id": result.task_id, "status": "running", "type": "user_plugin",
                               "start_time": up_start,
-                              "params": {"plugin_id": plugin_id, "entry_id": entry_id}},
+                              "params": task_params},
                     )
                 except Exception as emit_err:
                     logger.debug("[TaskExecutor] emit task_update(running) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
@@ -948,7 +1107,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     task_payload: Dict[str, Any] = {
                         "id": result.task_id, "status": "running", "type": "user_plugin",
                         "start_time": up_start,
-                        "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                        "params": task_params,
                     }
                     if progress is not None:
                         task_payload["progress"] = progress
@@ -976,16 +1135,32 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             on_progress=_on_plugin_progress,
                         )
                         up_terminal = "completed" if up_result.success else "failed"
-                        # Update task_registry with terminal state
+                        run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
+                        detail = str(run_data)[:500] if run_data else ""
+                        # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
+                        is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
+                        # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
                         _reg = Modules.task_registry.get(result.task_id)
-                        if _reg:
+                        if _reg and not (up_result.success and is_deferred):
                             _reg["status"] = up_terminal
+                            _reg["end_time"] = _now_iso()
                             _reg["result"] = up_result.result
                             if not up_result.success and up_result.error:
                                 _reg["error"] = str(up_result.error)[:500]
-                        run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
-                        detail = str(run_data)[:500] if run_data else ""
-                        if up_result.success:
+                        if up_result.success and is_deferred:
+                            # 保持任务为 running 状态，等待 daemon 触发后回调完成
+                            reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
+                            logger.info("[Deferred] Task %s kept running, reminder_id=%s", result.task_id, reminder_id)
+                            # 设置超时，防止绑定失败导致任务永远卡在 running
+                            if _reg:
+                                _reg["deferred_timeout"] = time.time() + DEFERRED_TASK_TIMEOUT
+                            if reminder_id:
+                                # 在线程中执行（含 HTTP 轮询，避免阻塞事件循环）
+                                import concurrent.futures as _cf
+                                loop = asyncio.get_event_loop()
+                                loop.run_in_executor(None, _bind_deferred_task, plugin_id, reminder_id, result.task_id)
+                            # 不进入后续 completed/failed 流程
+                        elif up_result.success:
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
                             summary = f'插件任务 "{plugin_id}" 已完成'
                             if detail:
@@ -1014,16 +1189,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
-                        # Emit task_update (terminal) so AgentHUD removes the running card
-                        try:
-                            await _emit_main_event(
-                                "task_update", lanlan_name,
-                                task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
-                                      "start_time": up_start, "end_time": _now_iso(),
-                                      "error": str(up_result.error or "")[:500] if not up_result.success else None},
-                            )
-                        except Exception as emit_err:
-                            logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
+                        # Emit task_update (terminal) — deferred 任务跳过，保持 running
+                        if not (up_result.success and is_deferred):
+                            try:
+                                await _emit_main_event(
+                                    "task_update", lanlan_name,
+                                    task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
+                                          "start_time": up_start, "end_time": _now_iso(),
+                                          "params": task_params,
+                                          "error": str(up_result.error or "")[:500] if not up_result.success else None},
+                                )
+                            except Exception as emit_err:
+                                logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
                     except asyncio.CancelledError as e:
                         cancel_msg = str(e)[:500] if str(e) else "cancelled"
                         _reg = Modules.task_registry.get(result.task_id)
@@ -1046,6 +1223,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": result.task_id, "status": "cancelled", "type": "user_plugin",
                                       "start_time": up_start, "end_time": _now_iso(),
+                                      "params": task_params,
                                       "error": cancel_msg},
                             )
                         except Exception as emit_err:
@@ -1073,6 +1251,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": result.task_id, "status": "failed", "type": "user_plugin",
                                       "start_time": up_start, "end_time": _now_iso(),
+                                      "params": task_params,
                                       "error": str(e)[:500]},
                             )
                         except Exception as emit_err:
@@ -1137,6 +1316,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
                         bu_session.complete_task(result_detail or summary, success)
                         bu_info["status"] = "completed" if success else "failed"
+                        bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
                         await _emit_task_result(
                             lanlan_name,
@@ -1186,6 +1366,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     except Exception as e:
                         logger.warning(f"[BrowserUse] Failed: {e}")
                         bu_info["status"] = "failed"
+                        bu_info["end_time"] = _now_iso()
                         bu_info["error"] = str(e)[:500]
                         bu_session.complete_task(str(e), success=False)
                         try:
@@ -1465,13 +1646,19 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     # Log request
     logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
+    # 获取插件友好名称（用于 HUD 显示）
+    plugin_name = _get_plugin_friendly_name(plugin_id)
+    task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
+    if plugin_name:
+        task_params["plugin_name"] = plugin_name
+
     # Ensure task registry entry for tracking
     info = {
         "id": task_id,
         "type": "plugin_direct",
         "status": "running",
         "start_time": _now_iso(),
-        "params": {"plugin_id": plugin_id, "entry_id": entry_id, "args": args},
+        "params": task_params,
         "lanlan_name": lanlan_name,
         "result": None,
         "error": None,
@@ -1488,7 +1675,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     "status": "running",
                     "type": "plugin_direct",
                     "start_time": info["start_time"],
-                    "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                    "params": task_params,
                 },
             )
         except Exception as emit_err:
@@ -1502,7 +1689,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 "status": "running",
                 "type": "plugin_direct",
                 "start_time": info["start_time"],
-                "params": {"plugin_id": plugin_id, "entry_id": entry_id},
+                "params": task_params,
             }
             if progress is not None:
                 task_payload["progress"] = progress
@@ -1528,6 +1715,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             )
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
+            info["end_time"] = _now_iso()
             if not res.success and res.error:
                 info["error"] = str(res.error)[:500]
             try:
@@ -1568,6 +1756,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             raise
         except Exception as e:
             info["status"] = "failed"
+            info["end_time"] = _now_iso()
             info["error"] = str(e)[:500]
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
             try:
@@ -1591,6 +1780,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         "type": "plugin_direct",
                         "start_time": info.get("start_time"),
                         "end_time": _now_iso(),
+                        "params": info.get("params", {}),
                         "error": info.get("error"),
                     },
                 )
@@ -1651,12 +1841,46 @@ async def cancel_task(task_id: str):
         await _emit_main_event(
             "task_update", lanlan_name,
             task={"id": task_id, "status": "cancelled", "type": task_type,
-                  "end_time": _now_iso(), "error": "Cancelled by user"},
+                  "end_time": _now_iso(), "params": info.get("params", {}),
+                  "error": "Cancelled by user"},
         )
     except Exception:
         pass
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+@app.post("/api/agent/tasks/{task_id}/complete")
+async def complete_deferred_task(task_id: str):
+    """供插件 daemon 回调：将 deferred 任务标记为已完成并通知前端 HUD。"""
+    info = Modules.task_registry.get(task_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if info.get("status") != "running":
+        # 已经是 terminal 状态，幂等返回
+        return {"ok": True, "skipped": True, "status": info.get("status")}
+
+    info["status"] = "completed"
+    info["end_time"] = _now_iso()
+    lanlan_name = info.get("lanlan_name")
+
+    try:
+        await _emit_main_event(
+            "task_update", lanlan_name,
+            task={
+                "id": task_id,
+                "status": "completed",
+                "type": info.get("type"),
+                "start_time": info.get("start_time"),
+                "end_time": info["end_time"],
+                "params": info.get("params", {}),
+            },
+        )
+    except Exception as e:
+        logger.warning("[Deferred] emit task_update(complete) failed: task_id=%s error=%s", task_id, e)
+
+    logger.info("[Deferred] Task %s marked completed via callback", task_id)
+    return {"ok": True}
 
 
 @app.get("/capabilities")
