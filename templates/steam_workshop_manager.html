@@ -644,8 +644,26 @@
             var base = Array.from(text);
             var chars = base.concat(base).concat(base);
 
-            // 始终使用自然半径，不做激进裁剪
-            var radius = Math.max(75, chars.length * 8);
+            // 先算 totalSlots，再据此推算半径，确保字符不重叠
+            var groupSize = base.length;
+            var gapExtra = 0.3;
+            var totalSlots = chars.length + gapExtra * 3;
+
+            var placeholder = container.closest('.preview-placeholder');
+            var availH = placeholder ? placeholder.clientHeight : 0;
+            var availW = placeholder ? placeholder.clientWidth : 0;
+            // 目标弧长间距 50px（42px 字号 + 适当间距），最小半径 230px
+            var nominalRadius = Math.max(230, Math.ceil(totalSlots * 50 / (2 * Math.PI)));
+            // 高度上限：0.65×availH；宽度上限：(availW - fontSize) / 2，取二者较小值
+            var maxFromH = availH > 80 ? availH * 0.65 : 230;
+            var maxFromW = availW > 80 ? (availW - 42) / 2 : 230;
+            var containerMax = Math.max(230, Math.min(maxFromH, maxFromW));
+            var radius = Math.min(nominalRadius, containerMax);
+
+            // 若半径被压缩（如英/俄等长文本），同步缩小字号防止重叠
+            var arcPerSlot = radius * 2 * Math.PI / totalSlots;
+            var fontSize = Math.max(14, Math.min(42, Math.floor(arcPerSlot) - 4));
+            container.style.setProperty('--ring-char-size', fontSize + 'px');
 
             // 小幅补偿 rotateX(-10deg) 导致前侧字符视觉偏高
             var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
@@ -653,10 +671,6 @@
             if (tiltDiv) {
                 tiltDiv.style.transform = 'translateY(' + yComp + 'px) rotateX(-10deg)';
             }
-
-            var groupSize = base.length;
-            var gapExtra = 0.3;
-            var totalSlots = chars.length + gapExtra * 3;
             container.innerHTML = '';
             chars.forEach(function(ch, i) {
                 var group = Math.floor(i / groupSize);

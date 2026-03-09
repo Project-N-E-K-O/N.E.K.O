@@ -368,23 +368,21 @@ box-sizing: border-box;
 /* 刷新按钮图标容器 - 样式参考取消订阅按钮 */
 .filter-group .refresh-button-wrapper {
     position: relative;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     background-color: #bcf1ff;
     padding: 4px;
     border-radius: 50px;
     flex-shrink: 0;
-    width: 100%;
-    box-sizing: border-box;
 }
 
 .filter-group .refresh-button-wrapper .btn {
-     padding: 8px 44px 8px 18px;
+    padding: 8px 32px 8px 16px;
     background: #17A7FF;
     border: none;
     border-radius: 50px;
     color: white;
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 700;
     letter-spacing: 1px;
     cursor: pointer;
@@ -393,12 +391,8 @@ box-sizing: border-box;
     white-space: nowrap;
     width: 100%;
     text-align: center;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    min-width: 0;
-    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .filter-group .refresh-button-wrapper .btn:hover {
@@ -3337,7 +3331,7 @@ margin-top: 10px;
     position: absolute;
     top: 0;
     left: 0;
-    font-size: 30px;
+    font-size: var(--ring-char-size, 42px);
     font-weight: 900;
     color: white;
     -webkit-text-stroke: 4px #c8eaff;
@@ -3359,7 +3353,7 @@ margin-top: 10px;
     position: absolute;
     top: 0;
     left: 0;
-    font-size: 30px;
+    font-size: var(--ring-char-size, 42px);
     font-weight: 900;
     -webkit-text-stroke: 0;
     text-shadow: none;
@@ -3433,4 +3427,19 @@ margin-top: 10px;
 @keyframes ring-rotate-3d {
     from { transform: rotateY(0deg); }
     to   { transform: rotateY(-360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .preview-ring-container {
+        animation: none;
+        transform: none;
+    }
+    .preview-ring-container .ring-char,
+    .preview-ring-container .ring-char::before,
+    .preview-ring-container .ring-char::after {
+        animation: none;
+        opacity: 1;
+        transform: none;
+        clip-path: none;
+    }
 }
