@@ -1095,7 +1095,7 @@ function init_app() {
                                     if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                         window.AgentHUD.updateAgentTaskHUD({ success: true, tasks: remaining, total_count: remaining.length, running_count: remaining.filter(t => t.status === 'running').length, queued_count: remaining.filter(t => t.status === 'queued').length, completed_count: remaining.filter(t => t.status === 'completed').length, failed_count: remaining.filter(t => t.status === 'failed').length, timestamp: new Date().toISOString() });
                                     }
-                                }, 8000));
+                                }, 10000));
                             } else if (window._agentTaskRemoveTimers.has(task.id)) {
                                 clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.delete(task.id);
