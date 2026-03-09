@@ -368,23 +368,21 @@ box-sizing: border-box;
 /* 刷新按钮图标容器 - 样式参考取消订阅按钮 */
 .filter-group .refresh-button-wrapper {
     position: relative;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     background-color: #bcf1ff;
     padding: 4px;
     border-radius: 50px;
     flex-shrink: 0;
-    width: 100%;
-    box-sizing: border-box;
 }
 
 .filter-group .refresh-button-wrapper .btn {
-     padding: 8px 44px 8px 18px;
+    padding: 8px 32px 8px 16px;
     background: #17A7FF;
     border: none;
     border-radius: 50px;
     color: white;
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 700;
     letter-spacing: 1px;
     cursor: pointer;
@@ -393,12 +391,8 @@ box-sizing: border-box;
     white-space: nowrap;
     width: 100%;
     text-align: center;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-    min-width: 0;
-    box-sizing: border-box;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .filter-group .refresh-button-wrapper .btn:hover {
@@ -639,7 +633,7 @@ object-fit: contain;
 
 .card-info-title-area {
     position: relative;
-    width: 50%;
+    width: 40%;
     height: 46px;
     margin: 3px;
     border-radius: 16px 16px 0 0;
@@ -647,7 +641,7 @@ object-fit: contain;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 36px 0 16px;
+    padding: 0 16px 0 16px;
     overflow: hidden;
 }
 
@@ -659,6 +653,16 @@ color: #fff;
 font-size: 18px;
 font-weight: 600;
 letter-spacing: 0.5px;
+overflow: hidden;
+min-width: 0;
+flex: 1;
+}
+
+.card-info-header-text > span {
+white-space: nowrap;
+overflow: hidden;
+text-overflow: ellipsis;
+min-width: 0;
 }
 
 .card-info-paw {
@@ -687,7 +691,6 @@ display: flex;
 align-items: center;
 justify-content: space-between;
 padding: 0 16px 0 16px;
-overflow: hidden;
 border-radius: 16px 16px 0 0;
 white-space: nowrap;
 }
@@ -750,6 +753,16 @@ color: #009dff;
 font-size: 18px;
 font-weight: 600;
 letter-spacing: 0.5px;
+overflow: hidden;
+min-width: 0;
+flex: 1;
+}
+
+.tags-header-text > span {
+white-space: nowrap;
+overflow: hidden;
+text-overflow: ellipsis;
+min-width: 0;
 }
 
 .tags-paw {
@@ -843,9 +856,16 @@ display: none;
 }
 
 /* Live2D预览占位符文字样式 */
+/* 让 preview-content 成为 flex 容器，确保 placeholder 可靠填满 */
+#live2d-preview-content {
+    display: flex;
+    flex-direction: column;
+}
+
 #live2d-preview-container .preview-placeholder {
-color: #fff;
-font-size: 200%;
+    flex: 1;
+    color: #fff;
+    font-size: 200%;
 }
 
 .preview-placeholder span {
@@ -948,6 +968,14 @@ flex-direction: column;
     cursor: pointer;
     text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
     transition: filter 0.2s;
+    overflow: hidden;
+}
+
+.character-card-buttons-row .btn-wrapper .btn span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .character-card-buttons-row .btn-wrapper .btn:hover:not(:disabled) {
@@ -3278,4 +3306,140 @@ margin-top: 10px;
     background: #17A7FF;
     cursor: not-allowed;
     opacity: 0.6;
+}
+
+/* 占位符环形3D文字动画 */
+.preview-ring-perspective {
+    perspective: 400px;
+    perspective-origin: center center;
+}
+
+.preview-ring-tilt {
+    transform: rotateX(-10deg);
+    transform-style: preserve-3d;
+}
+
+.preview-ring-container {
+    position: relative;
+    width: 0;
+    height: 0;
+    transform-style: preserve-3d;
+    animation: ring-rotate-3d 22s linear infinite;
+}
+
+.preview-ring-container .ring-char {
+    position: absolute;
+    top: 0;
+    left: 0;
+    font-size: var(--ring-char-size, 42px);
+    font-weight: 900;
+    color: white;
+    -webkit-text-stroke: 4px #c8eaff;
+    paint-order: stroke fill;
+    text-shadow:
+        0 0 1px rgba(255,255,255,0.6),
+        0 0 8px rgba(100, 180, 255, 0.45),
+        0 2px 4px rgba(0, 0, 0, 0.35);
+    line-height: 1;
+    white-space: nowrap;
+    margin-left: -0.5em;
+    margin-top: -0.5em;
+    animation: glitch-flicker var(--gdur, 5s) var(--gdelay, 0s) infinite;
+}
+
+.preview-ring-container .ring-char::before,
+.preview-ring-container .ring-char::after {
+    content: attr(data-char);
+    position: absolute;
+    top: 0;
+    left: 0;
+    font-size: var(--ring-char-size, 42px);
+    font-weight: 900;
+    -webkit-text-stroke: 0;
+    text-shadow: none;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.preview-ring-container .ring-char::before {
+    color: #ff99aa;
+    animation: glitch-red var(--gdur, 5s) var(--gdelay, 0s) infinite;
+}
+
+.preview-ring-container .ring-char::after {
+    color: #88ffee;
+    animation: glitch-cyan var(--gdur, 5s) var(--gdelay, 0s) infinite;
+}
+
+@keyframes glitch-flicker {
+    0%,  14%, 18%, 38%, 44%, 63%, 68%, 84%, 100% { opacity: 1; }
+    15%  { opacity: 0.15; }
+    16%  { opacity: 0.85; }
+    17%  { opacity: 0.05; }
+    39%  { opacity: 0.1; }
+    40%  { opacity: 0.7; }
+    42%  { opacity: 0; }
+    43%  { opacity: 1; }
+    64%  { opacity: 0.2; }
+    65%  { opacity: 0.8; }
+    66%  { opacity: 0.3; }
+    67%  { opacity: 1; }
+    85%  { opacity: 0.05; }
+    86%  { opacity: 0.9; }
+    87%  { opacity: 0.1; }
+    88%  { opacity: 0.75; }
+    89%  { opacity: 1; }
+}
+
+@keyframes glitch-red {
+    0%,  12%, 17%, 36%, 41%, 61%, 66%, 82%, 87%, 100% { opacity: 0; transform: none; clip-path: none; }
+    13%  { opacity: 1; transform: translateX(-9px) skewX(6deg);  clip-path: polygon(0 5%,  100% 5%,  100% 28%, 0 28%); }
+    14%  { opacity: 1; transform: translateX(5px)  skewX(-4deg); clip-path: polygon(0 32%, 100% 32%, 100% 55%, 0 55%); }
+    16%  { opacity: 1; transform: translateX(-7px) scaleY(1.1);  clip-path: polygon(0 60%, 100% 60%, 100% 85%, 0 85%); }
+    37%  { opacity: 1; transform: translateX(-6px) skewX(8deg);  clip-path: polygon(0 15%, 100% 15%, 100% 42%, 0 42%); }
+    39%  { opacity: 1; transform: translateX(8px)  skewX(-6deg); clip-path: polygon(0 58%, 100% 58%, 100% 82%, 0 82%); }
+    40%  { opacity: 1; transform: translateX(-4px) scaleY(0.9);  clip-path: polygon(0 70%, 100% 70%, 100% 90%, 0 90%); }
+    62%  { opacity: 1; transform: translateX(-8px) skewX(5deg);  clip-path: polygon(0 22%, 100% 22%, 100% 48%, 0 48%); }
+    64%  { opacity: 1; transform: translateX(6px)  skewX(-8deg); clip-path: polygon(0 50%, 100% 50%, 100% 75%, 0 75%); }
+    65%  { opacity: 0; clip-path: none; }
+    83%  { opacity: 1; transform: translateX(7px)  scaleY(1.15); clip-path: polygon(0 8%,  100% 8%,  100% 35%, 0 35%); }
+    85%  { opacity: 1; transform: translateX(-5px) skewX(7deg);  clip-path: polygon(0 45%, 100% 45%, 100% 68%, 0 68%); }
+    86%  { opacity: 0; clip-path: none; }
+}
+
+@keyframes glitch-cyan {
+    0%,  10%, 15%, 34%, 39%, 59%, 64%, 80%, 85%, 100% { opacity: 0; transform: none; clip-path: none; }
+    11%  { opacity: 1; transform: translateX(9px)  skewX(-7deg); clip-path: polygon(0 30%, 100% 30%, 100% 58%, 0 58%); }
+    13%  { opacity: 1; transform: translateX(-5px) scaleY(1.1);  clip-path: polygon(0 62%, 100% 62%, 100% 88%, 0 88%); }
+    14%  { opacity: 1; transform: translateX(6px)  skewX(5deg);  clip-path: polygon(0 10%, 100% 10%, 100% 30%, 0 30%); }
+    35%  { opacity: 1; transform: translateX(7px)  skewX(-9deg); clip-path: polygon(0 18%, 100% 18%, 100% 42%, 0 42%); }
+    37%  { opacity: 1; transform: translateX(-8px) scaleY(0.88); clip-path: polygon(0 48%, 100% 48%, 100% 70%, 0 70%); }
+    38%  { opacity: 1; transform: translateX(4px)  skewX(6deg);  clip-path: polygon(0 72%, 100% 72%, 100% 92%, 0 92%); }
+    60%  { opacity: 1; transform: translateX(8px)  skewX(-5deg); clip-path: polygon(0 25%, 100% 25%, 100% 52%, 0 52%); }
+    63%  { opacity: 1; transform: translateX(-6px) scaleY(1.12); clip-path: polygon(0 55%, 100% 55%, 100% 80%, 0 80%); }
+    65%  { opacity: 0; clip-path: none; }
+    81%  { opacity: 1; transform: translateX(-9px) skewX(8deg);  clip-path: polygon(0 12%, 100% 12%, 100% 38%, 0 38%); }
+    83%  { opacity: 1; transform: translateX(5px)  skewX(-4deg); clip-path: polygon(0 42%, 100% 42%, 100% 65%, 0 65%); }
+    84%  { opacity: 0; clip-path: none; }
+}
+
+@keyframes ring-rotate-3d {
+    from { transform: rotateY(0deg); }
+    to   { transform: rotateY(-360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .preview-ring-container {
+        animation: none;
+        transform: none;
+    }
+    .preview-ring-container .ring-char,
+    .preview-ring-container .ring-char::before,
+    .preview-ring-container .ring-char::after {
+        animation: none;
+        opacity: 1;
+        transform: none;
+        clip-path: none;
+    }
 }

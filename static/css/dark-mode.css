@@ -614,7 +614,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] .container-header {
-  background: #2a7bc4;
+  background: linear-gradient(to right, #1880aa, #0a3585);
 }
 
 [data-theme="dark"] .container-content {
