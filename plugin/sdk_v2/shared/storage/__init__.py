@@ -1,9 +1,6 @@
-"""Shared storage building blocks for SDK v2.
+"""Shared storage facades for SDK v2.
 
-Status by module:
-- `store`: implemented
-- `database`: implemented
-- `state`: implemented
+Concrete storage implementations live in `public/storage/*`.
 """
 
 from .database import AsyncSessionProtocol, PluginDatabase, PluginKVStore

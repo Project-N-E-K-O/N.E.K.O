@@ -9,9 +9,9 @@ from . import bus, compat, constants, core, logging, models, runtime, storage, t
 IMPLEMENTATION_STATUS = {
     "core": "mixed",
     "bus": "contract-only",
-    "storage": "implemented",
-    "runtime": "mixed",
-    "transport": "contract-only",
+    "storage": "facade",
+    "runtime": "facade",
+    "transport": "facade",
     "models": "implemented",
     "compat": "implemented",
     "constants": "implemented",
