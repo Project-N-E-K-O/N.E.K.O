@@ -85,6 +85,24 @@ class PluginStore:
         except Exception as error:
             return Err(error)
 
+    async def count(self) -> Result[int, Exception]:
+        try:
+            return await self._impl.count()
+        except Exception as error:
+            return Err(error)
+
+    async def dump(self) -> Result[dict[str, JsonValue], Exception]:
+        try:
+            return await self._impl.dump()
+        except Exception as error:
+            return Err(error)
+
+    async def close(self) -> Result[None, Exception]:
+        try:
+            return await self._impl.close()
+        except Exception as error:
+            return Err(error)
+
     async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
         return (await self.get(key, default)).unwrap_or(default)
 
@@ -102,6 +120,15 @@ class PluginStore:
 
     async def clear_async(self) -> int:
         return (await self.clear()).unwrap_or(0)
+
+    async def count_async(self) -> int:
+        return (await self.count()).unwrap_or(0)
+
+    async def dump_async(self) -> dict[str, JsonValue]:
+        return (await self.dump()).unwrap_or({})
+
+    async def close_async(self) -> None:
+        (await self.close()).raise_for_err()
 
 
 _OK_NONE = Ok(None)

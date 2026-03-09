@@ -53,6 +53,33 @@ class PluginKVStore:
         except Exception as error:
             return Err(error)
 
+    async def exists(self, key: str) -> Result[bool, Exception]:
+        key_ok = self._validate_key(key)
+        if isinstance(key_ok, Err):
+            return key_ok
+        try:
+            return await self._impl.exists(key)
+        except Exception as error:
+            return Err(error)
+
+    async def keys(self, prefix: str = "") -> Result[list[str], Exception]:
+        try:
+            return await self._impl.keys(prefix)
+        except Exception as error:
+            return Err(error)
+
+    async def clear(self) -> Result[int, Exception]:
+        try:
+            return await self._impl.clear()
+        except Exception as error:
+            return Err(error)
+
+    async def count(self) -> Result[int, Exception]:
+        try:
+            return await self._impl.count()
+        except Exception as error:
+            return Err(error)
+
     async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
         return (await self.get(key, default)).unwrap_or(default)
 
@@ -61,6 +88,18 @@ class PluginKVStore:
 
     async def delete_async(self, key: str) -> bool:
         return (await self.delete(key)).unwrap_or(False)
+
+    async def exists_async(self, key: str) -> bool:
+        return (await self.exists(key)).unwrap_or(False)
+
+    async def keys_async(self, prefix: str = "") -> list[str]:
+        return (await self.keys(prefix)).unwrap_or([])
+
+    async def clear_async(self) -> int:
+        return (await self.clear()).unwrap_or(0)
+
+    async def count_async(self) -> int:
+        return (await self.count()).unwrap_or(0)
 
 
 class PluginDatabase:
@@ -103,6 +142,21 @@ class PluginDatabase:
             return await self._impl.session()
         except Exception as error:
             return Err(error)
+
+    async def close(self) -> Result[None, Exception]:
+        try:
+            return await self._impl.close()
+        except Exception as error:
+            return Err(error)
+
+    async def create_all_async(self) -> None:
+        (await self.create_all()).raise_for_err()
+
+    async def drop_all_async(self) -> None:
+        (await self.drop_all()).raise_for_err()
+
+    async def close_async(self) -> None:
+        (await self.close()).raise_for_err()
 
     @property
     def kv(self) -> PluginKVStore:

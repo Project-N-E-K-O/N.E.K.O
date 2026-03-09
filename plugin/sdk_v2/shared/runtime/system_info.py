@@ -29,6 +29,15 @@ class SystemInfo:
         except Exception as error:
             return Err(error)
 
+    async def get_server_settings(self, *, timeout: float = 5.0) -> Result[JsonObject, Exception]:
+        timeout_ok = self._validate_timeout(timeout)
+        if isinstance(timeout_ok, Err):
+            return timeout_ok
+        try:
+            return await self._impl.get_server_settings(timeout=timeout)
+        except Exception as error:
+            return Err(error)
+
     async def get_python_env(self) -> Result[JsonObject, Exception]:
         try:
             return await self._impl.get_python_env()

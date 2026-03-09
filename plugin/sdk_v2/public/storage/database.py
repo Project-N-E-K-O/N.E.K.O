@@ -116,6 +116,25 @@ class PluginDatabase:
         except Exception as error:
             return Err(error)
 
+    async def close(self) -> Result[None, Exception]:
+        try:
+            conn = getattr(self._local, "conn", None)
+            if conn is not None:
+                conn.close()
+                self._local.conn = None
+            return Ok(None)
+        except Exception as error:
+            return Err(error)
+
+    async def create_all_async(self) -> None:
+        (await self.create_all()).raise_for_err()
+
+    async def drop_all_async(self) -> None:
+        (await self.drop_all()).raise_for_err()
+
+    async def close_async(self) -> None:
+        (await self.close()).raise_for_err()
+
     async def session(self) -> Result[AsyncSessionProtocol, Exception]:
         try:
             return Ok(_SqliteAsyncSession(self._get_conn()))
@@ -192,6 +211,38 @@ class PluginKVStore:
         self._db._get_conn().commit()
         return cursor.rowcount > 0
 
+    def _exists_sync(self, key: str) -> bool:
+        if not self._db.enabled:
+            return False
+        self._ensure_table()
+        row = self._db._get_conn().execute(f"SELECT 1 FROM {self._TABLE_NAME} WHERE key = ?", (key,)).fetchone()
+        return row is not None
+
+    def _keys_sync(self, prefix: str = "") -> list[str]:
+        if not self._db.enabled:
+            return []
+        self._ensure_table()
+        if prefix:
+            rows = self._db._get_conn().execute(f"SELECT key FROM {self._TABLE_NAME} WHERE key LIKE ? ORDER BY key", (f"{prefix}%",)).fetchall()
+        else:
+            rows = self._db._get_conn().execute(f"SELECT key FROM {self._TABLE_NAME} ORDER BY key").fetchall()
+        return [str(row[0]) for row in rows]
+
+    def _clear_sync(self) -> int:
+        if not self._db.enabled:
+            return 0
+        self._ensure_table()
+        cursor = self._db._get_conn().execute(f"DELETE FROM {self._TABLE_NAME}")
+        self._db._get_conn().commit()
+        return int(cursor.rowcount if cursor.rowcount >= 0 else 0)
+
+    def _count_sync(self) -> int:
+        if not self._db.enabled:
+            return 0
+        self._ensure_table()
+        row = self._db._get_conn().execute(f"SELECT COUNT(*) FROM {self._TABLE_NAME}").fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def get(self, key: str, default: JsonValue | None = None) -> Result[JsonValue | None, Exception]:
         try:
             return Ok(self._get_sync(key, default))
@@ -211,6 +262,30 @@ class PluginKVStore:
         except Exception as error:
             return Err(error)
 
+    async def exists(self, key: str) -> Result[bool, Exception]:
+        try:
+            return Ok(self._exists_sync(key))
+        except Exception as error:
+            return Err(error)
+
+    async def keys(self, prefix: str = "") -> Result[list[str], Exception]:
+        try:
+            return Ok(self._keys_sync(prefix))
+        except Exception as error:
+            return Err(error)
+
+    async def clear(self) -> Result[int, Exception]:
+        try:
+            return Ok(self._clear_sync())
+        except Exception as error:
+            return Err(error)
+
+    async def count(self) -> Result[int, Exception]:
+        try:
+            return Ok(self._count_sync())
+        except Exception as error:
+            return Err(error)
+
     async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
         return (await self.get(key, default)).unwrap_or(default)
 
@@ -219,6 +294,18 @@ class PluginKVStore:
 
     async def delete_async(self, key: str) -> bool:
         return (await self.delete(key)).unwrap_or(False)
+
+    async def exists_async(self, key: str) -> bool:
+        return (await self.exists(key)).unwrap_or(False)
+
+    async def keys_async(self, prefix: str = "") -> list[str]:
+        return (await self.keys(prefix)).unwrap_or([])
+
+    async def clear_async(self) -> int:
+        return (await self.clear()).unwrap_or(0)
+
+    async def count_async(self) -> int:
+        return (await self.count()).unwrap_or(0)
 
 
 __all__ = ["AsyncSessionProtocol", "PluginDatabase", "PluginKVStore"]

@@ -86,6 +86,11 @@ class _CtxSystemRaises:
         raise RuntimeError("boom")
 
 
+class _CtxSystemData:
+    async def get_system_config(self, timeout: float = 5.0):
+        return {"data": {"config": {"plugin_dir": "/tmp/demo-data"}}}
+
+
 class _CtxPlane:
     def __init__(self) -> None:
         self.pushed: list[tuple[str, str, dict, float]] = []
@@ -147,15 +152,31 @@ async def test_public_memory_client_branches() -> None:
 async def test_public_system_info_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     info = public_system_info.SystemInfo(_CtxSystem())
     assert (await info.get_system_config()).is_ok()
+    assert (await info.get_server_settings()).unwrap() == {"plugin_dir": "/tmp/demo"}
 
     info = public_system_info.SystemInfo(_CtxSystemNonDict())
     assert (await info.get_system_config()).unwrap() == {"result": "x"}
+    assert (await info.get_server_settings()).unwrap() == {}
+
+    info = public_system_info.SystemInfo(_CtxSystemData())
+    assert (await info.get_server_settings()).unwrap() == {"plugin_dir": "/tmp/demo-data"}
 
     info = public_system_info.SystemInfo(object())
     assert (await info.get_system_config()).is_err()
+    assert (await info.get_server_settings()).is_err()
 
     info = public_system_info.SystemInfo(_CtxSystemRaises())
     assert (await info.get_system_config()).is_err()
+    assert (await info.get_server_settings()).is_err()
+
+    original = public_system_info.SystemInfo.get_system_config
+    async def _boom(self, *, timeout: float = 5.0):
+        raise RuntimeError("boom")
+    public_system_info.SystemInfo.get_system_config = _boom  # type: ignore[assignment]
+    try:
+        assert (await public_system_info.SystemInfo(object()).get_server_settings()).is_err()
+    finally:
+        public_system_info.SystemInfo.get_system_config = original  # type: ignore[assignment]
 
     original_uname = platform.uname
     original_arch = platform.architecture

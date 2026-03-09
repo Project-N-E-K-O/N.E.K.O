@@ -1,21 +1,120 @@
-"""SDK v2 extension surface (contract-only)."""
+"""SDK v2 extension surface."""
 
 from __future__ import annotations
-from __future__ import annotations
 
-from . import base as _base
-from . import decorators as _decorators
-from . import runtime as _runtime
+from .base import ExtensionMeta, NekoExtensionBase
+from .decorators import (
+    EXTENSION_ENTRY_META,
+    EXTENSION_HOOK_META,
+    ExtensionEntryMeta,
+    ExtensionHookMeta,
+    extension,
+    extension_entry,
+    extension_hook,
+)
+from .runtime import (
+    AsyncCallChain,
+    CallChain,
+    CallChainTooDeepError,
+    CircularCallError,
+    ConfigPathError,
+    ConfigValidationError,
+    EntryConflictError,
+    Err,
+    ErrorCode,
+    ExtensionRuntime,
+    LogLevel,
+    LoggerLike,
+    MessagePlaneTransport,
+    Ok,
+    PluginConfig,
+    PluginConfigError,
+    PluginRouter,
+    PluginRouterError,
+    Result,
+    ResultError,
+    RouteHandler,
+    SDK_VERSION,
+    bind_result,
+    build_component_name,
+    capture,
+    configure_sdk_default_logger,
+    fail,
+    format_log_text,
+    get_call_chain,
+    get_call_depth,
+    get_extension_logger,
+    get_sdk_logger,
+    intercept_standard_logging,
+    is_envelope,
+    is_err,
+    is_in_call_chain,
+    is_ok,
+    map_err_result,
+    map_result,
+    match_result,
+    must,
+    ok,
+    raise_for_err,
+    setup_sdk_logging,
+    unwrap,
+    unwrap_or,
+)
 
-for _name in _base.__all__:
-    globals()[_name] = getattr(_base, _name)
-
-for _name in _decorators.__all__:
-    globals()[_name] = getattr(_decorators, _name)
-
-for _name in _runtime.__all__:
-    globals()[_name] = getattr(_runtime, _name)
-
-__all__ = list(dict.fromkeys([*_base.__all__, *_decorators.__all__, *_runtime.__all__]))
-
-del _name
+__all__ = list(dict.fromkeys([
+    "ExtensionMeta",
+    "NekoExtensionBase",
+    "EXTENSION_ENTRY_META",
+    "EXTENSION_HOOK_META",
+    "ExtensionEntryMeta",
+    "ExtensionHookMeta",
+    "extension_entry",
+    "extension_hook",
+    "extension",
+    "SDK_VERSION",
+    "LogLevel",
+    "build_component_name",
+    "LoggerLike",
+    "get_sdk_logger",
+    "get_extension_logger",
+    "setup_sdk_logging",
+    "configure_sdk_default_logger",
+    "intercept_standard_logging",
+    "format_log_text",
+    "ErrorCode",
+    "ok",
+    "fail",
+    "is_envelope",
+    "Ok",
+    "Err",
+    "Result",
+    "ResultError",
+    "is_ok",
+    "is_err",
+    "map_result",
+    "map_err_result",
+    "bind_result",
+    "match_result",
+    "unwrap",
+    "unwrap_or",
+    "raise_for_err",
+    "must",
+    "capture",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+    "PluginConfig",
+    "PluginConfigError",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "PluginRouter",
+    "PluginRouterError",
+    "EntryConflictError",
+    "RouteHandler",
+    "MessagePlaneTransport",
+    "ExtensionRuntime",
+]))

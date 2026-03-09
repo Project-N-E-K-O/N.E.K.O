@@ -69,5 +69,17 @@ class PluginStatePersistence:
     async def snapshot_async(self) -> JsonObject:
         return (await self.snapshot()).unwrap_or({})
 
+    async def collect_attrs_async(self, instance: object) -> JsonObject:
+        return await self._impl.collect_attrs_async(instance)
+
+    async def restore_attrs_async(self, instance: object, snapshot: JsonObject) -> int:
+        return await self._impl.restore_attrs_async(instance, snapshot)
+
+    async def has_saved_state_async(self) -> bool:
+        return await self._impl.has_saved_state_async()
+
+    async def get_state_info_async(self) -> JsonObject | None:
+        return await self._impl.get_state_info_async()
+
 
 __all__ = ["EXTENDED_TYPES", "PluginStatePersistence"]

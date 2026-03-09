@@ -1,27 +1,154 @@
-"""SDK v2 adapter surface (contract-only)."""
+"""SDK v2 adapter surface."""
 
 from __future__ import annotations
-from __future__ import annotations
 
-from . import base as _base
-from . import types as _types
-from . import decorators as _decorators
-from . import runtime as _runtime
-
-for _name in _base.__all__:
-    globals()[_name] = getattr(_base, _name)
-
-for _name in _types.__all__:
-    globals()[_name] = getattr(_types, _name)
-
-for _name in _decorators.__all__:
-    globals()[_name] = getattr(_decorators, _name)
-
-for _name in _runtime.__all__:
-    globals()[_name] = getattr(_runtime, _name)
-
+from .base import AdapterBase, AdapterConfig, AdapterContext, AdapterMode
+from .decorators import (
+    ADAPTER_EVENT_META,
+    ADAPTER_LIFECYCLE_META,
+    AdapterEventMeta,
+    on_adapter_event,
+    on_adapter_shutdown,
+    on_adapter_startup,
+    on_mcp_resource,
+    on_mcp_tool,
+    on_nonebot_message,
+)
 from .neko_adapter import NekoAdapterPlugin
+from .runtime import (
+    AsyncCallChain,
+    AdapterGatewayCore,
+    CallablePluginInvoker,
+    CallChain,
+    CallChainTooDeepError,
+    CircularCallError,
+    DefaultPolicyEngine,
+    DefaultRequestNormalizer,
+    DefaultResponseSerializer,
+    DefaultRouteEngine,
+    Err,
+    ErrorCode,
+    ExternalEnvelope,
+    GatewayAction,
+    GatewayError,
+    GatewayErrorException,
+    GatewayRequest,
+    GatewayResponse,
+    LogLevel,
+    LoggerLike,
+    Ok,
+    PluginInvoker,
+    PolicyEngine,
+    RequestNormalizer,
+    ResponseSerializer,
+    Result,
+    ResultError,
+    RouteDecision,
+    RouteEngine,
+    RouteMode,
+    SDK_VERSION,
+    TransportAdapter,
+    bind_result,
+    build_component_name,
+    capture,
+    configure_sdk_default_logger,
+    fail,
+    format_log_text,
+    get_adapter_logger,
+    get_call_chain,
+    get_call_depth,
+    get_sdk_logger,
+    intercept_standard_logging,
+    is_envelope,
+    is_err,
+    is_in_call_chain,
+    is_ok,
+    map_err_result,
+    map_result,
+    match_result,
+    must,
+    ok,
+    raise_for_err,
+    setup_sdk_logging,
+    unwrap,
+    unwrap_or,
+)
+from .types import AdapterMessage, AdapterResponse, Protocol, RouteRule, RouteTarget
 
-__all__ = list(dict.fromkeys([*_base.__all__, *_types.__all__, *_decorators.__all__, *_runtime.__all__, "NekoAdapterPlugin"]))
-
-del _name
+__all__ = list(dict.fromkeys([
+    "AdapterMode",
+    "AdapterConfig",
+    "AdapterContext",
+    "AdapterBase",
+    "Protocol",
+    "RouteTarget",
+    "AdapterMessage",
+    "AdapterResponse",
+    "RouteRule",
+    "ADAPTER_EVENT_META",
+    "ADAPTER_LIFECYCLE_META",
+    "AdapterEventMeta",
+    "on_adapter_event",
+    "on_adapter_startup",
+    "on_adapter_shutdown",
+    "on_mcp_tool",
+    "on_mcp_resource",
+    "on_nonebot_message",
+    "NekoAdapterPlugin",
+    "SDK_VERSION",
+    "LogLevel",
+    "build_component_name",
+    "LoggerLike",
+    "get_sdk_logger",
+    "get_adapter_logger",
+    "setup_sdk_logging",
+    "configure_sdk_default_logger",
+    "intercept_standard_logging",
+    "format_log_text",
+    "ErrorCode",
+    "ok",
+    "fail",
+    "is_envelope",
+    "Ok",
+    "Err",
+    "Result",
+    "ResultError",
+    "is_ok",
+    "is_err",
+    "map_result",
+    "map_err_result",
+    "bind_result",
+    "match_result",
+    "unwrap",
+    "unwrap_or",
+    "raise_for_err",
+    "must",
+    "capture",
+    "CallChain",
+    "AsyncCallChain",
+    "CircularCallError",
+    "CallChainTooDeepError",
+    "get_call_chain",
+    "get_call_depth",
+    "is_in_call_chain",
+    "ExternalEnvelope",
+    "GatewayAction",
+    "GatewayRequest",
+    "GatewayError",
+    "GatewayErrorException",
+    "GatewayResponse",
+    "RouteDecision",
+    "RouteMode",
+    "TransportAdapter",
+    "RequestNormalizer",
+    "PolicyEngine",
+    "RouteEngine",
+    "PluginInvoker",
+    "ResponseSerializer",
+    "AdapterGatewayCore",
+    "DefaultRequestNormalizer",
+    "DefaultPolicyEngine",
+    "DefaultRouteEngine",
+    "DefaultResponseSerializer",
+    "CallablePluginInvoker",
+]))

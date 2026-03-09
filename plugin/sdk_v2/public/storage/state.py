@@ -134,13 +134,23 @@ class PluginStatePersistence:
             return [self._deserialize_value(f"{key}[{i}]", v, instance) for i, v in enumerate(value)]
         return value
 
-    def _collect_snapshot(self, instance: object) -> JsonObject:
+    def _collect_attrs(self, instance: object) -> JsonObject:
         keys = list(getattr(instance, "__freezable__", []) or [])
         snapshot: JsonObject = {}
         for key in keys:
             if hasattr(instance, key):
                 snapshot[key] = self._serialize_value(key, getattr(instance, key), instance)
         return snapshot
+
+    def _collect_snapshot(self, instance: object) -> JsonObject:
+        return self._collect_attrs(instance)
+
+    def _restore_attrs(self, instance: object, snapshot: JsonObject) -> int:
+        restored = 0
+        for key, value in snapshot.items():
+            setattr(instance, key, self._deserialize_value(key, value, instance))
+            restored += 1
+        return restored
 
     def _save_sync(self, instance: object) -> bool:
         if self.backend == "off":
@@ -176,8 +186,7 @@ class PluginStatePersistence:
         snapshot = raw.get("data", {})
         if not isinstance(snapshot, dict):
             return False
-        for key, value in snapshot.items():
-            setattr(instance, key, self._deserialize_value(key, value, instance))
+        self._restore_attrs(instance, snapshot)
         return True
 
     def _clear_sync(self) -> bool:
@@ -227,6 +236,12 @@ class PluginStatePersistence:
         except Exception as error:
             return Err(error)
 
+    async def collect_attrs_async(self, instance: object) -> JsonObject:
+        return self._collect_attrs(instance)
+
+    async def restore_attrs_async(self, instance: object, snapshot: JsonObject) -> int:
+        return self._restore_attrs(instance, snapshot)
+
     async def save_async(self, instance: object) -> bool:
         return (await self.save(instance)).unwrap_or(False)
 
@@ -238,6 +253,24 @@ class PluginStatePersistence:
 
     async def snapshot_async(self) -> JsonObject:
         return (await self.snapshot()).unwrap_or({})
+
+    async def has_saved_state_async(self) -> bool:
+        if self.backend == "memory":
+            return self._memory_state is not None
+        return self._state_path.exists()
+
+    async def get_state_info_async(self) -> JsonObject | None:
+        exists = await self.has_saved_state_async()
+        if not exists:
+            return None
+        if self.backend == "memory":
+            size = len(self._memory_state or b"")
+            return {"backend": "memory", "plugin_id": self.plugin_id, "size_bytes": size}
+        try:
+            stat = self._state_path.stat()
+        except Exception:
+            return None
+        return {"backend": self.backend, "plugin_id": self.plugin_id, "path": str(self._state_path), "size_bytes": stat.st_size}
 
 
 __all__ = ["EXTENDED_TYPES", "PluginStatePersistence"]

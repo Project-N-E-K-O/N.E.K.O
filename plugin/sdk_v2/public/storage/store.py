@@ -130,6 +130,33 @@ class PluginStore:
         self._get_conn().commit()
         return int(cursor.rowcount if cursor.rowcount >= 0 else 0)
 
+    def _count_sync(self) -> int:
+        if not self.enabled:
+            return 0
+        row = self._get_conn().execute("SELECT COUNT(*) FROM kv_store").fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _dump_sync(self) -> dict[str, JsonValue]:
+        if not self.enabled:
+            return {}
+        rows = self._get_conn().execute("SELECT key, value FROM kv_store ORDER BY key").fetchall()
+        result: dict[str, JsonValue] = {}
+        for row in rows:
+            key = str(row[0])
+            try:
+                value = _unpack(row[1])
+            except Exception:
+                continue
+            if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+                result[key] = value
+        return result
+
+    def _close_sync(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
     async def get(self, key: str, default: JsonValue | None = None) -> Result[JsonValue | None, Exception]:
         try:
             return Ok(self._get_sync(key, default))
@@ -167,6 +194,25 @@ class PluginStore:
         except Exception as error:
             return Err(error)
 
+    async def count(self) -> Result[int, Exception]:
+        try:
+            return Ok(self._count_sync())
+        except Exception as error:
+            return Err(error)
+
+    async def dump(self) -> Result[dict[str, JsonValue], Exception]:
+        try:
+            return Ok(self._dump_sync())
+        except Exception as error:
+            return Err(error)
+
+    async def close(self) -> Result[None, Exception]:
+        try:
+            self._close_sync()
+            return Ok(None)
+        except Exception as error:
+            return Err(error)
+
     async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
         return (await self.get(key, default)).unwrap_or(default)
 
@@ -184,6 +230,15 @@ class PluginStore:
 
     async def clear_async(self) -> int:
         return (await self.clear()).unwrap_or(0)
+
+    async def count_async(self) -> int:
+        return (await self.count()).unwrap_or(0)
+
+    async def dump_async(self) -> dict[str, JsonValue]:
+        return (await self.dump()).unwrap_or({})
+
+    async def close_async(self) -> None:
+        (await self.close()).raise_for_err()
 
 
 __all__ = ["PluginStore"]

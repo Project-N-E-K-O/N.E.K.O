@@ -27,6 +27,19 @@ class SystemInfo:
         except Exception as error:
             return Err(error)
 
+    async def get_server_settings(self, *, timeout: float = 5.0) -> Result[JsonObject, Exception]:
+        try:
+            config = await self.get_system_config(timeout=timeout)
+            if isinstance(config, Err):
+                return config
+            payload = config.value
+            if isinstance(payload.get("data"), dict):
+                payload = payload["data"]
+            settings = payload.get("config") if isinstance(payload, dict) else None
+            return Ok(settings if isinstance(settings, dict) else {})
+        except Exception as error:
+            return Err(error)
+
     async def get_python_env(self) -> Result[JsonObject, Exception]:
         try:
             try:

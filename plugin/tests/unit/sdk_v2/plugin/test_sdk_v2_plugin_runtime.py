@@ -169,6 +169,9 @@ async def test_system_info_runtime_behaviors() -> None:
     info = rt.SystemInfo(_CtxWithSystem())
     config = await info.get_system_config()
     assert config.is_ok()
+    settings = await info.get_server_settings()
+    assert settings.is_ok()
+    assert settings.unwrap() == {"plugin_dir": "/tmp/demo"}
     env = await info.get_python_env()
     assert env.is_ok()
     assert "python" in env.unwrap()
@@ -178,6 +181,7 @@ async def test_system_info_runtime_behaviors() -> None:
 
     no_system = rt.SystemInfo(_CtxNoSystem())
     assert (await no_system.get_system_config()).is_err()
+    assert (await no_system.get_server_settings()).is_err()
 
 
 @pytest.mark.asyncio
