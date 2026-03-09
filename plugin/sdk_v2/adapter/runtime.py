@@ -1,16 +1,11 @@
-"""Adapter runtime surface for SDK v2.
-
-This runtime surface follows the same layout as the other facades: common
-SDK-wide runtime exports first, adapter-specific gateway/runtime contracts
-second.
-"""
+"""Adapter runtime surface for SDK v2."""
 
 from __future__ import annotations
 
 from plugin.sdk_v2.shared import runtime_common as _common_runtime
-from plugin.sdk_v2.shared.logging import get_adapter_logger
+from plugin.sdk_v2.shared.logging import get_adapter_logger  # noqa: F401
 
-from .gateway_contracts import (
+from .gateway_contracts import (  # noqa: F401
     PluginInvoker,
     PolicyEngine,
     RequestNormalizer,
@@ -18,15 +13,15 @@ from .gateway_contracts import (
     RouteEngine,
     TransportAdapter,
 )
-from .gateway_core import AdapterGatewayCore
-from .gateway_defaults import (
+from .gateway_core import AdapterGatewayCore  # noqa: F401
+from .gateway_defaults import (  # noqa: F401
     CallablePluginInvoker,
     DefaultPolicyEngine,
     DefaultRequestNormalizer,
     DefaultResponseSerializer,
     DefaultRouteEngine,
 )
-from .gateway_models import (
+from .gateway_models import (  # noqa: F401
     ExternalEnvelope,
     GatewayAction,
     GatewayError,

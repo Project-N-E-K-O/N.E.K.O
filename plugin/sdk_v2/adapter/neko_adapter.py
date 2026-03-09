@@ -1,38 +1,38 @@
-"""Neko adapter plugin contract for SDK v2."""
+"""Adapter-facing Neko adapter facade for SDK v2."""
 
 from __future__ import annotations
 
-from plugin.sdk_v2.plugin.base import NekoPluginBase
+from plugin.sdk_v2.public.adapter.neko_adapter import NekoAdapterPlugin as _ImplNekoAdapterPlugin
 from plugin.sdk_v2.shared.models import Result
 
 from .base import AdapterConfig, AdapterContext, AdapterMode
 from .types import RouteRule
 
 
-class NekoAdapterPlugin(NekoPluginBase):
-    """Adapter-capable plugin contract."""
+class NekoAdapterPlugin(_ImplNekoAdapterPlugin):
+    """Stable adapter-capable plugin facade."""
 
     @property
     def adapter_config(self) -> AdapterConfig:
-        raise NotImplementedError("sdk_v2 contract-only facade: adapter.neko_adapter not implemented")
+        return super().adapter_config
 
     @property
     def adapter_context(self) -> AdapterContext:
-        raise NotImplementedError
+        return super().adapter_context
 
     @property
     def adapter_mode(self) -> AdapterMode:
-        raise NotImplementedError
+        return super().adapter_mode
 
     @property
     def adapter_id(self) -> str:
-        raise NotImplementedError
+        return super().adapter_id
 
     async def adapter_startup(self) -> Result[None, Exception]:
-        raise NotImplementedError
+        return await super().adapter_startup()
 
     async def adapter_shutdown(self) -> Result[None, Exception]:
-        raise NotImplementedError
+        return await super().adapter_shutdown()
 
     async def register_adapter_tool_as_entry(
         self,
@@ -41,13 +41,13 @@ class NekoAdapterPlugin(NekoPluginBase):
         display_name: str = "",
         description: str = "",
     ) -> Result[bool, Exception]:
-        raise NotImplementedError
+        return await super().register_adapter_tool_as_entry(name, handler, display_name=display_name, description=description)
 
     async def unregister_adapter_tool_entry(self, name: str) -> Result[bool, Exception]:
-        raise NotImplementedError
+        return await super().unregister_adapter_tool_entry(name)
 
     def list_adapter_routes(self) -> list[RouteRule]:
-        raise NotImplementedError
+        return super().list_adapter_routes()
 
 
 __all__ = ["NekoAdapterPlugin"]

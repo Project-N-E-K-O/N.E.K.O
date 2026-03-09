@@ -17,16 +17,16 @@ def test_extension_meta_construct() -> None:
     assert meta.capabilities == []
 
 
-def test_extension_decorators_raise() -> None:
-    with pytest.raises(NotImplementedError):
-        dec.extension_entry()
-    with pytest.raises(NotImplementedError):
-        dec.extension_hook()
+def test_extension_decorators_construct() -> None:
+    def fn() -> str:
+        return "ok"
+    assert dec.extension_entry()(fn) is fn
+    assert getattr(fn, dec.EXTENSION_ENTRY_META).id is None
+    assert dec.extension_hook()(fn) is fn
+    assert getattr(fn, dec.EXTENSION_HOOK_META).target == "*"
 
 
-def test_extension_decorators_return_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dec, "_not_impl", lambda *_args, **_kwargs: None)
-
+def test_extension_decorators_return_paths() -> None:
     def fn() -> str:
         return "ok"
 
@@ -35,10 +35,14 @@ def test_extension_decorators_return_paths(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_extension_runtime_not_implemented() -> None:
-    rt = extension.ExtensionRuntime(config=object(), router=object(), transport=object())
-    with pytest.raises(NotImplementedError):
-        await rt.health()
+async def test_extension_runtime_health() -> None:
+    class _Router:
+        def name(self) -> str:
+            return "router"
+    rt = extension.ExtensionRuntime(config=object(), router=_Router(), transport=object())
+    health = await rt.health()
+    assert health.is_ok()
+    assert health.unwrap()["status"] == "ok"
 
 
 def test_extension_runtime_common_exports() -> None:

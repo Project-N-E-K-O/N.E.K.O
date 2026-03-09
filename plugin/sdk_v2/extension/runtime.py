@@ -1,16 +1,11 @@
-"""Extension runtime contracts for SDK v2.
-
-This runtime surface stays narrower than `plugin.runtime`, but follows the same
-layout: common SDK-wide runtime exports first, extension-specific contracts
-second.
-"""
+"""Extension runtime contracts for SDK v2."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from plugin.sdk_v2.shared import runtime_common as _common_runtime
-from plugin.sdk_v2.shared.core.config import (
+from plugin.sdk_v2.shared.core.config import (  # noqa: F401
     ConfigPathError,
     ConfigProfileError,
     ConfigValidationError,
@@ -19,8 +14,9 @@ from plugin.sdk_v2.shared.core.config import (
     PluginConfigError,
     PluginConfigProfiles,
 )
-from plugin.sdk_v2.shared.core.router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler
-from plugin.sdk_v2.shared.logging import get_extension_logger
+from plugin.sdk_v2.shared.core.router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler  # noqa: F401
+from plugin.sdk_v2.shared.logging import get_extension_logger  # noqa: F401
+from plugin.sdk_v2.shared.models import Ok, Result
 from plugin.sdk_v2.shared.transport.message_plane import MessagePlaneTransport
 
 for _name in _common_runtime.__all__:
@@ -35,13 +31,7 @@ EXTENSION_RUNTIME_EXPORTS = [
     "ConfigProfileError",
     "PluginConfigBaseView",
     "PluginConfigProfiles",
-    "ConfigProfileError",
-    "PluginConfigBaseView",
-    "PluginConfigProfiles",
     "ConfigValidationError",
-    "ConfigProfileError",
-    "PluginConfigBaseView",
-    "PluginConfigProfiles",
     "PluginRouter",
     "PluginRouterError",
     "EntryConflictError",
@@ -58,7 +48,7 @@ class ExtensionRuntime:
     transport: MessagePlaneTransport
 
     async def health(self) -> Result[dict[str, str], Exception]:
-        raise NotImplementedError("sdk_v2 contract-only facade: extension.runtime not implemented")
+        return Ok({"status": "ok", "router": self.router.name(), "transport": self.transport.__class__.__name__})
 
 
 __all__ = [*COMMON_RUNTIME_EXPORTS, *EXTENSION_RUNTIME_EXPORTS]

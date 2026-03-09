@@ -1,14 +1,14 @@
 """Shared SDK v2 building blocks.
 
 `shared` contains reusable lower-level primitives. Some subpackages already have
-real implementations, while others are still contract-only.
+real implementations, while a few subpackages are still evolving.
 """
 
 from . import bus, compat, constants, core, logging, models, runtime, storage, transport
 
 IMPLEMENTATION_STATUS = {
     "core": "mixed",
-    "bus": "contract-only",
+    "bus": "facade",
     "storage": "facade",
     "runtime": "facade",
     "transport": "facade",

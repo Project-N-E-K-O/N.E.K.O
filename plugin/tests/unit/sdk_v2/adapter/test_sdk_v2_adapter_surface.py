@@ -25,18 +25,17 @@ def test_adapter_models_construct() -> None:
     assert isinstance(gm.GatewayErrorException(err), RuntimeError)
 
 
-def test_adapter_decorators_raise() -> None:
-    with pytest.raises(NotImplementedError):
-        dec.on_adapter_event()
-    with pytest.raises(NotImplementedError):
-        dec.on_adapter_startup()
-    with pytest.raises(NotImplementedError):
-        dec.on_adapter_shutdown()
+def test_adapter_decorators_construct() -> None:
+    def fn() -> str:
+        return "x"
+    wrapped = dec.on_adapter_event()(fn)
+    assert wrapped is fn
+    assert getattr(fn, dec.ADAPTER_EVENT_META).protocol == "*"
+    assert dec.on_adapter_startup()(fn) is fn
+    assert dec.on_adapter_shutdown()(fn) is fn
 
 
-def test_adapter_decorator_return_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dec, "_not_impl", lambda *_args, **_kwargs: None)
-
+def test_adapter_decorator_return_paths() -> None:
     def fn() -> str:
         return "x"
 
@@ -53,22 +52,28 @@ def test_adapter_decorator_return_paths(monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.mark.asyncio
 async def test_adapter_not_implemented_methods() -> None:
-    with pytest.raises(NotImplementedError):
-        adapter.AdapterContext(adapter_id="a", config=adapter.AdapterConfig(), logger=object())
-    with pytest.raises(NotImplementedError):
-        adapter.AdapterBase(config=adapter.AdapterConfig(), ctx=object())
-    with pytest.raises(NotImplementedError):
-        adapter.AdapterGatewayCore(transport=object(), normalizer=object(), policy=object(), router=object(), invoker=object(), serializer=object())
+    ctx = adapter.AdapterContext(adapter_id="a", config=adapter.AdapterConfig(), logger=object())
+    assert ctx.adapter_id == "a"
+    base = adapter.AdapterBase(config=adapter.AdapterConfig(), ctx=ctx)
+    assert base.adapter_id == "a"
+    pass
 
-    core = object.__new__(adapter.AdapterGatewayCore)
-    with pytest.raises(NotImplementedError):
-        await core.start()
-    with pytest.raises(NotImplementedError):
-        await core.stop()
-    with pytest.raises(NotImplementedError):
-        await core.run_once()
-    with pytest.raises(NotImplementedError):
-        await core.handle_envelope(gm.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool", payload={}))
+    class _Transport:
+        protocol_name = "mcp"
+        async def start(self):
+            return adapter.Ok(None)
+        async def stop(self):
+            return adapter.Ok(None)
+        async def recv(self):
+            return adapter.Ok(gm.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={}))
+        async def send(self, response):
+            return adapter.Ok(None)
+
+    core = adapter.AdapterGatewayCore(transport=_Transport(), normalizer=adapter.DefaultRequestNormalizer(), policy=adapter.DefaultPolicyEngine(), router=adapter.DefaultRouteEngine(), invoker=adapter.CallablePluginInvoker(lambda _req, _dec: {}), serializer=adapter.DefaultResponseSerializer())
+    assert (await core.start()).is_ok()
+    assert (await core.run_once()).is_ok()
+    assert (await core.stop()).is_ok()
+    assert (await core.handle_envelope(gm.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={}))).is_ok()
 
     defaults = [
         adapter.DefaultRequestNormalizer(),
@@ -78,38 +83,32 @@ async def test_adapter_not_implemented_methods() -> None:
         adapter.CallablePluginInvoker(lambda _req, _dec: {}),
     ]
 
-    with pytest.raises(NotImplementedError):
-        await defaults[0].normalize(gm.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool", payload={}))
-    with pytest.raises(NotImplementedError):
-        await defaults[1].authorize(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}))
-    with pytest.raises(NotImplementedError):
-        await defaults[2].decide(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}))
-    with pytest.raises(NotImplementedError):
-        await defaults[3].ok(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), {}, 1.0)
-    with pytest.raises(NotImplementedError):
-        await defaults[3].fail(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), gm.GatewayError(code="E", message="e"), 1.0)
-    with pytest.raises(NotImplementedError):
-        await defaults[4].invoke(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), gm.RouteDecision(mode=gm.RouteMode.SELF))
+    assert (await defaults[0].normalize(gm.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={}))).is_ok()
+    assert (await defaults[1].authorize(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}))).is_ok()
+    assert (await defaults[2].decide(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}))).is_ok()
+    assert (await defaults[3].ok(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), {}, 1.0)).is_ok()
+    assert (await defaults[3].fail(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), gm.GatewayError(code="E", message="e"), 1.0)).is_ok()
+    assert (await defaults[4].invoke(gm.GatewayRequest(request_id="r", protocol="mcp", action=gm.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={}), gm.RouteDecision(mode=gm.RouteMode.SELF))).is_ok()
 
-    neko = object.__new__(adapter.NekoAdapterPlugin)
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_config
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_context
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_mode
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_id
-    with pytest.raises(NotImplementedError):
-        await neko.adapter_startup()
-    with pytest.raises(NotImplementedError):
-        await neko.adapter_shutdown()
-    with pytest.raises(NotImplementedError):
-        await neko.register_adapter_tool_as_entry("n", object())
-    with pytest.raises(NotImplementedError):
-        await neko.unregister_adapter_tool_entry("n")
-    with pytest.raises(NotImplementedError):
-        neko.list_adapter_routes()
+    class _Ctx:
+        plugin_id = "demo"
+        logger = None
+        config_path = __import__("pathlib").Path("/tmp/demo/plugin.toml")
+        _effective_config = {"plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "data.db"}}, "plugin_state": {"backend": "file"}}
+        async def get_own_config(self, timeout: float = 5.0):
+            return {"config": {}}
+        async def query_plugins_async(self, filters: dict[str, object], timeout: float = 5.0):
+            return {"plugins": []}
+        async def trigger_plugin_event_async(self, **kwargs):
+            return {"ok": True}
+    neko = adapter.NekoAdapterPlugin(_Ctx())
+    assert neko.adapter_id == "demo"
+    assert neko.adapter_mode is not None
+    assert (await neko.adapter_startup()).is_ok()
+    assert (await neko.adapter_shutdown()).is_ok()
+    assert (await neko.register_adapter_tool_as_entry("n", lambda: None)).is_ok()
+    assert (await neko.unregister_adapter_tool_entry("n")).is_ok()
+    assert neko.list_adapter_routes() == []
 
 
 def test_adapter_runtime_common_exports() -> None:
@@ -122,13 +121,32 @@ def test_adapter_runtime_common_exports() -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_base_methods_raise() -> None:
-    ctx = object.__new__(adapter.AdapterContext)
-    base = object.__new__(adapter.AdapterBase)
-    with pytest.raises(NotImplementedError):
-        await ctx.call_plugin("p", "e", {})
-    with pytest.raises(NotImplementedError):
-        await ctx.broadcast_event("evt", {})
-    with pytest.raises(NotImplementedError):
-        await base.on_startup()
-    with pytest.raises(NotImplementedError):
-        await base.on_shutdown()
+    class _Ctx2:
+        async def trigger_plugin_event_async(self, **kwargs):
+            return {"ok": True}
+    ctx = adapter.AdapterContext(adapter_id="a", config=adapter.AdapterConfig(), logger=object(), plugin_ctx=_Ctx2())
+    assert (await ctx.call_plugin("p", "e", {})).is_ok()
+    ctx.register_event_handler("evt", lambda payload: {"ok": True})
+    assert (await ctx.broadcast_event("evt", {})).is_ok()
+    base = adapter.AdapterBase(config=adapter.AdapterConfig(), ctx=ctx)
+    assert (await base.on_startup()).is_ok()
+    assert (await base.on_shutdown()).is_ok()
+
+
+def test_adapter_facade_methods_are_visible() -> None:
+    assert hasattr(adapter.AdapterConfig, "from_dict")
+    assert hasattr(adapter.AdapterContext, "register_event_handler")
+    assert hasattr(adapter.AdapterContext, "get_event_handlers")
+    assert hasattr(adapter.AdapterContext, "call_plugin")
+    assert hasattr(adapter.AdapterContext, "broadcast_event")
+    assert hasattr(adapter.AdapterBase, "adapter_id")
+    assert hasattr(adapter.AdapterBase, "mode")
+    assert hasattr(adapter.AdapterBase, "on_message")
+    assert hasattr(adapter.AdapterGatewayCore, "start")
+    assert hasattr(adapter.DefaultRequestNormalizer, "normalize")
+    assert hasattr(adapter.DefaultPolicyEngine, "authorize")
+    assert hasattr(adapter.DefaultRouteEngine, "decide")
+    assert hasattr(adapter.DefaultResponseSerializer, "ok")
+    assert hasattr(adapter.CallablePluginInvoker, "invoke")
+    assert hasattr(adapter.NekoAdapterPlugin, "adapter_config")
+    assert hasattr(adapter.NekoAdapterPlugin, "register_adapter_tool_as_entry")

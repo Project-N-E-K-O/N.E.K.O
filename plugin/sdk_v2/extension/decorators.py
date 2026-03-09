@@ -1,9 +1,4 @@
-"""Extension decorators for SDK v2.
-
-The extension facade keeps a narrower semantic layer than `plugin.decorators`.
-It exposes extension-oriented entry and hook wrappers without leaking internal
-implementation details.
-"""
+"""Extension decorators for SDK v2."""
 
 from __future__ import annotations
 
@@ -33,32 +28,22 @@ class ExtensionHookMeta:
 
 
 def _not_impl(*_args: object, **_kwargs: object) -> None:
-    raise NotImplementedError("sdk_v2 contract-only facade: extension.decorators not implemented")
+    return None
 
 
-def extension_entry(
-    id: str | None = None,
-    *,
-    name: str | None = None,
-    description: str = "",
-    timeout: float | None = None,
-) -> Callable[[F], F]:
+def extension_entry(id: str | None = None, *, name: str | None = None, description: str = "", timeout: float | None = None) -> Callable[[F], F]:
     _not_impl(id, name, description, timeout)
-
     def decorator(fn: F) -> F:
-        _not_impl(fn)
+        setattr(fn, EXTENSION_ENTRY_META, ExtensionEntryMeta(id=id, name=name, description=description, timeout=timeout))
         return fn
-
     return decorator
 
 
 def extension_hook(*, target: str = "*", timing: str = "before", priority: int = 0) -> Callable[[F], F]:
     _not_impl(target, timing, priority)
-
     def decorator(fn: F) -> F:
-        _not_impl(fn)
+        setattr(fn, EXTENSION_HOOK_META, ExtensionHookMeta(target=target, timing=timing, priority=priority))
         return fn
-
     return decorator
 
 
@@ -79,6 +64,7 @@ __all__ = [
     "EXTENSION_HOOK_META",
     "ExtensionEntryMeta",
     "ExtensionHookMeta",
+    "_not_impl",
     "extension_entry",
     "extension_hook",
     "extension",

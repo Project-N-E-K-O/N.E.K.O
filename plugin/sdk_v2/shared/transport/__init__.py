@@ -1,6 +1,6 @@
 """Shared transport building blocks for SDK v2.
 
-This package is currently contract-only.
+This package exposes shared transport facades backed by public implementations.
 """
 
 from .message_plane import MessageHandler, MessagePlaneRpcClient, MessagePlaneTransport, format_rpc_error

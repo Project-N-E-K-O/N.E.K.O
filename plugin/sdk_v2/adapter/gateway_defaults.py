@@ -1,48 +1,55 @@
-"""Default gateway component contracts for SDK v2 adapter."""
+"""Adapter-facing default gateway component facades for SDK v2."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
-
+from plugin.sdk_v2.public.adapter.gateway_defaults import (
+    CallablePluginInvoker as _ImplCallablePluginInvoker,
+    DefaultPolicyEngine as _ImplDefaultPolicyEngine,
+    DefaultRequestNormalizer as _ImplDefaultRequestNormalizer,
+    DefaultResponseSerializer as _ImplDefaultResponseSerializer,
+    DefaultRouteEngine as _ImplDefaultRouteEngine,
+)
 from plugin.sdk_v2.shared.models import Result
 
 from .gateway_models import ExternalEnvelope, GatewayError, GatewayRequest, GatewayResponse, RouteDecision
 
 
-class DefaultRequestNormalizer:
+class DefaultRequestNormalizer(_ImplDefaultRequestNormalizer):
+    """Stable adapter-facing request normalizer facade."""
+
     async def normalize(self, env: ExternalEnvelope) -> Result[GatewayRequest, Exception]:
-        raise NotImplementedError("sdk_v2 contract-only facade: adapter.gateway_defaults not implemented")
+        return await super().normalize(env)
 
 
-@dataclass(slots=True)
-class DefaultPolicyEngine:
-    allowed_plugin_ids: set[str] | None = None
-    max_params_bytes: int = 256 * 1024
+class DefaultPolicyEngine(_ImplDefaultPolicyEngine):
+    """Stable adapter-facing policy engine facade."""
 
     async def authorize(self, request: GatewayRequest) -> Result[None, Exception]:
-        raise NotImplementedError
+        return await super().authorize(request)
 
 
-class DefaultRouteEngine:
+class DefaultRouteEngine(_ImplDefaultRouteEngine):
+    """Stable adapter-facing route engine facade."""
+
     async def decide(self, request: GatewayRequest) -> Result[RouteDecision, Exception]:
-        raise NotImplementedError
+        return await super().decide(request)
 
 
-class DefaultResponseSerializer:
+class DefaultResponseSerializer(_ImplDefaultResponseSerializer):
+    """Stable adapter-facing response serializer facade."""
+
     async def ok(self, request: GatewayRequest, result: object, latency_ms: float) -> Result[GatewayResponse, Exception]:
-        raise NotImplementedError
+        return await super().ok(request, result, latency_ms)
 
     async def fail(self, request: GatewayRequest, error: GatewayError, latency_ms: float) -> Result[GatewayResponse, Exception]:
-        raise NotImplementedError
+        return await super().fail(request, error, latency_ms)
 
 
-@dataclass(slots=True)
-class CallablePluginInvoker:
-    invoke_fn: Callable[[GatewayRequest, RouteDecision], object]
+class CallablePluginInvoker(_ImplCallablePluginInvoker):
+    """Stable adapter-facing invoker facade."""
 
     async def invoke(self, request: GatewayRequest, decision: RouteDecision) -> Result[object, Exception]:
-        raise NotImplementedError
+        return await super().invoke(request, decision)
 
 
 __all__ = [

@@ -75,7 +75,7 @@ from .runtime import (
 )
 from .types import AdapterMessage, AdapterResponse, Protocol, RouteRule, RouteTarget
 
-__all__ = list(dict.fromkeys([
+__all__ = [
     "AdapterMode",
     "AdapterConfig",
     "AdapterContext",
@@ -151,4 +151,4 @@ __all__ = list(dict.fromkeys([
     "DefaultRouteEngine",
     "DefaultResponseSerializer",
     "CallablePluginInvoker",
-]))
+]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
+import plugin.sdk_v2.adapter as adapter
 
 from plugin.sdk_v2.public.adapter import base as pub_adapter_base
 from plugin.sdk_v2.public.adapter import decorators as pub_adapter_decorators
@@ -69,22 +70,25 @@ def test_public_adapter_decorators_return_paths(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_public_adapter_contract_methods_raise() -> None:
-    with pytest.raises(NotImplementedError):
-        pub_adapter_base.AdapterContext(adapter_id="a", config=pub_adapter_base.AdapterConfig(), logger=object())
-    with pytest.raises(NotImplementedError):
-        pub_adapter_base.AdapterBase(config=pub_adapter_base.AdapterConfig(), ctx=object())
-    with pytest.raises(NotImplementedError):
-        pub_adapter_gateway_core.AdapterGatewayCore(transport=object(), normalizer=object(), policy=object(), router=object(), invoker=object(), serializer=object())
+    class _Transport:
+        protocol_name = "mcp"
+        async def start(self):
+            return adapter.Ok(None)
+        async def stop(self):
+            return adapter.Ok(None)
+        async def recv(self):
+            return adapter.Ok(pub_adapter_gateway_models.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={}))
+        async def send(self, response):
+            return adapter.Ok(None)
 
-    core = object.__new__(pub_adapter_gateway_core.AdapterGatewayCore)
-    with pytest.raises(NotImplementedError):
-        await core.start()
-    with pytest.raises(NotImplementedError):
-        await core.stop()
-    with pytest.raises(NotImplementedError):
-        await core.run_once()
-    with pytest.raises(NotImplementedError):
-        await core.handle_envelope(pub_adapter_gateway_models.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool", payload={}))
+    ctx = pub_adapter_base.AdapterContext(adapter_id="a", config=pub_adapter_base.AdapterConfig(), logger=object())
+    base = pub_adapter_base.AdapterBase(config=pub_adapter_base.AdapterConfig(), ctx=ctx)
+    assert base.adapter_id == "a"
+    core = pub_adapter_gateway_core.AdapterGatewayCore(transport=_Transport(), normalizer=pub_adapter_gateway_defaults.DefaultRequestNormalizer(), policy=pub_adapter_gateway_defaults.DefaultPolicyEngine(), router=pub_adapter_gateway_defaults.DefaultRouteEngine(), invoker=pub_adapter_gateway_defaults.CallablePluginInvoker(lambda _req, _dec: {}), serializer=pub_adapter_gateway_defaults.DefaultResponseSerializer())
+    assert (await core.start()).is_ok()
+    assert (await core.stop()).is_ok()
+    assert (await core.run_once()).is_ok()
+    assert (await core.handle_envelope(pub_adapter_gateway_models.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={}))).is_ok()
 
     defaults = [
         pub_adapter_gateway_defaults.DefaultRequestNormalizer(),
@@ -94,42 +98,36 @@ async def test_public_adapter_contract_methods_raise() -> None:
         pub_adapter_gateway_defaults.CallablePluginInvoker(lambda _req, _dec: {}),
     ]
     req = pub_adapter_gateway_models.GatewayRequest(request_id="r", protocol="mcp", action=pub_adapter_gateway_models.GatewayAction.TOOL_CALL, source_app="a", trace_id="t", params={})
-    env = pub_adapter_gateway_models.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool", payload={})
+    env = pub_adapter_gateway_models.ExternalEnvelope(protocol="mcp", connection_id="c", request_id="r", action="tool_call", payload={})
     err = pub_adapter_gateway_models.GatewayError(code="E", message="e")
     route = pub_adapter_gateway_models.RouteDecision(mode=pub_adapter_gateway_models.RouteMode.SELF)
+    assert (await defaults[0].normalize(env)).is_ok()
+    assert (await defaults[1].authorize(req)).is_ok()
+    assert (await defaults[2].decide(req)).is_ok()
+    assert (await defaults[3].ok(req, {}, 1.0)).is_ok()
+    assert (await defaults[3].fail(req, err, 1.0)).is_ok()
+    assert (await defaults[4].invoke(req, route)).is_ok()
 
-    with pytest.raises(NotImplementedError):
-        await defaults[0].normalize(env)
-    with pytest.raises(NotImplementedError):
-        await defaults[1].authorize(req)
-    with pytest.raises(NotImplementedError):
-        await defaults[2].decide(req)
-    with pytest.raises(NotImplementedError):
-        await defaults[3].ok(req, {}, 1.0)
-    with pytest.raises(NotImplementedError):
-        await defaults[3].fail(req, err, 1.0)
-    with pytest.raises(NotImplementedError):
-        await defaults[4].invoke(req, route)
+    class _Ctx:
+        plugin_id = "demo"
+        logger = None
+        config_path = __import__("pathlib").Path("/tmp/demo/plugin.toml")
+        _effective_config = {"plugin": {"store": {"enabled": True}, "database": {"enabled": True, "name": "data.db"}}, "plugin_state": {"backend": "file"}}
+        async def get_own_config(self, timeout: float = 5.0):
+            return {"config": {}}
+        async def query_plugins_async(self, filters: dict[str, object], timeout: float = 5.0):
+            return {"plugins": []}
+        async def trigger_plugin_event_async(self, **kwargs):
+            return {"ok": True}
 
-    neko = object.__new__(pub_adapter_neko.NekoAdapterPlugin)
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_config
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_context
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_mode
-    with pytest.raises(NotImplementedError):
-        _ = neko.adapter_id
-    with pytest.raises(NotImplementedError):
-        await neko.adapter_startup()
-    with pytest.raises(NotImplementedError):
-        await neko.adapter_shutdown()
-    with pytest.raises(NotImplementedError):
-        await neko.register_adapter_tool_as_entry("n", object())
-    with pytest.raises(NotImplementedError):
-        await neko.unregister_adapter_tool_entry("n")
-    with pytest.raises(NotImplementedError):
-        neko.list_adapter_routes()
+    neko = pub_adapter_neko.NekoAdapterPlugin(_Ctx())
+    assert neko.adapter_id == "demo"
+    assert neko.adapter_mode is not None
+    assert (await neko.adapter_startup()).is_ok()
+    assert (await neko.adapter_shutdown()).is_ok()
+    assert (await neko.register_adapter_tool_as_entry("n", lambda: None)).is_ok()
+    assert (await neko.unregister_adapter_tool_entry("n")).is_ok()
+    assert neko.list_adapter_routes() == []
 
 
 def test_public_adapter_gateway_contract_symbols() -> None:
@@ -138,8 +136,7 @@ def test_public_adapter_gateway_contract_symbols() -> None:
 
 
 def test_public_adapter_decorators_raise_directly() -> None:
-    with pytest.raises(NotImplementedError):
-        pub_adapter_decorators._not_impl()
+    assert pub_adapter_decorators._not_impl() is None
 
 
 def test_public_adapter_gateway_error_exception_sets_error() -> None:
@@ -150,13 +147,14 @@ def test_public_adapter_gateway_error_exception_sets_error() -> None:
 
 @pytest.mark.asyncio
 async def test_public_adapter_base_methods_raise() -> None:
-    ctx = object.__new__(pub_adapter_base.AdapterContext)
-    base = object.__new__(pub_adapter_base.AdapterBase)
-    with pytest.raises(NotImplementedError):
-        await ctx.call_plugin("p", "e", {})
-    with pytest.raises(NotImplementedError):
-        await ctx.broadcast_event("evt", {})
-    with pytest.raises(NotImplementedError):
-        await base.on_startup()
-    with pytest.raises(NotImplementedError):
-        await base.on_shutdown()
+    class _Ctx:
+        async def trigger_plugin_event_async(self, **kwargs):
+            return {"ok": True}
+    ctx = pub_adapter_base.AdapterContext(adapter_id="a", config=pub_adapter_base.AdapterConfig(), logger=object(), plugin_ctx=_Ctx())
+    assert (await ctx.call_plugin("p", "e", {})).is_ok()
+    ctx.register_event_handler("evt", lambda payload: {"ok": True})
+    assert (await ctx.broadcast_event("evt", {})).is_ok()
+    base = pub_adapter_base.AdapterBase(config=pub_adapter_base.AdapterConfig(), ctx=ctx)
+    assert base.adapter_id == "a"
+    assert (await base.on_startup()).is_ok()
+    assert (await base.on_shutdown()).is_ok()
