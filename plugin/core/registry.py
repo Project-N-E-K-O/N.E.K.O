@@ -1298,7 +1298,9 @@ def load_plugins_from_toml(
     logger.info("Loading plugins from {}", plugin_config_root)
     
     # 设置 Python 路径，确保能够导入插件模块
-    project_root = plugin_config_root.parent.parent.resolve()
+    # plugin_config_root = .../bin/plugin/plugins
+    # 我们需要 .../bin/plugin 作为 sys.path，这样 import plugins.xxx 才能正确解析
+    project_root = plugin_config_root.parent.resolve()
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
         logger.info("Added project root to sys.path: {}", project_root)
