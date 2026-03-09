@@ -148,7 +148,6 @@ def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) ->
     """通过插件服务将 agent_task_id 关联到提醒记录，供 daemon 触发时回调使用。
     bind_task 是快速操作（只写文件），触发 run 后短暂轮询等待完成。"""
     try:
-        import httpx
         import time as _time
         with httpx.Client(timeout=5.0, proxy=None, trust_env=False) as client:
             # 1. 触发 bind_task entry
@@ -196,7 +195,6 @@ def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     new_cache = {}
     cache_time = now
     try:
-        import httpx
         with httpx.Client(timeout=1.0, proxy=None, trust_env=False) as client:
             resp = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
             if resp.status_code == 200:

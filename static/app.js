@@ -554,23 +554,25 @@ function init_app() {
                 }
                 // Restore active tasks from state snapshot (covers page refresh / reconnect)
                 if (stateResp && stateResp.success && stateResp.snapshot) {
-                    const activeTasks = stateResp.snapshot.active_tasks;
-                    if (Array.isArray(activeTasks) && activeTasks.length > 0) {
-                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
-                        activeTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
-                        const tasks = Array.from(window._agentTaskMap.values());
-                        const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
-                        if (hasRunning && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
-                            window.AgentHUD.showAgentTaskHUD();
-                            window.AgentHUD.updateAgentTaskHUD({
-                                success: true, tasks,
-                                running_count: tasks.filter(t => t.status === 'running').length,
-                                queued_count: tasks.filter(t => t.status === 'queued').length,
-                            });
-                            if (!agentTaskTimeUpdateInterval) {
-                                agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
-                            }
+                    const activeTasks = stateResp.snapshot.active_tasks || [];
+                    // Replace map contents with snapshot (clear stale tasks)
+                    window._agentTaskMap = new Map();
+                    activeTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    const tasks = Array.from(window._agentTaskMap.values());
+                    const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
+                    if (hasRunning && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                        window.AgentHUD.showAgentTaskHUD();
+                        window.AgentHUD.updateAgentTaskHUD({
+                            success: true, tasks,
+                            running_count: tasks.filter(t => t.status === 'running').length,
+                            queued_count: tasks.filter(t => t.status === 'queued').length,
+                        });
+                        if (!agentTaskTimeUpdateInterval) {
+                            agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
                         }
+                    } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                        // No active tasks, hide HUD
+                        window.AgentHUD.hideAgentTaskHUD();
                     }
                 }
             }).catch(() => { });

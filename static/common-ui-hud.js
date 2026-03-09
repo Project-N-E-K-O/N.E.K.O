@@ -838,16 +838,32 @@ window.AgentHUD._createTaskCard = function (task) {
     });
 
     // 任务类型图标和名称
-    const typeIcon = task.type === 'user_plugin' || task.type === 'plugin_direct' ? '🧩' : (task.source === 'computer_use' ? '🖱️' : '⚙️');
     const rawTypeName = task.type || task.source || 'unknown';
     const params = task.params || {};
 
+    // 根据类型确定图标
+    let typeIcon;
+    if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
+        typeIcon = '🧩';
+    } else if (rawTypeName === 'computer_use') {
+        typeIcon = '🖱️';
+    } else if (rawTypeName === 'browser_use') {
+        typeIcon = '🌐';
+    } else if (rawTypeName === 'mcp') {
+        typeIcon = '🔌';
+    } else {
+        typeIcon = '⚙️';
+    }
+
+    // 根据类型确定名称
     let typeName = rawTypeName;
     if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
         // 优先级：plugin_name > plugin_id > 翻译文本
         typeName = params.plugin_name || params.plugin_id || (window.t ? window.t('agent.taskHud.typeUserPlugin') : '用户插件');
     } else if (rawTypeName === 'computer_use') {
         typeName = window.t ? window.t('agent.taskHud.typeComputerUse') : '电脑控制';
+    } else if (rawTypeName === 'browser_use') {
+        typeName = window.t ? window.t('agent.taskHud.typeBrowserUse') : '浏览器控制';
     } else if (rawTypeName === 'mcp') {
         typeName = window.t ? window.t('agent.taskHud.typeMCP') : 'MCP工具';
     }
@@ -857,7 +873,19 @@ window.AgentHUD._createTaskCard = function (task) {
     typeLabel.style.overflow = 'hidden';
     typeLabel.style.textOverflow = 'ellipsis';
     typeLabel.style.minWidth = '0';
-    typeLabel.innerHTML = `${typeIcon} <span style="color: var(--neko-popup-text-sub, #666); font-size: 12px; font-weight: 500;">${typeName}</span>`;
+
+    // 使用 textContent 防止 XSS（避免 plugin_name 中的 HTML 被解析）
+    const iconSpan = document.createElement('span');
+    iconSpan.textContent = typeIcon + ' ';
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = typeName;
+    Object.assign(nameSpan.style, {
+        color: 'var(--neko-popup-text-sub, #666)',
+        fontSize: '12px',
+        fontWeight: '500'
+    });
+    typeLabel.appendChild(iconSpan);
+    typeLabel.appendChild(nameSpan);
 
     const statusBadge = document.createElement('span');
     statusBadge.textContent = statusText;

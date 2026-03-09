@@ -1438,6 +1438,7 @@
             "cancelConfirm": "Cancel all running tasks?",
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",
+            "typeBrowserUse": "Browser Control",
             "typeMCP": "MCP Tool"
         }
     },

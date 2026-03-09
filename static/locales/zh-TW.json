@@ -1437,7 +1437,8 @@
             "cancelAll": "終止所有任務",
             "cancelConfirm": "確定要終止所有正在進行的任務嗎？",
             "typeUserPlugin": "使用者插件",
-            "typeComputerUse": "電腦控制",
+            "typeComputerUse": "鍵鼠控制",
+            "typeBrowserUse": "瀏覽器控制",
             "typeMCP": "MCP工具"
         }
     },

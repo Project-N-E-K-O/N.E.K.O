@@ -232,6 +232,18 @@ class MemoReminderPlugin(NekoPluginBase):
                     continue
 
                 if trigger_dt <= now:
+                    # 如果 agent_task_id 为 None 且刚创建（<5秒），等待 bind_task 完成
+                    if r.get("agent_task_id") is None:
+                        created_at_str = r.get("created_at", "")
+                        try:
+                            created_dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                            age = (now - created_dt).total_seconds()
+                            if age < 5.0:  # 5 秒缓冲，等待 bind_task
+                                kept.append(r)
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # 解析失败，正常处理
+
                     try:
                         self._push_reminder(r)
                     except Exception:
@@ -276,9 +288,14 @@ class MemoReminderPlugin(NekoPluginBase):
                 import httpx as _httpx
                 from config import TOOL_SERVER_PORT
                 with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
-                    c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
-            except Exception:
-                self.logger.warning("Failed to notify agent task completion for reminder {}", rid)
+                    resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
+                    if not resp.is_success:
+                        self.logger.warning(
+                            "Failed to notify agent task completion for reminder {}: HTTP {} - {}",
+                            rid, resp.status_code, resp.text
+                        )
+            except Exception as e:
+                self.logger.warning("Failed to notify agent task completion for reminder {}: {}", rid, e)
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
