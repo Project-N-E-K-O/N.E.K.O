@@ -95,13 +95,16 @@ DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
 _task_registry_last_cleanup: float = 0.0
 
 
-def _cleanup_task_registry() -> None:
-    """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时"""
-    from datetime import datetime, timezone
+def _cleanup_task_registry() -> List[Dict[str, Any]]:
+    """清理 task_registry 中超过 5 分钟的已完成/失败/取消任务，防止内存泄漏；同时检查 deferred 任务超时
+
+    返回超时的 deferred 任务列表（需要发送 task_update 通知前端）
+    """
     global _task_registry_last_cleanup
     now = time.time()
+    timed_out: List[Dict[str, Any]] = []
     if now - _task_registry_last_cleanup < 60:  # 最多每 60 秒清理一次
-        return
+        return timed_out
     _task_registry_last_cleanup = now
     to_remove = []
     for tid, info in Modules.task_registry.items():
@@ -114,7 +117,17 @@ def _cleanup_task_registry() -> None:
                 info["status"] = "failed"
                 info["end_time"] = _now_iso()
                 info["error"] = "Deferred task timeout (callback not received)"
-                # 不删除，让它自然清理
+                # 收集超时任务，需要通知前端
+                timed_out.append({
+                    "id": tid,
+                    "status": "failed",
+                    "type": info.get("type"),
+                    "start_time": info.get("start_time"),
+                    "end_time": info.get("end_time"),
+                    "error": info.get("error"),
+                    "params": info.get("params", {}),
+                    "lanlan_name": info.get("lanlan_name"),
+                })
                 continue
 
         if st not in ("completed", "failed", "cancelled"):
@@ -142,6 +155,7 @@ def _cleanup_task_registry() -> None:
         del Modules.task_registry[tid]
     if to_remove:
         logger.debug("[TaskRegistry] Cleaned up %d completed tasks", len(to_remove))
+    return timed_out
 
 
 def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) -> None:
@@ -634,6 +648,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     flags = dict(Modules.agent_flags or {})
     capabilities = dict(Modules.capability_cache or {})
     # Periodic cleanup of completed tasks to prevent memory leak
+    # Note: _emit_agent_status_update also calls this and handles timed_out tasks
     _cleanup_task_registry()
     # Include active (queued/running) tasks so frontend can restore after page refresh
     active_tasks = []
@@ -701,6 +716,26 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
+        # 先检查超时的 deferred 任务并发送 task_update 通知
+        timed_out = _cleanup_task_registry()
+        for task_info in timed_out:
+            try:
+                await _emit_main_event(
+                    "task_update",
+                    task_info.get("lanlan_name"),
+                    task={
+                        "id": task_info.get("id"),
+                        "status": "failed",
+                        "type": task_info.get("type"),
+                        "start_time": task_info.get("start_time"),
+                        "end_time": task_info.get("end_time"),
+                        "error": task_info.get("error"),
+                        "params": task_info.get("params", {}),
+                    },
+                )
+            except Exception as e:
+                logger.warning("[Agent] Failed to emit task_update for timed-out task %s: %s", task_info.get("id"), e)
+
         snapshot = _collect_agent_status_snapshot()
         await _emit_main_event(
             "agent_status_update",
@@ -1857,6 +1892,12 @@ async def complete_deferred_task(task_id: str):
     if info.get("status") != "running":
         # 已经是 terminal 状态，幂等返回
         return {"ok": True, "skipped": True, "status": info.get("status")}
+
+    # 验证这是一个 deferred 任务（只有 user_plugin 且有 deferred_timeout 的任务才能通过此端点完成）
+    if info.get("type") != "user_plugin":
+        raise HTTPException(status_code=403, detail="Only user_plugin tasks can be completed via this endpoint")
+    if not info.get("deferred_timeout"):
+        raise HTTPException(status_code=400, detail="Not a deferred task - use normal completion flow")
 
     info["status"] = "completed"
     info["end_time"] = _now_iso()

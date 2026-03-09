@@ -232,8 +232,9 @@ class MemoReminderPlugin(NekoPluginBase):
                     continue
 
                 if trigger_dt <= now:
-                    # 如果 agent_task_id 为 None 且刚创建（<5秒），等待 bind_task 完成
-                    if r.get("agent_task_id") is None:
+                    # 如果是 deferred 提醒且刚创建（<5秒），等待 bind_task 完成
+                    # 只对有 deferred_bind_pending 标志的提醒应用缓冲（避免影响非 deferred 提醒）
+                    if r.get("deferred_bind_pending") and r.get("agent_task_id") is None:
                         created_at_str = r.get("created_at", "")
                         try:
                             created_dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
@@ -294,8 +295,10 @@ class MemoReminderPlugin(NekoPluginBase):
                             "Failed to notify agent task completion for reminder {}: HTTP {} - {}",
                             rid, resp.status_code, resp.text
                         )
+                        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
             except Exception as e:
                 self.logger.warning("Failed to notify agent task completion for reminder {}: {}", rid, e)
+                raise  # 重新抛出，让 _fire_due_reminders 的重试逻辑生效
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
@@ -429,6 +432,7 @@ class MemoReminderPlugin(NekoPluginBase):
             "repeat": repeat,
             "lanlan_name": lanlan_name,
             "agent_task_id": None,  # agent_server 会回写，用于 deferred 完成通知
+            "deferred_bind_pending": True,  # 标记需要 bind_task 回写
         }
 
         with self._reminders_lock:
@@ -480,6 +484,7 @@ class MemoReminderPlugin(NekoPluginBase):
             for r in reminders:
                 if r.get("id") == reminder_id:
                     r["agent_task_id"] = agent_task_id
+                    r["deferred_bind_pending"] = False  # 清除标志，表示绑定完成
                     self._save_reminders_unlocked(reminders)
                     self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
                     return ok(data={"bound": True})

@@ -1437,7 +1437,7 @@
             "cancelAll": "すべてのタスクをキャンセル",
             "cancelConfirm": "実行中のすべてのタスクをキャンセルしますか？",
             "typeUserPlugin": "ユーザープラグイン",
-            "typeComputerUse": "コンピュータ制御",
+            "typeComputerUse": "キーボード/マウス操作",
             "typeBrowserUse": "ブラウザ制御",
             "typeMCP": "MCPツール"
         }

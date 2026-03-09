@@ -1000,12 +1000,13 @@ function init_app() {
                             window.startAgentTaskPolling();
                         }
                         // Restore active tasks from snapshot (covers page refresh / reconnect)
-                        const snapshotTasks = snapshot.active_tasks;
-                        if (Array.isArray(snapshotTasks) && snapshotTasks.length > 0) {
-                            if (!window._agentTaskMap) window._agentTaskMap = new Map();
-                            snapshotTasks.forEach(t => {
-                                if (t && t.id) window._agentTaskMap.set(t.id, t);
-                            });
+                        const snapshotTasks = snapshot.active_tasks || [];
+                        // Replace map contents with snapshot (clear stale/ghost tasks)
+                        window._agentTaskMap = new Map();
+                        snapshotTasks.forEach(t => {
+                            if (t && t.id) window._agentTaskMap.set(t.id, t);
+                        });
+                        if (snapshotTasks.length > 0) {
                             const tasks = Array.from(window._agentTaskMap.values());
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                 window.AgentHUD.updateAgentTaskHUD({
@@ -1019,6 +1020,9 @@ function init_app() {
                                     timestamp: new Date().toISOString()
                                 });
                             }
+                        } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                            // No active tasks, hide HUD
+                            window.AgentHUD.hideAgentTaskHUD();
                         }
                     } catch (_e) { /* ignore */ }
                 } else if (response.type === 'agent_notification') {
@@ -8231,11 +8235,7 @@ function init_app() {
     function updateTaskRunningTimes() {
         const taskList = document.getElementById('agent-task-list');
         if (!taskList) {
-            // DOM gone — nothing to update, stop the interval
-            if (agentTaskTimeUpdateInterval) {
-                clearInterval(agentTaskTimeUpdateInterval);
-                agentTaskTimeUpdateInterval = null;
-            }
+            // DOM gone (HUD might be rebuilding) — just skip this update, don't stop the interval
             return;
         }
 
