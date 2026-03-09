@@ -89,6 +89,8 @@
                         if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
                             selectModelFromDropdown(model.name, model);
+                            modelSingleselect.classList.remove('active', 'open-up', 'open-down');
+                            modelSingleselectHeader.setAttribute('aria-expanded', 'false');
                         }
                     });
                     modelSingleselectOptions.appendChild(item);
@@ -115,7 +117,7 @@
         currentModelInfo = modelInfo;
         modelSelect.value = modelName;
         modelSingleselectText.textContent = modelName;
-        modelSingleselect.classList.remove('active');
+        modelSingleselect.classList.remove('active', 'open-up', 'open-down');
         modelSingleselectHeader.setAttribute('aria-expanded', 'false');
         
         modelSingleselectOptions.querySelectorAll('.singleselect-item').forEach(item => {
@@ -158,12 +160,21 @@
             if (spaceBelow >= optionsHeight) {
                 modelSingleselect.classList.add('open-down');
                 modelSingleselect.classList.remove('open-up');
+                modelSingleselectOptions.style.maxHeight = '250px';
             } else if (spaceAbove >= optionsHeight) {
                 modelSingleselect.classList.add('open-up');
                 modelSingleselect.classList.remove('open-down');
+                modelSingleselectOptions.style.maxHeight = '250px';
             } else {
-                modelSingleselect.classList.add('open-down');
-                modelSingleselect.classList.remove('open-up');
+                if (spaceBelow > spaceAbove) {
+                    modelSingleselect.classList.add('open-down');
+                    modelSingleselect.classList.remove('open-up');
+                    modelSingleselectOptions.style.maxHeight = `${spaceBelow}px`;
+                } else {
+                    modelSingleselect.classList.add('open-up');
+                    modelSingleselect.classList.remove('open-down');
+                    modelSingleselectOptions.style.maxHeight = `${spaceAbove}px`;
+                }
             }
             
             requestAnimationFrame(() => {
@@ -385,12 +396,21 @@
                 if (spaceBelow >= optionsHeight) {
                     multiselect.classList.add('open-down');
                     multiselect.classList.remove('open-up');
+                    options.style.maxHeight = '250px';
                 } else if (spaceAbove >= optionsHeight) {
                     multiselect.classList.add('open-up');
                     multiselect.classList.remove('open-down');
+                    options.style.maxHeight = '250px';
                 } else {
-                    multiselect.classList.add('open-down');
-                    multiselect.classList.remove('open-up');
+                    if (spaceBelow > spaceAbove) {
+                        multiselect.classList.add('open-down');
+                        multiselect.classList.remove('open-up');
+                        options.style.maxHeight = `${spaceBelow}px`;
+                    } else {
+                        multiselect.classList.add('open-up');
+                        multiselect.classList.remove('open-down');
+                        options.style.maxHeight = `${spaceAbove}px`;
+                    }
                 }
                 
                 // 检测是否显示滚动条
