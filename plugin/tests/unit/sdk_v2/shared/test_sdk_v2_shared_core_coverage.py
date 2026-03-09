@@ -223,14 +223,12 @@ def test_core_base_enable_file_logging_branch(monkeypatch: pytest.MonkeyPatch, t
     base = _DemoPlugin(ctx=_CtxOk())
     calls: dict[str, object] = {}
 
-    monkeypatch.setattr(core_base._loguru_logger, "remove", lambda sink_id: calls.setdefault("removed", sink_id))
-    monkeypatch.setattr(core_base._loguru_logger, "add", lambda *args, **kwargs: calls.setdefault("added", (args, kwargs)) or 123)
+    monkeypatch.setattr(core_base, "setup_plugin_file_logging", lambda **kwargs: calls.setdefault("kwargs", kwargs) or 123)
     setattr(base, "_file_sink_id", 77)
 
     logger = base.enable_file_logging(log_dir=tmp_path, max_bytes=10, backup_count=2)
     assert logger is base.file_logger
-    assert calls["removed"] == 77
-    assert "added" in calls
+    assert calls["kwargs"]["previous_sink_id"] == 77
 
 
 @pytest.mark.asyncio

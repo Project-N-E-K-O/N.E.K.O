@@ -163,3 +163,39 @@ def test_plugin_entry_proxy_object_forwards() -> None:
         assert dec.plugin.entry(id="x", auto_start=True) is sentinel
     finally:
         dec.plugin_entry = original  # type: ignore[assignment]
+
+
+def test_plugin_proxy_object_additional_forwards() -> None:
+    sentinel = object()
+
+    def _sentinel(**kwargs: object):
+        return (sentinel, kwargs)
+
+    originals = {
+        "on_event": dec.on_event,
+        "hook": dec.hook,
+        "lifecycle": dec.lifecycle,
+        "message": dec.message,
+        "timer_interval": dec.timer_interval,
+        "custom_event": dec.custom_event,
+    }
+    dec.on_event = _sentinel  # type: ignore[assignment]
+    dec.hook = _sentinel  # type: ignore[assignment]
+    dec.lifecycle = _sentinel  # type: ignore[assignment]
+    dec.message = _sentinel  # type: ignore[assignment]
+    dec.timer_interval = _sentinel  # type: ignore[assignment]
+    dec.custom_event = _sentinel  # type: ignore[assignment]
+    try:
+        assert dec.plugin.event(id="e")[0] is sentinel
+        assert dec.plugin.hook(target="x")[0] is sentinel
+        assert dec.plugin.lifecycle(id="startup")[0] is sentinel
+        assert dec.plugin.message(id="m")[0] is sentinel
+        assert dec.plugin.timer(id="t", seconds=1)[0] is sentinel
+        assert dec.plugin.custom_event(event_type="x", id="c")[0] is sentinel
+    finally:
+        dec.on_event = originals["on_event"]  # type: ignore[assignment]
+        dec.hook = originals["hook"]  # type: ignore[assignment]
+        dec.lifecycle = originals["lifecycle"]  # type: ignore[assignment]
+        dec.message = originals["message"]  # type: ignore[assignment]
+        dec.timer_interval = originals["timer_interval"]  # type: ignore[assignment]
+        dec.custom_event = originals["custom_event"]  # type: ignore[assignment]

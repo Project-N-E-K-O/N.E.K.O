@@ -143,3 +143,44 @@ async def test_shared_storage_facades_work(tmp_path) -> None:
     assert await persistence.load_async(obj) is True
     assert await persistence.clear_async() is True
     assert await persistence.snapshot_async() == {}
+
+
+@pytest.mark.asyncio
+async def test_shared_facade_validation_paths(tmp_path) -> None:
+    plugin_dir = tmp_path / "facade_valid"
+    plugin_dir.mkdir()
+
+    kv_store = store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
+    assert (await kv_store.get("", None)).is_err()
+    assert (await kv_store.set("", 1)).is_err()
+    assert (await kv_store.delete("",)).is_err()
+    assert (await kv_store.exists("",)).is_err()
+
+    db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
+    assert (await db.kv.get("", None)).is_err()
+    assert (await db.kv.set("", 1)).is_err()
+    assert (await db.kv.delete("",)).is_err()
+
+    mem = runtime_memory.MemoryClient(object())
+    assert (await mem.query("", "q")).is_err()
+    assert (await mem.query("bucket", "", timeout=1)).is_err()
+    assert (await mem.query("bucket", "q", timeout=0)).is_err()
+    assert (await mem.get("", limit=1)).is_err()
+    assert (await mem.get("bucket", limit=0)).is_err()
+    assert (await mem.get("bucket", timeout=0)).is_err()
+
+    sys_client = system_info.SystemInfo(object())
+    assert (await sys_client.get_system_config(timeout=0)).is_err()
+
+    plane = message_plane.MessagePlaneTransport()
+    assert (await plane.request("", {}, timeout=1)).is_err()
+    assert (await plane.request("t", {}, timeout=0)).is_err()
+    assert (await plane.publish("", {}, timeout=1)).is_err()
+    assert (await plane.notify("", {}, timeout=1)).is_err()
+    assert (await plane.subscribe("", lambda payload: payload)).is_err()
+    assert (await plane.subscribe("t", object())).is_err()
+    assert (await plane.unsubscribe("", None)).is_err()
+    assert (await plane.unsubscribe("t", object())).is_err()
+
+    persistence = state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="weird")
+    assert persistence.backend == "file"

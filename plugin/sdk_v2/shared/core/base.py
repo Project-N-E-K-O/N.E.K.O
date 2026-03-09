@@ -6,9 +6,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from loguru import logger as _loguru_logger
-
-from plugin.logging_config import FORMAT_FILE, LOG_COMPRESSION, LOG_DIR, LOG_MAX_SIZE, LOG_RETENTION
+from plugin.sdk_v2.public.core.base_runtime import (
+    resolve_db_config,
+    resolve_effective_config,
+    resolve_plugin_dir,
+    resolve_state_backend,
+    resolve_store_enabled,
+    setup_plugin_file_logging,
+)
 from plugin.sdk_v2.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk_v2.shared.logging import LogLevel, LoggerLike, get_plugin_logger, setup_sdk_logging
 from .types import EntryHandler, InputSchema, PluginContextProtocol, RouterProtocol
@@ -24,7 +29,7 @@ class PluginMeta:
     id: str
     name: str
     version: str = "0.0.0"
-    sdk_version: str = "2.0.0a0"
+    sdk_version: str = "0.1.0"
     description: str = ""
     sdk_recommended: str | None = None
     sdk_supported: str | None = None
@@ -57,21 +62,11 @@ class NekoPluginBase:
         from plugin.sdk_v2.shared.storage.state import PluginStatePersistence
         from plugin.sdk_v2.shared.storage.store import PluginStore
 
-        config_path = getattr(ctx, "config_path", None)
-        plugin_dir = Path(config_path).parent if config_path is not None else Path.cwd()
-        effective_cfg = getattr(ctx, "_effective_config", None)
-        if not isinstance(effective_cfg, dict):
-            effective_cfg = {}
-
-        store_cfg = effective_cfg.get("plugin", {}).get("store", {}) if isinstance(effective_cfg.get("plugin"), dict) else {}
-        store_enabled = bool(store_cfg.get("enabled", True)) if isinstance(store_cfg, dict) else True
-
-        db_cfg = effective_cfg.get("plugin", {}).get("database", {}) if isinstance(effective_cfg.get("plugin"), dict) else {}
-        db_enabled = bool(db_cfg.get("enabled", True)) if isinstance(db_cfg, dict) else True
-        db_name = str(db_cfg.get("name", "plugin.db")) if isinstance(db_cfg, dict) else "plugin.db"
-
-        state_cfg = effective_cfg.get("plugin_state", {}) if isinstance(effective_cfg.get("plugin_state"), dict) else {}
-        state_backend = str(state_cfg.get("backend", "file")) if isinstance(state_cfg, dict) else "file"
+        plugin_dir = resolve_plugin_dir(ctx)
+        effective_cfg = resolve_effective_config(ctx)
+        store_enabled = resolve_store_enabled(effective_cfg)
+        db_enabled, db_name = resolve_db_config(effective_cfg)
+        state_backend = resolve_state_backend(effective_cfg)
 
         plugin_id = str(getattr(ctx, "plugin_id", "plugin"))
         self.store = PluginStore(plugin_id=plugin_id, plugin_dir=plugin_dir, logger=self.logger, enabled=store_enabled)
@@ -176,27 +171,15 @@ class NekoPluginBase:
             raise ValueError("backup_count must be > 0")
 
         component = self.logger_component()
-        setup_sdk_logging(component=component, level=parsed_level)
-
-        if log_dir is not None or max_bytes is not None or backup_count is not None:
-            target_dir = Path(log_dir) if log_dir is not None else LOG_DIR
-            target_dir.mkdir(parents=True, exist_ok=True)
-            log_file = target_dir / f"{component.replace('.', '_')}.log"
-
-            previous_sink_id = getattr(self, "_file_sink_id", None)
-            if isinstance(previous_sink_id, int):
-                _loguru_logger.remove(previous_sink_id)
-
-            sink_id = _loguru_logger.add(
-                str(log_file),
-                format=FORMAT_FILE,
-                level=parsed_level.value,
-                rotation=max_bytes if max_bytes is not None else LOG_MAX_SIZE,
-                retention=backup_count if backup_count is not None else LOG_RETENTION,
-                compression=LOG_COMPRESSION,
-                encoding="utf-8",
-                filter=lambda record, c=component: record["extra"].get("component", "") == c,
-            )
+        sink_id = setup_plugin_file_logging(
+            component=component,
+            parsed_level=parsed_level,
+            log_dir=log_dir,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+            previous_sink_id=getattr(self, "_file_sink_id", None),
+        )
+        if sink_id is not None:
             setattr(self, "_file_sink_id", sink_id)
 
         logger = self.get_logger()

@@ -76,7 +76,7 @@ def test_base_constants_and_meta_defaults() -> None:
 
     meta = PluginMeta(id="p", name="Plugin")
     assert meta.version == "0.0.0"
-    assert meta.sdk_version == "2.0.0a0"
+    assert meta.sdk_version == "0.1.0"
     assert meta.sdk_recommended is None
     assert meta.sdk_conflicts == []
 
@@ -187,3 +187,11 @@ def test_enable_file_logging_keeps_default_logger_synced() -> None:
     assert logger is getattr(base, "file_logger")
     assert logger is base.logger
     assert logger is base.sdk_logger
+
+
+def test_plugin_base_convenience_accessors() -> None:
+    base = _DemoPlugin(ctx=_Ctx())
+    assert base.plugin_id == "demo"
+    assert base.config_dir == Path("/tmp/demo")
+    assert base.data_path() == Path("/tmp/demo/data")
+    assert base.data_path("cache", "x.json") == Path("/tmp/demo/data/cache/x.json")

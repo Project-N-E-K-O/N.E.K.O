@@ -4,7 +4,8 @@ import importlib
 
 from plugin.sdk_v2 import shared
 from plugin.sdk_v2.shared import models
-from plugin.sdk_v2.shared.models import errors, responses, version
+from plugin.sdk_v2.shared import constants
+from plugin.sdk_v2.shared.models import errors, responses
 
 
 def test_shared_and_models_exports() -> None:
@@ -53,4 +54,4 @@ def test_responses_helpers_and_version() -> None:
     assert responses.is_envelope(err_enum) is True
     assert responses.is_envelope({"success": True}) is False
 
-    assert version.SDK_VERSION == "2.0.0a0"
+    assert constants.SDK_VERSION == "0.1.0"

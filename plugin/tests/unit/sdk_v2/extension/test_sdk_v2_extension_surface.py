@@ -42,7 +42,7 @@ async def test_extension_runtime_not_implemented() -> None:
 
 
 def test_extension_runtime_common_exports() -> None:
-    assert extension.SDK_VERSION == "2.0.0a0"
+    assert extension.SDK_VERSION == "0.1.0"
     assert extension.ok is not None
     assert extension.fail is not None
     assert extension.Result is not None

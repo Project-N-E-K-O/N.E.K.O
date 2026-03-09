@@ -20,7 +20,7 @@ from .shared.constants import (
     NEKO_PLUGIN_TAG,
     PERSIST_ATTR,
 )
-from .shared.models.version import SDK_VERSION
+from .shared.constants import SDK_VERSION
 
 __all__ = [
     "plugin",

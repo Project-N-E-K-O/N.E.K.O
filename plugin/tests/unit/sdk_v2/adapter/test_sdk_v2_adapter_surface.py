@@ -113,7 +113,7 @@ async def test_adapter_not_implemented_methods() -> None:
 
 
 def test_adapter_runtime_common_exports() -> None:
-    assert adapter.SDK_VERSION == "2.0.0a0"
+    assert adapter.SDK_VERSION == "0.1.0"
     assert adapter.ok is not None
     assert adapter.fail is not None
     assert adapter.Result is not None

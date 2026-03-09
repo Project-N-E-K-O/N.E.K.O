@@ -1,8 +1,8 @@
 """Plugin flavor decorators.
 
 The shared layer owns the metadata model and validation rules. This module keeps
-the plugin-facing namespace small and stable, and defines plugin-specific helper
-objects such as `plugin.entry(...)`.
+plugin-facing names stable and adds plugin-oriented convenience proxies such as
+`plugin.entry(...)` and `plugin.hook(...)`.
 """
 
 from __future__ import annotations
@@ -84,6 +84,30 @@ class _PluginDecorators:
     @staticmethod
     def entry(**kwargs: object) -> Callable[[F], F]:
         return plugin_entry(**kwargs)
+
+    @staticmethod
+    def event(**kwargs: object) -> Callable[[F], F]:
+        return on_event(**kwargs)
+
+    @staticmethod
+    def hook(**kwargs: object) -> Callable[[F], F]:
+        return hook(**kwargs)
+
+    @staticmethod
+    def lifecycle(**kwargs: object) -> Callable[[F], F]:
+        return lifecycle(**kwargs)
+
+    @staticmethod
+    def message(**kwargs: object) -> Callable[[F], F]:
+        return message(**kwargs)
+
+    @staticmethod
+    def timer(**kwargs: object) -> Callable[[F], F]:
+        return timer_interval(**kwargs)
+
+    @staticmethod
+    def custom_event(**kwargs: object) -> Callable[[F], F]:
+        return custom_event(**kwargs)
 
 
 plugin = _PluginDecorators()

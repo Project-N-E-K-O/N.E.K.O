@@ -43,7 +43,7 @@ from plugin.sdk_v2.shared.models import (
 )
 from plugin.sdk_v2.shared.models.errors import ErrorCode
 from plugin.sdk_v2.shared.models.responses import fail, is_envelope, ok
-from plugin.sdk_v2.shared.models.version import SDK_VERSION
+from plugin.sdk_v2.shared.constants import SDK_VERSION
 from plugin.sdk_v2.shared.runtime.call_chain import (
     AsyncCallChain,
     CallChain,

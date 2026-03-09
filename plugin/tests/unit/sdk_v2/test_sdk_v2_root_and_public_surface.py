@@ -11,7 +11,7 @@ def test_sdk_v2_root_exposes_namespaces_and_sdk_constants() -> None:
     assert mod.extension is not None
     assert mod.adapter is not None
     assert mod.shared is not None
-    assert mod.SDK_VERSION == "2.0.0a0"
+    assert mod.SDK_VERSION == "0.1.0"
     assert mod.NEKO_PLUGIN_META_ATTR == "__neko_plugin_meta__"
     assert mod.NEKO_PLUGIN_TAG == "__neko_plugin__"
     assert mod.EVENT_META_ATTR == "__neko_event_meta__"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
 
 from plugin.sdk_v2.public.storage.database import (
     AsyncSessionProtocol,
@@ -11,7 +10,7 @@ from plugin.sdk_v2.public.storage.database import (
     PluginKVStore as _ImplPluginKVStore,
 )
 from plugin.sdk_v2.shared.core.types import JsonValue, LoggerLike
-from plugin.sdk_v2.shared.models import Result
+from plugin.sdk_v2.shared.models import Err, Ok, Result
 
 
 class PluginKVStore:
@@ -21,23 +20,47 @@ class PluginKVStore:
         self._db = database
         self._impl = _ImplPluginKVStore(database=database._impl)
 
+    @staticmethod
+    def _validate_key(key: str) -> Result[None, Exception]:
+        if not isinstance(key, str) or key == "":
+            return Err(ValueError("key must be non-empty"))
+        return _OK_NONE
+
     async def get(self, key: str, default: JsonValue | None = None) -> Result[JsonValue | None, Exception]:
-        return await self._impl.get(key, default)
+        key_ok = self._validate_key(key)
+        if isinstance(key_ok, Err):
+            return key_ok
+        try:
+            return await self._impl.get(key, default)
+        except Exception as error:
+            return Err(error)
 
     async def set(self, key: str, value: JsonValue) -> Result[None, Exception]:
-        return await self._impl.set(key, value)
+        key_ok = self._validate_key(key)
+        if isinstance(key_ok, Err):
+            return key_ok
+        try:
+            return await self._impl.set(key, value)
+        except Exception as error:
+            return Err(error)
 
     async def delete(self, key: str) -> Result[bool, Exception]:
-        return await self._impl.delete(key)
+        key_ok = self._validate_key(key)
+        if isinstance(key_ok, Err):
+            return key_ok
+        try:
+            return await self._impl.delete(key)
+        except Exception as error:
+            return Err(error)
 
     async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
-        return await self._impl.get_async(key, default)
+        return (await self.get(key, default)).unwrap_or(default)
 
     async def set_async(self, key: str, value: JsonValue) -> None:
-        await self._impl.set_async(key, value)
+        (await self.set(key, value)).raise_for_err()
 
     async def delete_async(self, key: str) -> bool:
-        return await self._impl.delete_async(key)
+        return (await self.delete(key)).unwrap_or(False)
 
 
 class PluginDatabase:
@@ -52,9 +75,11 @@ class PluginDatabase:
         enabled: bool = True,
         db_name: str | None = None,
     ):
+        self.plugin_id = plugin_id
+        self.plugin_dir = Path(plugin_dir)
         self._impl = _ImplPluginDatabase(
             plugin_id=plugin_id,
-            plugin_dir=plugin_dir,
+            plugin_dir=self.plugin_dir,
             logger=logger,
             enabled=enabled,
             db_name=db_name,
@@ -62,13 +87,22 @@ class PluginDatabase:
         self._kv: PluginKVStore | None = None
 
     async def create_all(self) -> Result[None, Exception]:
-        return await self._impl.create_all()
+        try:
+            return await self._impl.create_all()
+        except Exception as error:
+            return Err(error)
 
     async def drop_all(self) -> Result[None, Exception]:
-        return await self._impl.drop_all()
+        try:
+            return await self._impl.drop_all()
+        except Exception as error:
+            return Err(error)
 
     async def session(self) -> Result[AsyncSessionProtocol, Exception]:
-        return await self._impl.session()
+        try:
+            return await self._impl.session()
+        except Exception as error:
+            return Err(error)
 
     @property
     def kv(self) -> PluginKVStore:
@@ -76,5 +110,7 @@ class PluginDatabase:
             self._kv = PluginKVStore(database=self)
         return self._kv
 
+
+_OK_NONE = Ok(None)
 
 __all__ = ["AsyncSessionProtocol", "PluginDatabase", "PluginKVStore"]
