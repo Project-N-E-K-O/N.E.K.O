@@ -221,8 +221,8 @@
 <div class="card-info-header-text">
 <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
 <span data-i18n="steam.cardInfoPreview">角色卡信息</span>
-<img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
 </div>
+<img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
 </div>
 </div>
 <div class="card-info-body">
@@ -282,8 +282,12 @@
 <!-- Live2D预览Canvas -->
 <canvas id="live2d-preview-canvas" style="display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
 <!-- 占位符 -->
-<div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; color: #666; position: relative; z-index: 1; background-color: transparent;">
-<span data-i18n="steam.selectCharaToPreview">请选择角色进行预览</span>
+<div class="preview-placeholder" style="display: flex; justify-content: center; align-items: center; height: 100%; position: relative; z-index: 1; background-color: transparent;">
+<div class="preview-ring-perspective">
+<div class="preview-ring-tilt">
+<div id="preview-ring-container" class="preview-ring-container"></div>
+</div>
+</div>
 </div>
 <!-- 防止点击的覆盖层 -->
 <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
@@ -378,8 +382,8 @@
 <div class="tags-header-text">
 <svg width="15" height="15" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="white"/></svg>
 <span data-i18n="steam.characterCardTags">角色卡标签</span>
-<img src="/static/icons/paw_ui.png" class="tags-paw" alt="">
 </div>
+<img src="/static/icons/paw_ui.png" class="tags-paw" alt="">
 </div>
 </div>
 <div class="control-group tags-content">
@@ -618,6 +622,70 @@
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {
                 initUniversalTutorialManager();
+            }
+        });
+    </script>
+
+    <!-- 占位符环形文字 -->
+    <script>
+        var GLITCH_TIMINGS = [
+            {dur:'4.8s',delay:'0s'},   {dur:'5.3s',delay:'1.2s'},
+            {dur:'4.5s',delay:'2.7s'}, {dur:'5.7s',delay:'0.4s'},
+            {dur:'4.2s',delay:'3.5s'}, {dur:'5.1s',delay:'1.8s'},
+            {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
+            {dur:'4.6s',delay:'3.2s'},
+        ];
+        function buildPreviewRing() {
+            var container = document.getElementById('preview-ring-container');
+            if (!container) return;
+            var key = 'steam.selectCharaToPreview';
+            var raw = (typeof window.t === 'function') ? window.t(key) : null;
+            var text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+            var base = Array.from(text);
+            var chars = base.concat(base).concat(base);
+
+            // 始终使用自然半径，不做激进裁剪
+            var radius = Math.max(75, chars.length * 8);
+
+            // 小幅补偿 rotateX(-10deg) 导致前侧字符视觉偏高
+            var yComp = Math.round(radius * Math.sin(10 * Math.PI / 180) * -0.1);
+            var tiltDiv = container.closest('.preview-ring-tilt');
+            if (tiltDiv) {
+                tiltDiv.style.transform = 'translateY(' + yComp + 'px) rotateX(-10deg)';
+            }
+
+            var groupSize = base.length;
+            var gapExtra = 0.3;
+            var totalSlots = chars.length + gapExtra * 3;
+            container.innerHTML = '';
+            chars.forEach(function(ch, i) {
+                var group = Math.floor(i / groupSize);
+                var posInGroup = i % groupSize;
+                var slotIndex = group * (groupSize + gapExtra) + posInGroup;
+                var angle = (slotIndex / totalSlots) * 360;
+                var span = document.createElement('span');
+                span.className = 'ring-char';
+                span.textContent = ch;
+                span.setAttribute('data-char', ch);
+                var t = GLITCH_TIMINGS[i % GLITCH_TIMINGS.length];
+                span.style.setProperty('--gdur', t.dur);
+                span.style.setProperty('--gdelay', t.delay);
+                span.style.transform = 'rotateY(' + angle + 'deg) translateZ(' + radius + 'px)';
+                container.appendChild(span);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            buildPreviewRing();
+            requestAnimationFrame(function() { requestAnimationFrame(buildPreviewRing); });
+        });
+        window.addEventListener('localechange', buildPreviewRing);
+        document.addEventListener('DOMContentLoaded', function() {
+            var placeholder = document.querySelector('#live2d-preview-container .preview-placeholder');
+            if (placeholder && typeof ResizeObserver !== 'undefined') {
+                new ResizeObserver(buildPreviewRing).observe(placeholder);
+            } else {
+                window.addEventListener('resize', buildPreviewRing);
             }
         });
     </script>
