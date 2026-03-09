@@ -1074,6 +1074,12 @@ function init_app() {
                             if (existing && existing.params && (!task.params || Object.keys(task.params).length === 0)) {
                                 merged.params = existing.params;
                             }
+                            // Set terminal_at when task transitions to terminal state (for linger logic)
+                            if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+                                if (!existing || !['completed', 'failed', 'cancelled'].includes(existing.status)) {
+                                    merged.terminal_at = Date.now();
+                                }
+                            }
                             window._agentTaskMap.set(task.id, merged);
                             if (['completed', 'failed', 'cancelled'].includes(task.status)) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));

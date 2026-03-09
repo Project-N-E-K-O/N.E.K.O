@@ -417,6 +417,11 @@ class MemoReminderPlugin(NekoPluginBase):
 
         r = dict(r)
         r["trigger_at"] = next_dt.isoformat()
+        # 清除 transient 状态，以便下次触发时重新发送消息
+        r.pop("delivered", None)
+        r.pop("callback_pending", None)
+        r.pop("callback_error", None)
+        r.pop("callback_retry_count", None)
         return r
 
     @plugin_entry(
@@ -538,7 +543,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         return ok(data={
             "status": "scheduled",
-            "deferred": True,
+            "deferred": needs_deferred,
             "reminder_id": rid,
             "trigger_at_local": local_str,
             "repeat": repeat,
