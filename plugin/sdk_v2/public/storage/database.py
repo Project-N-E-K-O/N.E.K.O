@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Protocol
 
 from plugin.sdk_v2.shared.core.types import JsonValue, LoggerLike
+from plugin.sdk_v2.shared.logging import get_plugin_logger
 from plugin.sdk_v2.shared.models import Err, Ok, Result
+
+from ._template import StorageResultTemplate
 
 try:
     import ormsgpack as _msgpack  # type: ignore
@@ -55,7 +58,7 @@ class _SqliteAsyncSession:
         return None
 
 
-class PluginDatabase:
+class PluginDatabase(StorageResultTemplate):
     """Async-first SQLite-backed plugin database facade."""
 
     def __init__(
@@ -67,9 +70,9 @@ class PluginDatabase:
         enabled: bool = True,
         db_name: str | None = None,
     ):
+        super().__init__(logger=logger or get_plugin_logger(plugin_id, "storage.database"))
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
-        self.logger = logger
         self.enabled = enabled
         self.db_name = db_name or "plugin.db"
         self._db_path = self.plugin_dir / self.db_name
@@ -94,46 +97,34 @@ class PluginDatabase:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
 
+    def _create_all_sync(self) -> None:
+        if self.enabled:
+            self._init_db()
+
+    def _drop_all_sync(self) -> None:
+        if not self.enabled:
+            return
+        if self._db_path.exists():
+            self._db_path.unlink()
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            self._local.conn = None
+        self._kv_store = None
+
+    def _close_sync(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
     async def create_all(self) -> Result[None, Exception]:
-        try:
-            if self.enabled:
-                self._init_db()
-            return Ok(None)
-        except Exception as error:
-            return Err(error)
+        return await self._run_sync_result("storage.database.create_all", self._create_all_sync)
 
     async def drop_all(self) -> Result[None, Exception]:
-        try:
-            if not self.enabled:
-                return Ok(None)
-            if self._db_path.exists():
-                self._db_path.unlink()
-            conn = getattr(self._local, "conn", None)
-            if conn is not None:
-                self._local.conn = None
-            self._kv_store = None
-            return Ok(None)
-        except Exception as error:
-            return Err(error)
+        return await self._run_sync_result("storage.database.drop_all", self._drop_all_sync)
 
     async def close(self) -> Result[None, Exception]:
-        try:
-            conn = getattr(self._local, "conn", None)
-            if conn is not None:
-                conn.close()
-                self._local.conn = None
-            return Ok(None)
-        except Exception as error:
-            return Err(error)
-
-    async def create_all_async(self) -> None:
-        (await self.create_all()).raise_for_err()
-
-    async def drop_all_async(self) -> None:
-        (await self.drop_all()).raise_for_err()
-
-    async def close_async(self) -> None:
-        (await self.close()).raise_for_err()
+        return await self._run_sync_result("storage.database.close", self._close_sync)
 
     async def session(self) -> Result[AsyncSessionProtocol, Exception]:
         try:
@@ -244,68 +235,25 @@ class PluginKVStore:
         return int(row[0]) if row is not None else 0
 
     async def get(self, key: str, default: JsonValue | None = None) -> Result[JsonValue | None, Exception]:
-        try:
-            return Ok(self._get_sync(key, default))
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.get", self._get_sync, key, default)
 
     async def set(self, key: str, value: JsonValue) -> Result[None, Exception]:
-        try:
-            self._set_sync(key, value)
-            return Ok(None)
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.set", self._set_sync, key, value)
 
     async def delete(self, key: str) -> Result[bool, Exception]:
-        try:
-            return Ok(self._delete_sync(key))
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.delete", self._delete_sync, key)
 
     async def exists(self, key: str) -> Result[bool, Exception]:
-        try:
-            return Ok(self._exists_sync(key))
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.exists", self._exists_sync, key)
 
     async def keys(self, prefix: str = "") -> Result[list[str], Exception]:
-        try:
-            return Ok(self._keys_sync(prefix))
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.keys", self._keys_sync, prefix)
 
     async def clear(self) -> Result[int, Exception]:
-        try:
-            return Ok(self._clear_sync())
-        except Exception as error:
-            return Err(error)
+        return await self._db._run_sync_result("storage.database.kv.clear", self._clear_sync)
 
     async def count(self) -> Result[int, Exception]:
-        try:
-            return Ok(self._count_sync())
-        except Exception as error:
-            return Err(error)
-
-    async def get_async(self, key: str, default: JsonValue | None = None) -> JsonValue | None:
-        return (await self.get(key, default)).unwrap_or(default)
-
-    async def set_async(self, key: str, value: JsonValue) -> None:
-        (await self.set(key, value)).raise_for_err()
-
-    async def delete_async(self, key: str) -> bool:
-        return (await self.delete(key)).unwrap_or(False)
-
-    async def exists_async(self, key: str) -> bool:
-        return (await self.exists(key)).unwrap_or(False)
-
-    async def keys_async(self, prefix: str = "") -> list[str]:
-        return (await self.keys(prefix)).unwrap_or([])
-
-    async def clear_async(self) -> int:
-        return (await self.clear()).unwrap_or(0)
-
-    async def count_async(self) -> int:
-        return (await self.count()).unwrap_or(0)
+        return await self._db._run_sync_result("storage.database.kv.count", self._count_sync)
 
 
 __all__ = ["AsyncSessionProtocol", "PluginDatabase", "PluginKVStore"]

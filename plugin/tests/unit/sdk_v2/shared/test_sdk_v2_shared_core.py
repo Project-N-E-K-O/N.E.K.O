@@ -177,10 +177,10 @@ async def test_core_config_plugins_router_behaviors() -> None:
     assert missing.is_err()
 
     set_result = await cfg.set("feature.flag", True)
-    assert set_result.is_ok()
+    assert set_result.is_err()
 
     updated = await cfg.update({"a": 1})
-    assert updated.is_ok()
+    assert updated.is_err()
     section = await cfg.get_section("feature")
     assert section.is_ok()
 

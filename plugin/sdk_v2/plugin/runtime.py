@@ -8,9 +8,12 @@ from plugin.sdk_v2.shared import runtime_common as _common_runtime
 from plugin.sdk_v2.shared.constants import EVENT_META_ATTR, HOOK_META_ATTR
 from plugin.sdk_v2.shared.core.config import (
     ConfigPathError,
+    ConfigProfileError,
     ConfigValidationError,
     PluginConfig,
+    PluginConfigBaseView,
     PluginConfigError,
+    PluginConfigProfiles,
 )
 from plugin.sdk_v2.shared.core.events import EventHandler, EventMeta
 from plugin.sdk_v2.shared.core.hook_executor import HookExecutorMixin
@@ -53,7 +56,16 @@ PLUGIN_RUNTIME_EXPORTS = [
     "PluginConfig",
     "PluginConfigError",
     "ConfigPathError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
     "ConfigValidationError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
     "Plugins",
     "PluginCallError",
     "PluginDescriptor",

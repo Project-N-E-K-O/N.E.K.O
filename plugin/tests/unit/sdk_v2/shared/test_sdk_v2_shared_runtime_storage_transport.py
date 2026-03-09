@@ -104,15 +104,15 @@ async def test_shared_storage_facades_work(tmp_path) -> None:
     assert (await kv_store.dump()).unwrap() == {"k": {"v": 1}}
     assert (await kv_store.delete("k")).unwrap() is True
     assert (await kv_store.clear()).unwrap() == 0
-    assert await kv_store.get_async("missing", "d") == "d"
-    await kv_store.set_async("a", 1)
-    assert await kv_store.exists_async("a") is True
-    assert await kv_store.keys_async() == ["a"]
-    assert await kv_store.count_async() == 1
-    assert await kv_store.dump_async() == {"a": 1}
-    assert await kv_store.delete_async("a") is True
-    assert await kv_store.clear_async() == 0
-    await kv_store.close_async()
+    assert (await kv_store.get("missing", "d")).unwrap() == "d"
+    (await kv_store.set("a", 1)).unwrap()
+    assert (await kv_store.exists("a")).unwrap() is True
+    assert (await kv_store.keys()).unwrap() == ["a"]
+    assert (await kv_store.count()).unwrap() == 1
+    assert (await kv_store.dump()).unwrap() == {"a": 1}
+    assert (await kv_store.delete("a")).unwrap() is True
+    assert (await kv_store.clear()).unwrap() == 0
+    (await kv_store.close()).unwrap()
 
     db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True, db_name="plugin.db")
     assert (await db.create_all()).is_ok()
@@ -128,17 +128,17 @@ async def test_shared_storage_facades_work(tmp_path) -> None:
     assert (await kv.clear()).unwrap() == 1
     assert (await kv.set("k", [1, 2])).is_ok()
     assert (await kv.delete("k")).unwrap() is True
-    assert await kv.get_async("missing", "z") == "z"
-    await kv.set_async("x", {"v": True})
-    assert await kv.exists_async("x") is True
-    assert await kv.keys_async() == ["x"]
-    assert await kv.count_async() == 1
-    assert await kv.clear_async() == 1
-    await kv.set_async("x", {"v": True})
-    assert await kv.delete_async("x") is True
-    await db.create_all_async()
-    await db.close_async()
-    await db.drop_all_async()
+    assert (await kv.get("missing", "z")).unwrap() == "z"
+    (await kv.set("x", {"v": True})).unwrap()
+    assert (await kv.exists("x")).unwrap() is True
+    assert (await kv.keys()).unwrap() == ["x"]
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.clear()).unwrap() == 1
+    (await kv.set("x", {"v": True})).unwrap()
+    assert (await kv.delete("x")).unwrap() is True
+    (await db.create_all()).unwrap()
+    (await db.close()).unwrap()
+    (await db.drop_all()).unwrap()
 
     class _StateObj:
         __freezable__ = ["counter", "when"]
@@ -156,14 +156,14 @@ async def test_shared_storage_facades_work(tmp_path) -> None:
     assert (await persistence.load(obj)).unwrap() is True
     assert obj.counter == 2
     assert (await persistence.clear()).unwrap() is True
-    assert await persistence.save_async(obj) is True
-    assert await persistence.load_async(obj) is True
-    assert await persistence.clear_async() is True
-    assert await persistence.snapshot_async() == {}
-    assert await persistence.collect_attrs_async(obj) == {"counter": 2, "when": {"__neko_type__": "datetime", "__neko_value__": "2024-01-01T01:01:01"}}
-    assert await persistence.restore_attrs_async(obj, {"counter": 9}) == 1
-    assert await persistence.has_saved_state_async() is False
-    assert await persistence.get_state_info_async() is None
+    assert (await persistence.save(obj)).unwrap() is True
+    assert (await persistence.load(obj)).unwrap() is True
+    assert (await persistence.clear()).unwrap() is True
+    assert (await persistence.snapshot()).unwrap() == {}
+    assert (await persistence.collect_attrs(obj)).unwrap() == {"counter": 2, "when": {"__neko_type__": "datetime", "__neko_value__": "2024-01-01T01:01:01"}}
+    assert (await persistence.restore_attrs(obj, {"counter": 9})).unwrap() == 1
+    assert (await persistence.has_saved_state()).unwrap() is False
+    assert (await persistence.get_state_info()).unwrap() is None
 
 
 @pytest.mark.asyncio

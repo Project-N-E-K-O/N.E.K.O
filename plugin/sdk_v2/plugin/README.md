@@ -53,3 +53,10 @@ from plugin.sdk_v2.plugin import (
 ## 迁移说明
 - 外层保持为显式 facade。
 - 内部模型与拼装细节可以继续下沉到 `public/*`。
+
+## Config 语义
+- `self.config`：默认读取当前 active profile 叠加后的 effective config。
+- `self.config.set/update(...)`：只写 active profile overlay，不直接写 base config。
+- `self.config.profiles`：profile 管理入口，负责 `list/active/require_active/get/effective/create/activate/delete`。
+- `self.config.base`：base config 只读视图，保留 `dump/get/require/get_section` 供进阶读取。
+- 兼容别名（如 `dump_base/get_profile/dump_effective`）仍可用，但推荐优先使用 `base/profiles` 结构化入口。

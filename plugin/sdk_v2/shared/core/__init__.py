@@ -5,7 +5,15 @@ remain contract-only during the migration.
 """
 
 from .base import NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG, NekoPluginBase, PluginMeta
-from .config import PluginConfig, PluginConfigError
+from .config import (
+    ConfigPathError,
+    ConfigProfileError,
+    ConfigValidationError,
+    PluginConfig,
+    PluginConfigBaseView,
+    PluginConfigError,
+    PluginConfigProfiles,
+)
 from .decorators import (
     CHECKPOINT_ATTR,
     PERSIST_ATTR,
@@ -60,6 +68,21 @@ __all__ = [
     "NekoPluginBase",
     "PluginConfig",
     "PluginConfigError",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
+    "ConfigPathError",
+    "ConfigValidationError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
     "Plugins",
     "PluginDescriptor",
     "PluginCallError",

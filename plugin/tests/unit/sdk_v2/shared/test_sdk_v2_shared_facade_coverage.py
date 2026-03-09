@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from plugin.sdk_v2.shared.runtime import memory as shared_memory
@@ -64,12 +62,12 @@ async def test_shared_store_facade_validation_and_async_helpers(tmp_path) -> Non
     assert (await kv.delete("")).is_err()
     assert (await kv.exists("")).is_err()
 
-    await kv.set_async("a", 1)
-    assert await kv.get_async("a") == 1
-    assert await kv.exists_async("a") is True
-    assert await kv.keys_async() == ["a"]
-    assert await kv.delete_async("a") is True
-    assert await kv.clear_async() == 0
+    (await kv.set("a", 1)).unwrap()
+    assert (await kv.get("a")).unwrap() == 1
+    assert (await kv.exists("a")).unwrap() is True
+    assert (await kv.keys()).unwrap() == ["a"]
+    assert (await kv.delete("a")).unwrap() is True
+    assert (await kv.clear()).unwrap() == 0
 
     async def boom(*args, **kwargs):
         raise RuntimeError("boom")
@@ -102,9 +100,9 @@ async def test_shared_database_and_state_facades(tmp_path) -> None:
     assert (await kv.get("", None)).is_err()
     assert (await kv.set("", 1)).is_err()
     assert (await kv.delete("")).is_err()
-    await kv.set_async("a", 1)
-    assert await kv.get_async("a") == 1
-    assert await kv.delete_async("a") is True
+    (await kv.set("a", 1)).unwrap()
+    assert (await kv.get("a")).unwrap() == 1
+    assert (await kv.delete("a")).unwrap() is True
 
     async def boom(*args, **kwargs):
         raise RuntimeError("boom")
@@ -132,8 +130,8 @@ async def test_shared_database_and_state_facades(tmp_path) -> None:
             self.counter = 1
 
     obj = _Obj()
-    assert await persistence.save_async(obj) in {True, False}
-    assert isinstance(await persistence.snapshot_async(), dict)
+    assert (await persistence.save(obj)).unwrap() in {True, False}
+    assert isinstance((await persistence.snapshot()).unwrap(), dict)
 
     persistence._impl.save = boom  # type: ignore[method-assign]
     persistence._impl.load = boom  # type: ignore[method-assign]
@@ -143,10 +141,6 @@ async def test_shared_database_and_state_facades(tmp_path) -> None:
     assert (await persistence.load(obj)).is_err()
     assert (await persistence.clear()).is_err()
     assert (await persistence.snapshot()).is_err()
-    assert await persistence.save_async(obj) is False
-    assert await persistence.load_async(obj) is False
-    assert await persistence.clear_async() is False
-    assert await persistence.snapshot_async() == {}
 
 
 @pytest.mark.asyncio
@@ -184,28 +178,28 @@ async def test_shared_store_and_db_new_async_helpers(tmp_path) -> None:
     plugin_dir.mkdir()
 
     kv = shared_store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await kv.set_async("a", 1)
+    (await kv.set("a", 1)).unwrap()
     assert (await kv.count()).unwrap() == 1
     assert (await kv.dump()).unwrap() == {"a": 1}
-    assert await kv.count_async() == 1
-    assert await kv.dump_async() == {"a": 1}
-    await kv.close_async()
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.dump()).unwrap() == {"a": 1}
+    (await kv.close()).unwrap()
 
     db = shared_database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await db.create_all_async()
+    (await db.create_all()).unwrap()
     kvdb = db.kv
-    await kvdb.set_async("x", 1)
+    (await kvdb.set("x", 1)).unwrap()
     assert (await kvdb.exists("x")).unwrap() is True
     assert (await kvdb.keys()).unwrap() == ["x"]
     assert (await kvdb.count()).unwrap() == 1
     assert (await kvdb.clear()).unwrap() == 1
-    await kvdb.set_async("x", 1)
-    assert await kvdb.exists_async("x") is True
-    assert await kvdb.keys_async() == ["x"]
-    assert await kvdb.count_async() == 1
-    assert await kvdb.clear_async() == 1
-    await db.close_async()
-    await db.drop_all_async()
+    (await kvdb.set("x", 1)).unwrap()
+    assert (await kvdb.exists("x")).unwrap() is True
+    assert (await kvdb.keys()).unwrap() == ["x"]
+    assert (await kvdb.count()).unwrap() == 1
+    assert (await kvdb.clear()).unwrap() == 1
+    (await db.close()).unwrap()
+    (await db.drop_all()).unwrap()
 
     persistence = shared_state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="file")
     class _Obj:
@@ -213,10 +207,10 @@ async def test_shared_store_and_db_new_async_helpers(tmp_path) -> None:
         def __init__(self):
             self.counter = 1
     obj = _Obj()
-    assert await persistence.collect_attrs_async(obj) == {"counter": 1}
-    assert await persistence.restore_attrs_async(obj, {"counter": 2}) == 1
-    assert await persistence.has_saved_state_async() is False
-    assert await persistence.get_state_info_async() is None
+    assert (await persistence.collect_attrs(obj)).unwrap() == {"counter": 1}
+    assert (await persistence.restore_attrs(obj, {"counter": 2})).unwrap() == 1
+    assert (await persistence.has_saved_state()).unwrap() is False
+    assert (await persistence.get_state_info()).unwrap() is None
 
 
 @pytest.mark.asyncio
@@ -225,21 +219,21 @@ async def test_shared_storage_new_method_branch_coverage(tmp_path) -> None:
     plugin_dir.mkdir()
 
     kv = shared_store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await kv.set_async("a", 1)
-    assert await kv.count_async() == 1
-    assert await kv.dump_async() == {"a": 1}
-    await kv.close_async()
+    (await kv.set("a", 1)).unwrap()
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.dump()).unwrap() == {"a": 1}
+    (await kv.close()).unwrap()
 
     db = shared_database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await db.create_all_async()
+    (await db.create_all()).unwrap()
     kvdb = db.kv
-    await kvdb.set_async("x", 1)
-    assert await kvdb.exists_async("x") is True
-    assert await kvdb.keys_async() == ["x"]
-    assert await kvdb.count_async() == 1
-    assert await kvdb.clear_async() == 1
-    await db.close_async()
-    await db.drop_all_async()
+    (await kvdb.set("x", 1)).unwrap()
+    assert (await kvdb.exists("x")).unwrap() is True
+    assert (await kvdb.keys()).unwrap() == ["x"]
+    assert (await kvdb.count()).unwrap() == 1
+    assert (await kvdb.clear()).unwrap() == 1
+    (await db.close()).unwrap()
+    (await db.drop_all()).unwrap()
 
     persistence = shared_state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="file")
     class _Obj:
@@ -247,10 +241,10 @@ async def test_shared_storage_new_method_branch_coverage(tmp_path) -> None:
         def __init__(self):
             self.counter = 1
     obj = _Obj()
-    assert await persistence.collect_attrs_async(obj) == {"counter": 1}
-    assert await persistence.restore_attrs_async(obj, {"counter": 2}) == 1
-    assert await persistence.has_saved_state_async() is False
-    assert await persistence.get_state_info_async() is None
+    assert (await persistence.collect_attrs(obj)).unwrap() == {"counter": 1}
+    assert (await persistence.restore_attrs(obj, {"counter": 2})).unwrap() == 1
+    assert (await persistence.has_saved_state()).unwrap() is False
+    assert (await persistence.get_state_info()).unwrap() is None
 
 
 @pytest.mark.asyncio

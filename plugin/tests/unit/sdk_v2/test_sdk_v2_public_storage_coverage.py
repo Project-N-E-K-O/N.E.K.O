@@ -26,15 +26,15 @@ async def test_public_store_database_and_state_behaviors(tmp_path, monkeypatch: 
     assert (await kv_store.keys()).unwrap() == ["k"]
     assert (await kv_store.delete("k")).unwrap() is True
     assert (await kv_store.clear()).unwrap() == 0
-    assert await kv_store.get_async("missing", "d") == "d"
-    await kv_store.set_async("a", 1)
-    assert await kv_store.exists_async("a") is True
-    assert await kv_store.keys_async() == ["a"]
-    assert await kv_store.count_async() == 1
-    assert await kv_store.dump_async() == {"a": 1}
-    assert await kv_store.delete_async("a") is True
-    assert await kv_store.clear_async() == 0
-    await kv_store.close_async()
+    assert (await kv_store.get("missing", "d")).unwrap() == "d"
+    (await kv_store.set("a", 1)).unwrap()
+    assert (await kv_store.exists("a")).unwrap() is True
+    assert (await kv_store.keys()).unwrap() == ["a"]
+    assert (await kv_store.count()).unwrap() == 1
+    assert (await kv_store.dump()).unwrap() == {"a": 1}
+    assert (await kv_store.delete("a")).unwrap() is True
+    assert (await kv_store.clear()).unwrap() == 0
+    (await kv_store.close()).unwrap()
 
     disabled_store = store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=False)
     assert (await disabled_store.get("x", "d")).unwrap() == "d"
@@ -65,21 +65,21 @@ async def test_public_store_database_and_state_behaviors(tmp_path, monkeypatch: 
     assert (await kv.set("k", [1, 2])).is_ok()
     assert (await kv.get("k")).unwrap() == [1, 2]
     assert (await kv.delete("k")).unwrap() is True
-    assert await kv.get_async("missing", "z") == "z"
-    await kv.set_async("x", {"v": True})
-    assert await kv.exists_async("x") is True
-    assert await kv.keys_async() == ["x"]
-    assert await kv.count_async() == 1
-    assert await kv.clear_async() == 1
-    await kv.set_async("x", {"v": True})
-    assert await kv.delete_async("x") is True
+    assert (await kv.get("missing", "z")).unwrap() == "z"
+    (await kv.set("x", {"v": True})).unwrap()
+    assert (await kv.exists("x")).unwrap() is True
+    assert (await kv.keys()).unwrap() == ["x"]
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.clear()).unwrap() == 1
+    (await kv.set("x", {"v": True})).unwrap()
+    assert (await kv.delete("x")).unwrap() is True
     kv._ensure_table()
     db._get_conn().execute(f"INSERT OR REPLACE INTO {kv._TABLE_NAME} (key, value, created_at, updated_at) VALUES (?, ?, 0, 0)", ("bad2", database._pack(b"x")))
     db._get_conn().commit()
     assert (await kv.get("bad2", "d")).unwrap() == "d"
-    await db.create_all_async()
-    await db.close_async()
-    await db.drop_all_async()
+    (await db.create_all()).unwrap()
+    (await db.close()).unwrap()
+    (await db.drop_all()).unwrap()
 
     disabled_db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=False)
     assert (await disabled_db.create_all()).is_ok()
@@ -123,16 +123,16 @@ async def test_public_store_database_and_state_behaviors(tmp_path, monkeypatch: 
     assert (await persistence.clear()).unwrap() is True
 
     memory_state = state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="memory")
-    assert await memory_state.save_async(obj) is True
+    assert (await memory_state.save(obj)).unwrap() is True
     obj.counter = 0
-    assert await memory_state.load_async(obj) is True
+    assert (await memory_state.load(obj)).unwrap() is True
     assert obj.counter == 2
-    assert await memory_state.clear_async() is True
-    assert await memory_state.snapshot_async() == {}
-    assert await memory_state.collect_attrs_async(obj) == {"counter": 2, "when": {"__neko_type__": "datetime", "__neko_value__": "2024-01-01T01:01:01"}, "items": {"__neko_type__": "set", "__neko_value__": ["a"]}, "fitems": {"__neko_type__": "frozenset", "__neko_value__": ["b"]}, "path": {"__neko_type__": "path", "__neko_value__": str(plugin_dir)}, "tuple_val": [1, 2], "custom": {"custom": 2}}
-    assert await memory_state.restore_attrs_async(obj, {"counter": 7}) == 1
-    assert await memory_state.has_saved_state_async() is False
-    assert await memory_state.get_state_info_async() is None
+    assert (await memory_state.clear()).unwrap() is True
+    assert (await memory_state.snapshot()).unwrap() == {}
+    assert (await memory_state.collect_attrs(obj)).unwrap() == {"counter": 2, "when": {"__neko_type__": "datetime", "__neko_value__": "2024-01-01T01:01:01"}, "items": {"__neko_type__": "set", "__neko_value__": ["a"]}, "fitems": {"__neko_type__": "frozenset", "__neko_value__": ["b"]}, "path": {"__neko_type__": "path", "__neko_value__": str(plugin_dir)}, "tuple_val": [1, 2], "custom": {"custom": 2}}
+    assert (await memory_state.restore_attrs(obj, {"counter": 7})).unwrap() == 1
+    assert (await memory_state.has_saved_state()).unwrap() is False
+    assert (await memory_state.get_state_info()).unwrap() is None
 
     off_state = state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="off")
     assert (await off_state.save(obj)).unwrap() is False
@@ -175,8 +175,8 @@ async def test_public_store_database_and_state_behaviors(tmp_path, monkeypatch: 
     original_db_connect = database.sqlite3.connect
     db_keys = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
     kv_keys = db_keys.kv
-    await kv_keys.set_async("pref_one", 1)
-    await kv_keys.set_async("pref_two", 2)
+    (await kv_keys.set("pref_one", 1)).unwrap()
+    (await kv_keys.set("pref_two", 2)).unwrap()
     assert kv_keys._keys_sync("pref_") == ["pref_one", "pref_two"]
 
     db2 = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
@@ -308,13 +308,13 @@ async def test_public_store_database_new_async_methods_and_errors(tmp_path, monk
     kv_store = store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=False)
     assert kv_store._count_sync() == 0
     assert kv_store._dump_sync() == {}
-    await kv_store.close_async()
+    (await kv_store.close()).unwrap()
 
     enabled = store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await enabled.set_async("a", 1)
+    (await enabled.set("a", 1)).unwrap()
     assert (await enabled.count()).unwrap() == 1
     assert (await enabled.dump()).unwrap() == {"a": 1}
-    await enabled.close_async()
+    (await enabled.close()).unwrap()
 
     original_connect = store.sqlite3.connect
     enabled._local.conn = None
@@ -326,17 +326,17 @@ async def test_public_store_database_new_async_methods_and_errors(tmp_path, monk
 
     db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
     kv = db.kv
-    await kv.set_async("x", 1)
+    (await kv.set("x", 1)).unwrap()
     assert (await kv.exists("x")).unwrap() is True
     assert (await kv.keys()).unwrap() == ["x"]
     assert (await kv.count()).unwrap() == 1
     assert (await kv.clear()).unwrap() == 1
-    await kv.set_async("x", 1)
-    assert await kv.exists_async("x") is True
-    assert await kv.keys_async() == ["x"]
-    assert await kv.count_async() == 1
-    assert await kv.clear_async() == 1
-    await db.close_async()
+    (await kv.set("x", 1)).unwrap()
+    assert (await kv.exists("x")).unwrap() is True
+    assert (await kv.keys()).unwrap() == ["x"]
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.clear()).unwrap() == 1
+    (await db.close()).unwrap()
 
     original_db_connect = database.sqlite3.connect
     db._local.conn = None
@@ -362,10 +362,10 @@ async def test_public_storage_new_method_branch_coverage(tmp_path, monkeypatch: 
 
     # store async wrappers and error branches
     kv_store = store.PluginStore(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await kv_store.set_async("a", 1)
-    assert await kv_store.count_async() == 1
-    assert await kv_store.dump_async() == {"a": 1}
-    await kv_store.close_async()
+    (await kv_store.set("a", 1)).unwrap()
+    assert (await kv_store.count()).unwrap() == 1
+    assert (await kv_store.dump()).unwrap() == {"a": 1}
+    (await kv_store.close()).unwrap()
     original_connect = store.sqlite3.connect
     kv_store._local.conn = None
     monkeypatch.setattr(store.sqlite3, "connect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -380,20 +380,20 @@ async def test_public_storage_new_method_branch_coverage(tmp_path, monkeypatch: 
 
     # db create/drop/close async wrappers + kv async helpers/error branches
     db = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
-    await db.create_all_async()
+    (await db.create_all()).unwrap()
     kv = db.kv
-    await kv.set_async("x", 1)
-    assert await kv.exists_async("x") is True
-    assert await kv.keys_async() == ["x"]
-    assert await kv.count_async() == 1
-    assert await kv.clear_async() == 1
-    await db.close_async()
-    await db.drop_all_async()
+    (await kv.set("x", 1)).unwrap()
+    assert (await kv.exists("x")).unwrap() is True
+    assert (await kv.keys()).unwrap() == ["x"]
+    assert (await kv.count()).unwrap() == 1
+    assert (await kv.clear()).unwrap() == 1
+    (await db.close()).unwrap()
+    (await db.drop_all()).unwrap()
 
     db_keys = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
     kv_keys = db_keys.kv
-    await kv_keys.set_async("pref_one", 1)
-    await kv_keys.set_async("pref_two", 2)
+    (await kv_keys.set("pref_one", 1)).unwrap()
+    (await kv_keys.set("pref_two", 2)).unwrap()
     assert kv_keys._keys_sync("pref_") == ["pref_one", "pref_two"]
 
     db2 = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
@@ -413,19 +413,19 @@ async def test_public_storage_new_method_branch_coverage(tmp_path, monkeypatch: 
 
     # state extra info helpers
     state_file = state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="file")
-    assert await state_file.has_saved_state_async() is False
-    assert await state_file.get_state_info_async() is None
+    assert (await state_file.has_saved_state()).unwrap() is False
+    assert (await state_file.get_state_info()).unwrap() is None
     class _Obj:
         __freezable__ = ["counter"]
         def __init__(self):
             self.counter = 1
     obj = _Obj()
-    await state_file.save_async(obj)
-    info = await state_file.get_state_info_async()
+    (await state_file.save(obj)).unwrap()
+    info = (await state_file.get_state_info()).unwrap()
     assert info is not None and info["backend"] == "file"
     state_mem = state.PluginStatePersistence(plugin_id="demo", plugin_dir=plugin_dir, backend="memory")
-    await state_mem.save_async(obj)
-    info_mem = await state_mem.get_state_info_async()
+    (await state_mem.save(obj)).unwrap()
+    info_mem = (await state_mem.get_state_info()).unwrap()
     assert info_mem is not None and info_mem["backend"] == "memory"
     class _BadPath:
         @staticmethod
@@ -435,7 +435,7 @@ async def test_public_storage_new_method_branch_coverage(tmp_path, monkeypatch: 
         def stat():
             raise RuntimeError('boom')
     state_file._state_path = _BadPath()  # type: ignore[assignment]
-    assert await state_file.get_state_info_async() is None
+    assert (await state_file.get_state_info()).unwrap() is None
 
 
 @pytest.mark.asyncio
@@ -466,8 +466,8 @@ async def test_public_storage_remaining_branch_coverage(tmp_path, monkeypatch: p
 
     db_keys = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)
     kv_keys = db_keys.kv
-    await kv_keys.set_async("pref_one", 1)
-    await kv_keys.set_async("pref_two", 2)
+    (await kv_keys.set("pref_one", 1)).unwrap()
+    (await kv_keys.set("pref_two", 2)).unwrap()
     assert kv_keys._keys_sync("pref_") == ["pref_one", "pref_two"]
 
     db2 = database.PluginDatabase(plugin_id="demo", plugin_dir=plugin_dir, enabled=True)

@@ -10,7 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from plugin.sdk_v2.shared import runtime_common as _common_runtime
-from plugin.sdk_v2.shared.core.config import ConfigPathError, ConfigValidationError, PluginConfig, PluginConfigError
+from plugin.sdk_v2.shared.core.config import (
+    ConfigPathError,
+    ConfigProfileError,
+    ConfigValidationError,
+    PluginConfig,
+    PluginConfigBaseView,
+    PluginConfigError,
+    PluginConfigProfiles,
+)
 from plugin.sdk_v2.shared.core.router import EntryConflictError, PluginRouter, PluginRouterError, RouteHandler
 from plugin.sdk_v2.shared.logging import get_extension_logger
 from plugin.sdk_v2.shared.transport.message_plane import MessagePlaneTransport
@@ -24,7 +32,16 @@ EXTENSION_RUNTIME_EXPORTS = [
     "PluginConfig",
     "PluginConfigError",
     "ConfigPathError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
     "ConfigValidationError",
+    "ConfigProfileError",
+    "PluginConfigBaseView",
+    "PluginConfigProfiles",
     "PluginRouter",
     "PluginRouterError",
     "EntryConflictError",

@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from plugin.sdk_v2.shared.core.types import JsonObject, LoggerLike
-from plugin.sdk_v2.shared.models import Err, Ok, Result
+from plugin.sdk_v2.shared.logging import get_plugin_logger
+from plugin.sdk_v2.shared.models import Result
+
+from ._template import StorageResultTemplate
 
 try:
     import ormsgpack as _msgpack  # type: ignore
@@ -79,7 +82,7 @@ def _deserialize_extended(data: dict[str, Any]) -> Any:
     return None
 
 
-class PluginStatePersistence:
+class PluginStatePersistence(StorageResultTemplate):
     """Async-first plugin state persistence."""
 
     STATE_VERSION = 1
@@ -92,9 +95,9 @@ class PluginStatePersistence:
         logger: LoggerLike | None = None,
         backend: str = "file",
     ):
+        super().__init__(logger=logger or get_plugin_logger(plugin_id, "storage.state"))
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
-        self.logger = logger
         self.backend = (backend or "file").lower()
         self._state_path = self.plugin_dir / ".plugin_state"
         self._memory_state: bytes | None = None
@@ -212,56 +215,13 @@ class PluginStatePersistence:
             return raw["data"]
         return {}
 
-    async def save(self, instance: object) -> Result[bool, Exception]:
-        try:
-            return Ok(self._save_sync(instance))
-        except Exception as error:
-            return Err(error)
-
-    async def load(self, instance: object) -> Result[bool, Exception]:
-        try:
-            return Ok(self._load_sync(instance))
-        except Exception as error:
-            return Err(error)
-
-    async def clear(self) -> Result[bool, Exception]:
-        try:
-            return Ok(self._clear_sync())
-        except Exception as error:
-            return Err(error)
-
-    async def snapshot(self) -> Result[JsonObject, Exception]:
-        try:
-            return Ok(self._snapshot_sync())
-        except Exception as error:
-            return Err(error)
-
-    async def collect_attrs_async(self, instance: object) -> JsonObject:
-        return self._collect_attrs(instance)
-
-    async def restore_attrs_async(self, instance: object, snapshot: JsonObject) -> int:
-        return self._restore_attrs(instance, snapshot)
-
-    async def save_async(self, instance: object) -> bool:
-        return (await self.save(instance)).unwrap_or(False)
-
-    async def load_async(self, instance: object) -> bool:
-        return (await self.load(instance)).unwrap_or(False)
-
-    async def clear_async(self) -> bool:
-        return (await self.clear()).unwrap_or(False)
-
-    async def snapshot_async(self) -> JsonObject:
-        return (await self.snapshot()).unwrap_or({})
-
-    async def has_saved_state_async(self) -> bool:
+    def _has_saved_state_sync(self) -> bool:
         if self.backend == "memory":
             return self._memory_state is not None
         return self._state_path.exists()
 
-    async def get_state_info_async(self) -> JsonObject | None:
-        exists = await self.has_saved_state_async()
-        if not exists:
+    def _get_state_info_sync(self) -> JsonObject | None:
+        if not self._has_saved_state_sync():
             return None
         if self.backend == "memory":
             size = len(self._memory_state or b"")
@@ -271,6 +231,30 @@ class PluginStatePersistence:
         except Exception:
             return None
         return {"backend": self.backend, "plugin_id": self.plugin_id, "path": str(self._state_path), "size_bytes": stat.st_size}
+
+    async def save(self, instance: object) -> Result[bool, Exception]:
+        return await self._run_sync_result("storage.state.save", self._save_sync, instance)
+
+    async def load(self, instance: object) -> Result[bool, Exception]:
+        return await self._run_sync_result("storage.state.load", self._load_sync, instance)
+
+    async def clear(self) -> Result[bool, Exception]:
+        return await self._run_sync_result("storage.state.clear", self._clear_sync)
+
+    async def snapshot(self) -> Result[JsonObject, Exception]:
+        return await self._run_sync_result("storage.state.snapshot", self._snapshot_sync)
+
+    async def collect_attrs(self, instance: object) -> Result[JsonObject, Exception]:
+        return await self._run_sync_result("storage.state.collect_attrs", self._collect_attrs, instance)
+
+    async def restore_attrs(self, instance: object, snapshot: JsonObject) -> Result[int, Exception]:
+        return await self._run_sync_result("storage.state.restore_attrs", self._restore_attrs, instance, snapshot)
+
+    async def has_saved_state(self) -> Result[bool, Exception]:
+        return await self._run_sync_result("storage.state.has_saved_state", self._has_saved_state_sync)
+
+    async def get_state_info(self) -> Result[JsonObject | None, Exception]:
+        return await self._run_sync_result("storage.state.get_state_info", self._get_state_info_sync)
 
 
 __all__ = ["EXTENDED_TYPES", "PluginStatePersistence"]
