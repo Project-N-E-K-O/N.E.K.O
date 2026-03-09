@@ -22,6 +22,12 @@ class Events(BusClientBase):
         for watcher in self._state.watchers.values():
             if watcher.channel == event_type or watcher.channel == "*":
                 watcher.queue.append(item)
+                try:
+                    result = watcher.handler(item)
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception:
+                    continue
         return Ok(item)
 
     async def list(self, event_type: str | None = None, *, limit: int = 100, timeout: float = 10.0) -> Result[list[BusEvent], Exception]:

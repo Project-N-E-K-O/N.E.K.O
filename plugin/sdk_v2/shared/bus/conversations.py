@@ -4,17 +4,26 @@ from __future__ import annotations
 
 from plugin.sdk_v2.public.bus.conversations import Conversations as _ImplConversations
 from plugin.sdk_v2.shared.core.types import JsonObject
-from plugin.sdk_v2.shared.models import Err, Result
+from plugin.sdk_v2.shared.models import Err, Ok, Result
 
 from ._client_base import BusClientBase
-from .types import BusConversation
+from ._facade import BusFacadeMixin
+from .types import BusConversation, BusList
 
 
 class ConversationNotFoundError(RuntimeError):
     """Conversation id does not exist."""
 
 
-class Conversations(BusClientBase):
+class ConversationRecord(BusConversation):
+    pass
+
+
+class ConversationList(BusList[ConversationRecord]):
+    pass
+
+
+class Conversations(BusFacadeMixin, BusClientBase):
     def __init__(self, _transport=None):
         super().__init__(_transport, namespace="conversations")
         self._impl = _ImplConversations(self._transport)
@@ -23,25 +32,51 @@ class Conversations(BusClientBase):
     async def list(self, *, limit: int = 50, cursor: str | None = None, timeout: float = 10.0) -> Result[list[BusConversation], Exception]:
         if limit <= 0:
             return Err(ValueError("limit must be > 0"))
-        return await self._forward_result("bus.conversations.list", self._impl.list, limit=limit, cursor=cursor, timeout=timeout)
+        return await self._call("bus.conversations.list", self._impl.list, limit=limit, cursor=cursor, timeout=timeout)
 
     async def get(self, conversation_id: str, *, timeout: float = 10.0) -> Result[BusConversation, Exception]:
         if not isinstance(conversation_id, str) or conversation_id.strip() == "":
             return Err(ConversationNotFoundError("conversation_id must be non-empty"))
-        result = await self._forward_result("bus.conversations.get", self._impl.get, conversation_id, timeout=timeout)
-        if isinstance(result, Err) and isinstance(result.error, RuntimeError):
+        result = await self._call("bus.conversations.get", self._impl.get, conversation_id, timeout=timeout)
+        if isinstance(result, Err):
             return Err(ConversationNotFoundError(str(result.error)))
         return result
 
     async def create(self, topic: str, *, metadata: JsonObject | None = None, timeout: float = 10.0) -> Result[BusConversation, Exception]:
         if not isinstance(topic, str) or topic.strip() == "":
             return Err(ValueError("topic must be non-empty"))
-        return await self._forward_result("bus.conversations.create", self._impl.create, topic, metadata=metadata, timeout=timeout)
+        return await self._call("bus.conversations.create", self._impl.create, topic, metadata=metadata, timeout=timeout)
 
     async def delete(self, conversation_id: str, *, timeout: float = 10.0) -> Result[bool, Exception]:
         if not isinstance(conversation_id, str) or conversation_id.strip() == "":
             return Err(ValueError("conversation_id must be non-empty"))
-        return await self._forward_result("bus.conversations.delete", self._impl.delete, conversation_id, timeout=timeout)
+        return await self._call("bus.conversations.delete", self._impl.delete, conversation_id, timeout=timeout)
+
+    async def get_by_id(self, conversation_id: str, *, timeout: float = 10.0) -> Result[BusConversation, Exception]:
+        return await self.get(conversation_id, timeout=timeout)
 
 
-__all__ = ["Conversations", "ConversationNotFoundError"]
+class ConversationClient:
+    def __init__(self, _transport=None):
+        self._transport = _transport
+        self._impl = Conversations(_transport)
+
+    async def get(self, *, conversation_id: str | None = None, max_count: int = 50, since_ts: float | None = None, timeout: float = 5.0) -> ConversationList:
+        if conversation_id:
+            item = await self._impl.get(conversation_id, timeout=timeout)
+            return ConversationList([ConversationRecord(**item.unwrap().dump())] if isinstance(item, Ok) else [])
+        listed = await self._impl.list(limit=max_count, timeout=timeout)
+        items = [ConversationRecord(**item.dump()) for item in listed.unwrap_or([])]
+        return ConversationList(items)
+
+    async def get_async(self, **kwargs) -> ConversationList:
+        return await self.get(**kwargs)
+
+    async def get_by_id(self, conversation_id: str, *, max_count: int = 50, timeout: float = 5.0) -> ConversationList:
+        return await self.get(conversation_id=conversation_id, max_count=max_count, timeout=timeout)
+
+    async def get_by_id_async(self, conversation_id: str, *, max_count: int = 50, timeout: float = 5.0) -> ConversationList:
+        return await self.get_by_id(conversation_id, max_count=max_count, timeout=timeout)
+
+
+__all__ = ["Conversations", "ConversationNotFoundError", "ConversationRecord", "ConversationList", "ConversationClient"]

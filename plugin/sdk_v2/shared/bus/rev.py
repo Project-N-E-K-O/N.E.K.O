@@ -1,7 +1,8 @@
-"""Revision bus facade."""
+"""Revision bus facade and change-listener helpers."""
 
 from __future__ import annotations
 
+from plugin.sdk_v2.public.bus._changes import dispatch_bus_change, register_bus_change_listener
 from plugin.sdk_v2.public.bus.rev import Revision as _ImplRevision
 from plugin.sdk_v2.shared.models import Err, Result
 
@@ -19,12 +20,12 @@ class Revision(BusClientBase):
             return Err(ValueError("namespace must be non-empty"))
         if not isinstance(record_id, str) or record_id.strip() == "":
             return Err(ValueError("record_id must be non-empty"))
-        return await self._forward_result("bus.revision.get", self._impl.get, namespace, record_id, timeout=timeout)
+        return await self._forward_bus_result("bus.revision.get", self._impl.get, namespace, record_id, timeout=timeout)
 
     async def compare(self, namespace: str, record_id: str, expected: int, *, timeout: float = 10.0) -> Result[bool, Exception]:
         if not isinstance(expected, int):
             return Err(ValueError("expected must be int"))
-        return await self._forward_result("bus.revision.compare", self._impl.compare, namespace, record_id, expected, timeout=timeout)
+        return await self._forward_bus_result("bus.revision.compare", self._impl.compare, namespace, record_id, expected, timeout=timeout)
 
 
-__all__ = ["Revision"]
+__all__ = ["Revision", "register_bus_change_listener", "dispatch_bus_change"]

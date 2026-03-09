@@ -3,8 +3,8 @@
 Thin shared facades over `public.bus` implementations.
 """
 
-from ._client_base import BusClientBase
-from .bus_list import Bus
+from ._client_base import BusClientBase, BusTransportError
+from .bus_list import Bus, BusListCore, BusListWatcherCore
 from .conversations import Conversations
 from .events import Events
 from .lifecycle import Lifecycle
@@ -19,7 +19,10 @@ from .watchers import Watchers
 __all__ = [
     "BusTransportProtocol",
     "BusClientBase",
+    "BusTransportError",
     "Bus",
+    "BusListCore",
+    "BusListWatcherCore",
     "BusConversation",
     "BusMessage",
     "BusEvent",
