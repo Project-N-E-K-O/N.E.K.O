@@ -422,6 +422,9 @@ class MemoReminderPlugin(NekoPluginBase):
         r.pop("callback_pending", None)
         r.pop("callback_error", None)
         r.pop("callback_retry_count", None)
+        # 清除旧的任务关联，下次触发时会生成新的 agent_task_id
+        r.pop("agent_task_id", None)
+        r.pop("deferred_bind_pending", None)
         return r
 
     @plugin_entry(

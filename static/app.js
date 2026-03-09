@@ -8363,8 +8363,16 @@ function init_app() {
             window.startAgentTaskPolling();
         } else {
             // Don't hide HUD if there are still active tasks being tracked via WebSocket
+            // Include tasks in linger window (10s after completion)
+            const LINGER_MS = 10000;
+            const now = Date.now();
             const hasActiveTasks = window._agentTaskMap && window._agentTaskMap.size > 0 &&
-                Array.from(window._agentTaskMap.values()).some(t => t.status === 'running' || t.status === 'queued');
+                Array.from(window._agentTaskMap.values()).some(t => {
+                    if (t.status === 'running' || t.status === 'queued') return true;
+                    // Check linger window for terminal tasks
+                    const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                    return isTerminal && t.terminal_at && (now - t.terminal_at < LINGER_MS);
+                });
             if (hasActiveTasks) {
                 console.log('[DEBUG HUD] Flags off but active tasks exist, keeping HUD visible. Master:', isMasterOn, 'Child:', isChildOn);
             } else {
