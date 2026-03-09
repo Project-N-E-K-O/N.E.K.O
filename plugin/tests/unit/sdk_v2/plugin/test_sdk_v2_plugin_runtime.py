@@ -151,13 +151,15 @@ async def test_router_contract_methods_raise_not_implemented() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_chain_helpers_raise_not_implemented() -> None:
-    with pytest.raises(NotImplementedError):
-        await rt.get_call_chain()
-    with pytest.raises(NotImplementedError):
-        await rt.get_call_depth()
-    with pytest.raises(NotImplementedError):
-        await rt.is_in_call_chain("p", "e")
+async def test_call_chain_helpers_runtime() -> None:
+    rt.CallChain.clear()
+    assert (await rt.get_call_chain()).unwrap() == []
+    assert (await rt.get_call_depth()).unwrap() == 0
+    with rt.CallChain.track("p.entry:run"):
+        assert (await rt.get_call_depth()).unwrap() == 1
+        assert (await rt.is_in_call_chain("p", "run")).unwrap() is True
+        assert (await rt.get_call_chain()).unwrap()[0].plugin_id == "p"
+    assert (await rt.is_in_call_chain("p", "run")).unwrap() is False
 
 
 @pytest.mark.asyncio

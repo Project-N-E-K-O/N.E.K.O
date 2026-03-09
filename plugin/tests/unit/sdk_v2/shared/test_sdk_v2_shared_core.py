@@ -293,3 +293,32 @@ def test_core_shortcuts_forward(monkeypatch: pytest.MonkeyPatch) -> None:
         "around:*:3:c",
         "replace:*:4:d",
     ]
+
+
+def test_router_convenience_accessors() -> None:
+    router = core_router.PluginRouter(prefix="x_", tags=["a"], name="r")
+    assert router.prefix == "x_"
+    router.prefix = "y_"
+    assert router.prefix == "y_"
+    assert router.tags == ["a"]
+    assert router.is_bound is False
+    assert router.entry_ids == []
+
+    base = core_base.NekoPluginBase(_CoreCtx())
+    base.include_router(router)
+    assert router.is_bound is True
+    assert router.plugin_id == "demo"
+    assert router.ctx is base.ctx
+    assert router.config is base.config
+    assert router.plugins is base.plugins
+    assert router.logger is base.logger
+    assert router.store is base.store
+    assert router.db is base.db
+    assert router.get_plugin_attr("ctx") is base.ctx
+    assert router.has_plugin_attr("config") is True
+    assert router.get_dependency("plugins") is base.plugins
+    assert router.collect_entries() == {}
+    assert router.on_mount() is None
+    assert router.on_unmount() is None
+    assert base.exclude_router(router) is True
+    assert router.is_bound is False

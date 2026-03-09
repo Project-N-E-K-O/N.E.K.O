@@ -54,19 +54,15 @@ def test_runtime_contract_inits_construct() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_storage_transport_facade_methods() -> None:
-    async_chain = object.__new__(call_chain.AsyncCallChain)
-    with pytest.raises(NotImplementedError):
-        await async_chain.get()
-    with pytest.raises(NotImplementedError):
-        await async_chain.depth()
-    with pytest.raises(NotImplementedError):
-        await async_chain.contains("p", "run")
-    with pytest.raises(NotImplementedError):
-        await call_chain.get_call_chain()
-    with pytest.raises(NotImplementedError):
-        await call_chain.get_call_depth()
-    with pytest.raises(NotImplementedError):
-        await call_chain.is_in_call_chain("p", "run")
+    call_chain.CallChain.clear()
+    async_chain = call_chain.AsyncCallChain()
+    assert (await async_chain.get()).unwrap() == []
+    assert (await async_chain.depth()).unwrap() == 0
+    assert (await async_chain.contains("p", "run")).unwrap() is False
+    with call_chain.CallChain.track("p.entry:run"):
+        assert (await call_chain.get_call_chain()).unwrap()[0].event_id == "run"
+        assert (await call_chain.get_call_depth()).unwrap() == 1
+        assert (await call_chain.is_in_call_chain("p", "run")).unwrap() is True
 
     mem = runtime_memory.MemoryClient(object())
     assert (await mem.query("bucket", "q")).is_err()

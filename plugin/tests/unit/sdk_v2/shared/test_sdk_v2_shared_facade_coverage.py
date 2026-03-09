@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from plugin.sdk_v2.shared.runtime import memory as shared_memory
@@ -7,6 +8,7 @@ from plugin.sdk_v2.shared.runtime import system_info as shared_system_info
 from plugin.sdk_v2.shared.storage import database as shared_database
 from plugin.sdk_v2.shared.storage import state as shared_state
 from plugin.sdk_v2.shared.storage import store as shared_store
+from plugin.sdk_v2.public.transport import message_plane_rpc as public_plane_rpc
 from plugin.sdk_v2.shared.transport import message_plane as shared_plane
 
 
@@ -276,3 +278,58 @@ async def test_shared_storage_facade_error_wrappers_extra(tmp_path) -> None:
 
     db._impl.close = boom  # type: ignore[method-assign]
     assert (await db.close()).is_err()
+
+
+def test_shared_message_plane_rpc_formatter_and_client_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert shared_plane.format_rpc_error(None) == "message_plane error"
+    assert shared_plane.format_rpc_error("x") == "x"
+    assert shared_plane.format_rpc_error({"code": "E", "message": "m"}) == "E: m"
+    assert shared_plane.format_rpc_error({"message": "m"}) == "m"
+
+    class _BadStr:
+        def __str__(self) -> str:
+            raise RuntimeError("boom")
+
+    assert shared_plane.format_rpc_error(_BadStr()) == "message_plane error"
+
+    client = shared_plane.MessagePlaneRpcClient(plugin_id="p", endpoint="ipc://x")
+    client._tls = None
+    assert isinstance(client._next_req_id(), str)
+
+
+@pytest.mark.asyncio
+async def test_shared_message_plane_rpc_client_async_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = shared_plane.MessagePlaneRpcClient(plugin_id="p", endpoint="ipc://x")
+
+    class _FakeFrame(bytes):
+        pass
+
+    class _Sock:
+        def __init__(self, payload: bytes):
+            self.payload = payload
+            self.sent = []
+        async def send(self, data: bytes, **kwargs):
+            self.sent.append(data)
+        async def poll(self, timeout: int, flags: int):
+            return 1
+        async def recv(self, **kwargs):
+            return _FakeFrame(self.payload)
+
+    req_id = "p:1"
+    payload = public_plane_rpc.ormsgpack.packb({"v": 1, "req_id": req_id, "ok": True, "data": {"x": 1}})
+    sock = _Sock(payload)
+    monkeypatch.setattr(client, "_get_async_sock", lambda: asyncio.sleep(0, result=sock))
+    monkeypatch.setattr(client, "_next_req_id", lambda: req_id)
+    result = await client.request_async(op="x", args={}, timeout=0.1)
+    assert result is not None and result["ok"] is True
+
+    class _BadPollSock(_Sock):
+        async def poll(self, timeout: int, flags: int):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(client, "_get_async_sock", lambda: asyncio.sleep(0, result=_BadPollSock(payload)))
+    assert await client.request_async(op="x", args={}, timeout=0.1) is None
+
+    monkeypatch.setattr(client, "request_async", lambda **kwargs: asyncio.sleep(0, result={"ok": True, "req_id": "1", "v": 1}))
+    batch = await client.batch_request_async([{"op": "a", "args": {}}, {"op": "b", "args": {}}], timeout=0.1)
+    assert batch == [{"ok": True, "req_id": "1", "v": 1}, {"ok": True, "req_id": "1", "v": 1}]

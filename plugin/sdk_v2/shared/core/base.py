@@ -83,6 +83,9 @@ class NekoPluginBase:
     def include_router(self, router: RouterProtocol, *, prefix: str = "") -> None:
         if prefix != "":
             router.set_prefix(prefix)
+        binder = getattr(router, "_bind", None)
+        if callable(binder):
+            binder(self)
         self._routers.append(router)
 
     def exclude_router(self, router: RouterProtocol | str) -> bool:
@@ -90,10 +93,16 @@ class NekoPluginBase:
             for item in self._routers:
                 if item.name() == router:
                     self._routers.remove(item)
+                    unbind = getattr(item, "_unbind", None)
+                    if callable(unbind):
+                        unbind()
                     return True
             return False
         if router in self._routers:
             self._routers.remove(router)
+            unbind = getattr(router, "_unbind", None)
+            if callable(unbind):
+                unbind()
             return True
         return False
 

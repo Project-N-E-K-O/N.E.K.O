@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from plugin.sdk_v2.public.transport.message_plane import MessageHandler, MessagePlaneTransport as _ImplMessagePlaneTransport
+from plugin.sdk_v2.public.transport.message_plane_rpc import MessagePlaneRpcClient, format_rpc_error
 from plugin.sdk_v2.shared.core.types import JsonObject, JsonValue, PluginContextProtocol
 from plugin.sdk_v2.shared.models import Err, Ok, Result
 
@@ -87,4 +88,4 @@ class MessagePlaneTransport:
 
 _OK_NONE = Ok(None)
 
-__all__ = ["MessagePlaneTransport", "MessageHandler"]
+__all__ = ["MessagePlaneTransport", "MessageHandler", "MessagePlaneRpcClient", "format_rpc_error"]

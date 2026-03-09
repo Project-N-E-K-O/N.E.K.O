@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+import pytest
+
 from plugin.sdk_v2.plugin.base import (
     NEKO_PLUGIN_META_ATTR,
     NEKO_PLUGIN_TAG,
@@ -195,3 +197,45 @@ def test_plugin_base_convenience_accessors() -> None:
     assert base.config_dir == Path("/tmp/demo")
     assert base.data_path() == Path("/tmp/demo/data")
     assert base.data_path("cache", "x.json") == Path("/tmp/demo/data/cache/x.json")
+
+
+def test_plugin_base_router_and_static_ui_convenience(tmp_path) -> None:
+    ctx = _Ctx()
+    ctx.config_path = tmp_path / "plugin.toml"
+    ctx.config_path.parent.mkdir(parents=True, exist_ok=True)
+    (ctx.config_path.parent / "static").mkdir()
+    (ctx.config_path.parent / "static" / "index.html").write_text("ok")
+
+    base = _DemoPlugin(ctx=ctx)
+    router = _Router(name="r2")
+    base.include_router(router, prefix="api_")
+    assert base.get_router("r2") is router
+    assert base.list_routers() == ["r2"]
+    assert base.register_static_ui() is True
+    assert base.get_static_ui_config()["plugin_id"] == "demo"
+
+
+
+@pytest.mark.asyncio
+async def test_plugin_base_dynamic_entry_and_status_helpers() -> None:
+    class _CtxWithStatus(_Ctx):
+        def __init__(self) -> None:
+            self.status = None
+        def update_status(self, status: dict[str, object]) -> None:
+            self.status = status
+
+    base = _DemoPlugin(ctx=_CtxWithStatus())
+
+    async def dyn_handler() -> str:
+        return "dyn"
+
+    assert await base.register_dynamic_entry("dyn", dyn_handler, name="Dyn") is True
+    assert base.is_entry_enabled("dyn") is True
+    assert any(item["id"] == "dyn" for item in base.list_entries())
+    assert await base.disable_entry("dyn") is True
+    assert base.is_entry_enabled("dyn") is False
+    assert any(item["id"] == "dyn" for item in base.list_entries(include_disabled=True))
+    assert await base.enable_entry("dyn") is True
+    assert await base.unregister_dynamic_entry("dyn") is True
+    base.report_status({"ok": True})
+    assert base.ctx.status == {"ok": True}
