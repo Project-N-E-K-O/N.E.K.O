@@ -565,18 +565,20 @@ function init_app() {
                     filteredTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
                     const tasks = Array.from(window._agentTaskMap.values());
                     const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
-                    if (hasRunning && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                    // Show HUD if there are any tasks (including terminal in linger window)
+                    // But only start timer for running/queued tasks
+                    if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                         window.AgentHUD.showAgentTaskHUD();
                         window.AgentHUD.updateAgentTaskHUD({
                             success: true, tasks,
                             running_count: tasks.filter(t => t.status === 'running').length,
                             queued_count: tasks.filter(t => t.status === 'queued').length,
                         });
-                        if (!agentTaskTimeUpdateInterval) {
+                        if (hasRunning && !agentTaskTimeUpdateInterval) {
                             agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
                         }
                     } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
-                        // No active tasks, hide HUD
+                        // No tasks at all, hide HUD
                         window.AgentHUD.hideAgentTaskHUD();
                     }
                 }
@@ -1070,8 +1072,8 @@ function init_app() {
                             // Merge with existing task data to preserve params from earlier updates
                             const existing = window._agentTaskMap.get(task.id);
                             const merged = existing ? { ...existing, ...task } : task;
-                            // Preserve params: don't let an empty/missing params overwrite existing ones
-                            if (existing && existing.params && (!task.params || Object.keys(task.params).length === 0)) {
+                            // Preserve params: only fallback to existing.params if task.params is undefined (not just empty)
+                            if (existing && existing.params && typeof task.params === 'undefined') {
                                 merged.params = existing.params;
                             }
                             // Set terminal_at when task transitions to terminal state (for linger logic)
@@ -1101,14 +1103,14 @@ function init_app() {
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
                         const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
-                        // Force-show HUD and start timer when running tasks arrive via WebSocket
-                        // This overrides checkAndToggleTaskHUD which may have hidden the HUD during page load
-                        if (hasRunning && window.AgentHUD) {
+                        // Show HUD if there are any tasks (including terminal tasks in linger window)
+                        // But only start the time-update interval for running/queued tasks
+                        if (tasks.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
                             }
-                            // Ensure the time-update interval is running
-                            if (!agentTaskTimeUpdateInterval) {
+                            // Only start timer when there are active (running/queued) tasks
+                            if (hasRunning && !agentTaskTimeUpdateInterval) {
                                 agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
                             }
                         }

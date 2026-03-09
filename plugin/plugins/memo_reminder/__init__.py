@@ -564,7 +564,6 @@ class MemoReminderPlugin(NekoPluginBase):
     )
     async def bind_task(self, reminder_id: str, agent_task_id: str, **kwargs):
         """将 agent_task_id 写回到对应的提醒记录，供 daemon 触发时回调使用"""
-        from plugin.sdk.responses import ok, fail
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
             for r in reminders:
