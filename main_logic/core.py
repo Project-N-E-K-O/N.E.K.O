@@ -1921,6 +1921,10 @@ class LLMSessionManager:
                 if getattr(self.session, "_is_responding", False):
                     logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
                     return
+                # 主动推送是新的语音轮次，必须换 speech_id，否则 CosyVoice
+                # worker 会在已 finish-task 的 synthesizer 上 continue-task 导致报错
+                async with self.lock:
+                    self.current_speech_id = str(uuid4())
                 logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
                 self.pending_agent_callbacks.clear()
                 delivered = await self.session.stream_proactive(instruction)
@@ -1939,6 +1943,8 @@ class LLMSessionManager:
                     except Exception as e:
                         logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
                 if isinstance(self.session, OmniOfflineClient):
+                    async with self.lock:
+                        self.current_speech_id = str(uuid4())
                     self.pending_agent_callbacks.clear()
                     delivered = await self.session.stream_proactive(instruction)
                     if delivered:
