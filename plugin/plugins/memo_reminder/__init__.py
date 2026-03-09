@@ -24,6 +24,7 @@ _STORE_KEY = "reminders"
 
 _TZ_UTC = timezone.utc
 _DEFAULT_TZ = "Asia/Shanghai"
+DEFERRED_WINDOW_SECONDS = 3600  # 与 agent_server 的 DEFERRED_TASK_TIMEOUT 对齐（1小时）
 
 _FORMATS_WITH_DATE = (
     ("%Y-%m-%d %H:%M:%S", True),
@@ -231,43 +232,150 @@ class MemoReminderPlugin(NekoPluginBase):
                     kept.append(r)
                     continue
 
+                # 检查是否有待重试的回调（消息已发送但回调失败）
+                if r.get("delivered") and r.get("callback_pending"):
+                    # 只重试回调，不重复发送消息
+                    agent_task_id = r.get("agent_task_id")
+                    rid = r.get("id", "?")
+                    if agent_task_id:
+                        try:
+                            import httpx as _httpx
+                            from config import TOOL_SERVER_PORT
+                            with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
+                                resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
+                                if resp.is_success:
+                                    # 回调成功，清除待重试标志
+                                    r["callback_pending"] = False
+                                    r["callback_error"] = None
+                                    self.logger.info("Retry callback succeeded for reminder {}", rid)
+                                    fired_ids.append(rid)
+                                    updated = self._reschedule(r, now)
+                                    if updated:
+                                        kept.append(updated)
+                                    continue
+                                elif resp.status_code == 404:
+                                    # 任务不存在（可能服务重启后丢失），放弃重试
+                                    self.logger.warning("Retry callback abandoned for reminder {}: task not found (404)", rid)
+                                    r["callback_pending"] = False
+                                    r["callback_error"] = "Task not found (404)"
+                                    fired_ids.append(rid)
+                                    updated = self._reschedule(r, now)
+                                    if updated:
+                                        kept.append(updated)
+                                    continue
+                                else:
+                                    self.logger.warning("Retry callback failed for reminder {}: HTTP {}", rid, resp.status_code)
+                        except Exception as e:
+                            self.logger.warning("Retry callback exception for reminder {}: {}", rid, e)
+                        # 回调仍失败（非404），保留提醒以便下次重试（限制重试次数）
+                        retry_count = r.get("callback_retry_count", 0) + 1
+                        if retry_count >= 5:
+                            # 超过重试次数，放弃
+                            self.logger.warning("Retry callback abandoned for reminder {}: max retries exceeded", rid)
+                            r["callback_pending"] = False
+                            r["callback_error"] = "Max retries exceeded"
+                            fired_ids.append(rid)
+                            updated = self._reschedule(r, now)
+                            if updated:
+                                kept.append(updated)
+                            continue
+                        r["callback_retry_count"] = retry_count
+                        kept.append(r)
+                        continue
+                    else:
+                        # 没有 agent_task_id，不需要回调
+                        fired_ids.append(rid)
+                        updated = self._reschedule(r, now)
+                        if updated:
+                            kept.append(updated)
+                        continue
+
                 if trigger_dt <= now:
+                    # 如果是 deferred 提醒且刚创建（<5秒），等待 bind_task 完成
+                    # 只对有 deferred_bind_pending 标志的提醒应用缓冲（避免影响非 deferred 提醒）
+                    if r.get("deferred_bind_pending") and r.get("agent_task_id") is None:
+                        created_at_str = r.get("created_at", "")
+                        try:
+                            created_dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                            age = (now - created_dt).total_seconds()
+                            if age < 5.0:  # 5 秒缓冲，等待 bind_task
+                                kept.append(r)
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # 解析失败，正常处理
+
                     try:
                         self._push_reminder(r)
                     except Exception:
                         self.logger.exception("Failed to push reminder {}", r.get("id", "?"))
                         kept.append(r)
                         continue
-                    fired_ids.append(r.get("id", "?"))
-                    updated = self._reschedule(r, now)
-                    if updated:
-                        kept.append(updated)
+
+                    # 检查是否需要保留（回调失败或需要重调度）
+                    if r.get("callback_pending"):
+                        # 回调失败，保留以便重试
+                        kept.append(r)
+                    else:
+                        fired_ids.append(r.get("id", "?"))
+                        updated = self._reschedule(r, now)
+                        if updated:
+                            kept.append(updated)
                 else:
                     kept.append(r)
 
             if fired_ids:
                 self._save_reminders_unlocked(kept)
                 self.logger.info("Fired reminders: {}", fired_ids)
+            elif kept:
+                # 即使没有新触发的提醒，也需要保存更新后的状态（如 callback_pending 清除）
+                self._save_reminders_unlocked(kept)
 
     def _push_reminder(self, r: Dict[str, Any]) -> None:
         msg = r.get("message", "提醒时间到了！")
         rid = r.get("id", "?")
         repeat_label = r.get("repeat", "once")
-        self.ctx.push_message(
-            source="memo_reminder",
-            message_type="proactive_notification",
-            description=f"⏰ 备忘提醒 [{rid[:8]}]",
-            priority=8,
-            content=f"⏰ 提醒: {msg}",
-            metadata={
-                "task_id": rid,
-                "reminder_id": rid,
-                "repeat": repeat_label,
-                "trigger_at": r.get("trigger_at"),
-                "created_at": r.get("created_at"),
-            },
-            target_lanlan=r.get("lanlan_name"),
-        )
+
+        # 只有未发送过消息的提醒才发送（防止重试时重复发送）
+        if not r.get("delivered"):
+            self.ctx.push_message(
+                source="memo_reminder",
+                message_type="proactive_notification",
+                description=f"⏰ 备忘提醒 [{rid[:8]}]",
+                priority=8,
+                content=f"⏰ 提醒: {msg}",
+                metadata={
+                    "task_id": rid,
+                    "reminder_id": rid,
+                    "repeat": repeat_label,
+                    "trigger_at": r.get("trigger_at"),
+                    "created_at": r.get("created_at"),
+                },
+                target_lanlan=r.get("lanlan_name"),
+            )
+            # 标记消息已发送
+            r["delivered"] = True
+
+        # 通知 agent_server deferred 任务已完成
+        agent_task_id = r.get("agent_task_id")
+        if agent_task_id:
+            try:
+                import httpx as _httpx
+                from config import TOOL_SERVER_PORT
+                with _httpx.Client(timeout=2.0, proxy=None, trust_env=False) as c:
+                    resp = c.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/api/agent/tasks/{agent_task_id}/complete")
+                    if not resp.is_success:
+                        self.logger.warning(
+                            "Failed to notify agent task completion for reminder {}: HTTP {} - {}",
+                            rid, resp.status_code, resp.text
+                        )
+                        # 标记回调待重试（但不抛出异常，避免消息重复发送）
+                        r["callback_pending"] = True
+                        r["callback_error"] = f"HTTP {resp.status_code}: {resp.text}"
+            except Exception as e:
+                self.logger.warning("Failed to notify agent task completion for reminder {}: {}", rid, e)
+                # 标记回调待重试
+                r["callback_pending"] = True
+                r["callback_error"] = str(e)
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
@@ -309,6 +417,14 @@ class MemoReminderPlugin(NekoPluginBase):
 
         r = dict(r)
         r["trigger_at"] = next_dt.isoformat()
+        # 清除 transient 状态，以便下次触发时重新发送消息
+        r.pop("delivered", None)
+        r.pop("callback_pending", None)
+        r.pop("callback_error", None)
+        r.pop("callback_retry_count", None)
+        # 清除旧的任务关联，下次触发时会生成新的 agent_task_id
+        r.pop("agent_task_id", None)
+        r.pop("deferred_bind_pending", None)
         return r
 
     @plugin_entry(
@@ -392,6 +508,10 @@ class MemoReminderPlugin(NekoPluginBase):
         if not lanlan_name:
             lanlan_name = getattr(self.ctx, "_current_lanlan", None)
 
+        # 只有当触发时间在 1 小时内时才需要 deferred 机制（与 agent_server 的 DEFERRED_TASK_TIMEOUT 对齐）
+        trigger_delay = (trigger_dt - now).total_seconds()
+        needs_deferred = trigger_delay < DEFERRED_WINDOW_SECONDS
+
         rid = uuid.uuid4().hex[:12]
         reminder = {
             "id": rid,
@@ -400,6 +520,8 @@ class MemoReminderPlugin(NekoPluginBase):
             "created_at": now.isoformat(),
             "repeat": repeat,
             "lanlan_name": lanlan_name,
+            "agent_task_id": None,  # agent_server 会回写，用于 deferred 完成通知（仅当 needs_deferred=True）
+            "deferred_bind_pending": needs_deferred,  # 只有短延迟提醒才需要等待 bind_task
         }
 
         with self._reminders_lock:
@@ -424,6 +546,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         return ok(data={
             "status": "scheduled",
+            "deferred": needs_deferred,
             "reminder_id": rid,
             "trigger_at_local": local_str,
             "repeat": repeat,
@@ -436,6 +559,24 @@ class MemoReminderPlugin(NekoPluginBase):
                 "the system will push it automatically when the time comes."
             ),
         })
+
+    @plugin_entry(
+        id="bind_task",
+        name="绑定Agent任务ID",
+        description="内部接口：将 agent_task_id 关联到提醒记录，用于 deferred 完成通知",
+    )
+    async def bind_task(self, reminder_id: str, agent_task_id: str, **kwargs):
+        """将 agent_task_id 写回到对应的提醒记录，供 daemon 触发时回调使用"""
+        with self._reminders_lock:
+            reminders = self._load_reminders_unlocked()
+            for r in reminders:
+                if r.get("id") == reminder_id:
+                    r["agent_task_id"] = agent_task_id
+                    r["deferred_bind_pending"] = False  # 清除标志，表示绑定完成
+                    self._save_reminders_unlocked(reminders)
+                    self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
+                    return ok(data={"bound": True})
+        return fail("NOT_FOUND", f"Reminder {reminder_id} not found")
 
     @plugin_entry(
         id="list_reminders",

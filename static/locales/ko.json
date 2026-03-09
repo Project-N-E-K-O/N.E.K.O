@@ -1435,7 +1435,11 @@
             "statusFailed": "실패",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
-            "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?"
+            "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",
+            "typeUserPlugin": "사용자 플러그인",
+            "typeComputerUse": "컴퓨터 제어",
+            "typeBrowserUse": "브라우저 제어",
+            "typeMCP": "MCP 도구"
         }
     },
     "vrm": {

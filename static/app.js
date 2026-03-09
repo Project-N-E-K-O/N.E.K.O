@@ -534,8 +534,9 @@ function init_app() {
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
                 fetch('/api/agent/health').then(r => r.ok).catch(() => false),
-                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null)
-            ]).then(([healthOk, flagsResp]) => {
+                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/agent/state').then(r => r.ok ? r.json() : null).catch(() => null)
+            ]).then(([healthOk, flagsResp, stateResp]) => {
                 if (flagsResp && flagsResp.success) {
                     window._agentStatusSnapshot = {
                         server_online: !!healthOk,
@@ -549,6 +550,36 @@ function init_app() {
                         const warmFlags = flagsResp.agent_flags || {};
                         warmFlags.agent_enabled = !!flagsResp.analyzer_enabled;
                         window.agentStateMachine.updateCache(!!healthOk, warmFlags);
+                    }
+                }
+                // Restore active tasks from state snapshot (covers page refresh / reconnect)
+                if (stateResp && stateResp.success && stateResp.snapshot) {
+                    const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                    const activeTasks = stateResp.snapshot.active_tasks || [];
+                    // Filter by current session/role (lanlan_name) to avoid cross-session task leakage
+                    const filteredTasks = currentLanlanName
+                        ? activeTasks.filter(t => !t.lanlan_name || t.lanlan_name === currentLanlanName)
+                        : activeTasks;
+                    // Replace map contents with snapshot (clear stale tasks)
+                    window._agentTaskMap = new Map();
+                    filteredTasks.forEach(t => { if (t && t.id) window._agentTaskMap.set(t.id, t); });
+                    const tasks = Array.from(window._agentTaskMap.values());
+                    const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
+                    // Show HUD if there are any tasks (including terminal in linger window)
+                    // But only start timer for running/queued tasks
+                    if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
+                        window.AgentHUD.showAgentTaskHUD();
+                        window.AgentHUD.updateAgentTaskHUD({
+                            success: true, tasks,
+                            running_count: tasks.filter(t => t.status === 'running').length,
+                            queued_count: tasks.filter(t => t.status === 'queued').length,
+                        });
+                        if (hasRunning && !agentTaskTimeUpdateInterval) {
+                            agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
+                        }
+                    } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                        // No tasks at all, hide HUD
+                        window.AgentHUD.hideAgentTaskHUD();
                     }
                 }
             }).catch(() => { });
@@ -976,13 +1007,37 @@ function init_app() {
                             window.startAgentTaskPolling();
                         }
                         // Restore active tasks from snapshot (covers page refresh / reconnect)
-                        const snapshotTasks = snapshot.active_tasks;
-                        if (Array.isArray(snapshotTasks) && snapshotTasks.length > 0) {
-                            if (!window._agentTaskMap) window._agentTaskMap = new Map();
-                            snapshotTasks.forEach(t => {
-                                if (t && t.id) window._agentTaskMap.set(t.id, t);
-                            });
-                            const tasks = Array.from(window._agentTaskMap.values());
+                        const currentLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                        const snapshotTasks = snapshot.active_tasks || [];
+                        // Filter by current session/role (lanlan_name) to avoid cross-session task leakage
+                        const filteredSnapshotTasks = currentLanlanName
+                            ? snapshotTasks.filter(t => !t.lanlan_name || t.lanlan_name === currentLanlanName)
+                            : snapshotTasks;
+                        // Merge snapshot with existing tasks: preserve terminal tasks still in linger window
+                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        const now = Date.now();
+                        const LINGER_MS = 10000; // Same as MIN_DISPLAY_MS in common-ui-hud.js
+                        // Build new map: filtered snapshot tasks + lingering terminal tasks
+                        const newMap = new Map();
+                        filteredSnapshotTasks.forEach(t => {
+                            if (t && t.id) newMap.set(t.id, t);
+                        });
+                        // Preserve terminal tasks still within linger window (also filter by role)
+                        window._agentTaskMap.forEach((t, id) => {
+                            if (!newMap.has(id)) {
+                                // Skip tasks from other roles
+                                if (currentLanlanName && t.lanlan_name && t.lanlan_name !== currentLanlanName) {
+                                    return;
+                                }
+                                const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                                if (isTerminal && t.terminal_at && (now - t.terminal_at < LINGER_MS)) {
+                                    newMap.set(id, t);
+                                }
+                            }
+                        });
+                        window._agentTaskMap = newMap;
+                        const tasks = Array.from(window._agentTaskMap.values());
+                        if (tasks.length > 0) {
                             if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                 window.AgentHUD.updateAgentTaskHUD({
                                     success: true,
@@ -995,6 +1050,9 @@ function init_app() {
                                     timestamp: new Date().toISOString()
                                 });
                             }
+                        } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+                            // No active tasks, hide HUD
+                            window.AgentHUD.hideAgentTaskHUD();
                         }
                     } catch (_e) { /* ignore */ }
                 } else if (response.type === 'agent_notification') {
@@ -1011,7 +1069,20 @@ function init_app() {
                         if (!window._agentTaskRemoveTimers) window._agentTaskRemoveTimers = new Map();
                         const task = response.task || {};
                         if (task.id) {
-                            window._agentTaskMap.set(task.id, task);
+                            // Merge with existing task data to preserve params from earlier updates
+                            const existing = window._agentTaskMap.get(task.id);
+                            const merged = existing ? { ...existing, ...task } : task;
+                            // Preserve params: only fallback to existing.params if task.params is undefined (not just empty)
+                            if (existing && existing.params && typeof task.params === 'undefined') {
+                                merged.params = existing.params;
+                            }
+                            // Set terminal_at when task transitions to terminal state (for linger logic)
+                            if (['completed', 'failed', 'cancelled'].includes(task.status)) {
+                                if (!existing || !['completed', 'failed', 'cancelled'].includes(existing.status)) {
+                                    merged.terminal_at = Date.now();
+                                }
+                            }
+                            window._agentTaskMap.set(task.id, merged);
                             if (['completed', 'failed', 'cancelled'].includes(task.status)) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.set(task.id, setTimeout(() => {
@@ -1024,13 +1095,25 @@ function init_app() {
                                     if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                                         window.AgentHUD.updateAgentTaskHUD({ success: true, tasks: remaining, total_count: remaining.length, running_count: remaining.filter(t => t.status === 'running').length, queued_count: remaining.filter(t => t.status === 'queued').length, completed_count: remaining.filter(t => t.status === 'completed').length, failed_count: remaining.filter(t => t.status === 'failed').length, timestamp: new Date().toISOString() });
                                     }
-                                }, 8000));
+                                }, 10000));
                             } else if (window._agentTaskRemoveTimers.has(task.id)) {
                                 clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.delete(task.id);
                             }
                         }
                         const tasks = Array.from(window._agentTaskMap.values());
+                        const hasRunning = tasks.some(t => t.status === 'running' || t.status === 'queued');
+                        // Show HUD if there are any tasks (including terminal tasks in linger window)
+                        // But only start the time-update interval for running/queued tasks
+                        if (tasks.length > 0 && window.AgentHUD) {
+                            if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                                window.AgentHUD.showAgentTaskHUD();
+                            }
+                            // Only start timer when there are active (running/queued) tasks
+                            if (hasRunning && !agentTaskTimeUpdateInterval) {
+                                agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
+                            }
+                        }
                         if (window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                             window.AgentHUD.updateAgentTaskHUD({
                                 success: true,
@@ -8187,7 +8270,21 @@ function init_app() {
     // 更新运行中任务的时间显示
     function updateTaskRunningTimes() {
         const taskList = document.getElementById('agent-task-list');
-        if (!taskList) return;
+        if (!taskList) {
+            // DOM gone (HUD might be rebuilding) — just skip this update, don't stop the interval
+            return;
+        }
+
+        // Auto-stop when no running/queued tasks remain
+        const hasRunning = window._agentTaskMap && Array.from(window._agentTaskMap.values())
+            .some(t => t.status === 'running' || t.status === 'queued');
+        if (!hasRunning) {
+            if (agentTaskTimeUpdateInterval) {
+                clearInterval(agentTaskTimeUpdateInterval);
+                agentTaskTimeUpdateInterval = null;
+            }
+            return;
+        }
 
         const timeElements = taskList.querySelectorAll('[id^="task-time-"]');
         timeElements.forEach(timeEl => {
@@ -8265,8 +8362,23 @@ function init_app() {
             console.log('[DEBUG HUD] Starting polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
             window.startAgentTaskPolling();
         } else {
-            console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
-            window.stopAgentTaskPolling();
+            // Don't hide HUD if there are still active tasks being tracked via WebSocket
+            // Include tasks in linger window (10s after completion)
+            const LINGER_MS = 10000;
+            const now = Date.now();
+            const hasActiveTasks = window._agentTaskMap && window._agentTaskMap.size > 0 &&
+                Array.from(window._agentTaskMap.values()).some(t => {
+                    if (t.status === 'running' || t.status === 'queued') return true;
+                    // Check linger window for terminal tasks
+                    const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                    return isTerminal && t.terminal_at && (now - t.terminal_at < LINGER_MS);
+                });
+            if (hasActiveTasks) {
+                console.log('[DEBUG HUD] Flags off but active tasks exist, keeping HUD visible. Master:', isMasterOn, 'Child:', isChildOn);
+            } else {
+                console.log('[DEBUG HUD] Stopping polling. Master:', isMasterOn, 'Child:', isChildOn, 'DOM:', domMaster, domChild, 'Flag:', flags?.agent_enabled, 'Opt:', optMaster, optChild);
+                window.stopAgentTaskPolling();
+            }
         }
     }
 

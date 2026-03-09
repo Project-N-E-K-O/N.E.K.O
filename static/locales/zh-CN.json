@@ -1435,7 +1435,11 @@
             "statusFailed": "失败",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
-            "cancelConfirm": "确定要终止所有正在进行的任务吗？"
+            "cancelConfirm": "确定要终止所有正在进行的任务吗？",
+            "typeUserPlugin": "用户插件",
+            "typeComputerUse": "键鼠控制",
+            "typeBrowserUse": "浏览器控制",
+            "typeMCP": "MCP工具"
         }
     },
     "vrm": {
