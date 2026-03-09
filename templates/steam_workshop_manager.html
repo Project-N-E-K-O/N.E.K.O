@@ -693,9 +693,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             buildPreviewRing();
             requestAnimationFrame(function() { requestAnimationFrame(buildPreviewRing); });
-        });
-        window.addEventListener('localechange', buildPreviewRing);
-        document.addEventListener('DOMContentLoaded', function() {
             var placeholder = document.querySelector('#live2d-preview-container .preview-placeholder');
             if (placeholder && typeof ResizeObserver !== 'undefined') {
                 new ResizeObserver(buildPreviewRing).observe(placeholder);
@@ -703,6 +700,7 @@
                 window.addEventListener('resize', buildPreviewRing);
             }
         });
+        window.addEventListener('localechange', buildPreviewRing);
     </script>
 </body>
 
