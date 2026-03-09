@@ -136,17 +136,35 @@
         const wasActive = modelSingleselect.classList.contains('active');
 
         document.querySelectorAll('.custom-multiselect').forEach(ms => {
-            ms.classList.remove('active');
+            ms.classList.remove('active', 'open-up', 'open-down');
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
 
         if (wasActive) {
-            modelSingleselect.classList.remove('active');
+            modelSingleselect.classList.remove('active', 'open-up', 'open-down');
             modelSingleselectHeader.setAttribute('aria-expanded', 'false');
         } else {
             modelSingleselect.classList.add('active');
             modelSingleselectHeader.setAttribute('aria-expanded', 'true');
+            
+            // 检测下拉菜单是否超出视口，选择展开方向
+            const viewportHeight = window.innerHeight;
+            const headerRect = modelSingleselectHeader.getBoundingClientRect();
+            const optionsHeight = Math.min(modelSingleselectOptions.scrollHeight, 250);
+            const spaceBelow = viewportHeight - headerRect.bottom - 8;
+            const spaceAbove = headerRect.top - 8;
+            
+            if (spaceBelow >= optionsHeight) {
+                modelSingleselect.classList.add('open-down');
+                modelSingleselect.classList.remove('open-up');
+            } else if (spaceAbove >= optionsHeight) {
+                modelSingleselect.classList.add('open-up');
+                modelSingleselect.classList.remove('open-down');
+            } else {
+                modelSingleselect.classList.add('open-down');
+                modelSingleselect.classList.remove('open-up');
+            }
             
             requestAnimationFrame(() => {
                 if (modelSingleselectOptions.scrollHeight > modelSingleselectOptions.clientHeight) {
@@ -345,19 +363,37 @@
 
         // 关闭所有其他下拉菜单
         document.querySelectorAll('.custom-multiselect').forEach(ms => {
-            ms.classList.remove('active');
+            ms.classList.remove('active', 'open-up', 'open-down');
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
-        modelSingleselect.classList.remove('active');
+        modelSingleselect.classList.remove('active', 'open-up', 'open-down');
         modelSingleselectHeader.setAttribute('aria-expanded', 'false');
 
         if (!wasActive) {
             multiselect.classList.add('active');
             if (header) header.setAttribute('aria-expanded', 'true');
             
-            // 检测是否显示滚动条
+            // 检测下拉菜单是否超出视口，选择展开方向
             if (options) {
+                const viewportHeight = window.innerHeight;
+                const headerRect = header.getBoundingClientRect();
+                const optionsHeight = Math.min(options.scrollHeight, 250);
+                const spaceBelow = viewportHeight - headerRect.bottom - 8;
+                const spaceAbove = headerRect.top - 8;
+                
+                if (spaceBelow >= optionsHeight) {
+                    multiselect.classList.add('open-down');
+                    multiselect.classList.remove('open-up');
+                } else if (spaceAbove >= optionsHeight) {
+                    multiselect.classList.add('open-up');
+                    multiselect.classList.remove('open-down');
+                } else {
+                    multiselect.classList.add('open-down');
+                    multiselect.classList.remove('open-up');
+                }
+                
+                // 检测是否显示滚动条
                 requestAnimationFrame(() => {
                     if (options.scrollHeight > options.clientHeight) {
                         options.classList.add('has-scrollbar');
@@ -374,11 +410,11 @@
     // 点击外部关闭下拉菜单
     window.addEventListener('click', () => {
         document.querySelectorAll('.custom-multiselect').forEach(ms => {
-            ms.classList.remove('active');
+            ms.classList.remove('active', 'open-up', 'open-down');
             const h = ms.querySelector('.multiselect-header');
             if (h) h.setAttribute('aria-expanded', 'false');
         });
-        modelSingleselect.classList.remove('active');
+        modelSingleselect.classList.remove('active', 'open-up', 'open-down');
         modelSingleselectHeader.setAttribute('aria-expanded', 'false');
     });
 
