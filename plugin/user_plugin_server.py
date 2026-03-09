@@ -109,6 +109,37 @@ _ensure_plugin_zmq_endpoint_available()
 from config import USER_PLUGIN_SERVER_PORT
 from plugin.logging_config import configure_default_logger, get_logger
 
+
+def _install_logging_brace_compat() -> None:
+    if getattr(logging, "_neko_brace_compat_installed", False):
+        return
+
+    original_get_message = logging.LogRecord.getMessage
+
+    def _compat_get_message(self: logging.LogRecord) -> str:
+        try:
+            return original_get_message(self)
+        except TypeError:
+            msg = str(self.msg)
+            args = self.args
+            if not args or "%" in msg or "{" not in msg or "}" not in msg:
+                raise
+            try:
+                if isinstance(args, dict):
+                    return msg.format(**args)
+                if not isinstance(args, tuple):
+                    args = (args,)
+                return msg.format(*args)
+            except Exception:
+                return f"{msg} | args={self.args!r}"
+
+    setattr(logging.LogRecord, "getMessage", _compat_get_message)
+    setattr(logging, "_neko_brace_compat_installed", True)
+
+
+_install_logging_brace_compat()
+
+
 configure_default_logger()
 logger = get_logger("server.user_plugin_server")
 
