@@ -61,12 +61,13 @@ os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
 
 # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
 # httpx 优先读小写 no_proxy，因此大小写都需要设置
+# 使用精确 token 匹配，防止 "127.0.0.1" in "127.0.0.10" 这类子串误判
 for _key in ("NO_PROXY", "no_proxy"):
-    _no_proxy = os.environ.get(_key, "")
+    _no_proxy_raw = os.environ.get(_key, "")
+    _tokens = set(map(str.strip, filter(None, _no_proxy_raw.split(","))))
     for _host in ("127.0.0.1", "localhost"):
-        if _host not in _no_proxy:
-            _no_proxy = f"{_no_proxy},{_host}" if _no_proxy else _host
-    os.environ[_key] = _no_proxy
+        _tokens.add(_host)
+    os.environ[_key] = ",".join(_tokens)
 
 JOB_HANDLE = None
 _cleanup_lock = threading.Lock()

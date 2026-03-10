@@ -197,6 +197,7 @@ function init_app() {
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
     let screenCaptureAutoPromptFailed = false; // 防止无用户手势时 getDisplayMedia 反复弹窗（刷新后保护）
+    let screenRecordingPermissionHintShown = false; // 403 屏幕录制权限提示只显示一次
 
     // 【补充声明】修复未声明变量导致的隐式全局或 ReferenceError
     let subtitleCheckDebounceTimer = null; 
@@ -385,25 +386,25 @@ function init_app() {
     /**
      * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
      * 安全限制：仅当页面来自 localhost / 127.0.0.1 / 0.0.0.0 时才调用（确保后端与用户在同一台机器）。
-     * @returns {Promise<string|null>} JPEG dataUrl 或 null
+     * @returns {Promise<{dataUrl: string|null, status: number|null}>} 包含 dataUrl 和 HTTP status
      */
     async function fetchBackendScreenshot() {
         const h = window.location.hostname;
         if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
-            return null;
+            return { dataUrl: null, status: null };
         }
         try {
             const resp = await fetch('/api/screenshot');
-            if (!resp.ok) return null;
+            if (!resp.ok) return { dataUrl: null, status: resp.status };
             const json = await resp.json();
             if (json.success && json.data) {
                 console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
-                return json.data;
+                return { dataUrl: json.data, status: 200 };
             }
-            return null;
+            return { dataUrl: null, status: resp.status };
         } catch (e) {
             console.warn('[截图] 后端截图请求失败:', e);
-            return null;
+            return { dataUrl: null, status: null };
         }
     }
 
@@ -3500,7 +3501,7 @@ function init_app() {
                 };
             } else {
                 // 回退策略3: 后端 pyautogui 轮询模式（所有前端流方式均失败）
-                const backendTest = await fetchBackendScreenshot();
+                const { dataUrl: backendTest } = await fetchBackendScreenshot();
                 if (!backendTest) {
                     throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
                 }
@@ -3514,7 +3515,7 @@ function init_app() {
                 // 复用 videoSenderInterval，stopScreening() 可统一清理
                 videoSenderInterval = setInterval(async () => {
                     try {
-                        const frame = await fetchBackendScreenshot();
+                        const { dataUrl: frame } = await fetchBackendScreenshot();
                         if (frame && socket && socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({ action: 'stream_data', data: frame, input_type: 'screen' }));
                         }
@@ -4693,7 +4694,7 @@ function init_app() {
                     if (displayErr.name === 'NotAllowedError') throw displayErr;
 
                     console.warn('[截图] getDisplayMedia 失败，尝试后端截图:', displayErr);
-                    const backendDataUrl = await fetchBackendScreenshot();
+                    const { dataUrl: backendDataUrl } = await fetchBackendScreenshot();
                     if (backendDataUrl) {
                         dataUrl = backendDataUrl;
                     } else {
@@ -9845,6 +9846,12 @@ function init_app() {
                     } catch (e) {
                         // 某些情况下不需要 play() 成功也能读取帧
                     }
+                    // 等待视频元数据/首帧就绪，避免 play() 后立即读帧时尺寸为 0×0
+                    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                        await new Promise(resolve => {
+                            video.addEventListener('loadeddata', resolve, { once: true });
+                        });
+                    }
                     const frame = captureCanvasFrame(video, 0.8);
                     dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
                     video.srcObject = null;
@@ -9870,8 +9877,16 @@ function init_app() {
                     dataUrl = await captureProactiveChatScreenshot();
                 } else {
                     // macOS/Linux: 定时器（非用户手势）上下文中调用 getDisplayMedia 会反复弹窗
-                    // 仅走后端 pyautogui 截图兜底
-                    dataUrl = await fetchBackendScreenshot();
+                    // 仅走后端 pyautogui 截图兜底；403 表示缺少屏幕录制权限，给用户一次性提示
+                    const { dataUrl: backendDataUrl, status: backendStatus } = await fetchBackendScreenshot();
+                    if (backendStatus === 403 && !screenRecordingPermissionHintShown) {
+                        screenRecordingPermissionHintShown = true;
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast('⚠️ 屏幕录制权限未授权，请在系统设置中允许屏幕录制', 6000);
+                        }
+                        console.warn('[ProactiveVision] 后端截图返回 403，请在"系统设置 → 隐私与安全性 → 屏幕录制"中授权 N.E.K.O');
+                    }
+                    dataUrl = backendDataUrl;
                 }
             }
 
@@ -9971,7 +9986,7 @@ function init_app() {
     // 主动搭话截图函数（优先后端 pyautogui 静默截图 → 前端 getDisplayMedia 缓存流复用）
     async function captureProactiveChatScreenshot() {
         // 策略1: 后端 pyautogui 优先（本地运行时完全静默，无弹窗）
-        const backendDataUrl = await fetchBackendScreenshot();
+        const { dataUrl: backendDataUrl } = await fetchBackendScreenshot();
         if (backendDataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
             return backendDataUrl;
@@ -10028,6 +10043,12 @@ function init_app() {
                 video.muted = true;
                 await video.play();
 
+                // 等待视频元数据/首帧就绪，避免立即读帧时尺寸为 0×0
+                if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                    await new Promise(resolve => {
+                        video.addEventListener('loadeddata', resolve, { once: true });
+                    });
+                }
                 const frame = captureCanvasFrame(video, 0.85);
                 video.srcObject = null;
                 video.remove();
@@ -10063,7 +10084,7 @@ function init_app() {
     // 关闭时：释放前端流（如果不是手动屏幕共享）
     async function acquireProactiveVisionStream() {
         // 策略1: 测试后端 pyautogui 是否可用（静默，无弹窗）
-        const backendOk = await fetchBackendScreenshot();
+        const { dataUrl: backendOk } = await fetchBackendScreenshot();
         if (backendOk) {
             console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
             return true;
@@ -11323,6 +11344,19 @@ function init_app() {
             attributeFilter: ['style']
         });
     });
+
+    // 页面卸载前清理屏幕捕获流，避免 macOS 上旧捕获会话残留导致刷新后 getDisplayMedia 冲突
+    // 必须在 init_app() 内注册，才能正确闭合到 let screenCaptureStream 局部变量
+    window.addEventListener("beforeunload", () => {
+        try {
+            if (typeof screenCaptureStream !== 'undefined' && screenCaptureStream &&
+                typeof screenCaptureStream.getTracks === 'function') {
+                screenCaptureStream.getTracks().forEach(track => {
+                    try { track.stop(); } catch (e) { }
+                });
+            }
+        } catch (e) { }
+    });
 } // 兼容老按钮
 
 const ready = async () => {
@@ -11360,18 +11394,6 @@ if (document.readyState === "complete" || document.readyState === "interactive")
     document.addEventListener("DOMContentLoaded", ready);
     window.addEventListener("load", ready);
 }
-
-// 页面卸载前清理屏幕捕获流，避免 macOS 上旧捕获会话残留导致刷新后 getDisplayMedia 冲突
-window.addEventListener("beforeunload", () => {
-    try {
-        if (typeof screenCaptureStream !== 'undefined' && screenCaptureStream &&
-            typeof screenCaptureStream.getTracks === 'function') {
-            screenCaptureStream.getTracks().forEach(track => {
-                try { track.stop(); } catch (e) { }
-            });
-        }
-    } catch (e) { }
-});
 
 // 页面加载后显示启动提示
 window.addEventListener("load", () => {

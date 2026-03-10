@@ -1347,20 +1347,18 @@ async def backend_screenshot(request: Request):
         if shot.mode in ('RGBA', 'LA', 'P'):
             shot = shot.convert('RGB')
 
-        # macOS 黑屏检测：未授权 Screen Recording 时 pyautogui 返回全黑图片
-        # 采样若干像素判断是否全黑，避免把无意义的黑图当作有效截图
-        try:
-            import numpy as np
-            arr = np.array(shot)
-            if arr.mean() < 1.0:  # 几乎全黑（允许极小的噪声）
-                logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
-                return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
-        except ImportError:
-            # numpy 不可用时，用 PIL getextrema 做简单检测
-            extrema = shot.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
-            if all(mx <= 1 for _, mx in extrema):
-                logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
-                return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+        # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
+        # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
+        if sys.platform == "darwin":
+            # 低分辨率采样：把图缩到 16×16 后用 PIL extrema 检测，避免全量 numpy 数组的内存开销
+            try:
+                thumb = shot.resize((16, 16))
+                extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
+                if all(mx <= 1 for _, mx in extrema):
+                    logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
+                    return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+            except Exception:
+                pass
 
         jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
