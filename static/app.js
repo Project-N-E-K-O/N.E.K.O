@@ -594,8 +594,11 @@ function init_app() {
                         if (hasRunning && !agentTaskTimeUpdateInterval) {
                             agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
                         }
+                    } else if (typeof window.checkAndToggleTaskHUD === 'function') {
+                        // Re-evaluate HUD visibility from enablement state instead of
+                        // force-hiding on an empty task snapshot.
+                        window.checkAndToggleTaskHUD();
                     } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
-                        // No tasks at all, hide HUD
                         window.AgentHUD.hideAgentTaskHUD();
                     }
                 }
@@ -1067,8 +1070,11 @@ function init_app() {
                                     timestamp: new Date().toISOString()
                                 });
                             }
+                        } else if (typeof window.checkAndToggleTaskHUD === 'function') {
+                            // An empty snapshot should not hide the HUD while any
+                            // agent capability is still enabled.
+                            window.checkAndToggleTaskHUD();
                         } else if (window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
-                            // No active tasks, hide HUD
                             window.AgentHUD.hideAgentTaskHUD();
                         }
                     } catch (_e) { /* ignore */ }
