@@ -301,13 +301,8 @@ MESSAGE_PLANE_ZMQ_PUB_ENDPOINT = os.getenv(
     os.getenv("NEKO_MESSAGE_PLANE_PUB", "tcp://127.0.0.1:38866"),
 )
 
-# Message plane 运行模式
-# - embedded: 作为主进程的后台线程启动（默认）
-# - external: 由主进程启动独立子进程（独立解释器），用于隔离控制面与数据面负载
-# Env: NEKO_MESSAGE_PLANE_RUN_MODE, default="external"
-MESSAGE_PLANE_RUN_MODE = os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE", "external").strip().lower()
-if MESSAGE_PLANE_RUN_MODE not in ("embedded", "external"):
-    MESSAGE_PLANE_RUN_MODE = "external"
+# Message plane 始终以内嵌线程方式运行。
+# 保留端点配置，但不再支持 external 独立子进程模式。
 
 MESSAGE_PLANE_VALIDATE_MODE = os.getenv("NEKO_MESSAGE_PLANE_VALIDATE_MODE", "strict").lower()
 if MESSAGE_PLANE_VALIDATE_MODE not in ("off", "warn", "strict"):
@@ -581,7 +576,6 @@ __all__ = [
     "SYNC_CALL_IN_HANDLER_POLICY",
 
     # Message plane
-    "MESSAGE_PLANE_RUN_MODE",
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
@@ -648,7 +642,6 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "MESSAGE_PLANE_BACKEND",
     "MESSAGE_PLANE_RUST_BIN",
     "MESSAGE_PLANE_WORKERS",
-    "MESSAGE_PLANE_RUN_MODE",
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",

@@ -51,7 +51,6 @@ class VRMInteraction {
         this._cachedScreenBounds = null; // { minX, maxX, minY, maxY }
         this._floatingButtonsPendingFrame = null; // RAF ID，用于取消
         this._lastModelUpdateTime = 0;
-        this._ignoreMouseMoveUntil = 0;
 
         // 出界回弹配置（与聊天框风格一致）
         this._snapConfig = {
@@ -342,25 +341,26 @@ class VRMInteraction {
             }
         };
 
-        // 5.5 鼠标悬停时动态更新光标（不拖拽时检测是否在模型上）
-        // 节流射线检测，避免每帧 intersectObject 造成卡顿
-        let _hoverThrottleId = null;
+        // 5.5 鼠标悬停时动态更新光标（不拖拽时检测是否在模型附近）
+        // 仅使用屏幕包围盒判断，避免高频射线检测导致掉帧
         let _lastHoverHitTestAt = 0;
         this.mouseHoverHandler = (e) => {
             if (this.isDragging || this.checkLocked()) return;
-            if (_hoverThrottleId) return; // 节流中，跳过
             const now = performance.now();
-            if ((now - _lastHoverHitTestAt) < 50) return;
+            if ((now - _lastHoverHitTestAt) < 80) return;
             _lastHoverHitTestAt = now;
-            _hoverThrottleId = requestAnimationFrame(() => {
-                _hoverThrottleId = null;
-                if (this.isDragging) return;
-                if (this._hitTestModel(e.clientX, e.clientY)) {
-                    canvas.style.cursor = 'grab';
-                } else {
-                    canvas.style.cursor = 'default';
-                }
-            });
+            if (this.isDragging) return;
+            const bounds = this._cachedScreenBounds;
+            if (!bounds) {
+                canvas.style.cursor = 'default';
+                return;
+            }
+            const padding = 10;
+            const isNearModel = e.clientX >= (bounds.minX - padding) &&
+                e.clientX <= (bounds.maxX + padding) &&
+                e.clientY >= (bounds.minY - padding) &&
+                e.clientY <= (bounds.maxY + padding);
+            canvas.style.cursor = isNearModel ? 'grab' : 'default';
         };
 
         // 6. 滚轮缩放
@@ -1020,13 +1020,6 @@ class VRMInteraction {
             pushRect(document.getElementById('vrm-floating-buttons'));
             pushRect(document.getElementById('vrm-lock-icon'));
 
-            document.querySelectorAll('.vrm-popup').forEach((popupEl) => {
-                pushRect(popupEl);
-            });
-            document.querySelectorAll('.vrm-side-panel, .live2d-side-panel').forEach((panelEl) => {
-                pushRect(panelEl);
-            });
-
             return rects;
         };
 
@@ -1154,7 +1147,7 @@ class VRMInteraction {
 
             // 更新缓存（如果模型已更新）
             const now = Date.now();
-            if (!this._cachedScreenBounds || (now - this._lastModelUpdateTime) > 100) {
+            if (!this._cachedScreenBounds || (now - this._lastModelUpdateTime) > 250) {
                 this.updateModelBoundsCache();
             }
 
@@ -1206,14 +1199,6 @@ class VRMInteraction {
         };
 
         const onPointerMove = (event) => {
-            const now = performance.now();
-            if (event.type === 'mousemove' && now < this._ignoreMouseMoveUntil) {
-                return;
-            }
-            if (event.type === 'pointermove') {
-                // 去重由 pointermove 引发的合成 mousemove，降低重复事件链开销
-                this._ignoreMouseMoveUntil = now + 40;
-            }
             if (!this.manager._isModelReadyForInteraction) return;
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
             if (!this.manager.renderer || !this.manager.camera) return;
@@ -1272,8 +1257,8 @@ class VRMInteraction {
         window.addEventListener('blur', onBlur);
 
         canvas.addEventListener('mouseenter', onMouseEnter);
-        window.addEventListener('pointermove', onPointerMove);
-        window.addEventListener('mousemove', onPointerMove);
+        canvas.addEventListener('pointermove', onPointerMove);
+        canvas.addEventListener('mousemove', onPointerMove);
 
         this._vrmCtrlKeyDownListener = onKeyDown;
         this._vrmCtrlKeyUpListener = onKeyUp;
@@ -1308,8 +1293,8 @@ class VRMInteraction {
             this._floatingButtonsMouseLeave = null;
         }
         if (this._floatingButtonsPointerMove) {
-            window.removeEventListener('pointermove', this._floatingButtonsPointerMove);
-            window.removeEventListener('mousemove', this._floatingButtonsPointerMove);
+            canvas.removeEventListener('pointermove', this._floatingButtonsPointerMove);
+            canvas.removeEventListener('mousemove', this._floatingButtonsPointerMove);
             this._floatingButtonsPointerMove = null;
         }
         // 清理 Ctrl 键 / blur 监听器
