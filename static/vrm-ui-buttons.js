@@ -897,6 +897,31 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                             lockIcon.style.top = `${boundedLockY}px`;
                         }
                         lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
+
+                        // 检测锁图标是否被弹出菜单或侧面板覆盖，覆盖时降低不透明度
+                        const lockRect = lockIcon.getBoundingClientRect();
+                        let isLockOverlapped = false;
+                        document.querySelectorAll('[id^="vrm-popup-"]').forEach(popup => {
+                            if (popup.style.display === 'flex' && popup.style.opacity === '1') {
+                                const popupRect = popup.getBoundingClientRect();
+                                if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
+                                    lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
+                                    isLockOverlapped = true;
+                                }
+                            }
+                        });
+                        if (!isLockOverlapped) {
+                            document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
+                                if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
+                                    const panelRect = panel.getBoundingClientRect();
+                                    if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
+                                        lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
+                                        isLockOverlapped = true;
+                                    }
+                                }
+                            });
+                        }
+                        lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
                     }
                 }
             }
