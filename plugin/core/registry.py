@@ -35,7 +35,11 @@ from plugin._types.exceptions import (
     PluginLoadError,
     PluginMetadataError,
 )
-from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
+from plugin.settings import (
+    BUILTIN_PLUGIN_CONFIG_ROOT,
+    PLUGIN_ENABLE_ID_CONFLICT_CHECK,
+    PLUGIN_ENABLE_DEPENDENCY_CHECK,
+)
 from plugin.utils import parse_bool_config
 
 # 从 dependency.py 导入依赖相关函数
@@ -893,6 +897,21 @@ def _collect_plugin_contexts_from_roots(
 
 def _prepare_plugin_import_roots(plugin_config_roots: Iterable[Path], logger: Any) -> None:
     """为用户插件根注入 import 根目录，内置插件保持包内导入。"""
+    try:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve()
+    except Exception:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
+
+    def _is_same_or_within(path: Path, base: Path) -> bool:
+        try:
+            if path == base:
+                return True
+            if hasattr(path, "is_relative_to"):
+                return path.is_relative_to(base)  # type: ignore[attr-defined]
+            return str(path).startswith(str(base))
+        except Exception:
+            return False
+
     for plugin_config_root in plugin_config_roots:
         try:
             root = plugin_config_root.resolve()
@@ -900,6 +919,9 @@ def _prepare_plugin_import_roots(plugin_config_roots: Iterable[Path], logger: An
             root = plugin_config_root
 
         project_root = root.parent
+        if _is_same_or_within(root, builtin_root) or _is_same_or_within(project_root, builtin_root):
+            logger.debug("Skipping built-in plugin import root: {}", root)
+            continue
         if str(project_root) in sys.path:
             continue
         sys.path.insert(0, str(project_root))
