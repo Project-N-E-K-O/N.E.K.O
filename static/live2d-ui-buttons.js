@@ -515,15 +515,17 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
-                    this.closePopupById(config.exclusive);
-                    // 更新被关闭的互斥按钮的背景和图标
-                    const exclusiveData = this._floatingButtons[config.exclusive];
-                    if (exclusiveData && exclusiveData.button) {
-                        exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
-                    }
-                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
-                        exclusiveData.imgOff.style.opacity = '0.75';
-                        exclusiveData.imgOn.style.opacity = '0';
+                    const closed = this.closePopupById(config.exclusive);
+                    if (closed) {
+                        // 关闭成功，更新被关闭的互斥按钮的背景和图标
+                        const exclusiveData = this._floatingButtons[config.exclusive];
+                        if (exclusiveData && exclusiveData.button) {
+                            exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        }
+                        if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                            exclusiveData.imgOff.style.opacity = '0.75';
+                            exclusiveData.imgOn.style.opacity = '0';
+                        }
                     }
                 }
 
