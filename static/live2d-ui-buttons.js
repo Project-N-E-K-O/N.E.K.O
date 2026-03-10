@@ -488,8 +488,11 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
-                    // 更新被关闭的互斥按钮的图标
+                    // 更新被关闭的互斥按钮的背景和图标
                     const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.button) {
+                        exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                    }
                     if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
                         exclusiveData.imgOff.style.opacity = '0.75';
                         exclusiveData.imgOn.style.opacity = '0';
@@ -499,17 +502,19 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 // 切换弹出框
                 this.showPopup(config.id, popup);
 
-                // 等待弹出框状态更新后更新图标状态
+                // 等待弹出框状态更新后更新图标和背景状态
                 setTimeout(() => {
                     const newPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                    // 根据弹出框状态更新图标
-                    if (imgOff && imgOn) {
-                        if (newPopupVisible) {
-                            // 弹出框显示：显示on图标
+                    // 根据弹出框状态更新背景色和图标
+                    if (newPopupVisible) {
+                        btn.style.background = 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0';
                             imgOn.style.opacity = '1';
-                        } else {
-                            // 弹出框隐藏：显示off图标
+                        }
+                    } else {
+                        btn.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0.75';
                             imgOn.style.opacity = '0';
                         }
