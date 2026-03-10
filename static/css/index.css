@@ -350,6 +350,24 @@ button * {
     /* Fluent Design 背景层 */
 }
 
+/* 聊天内容滚动条 - 防止透明窗口中滚动条轨道穿透桌面 */
+#chat-content-wrapper::-webkit-scrollbar {
+    width: 6px;
+}
+
+#chat-content-wrapper::-webkit-scrollbar-track {
+    background: rgba(249, 249, 249, 0.95);
+}
+
+#chat-content-wrapper::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+}
+
+#chat-content-wrapper::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+}
+
 /* 切换按钮样式 - 更醒目的设计 */
 #toggle-chat-btn {
     pointer-events: auto;

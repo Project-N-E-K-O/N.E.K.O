@@ -323,7 +323,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(25, 25, 25, 0.95);
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-thumb {
