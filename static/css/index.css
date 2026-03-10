@@ -348,6 +348,13 @@ button * {
     visibility: visible;
     background: rgba(249, 249, 249, 0.7);
     /* Fluent Design 背景层 */
+    /* Firefox 滚动条 */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.15) rgba(249, 249, 249, 0.95);
+}
+
+#chat-content-wrapper:hover {
+    scrollbar-color: rgba(0, 0, 0, 0.25) rgba(249, 249, 249, 0.95);
 }
 
 /* 聊天内容滚动条 - 防止透明窗口中滚动条轨道穿透桌面 */
