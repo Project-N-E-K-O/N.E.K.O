@@ -352,6 +352,11 @@ function init_app() {
      * @returns {{dataUrl: string, width: number, height: number}} 返回dataUrl和实际尺寸
      */
     function captureCanvasFrame(video, jpegQuality = 0.8) {
+        // 流无效时 videoWidth/videoHeight 为 0，直接返回 null 避免生成空图
+        if (!video.videoWidth || !video.videoHeight) {
+            return null;
+        }
+
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
 
@@ -4699,9 +4704,11 @@ function init_app() {
                 video.muted = true;
                 await video.play();
                 const frame = captureCanvasFrame(video);
-                dataUrl = frame.dataUrl;
-                width = frame.width;
-                height = frame.height;
+                if (frame) {
+                    dataUrl = frame.dataUrl;
+                    width = frame.width;
+                    height = frame.height;
+                }
                 video.srcObject = null;
                 video.remove();
             }
@@ -9813,19 +9820,41 @@ function init_app() {
                 scheduleScreenCaptureIdleCheck();
                 usedCachedStream = true;
 
-                const video = document.createElement('video');
-                video.srcObject = screenCaptureStream;
-                video.autoplay = true;
-                video.muted = true;
-                try {
-                    await video.play();
-                } catch (e) {
-                    // 某些情况下不需要 play() 成功也能读取帧
+                // 先检查 tracks 是否还活着
+                const videoTracks = screenCaptureStream.getVideoTracks();
+                const hasLiveTrack = videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live');
+
+                if (!hasLiveTrack) {
+                    console.warn('[ProactiveVision] 缓存流的 tracks 已结束，废弃该流');
+                    screenCaptureStream = null;
+                    screenCaptureStreamLastUsed = null;
+                    usedCachedStream = false;
+                } else {
+                    const video = document.createElement('video');
+                    video.srcObject = screenCaptureStream;
+                    video.autoplay = true;
+                    video.muted = true;
+                    try {
+                        await video.play();
+                    } catch (e) {
+                        // 某些情况下不需要 play() 成功也能读取帧
+                    }
+                    const frame = captureCanvasFrame(video, 0.8);
+                    dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
+                    video.srcObject = null;
+                    video.remove();
+
+                    // 如果流 active 但提取帧失败（0×0），说明流是空壳，主动废弃
+                    if (!dataUrl) {
+                        console.warn('[ProactiveVision] 缓存流提取帧失败（可能是刷新后的空壳流），废弃该流');
+                        try {
+                            screenCaptureStream.getTracks().forEach(t => { try { t.stop(); } catch (e) { } });
+                        } catch (e) { }
+                        screenCaptureStream = null;
+                        screenCaptureStreamLastUsed = null;
+                        usedCachedStream = false;
+                    }
                 }
-                const frame = captureCanvasFrame(video, 0.8);
-                dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
-                video.srcObject = null;
-                video.remove();
             }
 
             // 如果缓存流提取帧失败，或无缓存流
@@ -9949,6 +9978,18 @@ function init_app() {
             try {
                 let captureStream = screenCaptureStream;
 
+                // 检查缓存流的 tracks 是否还活着
+                if (captureStream && captureStream.active) {
+                    const videoTracks = captureStream.getVideoTracks();
+                    const hasLiveTrack = videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live');
+                    if (!hasLiveTrack) {
+                        console.warn('[主动搭话截图] 缓存流 tracks 已结束，废弃');
+                        captureStream = null;
+                        screenCaptureStream = null;
+                        screenCaptureStreamLastUsed = null;
+                    }
+                }
+
                 if (!captureStream || !captureStream.active) {
                     captureStream = await navigator.mediaDevices.getDisplayMedia({
                         video: { cursor: 'always', frameRate: { max: 1 } },
@@ -9981,12 +10022,25 @@ function init_app() {
                 video.muted = true;
                 await video.play();
 
-                const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
+                const frame = captureCanvasFrame(video, 0.85);
                 video.srcObject = null;
                 video.remove();
 
-                console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${width}x${height}`);
-                return dataUrl;
+                if (!frame || !frame.dataUrl) {
+                    // 流看似活着但提取帧失败，废弃空壳流
+                    console.warn('[主动搭话截图] 缓存流提取帧失败（空壳流），废弃');
+                    try {
+                        captureStream.getTracks().forEach(t => { try { t.stop(); } catch (e) { } });
+                    } catch (e) { }
+                    if (screenCaptureStream === captureStream) {
+                        screenCaptureStream = null;
+                        screenCaptureStreamLastUsed = null;
+                    }
+                    return null;
+                }
+
+                console.log(`[主动搭话截图] 前端截图成功（流已缓存），尺寸: ${frame.width}x${frame.height}`);
+                return frame.dataUrl;
             } catch (err) {
                 console.warn('[主动搭话截图] getDisplayMedia 失败:', err);
                 screenCaptureAutoPromptFailed = true;
@@ -10011,10 +10065,18 @@ function init_app() {
 
         // 策略2: 已有可用的前端流，无需重新获取
         if (screenCaptureStream && screenCaptureStream.active) {
-            console.log('[主动视觉] 已有可用的屏幕流，复用');
-            screenCaptureStreamLastUsed = Date.now();
-            scheduleScreenCaptureIdleCheck();
-            return true;
+            const videoTracks = screenCaptureStream.getVideoTracks();
+            const hasLiveTrack = videoTracks.length > 0 && videoTracks.some(t => t.readyState === 'live');
+            if (hasLiveTrack) {
+                console.log('[主动视觉] 已有可用的屏幕流，复用');
+                screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
+                return true;
+            }
+            // tracks 已结束，废弃流，继续走策略3
+            console.warn('[主动视觉] 缓存流 tracks 已结束，废弃并重新获取');
+            screenCaptureStream = null;
+            screenCaptureStreamLastUsed = null;
         }
 
         // 策略3: 通过 getDisplayMedia 获取流（当前处于用户点击开关的手势上下文中）
@@ -11292,6 +11354,18 @@ if (document.readyState === "complete" || document.readyState === "interactive")
     document.addEventListener("DOMContentLoaded", ready);
     window.addEventListener("load", ready);
 }
+
+// 页面卸载前清理屏幕捕获流，避免 macOS 上旧捕获会话残留导致刷新后 getDisplayMedia 冲突
+window.addEventListener("beforeunload", () => {
+    try {
+        if (typeof screenCaptureStream !== 'undefined' && screenCaptureStream &&
+            typeof screenCaptureStream.getTracks === 'function') {
+            screenCaptureStream.getTracks().forEach(track => {
+                try { track.stop(); } catch (e) { }
+            });
+        }
+    } catch (e) { }
+});
 
 // 页面加载后显示启动提示
 window.addEventListener("load", () => {
