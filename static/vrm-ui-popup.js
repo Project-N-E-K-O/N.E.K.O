@@ -39,6 +39,9 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             transform: translateX(-10px);
             transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
         }
+        .vrm-popup.is-positioning {
+            pointer-events: none !important;
+        }
         .vrm-popup.vrm-popup-settings {
             max-height: 70vh;
         }
@@ -1771,7 +1774,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
 
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
-        popup.style.pointerEvents = 'none'; // 阻止 positionPopup 完成前的 hover 事件
+        popup.classList.add('is-positioning'); // 阻止 positionPopup 完成前的 hover 事件
 
         // 检查按钮是否有 separatePopupTrigger 配置
         // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
@@ -1809,7 +1812,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                 if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                 popup.style.visibility = 'visible';
                 popup.style.opacity = '1';
-                popup.style.pointerEvents = ''; // positionPopup 完成，恢复交互
+                popup.classList.remove('is-positioning'); // positionPopup 完成，恢复交互
                 
                 // 设置小三角图标的旋转状态（旋转180度）
                 const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
