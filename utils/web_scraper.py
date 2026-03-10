@@ -14,13 +14,14 @@ from typing import Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from bs4 import BeautifulSoup
 import os
 from pathlib import Path
 import json
 import sys
 
+from config import get_extra_body
 from utils.file_utils import atomic_write_json
 
 logger = get_module_logger(__name__)
@@ -1246,6 +1247,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             temperature=1.0,
             timeout=10.0,
             max_retries=0,
+            extra_body=get_extra_body(summary_config['model']) or None,
         )
         
         # 清理/脱敏窗口标题用于日志显示
@@ -1258,38 +1260,35 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         china_region = is_china_region()
         
         if china_region:
-            prompt = f"""基于以下窗口标题，生成3个不同的搜索关键词，用于在百度上搜索相关内容。
-
-窗口标题：{window_title}
+            system_prompt = """你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合百度搜索的多样化关键词。
 
 要求：
-1. 生成3个不同角度的搜索关键词
-2. 关键词应该简洁（2-8个字）
-3. 关键词应该多样化，涵盖不同方面
-4. 只输出3个关键词，每行一个，不要添加任何序号、标点或其他内容
+1. 生成 3 个不同角度的搜索关键词
+2. 关键词应简洁，控制在 2-8 个字
+3. 关键词应尽量覆盖不同方面
+4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容"""
+            user_prompt = f"""窗口标题：{window_title}
 
-示例输出格式：
-关键词1
-关键词2
-关键词3"""
+请输出 3 个搜索关键词。"""
         else:
-            prompt = f"""Based on the following window title, generate 3 different search keywords for Google search.
-
-Window title: {window_title}
+            system_prompt = """You generate search keywords from a window title.
 
 Requirements:
-1. Generate 3 keywords from different angles
-2. Keywords should be concise (2-6 words each)
-3. Keywords should be diverse, covering different aspects
-4. Output only 3 keywords, one per line, without any numbers, punctuation, or other content
+1. Generate 3 keywords for Google search from different angles
+2. Each keyword should be concise, about 2-6 words
+3. Keep the keywords diverse
+4. Output exactly 3 lines, one keyword per line
+5. Do not add numbers, punctuation, explanations, or any extra text"""
+            user_prompt = f"""Window title: {window_title}
 
-Example output format:
-keyword one
-keyword two
-keyword three"""
+Please output 3 search keywords."""
 
-        # 使用异步调用，并显式检测空包/空内容，避免后续继续按正常响应解析
-        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        # Gemini 的 OpenAI 兼容接口需要实际的 user content；
+        # 仅发送 system message 可能被底层适配为空 contents。
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
         response_text = _extract_llm_text_content(getattr(response, 'content', None))
         if not response_text:
             logger.warning(f"为窗口标题「{sanitized_title}」生成搜索关键词时收到空包，使用默认清理方法回退")
