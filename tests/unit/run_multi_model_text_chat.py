@@ -15,6 +15,7 @@ from tests.unit.test_text_chat import (
     test_vision_chat,
 )
 from tests.utils.llm_judger import LLMJudger
+from utils.file_utils import atomic_write_json
 
 
 # Configure model targets here.
@@ -209,8 +210,7 @@ def _append_comparison_to_reports(md_path: Path, comparison: List[Dict]) -> None
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         data["model_comparison"] = comparison
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(json_path, data, ensure_ascii=False, indent=2)
 
     md_lines = [
         "",

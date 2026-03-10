@@ -3,7 +3,7 @@ name = "Load Test Plugin"
 description = "Plugin for measuring QPS limits of N.E.K.O plugin subsystems"
 version = "0.1.0"
 id = "load_tester"
-entry = "plugins.load_tester:LoadTestPlugin"
+entry = "plugin.plugins.load_tester:LoadTestPlugin"
 
 [plugin.author]
 

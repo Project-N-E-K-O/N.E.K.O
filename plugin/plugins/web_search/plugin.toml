@@ -3,7 +3,7 @@ name = "网络搜索"
 description = "通过 DuckDuckGo 搜索网络内容。无需 API Key，免费使用。支持文本搜索和新闻搜索。"
 version = "0.1.0"
 id = "web_search"
-entry = "plugins.web_search:WebSearchPlugin"
+entry = "plugin.plugins.web_search:WebSearchPlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"

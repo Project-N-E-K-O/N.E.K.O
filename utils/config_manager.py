@@ -25,6 +25,7 @@ from utils.api_config_loader import (
     get_assist_api_key_fields,
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
+from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
@@ -339,6 +340,7 @@ class ConfigManager:
         self.app_docs_dir = self.docs_dir / self.app_name
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
         self.vrm_dir = self.app_docs_dir / "vrm"
@@ -594,6 +596,18 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create memory directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_plugins_directory(self):
+        """确保我的文档下的plugins目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+
+            self.plugins_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create plugins directory: {e}", file=sys.stderr)
             return False
     
     def ensure_live2d_directory(self):
@@ -853,8 +867,7 @@ class ConfigManager:
         # 确保config目录存在
         self.ensure_config_directory()
 
-        with open(character_json_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(character_json_path, data, ensure_ascii=False, indent=2)
 
     # --- Voice storage helpers ---
 
@@ -1400,11 +1413,11 @@ class ConfigManager:
 
         # 文本模式回复长度守卫上限（字/词数，超限会丢弃并重试）
         try:
-            config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 400))
+            config['TEXT_GUARD_MAX_LENGTH'] = int(core_cfg.get('textGuardMaxLength', 300))
             if config['TEXT_GUARD_MAX_LENGTH'] <= 0:
-                config['TEXT_GUARD_MAX_LENGTH'] = 400
+                config['TEXT_GUARD_MAX_LENGTH'] = 300
         except (TypeError, ValueError):
-            config['TEXT_GUARD_MAX_LENGTH'] = 400
+            config['TEXT_GUARD_MAX_LENGTH'] = 300
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
@@ -1723,8 +1736,7 @@ class ConfigManager:
             used += units
             data = {"date": today, "used": used}
             try:
-                with open(quota_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                atomic_write_json(quota_path, data, ensure_ascii=False, indent=2)
             except Exception as e:
                 logger.warning("保存 Agent 配额计数失败: %s", e)
 
@@ -1777,9 +1789,7 @@ class ConfigManager:
         config_path = self.config_dir / filename
         
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()  # 强制刷新缓冲区
+            atomic_write_json(config_path, data, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Error saving {filename}: {e}", file=sys.stderr)
             raise
@@ -1818,6 +1828,7 @@ class ConfigManager:
             "app_dir": str(self.app_docs_dir),
             "config_dir": str(self.config_dir),
             "memory_dir": str(self.memory_dir),
+            "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
             "workshop_dir": str(self.workshop_dir),
             "chara_dir": str(self.chara_dir),
@@ -1974,8 +1985,7 @@ class ConfigManager:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
             
             # 保存配置
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, indent=4, ensure_ascii=False)
+            atomic_write_json(config_path, config_data, indent=4, ensure_ascii=False)
             
             logger.info(f"成功保存workshop配置: {config_data}")
         except Exception as e:
@@ -2061,6 +2071,13 @@ def get_config_manager(app_name=None):
 def get_config_path(filename):
     """获取配置文件路径"""
     return get_config_manager().get_config_path(filename)
+
+
+def get_plugins_directory(app_name=None):
+    """获取用户插件根目录，默认位于应用文档目录下的 ``plugins``。"""
+    manager = ConfigManager(app_name)
+    manager.ensure_plugins_directory()
+    return manager.plugins_dir
 
 
 def load_json_config(filename, default_value=None):

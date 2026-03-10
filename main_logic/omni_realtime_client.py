@@ -13,6 +13,7 @@ from enum import Enum
 from config import NATIVE_IMAGE_MIN_INTERVAL, IMAGE_IDLE_RATE_MULTIPLIER
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
+from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
@@ -97,16 +98,15 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
                 logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
                 try:
                     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-                    with open(sentinel_path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {
-                                "path": diag_path,
-                                "timestamp": now_ts,
-                            },
-                            f,
-                            ensure_ascii=False,
-                            indent=2,
-                        )
+                    atomic_write_json(
+                        sentinel_path,
+                        {
+                            "path": diag_path,
+                            "timestamp": now_ts,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
                 except Exception as sentinel_write_err:
                     logger.error(f"Gemini diagnostic sentinel write failed: {sentinel_write_err}")
         except Exception as diag_err:

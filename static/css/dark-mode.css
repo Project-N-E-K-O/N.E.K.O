@@ -318,12 +318,21 @@ html #chat-container {
 }
 
 /* ===== 暗色模式：滚动条 ===== */
+/* Firefox 滚动条 */
+[data-theme="dark"] #chat-content-wrapper {
+  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(25, 25, 25, 0.95);
+}
+
+[data-theme="dark"] #chat-content-wrapper:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.25) rgba(25, 25, 25, 0.95);
+}
+
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar {
   width: 6px;
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(25, 25, 25, 0.95);
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-thumb {
@@ -614,7 +623,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] .container-header {
-  background: #2a7bc4;
+  background: linear-gradient(to right, #1880aa, #0a3585);
 }
 
 [data-theme="dark"] .container-content {

@@ -69,11 +69,15 @@ DEFAULT_PORTS = {
     "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
 }
 INTERNAL_DEFAULT_PORTS = {
+    "USER_PLUGIN_SERVER_PORT": 48916,
     "AGENT_MQ_PORT": 48917,
     "MAIN_AGENT_EVENT_PORT": 48918,
+    "ZMQ_SESSION_PUB_PORT": 48961,
+    "ZMQ_AGENT_PUSH_PORT": 48962,
+    "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
-AVOID_FALLBACK_PORTS = set(range(48911, 48919))
+AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
 
 # 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
 MODULE_TO_PORT_KEY: dict[str, str] = {
@@ -81,6 +85,36 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+
+
+def _install_logging_brace_compat() -> None:
+    if getattr(logging, "_neko_brace_compat_installed", False):
+        return
+
+    original_get_message = logging.LogRecord.getMessage
+
+    def _compat_get_message(record: logging.LogRecord) -> str:
+        try:
+            return original_get_message(record)
+        except TypeError:
+            msg = str(record.msg)
+            args = record.args
+            if not args or "%" in msg or "{" not in msg or "}" not in msg:
+                raise
+            try:
+                if isinstance(args, dict):
+                    return msg.format(**args)
+                if not isinstance(args, tuple):
+                    args = (args,)
+                return msg.format(*args)
+            except Exception:
+                return f"{msg} | args={record.args!r}"
+
+    logging.LogRecord.getMessage = _compat_get_message
+    logging._neko_brace_compat_installed = True
+
+
+_install_logging_brace_compat()
 
 
 def _show_error_dialog(message: str):

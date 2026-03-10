@@ -4,8 +4,6 @@ import asyncio
 import concurrent.futures
 import os
 import socket
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -94,8 +92,7 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
 
 
 class PythonMessagePlaneRunner(MessagePlaneRunner):
-    def __init__(self, *, run_mode: str, endpoints: MessagePlaneEndpoints) -> None:
-        self._run_mode = str(run_mode)
+    def __init__(self, *, endpoints: MessagePlaneEndpoints) -> None:
         self._endpoints = endpoints
 
         self._thread: threading.Thread | None = None
@@ -103,7 +100,6 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._rpc = None
         self._ingest = None
         self._pub = None
-        self._proc: subprocess.Popen | None = None
 
     def _cleanup_embedded(
         self,
@@ -156,36 +152,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
         self._thread = None
         self._ingest_thread = None
 
-    def _terminate_process(self, proc: subprocess.Popen | None) -> None:
-        if proc is None:
-            return
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=1.0)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            return
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            return
-        try:
-            proc.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            logger.warning("message_plane process did not exit after kill pid={}", getattr(proc, "pid", "?"))
-        except Exception:
-            pass
-
     def start(self) -> MessagePlaneEndpoints:
-        if self._run_mode == "external":
-            return self._start_external()
         return self._start_embedded()
 
     def _start_embedded(self) -> MessagePlaneEndpoints:
@@ -245,45 +212,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             raise
         return self._endpoints
 
-    def _start_external(self) -> MessagePlaneEndpoints:
-        if self._proc is not None and self._proc.poll() is None:
-            return self._endpoints
-
-        env = dict(os.environ)
-        env["NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT"] = str(self._endpoints.rpc)
-        env["NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT"] = str(self._endpoints.pub)
-        env["NEKO_MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT"] = str(self._endpoints.ingest)
-
-        try:
-            cmd = [sys.executable, "-m", "plugin.message_plane.main"]
-            self._proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=None,
-                stderr=None,
-                close_fds=True,
-                env=env,
-            )
-            logger.info("message_plane external process started pid={}", int(self._proc.pid))
-        except Exception as e:
-            self._proc = None
-            logger.warning("message_plane external process start failed: {}", e)
-            raise
-
-        for label, ep in [("rpc", self._endpoints.rpc), ("ingest", self._endpoints.ingest), ("pub", self._endpoints.pub)]:
-            if not _wait_tcp_ready(str(ep), timeout_s=3.0):
-                logger.warning("message_plane {} endpoint not ready: {}", label, ep)
-        return self._endpoints
-
     def stop(self) -> None:
-        if self._run_mode == "external":
-            p = self._proc
-            self._proc = None
-            if p is None:
-                return
-            self._terminate_process(p)
-            return
-
         rpc_srv = self._rpc
         ingest_srv = self._ingest
         pub_srv = self._pub
@@ -368,15 +297,10 @@ def _resolve_endpoint_with_fallback(endpoint: str, used_ports: set[tuple[str, in
 
 def build_message_plane_runner() -> MessagePlaneRunner:
     from plugin.settings import (
-        MESSAGE_PLANE_RUN_MODE,
         MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
         MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
         MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
     )
-
-    run_mode = os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE", str(MESSAGE_PLANE_RUN_MODE)).strip().lower()
-    if run_mode not in ("embedded", "external"):
-        run_mode = str(MESSAGE_PLANE_RUN_MODE)
 
     rpc_env = os.getenv("NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT", str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
     pub_env = os.getenv("NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT", str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT))
@@ -397,4 +321,4 @@ def build_message_plane_runner() -> MessagePlaneRunner:
         ingest=ingest_ep,
     )
 
-    return PythonMessagePlaneRunner(run_mode=run_mode, endpoints=endpoints)
+    return PythonMessagePlaneRunner(endpoints=endpoints)

@@ -95,7 +95,7 @@ add_data('steam_appid.txt', '.')
 if sys.platform == 'darwin':
     # macOS (Apple Silicon) 使用 .dylib
     libsteam_api = os.path.join(PROJECT_ROOT, 'libsteam_api.dylib')
-    libSteamworksPy = os.path.join(PROJECT_ROOT, 'libSteamworksPy.dylib')
+    libSteamworksPy = os.path.join(PROJECT_ROOT, 'SteamworksPy.dylib')
     if os.path.exists(libsteam_api):
         binaries.append((libsteam_api, '.'))
     if os.path.exists(libSteamworksPy):

@@ -7,6 +7,8 @@ from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
+from utils.file_utils import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 # Set to a specific provider to force judger selection.
@@ -360,12 +362,16 @@ Respond in the following JSON format ONLY (no markdown code fences, no extra tex
         failed = total - passed
 
         # --- JSON report (always written) ---
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({
+        atomic_write_json(
+            json_path,
+            {
                 "generated_at": datetime.now().isoformat(),
                 "summary": {"total": total, "passed": passed, "failed": failed},
                 "results": self._results,
-            }, f, ensure_ascii=False, indent=2)
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
         # --- Try LLM-generated narrative report ---
         md_content = self._generate_narrative_report(total, passed, failed, json_path.name)

@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
 
+from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 
 # ==========================================
@@ -125,8 +126,7 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             logger.info(f"✅ 已加密保存 {platform} 凭证到: {cookie_file}")
         else:
             # 明文保存
-            with open(cookie_file, 'w', encoding='utf-8') as f:
-                json.dump(cookies, f, ensure_ascii=False, indent=4)
+            atomic_write_json(cookie_file, cookies, ensure_ascii=False, indent=4)
                 
             # 🔒 安全加固：修改文件权限为 600 (仅当前用户可读写)，防止跨用户窃取
             if sys.platform != 'win32':
