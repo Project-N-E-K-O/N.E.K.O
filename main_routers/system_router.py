@@ -1357,8 +1357,8 @@ async def backend_screenshot(request: Request):
                 if all(mx <= 1 for _, mx in extrema):
                     logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
                     return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
 
         jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')

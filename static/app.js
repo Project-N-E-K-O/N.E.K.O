@@ -10063,6 +10063,10 @@ function init_app() {
                         screenCaptureStream = null;
                         screenCaptureStreamLastUsed = null;
                     }
+                    // 空壳流说明 getDisplayMedia 已不可用（如刷新后旧流残留），
+                    // 标记 autoPromptFailed 防止后续 timer/非手势上下文再次弹窗
+                    screenCaptureAutoPromptFailed = true;
+                    console.log('[主动搭话截图] 已标记 screenCaptureAutoPromptFailed，后续不再自动弹窗请求屏幕共享');
                     return null;
                 }
 
