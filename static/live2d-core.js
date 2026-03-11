@@ -784,9 +784,15 @@ window.addEventListener('neko-render-quality-changed', (e) => {
                     const checkInterval = setInterval(() => {
                         if (!mgr._isLoadingModel) {
                             clearInterval(checkInterval);
+                            clearTimeout(waitTimeout);
                             resolve();
                         }
                     }, 100);
+                    const waitTimeout = setTimeout(() => {
+                        clearInterval(checkInterval);
+                        console.warn('[Live2D] 等待模型加载超时(30秒)，继续执行...');
+                        resolve();
+                    }, 30000);
                 });
             }
             
@@ -797,8 +803,10 @@ window.addEventListener('neko-render-quality-changed', (e) => {
             
             console.log(`[Live2D] 画质变更为 ${currentQuality}，重新加载模型以应用纹理降采样`);
             
+            const modelForSave = mgr.currentModel;
+            
             try {
-                const textures = mgr.currentModel.textures;
+                const textures = modelForSave.textures;
                 if (textures) {
                     textures.forEach(tex => {
                         if (tex?.baseTexture) {
@@ -810,7 +818,6 @@ window.addEventListener('neko-render-quality-changed', (e) => {
                 console.warn('[Live2D] 清理纹理缓存时出错:', err);
             }
             
-            const modelForSave = mgr.currentModel;
             const scaleX = modelForSave.scale.x;
             const scaleY = modelForSave.scale.y;
             const posX = modelForSave.x;
