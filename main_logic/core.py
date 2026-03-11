@@ -211,6 +211,8 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self.session_start_cooldown_seconds = 3.0  # 冷却时间：3秒
         self.session_start_max_failures = 3  # 最大连续失败次数
+        self._memory_error_retry_after = 0  # Memory Server 专属冷却时间戳
+        self._memory_error_cooldown_seconds = 10  # Memory Server 冷却时间
         
         # 防止并发启动的标志
         self.is_starting_session = False
@@ -1363,6 +1365,7 @@ class LLMSessionManager:
                 # 启动成功，重置失败计数器
                 self.session_start_failure_count = 0
                 self.session_start_last_failure_time = None
+                self._memory_error_retry_after = 0
                 
                 logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - _diag_start:.2f}秒)")
                 # 通知前端 session 已成功启动
@@ -1397,6 +1400,8 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "MEMORY_SERVER_NOT_RUNNING"}))
                 # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
                 self.session_start_failure_count -= 1
+                # 设置 Memory 专属冷却，避免高频重试刷日志
+                self._memory_error_retry_after = time.time() + self._memory_error_cooldown_seconds
             else:
                 error_message = f"Error starting session: {e}"
                 logger.exception(f"💥 {error_message} (失败次数: {self.session_start_failure_count})")
@@ -2275,6 +2280,9 @@ class LLMSessionManager:
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and not self.is_starting_session:
             if not self.session or not self.is_active:
+                # Memory Server 专属冷却检查
+                if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                    return
                 logger.info(f"Session未就绪且不存在，根据输入类型 {input_type} 自动创建 session")
                 # 根据输入类型确定模式
                 mode = 'text' if input_type == 'text' else 'audio'
@@ -2306,6 +2314,9 @@ class LLMSessionManager:
         
         # 如果 session 不存在或不活跃，检查是否可以自动重建
         if not self.session or not self.is_active:
+            # Memory Server 专属冷却检查
+            if self._memory_error_retry_after and time.time() < self._memory_error_retry_after:
+                return
             # 检查失败计数器和冷却时间
             if self.session_start_failure_count >= self.session_start_max_failures:
                 # 达到最大失败次数，检查是否已过冷却期

@@ -1084,8 +1084,8 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageElement.style.zIndex = '1000';
 
     // 为不同类型设置背景色和前景色
-    const bgColors = { error: '#ffebee', warning: '#fff8e1', success: '#e8f5e9', info: '#e3f2fd' };
-    const fgColors = { error: '#c62828', warning: '#e65100', success: '#2e7d32', info: '#1565c0' };
+    const bgColors = { error: '#fde8e8', warning: '#fdf6e3', success: '#e3f7f1', info: '#e8f4fd' };
+    const fgColors = { error: '#d04848', warning: '#c47e00', success: '#1a8a5c', info: '#2d8ec9' };
     messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
     messageElement.style.color = fgColors[type] || '#333';
 

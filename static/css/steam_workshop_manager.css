@@ -2555,21 +2555,21 @@ transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .success-message {
-background: #e8f5e9;
-color: #2e7d32;
-border-left: 4px solid #4caf50;
+background: #e3f7f1;
+color: #1a8a5c;
+border-left: 4px solid #34c78e;
 }
 
 .error-message {
-background: #ffebee;
-color: #c62828;
-border-left: 4px solid #f44336;
+background: #fde8e8;
+color: #d04848;
+border-left: 4px solid #e06060;
 }
 
 .warning-message {
-background: #fff8e1;
-color: #ff8f00;
-border-left: 4px solid #ffb74d;
+background: #fdf6e3;
+color: #c47e00;
+border-left: 4px solid #e8a830;
 }
 
 .message-close {
@@ -2724,6 +2724,59 @@ padding: 10px 15px;
 border-top: 1px solid #e0e0e0;
 background: #fafafa;
 gap: 8px;
+}
+
+/* 上传到创意工坊模态框样式覆盖 */
+#uploadToWorkshopModal .modal-content {
+background: #e8f4fd;
+}
+
+#uploadToWorkshopModal .modal-header {
+background: #dceefb;
+border-bottom: 1px solid #b3d9f2;
+}
+
+#uploadToWorkshopModal .modal-title {
+color: #40C5F1;
+}
+
+#uploadToWorkshopModal .modal-footer {
+background: #dceefb;
+border-top: 1px solid #b3d9f2;
+}
+
+#uploadToWorkshopModal .btn-secondary[onclick*="selectPreviewImage"] {
+min-width: 90px;
+white-space: nowrap;
+padding: 8px 16px;
+}
+
+/* 取消上传确认 & 重复上传提示模态框样式 */
+#cancelUploadModal .modal-content,
+#duplicateUploadModal .modal-content {
+background: #e8f4fd;
+}
+
+#cancelUploadModal .modal-header,
+#duplicateUploadModal .modal-header {
+background: #dceefb;
+border-bottom: 1px solid #b3d9f2;
+}
+
+#cancelUploadModal .modal-title,
+#duplicateUploadModal .modal-title {
+color: #40C5F1;
+}
+
+#cancelUploadModal .modal-body p,
+#duplicateUploadModal .modal-body p {
+color: #2d8ec9;
+}
+
+#cancelUploadModal .modal-footer,
+#duplicateUploadModal .modal-footer {
+background: #dceefb;
+border-top: 1px solid #b3d9f2;
 }
 
 .item-detail-container {
