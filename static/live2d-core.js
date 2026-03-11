@@ -828,10 +828,6 @@ window.addEventListener('neko-render-quality-changed', (e) => {
             }
             
             await mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined);
-            
-            if (_qualityChangeQueued) {
-                setTimeout(processQualityChange, 50);
-            }
         } catch (err) {
             console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
         } finally {
