@@ -28,6 +28,10 @@
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
 
+    // --- 状态追踪：用于 5 秒去重 ---
+    let lastPlayedMusicUrl = null;
+    let lastMusicPlayTime = 0;
+
     // --- 2. 原始工具函数 (完全保留所有域名白名单) ---
     const isSafeUrl = (url) => {
         if (!url) return false;
@@ -64,6 +68,22 @@
         if (typeof window.showStatusToast === 'function') {
             const errMsg = window.t ? window.t(msgKey, defaultMsg) : defaultMsg;
             window.showStatusToast(errMsg, 3000);
+        }
+    };
+
+    const showNowPlayingToast = (name) => {
+        if (typeof window.showStatusToast === 'function') {
+            const displayName = name || '未知曲目';
+            const defaultText = '为您播放: ' + displayName;
+            let playMsg = window.t ? window.t('music.nowPlaying', {
+                name: displayName,
+                defaultValue: defaultText
+            }) : defaultText;
+
+            // 鲁棒性检查：如果 i18n 返回了非字符串，回退到默认文案
+            if (typeof playMsg !== 'string') playMsg = defaultText;
+
+            window.showStatusToast(playMsg, 3000);
         }
     };
 
@@ -331,6 +351,14 @@
     // --- 6. 暴露全局接口 ---
     window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
+
+        const now = Date.now();
+        // 如果是 5 秒内相同的 URL 且播放器已在界面中，视为重复触发并略过（去重交回组件层处理）
+        if (lastPlayedMusicUrl === trackInfo.url && (now - lastMusicPlayTime) < 5000 && isPlayerInDOM()) {
+            console.log('[Music UI] 5秒内相同音乐且已在播放中，跳过播发请求:', trackInfo.name);
+            return true; // 视为已接受处理
+        }
+
         // 如果是同一首歌，但音乐条已经被关掉了（DOM里找不到了）
         if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
             currentPlayingTrack = null;
@@ -341,6 +369,8 @@
         }
 
         const currentToken = ++latestMusicRequestToken;
+        lastPlayedMusicUrl = trackInfo.url;
+        lastMusicPlayTime = now;
 
         if (isSameTrack(trackInfo) && isPlayerInDOM()) {
             const player = getMusicPlayerInstance();
@@ -348,9 +378,12 @@
                 if (typeof window.setMusicUserDriven === 'function')
                     window.setMusicUserDriven();
                 player.play();
+                showNowPlayingToast(trackInfo.name);
             }
             return true;
         }
+
+        showNowPlayingToast(trackInfo.name);
 
         loadAPlayerLibrary().then(() => {
             executePlay(trackInfo, currentToken, shouldAutoPlay);

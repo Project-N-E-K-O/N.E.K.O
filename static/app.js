@@ -2200,8 +2200,7 @@ function init_app() {
         }
     }
 
-    let _lastPlayedMusicUrl = null;
-    let _lastMusicPlayTime = 0;
+    let _musicDispatchId = 0;
 
     window.dispatchMusicPlay = function (trackInfo) {
         if (!trackInfo || !trackInfo.url) {
@@ -2209,52 +2208,41 @@ function init_app() {
             return;
         }
 
-        const now = Date.now();
+        const currentDispatchId = ++_musicDispatchId;
         const musicUrl = trackInfo.url;
-
-        if (_lastPlayedMusicUrl === musicUrl && (now - _lastMusicPlayTime) < 5000) {
-            console.log('[MusicDispatch] 5秒内相同音乐，跳过播放:', trackInfo.name);
-            return;
-        }
 
         if (window.sendMusicMessage) {
             const accepted = window.sendMusicMessage(trackInfo);
             if (accepted) {
-                _lastPlayedMusicUrl = musicUrl;
-                _lastMusicPlayTime = now;
-                if (window.showStatusToast) {
-                    let playMsg = window.t('music.nowPlaying', { name: trackInfo.name, defaultValue: '为您播放: ' + trackInfo.name });
-                    if (typeof playMsg !== 'string') playMsg = String(playMsg);
-                    window.showStatusToast(playMsg, 3000);
-                }
+                // Toast 现在由 window.sendMusicMessage 内部处理，以确保去重逻辑和 UI 状态同步
             }
         } else {
-            console.warn('[MusicDispatch] sendMusicMessage 尚未就绪，启动双保险等待...');
+            console.warn(`[MusicDispatch] sendMusicMessage 尚未就绪，启动等待 (ID: ${currentDispatchId})...`);
 
-            // 逻辑：每 500ms 检查一次，或者监听到事件时触发
             const retryPlay = () => {
-                if (window.sendMusicMessage) {
-                    console.log('[MusicDispatch] 检测到接口已就绪，正在补发播放请求...');
-                    clearInterval(pollTimer);
-                    window.removeEventListener('music-ui-ready', retryPlay);
-                    // 重新执行播放逻辑
-                    window.dispatchMusicPlay(trackInfo);
-                    return true;
+                // 门闩校验：只允许最新的 dispatch 请求执行
+                if (currentDispatchId !== _musicDispatchId) {
+                    console.log(`[MusicDispatch] 放弃过时的播放请求 (ID: ${currentDispatchId})`);
+                    cleanup();
+                    return;
                 }
-                return false;
+
+                if (window.sendMusicMessage) {
+                    console.log(`[MusicDispatch] 接口已就绪，补发播放请求 (ID: ${currentDispatchId})`);
+                    cleanup();
+                    window.dispatchMusicPlay(trackInfo);
+                }
             };
 
-            // 保险 1：定时轮询 (防止错过事件)
-            const pollTimer = setInterval(retryPlay, 500);
-
-            // 保险 2：事件监听
-            window.addEventListener('music-ui-ready', retryPlay, { once: true });
-
-            // 5秒后如果还没加载出来，放弃轮询防止内存泄漏
-            setTimeout(() => {
+            const cleanup = () => {
                 clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
                 window.removeEventListener('music-ui-ready', retryPlay);
-            }, 5000);
+            };
+
+            const pollTimer = setInterval(retryPlay, 500);
+            const timeoutTimer = setTimeout(cleanup, 5000);
+            window.addEventListener('music-ui-ready', retryPlay, { once: true });
         }
     };
 
@@ -2338,8 +2326,8 @@ function init_app() {
                                 query: aiTrackInfo.name,
                                 defaultValue: defaultStr
                             }) : defaultStr;
-                            
-                            if (typeof notFoundMsg !== 'string') notFoundMsg = String(notFoundMsg);
+
+                            if (typeof notFoundMsg !== 'string') notFoundMsg = defaultStr;
                             window.showStatusToast(notFoundMsg, 3000);
                         }
                     }
