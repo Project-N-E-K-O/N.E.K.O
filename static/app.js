@@ -2223,7 +2223,8 @@ function init_app() {
                 _lastPlayedMusicUrl = musicUrl;
                 _lastMusicPlayTime = now;
                 if (window.showStatusToast) {
-                    const playMsg = window.t('music.nowPlaying', { name: trackInfo.name, defaultValue: '为您播放: ' + trackInfo.name });
+                    let playMsg = window.t('music.nowPlaying', { name: trackInfo.name, defaultValue: '为您播放: ' + trackInfo.name });
+                    if (typeof playMsg !== 'string') playMsg = String(playMsg);
                     window.showStatusToast(playMsg, 3000);
                 }
             }

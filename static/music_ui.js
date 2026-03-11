@@ -68,13 +68,17 @@
     };
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
+        // 核心：优先执行本地暂停，避免声音残留
+        if (localPlayer && typeof localPlayer.pause === 'function') {
+            localPlayer.pause();
+        }
 
-        if (typeof window.destroyAPlayer === 'function' && fullTeardown) {
-            window.destroyAPlayer();
-        } else {
-            if (localPlayer) {
-                if (typeof localPlayer.pause === 'function') localPlayer.pause();
-                if (fullTeardown && typeof localPlayer.destroy === 'function') localPlayer.destroy();
+        if (fullTeardown) {
+            if (typeof window.destroyAPlayer === 'function') {
+                window.destroyAPlayer();
+            }
+            if (localPlayer && typeof localPlayer.destroy === 'function') {
+                localPlayer.destroy();
             }
         }
 
@@ -153,7 +157,7 @@
 
         if (getMusicPlayerInstance())
             destroyMusicPlayer(true);
-        document.querySelectorAll('.music-player-bar.fading-out').forEach(el => el.remove());
+        document.querySelectorAll('.music-player-bar.fading-out').forEach(el => { el.remove(); });
         currentPlayingTrack = trackInfo;
 
         const playerId = 'music-bar-player-' + Math.random().toString(36).slice(2, 10);
@@ -256,7 +260,6 @@
             if (currentToken !== latestMusicRequestToken) {
                 if (typeof aplayerInstance.destroy === 'function')
                     aplayerInstance.destroy();
-                localPlayer = null;
                 return;
             }
 
@@ -327,6 +330,7 @@
 
     // --- 6. 暴露全局接口 ---
     window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
+        if (!trackInfo) return false;
         // 如果是同一首歌，但音乐条已经被关掉了（DOM里找不到了）
         if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
             currentPlayingTrack = null;
@@ -370,7 +374,10 @@
         const player = window.aplayer || (window.aplayerInjected && window.aplayerInjected.aplayer);
         if (player && player.audio && player.audio.paused) {
             // 如果当前有排队中的音乐，尝试播放
-            player.play().catch(() => { });
+            const playPromise = player.play();
+            if (playPromise !== undefined && typeof playPromise.catch === 'function') {
+                playPromise.catch(() => { });
+            }
         }
 
         // 移除监听器，只需触发一次
