@@ -1258,7 +1258,7 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
 
             // 验证缩放值是否有效
             if (Number.isFinite(scaleX) && Number.isFinite(scaleY) &&
-                scaleX > MODEL_PREFERENCES.SCALE_MIN && scaleY > MODEL_PREFERENCES.SCALE_MIN && scaleX < 10 && scaleY < 10) {
+                scaleX >= MODEL_PREFERENCES.SCALE_MIN && scaleY >= MODEL_PREFERENCES.SCALE_MIN && scaleX < 10 && scaleY < 10) {
                 // 仅在屏幕分辨率发生"跨代"级别变化时（如 1080p→4K）才归一化缩放
                 // 普通跨屏移动（如 1600x900→2560x1440）不调整，避免用户调好的大小被改
                 const scaleRatio = Math.min(wRatio, hRatio);
