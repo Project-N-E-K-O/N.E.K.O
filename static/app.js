@@ -2250,7 +2250,10 @@ function init_app() {
             window.addEventListener('music-ui-ready', retryPlay, { once: true });
 
             // 5秒后如果还没加载出来，放弃轮询防止内存泄漏
-            setTimeout(() => clearInterval(pollTimer), 5000);
+            setTimeout(() => {
+                clearInterval(pollTimer);
+                window.removeEventListener('music-ui-ready', retryPlay);
+            }, 5000);
         }
     };
 
@@ -2327,12 +2330,15 @@ function init_app() {
                             window.sendMusicMessage(realTrack);
                         }
                     } else {
-                        // 【修复】直接使用 window.t 并传入 query 参数，配合你新改的 JSON 占位符
+                        // 【修复】直接使用 window.t 并传入 query 参数，并确保转换为字符串以防 i18n 加载失败返回非字符串
                         if (window.showStatusToast) {
-                            const notFoundMsg = window.t('music.notFound', {
+                            const defaultStr = `找不到歌曲: ${aiTrackInfo.name}`;
+                            let notFoundMsg = window.t ? window.t('music.notFound', {
                                 query: aiTrackInfo.name,
-                                defaultValue: `找不到歌曲: ${aiTrackInfo.name}`
-                            });
+                                defaultValue: defaultStr
+                            }) : defaultStr;
+                            
+                            if (typeof notFoundMsg !== 'string') notFoundMsg = String(notFoundMsg);
                             window.showStatusToast(notFoundMsg, 3000);
                         }
                     }

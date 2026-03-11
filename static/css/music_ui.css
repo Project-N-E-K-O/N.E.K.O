@@ -172,4 +172,4 @@
     box-shadow: 0 0 6px rgba(68, 183, 254, 0.8) !important;
 }
 
-.aplayer-notice { display: none !important; }
+.music-player-bar .aplayer-notice { display: none !important; }

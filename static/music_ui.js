@@ -2,7 +2,7 @@
  * Music UI Module
  * 职责：从 common-ui 分离出的所有音乐相关代码
  */
-(function() {
+(function () {
     'use strict';
 
     // --- 集中配置中心 ---
@@ -24,7 +24,7 @@
     };
 
     let currentPlayingTrack = null;
-    let localPlayer= null;
+    let localPlayer = null;
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
 
@@ -39,10 +39,10 @@
                 'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
                 'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
                 'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-                'freemusicarchive.org', 'musopen.org', 'bandcamp.com', 
+                'freemusicarchive.org', 'musopen.org', 'bandcamp.com',
                 'bcbits.com', 'soundcloud.com', 'sndcdn.com',
                 'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
-                'itunes.apple.com', 'audio-ssl.itunes.apple.com', 
+                'itunes.apple.com', 'audio-ssl.itunes.apple.com',
                 'dummyimage.com', 'music.163.com'
             ];
             return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
@@ -54,10 +54,10 @@
     const isPlayerInDOM = () => !!document.getElementById(MUSIC_CONFIG.dom.barId);
 
     const isSameTrack = (info) => {
-        return currentPlayingTrack && 
-               currentPlayingTrack.name === info.name && 
-               currentPlayingTrack.artist === info.artist &&
-               currentPlayingTrack.url === info.url;
+        return currentPlayingTrack &&
+            currentPlayingTrack.name === info.name &&
+            currentPlayingTrack.artist === info.artist &&
+            currentPlayingTrack.url === info.url;
     };
 
     const showErrorToast = (msgKey, defaultMsg) => {
@@ -67,7 +67,7 @@
         }
     };
 
-    const destroyMusicPlayer = (removeDOM = true) => {
+    const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
 
         if (typeof window.destroyAPlayer === 'function') {
             window.destroyAPlayer();
@@ -75,11 +75,11 @@
 
             if (localPlayer) {
                 if (typeof localPlayer.pause === 'function') localPlayer.pause();
-                if (typeof localPlayer.destroy === 'function') localPlayer.destroy();
+                if (fullTeardown && typeof localPlayer.destroy === 'function') localPlayer.destroy();
             }
         }
-        
-        localPlayer = null; 
+
+        localPlayer = null;
         window.aplayer = null;
         if (window.aplayerInjected) {
             window.aplayerInjected.aplayer = null;
@@ -101,7 +101,7 @@
             const injectCSS = (path) => new Promise((res) => {
                 if (!path) return res();
                 if (document.querySelector(`link[href*="${path}"]`)) return res();
-                
+
                 const link = document.createElement('link');
                 link.rel = 'stylesheet';
                 link.href = path;
@@ -139,17 +139,20 @@
             ]).then(() => {
                 console.log('[Music UI] 所有资源（包括自定义CSS）已就绪');
                 resolve();
-            }).catch(reject);
+            }).catch((err) => {
+                aplayerLoadPromise = null;
+                reject(err);
+            });
         });
         return aplayerLoadPromise;
     };
 
     // --- 5. 播放器挂载逻辑 (保留所有 DOM 安全赋值) ---
     const executePlay = async (trackInfo, currentToken, shouldAutoPlay = true) => {
-        if (currentToken !== latestMusicRequestToken) 
+        if (currentToken !== latestMusicRequestToken)
             return;
 
-        if (getMusicPlayerInstance()) 
+        if (getMusicPlayerInstance())
             destroyMusicPlayer(true);
         document.querySelectorAll('.music-player-bar.fading-out').forEach(el => el.remove());
         currentPlayingTrack = trackInfo;
@@ -160,7 +163,7 @@
 
         const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
         const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-        if (!chatContainerEl) 
+        if (!chatContainerEl)
             return;
 
         let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
@@ -168,9 +171,9 @@
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
-            if (textInputArea) 
+            if (textInputArea)
                 chatContainerEl.insertBefore(musicBar, textInputArea);
-            else 
+            else
                 chatContainerEl.appendChild(musicBar);
         }
 
@@ -187,36 +190,37 @@
                 <div class="music-bar-title"></div>
                 <div class="music-bar-artist"></div>
             </div>
-            <button type="button" class="music-bar-play">▶</button>
-            <button type="button" class="music-bar-close">✕</button>
+            <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+            <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
             <div id="${playerId}" style="display: none;"></div>
         `;
 
         musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
-        
+
         const coverImg = musicBar.querySelector('img');
         const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
         if (hasCover && coverImg) {
             coverImg.src = trackInfo.cover;
-            coverImg.onerror = function() {
+            coverImg.onerror = function () {
                 this.style.display = 'none';
-                if (fallbackIcon) 
+                if (fallbackIcon)
                     fallbackIcon.style.display = 'flex';
             };
         }
 
         const closeBtn = musicBar.querySelector('.music-bar-close');
         closeBtn.addEventListener('click', (e) => {
-            e.preventDefault(); 
-            destroyMusicPlayer(false);
-            if (musicBar.parentNode) { 
+            e.preventDefault();
+            latestMusicRequestToken++; // 取消可能正在进行的异步加载请求
+            destroyMusicPlayer(false, true); // 手动关闭时执行 full teardown
+            if (musicBar.parentNode) {
                 musicBar.classList.add('fading-out');
                 let isRemoved = false;
                 const safeRemove = () => {
-                    if (!isRemoved && musicBar.parentNode) { 
-                        musicBar.remove(); 
-                        isRemoved = true; 
+                    if (!isRemoved && musicBar.parentNode) {
+                        musicBar.remove();
+                        isRemoved = true;
                     }
                 };
                 musicBar.addEventListener('animationend', safeRemove, { once: true });
@@ -225,8 +229,8 @@
         });
 
         const container = musicBar.querySelector(`#${playerId}`);
-        const apBtn = musicBar.querySelector('.music-bar-play'); 
-        if (!container) 
+        const apBtn = musicBar.querySelector('.music-bar-play');
+        if (!container)
             return currentPlayingTrack = null;
 
         try {
@@ -235,54 +239,63 @@
                 theme: MUSIC_CONFIG.primaryColor,
                 loop: 'none',
                 preload: shouldAutoPlay ? 'auto' : 'metadata',
-                autoplay: shouldAutoPlay, 
+                autoplay: shouldAutoPlay,
                 mutex: true, volume: MUSIC_CONFIG.defaultVolume,
                 listFolded: true, order: 'normal',
                 audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]
             };
 
             let aplayerInstance = null;
-            if (typeof window.initializeAPlayer === 'function') 
+            if (typeof window.initializeAPlayer === 'function')
                 aplayerInstance = await window.initializeAPlayer(playerConfig);
-            else 
+            else
                 aplayerInstance = new window.APlayer(playerConfig);
 
-            if (!aplayerInstance) 
+            if (!aplayerInstance)
                 throw new Error("APlayer init failed");
 
             if (currentToken !== latestMusicRequestToken) {
-                if (typeof aplayerInstance.destroy === 'function') 
+                if (typeof aplayerInstance.destroy === 'function')
                     aplayerInstance.destroy();
-                    localPlayer = null;
+                localPlayer = null;
                 return;
             }
 
             localPlayer = aplayerInstance;
             window.aplayer = localPlayer;
 
-            if (!window.aplayerInjected) 
+            if (!window.aplayerInjected)
                 window.aplayerInjected = {};
             window.aplayerInjected.aplayer = localPlayer;
 
             if (apBtn) {
                 apBtn.addEventListener('click', (e) => {
-                    e.preventDefault(); 
-                    if (typeof window.setMusicUserDriven === 'function') 
+                    e.preventDefault();
+                    if (typeof window.setMusicUserDriven === 'function')
                         window.setMusicUserDriven();
                     localPlayer.toggle();
                 });
-                apBtn.textContent = shouldAutoPlay ? '⏸' : '▶';
-                localPlayer.on('play', () => apBtn.textContent = '⏸');
-                localPlayer.on('pause', () => apBtn.textContent = '▶');
-                localPlayer.on('ended', () => apBtn.textContent = '▶');
-                
+                const updatePlayBtnState = (isPlaying) => {
+                    const icon = isPlaying ? '⏸' : '▶';
+                    const text = isPlaying ? 'Pause' : 'Play';
+                    const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', text) : text;
+                    apBtn.textContent = icon;
+                    apBtn.setAttribute('title', tText);
+                    apBtn.setAttribute('aria-label', tText);
+                };
+
+                updatePlayBtnState(shouldAutoPlay);
+                localPlayer.on('play', () => updatePlayBtnState(true));
+                localPlayer.on('pause', () => updatePlayBtnState(false));
+                localPlayer.on('ended', () => updatePlayBtnState(false));
+
                 // 处理浏览器拦截自动播放导致界面“假死”的问题
                 // APlayer 的 play() 实际上是一个 Promise，如果被拦截会抛出带有 'NotAllowedError' 的 DOMException
                 if (shouldAutoPlay) {
                     // 由于 APlayer 内部也会调用 audio.play()，我们为其代理错误捕获
                     const originalPlay = localPlayer.audio.play;
                     if (originalPlay) {
-                        localPlayer.audio.play = function() {
+                        localPlayer.audio.play = function () {
                             const playPromise = originalPlay.call(this);
                             if (playPromise !== undefined) {
                                 playPromise.catch(error => {
@@ -301,20 +314,20 @@
             }
 
             const apElement = container.querySelector('.aplayer');
-            if (apElement) 
+            if (apElement)
                 apElement.style.display = 'none';
 
         } catch (err) {
             console.error('[Music UI] 播放器出错:', err);
             if (currentToken === latestMusicRequestToken) {
                 currentPlayingTrack = null;
-                showErrorToast('music.playError', '音乐播放加载失败'); 
+                showErrorToast('music.playError', '音乐播放加载失败');
             }
         }
     };
 
     // --- 6. 暴露全局接口 ---
-    window.sendMusicMessage = function(trackInfo, shouldAutoPlay = true) {
+    window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
         // 如果是同一首歌，但音乐条已经被关掉了（DOM里找不到了）
         if (isSameTrack(trackInfo) && !isPlayerInDOM()) {
             currentPlayingTrack = null;
@@ -329,7 +342,7 @@
         if (isSameTrack(trackInfo) && isPlayerInDOM()) {
             const player = getMusicPlayerInstance();
             if (player && player.audio && player.audio.paused) {
-                if (typeof window.setMusicUserDriven === 'function') 
+                if (typeof window.setMusicUserDriven === 'function')
                     window.setMusicUserDriven();
                 player.play();
             }
@@ -345,32 +358,32 @@
 
         return true;
     };
-// 全局解锁函数
-const unlockAudio = () => {
-    console.log('[Audio] 检测到交互，尝试激活音频环境...');
-    
-    // 1. 解锁 Web Audio API
-    if (window.lanlanAudioContext && window.lanlanAudioContext.state === 'suspended') {
-        window.lanlanAudioContext.resume();
-    }
-    
-    // 2. 解锁 APlayer 实例 (如果有的话)
-    const player = window.aplayer || (window.aplayerInjected && window.aplayerInjected.aplayer);
-    if (player && player.audio && player.audio.paused) {
-        // 如果当前有排队中的音乐，尝试播放
-        player.play().catch(() => {});
-    }
+    // 全局解锁函数
+    const unlockAudio = () => {
+        console.log('[Audio] 检测到交互，尝试激活音频环境...');
 
-    // 移除监听器，只需触发一次
-    document.removeEventListener('click', unlockAudio);
-    document.removeEventListener('keydown', unlockAudio);
-};
+        // 1. 解锁 Web Audio API
+        if (window.lanlanAudioContext && window.lanlanAudioContext.state === 'suspended') {
+            window.lanlanAudioContext.resume();
+        }
 
-// 监听任何点击或按键
-document.addEventListener('click', unlockAudio, { once: true });
-document.addEventListener('keydown', unlockAudio, { once: true });
+        // 2. 解锁 APlayer 实例 (如果有的话)
+        const player = window.aplayer || (window.aplayerInjected && window.aplayerInjected.aplayer);
+        if (player && player.audio && player.audio.paused) {
+            // 如果当前有排队中的音乐，尝试播放
+            player.play().catch(() => { });
+        }
 
-window.dispatchEvent(new CustomEvent('music-ui-ready'));
-console.log('[Music UI] 接口已暴露，就绪信号已发送');
+        // 移除监听器，只需触发一次
+        document.removeEventListener('click', unlockAudio);
+        document.removeEventListener('keydown', unlockAudio);
+    };
+
+    // 监听任何点击或按键
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+
+    window.dispatchEvent(new CustomEvent('music-ui-ready'));
+    console.log('[Music UI] 接口已暴露，就绪信号已发送');
 
 })();
