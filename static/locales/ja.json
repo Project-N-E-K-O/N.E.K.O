@@ -1030,6 +1030,7 @@
         "prefixFormatError": "プレフィックス形式エラー：最大10文字、数字と英字のみ",
         "registering": "ボイスを登録中です。お待ちください...",
         "registerSuccess": "登録成功！voice_id: {{voiceId}}",
+        "reusedExisting": "既存のボイスを再利用しました。アップロードをスキップしました。voice_id: {{voiceId}}",
         "registerFailed": "登録失敗：{{error}}",
         "requestError": "リクエストエラー：{{error}}",
         "voiceIdSaveFailed": "voice_idの自動保存に失敗しました: {{error}}",
