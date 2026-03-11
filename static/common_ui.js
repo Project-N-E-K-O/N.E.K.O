@@ -1103,481 +1103,410 @@ window.triggerScreenshot = function() {
     }
 };
 
-// ========== 音乐聊天气泡功能 ==========
-// 记录当前正在播放的音乐信息，用于去重
-let currentPlayingTrack = null;
+// ========== 音乐聊天气泡功能 (现代前端清爽版) ==========
 
-// 统一的 APlayer 实例获取函数
-const getMusicPlayerInstance = () => {
-    // 优先使用 window.aplayerInjected（推荐方式）
-    if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-        return window.aplayerInjected.aplayer;
-    }
-    // 回退到 window.aplayer（旧方式）
-    if (window.aplayer) {
-        return window.aplayer;
-    }
-    return null;
-};
+(function() {
+    'use strict';
 
-// 统一的停止音乐函数（只暂停，保留实例）
-const stopMusicPlayer = () => {
-    const player = getMusicPlayerInstance();
-    if (player && typeof player.pause === 'function') {
-        player.pause();
-    }
-};
+    // --- 集中配置中心 ---
+    const MUSIC_CONFIG = {
+        dom: {
+            containerId: 'chat-container',
+            insertBeforeId: 'text-input-area',
+            barId: 'music-player-bar'
+        },
+        assets: {
+            cssPath: '/static/libs/APlayer.min.css',
+            jsPath: '/static/libs/APlayer.min.js'
+        },
+        themeColors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'],
+        primaryColor: '#667eea',
+        secondaryColor: '#764ba2',
+        defaultVolume: 0.5
+    };
 
-// 检查是否需要清理旧音乐实例
-// 条件：音乐气泡之前的消息数 > 10 且播放器未播放
-const shouldCleanupOldMusicPlayer = () => {
-    const player = getMusicPlayerInstance();
-    if (!player) return false;
-    
-    // 播放器正在播放，不清理
-    if (!player.paused) return false;
-    
-    // 查找音乐气泡
-    const musicBubble = document.querySelector('.music-bubble');
-    if (!musicBubble) return false;
-    
-    // 统计音乐气泡之前的消息数量
-    const allMessages = chatContentWrapper ? chatContentWrapper.children : [];
-    let messageCountBeforeMusic = 0;
-    
-    for (let i = 0; i < allMessages.length; i++) {
-        const msg = allMessages[i];
-        // 检查是否是音乐气泡或其父元素
-        if (msg.contains(musicBubble) || msg === musicBubble) {
-            break;
-        }
-        // 只计算实际的消息元素
-        if (msg.querySelector && (msg.querySelector('.chat-message') || msg.classList?.contains('chat-message'))) {
-            messageCountBeforeMusic++;
-        }
-    }
-    
-    return messageCountBeforeMusic > 10;
-};
+    let currentPlayingTrack = null;
+    let aplayerLoadPromise = null;
+    let latestMusicRequestToken = 0;
+    let isMusicStyleInjected = false;
 
-// 统一的销毁音乐函数（完全销毁实例，释放资源）
-const destroyMusicPlayer = () => {
-    if (typeof window.destroyAPlayer === 'function') {
-        window.destroyAPlayer();
-    } else {
-        const player = getMusicPlayerInstance();
-        if (player) {
-            if (typeof player.pause === 'function') player.pause();
-            if (typeof player.destroy === 'function') player.destroy();
-        }
-        if (window.aplayer) window.aplayer = null;
-        if (window.aplayerInjected && window.aplayerInjected.aplayer) {
-            window.aplayerInjected.aplayer = null;
-        }
-    }
-    // 移除音乐消息根节点（整块移除，避免残留）
-    document.querySelectorAll('.music-message-root').forEach(root => {
-        root.remove();
-    });
-    currentPlayingTrack = null;
-};
-
-// APlayer 库加载单例 Promise
-let aplayerLoadPromise = null;
-// 当前最新的音乐请求 token，用于取消过期请求
-let latestMusicRequestToken = 0;
-
-window.sendMusicMessage = function(trackInfo) {
-    // --- 【新增：前置安全校验】将原 showMusicPlayer 内部的校验移到最开始 ---
+    // --- 纯函数库 & 工具方法 ---
     const isSafeUrl = (url) => {
         if (!url) return false;
         try {
             const parsed = new URL(url);
-            const allowedProtocols = ['http:', 'https:'];
+            if (!['http:', 'https:'].includes(parsed.protocol)) return false;
             const allowedDomains = [
-        'cdn.jsdelivr.net', 'i.scdn.co', 'p.scdn.co', 'a.scdn.co',
-        'via.placeholder.com', 'i.imgur.com', 'y.qq.com',
-        'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-        'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-        'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-        'freemusicarchive.org', 'musopen.org', 'bandcamp.com', 'bcbits.com', 'soundcloud.com', 'sndcdn.com',
-        'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-        'dummyimage.com', 'music.163.com'
+                'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
+                'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
+                'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
+                'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
+                'freemusicarchive.org', 'musopen.org', 'bandcamp.com', 
+                'bcbits.com', 'soundcloud.com', 'sndcdn.com',
+                'itunes.apple.com', 'audio-ssl.itunes.apple.com', 
+                'dummyimage.com', 'music.163.com'
             ];
-            if (!allowedProtocols.includes(parsed.protocol)) return false;
-            // 严格限制全等匹配或合法子域名匹配，防止 SSRF 域名绕过
-            if (!allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d))) return false;
-            return true;
+            return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
         } catch {
             return false;
         }
     };
 
-    // 1. 最先检查 URL 合法性，不合法直接驳回，绝不打断当前正在播放的音乐
-    if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
-        console.warn('[Common UI] 音频 URL 未通过安全校验，拒绝播放:', trackInfo.url);
-        return false;
-    }
-
-    // 2. 检查是否需要清理闲置的旧音乐播放器实例（防止未播放的DOM无限堆积）
-    if (shouldCleanupOldMusicPlayer()) {
-        console.log('[Common UI] 音乐气泡之前消息数超过10条且播放器未播放，销毁旧实例');
-        destroyMusicPlayer();
-    }
-    
-    const trackName = trackInfo.name || '未知曲目';
-    const artistName = trackInfo.artist || '未知艺术家';
-    
-    const shouldCreateNewPlayer = () => {
-        if (!currentPlayingTrack) return true;
-        const player = getMusicPlayerInstance();
-        if (player && !player.paused) {
-            console.log('[Common UI] 已有音乐正在播放，不创建新播放器');
-            return false;
-        }
-        return true;
-    };
-    
-    const isSameTrack = (info) => {
-        return currentPlayingTrack && 
-               currentPlayingTrack.name === info.name && 
-               currentPlayingTrack.artist === info.artist;
+    const getMusicPlayerInstance = () => {
+        if (window.aplayerInjected && window.aplayerInjected.aplayer) return window.aplayerInjected.aplayer;
+        if (window.aplayer) return window.aplayer;
+        return null;
     };
 
     const isPlayerInDOM = () => {
         const player = getMusicPlayerInstance();
         return player && player.container && document.body.contains(player.container);
     };
-    
-    // 如果是同一首歌且气泡还在，复用现有实例
-    const player = getMusicPlayerInstance();
-    if (isSameTrack(trackInfo)) {
-        if (isPlayerInDOM()) {
-            console.log('[Common UI] 相同歌曲且气泡存在，复用现有实例');
-            if (player && player.paused) {
+
+    const isSameTrack = (info) => {
+        return currentPlayingTrack && 
+               currentPlayingTrack.name === info.name && 
+               currentPlayingTrack.artist === info.artist &&
+               currentPlayingTrack.url === info.url;
+    };
+
+    const showErrorToast = (msgKey, defaultMsg) => {
+        if (typeof window.showStatusToast === 'function') {
+            const errMsg = window.t ? window.t(msgKey, defaultMsg) : defaultMsg;
+            window.showStatusToast(errMsg, 3000);
+        }
+    };
+
+    // --- 核心播放器控制逻辑 ---
+    const destroyMusicPlayer = (removeDOM = true) => {
+        if (typeof window.destroyAPlayer === 'function') {
+            latestMusicRequestToken++;
+            window.destroyAPlayer();
+        } else {
+            const player = getMusicPlayerInstance();
+            if (player) {
+                if (typeof player.pause === 'function') player.pause();
+                if (typeof player.destroy === 'function') player.destroy();
+            }
+            if (window.aplayer) window.aplayer = null;
+            if (window.aplayerInjected && window.aplayerInjected.aplayer) window.aplayerInjected.aplayer = null;
+        }
+        
+        if (removeDOM) {
+            const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
+            if (bar) bar.remove();
+        }
+        currentPlayingTrack = null;
+    };
+
+    // --- 样式注入 ---
+    const injectMusicBarStyles = () => {
+        if (isMusicStyleInjected || document.getElementById('music-bar-style')) return;
+        const style = document.createElement('style');
+        style.id = 'music-bar-style';
+        // 拒绝面条代码，采用多行清晰排版！通过 var(--xxx) 接收动态颜色
+        style.textContent = `
+            :root {
+                --music-bar-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                --music-text-main: #fff;
+                --music-text-sub: rgba(255, 255, 255, 0.6);
+            }
+            @keyframes musicBarSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+            @keyframes musicBarFadeOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
+            
+            .music-player-bar {
+                display: flex; align-items: center; gap: 10px;
+                padding: 8px 16px; margin: 0 auto 8px auto; width: 75%;
+                background: var(--music-bar-bg); border-radius: 12px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                box-sizing: border-box; flex-shrink: 0; position: relative;
+                animation: musicBarSlideIn 0.3s ease;
+            }
+            .music-player-bar.fading-out { animation: musicBarFadeOut 0.2s ease forwards; }
+            
+            .music-bar-cover {
+                width: 40px; height: 40px; border-radius: 8px; overflow: hidden;
+                background: linear-gradient(135deg, var(--dynamic-random-color), var(--dynamic-primary-color));
+                display: flex; align-items: center; justify-content: center;
+                font-size: 18px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            }
+            .music-bar-cover img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; pointer-events: auto; }
+            .music-bar-fallback { display: none; }
+            
+            .music-bar-info {
+                flex: 1; min-width: 0; overflow: hidden;
+                display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;
+            }
+            .music-bar-title { color: var(--music-text-main); font-size: 13px; 
+                font-weight: 600; white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis; margin-bottom: 2px; width: 100%; 
+            }
+            .music-bar-artist { color: var(--music-text-sub); font-size: 11px;
+                white-space: nowrap; overflow: hidden; 
+                text-overflow: ellipsis; width: 100%; 
+            }
+            
+            .music-bar-play {
+                width: 32px; height: 32px; border-radius: 50%; border: none; color: white;
+                background: linear-gradient(135deg, var(--dynamic-primary-color), var(--dynamic-secondary-color));
+                cursor: pointer; display: flex; align-items: center; justify-content: center;
+                font-size: 12px; flex-shrink: 0; box-shadow: 0 2px 4px rgba(102,126,234,0.4);
+                transition: transform 0.2s; pointer-events: auto;
+            }
+            .music-bar-play:hover { transform: scale(1.1); }
+            .music-bar-play:active { transform: scale(0.95); }
+            
+            .music-bar-close {
+                width: 20px; height: 20px; border: none; border-radius: 50%; padding: 0;
+                background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.5);
+                cursor: pointer; display: flex; align-items: center; justify-content: center;
+                font-size: 11px; flex-shrink: 0; transition: all 0.2s; pointer-events: auto; line-height: 1;
+            }
+            .music-bar-close:hover { color: var(--music-text-main); background: rgba(255,255,255,0.2); }
+            .aplayer-notice { display: none !important; }
+
+        `;
+        document.head.appendChild(style);
+        isMusicStyleInjected = true;
+    };
+
+// --- 动态加载 APlayer 库 ---
+    const loadAPlayerLibrary = () => {
+        if (aplayerLoadPromise) return aplayerLoadPromise;
+
+        aplayerLoadPromise = new Promise((resolve, reject) => {
+            if (typeof window.APlayer !== 'undefined') return resolve();
+            
+            // 1. 独立 Promise 处理 CSS 加载（防止裸奔）
+            const loadCSS = new Promise((res) => {
+                if (document.querySelector(`link[href*="${MUSIC_CONFIG.assets.cssPath}"]`)) return res();
+                const cssLink = document.createElement('link');
+                cssLink.rel = 'stylesheet';
+                cssLink.href = MUSIC_CONFIG.assets.cssPath;
+                cssLink.onload = res;
+                // 即使样式加载失败也不要彻底阻塞 JS 的执行，容错处理
+                cssLink.onerror = () => { console.warn('[Common UI] APlayer CSS 加载失败'); res(); };
+                document.head.appendChild(cssLink);
+            });
+
+            // 2. 独立 Promise 处理 JS 加载与校验
+            const loadJS = new Promise((res, rej) => {
+                const existingScript = document.querySelector(`script[src*="${MUSIC_CONFIG.assets.jsPath}"]`);
+
+                if (existingScript) {
+                    if (typeof window.APlayer !== 'undefined') return res();
+                    // 针对并发加载的轮询，抛弃易死锁的事件监听
+                    let retries = 50; 
+                    const checkInterval = setInterval(() => {
+                        if (typeof window.APlayer !== 'undefined') { clearInterval(checkInterval); res(); }
+                        else if (--retries <= 0) { clearInterval(checkInterval); rej(new Error('APlayer 加载超时')); }
+                }, 100);
+                return;
+            }
+
+            const script = document.createElement('script');
+            script.src = MUSIC_CONFIG.assets.jsPath;
+            script.onload = () => {
+                // 绝不盲目相信 onload，强校验全局变量
+                if (typeof window.APlayer !== 'undefined') res();
+                else rej(new Error('APlayer 脚本已加载，但未找到全局实例'));
+            };
+            script.onerror = () => {
+                script.remove();
+                aplayerLoadPromise = null; // 释放锁，允许重试
+                rej(new Error('APlayer JS 库加载失败'));
+            };
+            document.head.appendChild(script);
+        });
+
+        // 3. 并行等待 CSS 和 JS 双端就绪
+        Promise.all([loadCSS, loadJS]).then(() => resolve()).catch(reject);
+    });
+    return aplayerLoadPromise;
+};
+
+    // --- 播放器挂载与执行核心 ---
+    const executePlay = async (trackInfo, currentToken, shouldAutoPlay = true) => {
+        if (currentToken !== latestMusicRequestToken) 
+            return;
+
+        if (getMusicPlayerInstance()) 
+            destroyMusicPlayer(true);
+        // 强制清理正在 fading-out 的残留节点，防止 setTimeout 误杀新节点
+        document.querySelectorAll('.music-player-bar.fading-out').forEach(el => el.remove());
+        currentPlayingTrack = trackInfo;
+
+        const playerId = 'music-bar-player-' + Math.random().toString(36).slice(2, 10);
+        const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
+        const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
+
+        const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
+        const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+        if (!chatContainerEl) 
+            return;
+
+        injectMusicBarStyles();
+
+        let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        if (!musicBar) {
+            musicBar = document.createElement('div');
+            musicBar.id = MUSIC_CONFIG.dom.barId;
+            musicBar.className = 'music-player-bar';
+            if (textInputArea) 
+                chatContainerEl.insertBefore(musicBar, textInputArea);
+            else 
+                chatContainerEl.appendChild(musicBar);
+        }
+
+        musicBar.style.setProperty('--dynamic-random-color', randomColor);
+        musicBar.style.setProperty('--dynamic-primary-color', MUSIC_CONFIG.primaryColor);
+        musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
+
+        musicBar.innerHTML = `
+            <div class="music-bar-cover">
+                <img style="display: ${hasCover ? 'block' : 'none'};" alt="cover">
+                <span class="music-bar-fallback" style="display: ${hasCover ? 'none' : 'flex'};">🎵</span>
+            </div>
+            <div class="music-bar-info">
+                <div class="music-bar-title"></div>
+                <div class="music-bar-artist"></div>
+            </div>
+            <button type="button" class="music-bar-play">▶</button>
+            <button type="button" class="music-bar-close">✕</button>
+            <div id="${playerId}" style="display: none;"></div>
+        `;
+
+        // 纯净且安全的 DOM 赋值
+        musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
+        musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
+        
+        const coverImg = musicBar.querySelector('img');
+        const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
+        if (hasCover && coverImg) {
+            coverImg.src = trackInfo.cover; // 安全设值
+            coverImg.onerror = function() {
+                this.style.display = 'none';
+                if (fallbackIcon) fallbackIcon.style.display = 'flex';
+            };
+        }
+
+        // 增加双保险的 DOM 清理机制
+        const closeBtn = musicBar.querySelector('.music-bar-close');
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault(); // 阻断表单提交
+            destroyMusicPlayer(false);
+            if (musicBar.parentNode) { 
+                musicBar.classList.add('fading-out');
+                
+                // 双保险：防止 animationend 不触发导致内存泄漏
+                let isRemoved = false;
+                const safeRemove = () => {
+                    if (!isRemoved && musicBar.parentNode) {
+                        musicBar.remove();
+                        isRemoved = true;
+                    }
+                };
+                musicBar.addEventListener('animationend', safeRemove, { once: true });
+                setTimeout(safeRemove, 300); // 300ms 强制超期回收
+            }
+        });
+
+        const container = musicBar.querySelector(`#${playerId}`);
+        const apBtn = musicBar.querySelector('.music-bar-play'); 
+        
+        if (!container) return currentPlayingTrack = null;
+
+        try {
+            const playerConfig = {
+                container: container,
+                theme: MUSIC_CONFIG.primaryColor,
+                loop: 'none',
+                preload: shouldAutoPlay ? 'auto' : 'metadata',
+                autoplay: shouldAutoPlay, 
+                mutex: true,    
+                volume: MUSIC_CONFIG.defaultVolume,
+                listFolded: true,
+                order: 'normal',
+                audio: [{ name: trackInfo.name, artist: trackInfo.artist, 
+                    url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' 
+                }]
+            };
+
+            let aplayerInstance = null;
+            if (typeof window.initializeAPlayer === 'function') {
+                aplayerInstance = await window.initializeAPlayer(playerConfig);
+            } else {
+                aplayerInstance = new window.APlayer(playerConfig);
+            }
+
+            if (!aplayerInstance) throw new Error("APlayer init failed");
+            
+            if (currentToken !== latestMusicRequestToken) {
+                if (typeof aplayerInstance.destroy === 'function') aplayerInstance.destroy();
+                return;
+            }
+
+            if (!window.aplayerInjected) window.aplayerInjected = {};
+            window.aplayerInjected.aplayer = aplayerInstance;
+
+            if (apBtn) {
+                apBtn.addEventListener('click', (e) => {
+                    e.preventDefault(); 
+                    if (typeof window.setMusicUser主导 === 'function') {
+                        window.setMusicUser主导();
+                    }
+                    aplayerInstance.toggle();
+                });
+                apBtn.textContent = shouldAutoPlay ? '⏸' : '▶';
+                aplayerInstance.on('play', () => apBtn.textContent = '⏸');
+                aplayerInstance.on('pause', () => apBtn.textContent = '▶');
+                aplayerInstance.on('ended', () => apBtn.textContent = '▶');
+            }
+
+            const apElement = container.querySelector('.aplayer');
+            if (apElement) apElement.style.display = 'none';
+
+        } catch (err) {
+            console.error('[Common UI] 音乐播放器初始化失败:', err);
+            if (currentToken === latestMusicRequestToken) {
+                currentPlayingTrack = null;
+                showErrorToast('music.playError', '音乐播放加载失败'); 
+            }
+        }
+    };
+
+    // --- 对外暴漏的主函数绑定到 Window ---
+    window.sendMusicMessage = function(trackInfo, shouldAutoPlay = true) {
+        if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
+            console.warn('[Common UI] 音频 URL 未通过安全校验，拒绝播放:', trackInfo.url);
+            return false;
+        }
+
+        const currentToken = ++latestMusicRequestToken;
+
+        if (isSameTrack(trackInfo) && isPlayerInDOM()) {
+            const player = getMusicPlayerInstance();
+            if (player && player.audio && player.audio.paused) {
+                if (typeof window.setMusicUser主导 === 'function') {
+                    window.setMusicUser主导();
+                }
                 player.play();
             }
             return true;
-        } else {
-            console.log('[Common UI] 相同歌曲但气泡已被清理，彻底重置并重建');
-            destroyMusicPlayer(); 
-            currentPlayingTrack = null; 
-        }
-    }
-    
-    const loadAPlayerLibrary = () => {
-        if (aplayerLoadPromise) return aplayerLoadPromise;
-        
-        aplayerLoadPromise = new Promise((resolve, reject) => {
-            if (typeof APlayer !== 'undefined') {
-                resolve();
-                return;
-            }
-            
-            if (!document.querySelector('link[href*="APlayer.min.css"]')) {
-                const cssLink = document.createElement('link');
-                cssLink.rel = 'stylesheet';
-                cssLink.href = '/static/libs/APlayer.min.css';
-                cssLink.onerror = () => console.error('[Common UI] APlayer CSS 加载失败');
-                document.head.appendChild(cssLink);
-            }
-            
-            const existingScript = document.querySelector('script[src*="APlayer.min.js"]');
-            if (!existingScript) {
-                const script = document.createElement('script');
-                script.src = '/static/libs/APlayer.min.js';
-                script.onload = () => {
-                    console.log('[Common UI] APlayer 库加载成功 (local)');
-                    resolve();
-                };
-                script.onerror = () => {
-                    console.error('[Common UI] APlayer JS 加载失败');
-                    aplayerLoadPromise = null;
-                    reject(new Error('APlayer 库加载失败'));
-                };
-                document.head.appendChild(script);
-            } else {
-                if (typeof APlayer !== 'undefined') {
-                    resolve();
-                } else {
-                    const onLoad = () => { cleanup(); resolve(); };
-                    const onError = () => {
-                        cleanup();
-                        aplayerLoadPromise = null; 
-                        reject(new Error('APlayer 库加载失败'));
-                    };
-                    const fallbackTimer = setTimeout(() => {
-                        cleanup();
-                        if (typeof APlayer !== 'undefined') {
-                            resolve();
-                        } else {
-                            aplayerLoadPromise = null; 
-                            reject(new Error('APlayer 加载超时'));
-                        }
-                    }, 5000);
-
-                    const cleanup = () => {
-                        existingScript.removeEventListener('load', onLoad);
-                        existingScript.removeEventListener('error', onError);
-                        clearTimeout(fallbackTimer);
-                    };
-
-                    existingScript.addEventListener('load', onLoad);
-                    existingScript.addEventListener('error', onError);
-                }
-            }
-        });
-        return aplayerLoadPromise;
-    };
-    
-    // 为本次请求生成唯一 token (移到顶层，让闭包更早捕获)
-    const currentToken = ++latestMusicRequestToken;
-
-    // --- 【核心修复：将销毁旧实例和写入状态延后至真正开始渲染前】 ---
-    const executePlay = async () => {
-        // 第一道防线：如果排队期间被新请求挤掉，直接放弃
-        if (currentToken !== latestMusicRequestToken) {
-            console.log('[Common UI] 请求已过期，取消播放执行');
-            return;
         }
 
-        // 此时 APlayer 库已就绪，且 URL 已通过校验
-        // 安全地销毁旧实例并写入当前播放状态
-        if (getMusicPlayerInstance() || shouldCreateNewPlayer()) {
-            console.log('[Common UI] 准备切换新歌曲，正在回收旧气泡...');
-            destroyMusicPlayer();
-        }
-        currentPlayingTrack = trackInfo;
-
-        const playerId = 'music-msg-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-        const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'];
-        const randomColor = colors[Math.floor(Math.random() * colors.length)];
-        
-        console.log('[Music] trackInfo:', trackInfo);
-        
-        const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
-        
-        const messageDiv = document.createElement('div');
-        messageDiv.className = 'chat-message bot-message music-bubble';
-        messageDiv.style.cssText = 'display: inline-flex; align-items: center; gap: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); margin-top: 8px;';
-        
-        const coverDiv = document.createElement('div');
-        coverDiv.className = 'music-cover';
-        coverDiv.style.cssText = 'width: 48px; height: 48px; border-radius: 10px; background: linear-gradient(135deg, ' + randomColor + ', #667eea); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); overflow: hidden;';
-        
-        if (hasCover) {
-            const coverImg = document.createElement('img');
-            coverImg.src = trackInfo.cover;
-            coverImg.style.cssText = 'width: 100%; height: 100%; object-fit: cover; border-radius: 10px;';
-            coverImg.onerror = function() {
-                this.parentElement.style.background = 'linear-gradient(135deg, ' + randomColor + ', #667eea)';
-                this.style.display = 'none';
-                this.nextElementSibling.style.display = 'flex';
-            };
-            const coverSpan = document.createElement('span');
-            coverSpan.textContent = '🎵';
-            coverSpan.style.display = 'none';
-            coverDiv.appendChild(coverImg);
-            coverDiv.appendChild(coverSpan);
-        } else {
-            const coverSpan = document.createElement('span');
-            coverSpan.textContent = '🎵';
-            coverDiv.appendChild(coverSpan);
-        }
-        
-        const infoDiv = document.createElement('div');
-        infoDiv.className = 'music-info';
-        infoDiv.style.cssText = 'flex: 1; min-width: 0; overflow: hidden;';
-        
-        const titleDiv = document.createElement('div');
-        titleDiv.className = 'music-title';
-        titleDiv.style.cssText = 'color: #fff; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px;';
-        titleDiv.textContent = trackName;
-        
-        const artistDiv = document.createElement('div');
-        artistDiv.className = 'music-artist';
-        artistDiv.style.cssText = 'color: rgba(255,255,255,0.6); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
-        artistDiv.textContent = artistName;
-        
-        infoDiv.appendChild(titleDiv);
-        infoDiv.appendChild(artistDiv);
-        
-        const playBtn = document.createElement('button');
-        playBtn.className = 'music-play-btn';
-        playBtn.id = playerId + '-play';
-        playBtn.textContent = '▶';
-        playBtn.style.cssText = 'width: 36px; height: 36px; border-radius: 50%; border: none; background: linear-gradient(135deg, #667eea, #764ba2); color: white; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4); transition: transform 0.2s;';
-        
-        const playerContainer = document.createElement('div');
-        playerContainer.id = playerId;
-        playerContainer.className = 'music-msg-container';
-        playerContainer.style.display = 'none';
-        
-        messageDiv.appendChild(coverDiv);
-        messageDiv.appendChild(infoDiv);
-        messageDiv.appendChild(playBtn);
-        messageDiv.appendChild(playerContainer);
-        
-        let globalStyle = document.getElementById('music-player-global-style');
-        if (!globalStyle) {
-            globalStyle = document.createElement('style');
-            globalStyle.id = 'music-player-global-style';
-            globalStyle.textContent = `
-                .music-bubble + .music-bubble { margin-top: 2px !important; }
-                .music-bubble button.music-play-btn:hover { transform: scale(1.1); }
-                .music-bubble button.music-play-btn:active { transform: scale(0.95); }
-            `;
-            document.head.appendChild(globalStyle);
-        }
-        
-        const tempDiv = document.createElement('div');
-        tempDiv.className = 'music-message-root';
-        tempDiv.appendChild(messageDiv);
-        addNewMessage(tempDiv);
-        
-        let aplayerInstance = null;
-        
-        requestAnimationFrame(() => {
-            requestAnimationFrame(async () => {
-                // 第二道防线：DOM 渲染的几帧内，如果来了新歌，终止挂载
-                if (currentToken !== latestMusicRequestToken) {
-                    console.log('[Common UI] 渲染期间请求已过期，终止挂载');
-                    return;
-                }
-
-                const container = document.getElementById(playerId);
-                const playBtn = document.getElementById(playerId + '-play');
-
-                if (!container) {
-                    console.error('[Common UI] 音乐气泡挂载点不存在: playerId=%s', playerId);
-                    if (tempDiv && tempDiv.parentNode) {
-                        tempDiv.parentNode.removeChild(tempDiv);
-                    }
-                    if (currentToken === latestMusicRequestToken) {
-                        currentPlayingTrack = null;
-                    }
-                } else if (typeof window.initializeAPlayer === 'function' || typeof APlayer !== 'undefined') {
-                    try {
-                        const audioConfig = [{
-                            name: trackName,
-                            artist: artistName,
-                            url: trackInfo.url,
-                            cover: hasCover ? trackInfo.cover : ''
-                        }];
-
-                        if (typeof window.initializeAPlayer === 'function') {
-                            aplayerInstance = await window.initializeAPlayer({ 
-                                container: container,
-                                theme: '#667eea',
-                                loop: 'none',
-                                preload: 'none',
-                                mutex: true,
-                                volume: 0.7,
-                                listFolded: true,
-                                order: 'normal',
-                                audio: audioConfig
-                            });
-                        } else {
-                            aplayerInstance = new APlayer({
-                                container: container,
-                                theme: '#667eea',
-                                loop: 'none',
-                                preload: 'none',
-                                mutex: true,
-                                volume: 0.7,
-                                listFolded: true,
-                                order: 'normal',
-                                audio: audioConfig
-                            });
-                        }
-                        
-                        if (!aplayerInstance) {
-                            throw new Error("APlayer instance is null after initialization");
-                        }
-                        
-                        if (currentToken !== latestMusicRequestToken) {
-                            console.log('[Common UI] APlayer 初始化后发现请求过期，销毁实例');
-                            if (typeof window.destroyAPlayer === 'function' && window.aplayer === aplayerInstance) {
-                                window.destroyAPlayer();
-                            } else if (typeof aplayerInstance.destroy === 'function') {
-                                aplayerInstance.destroy();
-                            }
-                            return;
-                        }
-
-                        if (!window.aplayerInjected) window.aplayerInjected = {};
-                        window.aplayerInjected.aplayer = aplayerInstance;
-
-                        if (playBtn) {
-                            playBtn.addEventListener('click', () => {
-                                if (aplayerInstance) {
-                                    if (aplayerInstance.paused) {
-                                        aplayerInstance.play();
-                                        playBtn.textContent = '⏸';
-                                    } else {
-                                        aplayerInstance.pause();
-                                        playBtn.textContent = '▶';
-                                    }
-                                }
-                            });
-                        }
-
-                        aplayerInstance.on('play', () => {
-                            if (playBtn) playBtn.textContent = '⏸';
-                        });
-                        aplayerInstance.on('pause', () => {
-                            if (playBtn) playBtn.textContent = '▶';
-                        });
-                        
-                        aplayerInstance.on('ended', () => {
-                            if (playBtn) playBtn.textContent = '▶';
-                        });
-
-                        const apElement = container.querySelector('.aplayer');
-                        if (apElement) {
-                            apElement.style.display = 'none';
-                        }
-                        
-                    } catch (err) {
-                        console.error('[Common UI] 音乐气泡初始化失败，正在回滚:', err);
-                        if (tempDiv && tempDiv.parentNode) {
-                            tempDiv.parentNode.removeChild(tempDiv);
-                        }
-                        if (currentToken === latestMusicRequestToken) {
-                            currentPlayingTrack = null;
-                        }
-                        if (window.showStatusToast) {
-                            const errMsg = window.safeT ? window.safeT('music.playError', '音乐播放加载失败') : '音乐播放加载失败';
-                            window.showStatusToast(errMsg, 3000);
-                        }
-                    }
-                } else {
-                    console.error('[Common UI] APlayer 库未加载，无法创建音乐气泡');
-                    if (tempDiv && tempDiv.parentNode) {
-                        tempDiv.parentNode.removeChild(tempDiv);
-                    }
-                    if (currentToken === latestMusicRequestToken) {
-                        currentPlayingTrack = null;
-                    }
-                }
-            });
-        });
-    };
-
-    if (typeof APlayer === 'undefined') {
-        console.log('[Common UI] APlayer 库未加载，正在动态加载...');
         loadAPlayerLibrary().then(() => {
-            if (currentToken !== latestMusicRequestToken) {
-                console.log('[Common UI] 脚本下载期间请求已过期，跳过渲染');
-                return;
-            }
-            executePlay();
+            executePlay(trackInfo, currentToken, shouldAutoPlay);
         }).catch(err => {
             console.error('[Common UI] APlayer 库加载失败，中止操作:', err);
+            if (typeof showErrorToast === 'function') {
+                showErrorToast('music.loadError', '音乐播放器组件加载失败，请检查网络'); 
+            } else if (window.showStatusToast) {
+                window.showStatusToast('音乐播放器加载失败', 3000);
+        }
         });
+
         return true;
-    } else {
-        executePlay();
-        return true;
-    }
-};
+    };
+
+})();
