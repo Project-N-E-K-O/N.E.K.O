@@ -276,15 +276,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     this._floatingButtonsContainer = buttonsContainer;
     this._floatingButtons = this._floatingButtons || {};
 
-    // 响应式：小屏时固定在右下角并纵向排列（使用全局 isMobileWidth）
+    // 响应式：小屏时固定在左上角（使用全局 isMobileWidth）
     const applyResponsiveFloatingLayout = () => {
         if (isMobileWidth()) {
-            // 移动端：固定在右下角，纵向排布，整体上移100px
+            // 移动端：固定在左上角，纵向排布
             buttonsContainer.style.flexDirection = 'column';
-            buttonsContainer.style.bottom = '116px';
-            buttonsContainer.style.right = '16px';
-            buttonsContainer.style.left = '';
-            buttonsContainer.style.top = '';
+            buttonsContainer.style.top = '80px';
+            buttonsContainer.style.left = '16px';
+            buttonsContainer.style.bottom = '';
+            buttonsContainer.style.right = '';
         } else {
             // 桌面端：恢复纵向排布，由 ticker 动态定位
             buttonsContainer.style.flexDirection = 'column';
@@ -628,10 +628,10 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             // 先添加主按钮到包装器
             btnWrapper.appendChild(btn);
 
-            // 如果有弹出框且需要独立的触发器（仅麦克风）
+            // 如果有弹出框且需要独立的触发器（仅麦克风和屏幕分享）
             if (config.hasPopup && config.separatePopupTrigger) {
-                // 手机模式下移除麦克风弹窗与触发器
-                if (isMobileWidth() && config.id === 'mic') {
+                // 手机模式下移除小三角触发器
+                if (isMobileWidth() && (config.id === 'mic' || config.id === 'screen')) {
                     buttonsContainer.appendChild(btnWrapper);
                     this._floatingButtons[config.id] = {
                         button: btn,

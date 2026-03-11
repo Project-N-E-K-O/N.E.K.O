@@ -70,10 +70,10 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }
         if (window.isMobileWidth()) {
             buttonsContainer.style.flexDirection = 'column';
-            buttonsContainer.style.bottom = '116px';
-            buttonsContainer.style.right = '16px';
-            buttonsContainer.style.left = '';
-            buttonsContainer.style.top = '';
+            buttonsContainer.style.top = '80px';
+            buttonsContainer.style.left = '16px';
+            buttonsContainer.style.bottom = '';
+            buttonsContainer.style.right = '';
             buttonsContainer.style.display = 'flex';
         } else {
             buttonsContainer.style.flexDirection = 'column';
@@ -283,7 +283,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         btnWrapper.appendChild(btn);
 
         if (config.hasPopup && config.separatePopupTrigger) {
-            if (window.isMobileWidth() && config.id === 'mic') {
+            if (window.isMobileWidth() && (config.id === 'mic' || config.id === 'screen')) {
                 buttonsContainer.appendChild(btnWrapper);
                 return;
             }
