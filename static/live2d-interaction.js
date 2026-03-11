@@ -14,6 +14,12 @@ const SNAP_CONFIG = {
     easingType: 'easeOutBack'
 };
 
+// ===== 缩放限制配置 =====
+const SCALE_LIMITS = {
+    MIN: 0.005, // 最小缩放比例
+    MAX: 5.0     // 最大缩放比例（暂不实施，保留供后续使用）
+};
+
 // 缓动函数集合
 const EasingFunctions = {
     // 线性
@@ -633,10 +639,14 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
 
         const oldScale = this.currentModel.scale.x;
         let newScale = event.deltaY < 0 ? oldScale * scaleFactor : oldScale / scaleFactor;
+
+        // 钳制缩放下限（MAX 暂不实施）
+        newScale = Math.max(SCALE_LIMITS.MIN, newScale);
+
         this.currentModel.scale.set(newScale);
 
-        // 使用防抖动保存缩放，避免滚轮过程中频繁保存
-        this._debouncedSavePosition();
+        // 缩放后触发分级恢复检测（含保存），替代原 _debouncedSavePosition
+        this._debouncedSnapCheck();
     };
 
     const view = this.pixi_app.view;
@@ -1300,6 +1310,27 @@ Live2DManager.prototype._debouncedSavePosition = function () {
             console.error('防抖动保存位置时出错:', error);
         });
     }, 500);
+};
+
+// 防抖分级恢复检测（用于滚轮缩放后的边界检查 + 位置保存）
+Live2DManager.prototype._debouncedSnapCheck = function () {
+    if (this._snapCheckTimer) clearTimeout(this._snapCheckTimer);
+    // 同时取消可能残留的保存定时器，避免在吸附动画完成前保存中间状态
+    if (this._savePositionDebounceTimer) {
+        clearTimeout(this._savePositionDebounceTimer);
+    }
+    this._snapCheckTimer = setTimeout(async () => {
+        if (!this.currentModel || this._isSnapping) return;
+
+        // 统一复用现有吸附流程（含守卫、动画、保存）
+        // _checkSnapRequired 会根据 overflow 方向计算最近边缘，
+        // 无论模型是部分出界还是完全消失都能正确处理
+        const snapped = await this._checkAndPerformSnap(this.currentModel);
+        if (!snapped) {
+            // 未触发吸附（模型在合理范围内），仅保存缩放后的位置
+            await this._savePositionAfterInteraction();
+        }
+    }, 300);  // 300ms 防抖，等待连续滚轮操作结束
 };
 
 // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
