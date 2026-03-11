@@ -125,7 +125,7 @@ html #chat-container {
 
 /* ===== 暗色模式：聊天标题栏 ===== */
 [data-theme="dark"] #chat-header {
-  background: rgba(40, 40, 40, 0.7);
+  background: #2a2a2a;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 

@@ -652,14 +652,14 @@ class Live2DManager {
         // 更新 dataset
         buttonData.button.dataset.active = active ? 'true' : 'false';
 
-        // 更新背景色
+        // 更新背景色（使用 CSS 变量，确保暗色模式正确）
         buttonData.button.style.background = active
-            ? 'rgba(68, 183, 254, 0.3)'
-            : 'rgba(255, 255, 255, 0.65)';
+            ? 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))'
+            : 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
 
         // 更新图标
         if (buttonData.imgOff) {
-            buttonData.imgOff.style.opacity = active ? '0' : '1';
+            buttonData.imgOff.style.opacity = active ? '0' : '0.75';
         }
         if (buttonData.imgOn) {
             buttonData.imgOn.style.opacity = active ? '1' : '0';
