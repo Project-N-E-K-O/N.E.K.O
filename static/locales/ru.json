@@ -457,7 +457,7 @@
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
         "LLM_CONNECTION_FAILED": "💥 Ошибка подключения к LLM API. Проверьте сеть и настройки API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Соединение аварийно закрыто: {{error}}",
-        "AGENT_QUOTA_EXCEEDED": "💥 Дневной лимит бесплатной модели Agent исчерпан ({{used}}/{{limit}}). Попробуйте завтра.",
+        "AGENT_QUOTA_EXCEEDED": "💥 Дневной лимит бесплатной модели Лапки Неко исчерпан ({{used}}/{{limit}}). Попробуйте завтра.",
         "SESSION_START_CRITICAL": "⛔ Session не удалось запустить {{count}} раз подряд. Автоповтор остановлен. Проверьте сеть и настройки API, затем обновите страницу.",
         "SESSION_START_FAILED": "💥 Ошибка запуска Session: {{error}} (ошибка {{count}} раз)",
         "INTERNAL_UPDATE_FAILED": "💥 Ошибка внутреннего обновления: {{error}}",
@@ -475,17 +475,18 @@
         "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Управление браузером автоматически отключено: $t(agent.precheck.{{reason_code}})",
-        "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения Agent LLM",
+        "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения LLM Лапки Неко",
         "INVALID_INPUT_TYPE": "Недопустимый тип ввода: {{input_type}}",
         "UNKNOWN_ACTION": "Неизвестное действие: {{action}}",
         "SERVER_ERROR": "Внутренняя ошибка сервера",
         "AGENT_CU_MODULE_NOT_LOADED": "Невозможно включить Computer Use: модуль не загружен",
-        "AGENT_CU_ENABLED_CHECKING": "Управление клавиатурой/мышью включено, проверка подключения Agent LLM...",
+        "AGENT_CU_ENABLED_CHECKING": "Управление клавиатурой/мышью включено, проверка подключения LLM Лапки Неко...",
         "AGENT_CU_UNAVAILABLE": "Невозможно включить Computer Use: $t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Не удалось включить Computer Use: {{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Невозможно включить Browser Use: модуль не загружен",
         "AGENT_BU_NOT_INSTALLED": "Невозможно включить Browser Use: {{error}}",
-        "AGENT_BU_ENABLED_CHECKING": "Управление браузером включено, проверка подключения Agent LLM...",
+        "AGENT_UP_ENABLED_CHECKING": "Пользовательский плагин включён, запуск сервиса плагинов...",
+        "AGENT_BU_ENABLED_CHECKING": "Управление браузером включено, проверка подключения LLM Лапки Неко...",
         "AGENT_CU_AUTO_CLOSED": "Модуль Computer Use не загружен, автоматически отключён",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use недоступен: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "Ошибка подключения к TTS-сервису: {{msg}}",
@@ -626,6 +627,7 @@
         "siliconAssist": "SiliconFlow: Выгодно, поддерживает Агента",
         "openaiAssist": "OpenAI: Мощное управление памятью",
         "geminiAssist": "Gemini: Отличный интеллект, недоступен в Китае",
+        "kimiAssist": "Kimi: Доступен в Китае, поддерживает длинный контекст и визуализацию",
         "assistApiNote": "Примечание: Только Alibaba поддерживает пользовательский голос. GLM и StepFun не рекомендуются.",
         "assistApiKeyQwen": "Вспомогательный API Key — Alibaba",
         "assistApiKeyOpenai": "Вспомогательный API Key — OpenAI",
@@ -633,6 +635,7 @@
         "assistApiKeyStep": "Вспомогательный API Key — StepFun",
         "assistApiKeySilicon": "Вспомогательный API Key — SiliconFlow",
         "assistApiKeyGemini": "Вспомогательный API Key — Gemini",
+        "assistApiKeyKimi": "Вспомогательный API Key — Kimi",
         "assistApiKeyHint": "(Требуется только когда вспомогательный API — {{provider}})",
         "assistApiKeyPlaceholder": "Необязательно, по умолчанию основной API Key",
         "providerNames": {
@@ -801,9 +804,7 @@
         },
         "loadConfigFailed": "Не удалось загрузить конфигурацию, обновите страницу",
         "errorGettingCurrentApiKey": "Ошибка получения текущего API Key",
-        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key",
-        "assistApiKeyKimi": "Вспомогательный API Key - Kimi",
-        "kimiAssist": "Kimi: доступен в Китае, поддерживает длинный контекст и визуальные функции"
+        "getCurrentApiKeyFailed": "Не удалось получить текущий API Key"
     },
     "live2d": {
         "manager": "Менеджер моделей Live2D",
@@ -1303,7 +1304,7 @@
     "buttons": {
         "voiceControl": "Голосовое управление",
         "screenShare": "Демонстрация экрана",
-        "agentTools": "Инструменты Агента",
+        "agentTools": "Лапка Неко",
         "settings": "Настройки",
         "leave": "Уйти",
         "return": "Вернуться"
@@ -1349,21 +1350,28 @@
             "proactiveNewsChatTooltip": "Использовать тренды для проактивного чата",
             "proactiveVideoChat": "Видео чат",
             "proactiveVideoChatTooltip": "Использовать видеоконтент для проактивного чата",
-            "agentMaster": "Главный переключатель Агента",
+            "proactivePersonalChat": "Личные обновления",
+            "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
+            "proactiveMusicChat": "Музыкальные рекомендации",
+            "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
+            "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
+            "pluginConfigPage": "Настройки",
+            "pluginManagementPanel": "Панель управления",
             "mcpTools": "Инструменты MCP",
             "browserUse": "Управление браузером",
             "focusMode": "Разрешить прерывание",
             "unavailable": "{{name}} Недоступен",
             "checking": "Проверка...",
-            "serverOffline": "Сервер Агента оффлайн",
-            "masterRequired": "Сначала включите главный переключатель Агента",
+            "serverOffline": "Сервер Лапки Неко оффлайн",
+            "masterRequired": "Сначала включите главный переключатель Лапки Неко",
+            "capabilityNotReady": "{{name}} ещё не готов, нажмите, чтобы попробовать включить",
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
-            "moltbotAdapting": "moltbot (В разработке)",
+            "moltbotAdapting": "OpenClaw (В разработке)",
             "animationSettings": "Настройки анимации",
             "chatSettings": "Настройки чата",
             "frameRate": "Частота кадров",
@@ -1386,36 +1394,36 @@
     },
     "agent": {
         "status": {
-            "connecting": "Подключение к серверу Агента...",
-            "ready": "Сервер Агента готов",
-            "enabled": "Режим Агента включён",
-            "disabled": "Режим Агента отключён",
-            "disabledError": "Режим Агента отключён (частичная очистка не удалась)",
+            "connecting": "Подключение к серверу Лапки Неко...",
+            "ready": "Сервер Лапки Неко готов",
+            "enabled": "Режим Лапки Неко включён",
+            "disabled": "Режим Лапки Неко отключён",
+            "disabledError": "Режим Лапки Неко отключён (частичная очистка не удалась)",
             "enableFailed": "Ошибка включения",
             "disconnected": "Соединение с сервером потеряно",
-            "agentDisconnected": "Соединение с сервером Агента потеряно",
-            "freeModelWarning": "Из-за ограничений квоты использование бесплатной модели в режиме Agent может вызвать блокировку. Рекомендуется перейти на платную модель.\n\nЕсли вы уже настроили платный API, попробуйте перезапустить NEKO.",
+            "agentDisconnected": "Соединение с сервером Лапки Неко потеряно",
+            "freeModelWarning": "Из-за ограничений квоты использование бесплатной модели в режиме Лапки Неко может вызвать блокировку. Рекомендуется перейти на платную модель.\n\nЕсли вы уже настроили платный API, попробуйте перезапустить NEKO.",
             "freeModelWarningTitle": "Уведомление о бесплатной модели",
-            "connectivityCheck": "Проверка подключения Agent LLM...",
-            "precheckFailed": "Предварительная проверка Agent не удалась: {{reason}}"
+            "connectivityCheck": "Проверка подключения LLM Лапки Неко...",
+            "precheckFailed": "Предварительная проверка Лапки Неко не удалась: {{reason}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "Проверка подключения...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API не настроен",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui не установлен",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use не установлен",
-            "AGENT_NOT_INITIALIZED": "Ошибка инициализации Agent",
-            "AGENT_LLM_UNREACHABLE": "Agent LLM недоступен",
-            "AGENT_MODEL_NOT_CONFIGURED": "Модель Agent не настроена",
+            "AGENT_NOT_INITIALIZED": "Ошибка инициализации Лапки Неко",
+            "AGENT_LLM_UNREACHABLE": "LLM Лапки Неко недоступен",
+            "AGENT_MODEL_NOT_CONFIGURED": "Модель Лапки Неко не настроена",
             "AGENT_URL_NOT_CONFIGURED": "Agent API URL не настроен",
             "AGENT_KEY_NOT_CONFIGURED": "Agent API Key не настроен или недоступен",
             "AGENT_NO_PLUGINS": "Не найдено доступных плагинов",
             "AGENT_NO_PLUGINS_FOUND": "Не найдено доступных плагинов",
             "AGENT_PLUGIN_SERVER_ERROR": "Ошибка подключения к серверу плагинов",
-            "AGENT_CONNECTIVITY_FAILED": "Ошибка подключения Agent LLM"
+            "AGENT_CONNECTIVITY_FAILED": "Ошибка подключения LLM Лапки Неко"
         },
         "taskHud": {
-            "title": "Задачи Агента",
+            "title": "Задачи Лапки Неко",
             "running": "Выполняется",
             "queued": "В очереди",
             "noTasks": "Нет активных задач",
@@ -1425,10 +1433,14 @@
             "statusFailed": "Ошибка",
             "minimize": "Свернуть/Развернуть",
             "cancelAll": "Отменить все задачи",
-            "cancelConfirm": "Отменить все выполняемые задачи?"
+            "cancelConfirm": "Отменить все задачи (включая ожидающие)?",
+            "typeUserPlugin": "Пользовательский плагин",
+            "typeComputerUse": "Управление клавиатурой/мышью",
+            "typeBrowserUse": "Управление браузером",
+            "typeMCP": "Инструмент MCP"
         },
-        "quotaExceeded": "Бесплатная квота Agent на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
-        "contentFilterError": "Содержимое веб-страницы, просмотренной Agent, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты."
+        "quotaExceeded": "Бесплатная квота Лапки Неко на сегодня исчерпана ({{limit}} раз), попробуйте завтра.",
+        "contentFilterError": "Содержимое веб-страницы, просмотренной Лапкой Неко, было отклонено фильтром безопасности модели ИИ, задача прервана. Обычно это происходит, когда страница содержит чувствительные темы. Попробуйте другие ключевые слова или сайты."
     },
     "vrm": {
         "error": {
@@ -1728,8 +1740,8 @@
             "desc": "Покажите экран вашему Neko~"
         },
         "step8": {
-            "title": "🔨 Инструменты Агента",
-            "desc": "Панель инструментов Агента~"
+            "title": "🔨 Лапка Неко",
+            "desc": "Откройте панель «Лапка Неко»: computer use, browser use, plugin и другие функции~"
         },
         "step9": {
             "title": "💤 Попросить уйти",
@@ -2171,7 +2183,7 @@
         "noCookies": "Пожалуйста, сначала настройте Cookies",
         "statusLoadFailed": "Ошибка загрузки статуса",
         "thisPlatform": "Эта платформа",
-         "instructions": {
+        "instructions": {
             "bilibili": "📌 <b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
             "douyin": "📌 <b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
             "kuaishou": "📌 <b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
@@ -2264,7 +2276,42 @@
         "status": {
             "active": "● Готово",
             "inactive": "○ Не настроено"
+        },
+        "qrLogin": {
+            "tryQR": "Или... попробовать вход по QR-коду?",
+            "openQR": "📱 Открыть QR-вход",
+            "loading": "Получение QR-кода...",
+            "scanTitle": "📱 Вход по QR {{platform}}",
+            "waiting": "Ожидание сканирования...",
+            "validFor": "QR-код действителен: {{seconds}}сек",
+            "refreshQR": "Обновить QR-код",
+            "fetchFailed": "Не удалось получить QR-код, попробуйте позже",
+            "retry": "Повторить",
+            "networkError": "Ошибка сети, проверьте подключение",
+            "status": {
+                "success": "✅ {{message}}",
+                "expired": "❌ {{message}}, обновите",
+                "scanned": "📱 {{message}}",
+                "waiting": "{{message}}..."
+            },
+            "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию"
         }
+    },
+    "music": {
+        "unknownTrack": "Неизвестный трек",
+        "unknownArtist": "Неизвестный исполнитель",
+        "play": "Воспроизвести",
+        "pause": "Пауза",
+        "playing": "Воспроизводится",
+        "paused": "Приостановлено",
+        "searching": "Поиск: {{query}}",
+        "notFound": "Песня не найдена: {{query}}",
+        "nowPlaying": "Сейчас играет: {{name}}",
+        "showPlaylist": "Показать список",
+        "hidePlaylist": "Скрыть список",
+        "searchFailed": "Ошибка поиска музыки",
+        "playError": "Ошибка воспроизведения",
+        "ended": "Завершено"
     },
     "notice": {
         "voiceMigration": {

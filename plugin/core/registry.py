@@ -7,7 +7,7 @@ import inspect
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Callable, Type, Optional, cast
+from typing import Any, Dict, List, Callable, Type, Optional, Iterable, cast
 
 from loguru import logger
 
@@ -17,10 +17,8 @@ _DEFAULT_LOGGER = logger
 _pending_async_shutdown_tasks: set = set()
 
 
-# _LoggerAdapter 和 _wrap_logger 已删除，统一使用 loguru
-# 为保持向后兼容，_wrap_logger 现在直接返回 logger
 def _wrap_logger(logger: Any) -> Any:
-    """向后兼容函数，现在统一返回 loguru logger"""
+    """向后兼容函数，现在直接返回 logger。"""
     return logger
 
 try:
@@ -37,7 +35,11 @@ from plugin._types.exceptions import (
     PluginLoadError,
     PluginMetadataError,
 )
-from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
+from plugin.settings import (
+    BUILTIN_PLUGIN_CONFIG_ROOT,
+    PLUGIN_ENABLE_ID_CONFLICT_CHECK,
+    PLUGIN_ENABLE_DEPENDENCY_CHECK,
+)
 from plugin.utils import parse_bool_config
 
 # 从 dependency.py 导入依赖相关函数
@@ -849,6 +851,83 @@ def _collect_plugin_contexts(
     return plugin_contexts, pid_to_context
 
 
+def _collect_plugin_contexts_from_roots(
+    plugin_config_roots: Iterable[Path],
+    logger: Any,
+) -> tuple[List[PluginContext], Dict[str, PluginContext]]:
+    """从多个插件根目录收集插件配置，并在统一命名空间中去重。"""
+    plugin_contexts: List[PluginContext] = []
+    pid_to_context: Dict[str, PluginContext] = {}
+    processed_paths: set[Path] = set()
+
+    for plugin_config_root in plugin_config_roots:
+        try:
+            root = plugin_config_root.resolve()
+        except Exception:
+            root = plugin_config_root
+
+        if not root.exists():
+            logger.info("No plugin config directory {}, skipping", root)
+            continue
+
+        found_toml_files = list(root.glob("*/plugin.toml"))
+        logger.info("Found {} plugin.toml files in {}: {}", len(found_toml_files), root, [str(p) for p in found_toml_files])
+
+        for toml_path in found_toml_files:
+            try:
+                ctx = _parse_single_plugin_config(toml_path, processed_paths, logger)
+                if ctx is None:
+                    continue
+                if ctx.pid in pid_to_context:
+                    logger.error(
+                        "Duplicate plugin id '{}' found in '{}' and '{}'; skipping later config",
+                        ctx.pid,
+                        pid_to_context[ctx.pid].toml_path,
+                        toml_path,
+                    )
+                    continue
+                plugin_contexts.append(ctx)
+                pid_to_context[ctx.pid] = ctx
+            except Exception:
+                logger.exception("Unexpected error processing config {}", toml_path)
+                continue
+
+    return plugin_contexts, pid_to_context
+
+
+def _prepare_plugin_import_roots(plugin_config_roots: Iterable[Path], logger: Any) -> None:
+    """为用户插件根注入 import 根目录，内置插件保持包内导入。"""
+    try:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve()
+    except Exception:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
+
+    def _is_same_or_within(path: Path, base: Path) -> bool:
+        try:
+            if path == base:
+                return True
+            if hasattr(path, "is_relative_to"):
+                return path.is_relative_to(base)  # type: ignore[attr-defined]
+            return str(path).startswith(str(base))
+        except Exception:
+            return False
+
+    for plugin_config_root in plugin_config_roots:
+        try:
+            root = plugin_config_root.resolve()
+        except Exception:
+            root = plugin_config_root
+
+        project_root = root.parent
+        if _is_same_or_within(root, builtin_root) or _is_same_or_within(project_root, builtin_root):
+            logger.debug("Skipping built-in plugin import root: {}", root)
+            continue
+        if str(project_root) in sys.path:
+            continue
+        sys.path.insert(0, str(project_root))
+        logger.info("Added plugin import root to sys.path: {}", project_root)
+
+
 def _build_extension_map(
     plugin_contexts: List[PluginContext],
 ) -> Dict[str, List[Dict[str, str]]]:
@@ -1278,8 +1357,8 @@ def _check_plugin_already_registered(
     return False
 
 
-def load_plugins_from_toml(
-    plugin_config_root: Path,
+def load_plugins_from_roots(
+    plugin_config_roots: Iterable[Path],
     logger: Any,
     process_host_factory: Callable[..., Any],
 ) -> None:
@@ -1293,22 +1372,28 @@ def load_plugins_from_toml(
     3. 加载（Load）：按顺序执行实际加载。
     """
     logger = _wrap_logger(logger)
-    if not plugin_config_root.exists():
-        logger.info("No plugin config directory {}, skipping", plugin_config_root)
+    roots: list[Path] = []
+    for plugin_config_root in plugin_config_roots:
+        try:
+            root = plugin_config_root.resolve()
+        except Exception:
+            root = plugin_config_root
+        if root not in roots:
+            roots.append(root)
+
+    if not roots:
+        logger.info("No plugin config roots provided, skipping")
         return
 
-    logger.info("Loading plugins from {}", plugin_config_root)
-    
-    # 设置 Python 路径，确保能够导入插件模块
-    project_root = plugin_config_root.parent.parent.resolve()
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-        logger.info("Added project root to sys.path: {}", project_root)
+    logger.info("Loading plugins from roots: {}", [str(root) for root in roots])
+
+    # 用户插件继续使用顶层 ``plugins.xxx`` 导入；内置插件则改为 ``plugin.plugins.xxx``。
+    _prepare_plugin_import_roots(roots, logger)
     logger.info("Current working directory: {}", os.getcwd())
     logger.info("Python path (first 3): {}", sys.path[:3])
     
     # === Phase 1: Collect and Parse ===
-    plugin_contexts, pid_to_context = _collect_plugin_contexts(plugin_config_root, logger)
+    plugin_contexts, pid_to_context = _collect_plugin_contexts_from_roots(roots, logger)
     
     if not plugin_contexts:
         logger.info("No valid plugins found to load")
@@ -1345,7 +1430,6 @@ def load_plugins_from_toml(
         if not enabled_val:
             _load_disabled_plugin(ctx, logger)
             continue
-
         # 根据插件类型分发加载逻辑
         plugin_type = pdata.get("type", "plugin")
         
@@ -1596,3 +1680,12 @@ def load_plugins_from_toml(
             emit_lifecycle_event({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
         except Exception:
             logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)
+
+
+def load_plugins_from_toml(
+    plugin_config_root: Path,
+    logger: Any,
+    process_host_factory: Callable[..., Any],
+) -> None:
+    """兼容旧调用：从单个插件根目录加载。"""
+    load_plugins_from_roots((plugin_config_root,), logger, process_host_factory)

@@ -217,6 +217,14 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
+          # Plugin runtime assets/configs: include exported frontend and bundled plugins
+          # explicitly, even when they are gitignored locally.
+          if [ -d "plugin/frontend/exported" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/frontend/exported=plugin/frontend/exported"
+          fi
+          if [ -d "plugin/plugins" ]; then
+            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/plugins=plugin/plugins"
+          fi
           # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
           # that break Nuitka's xattr call; browser will download on first run)
           if [[ "$RUNNER_OS" != "macOS" ]]; then
@@ -237,6 +245,7 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory_server"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=agent_server"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
@@ -325,6 +334,8 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
+          if exist "plugin\frontend\exported" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/frontend/exported=plugin/frontend/exported
+          if exist "plugin\plugins" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/plugins=plugin/plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=uvicorn
@@ -339,6 +350,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory_server
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=agent_server
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers

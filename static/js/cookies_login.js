@@ -170,9 +170,313 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshStatusList();
 });
 
+/**
+ * 降低十六进制颜色的明度
+ * @param {string} hexColor - 输入的十六进制颜色，如 #fff 或 #ffffff
+ * @param {number} lightnessPercent - 降低明度的百分比（0-100），100 表示完全变黑
+ * @returns {string} 调整后的十六进制颜色
+ */
+function decreaseColorLightness(hexColor, lightnessPercent) {
+    // 验证输入的明度值
+    const percent = Math.max(0, Math.min(100, Number(lightnessPercent)));
+    const decreaseRatio = 1 - percent / 100;
+
+    // 清洗并验证十六进制颜色
+    let hex = hexColor.replace(/^#/, '');
+    // 处理简写形式 (#fff -> #ffffff)
+    if (hex.length === 3) {
+        hex = hex.split('').map(char => char + char).join('');
+    }
+
+    // 验证十六进制格式
+    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) {
+        throw new Error('请输入有效的十六进制颜色，如 #fff 或 #ffffff');
+    }
+
+    // 十六进制转 RGB
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+
+    // 降低明度（按比例减少每个通道的值）
+    const newR = Math.max(0, Math.round(r * decreaseRatio));
+    const newG = Math.max(0, Math.round(g * decreaseRatio));
+    const newB = Math.max(0, Math.round(b * decreaseRatio));
+
+    // RGB 转回十六进制（确保两位，不足补0）
+    const toHex = (num) => num.toString(16).padStart(2, '0');
+    const newHex = `#${toHex(newR)}${toHex(newG)}${toHex(newB)}`;
+
+    return newHex.toUpperCase(); // 统一返回大写格式，也可以改为 toLowerCase()
+}
+
+
+async function showQRLogin(config, platformKey) {
+    let qrSupportedPlatforms =[];
+    const qrLoginBox = document.getElementById('QRLogin');
+    qrLoginBox.innerHTML = "";
+    if (qrLoginBox) {
+        qrLoginBox.style.display = 'block';
+    }
+    const resp = await fetch('/api/auth/get_CanQRLoginList');
+    if (currentPlatform !== platformKey) return;
+    qrSupportedPlatforms = await resp.json();
+    if (currentPlatform !== platformKey) return;
+
+    if (qrSupportedPlatforms.includes(config["name"])){
+        const QRinfo =  document.createElement("div");
+        const butt = document.createElement("button");
+        QRinfo.innerHTML = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登陆?');
+        QRinfo.style = 'margin-bottom: 10px;color: #64748b;font-size: 14px';
+        butt.innerHTML = safeT('cookiesLogin.qrLogin.openQR', '📱 打开扫码登陆');
+        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed #4f46e5; background: ${config["theme"]} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
+        butt.onmouseover = function() { butt.style.background = decreaseColorLightness(config["theme"],20); };
+        butt.onmouseout = function() { butt.style.background = config["theme"]; };
+        butt.onclick = function(){requestQR(config, platformKey)};
+        qrLoginBox.appendChild(QRinfo);
+        qrLoginBox.appendChild(butt);
+    }else{
+        // let a = 1;希望这里可以空着不会报错 报错了就肘喵老师
+        // 当前只做了"Bilibili"扫码登录,其他平台再说吧
+    }
+}
+
+let qrPollTimeout = null;
+let qrPollInFlight = false;
+let qrRefreshTimeout = null;
+let currentQrKey = null;
+
+async function requestQR(config, platformKey) {
+    if (qrRefreshTimeout) {
+        clearTimeout(qrRefreshTimeout);
+        qrRefreshTimeout = null;
+    }
+    const qrLoginBox = document.getElementById('QRLogin');
+    qrLoginBox.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+            <div style="color: #64748b; margin-bottom: 10px;">${safeT('cookiesLogin.qrLogin.loading', '正在获取二维码...')}</div>
+        </div>
+    `;
+    
+    try {
+        const response = await fetch('/api/auth/get_QR', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ platform: config["name"] })
+        });
+        
+
+        
+        if (currentPlatform !== platformKey) return;
+        const result = await response.json();
+        if (currentPlatform !== platformKey) return;
+        if (!response.ok) {
+            throw new Error(
+                typeof result?.detail === 'string' && result.detail
+                    ? result.detail
+                    : safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试')
+            );
+        }
+        if (result.success && result.data) {
+            currentQrKey = result.data.qrcode_key;
+            const timeout = result.data.timeout || 180;
+            
+            qrLoginBox.innerHTML = `
+                <div style="text-align: center; padding: 15px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', config["name"])}</div>
+                    <img src="${result.data.qrcode_image}" alt="QR Code" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <div id="qr-status" style="margin-top: 12px; font-size: 13px; color: #64748b;">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
+                    <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
+                    <button id="qr-refresh-btn" style="margin-top: 12px; padding: 8px 16px; font-size: 13px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; color: #475569; cursor: pointer;">${safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码')}</button>
+                </div>
+            `;
+            
+            document.getElementById('qr-refresh-btn').onclick = function() {
+                currentQrKey = null;
+                stopQrPoll();
+                requestQR(config, platformKey);
+            };
+            
+            startQrPoll(config, platformKey);
+        } else {
+            qrLoginBox.innerHTML = `
+                <div style="text-align: center; padding: 20px; color: #ef4444;">
+                    ${safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试')}
+                    <button id="qr-retry-btn" style="display: block; margin: 10px auto 0; padding: 8px 16px; border-radius: 8px; border: 1px solid #ef4444; background: white; color: #ef4444; cursor: pointer;">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
+                </div>
+            `;
+            document.getElementById('qr-retry-btn').onclick = function() {
+                requestQR(config, platformKey);
+            };
+        }
+    } catch (err) {
+        console.error("Request QR error:", err);
+        if (currentPlatform !== platformKey) return;
+        const errorMessage =
+            typeof err?.message === 'string' && err.message
+                ? err.message
+                : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+        qrLoginBox.innerHTML = `
+            <div style="text-align: center; padding: 20px; color: #ef4444;">
+                ${errorMessage}
+                <button id="qr-retry-btn-err" style="display: block; margin: 10px auto 0; padding: 8px 16px; border-radius: 8px; border: 1px solid #ef4444; background: white; color: #ef4444; cursor: pointer;">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
+            </div>
+        `;
+        document.getElementById('qr-retry-btn-err').onclick = function() {
+            requestQR(config, platformKey);
+        };
+    }
+}
+
+function startQrPoll(config, platformKey) {
+    stopQrPoll();
+
+    const pollOnce = async () => {
+        let shouldContinuePolling = true;
+        const expectedQrKey = currentQrKey;
+
+        if (!expectedQrKey) {
+            stopQrPoll();
+            return;
+        }
+
+        if (qrPollInFlight) return;
+        qrPollInFlight = true;
+
+        try {
+            const response = await fetch('/api/auth/QRLogin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    platform: config["name"], 
+                    qrcode_key: expectedQrKey 
+                })
+            });
+
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(
+                    typeof result?.detail === 'string'
+                        ? result.detail
+                        : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接')
+                );
+            }
+
+            if (currentPlatform !== platformKey || currentQrKey !== expectedQrKey) {
+                shouldContinuePolling = false;
+                return;
+            }
+            
+            const statusEl = document.getElementById('qr-status');
+            const data = result.data;
+            const setStatusSpan = (color, text, fontWeight = 'normal') => {
+                if (!statusEl) return;
+                const span = document.createElement('span');
+                span.style.color = color;
+                span.style.fontWeight = fontWeight;
+                span.textContent = text;
+                statusEl.replaceChildren(span);
+            };
+
+            if (result.success && data?.status === 'success') {
+                shouldContinuePolling = false;
+                stopQrPoll();
+                setStatusSpan(
+                    '#22c55e',
+                    safeT('cookiesLogin.qrLogin.status.success', '✅ {{message}}').replace('{{message}}', data.message),
+                    '600'
+                );
+
+                const cookies = data.cookies;
+                const cookieFields = data.cookie_fields || [];
+
+                cookieFields.forEach(field => {
+                    if (cookies && cookies[field]) {
+                        const input = document.getElementById('input-' + field);
+                        if (input) input.value = cookies[field];
+                    }
+                });
+
+                showAlert(true, safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置'));
+
+                if (qrRefreshTimeout) {
+                    clearTimeout(qrRefreshTimeout);
+                }
+                qrRefreshTimeout = setTimeout(() => {
+                    if (currentPlatform !== platformKey) return;
+                    showQRLogin(config, platformKey);
+                    qrRefreshTimeout = null;
+                }, 2000);
+
+            } else if (data) {
+                const status = data.status;
+                const message = data.message;
+
+                if (statusEl) {
+                    if (status === 'expired') {
+                        shouldContinuePolling = false;
+                        setStatusSpan(
+                            '#ef4444',
+                            safeT('cookiesLogin.qrLogin.status.expired', '❌ {{message}}，请刷新').replace('{{message}}', message)
+                        );
+                        stopQrPoll();
+                    } else if (status === 'scanned') {
+                        setStatusSpan(
+                            '#f59e0b',
+                            safeT('cookiesLogin.qrLogin.status.scanned', '📱 {{message}}').replace('{{message}}', message)
+                        );
+                    } else if (status === 'waiting') {
+                        statusEl.textContent = safeT('cookiesLogin.qrLogin.status.waiting', '{{message}}...').replace('{{message}}', message);
+                    } else {
+                        statusEl.textContent = message;
+                    }
+                }
+            } else {
+                shouldContinuePolling = false;
+                stopQrPoll();
+            }
+        } catch (err) {
+            console.error("Poll error:", err);
+            shouldContinuePolling = false;
+            if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
+                const statusEl = document.getElementById('qr-status');
+                if (statusEl) {
+                    statusEl.textContent = typeof err?.message === 'string' && err.message ? err.message : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
+                }
+            }
+            stopQrPoll();
+        } finally {
+            if (currentPlatform === platformKey && currentQrKey === expectedQrKey) {
+                qrPollInFlight = false;
+                if (shouldContinuePolling && currentQrKey === expectedQrKey) {
+                    qrPollTimeout = setTimeout(pollOnce, 1500);
+                }
+            }
+        }
+    };
+
+    pollOnce();
+}
+
+function stopQrPoll() {
+    if (qrPollTimeout) {
+        clearTimeout(qrPollTimeout);
+        qrPollTimeout = null;
+    }
+    qrPollInFlight = false;
+}
+
+
+
 // 切换选项卡时，更新当前平台配置
 function switchTab(platformKey, btnElement, isReRender = false) {
     if (!PLATFORM_CONFIG[platformKey]) return;
+    stopQrPoll();
+    currentQrKey = null;
+    if (qrRefreshTimeout) {
+        clearTimeout(qrRefreshTimeout);
+        qrRefreshTimeout = null;
+    }
     currentPlatform = platformKey;
     const config = PLATFORM_CONFIG[platformKey];
     // 更新选项卡文本
@@ -193,6 +497,7 @@ function switchTab(platformKey, btnElement, isReRender = false) {
             descBox.style.display = 'none'; 
         }
     }
+    showQRLogin(PLATFORM_CONFIG_DATA[platformKey], platformKey)
     // 更新动态 Cookies 配置字段
     const fieldsContainer = document.getElementById('dynamic-fields');
     if (fieldsContainer) {

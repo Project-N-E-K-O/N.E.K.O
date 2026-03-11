@@ -110,100 +110,106 @@ def _inject_extensions(
             logger.debug("[Extension] tomllib/tomli not available, skipping extension injection")
             return
 
-    # 优先使用 settings 中的 PLUGIN_CONFIG_ROOT，回退到路径推导
+    # 优先使用 settings 中的插件根目录集合，回退到路径推导
     try:
-        from plugin.settings import PLUGIN_CONFIG_ROOT
-        plugin_config_root = PLUGIN_CONFIG_ROOT
+        from plugin.settings import PLUGIN_CONFIG_ROOTS
+        plugin_config_roots = tuple(PLUGIN_CONFIG_ROOTS)
     except Exception:
-        plugin_config_root = host_config_path.parent.parent
-
-    try:
-        if not plugin_config_root.exists():
-            return
-    except Exception:
-        return
+        plugin_config_roots = (host_config_path.parent.parent,)
 
     injected_count = 0
-    for toml_path in plugin_config_root.glob("*/plugin.toml"):
+    for plugin_config_root in plugin_config_roots:
         try:
-            with toml_path.open("rb") as f:
-                conf = tomllib.load(f)
-            pdata = conf.get("plugin") or {}
+            root = plugin_config_root.resolve()
+        except Exception:
+            root = plugin_config_root
 
-            # 只处理 type=extension
-            if pdata.get("type") != "extension":
+        try:
+            if not root.exists():
                 continue
+        except Exception:
+            continue
 
-            # 检查宿主匹配
-            host_conf = pdata.get("host")
-            if not isinstance(host_conf, dict):
-                continue
-            if host_conf.get("plugin_id") != host_plugin_id:
-                continue
+        for toml_path in root.glob("*/plugin.toml"):
+            try:
+                with toml_path.open("rb") as f:
+                    conf = tomllib.load(f)
+                pdata = conf.get("plugin") or {}
 
-            # 检查 enabled
-            runtime_cfg = conf.get("plugin_runtime")
-            if isinstance(runtime_cfg, dict):
-                from plugin.utils import parse_bool_config
-                if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
-                    logger.debug(
-                        "[Extension] Extension '{}' is disabled, skipping",
-                        pdata.get("id", "?"),
+                # 只处理 type=extension
+                if pdata.get("type") != "extension":
+                    continue
+
+                # 检查宿主匹配
+                host_conf = pdata.get("host")
+                if not isinstance(host_conf, dict):
+                    continue
+                if host_conf.get("plugin_id") != host_plugin_id:
+                    continue
+
+                # 检查 enabled
+                runtime_cfg = conf.get("plugin_runtime")
+                if isinstance(runtime_cfg, dict):
+                    from plugin.utils import parse_bool_config
+                    if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
+                        logger.debug(
+                            "[Extension] Extension '{}' is disabled, skipping",
+                            pdata.get("id", "?"),
+                        )
+                        continue
+
+                ext_id = pdata.get("id", "unknown")
+                ext_entry = pdata.get("entry")
+                if not ext_entry or ":" not in ext_entry:
+                    logger.warning(
+                        "[Extension] Extension '{}' has invalid entry '{}', skipping",
+                        ext_id, ext_entry,
                     )
                     continue
 
-            ext_id = pdata.get("id", "unknown")
-            ext_entry = pdata.get("entry")
-            if not ext_entry or ":" not in ext_entry:
-                logger.warning(
-                    "[Extension] Extension '{}' has invalid entry '{}', skipping",
-                    ext_id, ext_entry,
-                )
-                continue
+                # 导入 Extension Router 类
+                module_path, class_name = ext_entry.split(":", 1)
+                try:
+                    mod = importlib.import_module(module_path)
+                    router_cls = getattr(mod, class_name)
+                except (ImportError, ModuleNotFoundError) as e:
+                    logger.warning(
+                        "[Extension] Failed to import extension '{}' ({}): {}",
+                        ext_id, ext_entry, e,
+                    )
+                    continue
+                except AttributeError as e:
+                    logger.warning(
+                        "[Extension] Class '{}' not found in module '{}' for extension '{}': {}",
+                        class_name, module_path, ext_id, e,
+                    )
+                    continue
 
-            # 导入 Extension Router 类
-            module_path, class_name = ext_entry.split(":", 1)
-            try:
-                mod = importlib.import_module(module_path)
-                router_cls = getattr(mod, class_name)
-            except (ImportError, ModuleNotFoundError) as e:
-                logger.warning(
-                    "[Extension] Failed to import extension '{}' ({}): {}",
-                    ext_id, ext_entry, e,
-                )
-                continue
-            except AttributeError as e:
-                logger.warning(
-                    "[Extension] Class '{}' not found in module '{}' for extension '{}': {}",
-                    class_name, module_path, ext_id, e,
-                )
-                continue
+                # 验证是 PluginRouter 子类
+                if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
+                    logger.warning(
+                        "[Extension] Extension '{}' entry class '{}' is not a PluginRouter subclass, skipping",
+                        ext_id, class_name,
+                    )
+                    continue
 
-            # 验证是 PluginRouter 子类
-            if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
-                logger.warning(
-                    "[Extension] Extension '{}' entry class '{}' is not a PluginRouter subclass, skipping",
-                    ext_id, class_name,
-                )
-                continue
-
-            # 实例化并注入
-            prefix = host_conf.get("prefix", "")
-            try:
-                router_instance = router_cls(prefix=prefix, name=ext_id)
-                instance.include_router(router_instance)
-                injected_count += 1
-                logger.info(
-                    "[Extension] Injected extension '{}' into host '{}' with prefix '{}'",
-                    ext_id, host_plugin_id, prefix,
-                )
+                # 实例化并注入
+                prefix = host_conf.get("prefix", "")
+                try:
+                    router_instance = router_cls(prefix=prefix, name=ext_id)
+                    instance.include_router(router_instance)
+                    injected_count += 1
+                    logger.info(
+                        "[Extension] Injected extension '{}' into host '{}' with prefix '{}'",
+                        ext_id, host_plugin_id, prefix,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[Extension] Failed to inject extension '{}' into host '{}': {}",
+                        ext_id, host_plugin_id, e,
+                    )
             except Exception as e:
-                logger.warning(
-                    "[Extension] Failed to inject extension '{}' into host '{}': {}",
-                    ext_id, host_plugin_id, e,
-                )
-        except Exception as e:
-            logger.debug("[Extension] Error processing {}: {}", toml_path, e)
+                logger.debug("[Extension] Error processing {}: {}", toml_path, e)
 
     if injected_count > 0:
         logger.info(

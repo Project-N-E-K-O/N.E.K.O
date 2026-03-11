@@ -303,7 +303,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 chat_history.clear()
                                 last_synced_index = 0
 
-                            if message["data"] == 'turn end': # lanlan的消息结束了
+                            if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
+                                is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
                                 current_turn = 'user'
                                 text_output_cache = normalize_text(text_output_cache)
                                 if len(text_output_cache) > 0:
@@ -315,8 +316,8 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     merge_unsynced_tail_assistants(chat_history, last_synced_index)
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
-                                # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
-                                # 只在 recent 包含 user 消息时发送(过滤纯 assistant 的 proactive turn_end)
+                                # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务。
+                                # 仅 agent-callback 专用通道会显式跳过，避免任务结果回调引发二次分析。
                                 if not shutdown_event.is_set():
                                     try:
                                         # 构造最近的消息摘要
@@ -331,8 +332,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     continue
                                                 recent.append({'role': item.get('role'), 'content': txt})
                                         has_user = any(m.get('role') == 'user' for m in recent)
-                                        logger.info(f"[{lanlan_name}] turn_end analyze check: history={len(chat_history)} recent={len(recent)} has_user={has_user} had_input={had_user_input_this_turn}")
-                                        if recent and has_user and had_user_input_this_turn:
+                                        logger.info(
+                                            f"[{lanlan_name}] turn_end analyze check: "
+                                            f"history={len(chat_history)} recent={len(recent)} "
+                                            f"has_user={has_user} had_input={had_user_input_this_turn} "
+                                            f"agent_callback_turn={is_agent_callback_turn_end}"
+                                        )
+                                        if recent and not is_agent_callback_turn_end:
                                             sent = await _publish_analyze_request_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",

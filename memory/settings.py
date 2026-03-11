@@ -5,6 +5,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
+from utils.file_utils import atomic_write_json
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
 
 
@@ -44,8 +45,12 @@ class ImportantSettingsManager:
                 self.settings[i] = {i: {}, self.name_mapping['human']: {}}
 
     def save_settings(self, lanlan_name):
-        with open(self.settings_file[lanlan_name], 'w', encoding='utf-8') as f:
-            json.dump(self.settings[lanlan_name], f, indent=2, ensure_ascii=False)
+        atomic_write_json(
+            self.settings_file[lanlan_name],
+            self.settings[lanlan_name],
+            indent=2,
+            ensure_ascii=False,
+        )
 
     async def detect_and_resolve_contradictions(self, old_settings, new_settings, lanlan_name):
         # 使用LLM检测矛盾并解决它们

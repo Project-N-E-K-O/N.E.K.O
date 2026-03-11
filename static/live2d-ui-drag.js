@@ -116,7 +116,21 @@ Live2DManager.prototype.closePopupById = function (buttonId) {
     popup.style.opacity = '0';
     const closeOpensLeft = popup.dataset.opensLeft === 'true';
     popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-    
+
+    // 关闭该 popup 所属的所有侧面板
+    const popupId = popup.id;
+    if (popupId) {
+        document.querySelectorAll(`[data-neko-sidepanel-owner="${popupId}"]`).forEach(panel => {
+            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            panel.style.transition = 'none';
+            panel.style.opacity = '0';
+            panel.style.display = 'none';
+            // 清除 inline transition，让 CSS 定义的 transition 在下次 _expand() 时生效
+            panel.style.transition = '';
+        });
+    }
+
     // 复位小三角图标
     const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
     if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
@@ -135,7 +149,7 @@ Live2DManager.prototype.closePopupById = function (buttonId) {
         const buttonEntry = this._floatingButtons[buttonId];
         if (buttonEntry && buttonEntry.button) {
             buttonEntry.button.dataset.active = 'false';
-            buttonEntry.button.style.background = 'rgba(255, 255, 255, 0.65)';
+            buttonEntry.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
 
             if (buttonEntry.imgOff && buttonEntry.imgOn) {
                 buttonEntry.imgOff.style.opacity = '1';
@@ -354,6 +368,7 @@ window.createChatModeToggle = function(options) {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = checkboxId;
+    console.log(`[ChatModeToggle] 初始化 checkbox: ${checkboxId}, globalVarName=${globalVarName}, window值=${window[globalVarName]}`);
     if (typeof window[globalVarName] !== 'undefined') {
         checkbox.checked = window[globalVarName];
     }
@@ -429,7 +444,7 @@ window.createChatModeToggle = function(options) {
                 }
             } else {
                 // 子模式关闭：如果没有其他子模式开启，停止调度
-                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
+                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled || window.proactivePersonalChatEnabled || window.proactiveMusicEnabled;
                 if (!hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
                     window.stopProactiveChatSchedule();
                 }
@@ -477,6 +492,18 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveVideoChat',
         tooltipKey: 'settings.toggles.proactiveVideoChatTooltip',
         globalVarName: 'proactiveVideoChatEnabled'
+    },
+    {
+        mode: 'personal',
+        labelKey: 'settings.toggles.proactivePersonalChat',
+        tooltipKey: 'settings.toggles.proactivePersonalChatTooltip',
+        globalVarName: 'proactivePersonalChatEnabled'
+    },
+    {
+        mode: 'music',
+        labelKey: 'settings.toggles.proactiveMusicChat',
+        tooltipKey: 'settings.toggles.proactiveMusicChatTooltip',
+        globalVarName: 'proactiveMusicEnabled'
     }
 ];
 
@@ -654,6 +681,18 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         const triggerIcon = document.querySelector(`.live2d-trigger-icon-${buttonId}`);
         if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
 
+        // 关闭该 popup 所属的所有侧面板
+        const closingPopupId = popup.id;
+        if (closingPopupId) {
+            document.querySelectorAll(`[data-neko-sidepanel-owner="${closingPopupId}"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.style.transition = 'none';
+                panel.style.opacity = '0';
+                panel.style.display = 'none';
+            });
+        }
+
         // 如果是 agent 弹窗关闭，派发关闭事件
         if (buttonId === 'agent') {
             window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
@@ -687,6 +726,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         // 先让弹出框可见但透明，以便计算尺寸
         popup.style.opacity = '0';
         popup.style.visibility = 'visible';
+        popup.style.pointerEvents = 'none'; // 阻止 positionPopup 完成前的 hover 事件
 
         // 关键：在计算位置之前，先移除高度限制，确保获取真实尺寸
         if (buttonId === 'settings' || buttonId === 'agent') {
@@ -722,7 +762,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                     rightMargin: 20,
                     bottomMargin: 60,
                     topMargin: 8,
-                    gap: 8
+                    gap: 8,
+                    sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
                 });
                 popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
             }
@@ -730,6 +771,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             // 显示弹出框
             popup.style.visibility = 'visible';
             popup.style.opacity = '1';
+            popup.style.pointerEvents = ''; // positionPopup 完成，恢复交互
             popup.style.transform = 'translateX(0)';
             
             // 设置小三角图标的旋转状态（旋转180度）

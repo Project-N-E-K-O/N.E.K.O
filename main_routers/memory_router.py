@@ -14,6 +14,7 @@ import glob
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+from utils.file_utils import atomic_write_json
 from utils.logger_config import get_module_logger
 from fastapi.responses import JSONResponse
 
@@ -239,8 +240,7 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        with open(resolved_path, 'w', encoding='utf-8') as f:
-            json.dump(arr, f, ensure_ascii=False, indent=2)
+        atomic_write_json(resolved_path, arr, ensure_ascii=False, indent=2)
         
         # 从文件名提取猫娘名 (recent_XXX.json -> XXX)
         match = re.match(r'^recent_(.+)\.json$', filename)
@@ -373,8 +373,7 @@ async def update_catgirl_name(request: Request):
                         data['content'] = content
         
         # 保存更新后的内容
-        with open(new_file_path, 'w', encoding='utf-8') as f:
-            json.dump(file_content, f, ensure_ascii=False, indent=2)
+        atomic_write_json(new_file_path, file_content, ensure_ascii=False, indent=2)
         
         logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
         return {"success": True}
@@ -424,8 +423,7 @@ async def update_review_config(request: Request):
         config_data['recent_memory_auto_review'] = enabled
         
         # 保存配置
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config_data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(config_path, config_data, ensure_ascii=False, indent=2)
         
         logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
