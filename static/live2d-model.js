@@ -1264,8 +1264,10 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
                 const scaleRatio = Math.min(wRatio, hRatio);
                 const isExtremeChange = hasViewport && (scaleRatio > 1.8 || scaleRatio < 0.56);
                 if (isExtremeChange) {
-                    model.scale.set(scaleX * scaleRatio, scaleY * scaleRatio);
-                    console.log('屏幕分辨率大幅变化，缩放已归一化:', { wRatio, hRatio, scaleRatio });
+                    const scaledX = Math.max(MODEL_PREFERENCES.SCALE_MIN, Math.min(scaleX * scaleRatio, MODEL_PREFERENCES.SCALE_MAX));
+                    const scaledY = Math.max(MODEL_PREFERENCES.SCALE_MIN, Math.min(scaleY * scaleRatio, MODEL_PREFERENCES.SCALE_MAX));
+                    model.scale.set(scaledX, scaledY);
+                    console.log('屏幕分辨率大幅变化，缩放已归一化:', { wRatio, hRatio, scaleRatio, scaledX, scaledY });
                 } else {
                     model.scale.set(scaleX, scaleY);
                 }
