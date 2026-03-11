@@ -67,6 +67,7 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
         cursor: 'pointer',
         userSelect: 'none',
         pointerEvents: 'auto',
+        transition: 'opacity 0.3s ease',
         display: 'none' // 默认隐藏
     });
 
@@ -149,6 +150,33 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
             // 边界限制（现在窗口只覆盖一个屏幕，使用简单的边界检测）
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
             lockIcon.style.top = `${Math.max(0, Math.min(targetY, screenHeight - 40))}px`;
+
+            // 检测锁图标是否被弹出菜单或侧面板覆盖，覆盖时降低不透明度
+            const lockRect = lockIcon.getBoundingClientRect();
+            let isOverlapped = false;
+            // 检测所有可见的 popup
+            document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
+                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
+                    const popupRect = popup.getBoundingClientRect();
+                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
+                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
+                        isOverlapped = true;
+                    }
+                }
+            });
+            // 检测所有可见的侧面板
+            if (!isOverlapped) {
+                document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
+                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
+                        const panelRect = panel.getBoundingClientRect();
+                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
+                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
+                            isOverlapped = true;
+                        }
+                    }
+                });
+            }
+            lockIcon.style.opacity = isOverlapped ? '0.3' : '';
         } catch (_) {
             // 忽略单帧异常
         }
@@ -487,29 +515,36 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
-                    this.closePopupById(config.exclusive);
-                    // 更新被关闭的互斥按钮的图标
-                    const exclusiveData = this._floatingButtons[config.exclusive];
-                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
-                        exclusiveData.imgOff.style.opacity = '0.75';
-                        exclusiveData.imgOn.style.opacity = '0';
+                    const closed = this.closePopupById(config.exclusive);
+                    if (closed) {
+                        // 关闭成功，更新被关闭的互斥按钮的背景和图标
+                        const exclusiveData = this._floatingButtons[config.exclusive];
+                        if (exclusiveData && exclusiveData.button) {
+                            exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        }
+                        if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                            exclusiveData.imgOff.style.opacity = '0.75';
+                            exclusiveData.imgOn.style.opacity = '0';
+                        }
                     }
                 }
 
                 // 切换弹出框
                 this.showPopup(config.id, popup);
 
-                // 等待弹出框状态更新后更新图标状态
+                // 等待弹出框状态更新后更新图标和背景状态
                 setTimeout(() => {
                     const newPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                    // 根据弹出框状态更新图标
-                    if (imgOff && imgOn) {
-                        if (newPopupVisible) {
-                            // 弹出框显示：显示on图标
+                    // 根据弹出框状态更新背景色和图标
+                    if (newPopupVisible) {
+                        btn.style.background = 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0';
                             imgOn.style.opacity = '1';
-                        } else {
-                            // 弹出框隐藏：显示off图标
+                        }
+                    } else {
+                        btn.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0.75';
                             imgOn.style.opacity = '0';
                         }

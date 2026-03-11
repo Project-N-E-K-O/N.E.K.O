@@ -429,8 +429,8 @@ button * {
     left: 0;
     right: 0;
     height: 48px;
-    background: rgba(255, 255, 255, 0.5);
-    /* 更透明的 Mica 效果 */
+    background: #f7f8fa;
+    /* 不透明的标题栏背景 */
     border-bottom: 1px solid rgba(0, 0, 0, 0.06);
     /* Fluent Design 中性分隔线 */
     display: flex;
