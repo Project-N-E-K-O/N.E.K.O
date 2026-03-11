@@ -44,7 +44,7 @@ window.LIPSYNC_PARAMS = [
 
 // 模型偏好验证常量
 const MODEL_PREFERENCES = {
-    SCALE_MIN: 0,
+    SCALE_MIN: 0.005,
     SCALE_MAX: 10,
     POSITION_MAX: 100000
 };
@@ -56,8 +56,8 @@ function isValidModelPreferences(scale, position) {
     const scaleY = scale.y;
     const posX = position.x;
     const posY = position.y;
-    const isValidScale = Number.isFinite(scaleX) && scaleX > MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
-                        Number.isFinite(scaleY) && scaleY > MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
+    const isValidScale = Number.isFinite(scaleX) && scaleX >= MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
+                        Number.isFinite(scaleY) && scaleY >= MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
     const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
                            Math.abs(posX) < MODEL_PREFERENCES.POSITION_MAX && Math.abs(posY) < MODEL_PREFERENCES.POSITION_MAX;
     return isValidScale && isValidPosition;
@@ -720,9 +720,14 @@ class Live2DManager {
             }
         } else {
             this.isFocusing = false;
-            if (this.currentModel) {
-                const b = this.currentModel.getBounds();
-                this.currentModel.focus((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+            // 清除 focusController 的外部输入，使头部不受鼠标/拖拽等外部因素影响
+            // 自主运动（updateNaturalMovements：呼吸、轻微摆动）通过独立管线叠加，不受影响
+            // 注意：不能用 model.focus(center) — 它经过 toModelPosition + atan2 + 单位圆投影，
+            // 永远产生非零值（如 targetX=1），无法真正归零
+            if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.focusController) {
+                const fc = this.currentModel.internalModel.focusController;
+                fc.targetX = 0;
+                fc.targetY = 0;
             }
         }
     }

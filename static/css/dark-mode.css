@@ -1307,4 +1307,24 @@ html #chat-container {
   filter: brightness(0.85);
 }
 
+/* ===== 模型管理器：指定按钮暗色模式保持与白天一致 ===== */
+/* 三个小动作按钮（删除模型、播放动作、播放表情）的图标不降亮度 */
+[data-theme="dark"] #delete-model-btn img,
+[data-theme="dark"] #play-motion-btn img,
+[data-theme="dark"] #play-expression-btn img,
+[data-theme="dark"] #play-vrm-animation-btn img,
+[data-theme="dark"] #trigger-vrm-expression-btn img {
+  filter: none !important;
+}
+
+/* 保存设置、情感配置按钮 — 背景图和样式不被暗色模式覆盖 */
+[data-theme="dark"] #save-position-btn,
+[data-theme="dark"] #emotion-config-btn,
+[data-theme="dark"] #vrm-emotion-config-btn {
+  background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+  background-color: transparent !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */

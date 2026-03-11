@@ -159,6 +159,7 @@ class CursorFollowController {
         // ── 鼠标跟踪启用状态 ──
         this._enabled = true;
         this._userDisabled = false;  // 记录用户显式禁用，避免性能档切换覆盖
+        this._disabling = false;     // 正在回正过渡中
 
         // ── 鼠标状态 ──
         this._rawMouseX = 0;
@@ -346,11 +347,10 @@ class CursorFollowController {
         this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
 
         if (!this._enabled) {
-            // 关闭追踪时清空目标旋转，避免恢复时残留历史偏移
-            this._targetHeadYaw = 0;
-            this._targetHeadPitch = 0;
-            this._headYaw = 0;
-            this._headPitch = 0;
+            // 性能档切为 none 时，跳过过渡立即完成禁用
+            // 必须走 _completeDisable() 以恢复骨骼默认姿态，
+            // 否则 head/neck 残留叠加旋转会导致头部冻结在偏转位置
+            this._completeDisable();
         }
     }
 
@@ -440,9 +440,37 @@ class CursorFollowController {
     //  调用时机：在 mixer.update 之前
     // ════════════════════════════════════════════════════════════════
     updateTarget(delta) {
-        if (!this._initialized || !this.eyesTarget || !this.manager || !this._enabled) return;
+        if (!this._initialized || !this.eyesTarget || !this.manager) return;
+        if (!this._enabled && !this._disabling) return;
         // 首次 pointermove 前跳过，避免未知鼠标坐标导致首帧朝向异常
         if (!this._hasPointerInput) return;
+
+        // ── 回正过渡：仅执行眼球阻尼衰减 + eyesTarget 重建，不再求解新目标 ──
+        if (this._disabling) {
+            this._elapsedTime += delta;
+            const D = CURSOR_FOLLOW_DEFAULTS;
+            const camera = this.manager.camera;
+            if (!camera) return;
+
+            const eyeAlpha = 1 - Math.exp(-delta * D.eyeSmoothSpeed);
+            this._eyeYaw += (0 - this._eyeYaw) * eyeAlpha;
+            this._eyePitch += (0 - this._eyePitch) * eyeAlpha;
+
+            // 重建 eyesTarget 位置（与正常路径 line 545-556 相同逻辑）
+            const headPosForEye = this._getHeadWorldPos();
+            const baseRightForEye = this._tempVec3A.set(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+            const baseUpForEye = this._tempVec3D.set(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+            const baseForwardForEye = this._tempVec3C.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize().negate();
+            const cosPitch = Math.cos(this._eyePitch);
+
+            this._desiredTargetPos
+                .copy(headPosForEye)
+                .addScaledVector(baseRightForEye, Math.sin(this._eyeYaw) * cosPitch * D.lookAtDistance)
+                .addScaledVector(baseUpForEye, Math.sin(this._eyePitch) * D.lookAtDistance)
+                .addScaledVector(baseForwardForEye, Math.cos(this._eyeYaw) * cosPitch * D.lookAtDistance);
+            this.eyesTarget.position.copy(this._desiredTargetPos);
+            return;
+        }
 
         this._elapsedTime += delta;
 
@@ -561,7 +589,8 @@ class CursorFollowController {
     //  调用时机：在 vrm.update(delta) 之后
     // ════════════════════════════════════════════════════════════════
     applyHead(delta) {
-        if (!this._initialized || !this.manager || !this._enabled) return;
+        if (!this._initialized || !this.manager) return;
+        if (!this._enabled && !this._disabling) return;
 
         const vrm = this.manager?.currentModel?.vrm;
         if (!vrm?.humanoid) return;
@@ -570,6 +599,11 @@ class CursorFollowController {
 
         // ── 更新权重 ──
         this._updateHeadWeight(delta);
+        // 回正过渡中：权重收敛到 0 时完成过渡
+        if (this._disabling && this._headWeight < 0.001) {
+            this._completeDisable();
+            return;
+        }
         if (this._headWeight < 0.001) return;
 
         const now = performance.now();
@@ -577,7 +611,7 @@ class CursorFollowController {
         const pointerIdle = (now - this._lastPointerMoveAt) >= perf.pointerIdleMs;
         const headSolveIntervalMs = pointerIdle ? perf.idleHeadSolveIntervalMs : perf.activeHeadSolveIntervalMs;
         const shouldSolveByMovement = !perf.solveHeadOnMoveOnly || !pointerIdle;
-        const shouldSolveHead = shouldSolveByMovement && (now - this._lastHeadSolveAt) >= headSolveIntervalMs;
+        const shouldSolveHead = !this._disabling && shouldSolveByMovement && (now - this._lastHeadSolveAt) >= headSolveIntervalMs;
 
         // 即使低档静止，也不能提前 return，否则会出现“偶发复位感”。
         // 这里只控制是否重算目标角，阻尼和骨骼加成仍每帧应用。
@@ -733,8 +767,10 @@ class CursorFollowController {
     _updateHeadWeight(delta) {
         const D = CURSOR_FOLLOW_DEFAULTS;
 
-        // 目标权重（优先级：一次性动作 > 拖拽 > 待机动画 > 纯静止）
-        if (this._isActionPlaying()) {
+        // 回正过渡中：强制目标权重为 0，不受动画/拖拽状态覆盖
+        if (this._disabling) {
+            this._targetHeadWeight = 0;
+        } else if (this._isActionPlaying()) {
             this._targetHeadWeight = D.headWeightAction;       // 一次性动作 → 0
         } else if (this._isDragging()) {
             this._targetHeadWeight = 0.15;
@@ -754,6 +790,11 @@ class CursorFollowController {
     //  重置（模型切换时调用）
     // ════════════════════════════════════════════════════════════════
     reset() {
+        // 如果正在回正过渡中被重置（如模型切换），立即完成禁用
+        if (this._disabling) {
+            this._disabling = false;
+            this._enabled = false;
+        }
         this._headYaw = 0;
         this._headPitch = 0;
         this._eyeYaw = 0;
@@ -794,17 +835,36 @@ class CursorFollowController {
     // ════════════════════════════════════════════════════════════════
     setEnabled(enabled) {
         this._userDisabled = !enabled;
-        this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
-        if (!enabled) {
-            this.reset();
-            // 恢复骨骼到默认姿态
-            this._restoreBonesToDefault();
+        if (!enabled && this._enabled && !this._disabling) {
+            // 进入"回正"过渡状态，不立即禁用
+            this._disabling = true;
+            // 将所有目标角度清零 → 已有的阻尼插值会自动平滑回正
+            this._targetHeadYaw = 0;
+            this._targetHeadPitch = 0;
+            this._targetEyeYaw = 0;
+            this._targetEyePitch = 0;
+            this._targetHeadWeight = 0;
+            console.log('[CursorFollow] 鼠标跟踪开始回正过渡');
+        } else if (enabled) {
+            this._disabling = false;
+            this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
+            console.log('[CursorFollow] 鼠标跟踪已启用');
         }
-        console.log(`[CursorFollow] 鼠标跟踪已${enabled ? '启用' : '禁用'}`);
     }
 
     isEnabled() {
         return this._enabled;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  回正过渡完成：真正禁用鼠标跟踪
+    // ════════════════════════════════════════════════════════════════
+    _completeDisable() {
+        this._disabling = false;
+        this._enabled = false;
+        this.reset();
+        this._restoreBonesToDefault();
+        console.log('[CursorFollow] 回正过渡完成，鼠标跟踪已禁用');
     }
 
     // ════════════════════════════════════════════════════════════════

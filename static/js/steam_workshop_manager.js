@@ -3431,7 +3431,11 @@ function registerVoice() {
         .then(res => res.json())
         .then(data => {
             if (data.voice_id) {
-                resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                if (data.reused) {
+                    resultDiv.innerHTML = window.t ? window.t('voice.reusedExisting', { voiceId: data.voice_id }) : '已复用现有音色，跳过上传。voice_id: ' + data.voice_id;
+                } else {
+                    resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                }
                 resultDiv.style.color = 'green';
 
                 // 自动更新voice_id到后端

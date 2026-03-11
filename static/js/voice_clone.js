@@ -259,7 +259,11 @@ function registerVoice() {
         })
         .then(data => {
             if (data.voice_id) {
-                resultDiv.textContent = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                if (data.reused) {
+                    resultDiv.textContent = window.t ? window.t('voice.reusedExisting', { voiceId: data.voice_id }) : '已复用现有音色，跳过上传。voice_id: ' + data.voice_id;
+                } else {
+                    resultDiv.textContent = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                }
                 // 刷新音色列表
                 setTimeout(() => {
                     if (typeof loadVoices === 'function') {
