@@ -634,10 +634,11 @@ class LLMSessionManager:
             source="handle_connection_error",
         ):
             return
-        if expected_session is not None and self.session is not expected_session:
-            logger.info("⏭️ handle_connection_error 跳过：session 已被新实例替换")
-            return
-        self.session_closed_by_server = True
+        async with self.lock:
+            if expected_session is not None and self.session is not expected_session:
+                logger.info("⏭️ handle_connection_error 跳过：session 已被新实例替换")
+                return
+            self.session_closed_by_server = True
         
         if message:
             message_text = str(message)
@@ -2569,12 +2570,17 @@ class LLMSessionManager:
                 return
             pending_session_ref = self.pending_session
             main_session_ref = self.session
+            message_handler_task_ref = self.message_handler_task
+            tts_handler_task_ref = self.tts_handler_task
+            tts_thread_ref = self.tts_thread
+            tts_request_queue_ref = self.tts_request_queue
+            tts_response_queue_ref = self.tts_response_queue
             await self._init_renew_status()
             has_tts_resources = (
-                self.tts_handler_task is not None or
-                (self.tts_thread is not None and self.tts_thread.is_alive())
+                tts_handler_task_ref is not None or
+                (tts_thread_ref is not None and tts_thread_ref.is_alive())
             )
-            should_return_early = not self.is_active and not self.session and not has_tts_resources
+            should_return_early = not self.is_active and main_session_ref is None and not has_tts_resources
 
         if pending_session_ref and pending_session_ref is not main_session_ref:
             try:
@@ -2594,67 +2600,84 @@ class LLMSessionManager:
             # 重置启动标志，防止断网重连后 start_session 被忽略
             self.is_starting_session = False
 
-        if self.message_handler_task:
-            self.message_handler_task.cancel()
+        if message_handler_task_ref and not message_handler_task_ref.done():
+            message_handler_task_ref.cancel()
             try:
-                await asyncio.wait_for(self.message_handler_task, timeout=3.0)
+                await asyncio.wait_for(message_handler_task_ref, timeout=3.0)
             except asyncio.CancelledError:
                 pass
             except asyncio.TimeoutError:
                 logger.warning("End Session: Warning: Listener task cancellation timeout.")
             except Exception as e:
                 logger.error(f"💥 End Session: Error during listener task cancellation: {e}")
-            self.message_handler_task = None
+        async with self.lock:
+            if self.message_handler_task is message_handler_task_ref:
+                self.message_handler_task = None
 
-        if self.session:
+        if main_session_ref:
             try:
                 logger.info("End Session: Closing connection...")
-                await self.session.close()
+                await main_session_ref.close()
                 logger.info("End Session: Qwen connection closed.")
             except Exception as e:
                 logger.error(f"💥 End Session: Error during cleanup: {e}")
             finally:
-                # 清空 session 引用，防止后续使用错误的 session 类型
-                self.session = None
+                async with self.lock:
+                    # 仅当字段仍指向本次 teardown 捕获的旧 session 时才清空
+                    if self.session is main_session_ref:
+                        self.session = None
         # 关闭TTS子进程和相关任务
-        if self.tts_handler_task and not self.tts_handler_task.done():
-            self.tts_handler_task.cancel()
+        if tts_handler_task_ref and not tts_handler_task_ref.done():
+            tts_handler_task_ref.cancel()
             try:
-                await asyncio.wait_for(self.tts_handler_task, timeout=2.0)
+                await asyncio.wait_for(tts_handler_task_ref, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-            self.tts_handler_task = None
+        async with self.lock:
+            if self.tts_handler_task is tts_handler_task_ref:
+                self.tts_handler_task = None
             
-        if self.tts_thread and self.tts_thread.is_alive():
+        if tts_thread_ref and tts_thread_ref.is_alive():
             try:
-                self.tts_request_queue.put((None, None))  # 通知线程退出
-                self.tts_thread.join(timeout=2.0)  # 等待线程结束
+                tts_request_queue_ref.put((None, None))  # 通知线程退出
+                tts_thread_ref.join(timeout=2.0)  # 等待线程结束
             except Exception as e:
                 logger.error(f"💥 关闭TTS线程时出错: {e}")
             finally:
-                self.tts_thread = None
+                async with self.lock:
+                    if self.tts_thread is tts_thread_ref:
+                        self.tts_thread = None
                 
         # 清理TTS队列和缓存状态
         try:
-            while not self.tts_request_queue.empty():
-                self.tts_request_queue.get_nowait()
+            while not tts_request_queue_ref.empty():
+                tts_request_queue_ref.get_nowait()
         except: # noqa
             pass
         try:
-            while not self.tts_response_queue.empty():
-                self.tts_response_queue.get_nowait()
+            while not tts_response_queue_ref.empty():
+                tts_response_queue_ref.get_nowait()
         except: # noqa
             pass
         
-        # 重置TTS缓存状态
-        async with self.tts_cache_lock:
-            self.tts_ready = False
-            self.tts_pending_chunks.clear()
+        async with self.lock:
+            can_reset_tts_state = (
+                self.tts_handler_task is tts_handler_task_ref
+                and self.tts_thread is tts_thread_ref
+            )
+            can_reset_input_cache = self.session in (None, main_session_ref)
+
+        if can_reset_tts_state:
+            # 重置TTS缓存状态（仅当未出现新资源替换）
+            async with self.tts_cache_lock:
+                self.tts_ready = False
+                self.tts_pending_chunks.clear()
         
-        # 重置输入缓存状态
-        async with self.input_cache_lock:
-            self.session_ready = False
-            self.pending_input_data.clear()
+        if can_reset_input_cache:
+            # 重置输入缓存状态（避免清空新session启动过程中的输入缓存）
+            async with self.input_cache_lock:
+                self.session_ready = False
+                self.pending_input_data.clear()
 
         self.last_time = None
         if not by_server:
