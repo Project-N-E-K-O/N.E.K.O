@@ -773,8 +773,7 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         
         if (!currentQuality) return;
         
-        const modelPath = mgr._lastLoadedModelPath;
-        if (!modelPath) return;
+        if (!mgr.currentModel) return;
         
         _qualityChangePending = true;
         
@@ -790,6 +789,11 @@ window.addEventListener('neko-render-quality-changed', (e) => {
                     }, 100);
                 });
             }
+            
+            if (!mgr.currentModel) return;
+            
+            const modelPath = mgr._lastLoadedModelPath;
+            if (!modelPath) return;
             
             console.log(`[Live2D] 画质变更为 ${currentQuality}，重新加载模型以应用纹理降采样`);
             
@@ -825,6 +829,11 @@ window.addEventListener('neko-render-quality-changed', (e) => {
                 console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
                     scaleX, scaleY, posX, posY
                 });
+            }
+            
+            if (mgr._lastLoadedModelPath !== modelPath) {
+                console.warn('[Live2D] 模型已切换，跳过此次画质变更加载');
+                return;
             }
             
             await mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined);
