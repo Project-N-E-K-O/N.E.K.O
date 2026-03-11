@@ -576,17 +576,15 @@ class LLMSessionManager:
             
             # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
             async with self.hot_swap_cache_lock:
+                # Re-check: a hot-swap could have completed while we waited for the lock.
+                if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
+                    logger.info("⏭️ handle_silence_timeout: expected_session stale after acquiring cache lock, skipping")
+                    return
                 if self.hot_swap_audio_cache:
-                    # 计算4秒的字节数
-                    # 缓存的是处理后的16kHz音频：16000 samples/s × 2 bytes = 32000 bytes/s
-                    # 4秒 = 128000 bytes，稍微少扣掉一点
                     SILENCE_DURATION_BYTES = 120000
-                    
-                    # 计算当前缓存的总字节数
                     total_bytes = sum(len(chunk) for chunk in self.hot_swap_audio_cache)
                     
                     if total_bytes > SILENCE_DURATION_BYTES:
-                        # 从缓存末尾删除最后4秒的数据
                         bytes_to_remove = SILENCE_DURATION_BYTES
                         removed_bytes = 0
                         
@@ -595,12 +593,10 @@ class LLMSessionManager:
                             chunk_size = len(last_chunk)
                             
                             if chunk_size <= bytes_to_remove:
-                                # 整个chunk都要删除
                                 self.hot_swap_audio_cache.pop()
                                 bytes_to_remove -= chunk_size
                                 removed_bytes += chunk_size
                             else:
-                                # 只删除chunk的一部分
                                 keep_size = chunk_size - bytes_to_remove
                                 self.hot_swap_audio_cache[-1] = last_chunk[:keep_size]
                                 removed_bytes += bytes_to_remove
@@ -608,18 +604,20 @@ class LLMSessionManager:
                         
                         logger.info(f"🗑️ 静默超时：已清空音频缓存的最后 {removed_bytes} 字节（约{removed_bytes/32000:.1f}秒）")
                     else:
-                        # 如果缓存总量不足4秒，全部清空
                         logger.info(f"🗑️ 静默超时：缓存总量不足4秒，全部清空（{total_bytes} 字节）")
                         self.hot_swap_audio_cache.clear()
             
-            # 向前端发送特殊消息，告知自动闭麦但不关闭live2d
+            # Re-check before websocket side-effects
+            if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
+                logger.info("⏭️ handle_silence_timeout: expected_session stale before WS send, skipping")
+                return
+            
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({
                     "type": "auto_close_mic",
                     "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
                 })
             
-            # 关闭当前session
             await self.end_session(by_server=True, expected_session=expected_session)
             
         except Exception as e:
@@ -627,16 +625,20 @@ class LLMSessionManager:
     
     async def handle_connection_error(self, message=None, *, expected_session=None):
         async with self.lock:
+            is_pending = False
             if expected_session is not None:
                 if expected_session is self.pending_session:
-                    logger.info("⏭️ handle_connection_error: expected_session is pending_session, delegating to pending teardown")
-                    # 释放锁后走 pending 专用路径
+                    is_pending = True
                 elif expected_session is not self.session:
                     logger.info("⏭️ handle_connection_error: expected_session stale (not current session), skipping")
                     return
-            self.session_closed_by_server = True
+            # Only flag the manager-level flag for main session errors (or unguarded calls).
+            # A pending_session failure must not misclassify the main session as closed.
+            if not is_pending:
+                self.session_closed_by_server = True
         
-        if expected_session is not None and expected_session is self.pending_session:
+        if is_pending:
+            logger.info("⏭️ handle_connection_error: expected_session is pending_session, delegating to pending teardown")
             await self._teardown_pending_session_from_lifecycle_callback(expected_session, message)
             return
         
@@ -1250,7 +1252,12 @@ class LLMSessionManager:
                     api_type=self.core_api_type
                 )
 
-            # Connect BEFORE assigning to self.session
+            # Bind guarded callbacks BEFORE connect — connect() can invoke
+            # on_connection_error during the handshake, and without the guard
+            # it would run the raw unbound handler and potentially kill the
+            # current active session.
+            self._bind_session_lifecycle_callbacks(new_session)
+
             try:
                 await new_session.connect(initial_prompt, native_audio=not self.use_tts)
             except Exception:
@@ -1260,9 +1267,8 @@ class LLMSessionManager:
                     pass
                 raise
             
-            # Connect succeeded — promote to self.session and bind guarded callbacks
+            # Connect succeeded — promote to self.session
             self.session = new_session
-            self._bind_session_lifecycle_callbacks(self.session)
             logger.info("✅ LLM Session 已连接")
             logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
             print(initial_prompt)  #只在控制台显示，不输出到日志文件
@@ -1670,8 +1676,8 @@ class LLMSessionManager:
                 resp = await client.get(f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
                 initial_prompt += resp.text + self._convert_cache_to_str(self.message_cache_for_new_session)
             print(initial_prompt)
-            await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)
             self._bind_session_lifecycle_callbacks(self.pending_session)
+            await self.pending_session.connect(initial_prompt, native_audio = not self.use_tts)
 
             if self.pending_session_warmed_up_event:
                 self.pending_session_warmed_up_event.set() 
@@ -2557,13 +2563,23 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None):  # 与Core API断开连接
-        await self._init_renew_status()
-
+        # Pre-check: no-side-effect guard before _init_renew_status which mutates
+        # pending/prewarm state.  A stale callback must not nuke preparation state.
         async with self.lock:
             if not self.is_active:
                 return
             if expected_session is not None and expected_session is not self.session:
-                logger.info("⏭️ end_session: expected_session stale, skipping")
+                logger.info("⏭️ end_session: expected_session stale (pre-check), skipping")
+                return
+
+        await self._init_renew_status()
+
+        async with self.lock:
+            # Re-check after await: another task may have deactivated or swapped session.
+            if not self.is_active:
+                return
+            if expected_session is not None and expected_session is not self.session:
+                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
             self.is_active = False
             # is_starting_session 仅由 start_session 的 finally 块管理，
