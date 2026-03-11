@@ -4,7 +4,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getAllMetrics, getPluginMetrics, getPluginMetricsHistory } from '@/api/metrics'
-import { useAuthStore } from '@/stores/auth'
 import type { PluginMetrics } from '@/types/api'
 
 export const useMetricsStore = defineStore('metrics', () => {
@@ -25,24 +24,6 @@ export const useMetricsStore = defineStore('metrics', () => {
     // 如果已有请求正在进行，直接返回该请求的结果（防止请求堆积）
     if (pendingFetchAll) {
       return pendingFetchAll
-    }
-    
-    // 检查认证状态
-    const authStore = useAuthStore()
-    if (!authStore.isAuthenticated) {
-      console.log('[Metrics] Not authenticated, skipping fetchAllMetrics')
-      return {
-        metrics: [],
-        count: 0,
-        global: {
-          total_cpu_percent: 0.0,
-          total_memory_mb: 0.0,
-          total_memory_percent: 0.0,
-          total_threads: 0,
-          active_plugins: 0
-        },
-        time: new Date().toISOString()
-      }
     }
     
     loading.value = true
@@ -90,13 +71,6 @@ export const useMetricsStore = defineStore('metrics', () => {
   async function fetchPluginMetrics(pluginId: string) {
     if (!pluginId) {
       console.warn('[Metrics] fetchPluginMetrics called with empty pluginId')
-      return
-    }
-    
-    // 检查认证状态
-    const authStore = useAuthStore()
-    if (!authStore.isAuthenticated) {
-      console.log(`[Metrics] Not authenticated, skipping fetch for ${pluginId}`)
       return
     }
     

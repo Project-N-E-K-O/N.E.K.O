@@ -610,8 +610,8 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-btn-agent',
                 popover: {
-                    title: window.t ? window.t('tutorial.step8.title', '🔨 Agent工具') : '🔨 Agent工具',
-                    description: window.t ? window.t('tutorial.step8.desc', '打开 Agent 工具面板，使用各类辅助功能~') : '打开 Agent 工具面板，使用各类辅助功能~',
+                    title: window.t ? window.t('tutorial.step8.title', '🔨 NekoClaw') : '🔨 NekoClaw',
+                    description: window.t ? window.t('tutorial.step8.desc', '打开 NekoClaw 面板，使用 computer use、browser use 和 plugin 等功能~') : '打开 NekoClaw 面板，使用 computer use、browser use 和 plugin 等功能~',
                 },
                 disableActiveInteraction: true
             },

@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
+from utils.file_utils import atomic_write_json
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -194,8 +195,7 @@ def get_model_config(model_name: str):
         
         # 如果配置有更新，保存到文件
         if config_updated:
-            with open(model_json_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
             logger.info(f"已为模型 {model_name} 自动添加缺失的配置项")
             
         return {"success": True, "config": config_data}
@@ -238,8 +238,7 @@ async def update_model_config(model_name: str, request: Request):
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        with open(model_json_path, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, ensure_ascii=False, indent=4) # 使用 indent=4 保持格式
+        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
             
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -408,8 +407,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         config_data['EmotionMapping'] = data
 
         # 保存配置到文件
-        with open(model_json_path, 'w', encoding='utf-8') as f:
-            json.dump(config_data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=2)
         
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
@@ -574,8 +572,7 @@ async def save_model_parameters(model_name: str, request: Request):
         
         # 保存到parameters.json文件
         parameters_file = os.path.join(model_dir, 'parameters.json')
-        with open(parameters_file, 'w', encoding='utf-8') as f:
-            json.dump(parameters, f, indent=2, ensure_ascii=False)
+        atomic_write_json(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
         return {"success": True, "message": "参数保存成功"}
@@ -675,8 +672,7 @@ def get_model_config_by_id(model_id: str):
         
         # 如果配置有更新，保存到文件
         if config_updated:
-            with open(model_json_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
             logger.info(f"已为模型 {model_id} 自动添加缺失的配置项")
             
         return {"success": True, "config": config_data}
@@ -731,8 +727,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
             file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        with open(model_json_path, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, ensure_ascii=False, indent=4) # 使用 indent=4 保持格式
+        atomic_write_json(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
             
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -1010,8 +1005,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
 
                         if modified:
                             try:
-                                with open(motion_path, 'w', encoding='utf-8') as mf:
-                                    _json.dump(motion_data, mf, ensure_ascii=False, indent=4)
+                                atomic_write_json(motion_path, motion_data, ensure_ascii=False, indent=4)
                                 logger.info(f"已清除口型参数：{motion_path}")
                             except Exception:
                                 # 写入失败则记录但不阻止上传

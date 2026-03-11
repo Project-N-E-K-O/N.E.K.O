@@ -36,10 +36,18 @@ from config.prompts_sys import (
     get_proactive_format_sections,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
+    RECENT_PROACTIVE_TIME_LABELS, RECENT_PROACTIVE_CHANNEL_LABELS,
     BEGIN_GENERATE,
     SCREEN_SECTION_HEADER, SCREEN_SECTION_FOOTER,
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
+    PROACTIVE_SOURCE_LABELS,
+    MUSIC_SEARCH_RESULT_TEXTS,
+    PROACTIVE_MUSIC_TAG_HINT,
+    PROACTIVE_BOTH_TAG_INSTRUCTIONS,
+    PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
+    PROACTIVE_SCREEN_MUSIC_TAG_HINT,
+    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -51,6 +59,7 @@ from utils.web_scraper import (
     fetch_news_content, format_news_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
+from utils.music_crawlers import fetch_music_content
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -98,7 +107,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     从原始 web 数据中提取链接信息列表
     args:
-    - mode: 数据模式，支持 'news', 'video', 'home', 'personal'
+    - mode: 数据模式，支持 'news', 'video', 'home', 'personal', 'music'
     - raw_data: 原始 web 数据
     returns:
     - list[dict]: 包含链接信息的列表，每个元素包含 'title', 'url', 'source' 字段
@@ -148,6 +157,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
             if region == 'china':
+
                 b_dyn = raw_data.get('bilibili_dynamic', {})
                 for d in (b_dyn.get('dynamics', []) or []):
                     title = d.get('content', '')
@@ -161,6 +171,20 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                     url = d.get('url', '')
                     if title and url:
                         links.append({'title': title, 'url': url, 'source': '微博'})
+                        
+                d_dyn = raw_data.get('douyin_dynamic', {})
+                for d in (d_dyn.get('dynamics', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': '抖音'})
+
+                k_dyn = raw_data.get('kuaishou_dynamic', {})
+                for d in (k_dyn.get('dynamics', []) or []):
+                    title = d.get('content', '')
+                    url = d.get('url', '')
+                    if title and url:
+                        links.append({'title': title, 'url': url, 'source': '快手'})
             else:
                 r_dyn = raw_data.get('reddit_dynamic', {})
                 for d in (r_dyn.get('posts', []) or []):
@@ -175,6 +199,15 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                     url = d.get('url', '')
                     if title and url:
                         links.append({'title': title, 'url': url, 'source': 'Twitter'})
+
+        elif mode == 'music':
+            items = raw_data.get('data', [])
+            for item in items:
+                title = item.get('name', '')
+                artist = item.get('artist', '')
+                url = item.get('url', '')
+                if title and url:
+                    links.append({'title': f"{title} - {artist}", 'url': url, 'source': '音乐推荐'})
 
     except Exception as e:
         logger.warning(f"提取链接失败 [{mode}]: {e}")
@@ -243,20 +276,8 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     if not recent:
         return ""
 
-    _time_labels = {
-        'zh': {0: '刚刚', 'm': '{}分钟前', 'h': '{}小时前'},
-        'en': {0: 'just now', 'm': '{}min ago', 'h': '{}h ago'},
-        'ja': {0: 'たった今', 'm': '{}分前', 'h': '{}時間前'},
-        'ko': {0: '방금', 'm': '{}분 전', 'h': '{}시간 전'},
-    }
-    _ch_labels = {
-        'zh': {'vision': '屏幕', 'web': '网络'},
-        'en': {'vision': 'screen', 'web': 'web'},
-        'ja': {'vision': '画面', 'web': 'ネット'},
-        'ko': {'vision': '화면', 'web': '웹'},
-    }
-    tl = _time_labels.get(lang, _time_labels['zh'])
-    cl = _ch_labels.get(lang, _ch_labels['zh'])
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['zh'])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['zh'])
 
     def _rel(ts):
         """
@@ -511,6 +532,90 @@ def _log_trending_content(lanlan_name: str, trending_content: dict):
             print(detail)
     else:
         print(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
+
+def _log_music_content(lanlan_name: str, music_content: dict):
+    """记录音乐内容获取详情"""
+    if music_content.get('success'):
+        tracks = music_content.get('data', [])
+        titles = [f"{t.get('name', '')} - {t.get('artist', '')}" for t in tracks[:5]]
+        if titles:
+            logger.info(f"[{lanlan_name}] 成功获取音乐推荐:")
+            for title in titles:
+                logger.info(f"  - {title}")
+    else:
+        logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
+
+def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
+    """Formats music content into a readable string with multi-language support."""
+    if not music_content.get('success'):
+        return ""
+    
+    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['zh'])
+    
+    output_lines = [t['title']]
+    tracks = music_content.get('data', [])
+    for i, track in enumerate(tracks[:5], 1):
+        # 使用多语言字典中的“未知”占位符，替代硬编码的中文
+        name = track.get('name') or t['unknown_track']
+        artist = track.get('artist') or t['unknown_artist']
+        album = track.get('album', '')
+        
+        if album:
+            output_lines.append(f"{i}. 《{name}》 - {artist}（{t['album']}：{album}）")
+        else:
+            output_lines.append(f"{i}. 《{name}》 - {artist}")
+    
+    # 如果除了标题没有抓到任何歌曲，则返回空
+    if len(output_lines) == 1:
+        return ""
+        
+    # 删除了原来的 desc 尾注，保持素材的客观中立
+    return "\n".join(output_lines)
+
+
+def _append_music_recommendations(
+    source_links: list[dict],
+    music_content: dict | None,
+    limit: int = 3,
+) -> int:
+    """Deduplicate and append music tracks from *music_content* into *source_links*.
+
+    Returns the number of tracks actually appended (0 when nothing new).
+    """
+    music_raw = music_content.get('raw_data', {}) if music_content else {}
+    tracks = music_raw.get('data')
+    if not tracks:
+        return 0
+
+    existing_signatures = {
+        (
+            (link.get('url') or '').strip(),
+            (link.get('title') or '').strip(),
+            (link.get('artist') or '').strip(),
+        )
+        for link in source_links
+        if isinstance(link, dict) and link.get('source') == '音乐推荐'
+    }
+
+    appended = 0
+    for track in tracks[:limit]:
+        title = (track.get('name') or '未知曲目').strip()
+        artist = (track.get('artist') or '未知艺术家').strip()
+        url = (track.get('url') or '').strip()
+        sig = (url, title, artist)
+        if sig in existing_signatures:
+            continue
+        source_links.append({
+            'title': title,
+            'artist': artist,
+            'url': url,
+            'cover': track.get('cover', ''),
+            'source': '音乐推荐',
+        })
+        existing_signatures.add(sig)
+        appended += 1
+    return appended
+
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):
     """
@@ -1059,7 +1164,6 @@ async def proxy_image(image_path: str):
                 
                 # 方法2：尝试从路径中提取创意工坊相关部分
                 if not workshop_related_dir:
-                    import re
                     match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
                     if match:
                         workshop_related_dir = match.group(1)
@@ -1072,7 +1176,6 @@ async def proxy_image(image_path: str):
                 
                 # 方法4：如果是Steam创意工坊内容路径，添加整个steamapps/workshop目录
                 if not workshop_related_dir:
-                    import re
                     steamapps_match = re.search(r'(.*?steamapps)', decoded_path, re.IGNORECASE)
                     if steamapps_match:
                         workshop_related_dir = os.path.join(steamapps_match.group(1), 'workshop')
@@ -1087,7 +1190,6 @@ async def proxy_image(image_path: str):
                             logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
                     else:
                         # 如果目录不存在，尝试直接添加steamapps/workshop路径
-                        import re
                         workshop_match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
                         if workshop_match:
                             potential_dir = workshop_match.group(0)
@@ -1244,6 +1346,20 @@ async def backend_screenshot(request: Request):
         shot = pyautogui.screenshot()
         if shot.mode in ('RGBA', 'LA', 'P'):
             shot = shot.convert('RGB')
+
+        # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
+        # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
+        if sys.platform == "darwin":
+            # 低分辨率采样：把图缩到 16×16 后用 PIL extrema 检测，避免全量 numpy 数组的内存开销
+            try:
+                thumb = shot.resize((16, 16))
+                extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
+                if all(mx <= 1 for _, mx in extrema):
+                    logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
+                    return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+            except Exception:
+                logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
+
         jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
@@ -1320,7 +1436,7 @@ async def proactive_chat(request: Request):
                 compressed_b64 = ''
                 try:
                     from PIL import Image as _PILImage
-                    _, b64_raw = screenshot_data.split(',', 1)
+                    b64_raw = screenshot_data.split(',', 1)[1] if ',' in screenshot_data else screenshot_data
                     img = _PILImage.open(BytesIO(base64.b64decode(b64_raw)))
                     if img.mode in ('RGBA', 'LA', 'P'):
                         img = img.convert('RGB')
@@ -1381,6 +1497,9 @@ async def proactive_chat(request: Request):
                 links = _extract_links_from_raw(mode, personal_dynamics)
                 return (mode, {'formatted_content': formatted, 'raw_data': personal_dynamics, 'links': links})
             
+            elif mode == 'music':
+                return (mode, {'placeholder': True, 'note': '关键词将在 Phase 1 开始前生成'})
+
             else:
                 raise ValueError(f"未知模式: {mode}")
         
@@ -1511,7 +1630,9 @@ async def proactive_chat(request: Request):
                 streaming=True,
             )
             if disable_thinking:
-                kwargs['extra_body'] = get_extra_body(m)
+                extra_body = get_extra_body(m)
+                if extra_body:
+                    kwargs['model_kwargs'] = {"extra_body": extra_body}
             return ChatOpenAI(**kwargs)
         
         async def _llm_call_with_retry(
@@ -1568,10 +1689,15 @@ async def proactive_chat(request: Request):
         # ================================================================
         
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
-        web_modes = [m for m in sources if m != 'vision']
+        music_content = sources.get('music')
+        logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
+        
+        all_web_links: list[dict] = []
+        
+        # 收集音乐链接（在 Phase 1 Web 筛选完成后）
+        web_modes = [m for m in sources if m != 'vision' and m != 'music']
         
         merged_web_content = ""
-        all_web_links: list[dict] = []
         if web_modes:
             parts = []
             seen_topic_keys: set[str] = set()
@@ -1580,7 +1706,7 @@ async def proactive_chat(request: Request):
                 if remaining_total <= 0:
                     break
                 src = sources[m]
-                label_map = {'news': '热议话题', 'video': '视频推荐', 'home': '首页推荐', 'window': '窗口上下文', 'personal': '个人动态'}
+                label_map = PROACTIVE_SOURCE_LABELS.get(proactive_lang, PROACTIVE_SOURCE_LABELS['zh'])
                 label = label_map.get(m, m)
                 links = src.get('links', []) or []
 
@@ -1633,19 +1759,76 @@ async def proactive_chat(request: Request):
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
         selected_web_topic_key = ''
+        selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
+        
+        # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
+        if music_content and music_content.get('placeholder'):
+            logger.info(f"[{lanlan_name}] 音乐模式：开始生成搜索关键词...")
+            try:
+                from config.prompts_sys import get_proactive_music_keyword_prompt
+                music_keyword_prompt = get_proactive_music_keyword_prompt(proactive_lang).format(
+                    lanlan_name=lanlan_name,
+                    master_name=master_name_current,
+                    memory_context=memory_context,
+                    recent_chats_section=proactive_chat_history_prompt
+                )
+                music_keyword_result = await _llm_call_with_retry(music_keyword_prompt, "music_keyword")
+                print(f"[{lanlan_name}] Phase 1 音乐关键词: {music_keyword_result[:100]}")
+                
+                keyword = (music_keyword_result or '').strip()
+                keyword = re.sub(r'(?i).*?(?:关键词|搜索(?:关键词)?|keyword|search|キーワード|検索|키워드|검색|ключевое\s*слово|поиск)[：:\s]+', '', keyword, count=1)
+                keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
+
+                if re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
+                    print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
+                    music_content = None
+                else:
+                    music_raw = None
+                    if keyword:
+                        music_raw = await fetch_music_content(keyword=keyword, limit=5)
+                        if not (music_raw and music_raw.get('success')):
+                            logger.warning(f"[{lanlan_name}] 音乐模式：关键词 '{keyword}' 搜索失败，尝试随机推荐")
+                            music_raw = await fetch_music_content(keyword="", limit=5)
+                    else:
+                        logger.warning(f"[{lanlan_name}] 音乐模式：AI 未返回有效关键词，尝试随机推荐")
+                        music_raw = await fetch_music_content(keyword="", limit=5)
+
+                    if music_raw and music_raw.get('success'):
+                        _log_music_content(lanlan_name, music_raw)
+                        music_content = {
+                            'formatted_content': _format_music_content(music_raw, proactive_lang),
+                            'raw_data': music_raw,
+                        }
+                    else:
+                        music_content = None
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
+                try:
+                    music_raw = await fetch_music_content(keyword="", limit=5)
+                    if music_raw and music_raw.get('success'):
+                        _log_music_content(lanlan_name, music_raw)
+                        music_content = {
+                            'formatted_content': _format_music_content(music_raw, proactive_lang),
+                            'raw_data': music_raw,
+                        }
+                    else:
+                        music_content = None
+                except Exception:
+                    music_content = None
         
         # --- Web 通道: 1 次 LLM 筛选 ---
         if merged_web_content:
             try:
                 prompt = get_proactive_screen_prompt('web', proactive_lang).format(
                     memory_context=memory_context,
-                    recent_chats_section=proactive_chat_history_prompt,
-                    merged_content=merged_web_content
+                    merged_content=merged_web_content,
+                    # --- 修改：传入空字符串即可，因为真实对话已经在 memory_context 里了 ---
+                    recent_chats_section=""
                 )
                 web_result_text = await _llm_call_with_retry(prompt, "screen_web")
                 print(f"[{lanlan_name}] Phase 1 Web 筛选结果: {web_result_text[:120]}")
                 
-                if "[PASS]" not in web_result_text:
+                if "[PASS]" not in web_result_text.upper():
                     parsed = _parse_web_screening_result(web_result_text)
                     if parsed:
                         matched = _lookup_link_by_title(parsed.get('title', ''), all_web_links)
@@ -1668,12 +1851,44 @@ async def proactive_chat(request: Request):
                                 print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
                             else:
                                 print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
-                    if "[PASS]" not in web_result_text:
+                    if "[PASS]" not in web_result_text.upper():
                         phase1_topics.append(('web', web_result_text.strip()))
                 else:
                     print(f"[{lanlan_name}] Phase 1 Web 通道返回 PASS")
             except Exception as e:
                 logger.warning(f"[{lanlan_name}] Phase 1 Web 筛选异常: {type(e).__name__}: {e}")
+        
+        # 音乐模式特殊处理：不经过 Phase 1 LLM 筛选，直接添加音乐话题
+        if music_content and music_content.get('formatted_content'):
+            music_topic = music_content['formatted_content']
+            if music_topic:
+                # 检查音乐话题是否重复
+                music_tracks = music_content.get('raw_data', {}).get('data', [])
+                if music_tracks:
+                    # 获取第一首歌的详细信息
+                    first_track = music_tracks[0]
+                    track_name = first_track.get('name', '')
+                    track_artist = first_track.get('artist', '')
+                    track_url = first_track.get('url', '')
+                    
+                    # 复用通用的去重键生成函数，优先利用 URL 的唯一性，
+                    # 即使没有 URL 也会结合“歌名 - 艺术家”来生成 key，避免同名曲误伤
+                    music_topic_key = _build_topic_dedup_key(
+                        topic_title=f"{track_name} - {track_artist}",
+                        topic_source='music',
+                        topic_url=track_url
+                    )
+                    
+                    if _is_recent_topic_used(lanlan_name, music_topic_key):
+                        print(f"[{lanlan_name}] Phase 1 音乐话题去重命中，跳过: {track_name}")
+                    else:
+                        logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        phase1_topics.append(('music', music_topic))
+                        # 暂存音乐话题 key，等 Phase 2 成功后再记录
+                        selected_music_topic_key = music_topic_key
+                else:
+                    logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                    phase1_topics.append(('music', music_topic))
         
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -1685,10 +1900,14 @@ async def proactive_chat(request: Request):
         
         # 收集各通道结果
         active_channels = [ch for ch, _ in phase1_topics]
+        print(f"[{lanlan_name}] Phase 1 结果: phase1_topics={phase1_topics}, vision_content={'有' if vision_content else '无'}")
         web_topic = None
+        music_topic = None
         for channel, topic in phase1_topics:
             if channel == 'web':
                 web_topic = topic
+            elif channel == 'music':
+                music_topic = topic
         if vision_content:
             active_channels.append('vision')
         primary_channel = 'vision' if vision_content else (active_channels[0] if active_channels else 'unknown')
@@ -1742,11 +1961,25 @@ async def proactive_chat(request: Request):
             ef = _loc(EXTERNAL_TOPIC_FOOTER, proactive_lang)
             external_section = f"{el}\n{web_topic}\n{ef}"
         
+        music_section = ""
+        if music_topic:
+            # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
+            music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+        
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
             has_web=bool(external_section),
+            has_music=bool(music_section),  # 分离音乐布尔位
             lang=proactive_lang,
         )
+        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
+        if music_section and external_section:
+            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
+        elif music_section and screen_section:
+            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
+
         generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
@@ -1754,10 +1987,28 @@ async def proactive_chat(request: Request):
             recent_chats_section=proactive_chat_history_prompt,
             screen_section=screen_section,
             external_section=external_section,
+            music_section=music_section,
             master_name=master_name_current,
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
+        if music_topic:
+            if external_section:
+                generate_prompt += PROACTIVE_BOTH_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_BOTH_TAG_INSTRUCTIONS.get('en', PROACTIVE_BOTH_TAG_INSTRUCTIONS['zh']),
+                )
+            elif screen_section:
+                generate_prompt += PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS['zh']),
+                )
+            else:
+                generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+                    proactive_lang,
+                    PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
+                )
+        print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
         if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
@@ -1810,14 +2061,14 @@ async def proactive_chat(request: Request):
                         m = re.search(r'主动搭话\s*\n', cleaned)
                         if m:
                             cleaned = cleaned[m.end():]
-                        # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH]
-                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS)\]\s*', cleaned, re.IGNORECASE)
+                        # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
+                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
                         if tag_match:
                             source_tag = tag_match.group(1).upper()
                             cleaned = cleaned[tag_match.end():]
                         tag_parsed = True
                         
-                        if source_tag == 'PASS' or '[PASS]' in cleaned:
+                        if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                             print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
                             aborted = True
                             break
@@ -1860,11 +2111,11 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
-            if source_tag == 'PASS' or '[PASS]' in cleaned:
+            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
                 full_text += cleaned
@@ -1885,31 +2136,55 @@ async def proactive_chat(request: Request):
         logger.info(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}): {response_text[:120]}...")
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
 
-        # 文本级去重（高阈值，尽量避免误杀）
-        duplicate_hit, duplicate_score = _is_similar_to_recent_proactive_chat(lanlan_name, response_text)
-        if duplicate_hit:
-            logger.info(f"[{lanlan_name}] Phase 2 命中文本去重，score={duplicate_score:.3f}，pass")
-            await mgr.handle_new_message()
-            return JSONResponse({
-                "success": True,
-                "action": "pass",
-                "message": "主动搭话命中高相似度去重"
-            })
-        
-        # 根据来源标签调整通道/链接
+        has_music_topic = 'music' in active_channels
+
+        # 【核心修复】重新对齐 source_mode 处理逻辑，确保 BOTH 模式下音乐能播放
+        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
+
         if source_tag == 'SCREEN':
             source_links = []
             primary_channel = 'vision'
-        elif source_tag in ('WEB', 'BOTH'):
-            primary_channel = 'web' if source_tag == 'WEB' else primary_channel
+        elif source_tag == 'WEB':
+            primary_channel = 'web'
+        elif source_tag == 'MUSIC':
+            source_links = [] # 纯音乐模式不需要 Web 链接
+            primary_channel = 'music'
+        elif source_tag == 'BOTH':
+            # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
+            # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容
+            if is_music_used:
+                primary_channel = 'music'
+            else:
+                primary_channel = 'web'
+
+        # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
+        # 即使 source_tag 没有明确标记 MUSIC/BOTH，也尽量补齐可播放曲目。
+        should_try_music_fallback = (
+            primary_channel == 'music'
+            or (has_music_topic and not any(ch in ('vision', 'web') for ch in active_channels))
+        )
+        if should_try_music_fallback:
+            if source_links is None:
+                source_links = []
+            if _append_music_recommendations(source_links, music_content) > 0:
+                is_music_used = True
+
+        if is_music_used:
+            _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
 
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
-        if source_tag != 'SCREEN' and selected_web_topic_key:
+        
+        # 【逻辑优化】精准的话题去重记录
+        if selected_web_topic_key and (source_tag in ('WEB', 'BOTH')):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
+            
+        # 【增强去重】即使 source_tag 解析为空，只要逻辑上判定使用了音乐（如 BOTH 模式降级处理），也必须记录
+        if selected_music_topic_key and is_music_used:
+            _record_topic_usage(lanlan_name, selected_music_topic_key)
 
         return JSONResponse({
             "success": True,

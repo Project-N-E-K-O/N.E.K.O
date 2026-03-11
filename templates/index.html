@@ -25,6 +25,9 @@
     <link rel="stylesheet" href="/static/libs/driver.min.css">
     <!-- 教程样式定制 -->
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <!-- APlayer 库（本地） -->
+    <link rel="stylesheet" href="/static/libs/APlayer.min.css">
+    <script src="/static/libs/APlayer.min.js"></script>
 </head>
 
 <body>
@@ -130,6 +133,7 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
+    <script type="module" src="/static/js/APlayer/main.js"></script>
     <script src="/static/js/index.js"></script>
     <script src="/static/common_ui.js"></script>
     <script src="/static/vrm-init.js"></script>

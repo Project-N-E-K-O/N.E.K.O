@@ -21,6 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from utils.file_utils import atomic_write_json
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -425,8 +426,7 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
     
     # 写入文件
     try:
-        with open(meta_file_path, 'w', encoding='utf-8') as f:
-            json.dump(existing_meta, f, ensure_ascii=False, indent=2)
+        atomic_write_json(meta_file_path, existing_meta, ensure_ascii=False, indent=2)
         logger.info(f"已更新 .workshop_meta.json: {meta_file_path}")
     except Exception as e:
         logger.error(f"写入 .workshop_meta.json 失败: {e}")
@@ -2015,8 +2015,7 @@ async def prepare_workshop_upload(request: Request):
         
         # 1. 复制角色卡JSON到临时目录(已验证为安全文件名)喵
         chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
-        with open(chara_file_path, 'w', encoding='utf-8') as f:
-            json.dump(chara_data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(chara_file_path, chara_data, ensure_ascii=False, indent=2)
         logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
         
         # 2. 查找模型目录并复制模型文件

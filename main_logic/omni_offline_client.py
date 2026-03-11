@@ -113,7 +113,7 @@ class OmniOfflineClient:
         
         # ========== 普通对话守卫配置 ==========
         self.enable_response_guard = True     # 是否启用质量守卫
-        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 400
+        self.max_response_length = max_response_length if isinstance(max_response_length, int) and max_response_length > 0 else 300
         self.max_response_rerolls = 2         # 最多允许的自动重试次数
         
         # 质量守卫回调：由 core.py 设置，用于通知前端清理气泡

@@ -14,6 +14,29 @@ from brain.cua.core.engine import (
 )
 
 
+def _message_has_user_input(message) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if message.get("role") != "user":
+        return False
+
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type == "text" and str(item.get("text", "")).strip():
+                    return True
+                if item_type in {"image_url", "image"}:
+                    return True
+        return False
+    return bool(content)
+
+
 class LMMAgent:
     def __init__(self, engine_params=None, system_prompt=None, engine=None):
         if engine is None:
@@ -287,6 +310,9 @@ class LMMAgent:
             messages.append(
                 {"role": "user", "content": [{"type": "text", "text": user_message}]}
             )
+
+        if not any(_message_has_user_input(message) for message in messages):
+            raise ValueError("At least one non-empty user message is required before LLM generation")
 
         # Thinking enabled for Claude Sonnet 3.7 and Gemini 2.5 Pro
         if use_thinking:

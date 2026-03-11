@@ -29,7 +29,7 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_profiles import apply_user_config_profiles
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
-from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT
+from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
@@ -158,13 +158,13 @@ def _get_plugin_config_path(plugin_id: str) -> Path | None:
     if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
         return None
 
-    root = PLUGIN_CONFIG_ROOT.resolve()
-    config_file = (root / normalized_plugin_id / "plugin.toml").resolve()
-    if root not in config_file.parents:
-        return None
-
-    if config_file.exists():
-        return config_file
+    for root in PLUGIN_CONFIG_ROOTS:
+        resolved_root = root.resolve()
+        config_file = (resolved_root / normalized_plugin_id / "plugin.toml").resolve()
+        if resolved_root not in config_file.parents:
+            continue
+        if config_file.exists():
+            return config_file
     return None
 
 
@@ -272,13 +272,17 @@ class PluginLifecycleService:
         original_plugin_id = plugin_id
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
-        if isinstance(existing_host_obj, PluginHostContract) and existing_host_obj.is_alive():
-            _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=plugin_id)
-            return {
-                "success": True,
-                "plugin_id": plugin_id,
-                "message": "Plugin is already running",
-            }
+        if isinstance(existing_host_obj, PluginHostContract):
+            if existing_host_obj.is_alive():
+                _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=plugin_id)
+                return {
+                    "success": True,
+                    "plugin_id": plugin_id,
+                    "message": "Plugin is already running",
+                }
+            # Stale host (process dead) — remove so re-start can proceed
+            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
+            logger.info("removed stale host for plugin_id={} (process no longer alive)", plugin_id)
 
         if state.is_plugin_frozen(plugin_id) and not restore_state:
             raise _to_domain_error(

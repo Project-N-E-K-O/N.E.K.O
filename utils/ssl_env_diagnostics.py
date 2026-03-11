@@ -16,6 +16,8 @@ import ssl
 import traceback
 from datetime import datetime
 
+from utils.file_utils import atomic_write_json
+
 
 def probe_ssl_environment() -> dict:
     """执行 SSL 预检，返回结构化结果。"""
@@ -69,8 +71,7 @@ def write_ssl_diagnostic(
             }
         filename = f"ssl_diagnostic_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         path = os.path.join(output_dir, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        atomic_write_json(path, payload, ensure_ascii=False, indent=2)
         return path
     except Exception:
         return None

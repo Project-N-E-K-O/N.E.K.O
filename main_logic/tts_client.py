@@ -14,6 +14,7 @@ import aiohttp
 import asyncio
 from functools import partial
 from config import GSV_VOICE_PREFIX
+from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -183,6 +184,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         session_id = None
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
+        text_done_sent = False  # 防止同一轮次重复发送 tts.text.done
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         
@@ -328,19 +330,21 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     session_id = None
                     session_ready.clear()
                     current_speech_id = None
+                    text_done_sent = False
                     continue
                 
                 if sid is None:
                     # 正常结束（非阻塞）：发送完成信号，但不等待服务器确认、不关闭连接
                     # 音频继续通过 receive_task 流入 response_queue，
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
-                    if ws and session_id and current_speech_id is not None:
+                    if ws and session_id and current_speech_id is not None and not text_done_sent:
                         try:
                             done_event = {
                                 "type": "tts.text.done",
                                 "data": {"session_id": session_id}
                             }
                             await ws.send(json.dumps(done_event))
+                            text_done_sent = True
                         except Exception as e:
                             logger.warning(f"发送TTS完成信号失败: {e}")
                     continue
@@ -348,6 +352,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 # 新的语音ID，重新建立连接
                 if current_speech_id != sid:
                     current_speech_id = sid
+                    text_done_sent = False
                     response_done.clear()
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
@@ -519,6 +524,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         receive_task = None
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
+        buffer_committed = False  # 防止同一轮次重复提交缓冲区
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         
@@ -637,18 +643,20 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         receive_task = None
                     session_ready.clear()
                     current_speech_id = None
+                    buffer_committed = False
                     continue
                 
                 if sid is None:
                     # 正常结束（非阻塞）：提交缓冲区，但不等待服务器确认、不关闭连接
                     # 音频继续通过 receive_task 流入 response_queue，
                     # 连接由下次 speech_id 切换 / __interrupt__ 关闭
-                    if ws and session_ready.is_set() and current_speech_id is not None:
+                    if ws and session_ready.is_set() and current_speech_id is not None and not buffer_committed:
                         try:
                             await ws.send(json.dumps({
                                 "type": "input_text_buffer.commit",
                                 "event_id": f"event_{int(time.time() * 1000)}_commit"
                             }))
+                            buffer_committed = True
                         except Exception as e:
                             logger.warning(f"提交缓冲区失败: {e}")
                     continue
@@ -657,6 +665,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 # 直接关闭旧连接，打断旧语音
                 if current_speech_id != sid:
                     current_speech_id = sid
+                    buffer_committed = False
                     response_done.clear()
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
@@ -1156,8 +1165,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                 }
                                 
                                 # 使用异步HTTP客户端流式接收SSE响应
-                                async with aiohttp.ClientSession(trust_env=True) as session:
-                                    async with session.post(tts_url, headers=headers, json=payload) as resp:
+                                async with aiohttp.ClientSession(
+                                    **aiohttp_session_kwargs_for_url(tts_url)
+                                ) as session:
+                                    async with session.post(tts_url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                                         if resp.status == 200:
                                             # CogTTS返回SSE格式: data: {...JSON...}
                                             # 使用缓冲区逐块读取，避免 "Chunk too big" 错误
