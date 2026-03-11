@@ -253,8 +253,11 @@
 
         const container = musicBar.querySelector(`#${playerId}`);
         const apBtn = musicBar.querySelector('.music-bar-play');
-        if (!container)
-            return currentPlayingTrack = null;
+        if (!container) {
+            musicBar.remove();
+            currentPlayingTrack = null;
+            return;
+        }
 
         try {
             const playerConfig = {
@@ -341,6 +344,7 @@
 
         } catch (err) {
             console.error('[Music UI] 播放器出错:', err);
+            musicBar.remove();
             if (currentToken === latestMusicRequestToken) {
                 currentPlayingTrack = null;
                 showErrorToast('music.playError', '音乐播放加载失败');

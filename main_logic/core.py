@@ -167,6 +167,9 @@ class LLMSessionManager:
         else:
             self.voice_id = raw_voice_id
             self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+        if self._is_free_preset_voice and self.core_api_type != 'free':
+            self.voice_id = ''
+            self._is_free_preset_voice = False
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -472,10 +475,7 @@ class LLMSessionManager:
                 # 使用流式重采样器（维护内部状态，避免 chunk 边界不连续）
                 resampled_float = self.audio_resampler.resample_chunk(audio_float)
                 audio = (resampled_float * 32767.0).clip(-32768, 32767).astype(np.int16)
-
                 await self.send_speech(audio.tobytes())
-                # 你可以根据需要加上格式、isNewMessage等标记
-                # await self.websocket.send_json({"type": "cozy_audio", "format": "blob", "isNewMessage": True})
             else:
                 pass  # websocket未连接时忽略
 
@@ -992,6 +992,9 @@ class LLMSessionManager:
         else:
             self.voice_id = raw_voice_id
             self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+        if self._is_free_preset_voice and self.core_api_type != 'free':
+            self.voice_id = ''
+            self._is_free_preset_voice = False
         
         # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
         if not self.voice_id:
@@ -1271,6 +1274,8 @@ class LLMSessionManager:
             
             # Connect succeeded — promote to self.session
             self.session = new_session
+            if not self.current_speech_id:
+                self.current_speech_id = str(uuid4())
             logger.info("✅ LLM Session 已连接")
             logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
             print(initial_prompt)  #只在控制台显示，不输出到日志文件
@@ -1616,6 +1621,9 @@ class LLMSessionManager:
             else:
                 self.voice_id = raw_voice_id
                 self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
+            if self._is_free_preset_voice and self.core_api_type != 'free':
+                self.voice_id = ''
+                self._is_free_preset_voice = False
             
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
@@ -1662,6 +1670,8 @@ class LLMSessionManager:
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
+                    voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free'
+                        and 'lanlan.tech' in realtime_config.get('base_url', '') else None,
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
@@ -1671,7 +1681,8 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_silence_timeout=self.handle_silence_timeout,
                     on_status_message=self.send_status,
-                    api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
+                    on_repetition_detected=self.handle_repetition_detected,
+                    api_type=self.core_api_type
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
@@ -2180,6 +2191,7 @@ class LLMSessionManager:
             # 热切换完成后，立即将缓存的音频数据发送到新session
             await self._flush_hot_swap_audio_cache()
             self.session = self.pending_session
+            self.current_speech_id = str(uuid4())
             self.session_start_time = datetime.now()
             
             # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
