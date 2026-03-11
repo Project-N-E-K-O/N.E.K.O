@@ -347,15 +347,10 @@ class CursorFollowController {
         this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
 
         if (!this._enabled) {
-            // 性能档切为 none 时，跳过过渡立即禁用
-            if (this._disabling) {
-                this._disabling = false;
-            }
-            // 关闭追踪时清空目标旋转，避免恢复时残留历史偏移
-            this._targetHeadYaw = 0;
-            this._targetHeadPitch = 0;
-            this._headYaw = 0;
-            this._headPitch = 0;
+            // 性能档切为 none 时，跳过过渡立即完成禁用
+            // 必须走 _completeDisable() 以恢复骨骼默认姿态，
+            // 否则 head/neck 残留叠加旋转会导致头部冻结在偏转位置
+            this._completeDisable();
         }
     }
 
