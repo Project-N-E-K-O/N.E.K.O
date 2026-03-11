@@ -49,7 +49,7 @@ function addNewMessage(message) {
     if (typeof message === 'string') {
         newMessageElement.textContent = message;
     }
-    
+
     newMessageElement.className = 'chat-message';
     chatContentWrapper.appendChild(newMessageElement);
     scrollToBottom();
@@ -364,7 +364,7 @@ if (toggleBtn) {
                         toggleBtn.style.removeProperty('opacity');
                     }
                 }
-                
+
                 // 获取或创建图标
                 let iconImg = toggleBtn.querySelector('img');
                 if (!iconImg) {
@@ -379,7 +379,7 @@ if (toggleBtn) {
                     iconImg.style.width = '32px';
                     iconImg.style.height = '32px';
                 }
-                
+
                 if (becomingCollapsed) {
                     iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
@@ -410,20 +410,20 @@ if (toggleBtn) {
                 const targetSize = 50;
                 const scaleX = rect.width > 0 ? Math.min(1, targetSize / rect.width) : 1;
                 const scaleY = rect.height > 0 ? Math.min(1, targetSize / rect.height) : 1;
-                
+
                 chatContainer.style.setProperty('--chat-collapse-scale-x', '1');
                 chatContainer.style.setProperty('--chat-collapse-scale-y', '1');
                 chatContainer.classList.add('collapsing');
-                
+
                 void chatContainer.offsetHeight;
-                
+
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
                         chatContainer.style.setProperty('--chat-collapse-scale-x', String(scaleX));
                         chatContainer.style.setProperty('--chat-collapse-scale-y', String(scaleY));
                     });
                 });
-                
+
                 let handled = false;
                 const finishCollapse = () => {
                     if (handled) return;
@@ -440,7 +440,7 @@ if (toggleBtn) {
                     finishCollapse();
                 };
                 chatContainer.addEventListener('transitionend', onCollapseEnd);
-                
+
                 const transitionDuration = 350;
                 setTimeout(() => {
                     finishCollapse();
@@ -454,9 +454,9 @@ if (toggleBtn) {
                     chatContainer.removeAttribute('class');
                 }
             }
-            
+
             const isMinimized = willMinimize;
-            
+
             // 获取图标元素（HTML中应该已经有img标签）
             let iconImg = toggleBtn.querySelector('img');
             if (!iconImg) {
@@ -526,7 +526,7 @@ if (toggleBtn) {
 }
 
 // --- 对话区拖动功能 ---
-(function() {
+(function () {
     let isDragging = false;
     let hasMoved = false; // 用于判断是否发生了实际的移动
     let dragStartedFromToggleBtn = false; // 记录是否从 toggleBtn 开始拖动
@@ -689,31 +689,31 @@ if (toggleBtn) {
         isDragging = true;
         hasMoved = false;
         dragStartedFromToggleBtn = (e.target === toggleBtn || toggleBtn.contains(e.target));
-        
+
         // 获取初始鼠标/触摸位置
         const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
         const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-        
+
         // 记录开始时的鼠标位置
         startMouseX = clientX;
         startMouseY = clientY;
-        
+
         // 获取当前容器的实际位置（从计算样式中读取，确保准确）
         const computedStyle = window.getComputedStyle(chatContainer);
         startContainerLeft = parseFloat(computedStyle.left) || 0;
         startContainerBottom = parseFloat(computedStyle.bottom) || 0;
-        
+
         console.log('[Drag Start] Mouse:', clientX, clientY, 'Container:', startContainerLeft, startContainerBottom);
-        
+
         // 添加拖动样式
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
-        
+
         // 开始拖动时，临时禁用按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
         if (window.DragHelpers) {
             window.DragHelpers.disableButtonPointerEvents();
         }
-        
+
         // 阻止默认行为（除非明确跳过）
         if (!skipPreventDefault) {
             e.preventDefault();
@@ -723,32 +723,32 @@ if (toggleBtn) {
     // 移动中
     function onDragMove(e) {
         if (!isDragging) return;
-        
+
         const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
         const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
-        
+
         // 计算鼠标的位移
         const deltaX = clientX - startMouseX;
         const deltaY = clientY - startMouseY;
-        
+
         // 检查是否真的移动了（移动距离超过5px）
         const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-        
+
         if (distance > 5) {
             hasMoved = true;
         }
-        
+
         // 立即更新位置：初始位置 + 鼠标位移
         const newLeft = startContainerLeft + deltaX;
         // 注意：Y轴向下为正，但bottom值向上为正，所以要减去deltaY
         const newBottom = startContainerBottom - deltaY;
-        
+
         // 限制在视口内
         const maxLeft = window.innerWidth - chatContainer.offsetWidth;
         const maxBottomRaw = window.innerHeight - chatContainer.offsetHeight;
         const topBoundary = CHAT_SNAP_CONFIG.margin;
         const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
-        
+
         chatContainer.style.left = Math.max(0, Math.min(maxLeft, newLeft)) + 'px';
         chatContainer.style.bottom = Math.max(0, Math.min(maxBottom, newBottom)) + 'px';
     }
@@ -759,20 +759,20 @@ if (toggleBtn) {
             const wasDragging = isDragging;
             const didMove = hasMoved;
             const fromToggleBtn = dragStartedFromToggleBtn;
-            
+
             isDragging = false;
             hasMoved = false;
             dragStartedFromToggleBtn = false;
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
-            
+
             // 拖拽结束后恢复按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
             if (window.DragHelpers) {
                 window.DragHelpers.restoreButtonPointerEvents();
             }
-            
+
             console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
-            
+
             // 如果发生了移动，标记 justDragged 以阻止后续的 click 事件
             if (didMove && fromToggleBtn) {
                 justDragged = true;
@@ -781,7 +781,7 @@ if (toggleBtn) {
                     justDragged = false;
                 }, 100);
             }
-            
+
             // 如果在折叠状态下，没有发生移动，则触发展开
             // 但如果是从 toggleBtn 开始的，让自然的 click 事件处理
             if (wasDragging && !didMove && isCollapsed() && !fromToggleBtn) {
@@ -804,7 +804,7 @@ if (toggleBtn) {
                 startDrag(e);
             }
         });
-        
+
         // 触摸事件
         chatHeader.addEventListener('touchstart', (e) => {
             if (!isCollapsed()) {
@@ -812,7 +812,7 @@ if (toggleBtn) {
             }
         }, { passive: false });
     }
-    
+
     // 让切换按钮也可以触发拖拽（任何状态下都可以）
     if (toggleBtn) {
         // 鼠标事件
@@ -821,14 +821,14 @@ if (toggleBtn) {
             startDrag(e, true);
             e.stopPropagation(); // 阻止事件冒泡到 chatContainer
         });
-        
+
         // 触摸事件
         toggleBtn.addEventListener('touchstart', (e) => {
             startDrag(e, true);
             e.stopPropagation(); // 阻止事件冒泡到 chatContainer
         }, { passive: false });
     }
-    
+
     // 输入区域整体可拖动，但排除 textarea/button 等交互子元素
     if (textInputArea) {
         const isInteractiveTarget = (el) =>
@@ -854,7 +854,7 @@ if (toggleBtn) {
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {
                 return;
             }
-            
+
             // 启动拖动（移动时拖动，不移动时会在 endDrag 中展开）
             startDrag(e, true); // 跳过 preventDefault，允许后续的 click 事件
         }
@@ -866,7 +866,7 @@ if (toggleBtn) {
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {
                 return;
             }
-            
+
             // 启动拖动
             startDrag(e);
         }
@@ -891,95 +891,6 @@ const sidebar = document.getElementById('sidebar');
 
 // --- 初始化 ---
 document.addEventListener('DOMContentLoaded', () => {
-// --- 【新增：APlayer UI 美化样式】 ---
-    if (!document.getElementById('aplayer-custom-style')) {
-        const aplayerStyle = document.createElement('style');
-        aplayerStyle.id = 'aplayer-custom-style';
-        aplayerStyle.textContent = `
-            /* 1. 容器悬浮与毛玻璃质感 */
-            .music-msg-container .aplayer {
-                border-radius: 12px !important;
-                background: rgba(55, 53, 53, 0.65) !important;
-                backdrop-filter: blur(15px);
-                -webkit-backdrop-filter: blur(15px);
-                box-shadow: 0 10px 30px rgba(70, 64, 64, 0.2);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                font-family: inherit !important;
-                overflow: hidden;
-                margin-bottom: 5px;
-                min-height: 158px !important;
-                max-height: 158px !important;
-                height: 158px !important;
-            }
-
-            /* 适配浅色主题 */
-            [data-theme="light"] .music-msg-container .aplayer,
-            .aplayer-theme-light .aplayer {
-                background: rgba(255, 255, 255, 0.75) !important;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-                border: 1px solid rgba(0, 0, 0, 0.05);
-            }
-
-            /* 2. 封面图圆角内缩设计 */
-            .music-msg-container .aplayer .aplayer-pic {
-                border-radius: 8px;
-                margin: 6px;
-                height: calc(100% - 12px) !important;
-                width: 60px !important;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-                min-height: 134px !important;
-                max-height: 134px !important;
-            }
-
-            /* 3. 封面区域固定 */
-            .music-msg-container .aplayer .aplayer-pic .aplayer-pic-icon-wrap {
-                width: 100% !important;
-                height: 100% !important;
-            }
-
-            /* 4. 信息区域高度限制，防止文字过长影响整体高度 */
-            .music-msg-container .aplayer .aplayer-info {
-                height: 100% !important;
-                min-height: 134px !important;
-            }
-
-            /* 3. 进度条主题色：呼应你聊天框的专属蓝色 (#44b7fe) */
-            .music-msg-container .aplayer .aplayer-info .aplayer-controller .aplayer-bar-wrap .aplayer-bar .aplayer-played {
-                background: #44b7fe !important;
-            }
-            .music-msg-container .aplayer .aplayer-info .aplayer-controller .aplayer-bar-wrap .aplayer-bar .aplayer-played .aplayer-thumb {
-                background: #44b7fe !important;
-                box-shadow: 0 0 6px rgba(68, 183, 254, 0.8) !important;
-                transform: scale(1.2);
-            }
-
-            /* 4. 歌词与文字样式优化 */
-            .music-msg-container .aplayer .aplayer-info .aplayer-music .aplayer-title {
-                font-weight: 600;
-                font-size: 15px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                max-width: 160px;
-            }
-            .music-msg-container .aplayer .aplayer-info .aplayer-music .aplayer-author {
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                max-width: 120px;
-            }
-            .music-msg-container .aplayer .aplayer-lrc p {
-                color: #fff;
-                text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-            }
-            [data-theme="light"] .music-msg-container .aplayer .aplayer-lrc p {
-                color: #333;
-                text-shadow: none;
-            }
-        `;
-        document.head.appendChild(aplayerStyle);
-    }
-    // --- 【美化样式结束】 ---
 
     setupResizableChatContainer();
 
@@ -997,7 +908,7 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleBtn.innerHTML = '';
             toggleBtn.appendChild(iconImg);
         }
-        
+
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
             iconImg.src = '/static/icons/expand_icon_off.png';
@@ -1027,7 +938,7 @@ const observer = new MutationObserver((mutations) => {
 
 // 开始观察聊天内容区域的变化
 if (chatContentWrapper) {
-    observer.observe(chatContentWrapper, {childList: true, subtree: true});
+    observer.observe(chatContentWrapper, { childList: true, subtree: true });
 }
 
 // ========== Electron 全局快捷键接口 ==========
@@ -1037,17 +948,17 @@ if (chatContentWrapper) {
  * 切换语音会话状态（开始/结束）
  * Electron 调用此接口来触发语音按钮的切换
  */
-window.toggleVoiceSession = function() {
+window.toggleVoiceSession = function () {
     // 获取浮动按钮的当前状态
     const micButton = window.live2dManager?._floatingButtons?.mic?.button;
     const isActive = micButton?.dataset.active === 'true';
-    
+
     // 派发切换事件
     const event = new CustomEvent('live2d-mic-toggle', {
         detail: { active: !isActive }
     });
     window.dispatchEvent(event);
-    
+
     console.log('[Electron Shortcut] toggleVoiceSession:', !isActive ? 'start' : 'stop');
 };
 
@@ -1055,12 +966,12 @@ window.toggleVoiceSession = function() {
  * 切换屏幕分享状态（开始/结束）
  * Electron 调用此接口来触发屏幕分享按钮的切换
  */
-window.toggleScreenShare = function() {
+window.toggleScreenShare = function () {
     // 获取浮动按钮的当前状态
     const screenBtn = window.live2dManager?._floatingButtons?.screen?.button;
     const isActive = screenBtn?.dataset.active === 'true';
     const isRecording = window.isRecording || false;
-    
+
     // 屏幕分享仅在语音会话中有效
     // 如果尝试开启屏幕分享但语音会话未开启，显示提示并阻止操作
     if (!isActive && !isRecording) {
@@ -1073,13 +984,13 @@ window.toggleScreenShare = function() {
         }
         return;
     }
-    
+
     // 派发切换事件
     const event = new CustomEvent('live2d-screen-toggle', {
         detail: { active: !isActive }
     });
     window.dispatchEvent(event);
-    
+
     console.log('[Electron Shortcut] toggleScreenShare:', !isActive ? 'start' : 'stop');
 };
 
@@ -1087,13 +998,13 @@ window.toggleScreenShare = function() {
  * 触发截图功能
  * Electron 调用此接口来触发截图按钮点击
  */
-window.triggerScreenshot = function() {
+window.triggerScreenshot = function () {
     // 语音会话中禁止截图（文本框处于禁用态时意味着用户处于语音会话中）
     if (window.isRecording) {
         console.log('[Electron Shortcut] triggerScreenshot: blocked - in voice session');
         return;
     }
-    
+
     const screenshotButton = document.getElementById('screenshotButton');
     if (screenshotButton && !screenshotButton.disabled) {
         screenshotButton.click();
@@ -1102,411 +1013,3 @@ window.triggerScreenshot = function() {
         console.log('[Electron Shortcut] triggerScreenshot: button disabled or not found');
     }
 };
-
-// ========== 音乐聊天气泡功能 (现代前端清爽版) ==========
-
-(function() {
-    'use strict';
-
-    // --- 集中配置中心 ---
-    const MUSIC_CONFIG = {
-        dom: {
-            containerId: 'chat-container',
-            insertBeforeId: 'text-input-area',
-            barId: 'music-player-bar'
-        },
-        assets: {
-            cssPath: '/static/libs/APlayer.min.css',
-            jsPath: '/static/libs/APlayer.min.js'
-        },
-        themeColors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'],
-        primaryColor: '#667eea',
-        secondaryColor: '#764ba2',
-        defaultVolume: 0.5
-    };
-
-    let currentPlayingTrack = null;
-    let aplayerLoadPromise = null;
-    let latestMusicRequestToken = 0;
-    let isMusicStyleInjected = false;
-
-    // --- 纯函数库 & 工具方法 ---
-    const isSafeUrl = (url) => {
-        if (!url) return false;
-        try {
-            const parsed = new URL(url);
-            if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-            const allowedDomains = [
-                'i.scdn.co', 'p.scdn.co', 'a.scdn.co', 'i.imgur.com', 'y.qq.com',
-                'music.126.net', 'p1.music.126.net', 'p2.music.126.net', 'p3.music.126.net',
-                'm7.music.126.net', 'm8.music.126.net', 'm9.music.126.net',
-                'mmusic.spriteapp.cn', 'gg.spriteapp.cn',
-                'freemusicarchive.org', 'musopen.org', 'bandcamp.com', 
-                'bcbits.com', 'soundcloud.com', 'sndcdn.com',
-                'itunes.apple.com', 'audio-ssl.itunes.apple.com', 
-                'dummyimage.com', 'music.163.com'
-            ];
-            return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
-        } catch {
-            return false;
-        }
-    };
-
-    const getMusicPlayerInstance = () => {
-        if (window.aplayerInjected && window.aplayerInjected.aplayer) return window.aplayerInjected.aplayer;
-        if (window.aplayer) return window.aplayer;
-        return null;
-    };
-
-    const isPlayerInDOM = () => {
-        const player = getMusicPlayerInstance();
-        return player && player.container && document.body.contains(player.container);
-    };
-
-    const isSameTrack = (info) => {
-        return currentPlayingTrack && 
-               currentPlayingTrack.name === info.name && 
-               currentPlayingTrack.artist === info.artist &&
-               currentPlayingTrack.url === info.url;
-    };
-
-    const showErrorToast = (msgKey, defaultMsg) => {
-        if (typeof window.showStatusToast === 'function') {
-            const errMsg = window.t ? window.t(msgKey, defaultMsg) : defaultMsg;
-            window.showStatusToast(errMsg, 3000);
-        }
-    };
-
-    // --- 核心播放器控制逻辑 ---
-    const destroyMusicPlayer = (removeDOM = true) => {
-        if (typeof window.destroyAPlayer === 'function') {
-            latestMusicRequestToken++;
-            window.destroyAPlayer();
-        } else {
-            const player = getMusicPlayerInstance();
-            if (player) {
-                if (typeof player.pause === 'function') player.pause();
-                if (typeof player.destroy === 'function') player.destroy();
-            }
-            if (window.aplayer) window.aplayer = null;
-            if (window.aplayerInjected && window.aplayerInjected.aplayer) window.aplayerInjected.aplayer = null;
-        }
-        
-        if (removeDOM) {
-            const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
-            if (bar) bar.remove();
-        }
-        currentPlayingTrack = null;
-    };
-
-    // --- 样式注入 ---
-    const injectMusicBarStyles = () => {
-        if (isMusicStyleInjected || document.getElementById('music-bar-style')) return;
-        const style = document.createElement('style');
-        style.id = 'music-bar-style';
-        // 拒绝面条代码，采用多行清晰排版！通过 var(--xxx) 接收动态颜色
-        style.textContent = `
-            :root {
-                --music-bar-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-                --music-text-main: #fff;
-                --music-text-sub: rgba(255, 255, 255, 0.6);
-            }
-            @keyframes musicBarSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-            @keyframes musicBarFadeOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
-            
-            .music-player-bar {
-                display: flex; align-items: center; gap: 10px;
-                padding: 8px 16px; margin: 0 auto 8px auto; width: 75%;
-                background: var(--music-bar-bg); border-radius: 12px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-                box-sizing: border-box; flex-shrink: 0; position: relative;
-                animation: musicBarSlideIn 0.3s ease;
-            }
-            .music-player-bar.fading-out { animation: musicBarFadeOut 0.2s ease forwards; }
-            
-            .music-bar-cover {
-                width: 40px; height: 40px; border-radius: 8px; overflow: hidden;
-                background: linear-gradient(135deg, var(--dynamic-random-color), var(--dynamic-primary-color));
-                display: flex; align-items: center; justify-content: center;
-                font-size: 18px; flex-shrink: 0; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-            }
-            .music-bar-cover img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; pointer-events: auto; }
-            .music-bar-fallback { display: none; }
-            
-            .music-bar-info {
-                flex: 1; min-width: 0; overflow: hidden;
-                display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;
-            }
-            .music-bar-title { color: var(--music-text-main); font-size: 13px; 
-                font-weight: 600; white-space: nowrap; overflow: hidden;
-                text-overflow: ellipsis; margin-bottom: 2px; width: 100%; 
-            }
-            .music-bar-artist { color: var(--music-text-sub); font-size: 11px;
-                white-space: nowrap; overflow: hidden; 
-                text-overflow: ellipsis; width: 100%; 
-            }
-            
-            .music-bar-play {
-                width: 32px; height: 32px; border-radius: 50%; border: none; color: white;
-                background: linear-gradient(135deg, var(--dynamic-primary-color), var(--dynamic-secondary-color));
-                cursor: pointer; display: flex; align-items: center; justify-content: center;
-                font-size: 12px; flex-shrink: 0; box-shadow: 0 2px 4px rgba(102,126,234,0.4);
-                transition: transform 0.2s; pointer-events: auto;
-            }
-            .music-bar-play:hover { transform: scale(1.1); }
-            .music-bar-play:active { transform: scale(0.95); }
-            
-            .music-bar-close {
-                width: 20px; height: 20px; border: none; border-radius: 50%; padding: 0;
-                background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.5);
-                cursor: pointer; display: flex; align-items: center; justify-content: center;
-                font-size: 11px; flex-shrink: 0; transition: all 0.2s; pointer-events: auto; line-height: 1;
-            }
-            .music-bar-close:hover { color: var(--music-text-main); background: rgba(255,255,255,0.2); }
-            .aplayer-notice { display: none !important; }
-
-        `;
-        document.head.appendChild(style);
-        isMusicStyleInjected = true;
-    };
-
-// --- 动态加载 APlayer 库 ---
-    const loadAPlayerLibrary = () => {
-        if (aplayerLoadPromise) return aplayerLoadPromise;
-
-        aplayerLoadPromise = new Promise((resolve, reject) => {
-            if (typeof window.APlayer !== 'undefined') return resolve();
-            
-            // 1. 独立 Promise 处理 CSS 加载（防止裸奔）
-            const loadCSS = new Promise((res) => {
-                if (document.querySelector(`link[href*="${MUSIC_CONFIG.assets.cssPath}"]`)) return res();
-                const cssLink = document.createElement('link');
-                cssLink.rel = 'stylesheet';
-                cssLink.href = MUSIC_CONFIG.assets.cssPath;
-                cssLink.onload = res;
-                // 即使样式加载失败也不要彻底阻塞 JS 的执行，容错处理
-                cssLink.onerror = () => { console.warn('[Common UI] APlayer CSS 加载失败'); res(); };
-                document.head.appendChild(cssLink);
-            });
-
-            // 2. 独立 Promise 处理 JS 加载与校验
-            const loadJS = new Promise((res, rej) => {
-                const existingScript = document.querySelector(`script[src*="${MUSIC_CONFIG.assets.jsPath}"]`);
-
-                if (existingScript) {
-                    if (typeof window.APlayer !== 'undefined') return res();
-                    // 针对并发加载的轮询，抛弃易死锁的事件监听
-                    let retries = 50; 
-                    const checkInterval = setInterval(() => {
-                        if (typeof window.APlayer !== 'undefined') { clearInterval(checkInterval); res(); }
-                        else if (--retries <= 0) { clearInterval(checkInterval); rej(new Error('APlayer 加载超时')); }
-                }, 100);
-                return;
-            }
-
-            const script = document.createElement('script');
-            script.src = MUSIC_CONFIG.assets.jsPath;
-            script.onload = () => {
-                // 绝不盲目相信 onload，强校验全局变量
-                if (typeof window.APlayer !== 'undefined') res();
-                else rej(new Error('APlayer 脚本已加载，但未找到全局实例'));
-            };
-            script.onerror = () => {
-                script.remove();
-                aplayerLoadPromise = null; // 释放锁，允许重试
-                rej(new Error('APlayer JS 库加载失败'));
-            };
-            document.head.appendChild(script);
-        });
-
-        // 3. 并行等待 CSS 和 JS 双端就绪
-        Promise.all([loadCSS, loadJS]).then(() => resolve()).catch(reject);
-    });
-    return aplayerLoadPromise;
-};
-
-    // --- 播放器挂载与执行核心 ---
-    const executePlay = async (trackInfo, currentToken, shouldAutoPlay = true) => {
-        if (currentToken !== latestMusicRequestToken) 
-            return;
-
-        if (getMusicPlayerInstance()) 
-            destroyMusicPlayer(true);
-        // 强制清理正在 fading-out 的残留节点，防止 setTimeout 误杀新节点
-        document.querySelectorAll('.music-player-bar.fading-out').forEach(el => el.remove());
-        currentPlayingTrack = trackInfo;
-
-        const playerId = 'music-bar-player-' + Math.random().toString(36).slice(2, 10);
-        const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
-        const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
-
-        const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
-        const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-        if (!chatContainerEl) 
-            return;
-
-        injectMusicBarStyles();
-
-        let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
-        if (!musicBar) {
-            musicBar = document.createElement('div');
-            musicBar.id = MUSIC_CONFIG.dom.barId;
-            musicBar.className = 'music-player-bar';
-            if (textInputArea) 
-                chatContainerEl.insertBefore(musicBar, textInputArea);
-            else 
-                chatContainerEl.appendChild(musicBar);
-        }
-
-        musicBar.style.setProperty('--dynamic-random-color', randomColor);
-        musicBar.style.setProperty('--dynamic-primary-color', MUSIC_CONFIG.primaryColor);
-        musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
-
-        musicBar.innerHTML = `
-            <div class="music-bar-cover">
-                <img style="display: ${hasCover ? 'block' : 'none'};" alt="cover">
-                <span class="music-bar-fallback" style="display: ${hasCover ? 'none' : 'flex'};">🎵</span>
-            </div>
-            <div class="music-bar-info">
-                <div class="music-bar-title"></div>
-                <div class="music-bar-artist"></div>
-            </div>
-            <button type="button" class="music-bar-play">▶</button>
-            <button type="button" class="music-bar-close">✕</button>
-            <div id="${playerId}" style="display: none;"></div>
-        `;
-
-        // 纯净且安全的 DOM 赋值
-        musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
-        musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
-        
-        const coverImg = musicBar.querySelector('img');
-        const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
-        if (hasCover && coverImg) {
-            coverImg.src = trackInfo.cover; // 安全设值
-            coverImg.onerror = function() {
-                this.style.display = 'none';
-                if (fallbackIcon) fallbackIcon.style.display = 'flex';
-            };
-        }
-
-        // 增加双保险的 DOM 清理机制
-        const closeBtn = musicBar.querySelector('.music-bar-close');
-        closeBtn.addEventListener('click', (e) => {
-            e.preventDefault(); // 阻断表单提交
-            destroyMusicPlayer(false);
-            if (musicBar.parentNode) { 
-                musicBar.classList.add('fading-out');
-                
-                // 双保险：防止 animationend 不触发导致内存泄漏
-                let isRemoved = false;
-                const safeRemove = () => {
-                    if (!isRemoved && musicBar.parentNode) {
-                        musicBar.remove();
-                        isRemoved = true;
-                    }
-                };
-                musicBar.addEventListener('animationend', safeRemove, { once: true });
-                setTimeout(safeRemove, 300); // 300ms 强制超期回收
-            }
-        });
-
-        const container = musicBar.querySelector(`#${playerId}`);
-        const apBtn = musicBar.querySelector('.music-bar-play'); 
-        
-        if (!container) return currentPlayingTrack = null;
-
-        try {
-            const playerConfig = {
-                container: container,
-                theme: MUSIC_CONFIG.primaryColor,
-                loop: 'none',
-                preload: shouldAutoPlay ? 'auto' : 'metadata',
-                autoplay: shouldAutoPlay, 
-                mutex: true,    
-                volume: MUSIC_CONFIG.defaultVolume,
-                listFolded: true,
-                order: 'normal',
-                audio: [{ name: trackInfo.name, artist: trackInfo.artist, 
-                    url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' 
-                }]
-            };
-
-            let aplayerInstance = null;
-            if (typeof window.initializeAPlayer === 'function') {
-                aplayerInstance = await window.initializeAPlayer(playerConfig);
-            } else {
-                aplayerInstance = new window.APlayer(playerConfig);
-            }
-
-            if (!aplayerInstance) throw new Error("APlayer init failed");
-            
-            if (currentToken !== latestMusicRequestToken) {
-                if (typeof aplayerInstance.destroy === 'function') aplayerInstance.destroy();
-                return;
-            }
-
-            if (!window.aplayerInjected) window.aplayerInjected = {};
-            window.aplayerInjected.aplayer = aplayerInstance;
-
-            if (apBtn) {
-                apBtn.addEventListener('click', (e) => {
-                    e.preventDefault(); 
-                    if (typeof window.setMusicUser主导 === 'function') {
-                        window.setMusicUser主导();
-                    }
-                    aplayerInstance.toggle();
-                });
-                apBtn.textContent = shouldAutoPlay ? '⏸' : '▶';
-                aplayerInstance.on('play', () => apBtn.textContent = '⏸');
-                aplayerInstance.on('pause', () => apBtn.textContent = '▶');
-                aplayerInstance.on('ended', () => apBtn.textContent = '▶');
-            }
-
-            const apElement = container.querySelector('.aplayer');
-            if (apElement) apElement.style.display = 'none';
-
-        } catch (err) {
-            console.error('[Common UI] 音乐播放器初始化失败:', err);
-            if (currentToken === latestMusicRequestToken) {
-                currentPlayingTrack = null;
-                showErrorToast('music.playError', '音乐播放加载失败'); 
-            }
-        }
-    };
-
-    // --- 对外暴漏的主函数绑定到 Window ---
-    window.sendMusicMessage = function(trackInfo, shouldAutoPlay = true) {
-        if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {
-            console.warn('[Common UI] 音频 URL 未通过安全校验，拒绝播放:', trackInfo.url);
-            return false;
-        }
-
-        const currentToken = ++latestMusicRequestToken;
-
-        if (isSameTrack(trackInfo) && isPlayerInDOM()) {
-            const player = getMusicPlayerInstance();
-            if (player && player.audio && player.audio.paused) {
-                if (typeof window.setMusicUser主导 === 'function') {
-                    window.setMusicUser主导();
-                }
-                player.play();
-            }
-            return true;
-        }
-
-        loadAPlayerLibrary().then(() => {
-            executePlay(trackInfo, currentToken, shouldAutoPlay);
-        }).catch(err => {
-            console.error('[Common UI] APlayer 库加载失败，中止操作:', err);
-            if (typeof showErrorToast === 'function') {
-                showErrorToast('music.loadError', '音乐播放器组件加载失败，请检查网络'); 
-            } else if (window.showStatusToast) {
-                window.showStatusToast('音乐播放器加载失败', 3000);
-        }
-        });
-
-        return true;
-    };
-
-})();

@@ -4,7 +4,7 @@
 
 // 【防崩溃兜底】确保 window.t 始终是一个可调用的函数
 if (typeof window.t !== 'function') {
-    window.t = function(key, fallback) {
+    window.t = function (key, fallback) {
         // 如果 fallback 是字符串，直接返回
         if (typeof fallback === 'string') return fallback;
         // 如果 fallback 是 i18next 格式的对象，且包含 defaultValue，则回退到该默认值
@@ -16,7 +16,7 @@ if (typeof window.t !== 'function') {
     };
 }
 // 定义全局安全的翻译函数 safeT，供内部直接调用
-window.safeT = function(key, fallback) {
+window.safeT = function (key, fallback) {
     if (window.t && typeof window.t === 'function') {
         const translated = window.t(key, fallback);
         // 【修改】确保翻译库返回的确实是字符串，否则退回安全值
@@ -31,7 +31,7 @@ window.safeT = function(key, fallback) {
 let currentMusicSearchEpoch = 0;
 
 // 【新增】统一失效在途音乐搜索的工具函数
-window.invalidatePendingMusicSearch = function() {
+window.invalidatePendingMusicSearch = function () {
     currentMusicSearchEpoch++;
     window._pendingMusicCommand = '';
     console.log(`[Music] 搜索纪元更新至: ${currentMusicSearchEpoch}, 已失效所有在途请求`);
@@ -198,7 +198,7 @@ function init_app() {
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
 
     // 【补充声明】修复未声明变量导致的隐式全局或 ReferenceError
-    let subtitleCheckDebounceTimer = null; 
+    let subtitleCheckDebounceTimer = null;
 
     // 屏幕流闲置释放的统一 helper 函数
     function scheduleScreenCaptureIdleCheck() {
@@ -818,7 +818,7 @@ function init_app() {
                     try {
                         const parsed = JSON.parse(response.message);
                         if (parsed && parsed.code) statusCode = parsed.code;
-                    } catch (_) {}
+                    } catch (_) { }
 
                     // 如果正在切换模式且收到"已离开"消息，则忽略
                     if (isSwitchingMode && (statusCode === 'CHARACTER_LEFT' || response.message.includes('已离开'))) {
@@ -865,7 +865,7 @@ function init_app() {
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
                                         sessionStartedRejecter = reject; //  保存 reject 函数
-                                        
+
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
@@ -1159,15 +1159,15 @@ function init_app() {
                     try {
                         // 【补充修复】在 flush 最后缓冲区前，不仅要清空 pending，
                         // 还要确保 rest 里的半截指令被彻底正则抹除，防止“打字机”最后蹦出个 [play_...
-                        window._pendingMusicCommand = ''; 
+                        window._pendingMusicCommand = '';
 
                         let rest = typeof window._realisticGeminiBuffer === 'string'
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
-                        
+
                         // 统一清理可能残留的完整或半截指令内容
                         rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        
+
                         const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
@@ -1195,7 +1195,7 @@ function init_app() {
                         if (typeof window.processMusicCommands === 'function' && fullText) {
                             window.processMusicCommands(fullText);
                         }
-                        
+
                         // 2. 剔除音乐指令，避免影响后续的情感分析和字幕翻译
                         fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
 
@@ -1410,7 +1410,7 @@ function init_app() {
                             const searchMsg = window.t('music.searching', { query: searchTerm, defaultValue: '正在为您搜索: ' + searchTerm });
                             window.showStatusToast(searchMsg, 2000);
                         }
-                        
+
                         // 【新增】每次搜索前纪元+1，并记录下当前请求的纪元
                         currentMusicSearchEpoch++;
                         const myEpoch = currentMusicSearchEpoch;
@@ -1453,7 +1453,7 @@ function init_app() {
                                 if (typeof myEpoch !== 'undefined' && typeof currentMusicSearchEpoch !== 'undefined') {
                                     if (myEpoch !== currentMusicSearchEpoch) return;
                                 }
-                                
+
                                 console.error(`[Music] Music search API call failed:`, e);
                                 if (window.showStatusToast) {
                                     const failMsg = window.safeT ? window.safeT('music.searchFailed', '音乐搜索失败') : '音乐搜索失败';
@@ -1468,8 +1468,8 @@ function init_app() {
                         ? window.t('app.repetitionDetected', { name: response.name })
                         : `检测到高重复度对话。建议您终止对话，让${response.name}休息片刻。`;
                     showStatusToast(warningMessage, 8000);
-                    }
-                
+                }
+
             } catch (error) {
                 console.error(window.t('console.messageProcessingFailed'), error);
             }
@@ -2184,21 +2184,21 @@ function init_app() {
 
     let _lastPlayedMusicUrl = null;
     let _lastMusicPlayTime = 0;
-    
-    window.dispatchMusicPlay = function(trackInfo) {
+
+    window.dispatchMusicPlay = function (trackInfo) {
         if (!trackInfo || !trackInfo.url) {
             console.warn('[MusicDispatch] 无效的音乐信息，跳过播放');
             return;
         }
-        
+
         const now = Date.now();
         const musicUrl = trackInfo.url;
-        
+
         if (_lastPlayedMusicUrl === musicUrl && (now - _lastMusicPlayTime) < 5000) {
             console.log('[MusicDispatch] 5秒内相同音乐，跳过播放:', trackInfo.name);
             return;
         }
-        
+
         if (window.sendMusicMessage) {
             const accepted = window.sendMusicMessage(trackInfo);
             if (accepted) {
@@ -2210,7 +2210,29 @@ function init_app() {
                 }
             }
         } else {
-            console.warn('[MusicDispatch] sendMusicMessage 未定义');
+            console.warn('[MusicDispatch] sendMusicMessage 尚未就绪，启动双保险等待...');
+
+            // 逻辑：每 500ms 检查一次，或者监听到事件时触发
+            const retryPlay = () => {
+                if (window.sendMusicMessage) {
+                    console.log('[MusicDispatch] 检测到接口已就绪，正在补发播放请求...');
+                    clearInterval(pollTimer);
+                    window.removeEventListener('music-ui-ready', retryPlay);
+                    // 重新执行播放逻辑
+                    window.dispatchMusicPlay(trackInfo);
+                    return true;
+                }
+                return false;
+            };
+
+            // 保险 1：定时轮询 (防止错过事件)
+            const pollTimer = setInterval(retryPlay, 500);
+
+            // 保险 2：事件监听
+            window.addEventListener('music-ui-ready', retryPlay, { once: true });
+
+            // 5秒后如果还没加载出来，放弃轮询防止内存泄漏
+            setTimeout(() => clearInterval(pollTimer), 5000);
         }
     };
 
@@ -2233,31 +2255,31 @@ function init_app() {
      * 
      * @param {string} text - 可能包含音乐指令的文本
      */
-    window.processMusicCommands = async function(text) {
+    window.processMusicCommands = async function (text) {
         if (!text) return;
         const musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
         let match;
-        
+
         while ((match = musicRegex.exec(text)) !== null) {
             try {
                 // 1. 解析 AI 传来的意图信息（通常只有 name 和 artist）
                 const aiTrackInfo = JSON.parse(match[1]);
-                
+
                 // 校验 name 字段是否存在
                 if (!aiTrackInfo.name) {
                     console.warn('[Music Parser] 缺少 name 字段，跳过:', match[1]);
                     continue;
                 }
-                
+
                 const query = `${aiTrackInfo.name} ${aiTrackInfo.artist || ''}`.trim();
-                
+
                 if (query) {
                     // 【核心修复1】在发出请求前增加并锁定当前纪元
                     const myEpoch = ++currentMusicSearchEpoch;
-                    
+
                     const response = await fetch(`/api/music/search?query=${encodeURIComponent(query)}`);
                     const result = await response.json();
-                    
+
                     // 【核心修复2】门闩校验：如果纪元对不上（说明期间切猫或打断了），直接丢弃该结果
                     if (myEpoch !== currentMusicSearchEpoch) {
                         console.log(`[Music] 指令搜索结果过时，已丢弃: "${query}"`);
@@ -2278,7 +2300,7 @@ function init_app() {
                     if (result.data && result.data.length > 0) {
                         const realTrack = result.data[0];
                         console.log('[Music] 指令搜歌命中:', realTrack.name);
-                        
+
                         // 调用主分支统一的播放调度逻辑
                         if (typeof window.dispatchMusicPlay === 'function') {
                             window.dispatchMusicPlay(realTrack);
@@ -2289,9 +2311,9 @@ function init_app() {
                     } else {
                         // 【修复】直接使用 window.t 并传入 query 参数，配合你新改的 JSON 占位符
                         if (window.showStatusToast) {
-                            const notFoundMsg = window.t('music.notFound', { 
-                                query: aiTrackInfo.name, 
-                                defaultValue: `找不到歌曲: ${aiTrackInfo.name}` 
+                            const notFoundMsg = window.t('music.notFound', {
+                                query: aiTrackInfo.name,
+                                defaultValue: `找不到歌曲: ${aiTrackInfo.name}`
                             });
                             window.showStatusToast(notFoundMsg, 3000);
                         }
@@ -2394,15 +2416,15 @@ function init_app() {
                 window._lastBubbleTime = 0; // 重置时间戳，第一句立即显示
                 window._pendingMusicCommand = ''; // 新一轮开始时，清空待闭合的音乐指令
             }
-            
+
             let incoming = normalizeGeminiText(text);
-            
+
             // 处理未闭合的音乐指令片段
             if (window._pendingMusicCommand) {
                 incoming = window._pendingMusicCommand + incoming;
                 window._pendingMusicCommand = '';
             }
-            
+
             // 捕获字符串末尾尚未闭合的任意中括号块（防止 JSON 片段泄漏到聊天气泡）
             const openBracketMatch = incoming.match(/\[[^\]]*$/);
             if (openBracketMatch) {
@@ -2411,8 +2433,8 @@ function init_app() {
 
                 // 这样即使只收到 "[" 或 "[pl"，或者已经包含了部分 JSON 体
                 const targetPrefix = "[play_music:";
-                const isPlayMusicPrefix = 
-                    normalizedPartial.startsWith(targetPrefix) || 
+                const isPlayMusicPrefix =
+                    normalizedPartial.startsWith(targetPrefix) ||
                     targetPrefix.startsWith(normalizedPartial);
 
                 if (isPlayMusicPrefix) {
@@ -2421,7 +2443,7 @@ function init_app() {
                     console.log(`[Music] 拦截到不完整指令片段: ${partialText}`);
                 }
             }
-            
+
             const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
             let combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -2442,13 +2464,13 @@ function init_app() {
 
             // 1. 清洗文本（含未闭合指令片段的拦截）
             const cleanNewText = cleanMusicFromChunk(text);
-            
+
             // 2. 只有当清洗后还有实质性文本时，才去创建气泡 DOM；否则清空指针以避免误追加
             if (cleanNewText.trim()) {
                 const messageDiv = document.createElement('div');
                 messageDiv.classList.add('message', 'gemini');
                 messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanNewText;
-                
+
                 chatContainer.appendChild(messageDiv);
                 window.currentGeminiMessage = messageDiv;
 
@@ -2479,17 +2501,17 @@ function init_app() {
                     messageDiv.classList.add('message', 'gemini');
                     messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + cleanText;
                     chatContainer.appendChild(messageDiv);
-                    
+
                     window.currentGeminiMessage = messageDiv;
                     window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
                     window.currentTurnGeminiBubbles.push(messageDiv);
-                    
+
                     checkAndShowSubtitlePrompt(cleanText);
                 } else {
                     // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
                     window.currentGeminiMessage = null;
                 }
-            } 
+            }
             // 场景 B: 气泡已存在，执行平滑追加
             else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
                 const fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
@@ -5099,7 +5121,7 @@ function init_app() {
     // 清空音频队列并停止所有播放
     async function clearAudioQueue() {
         scheduledSources.forEach(source => {
-            try { source.stop(); } catch (_) {}
+            try { source.stop(); } catch (_) { }
         });
         scheduledSources = [];
         audioBufferQueue = [];
@@ -5113,7 +5135,7 @@ function init_app() {
     // 清空音频队列但不重置解码器（用于精确打断控制）
     function clearAudioQueueWithoutDecoderReset() {
         scheduledSources.forEach(source => {
-            try { source.stop(); } catch (_) {}
+            try { source.stop(); } catch (_) { }
         });
         scheduledSources = [];
         audioBufferQueue = [];
@@ -5132,93 +5154,93 @@ function init_app() {
 
         try {
 
-        const scheduleAheadTime = 5;
+            const scheduleAheadTime = 5;
 
-        initializeGlobalAnalyser();
-        // 若初始化仍失败，兜底直接将后续 source 连接到 destination，避免静音
-        const hasAnalyser = !!globalAnalyser;
+            initializeGlobalAnalyser();
+            // 若初始化仍失败，兜底直接将后续 source 连接到 destination，避免静音
+            const hasAnalyser = !!globalAnalyser;
 
-        // 关键：预调度所有在lookahead时间内的chunk
-        while (nextChunkTime < audioPlayerContext.currentTime + scheduleAheadTime) {
-            if (audioBufferQueue.length > 0) {
-                const { buffer: nextBuffer } = audioBufferQueue.shift();
-                if (window.DEBUG_AUDIO) {
-                    console.log('ctx', audioPlayerContext.sampleRate,
-                        'buf', nextBuffer.sampleRate);
-                }
-
-                const source = audioPlayerContext.createBufferSource();
-                source.buffer = nextBuffer;
-                if (hasAnalyser) {
-                    source.connect(globalAnalyser);
-                } else {
-                    source.connect(audioPlayerContext.destination);
-                }
-
-                if (hasAnalyser && !lipSyncActive) {
+            // 关键：预调度所有在lookahead时间内的chunk
+            while (nextChunkTime < audioPlayerContext.currentTime + scheduleAheadTime) {
+                if (audioBufferQueue.length > 0) {
+                    const { buffer: nextBuffer } = audioBufferQueue.shift();
                     if (window.DEBUG_AUDIO) {
-                        console.log('[Audio] 尝试启动口型同步:', {
-                            hasLanLan1: !!window.LanLan1,
-                            hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
-                            hasVrmManager: !!window.vrmManager,
-                            hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
-                        });
+                        console.log('ctx', audioPlayerContext.sampleRate,
+                            'buf', nextBuffer.sampleRate);
                     }
-                    if (window.LanLan1 && window.LanLan1.live2dModel) {
-                        startLipSync(window.LanLan1.live2dModel, globalAnalyser);
-                        lipSyncActive = true;
-                    } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
-                        // VRM模型的口型同步
-                        if (typeof window.vrmManager.animation.startLipSync === 'function') {
-                            window.vrmManager.animation.startLipSync(globalAnalyser);
-                            lipSyncActive = true;
-                        }
+
+                    const source = audioPlayerContext.createBufferSource();
+                    source.buffer = nextBuffer;
+                    if (hasAnalyser) {
+                        source.connect(globalAnalyser);
                     } else {
+                        source.connect(audioPlayerContext.destination);
+                    }
+
+                    if (hasAnalyser && !lipSyncActive) {
                         if (window.DEBUG_AUDIO) {
-                            console.warn('[Audio] 无法启动口型同步：没有可用的模型');
+                            console.log('[Audio] 尝试启动口型同步:', {
+                                hasLanLan1: !!window.LanLan1,
+                                hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
+                                hasVrmManager: !!window.vrmManager,
+                                hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
+                            });
                         }
-                    }
-                }
-
-                // 精确时间调度
-                source.start(nextChunkTime);
-                // console.log(`调度chunk在时间: ${nextChunkTime.toFixed(3)}`);
-
-                // 设置结束回调处理lipSync停止
-                source.onended = () => {
-                    // if (window.LanLan1 && window.LanLan1.live2dModel) {
-                    //     stopLipSync(window.LanLan1.live2dModel);
-                    // }
-                    const index = scheduledSources.indexOf(source);
-                    if (index !== -1) {
-                        scheduledSources.splice(index, 1);
-                    }
-
-                    if (scheduledSources.length === 0 && audioBufferQueue.length === 0) {
                         if (window.LanLan1 && window.LanLan1.live2dModel) {
-                            stopLipSync(window.LanLan1.live2dModel);
+                            startLipSync(window.LanLan1.live2dModel, globalAnalyser);
+                            lipSyncActive = true;
                         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
-                            // VRM模型停止口型同步
-                            if (typeof window.vrmManager.animation.stopLipSync === 'function') {
-                                window.vrmManager.animation.stopLipSync();
+                            // VRM模型的口型同步
+                            if (typeof window.vrmManager.animation.startLipSync === 'function') {
+                                window.vrmManager.animation.startLipSync(globalAnalyser);
+                                lipSyncActive = true;
+                            }
+                        } else {
+                            if (window.DEBUG_AUDIO) {
+                                console.warn('[Audio] 无法启动口型同步：没有可用的模型');
                             }
                         }
-                        lipSyncActive = false;
-                        isPlaying = false; // 新增：所有音频播放完毕，重置isPlaying
                     }
-                };
 
-                // // 更新下一个chunk的时间
-                nextChunkTime += nextBuffer.duration;
+                    // 精确时间调度
+                    source.start(nextChunkTime);
+                    // console.log(`调度chunk在时间: ${nextChunkTime.toFixed(3)}`);
 
-                scheduledSources.push(source);
-            } else {
-                break;
+                    // 设置结束回调处理lipSync停止
+                    source.onended = () => {
+                        // if (window.LanLan1 && window.LanLan1.live2dModel) {
+                        //     stopLipSync(window.LanLan1.live2dModel);
+                        // }
+                        const index = scheduledSources.indexOf(source);
+                        if (index !== -1) {
+                            scheduledSources.splice(index, 1);
+                        }
+
+                        if (scheduledSources.length === 0 && audioBufferQueue.length === 0) {
+                            if (window.LanLan1 && window.LanLan1.live2dModel) {
+                                stopLipSync(window.LanLan1.live2dModel);
+                            } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+                                // VRM模型停止口型同步
+                                if (typeof window.vrmManager.animation.stopLipSync === 'function') {
+                                    window.vrmManager.animation.stopLipSync();
+                                }
+                            }
+                            lipSyncActive = false;
+                            isPlaying = false; // 新增：所有音频播放完毕，重置isPlaying
+                        }
+                    };
+
+                    // // 更新下一个chunk的时间
+                    nextChunkTime += nextBuffer.duration;
+
+                    scheduledSources.push(source);
+                } else {
+                    break;
+                }
             }
-        }
 
-        // 继续调度循环
-        setTimeout(scheduleAudioChunks, 25); // 25ms间隔检查
+            // 继续调度循环
+            setTimeout(scheduleAudioChunks, 25); // 25ms间隔检查
 
         } finally {
             scheduleAudioChunksRunning = false;
@@ -8331,9 +8353,9 @@ function init_app() {
             || (userPlugin && userPlugin.checked);
 
         // Extract backend/cached state
-        const snap = window._agentStatusSnapshot; 
+        const snap = window._agentStatusSnapshot;
         const machineFlags = window.agentStateMachine ? window.agentStateMachine._cachedFlags : null;
-        
+
         // We prefer snapshot flags if they exist and are populated, else fallback to machine cached flags
         const flags = (snap && snap.flags && Object.keys(snap.flags).length > 0) ? snap.flags : machineFlags;
 
@@ -8341,11 +8363,11 @@ function init_app() {
         let optMaster = undefined;
         let optChild = undefined;
         if (window.agent_ui_v2_state && window.agent_ui_v2_state.optimistic) {
-             const opt = window.agent_ui_v2_state.optimistic;
-             if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
-             if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
-                 optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
-             }
+            const opt = window.agent_ui_v2_state.optimistic;
+            if ('agent_enabled' in opt) optMaster = !!opt.agent_enabled;
+            if ('computer_use_enabled' in opt || 'browser_use_enabled' in opt || 'user_plugin_enabled' in opt) {
+                optChild = !!opt.computer_use_enabled || !!opt.browser_use_enabled || !!opt.user_plugin_enabled;
+            }
         }
 
         let isMasterOn = false;
@@ -8422,11 +8444,11 @@ function init_app() {
                 userPluginCheckbox.removeEventListener('change', checkAndToggleTaskHUD);
                 userPluginCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
-            
+
             checkAndToggleTaskHUD();
             console.log('[App] Agent 任务 HUD 控制已绑定');
         };
-        
+
         // 由于不同模型(Live2D/VRM)构建 popup DOM 的时机不同，这里采用递归轮询直到元素出现为止
         setTimeout(bindHUD, 100);
     });
@@ -9418,10 +9440,10 @@ function init_app() {
         try {
             const response = await fetch('/api/auth/cookies/status');
             if (!response.ok) return [];
-            
+
             const result = await response.json();
             let availablePlatforms = [];
-            
+
             if (result.success && result.data) {
                 for (const [platform, info] of Object.entries(result.data)) {
                     if (platform !== 'platforms' && info.has_cookies) {
@@ -9441,43 +9463,43 @@ function init_app() {
             syncProactiveFlags();
 
             let availableModes = [];
-                // 收集所有启用的搭话方式
-                // 视觉搭话：需要同时开启主动搭话和自主视觉
-                // 同时触发 vision 和 window 模式
-                if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
-                    availableModes.push('vision');
-                    availableModes.push('window');
-                }
+            // 收集所有启用的搭话方式
+            // 视觉搭话：需要同时开启主动搭话和自主视觉
+            // 同时触发 vision 和 window 模式
+            if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                availableModes.push('vision');
+                availableModes.push('window');
+            }
 
-                // 新闻搭话：使用微博热议话题
-                if (proactiveNewsChatEnabled && proactiveChatEnabled) {
-                    availableModes.push('news');
-                }
+            // 新闻搭话：使用微博热议话题
+            if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                availableModes.push('news');
+            }
 
-                // 视频搭话：使用B站首页视频
-                if (proactiveVideoChatEnabled && proactiveChatEnabled) {
-                    availableModes.push('video');
-                }
+            // 视频搭话：使用B站首页视频
+            if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                availableModes.push('video');
+            }
 
-                // 个人动态搭话：使用B站和微博个人动态
-                if (proactivePersonalChatEnabled && proactiveChatEnabled) {
-                    // 检查是否有可用的 Cookie 凭证
-                    const platforms = await getAvailablePersonalPlatforms();
-                    if (platforms.length > 0) {
-                        availableModes.push('personal');  
-                        console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
-                    } else {
-                        // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
-                        console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
-                    }
+            // 个人动态搭话：使用B站和微博个人动态
+            if (proactivePersonalChatEnabled && proactiveChatEnabled) {
+                // 检查是否有可用的 Cookie 凭证
+                const platforms = await getAvailablePersonalPlatforms();
+                if (platforms.length > 0) {
+                    availableModes.push('personal');
+                    console.log(`[个人动态] 模式已启用，平台: ${platforms.join(', ')}`);
+                } else {
+                    // 如果开关开了但没登录，不把 personal 发给后端，避免后端抓取失败报错
+                    console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
                 }
+            }
 
-                // 音乐搭话
-                console.log(`[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=${proactiveMusicEnabled}, proactiveChatEnabled=${proactiveChatEnabled}`);
-                if (proactiveMusicEnabled && proactiveChatEnabled) {
-                    console.log('[ProactiveChat] 音乐模式已启用');
-                    availableModes.push('music');
-                }
+            // 音乐搭话
+            console.log(`[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=${proactiveMusicEnabled}, proactiveChatEnabled=${proactiveChatEnabled}`);
+            if (proactiveMusicEnabled && proactiveChatEnabled) {
+                console.log('[ProactiveChat] 音乐模式已启用');
+                availableModes.push('music');
+            }
 
             // 如果没有选择任何搭话方式，跳过本次搭话
             if (availableModes.length === 0) {
@@ -9535,7 +9557,7 @@ function init_app() {
                     latestModes.push('personal');
                 }
                 // 音乐搭话
-                 if (proactiveMusicEnabled && proactiveChatEnabled) {
+                if (proactiveMusicEnabled && proactiveChatEnabled) {
                     latestModes.push('music');
                 }
                 availableModes = availableModes.filter(m => latestModes.includes(m));
@@ -9616,7 +9638,7 @@ function init_app() {
                             _showProactiveChatSourceLinks(result.source_links);
                         }, 3000);
                     }
-                    
+
                     // 如果模式包含音乐信号，尝试播放第一条音轨
                     if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && result.source_links.length > 0) {
                         // 优先寻找有 artist 字段或标记为音乐推荐的真实音轨
@@ -9634,7 +9656,7 @@ function init_app() {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
                         }
                     }
-                    
+
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
                     console.log('AI选择不搭话');
@@ -10066,7 +10088,7 @@ function init_app() {
             if (/^asia\/(shanghai|chongqing|urumqi|harbin|kashgar)$/.test(tz)) return true;
             const lang = (navigator.language || '').toLowerCase();
             if (lang === 'zh' || lang.startsWith('zh-cn') || lang.startsWith('zh-hans')) return true;
-        } catch (_) {}
+        } catch (_) { }
         return false;
     }
 
@@ -10244,11 +10266,11 @@ function init_app() {
         console.log(`[自检] proactivePersonalChatEnabled: ${proactivePersonalChatEnabled}`);
         console.log(`[自检] proactiveMusicEnabled: ${proactiveMusicEnabled}`);
         console.log(`[自检] localStorage设置: ${localStorage.getItem('project_neko_settings') ? '已存在' : '不存在'}`);
-        
+
         // 检查WebSocket连接状态
         const wsStatus = socket ? socket.readyState : undefined;
         console.log(`[自检] WebSocket状态: ${wsStatus} (1=OPEN, 0=CONNECTING, 2=CLOSING, 3=CLOSED)`);
-        
+
         scheduleProactiveChat();
         console.log('========== 主动搭话启动自检完成 ==========');
     } else {
@@ -11196,9 +11218,9 @@ window.addEventListener("load", () => {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ cursor }),
-                }).catch(() => {});
+                }).catch(() => { });
             }
-        } catch (_) {}
+        } catch (_) { }
     }, 2000);
 });
 
