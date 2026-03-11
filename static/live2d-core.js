@@ -720,9 +720,14 @@ class Live2DManager {
             }
         } else {
             this.isFocusing = false;
-            if (this.currentModel) {
-                const b = this.currentModel.getBounds();
-                this.currentModel.focus((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+            // 清除 focusController 的外部输入，使头部不受鼠标/拖拽等外部因素影响
+            // 自主运动（updateNaturalMovements：呼吸、轻微摆动）通过独立管线叠加，不受影响
+            // 注意：不能用 model.focus(center) — 它经过 toModelPosition + atan2 + 单位圆投影，
+            // 永远产生非零值（如 targetX=1），无法真正归零
+            if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.focusController) {
+                const fc = this.currentModel.internalModel.focusController;
+                fc.targetX = 0;
+                fc.targetY = 0;
             }
         }
     }

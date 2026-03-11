@@ -664,11 +664,18 @@ class VRMManager {
 
                 // 3. 设置 lookAt 目标
                 if (this.currentModel.vrm.lookAt) {
-                    if (this._cursorFollow && this._cursorFollow.eyesTarget) {
+                    if (this._cursorFollow && this._cursorFollow.eyesTarget && this._cursorFollow.isEnabled()) {
+                        // CursorFollow 已加载且启用 → 使用 eyesTarget
                         if (this.currentModel.vrm.lookAt.target !== this._cursorFollow.eyesTarget) {
                             this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
                         }
+                    } else if (this._cursorFollow && !this._cursorFollow.isEnabled()) {
+                        // CursorFollow 已加载但禁用 → 设为 null，SDK 内部自动跳过 lookAt 求解
+                        if (this.currentModel.vrm.lookAt.target !== null) {
+                            this.currentModel.vrm.lookAt.target = null;
+                        }
                     } else {
+                        // CursorFollow 未加载时的旧 fallback 逻辑（保持兼容）
                         if (this._lookAtTarget && this._lookAtDesiredPoint) {
                             const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
                             const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));

@@ -290,7 +290,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     // this.pixi_app.stage.interactive = true;
     // this.pixi_app.stage.hitArea = this.pixi_app.screen;
 
-    let isDragging = false;
+    this._isDraggingModel = false;
     let dragStartPos = new PIXI.Point();
 
     // 点击检测相关变量
@@ -523,7 +523,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             return;
         }
 
-        isDragging = true;
+        this._isDraggingModel = true;
         this.isFocusing = false; // 拖拽时禁用聚焦
         const globalPos = event.data.global;
         dragStartPos.x = globalPos.x - model.x;
@@ -542,8 +542,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     });
 
     const onDragEnd = async () => {
-        if (isDragging) {
-            isDragging = false;
+        if (this._isDraggingModel) {
+            this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
 
@@ -578,11 +578,11 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
-        if (isDragging) {
+        if (this._isDraggingModel) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
                 // 如果变成多点触摸，停止拖拽
-                isDragging = false;
+                this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
                 return;
             }
@@ -931,7 +931,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         this._lastMouseY = pointer.y;
 
         // 在拖拽期间不执行任何操作
-        if (model.interactive && model.dragging) {
+        if ((model.interactive && model.dragging) || this._isDraggingModel) {
             return;
         }
 
@@ -1018,7 +1018,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
-                        model.focus(centerX, centerY);
+                        // 鼠标跟踪禁用时，清除 focusController 外部输入
+                        // 头部仍可按 updateNaturalMovements（呼吸、轻微摆动等）自主运动，
+                        // 但不受鼠标移动、拖拽等外部因素影响
+                        if (model.internalModel && model.internalModel.focusController) {
+                            const fc = model.internalModel.focusController;
+                            fc.targetX = 0;
+                            fc.targetY = 0;
+                        }
                     }
                 }
             } else {
