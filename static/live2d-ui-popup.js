@@ -141,8 +141,8 @@ Live2DManager.prototype._createSettingsPopupContent = function (popup) {
                     overflow: 'visible',
                     marginLeft: '-6px'
                 });
-                authPageLink._expand = () => {};
-                authPageLink._collapse = () => {};
+                authPageLink._expand = () => { };
+                authPageLink._collapse = () => { };
                 sidePanel.appendChild(authPageLink);
             }
 
@@ -1238,6 +1238,10 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
             }
 
             if (isChecked) {
+                // 开启：立即获取屏幕流（当前处于用户手势上下文，getDisplayMedia 可正常调用）
+                if (typeof window.acquireProactiveVisionStream === 'function') {
+                    window.acquireProactiveVisionStream();
+                }
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
@@ -1248,6 +1252,10 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                     }
                 }
             } else {
+                // 关闭：释放屏幕流
+                if (typeof window.releaseProactiveVisionStream === 'function') {
+                    window.releaseProactiveVisionStream();
+                }
                 if (typeof window.stopProactiveChatSchedule === 'function') {
                     // 只有当主动搭话也关闭时才停止调度
                     if (!window.proactiveChatEnabled) {
@@ -1303,12 +1311,12 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 // 创建设置菜单项
 Live2DManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
-        { 
-            id: 'character', 
-            label: window.t ? window.t('settings.menu.characterManage') : '角色管理', 
-            labelKey: 'settings.menu.characterManage', 
-            icon: '/static/icons/character_icon.png', 
-            action: 'navigate', 
+        {
+            id: 'character',
+            label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
+            labelKey: 'settings.menu.characterManage',
+            icon: '/static/icons/character_icon.png',
+            action: 'navigate',
             url: '/chara_manager',
             // 子菜单：通用设置、模型管理、声音克隆
             submenu: [
