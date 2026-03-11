@@ -44,7 +44,7 @@ window.LIPSYNC_PARAMS = [
 
 // 模型偏好验证常量
 const MODEL_PREFERENCES = {
-    SCALE_MIN: 0,
+    SCALE_MIN: 0.005,
     SCALE_MAX: 10,
     POSITION_MAX: 100000
 };
