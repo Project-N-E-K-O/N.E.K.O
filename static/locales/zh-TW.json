@@ -1030,6 +1030,7 @@
         "prefixFormatError": "前綴格式錯誤：不超過10個字符，隻支持數字和英文字母",
         "registering": "正在注冊聲音，請稍後！",
         "registerSuccess": "注冊成功！voice_id: {{voiceId}}",
+        "reusedExisting": "已復用現有音色，跳過上傳。voice_id: {{voiceId}}",
         "registerFailed": "注冊失敗：{{error}}",
         "requestError": "請求齣錯：{{error}}",
         "voiceIdSaveFailed": "voice_id自動保存失敗: {{error}}",
