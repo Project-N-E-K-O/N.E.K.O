@@ -341,7 +341,7 @@
 
         if (isSameTrack(trackInfo) && isPlayerInDOM()) {
             const player = getMusicPlayerInstance();
-            if (player && player.audio && player.audio.paused) {
+            if (shouldAutoPlay && player && player.audio && player.audio.paused) {
                 if (typeof window.setMusicUserDriven === 'function')
                     window.setMusicUserDriven();
                 player.play();
