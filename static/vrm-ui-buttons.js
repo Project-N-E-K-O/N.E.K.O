@@ -354,8 +354,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     popup.style.opacity !== '';
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
-                    // 更新被关闭的互斥按钮的图标
+                    // 更新被关闭的互斥按钮的背景和图标
                     const exclusiveData = this._floatingButtons[config.exclusive];
+                    if (exclusiveData && exclusiveData.button) {
+                        exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                    }
                     if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
                         exclusiveData.imgOff.style.opacity = '1';
                         exclusiveData.imgOn.style.opacity = '0';
@@ -363,16 +366,20 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 }
                 isToggling = true;
                 this.showPopup(config.id, popup);
-                // 更新图标状态
+                // 更新背景和图标状态
                 setTimeout(() => {
                     const newPopupVisible = popup.style.display === 'flex' &&
                         popup.style.opacity !== '0' &&
                         popup.style.opacity !== '';
-                    if (imgOff && imgOn) {
-                        if (newPopupVisible) {
+                    if (newPopupVisible) {
+                        btn.style.background = 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0';
                             imgOn.style.opacity = '1';
-                        } else {
+                        }
+                    } else {
+                        btn.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '1';
                             imgOn.style.opacity = '0';
                         }
@@ -890,6 +897,31 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                             lockIcon.style.top = `${boundedLockY}px`;
                         }
                         lockIcon.style.display = (this._shouldShowVrmLockIcon && this._shouldShowVrmLockIcon()) ? 'block' : 'none';
+
+                        // 检测锁图标是否被弹出菜单或侧面板覆盖，覆盖时降低不透明度
+                        const lockRect = lockIcon.getBoundingClientRect();
+                        let isLockOverlapped = false;
+                        document.querySelectorAll('[id^="vrm-popup-"]').forEach(popup => {
+                            if (popup.style.display === 'flex' && popup.style.opacity === '1') {
+                                const popupRect = popup.getBoundingClientRect();
+                                if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
+                                    lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
+                                    isLockOverlapped = true;
+                                }
+                            }
+                        });
+                        if (!isLockOverlapped) {
+                            document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
+                                if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
+                                    const panelRect = panel.getBoundingClientRect();
+                                    if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
+                                        lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
+                                        isLockOverlapped = true;
+                                    }
+                                }
+                            });
+                        }
+                        lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
                     }
                 }
             }

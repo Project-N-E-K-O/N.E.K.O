@@ -39,6 +39,9 @@ const VRM_POPUP_ANIMATION_DURATION_MS = 200;
             transform: translateX(-10px);
             transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
         }
+        .vrm-popup.is-positioning {
+            pointer-events: none !important;
+        }
         .vrm-popup.vrm-popup-settings {
             max-height: 70vh;
         }
@@ -616,6 +619,7 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
 // 创建侧边弹出面板容器（公共基础样式）
 VRMManager.prototype._createSidePanelContainer = function () {
     const container = document.createElement('div');
+    container.setAttribute('data-neko-sidepanel', '');
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -646,35 +650,30 @@ VRMManager.prototype._createSidePanelContainer = function () {
     container._expand = () => {
         if (container.style.display === 'flex' && container.style.opacity !== '0') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        // 注意：collapseOtherSidePanels 已在 expandPanel() 中提前调用并 reflow，
+        // 这里不再重复调用，避免与 expandPanel 的清理逻辑冲突
         container.style.display = 'flex';
+        container.style.pointerEvents = 'none';
+        const savedTransition = container.style.transition;
+        container.style.transition = 'none';
+        container.style.opacity = '0';
+        // 完全清除上一次定位残留，防止"记忆"旧位置影响新定位
         container.style.left = '';
         container.style.right = '';
-        container.style.transform = 'translateX(-6px)';
+        container.style.top = '';
+        container.style.transform = '';
+        void container.offsetHeight;
+        container.style.transition = savedTransition;
 
         const anchor = container._anchorElement;
-        const popupEl = container._popupElement;
-        if (anchor) {
-            const anchorRect = anchor.getBoundingClientRect();
-            const popupRect = popupEl ? popupEl.getBoundingClientRect() : anchorRect;
-            container.style.top = `${anchorRect.top}px`;
-            container.style.left = `${popupRect.right - 8}px`;
+        if (anchor && window.AvatarPopupUI && window.AvatarPopupUI.positionSidePanel) {
+            window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
 
         requestAnimationFrame(() => {
-            const containerRect = container.getBoundingClientRect();
-            if (containerRect.right > window.innerWidth - 10) {
-                const popupEl2 = container._popupElement;
-                const popupRect = popupEl2 ? popupEl2.getBoundingClientRect() : null;
-                if (popupRect) {
-                    container.style.left = '';
-                    container.style.right = `${window.innerWidth - popupRect.left - 8}px`;
-                    container.style.transform = 'translateX(6px)';
-                }
-            }
-            requestAnimationFrame(() => {
-                container.style.opacity = '1';
-                container.style.transform = 'translateX(0)';
-            });
+            container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            container.style.transform = 'translateX(0)';
         });
     };
 
@@ -682,16 +681,17 @@ VRMManager.prototype._createSidePanelContainer = function () {
         if (container.style.display === 'none') return;
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         container.style.opacity = '0';
-        if (container.style.right && container.style.right !== '') {
-            container.style.transform = 'translateX(6px)';
-        } else {
-            container.style.transform = 'translateX(-6px)';
-        }
+        container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
             if (container.style.opacity === '0') container.style.display = 'none';
             container._collapseTimeout = null;
         }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
+
+    // 注册到全局侧面板注册表
+    if (window.AvatarPopupUI && window.AvatarPopupUI.registerSidePanel) {
+        window.AvatarPopupUI.registerSidePanel(container);
+    }
 
     return container;
 };
@@ -722,13 +722,14 @@ VRMManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
     };
 
     const expandPanel = () => {
-        if (ownerId) {
-            document.querySelectorAll(`[data-neko-sidepanel-owner="${ownerId}"]`).forEach((panel) => {
-                if (panel !== sidePanel && typeof panel._collapse === 'function') {
-                    panel._collapse();
-                }
-            });
+        // ── 先强制关闭所有其他面板（模拟"点击其按钮关闭"） ──
+        // 不使用 _collapse()（有动画延迟），直接立即隐藏 + 清除全部状态
+        if (window.AvatarPopupUI && window.AvatarPopupUI.collapseOtherSidePanels) {
+            window.AvatarPopupUI.collapseOtherSidePanels(sidePanel);
         }
+        // 确保布局完全干净后再定位新面板
+        void document.body.offsetHeight;
+
         if (sidePanel._hoverCollapseTimer) {
             clearTimeout(sidePanel._hoverCollapseTimer);
             sidePanel._hoverCollapseTimer = null;
@@ -776,6 +777,7 @@ VRMManager.prototype._attachSidePanelHover = function (anchorEl, sidePanel) {
 VRMManager.prototype._createIntervalControl = function (toggle) {
     const container = document.createElement('div');
     container.className = `vrm-interval-control-${toggle.id}`;
+    container.setAttribute('data-neko-sidepanel', '');
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -894,37 +896,31 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
             container._collapseTimeout = null;
         }
 
+        // 注意：collapseOtherSidePanels 已在 expandPanel() 中提前调用并 reflow，
+        // 这里不再重复调用，避免与 expandPanel 的清理逻辑冲突
+
         container.style.display = 'flex';
+        container.style.pointerEvents = 'none';
+        const savedTransition = container.style.transition;
+        container.style.transition = 'none';
+        container.style.opacity = '0';
+        // 完全清除上一次定位残留，防止"记忆"旧位置影响新定位
         container.style.left = '';
         container.style.right = '';
-        container.style.transform = 'translateX(-6px)';
+        container.style.top = '';
+        container.style.transform = '';
+        void container.offsetHeight;
+        container.style.transition = savedTransition;
 
-        // 根据锚点元素和 popup 计算位置
         const anchor = container._anchorElement;
-        const popupEl = container._popupElement;
-        if (anchor) {
-            const anchorRect = anchor.getBoundingClientRect();
-            const popupRect = popupEl ? popupEl.getBoundingClientRect() : anchorRect;
-            container.style.top = `${anchorRect.top}px`;
-            container.style.left = `${popupRect.right - 8}px`;
+        if (anchor && window.AvatarPopupUI && window.AvatarPopupUI.positionSidePanel) {
+            window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
 
         requestAnimationFrame(() => {
-            // 检测右侧是否溢出视口
-            const containerRect = container.getBoundingClientRect();
-            if (containerRect.right > window.innerWidth - 10) {
-                const popupEl2 = container._popupElement;
-                const popupRect = popupEl2 ? popupEl2.getBoundingClientRect() : null;
-                if (popupRect) {
-                    container.style.left = '';
-                    container.style.right = `${window.innerWidth - popupRect.left - 8}px`;
-                    container.style.transform = 'translateX(6px)';
-                }
-            }
-            requestAnimationFrame(() => {
-                container.style.opacity = '1';
-                container.style.transform = 'translateX(0)';
-            });
+            container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            container.style.transform = 'translateX(0)';
         });
     };
 
@@ -936,11 +932,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
             container._collapseTimeout = null;
         }
         container.style.opacity = '0';
-        if (container.style.right && container.style.right !== '') {
-            container.style.transform = 'translateX(6px)';
-        } else {
-            container.style.transform = 'translateX(-6px)';
-        }
+        container.style.transform = container.dataset.goLeft === 'true' ? 'translateX(6px)' : 'translateX(-6px)';
         container._collapseTimeout = setTimeout(() => {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
@@ -948,6 +940,11 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
             container._collapseTimeout = null;
         }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
+
+    // 注册到全局侧面板注册表
+    if (window.AvatarPopupUI && window.AvatarPopupUI.registerSidePanel) {
+        window.AvatarPopupUI.registerSidePanel(container);
+    }
 
     // 附加到 body（不在 popup 流中，避免被 popup 的 overflow 裁剪）
     document.body.appendChild(container);
@@ -1375,6 +1372,7 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
 
             // 鼠标悬停展开/收缩：增加缓冲，避免主项和子项之间小缝隙导致抖动
             let submenuCollapseTimer = null;
+            let overflowTimer = null;
             const clearSubmenuCollapseTimer = () => {
                 if (submenuCollapseTimer) {
                     clearTimeout(submenuCollapseTimer);
@@ -1383,7 +1381,24 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
             };
             const expandSubmenu = () => {
                 clearSubmenuCollapseTimer();
+                if (overflowTimer) { clearTimeout(overflowTimer); overflowTimer = null; }
                 submenuContainer._expand();
+                // 展开动画完成后修正父 popup 垂直溢出
+                overflowTimer = setTimeout(() => {
+                    overflowTimer = null;
+                    if (!popup.isConnected || popup.style.display === 'none') return;
+                    const rect = popup.getBoundingClientRect();
+                    const bottomMargin = 60;
+                    const topMargin = 8;
+                    if (rect.bottom > window.innerHeight - bottomMargin) {
+                        const overflow = rect.bottom - (window.innerHeight - bottomMargin);
+                        popup.style.top = `${parseFloat(popup.style.top || 0) - overflow}px`;
+                    }
+                    const newRect = popup.getBoundingClientRect();
+                    if (newRect.top < topMargin) {
+                        popup.style.top = `${parseFloat(popup.style.top || 0) + (topMargin - newRect.top)}px`;
+                    }
+                }, VRM_POPUP_ANIMATION_DURATION_MS + 20);
             };
             const scheduleSubmenuCollapse = () => {
                 clearSubmenuCollapseTimer();
@@ -1568,6 +1583,8 @@ function finalizePopupClosedState(popup) {
     popup.style.top = '';
     popup.style.transform = '';
     popup.style.opacity = '';
+    popup.style.marginLeft = '';
+    popup.style.marginRight = '';
     popup.style.display = 'none';
     delete popup.dataset.opensLeft;
     popup._hideTimeoutId = null;
@@ -1589,7 +1606,21 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     popup.style.opacity = '0';
     const closeOpensLeft = popup.dataset.opensLeft === 'true';
     popup.style.transform = closeOpensLeft ? 'translateX(10px)' : 'translateX(-10px)';
-    
+
+    // 关闭该 popup 所属的所有侧面板
+    const popupId = popup.id;
+    if (popupId) {
+        document.querySelectorAll(`[data-neko-sidepanel-owner="${popupId}"]`).forEach(panel => {
+            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            panel.style.transition = 'none';
+            panel.style.opacity = '0';
+            panel.style.display = 'none';
+            // 清除 inline transition，让 CSS 定义的 transition 在下次 _expand() 时生效
+            panel.style.transition = '';
+        });
+    }
+
     // 复位小三角图标
     const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
     if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
@@ -1701,6 +1732,20 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (triggerIcon) triggerIcon.style.transform = 'rotate(0deg)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
+        // 关闭该 popup 所属的所有侧面板
+        const closingPopupId = popup.id;
+        if (closingPopupId) {
+            document.querySelectorAll(`[data-neko-sidepanel-owner="${closingPopupId}"]`).forEach(panel => {
+                if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+                if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                panel.style.transition = 'none';
+                panel.style.opacity = '0';
+                panel.style.display = 'none';
+                // 清除 inline transition，让 CSS 定义的 transition 在下次 _expand() 时生效
+                panel.style.transition = '';
+            });
+        }
+
         // 检查按钮是否有 separatePopupTrigger 配置
         // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
         // 关闭弹出框时不应该重置按钮状态
@@ -1729,6 +1774,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
 
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
+        popup.classList.add('is-positioning'); // 阻止 positionPopup 完成前的 hover 事件
 
         // 检查按钮是否有 separatePopupTrigger 配置
         // 对于有 separatePopupTrigger 的按钮（mic 和 screen），小三角弹出框和按钮激活状态是独立的
@@ -1757,7 +1803,8 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                         rightMargin: 20,
                         bottomMargin: 60,
                         topMargin: 8,
-                        gap: 8
+                        gap: 8,
+                        sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
                     });
                     popup.dataset.opensLeft = String(!!(pos && pos.opensLeft));
                     popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
@@ -1765,6 +1812,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
                 if (popup._showToken !== showToken || popup.style.display !== 'flex') return;
                 popup.style.visibility = 'visible';
                 popup.style.opacity = '1';
+                popup.classList.remove('is-positioning'); // positionPopup 完成，恢复交互
                 
                 // 设置小三角图标的旋转状态（旋转180度）
                 const triggerIcon = document.querySelector(`.vrm-trigger-icon-${buttonId}`);
