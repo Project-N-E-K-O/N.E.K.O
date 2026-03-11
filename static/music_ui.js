@@ -69,10 +69,9 @@
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
 
-        if (typeof window.destroyAPlayer === 'function') {
+        if (typeof window.destroyAPlayer === 'function' && fullTeardown) {
             window.destroyAPlayer();
         } else {
-
             if (localPlayer) {
                 if (typeof localPlayer.pause === 'function') localPlayer.pause();
                 if (fullTeardown && typeof localPlayer.destroy === 'function') localPlayer.destroy();

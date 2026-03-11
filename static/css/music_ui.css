@@ -151,7 +151,7 @@
 
 /* 浅色模式适配 */
 [data-theme="light"] .music-player-bar .aplayer,
-.aplayer-theme-light .aplayer {
+.music-player-bar .aplayer-theme-light .aplayer {
     background: rgba(255, 255, 255, 0.75) !important;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
 }
