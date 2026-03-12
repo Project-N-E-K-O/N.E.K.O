@@ -47,7 +47,8 @@
                 'bcbits.com', 'soundcloud.com', 'sndcdn.com',
                 'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
                 'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                'dummyimage.com', 'music.163.com'
+                'dummyimage.com', 'music.163.com',
+                'hdslb.com', 'bilivideo.com'
             ];
             return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
         } catch { return false; }
