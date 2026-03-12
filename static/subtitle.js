@@ -597,6 +597,9 @@ function hideSubtitlePrompt() {
 
 // 初始化字幕开关（DOM加载完成后）
 document.addEventListener('DOMContentLoaded', async function() {
+    // 拖拽初始化只绑定 DOM 事件，不依赖语言数据，立即执行
+    initSubtitleDrag();
+
     // 初始化用户语言（等待完成，确保使用最新值）
     await getUserLanguage();
 
@@ -622,9 +625,6 @@ document.addEventListener('DOMContentLoaded', async function() {
             console.error('[App] 通用引导管理器初始化失败:', error);
         }
     }
-
-    // 初始化字幕拖拽功能
-    initSubtitleDrag();
 });
 
 // 字幕拖拽功能
@@ -642,6 +642,7 @@ function initSubtitleDrag() {
 
     let isDragging = false;
     let pendingDrag = false; // mousedown 后等待真实拖动
+    let isManualPosition = false;
     let startX, startY;
     let initialX, initialY;
 
@@ -678,6 +679,7 @@ function initSubtitleDrag() {
     function commitDragPosition() {
         isDragging = true;
         pendingDrag = false;
+        isManualPosition = true;
         subtitleDisplay.classList.add('dragging');
         // 清除 transform 居中效果，改为绝对定位，保持当前位置
         subtitleDisplay.style.transform = 'none';
@@ -756,11 +758,14 @@ function initSubtitleDrag() {
     document.addEventListener('touchend', handleTouchUp);
     document.addEventListener('touchcancel', handleTouchUp);
 
-    // 窗口大小改变时，确保字幕不超出边界
+    // 窗口大小改变时，确保手动定位的字幕不超出边界
+    // CSS 居中定位（left:50% + transform）由浏览器自动处理，无需干预
     window.addEventListener('resize', () => {
+        if (!isManualPosition) return;
+
         const rect = subtitleDisplay.getBoundingClientRect();
-        const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
-        const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
+        const maxX = Math.max(0, window.innerWidth - subtitleDisplay.offsetWidth);
+        const maxY = Math.max(0, window.innerHeight - subtitleDisplay.offsetHeight);
 
         if (rect.right > window.innerWidth) {
             subtitleDisplay.style.left = maxX + 'px';
