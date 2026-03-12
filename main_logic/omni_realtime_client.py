@@ -200,6 +200,7 @@ class OmniRealtimeClient:
         self._modalities = ["text", "audio"]
         self._audio_in_buffer = False
         self._skip_until_next_response = False
+        self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -1106,12 +1107,12 @@ class OmniRealtimeClient:
                     self._skip_until_next_response = False
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
-                        # 不使用logger.info，避免日志文件泄露实际对话内容
-                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
+                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
-                        print("OmniRealtimeClient: response.done - 没有转录文本")
+                        print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False
@@ -1160,6 +1161,9 @@ class OmniRealtimeClient:
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
+                        self._audio_delta_count += 1
+                        if self._audio_delta_count == 1:
+                            logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
                             await self.on_audio_delta(audio_bytes)

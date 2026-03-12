@@ -1030,6 +1030,7 @@
         "prefixFormatError": "前缀格式错误：不超过10个字符，只支持数字和英文字母",
         "registering": "正在注册声音，请稍后！",
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
+        "reusedExisting": "已复用现有音色，跳过上传。voice_id: {{voiceId}}",
         "registerFailed": "注册失败：{{error}}",
         "requestError": "请求出错：{{error}}",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",

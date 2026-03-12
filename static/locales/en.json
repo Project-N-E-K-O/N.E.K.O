@@ -1030,6 +1030,7 @@
         "prefixFormatError": "Prefix format error: Maximum 10 characters, numbers and English letters only",
         "registering": "Registering voice, please wait!",
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
+        "reusedExisting": "Reused existing voice, upload skipped. voice_id: {{voiceId}}",
         "registerFailed": "Registration failed: {{error}}",
         "requestError": "Request error: {{error}}",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
