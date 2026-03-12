@@ -2311,7 +2311,9 @@
         "showPlaylist": "プレイリストを表示",
         "hidePlaylist": "プレイリストを非表示",
         "searchFailed": "音楽検索に失敗しました",
-        "playError": "再生エラー",
+        "playError": "音楽の再生読み込みに失敗しました",
+        "loadError": "音楽プレイヤーの読み込みに失敗しました",
+        "autoplayBlocked": "ブラウザが自動再生をブロックしました。再生ボタンをクリックしてください",
         "ended": "終了"
     },
     "notice": {
