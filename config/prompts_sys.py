@@ -1577,12 +1577,16 @@ def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
     return prompt_set[channel]
 
 
-def get_proactive_generate_prompt(lang: str = 'zh') -> str:
+def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = "") -> str:
     """
     获取 Phase 2 生成阶段 prompt
     """
     lang_key = _normalize_prompt_language(lang)
-    return PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
+    prompt = PROACTIVE_GENERATE_PROMPTS.get(lang_key, PROACTIVE_GENERATE_PROMPTS.get('en', PROACTIVE_GENERATE_PROMPTS['zh']))
+    if music_playing_hint:
+        # 将提示注入到 prompt 末尾，确保 AI 能看到
+        prompt += f"\n\n{music_playing_hint}"
+    return prompt
 
 
 def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, lang: str = 'zh') -> tuple:
@@ -2195,3 +2199,23 @@ MEMORY_RESULTS_HEADER = {
     'ko': '====={name}의 관련 기억=====\n',
     'ru': '====={name} — связанные воспоминания=====\n',
 }
+
+# ---------- 主动搭话：当前正在放歌时的提示（引导 AI 聊当前的歌，而不是推荐新歌） ----------
+PROACTIVE_MUSIC_PLAYING_HINT = {
+    'zh': '\n[注意] 主人正在听歌："{track_name}"。你可以评价或聊聊这首歌、歌手或风格，但请不要推荐新歌或尝试播放其他音乐，保持当前的氛围。',
+    'en': '\n[Note] Master is listening to: "{track_name}". You can comment on or talk about this song, artist, or style, but please do NOT recommend new songs or try to play other music. Keep the current vibe.',
+    'ja': '\n[注意] ご主人は今、「{track_name}」を聴いています。この曲やアーティスト、雰囲気について话しかけてもいいですが、新しい曲をすすめたり他の音楽を再生しようとせず、今の空気を大切にしてください。',
+    'ko': '\n[주의] 주인이 지금 "{track_name}"을(를) 듣고 있습니다. 이 곡이나 아티스트, 스타일에 대해 이야기할 수 있지만, 새로운 곡을 추천하거나 다른 음악을 재생하려고 하지 말고 현재의 분위기를 유지하세요.',
+    'ru': '\n[Примечание] Хозяин сейчас слушает: "{track_name}". Ты можешь прокомментировать или обсудить эту песню, исполнителя или стиль, но, пожалуйста, НЕ рекомендуй новые песни и не пытайся включить другую музыку. Поддерживай текущую атмосферу.',
+    'zh-TW': '\n[注意] 主人正在聽歌："{track_name}"。你可以評價或聊聊這首歌、歌手或風格，但請不要推薦新歌或嘗試播放其他音樂，保持當前的氛圍。',
+}
+
+
+def get_proactive_music_playing_hint(track_name: str, lang: str = 'zh') -> str:
+    """
+    获取“正在放歌”的提示语
+    """
+    lang_key = _normalize_prompt_language(lang)
+    template = PROACTIVE_MUSIC_PLAYING_HINT.get(lang_key, PROACTIVE_MUSIC_PLAYING_HINT.get('en', PROACTIVE_MUSIC_PLAYING_HINT['zh']))
+    return template.format(track_name=track_name)
+

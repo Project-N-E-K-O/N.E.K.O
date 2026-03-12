@@ -33,6 +33,7 @@ from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
+    get_proactive_music_playing_hint,
     get_proactive_format_sections,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
@@ -1382,6 +1383,8 @@ async def proactive_chat(request: Request):
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
+        is_playing_music = data.get('is_playing_music', False)
+        current_track = data.get('current_track', None)
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
@@ -1980,7 +1983,12 @@ async def proactive_chat(request: Request):
             screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
             output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
 
-        generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
+        music_playing_hint = ""
+        if is_playing_music and current_track:
+            track_name = current_track.get('name', '未知曲目')
+            music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
+
+        generate_prompt = get_proactive_generate_prompt(proactive_lang, music_playing_hint).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
             memory_context=memory_context,

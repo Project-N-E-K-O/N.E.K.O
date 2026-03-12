@@ -426,6 +426,31 @@
     document.addEventListener('click', unlockAudio, { once: true });
     document.addEventListener('keydown', unlockAudio, { once: true });
 
+    const isMusicPlaying = () => {
+        try {
+            return !!(localPlayer && !localPlayer.paused && isPlayerInDOM());
+        } catch (e) {
+            console.error('[Music UI] Error checking if music is playing:', e);
+            return false;
+        }
+    };
+
+    const getMusicCurrentTrack = () => {
+        try {
+            return currentPlayingTrack || null;
+        } catch (e) {
+            console.error('[Music UI] Error getting current track:', e);
+            return null;
+        }
+    };
+
+    // --- 暴露接口 ---
+    window.destroyMusicPlayer = destroyMusicPlayer;
+    window.sendMusicMessage = sendMusicMessage;
+    window.getMusicPlayerInstance = getMusicPlayerInstance;
+    window.isMusicPlaying = isMusicPlaying;
+    window.getMusicCurrentTrack = getMusicCurrentTrack;
+
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');
 
