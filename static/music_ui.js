@@ -88,9 +88,6 @@
     };
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
-        // 增加 token 使当前所有异步播放/错误逻辑失效，防止关闭后弹出“加载失败”
-        latestMusicRequestToken++;
-
         // 核心：优先执行本地暂停，避免声音残留
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
@@ -348,7 +345,7 @@
         } catch (err) {
             console.error('[Music UI] 播放器出错:', err);
             musicBar.remove();
-            if (currentToken === latestMusicRequestToken && isPlayerInDOM()) {
+            if (currentToken === latestMusicRequestToken) {
                 currentPlayingTrack = null;
                 showErrorToast('music.playError', '音乐播放加载失败');
             }
@@ -356,7 +353,7 @@
     };
 
     // --- 6. 暴露全局接口 ---
-    const sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
+    window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
         const now = Date.now();
@@ -431,7 +428,7 @@
 
     const isMusicPlaying = () => {
         try {
-            return !!(localPlayer && localPlayer.audio && !localPlayer.audio.paused && isPlayerInDOM());
+            return !!(localPlayer && !localPlayer.audio.paused && isPlayerInDOM());
         } catch (e) {
             console.error('[Music UI] Error checking if music is playing:', e);
             return false;
