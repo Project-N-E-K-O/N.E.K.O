@@ -1766,7 +1766,10 @@ async def proactive_chat(request: Request):
         selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
         
         # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
-        if music_content and music_content.get('placeholder'):
+        if is_playing_music and music_content:
+            logger.info(f"[{lanlan_name}] 音乐正在播放，跳过音乐搜索（music_playing_hint 仍会注入）")
+            music_content = None
+        elif music_content and music_content.get('placeholder'):
             logger.info(f"[{lanlan_name}] 音乐模式：开始生成搜索关键词...")
             try:
                 from config.prompts_sys import get_proactive_music_keyword_prompt
