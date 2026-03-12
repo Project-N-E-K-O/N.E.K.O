@@ -429,7 +429,7 @@
 
     const isMusicPlaying = () => {
         try {
-            return !!(localPlayer && !localPlayer.audio.paused && isPlayerInDOM());
+            return !!(localPlayer && localPlayer.audio && !localPlayer.audio.paused && isPlayerInDOM());
         } catch (e) {
             console.error('[Music UI] Error checking if music is playing:', e);
             return false;
@@ -447,7 +447,6 @@
 
     // --- 暴露接口 ---
     window.destroyMusicPlayer = destroyMusicPlayer;
-    window.sendMusicMessage = sendMusicMessage;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
