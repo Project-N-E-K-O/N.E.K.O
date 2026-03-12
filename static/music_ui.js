@@ -88,6 +88,9 @@
     };
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
+        // 增加 token 使当前所有异步播放/错误逻辑失效，防止关闭后弹出“加载失败”
+        latestMusicRequestToken++;
+
         // 核心：优先执行本地暂停，避免声音残留
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
@@ -345,7 +348,7 @@
         } catch (err) {
             console.error('[Music UI] 播放器出错:', err);
             musicBar.remove();
-            if (currentToken === latestMusicRequestToken) {
+            if (currentToken === latestMusicRequestToken && isPlayerInDOM()) {
                 currentPlayingTrack = null;
                 showErrorToast('music.playError', '音乐播放加载失败');
             }
