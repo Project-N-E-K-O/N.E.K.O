@@ -2207,6 +2207,23 @@ PROACTIVE_MUSIC_PLAYING_HINT = {
     'ja': '\n[注意] ご主人は今、「{track_name}」を聴いています。この曲やアーティスト、雰囲気について話しかけてもいいですが、新しい曲をすすめたり他の音楽を再生しようとせず、今の空気を大切にしてください。',
     'ko': '\n[주의] 주인이 지금 "{track_name}"을(를) 듣고 있습니다. 이 곡이나 아티스트, 스타일에 대해 이야기할 수 있지만, 새로운 곡을 추천하거나 다른 음악을 재생하려고 하지 말고 현재의 분위기를 유지하세요.',
     'ru': '\n[Примечание] Хозяин сейчас слушает: "{track_name}". Ты можешь прокомментировать или обсудить эту песню, исполнителя или стиль, но, пожалуйста, НЕ рекомендуй новые песни и не пытайся включить другую музыку. Поддерживай текущую атмосферу.'
+}
+
+PROACTIVE_MUSIC_UNKNOWN_TRACK = {
+    'zh': '未知曲目',
+    'en': 'Unknown Track',
+    'ja': '未知の曲',
+    'ko': '알 수 없는 곡',
+    'ru': 'Неизвестный трек',
+}
+
+
+def get_proactive_music_unknown_track_name(lang: str = 'zh') -> str:
+    """
+    获取本地化的“未知曲目”名称
+    """
+    lang_key = _normalize_prompt_language(lang)
+    return PROACTIVE_MUSIC_UNKNOWN_TRACK.get(lang_key, PROACTIVE_MUSIC_UNKNOWN_TRACK.get('en', PROACTIVE_MUSIC_UNKNOWN_TRACK['zh']))
 
 
 def get_proactive_music_playing_hint(track_name: str, lang: str = 'zh') -> str:
@@ -2215,5 +2232,7 @@ def get_proactive_music_playing_hint(track_name: str, lang: str = 'zh') -> str:
     """
     lang_key = _normalize_prompt_language(lang)
     template = PROACTIVE_MUSIC_PLAYING_HINT.get(lang_key, PROACTIVE_MUSIC_PLAYING_HINT.get('en', PROACTIVE_MUSIC_PLAYING_HINT['zh']))
-    return template.format(track_name=track_name)
+    # 对歌名中的花括号进行转义，防止后续整体 prompt.format() 时触发 KeyError
+    safe_track_name = track_name.replace('{', '{{').replace('}', '}}')
+    return template.format(track_name=safe_track_name)
 

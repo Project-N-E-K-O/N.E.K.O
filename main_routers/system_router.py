@@ -1985,7 +1985,7 @@ async def proactive_chat(request: Request):
 
         music_playing_hint = ""
         if is_playing_music and current_track:
-            track_name = current_track.get('name', '未知曲目')
+            track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
             music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
 
         generate_prompt = get_proactive_generate_prompt(proactive_lang, music_playing_hint).format(

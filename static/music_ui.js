@@ -353,7 +353,7 @@
     };
 
     // --- 6. 暴露全局接口 ---
-    window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
+    const sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
 
         const now = Date.now();
