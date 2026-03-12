@@ -576,6 +576,11 @@ html #chat-container {
   color: #fff !important;
 }
 
+[data-theme="dark"] #neko-tutorial-skip-btn{
+  color: #b1b1b1 ;
+  border: 3px solid rgb(178, 178, 178);
+}
+
 /* ===== 暗色模式：通用链接颜色 ===== */
 [data-theme="dark"] a {
   color: #5cb8f0;
@@ -1129,6 +1134,19 @@ html #chat-container {
 [data-theme="dark"] .tutorial-reset-wrapper select:hover,
 [data-theme="dark"] .tutorial-reset-btn:hover {
   background: #383838;
+}
+
+[data-theme="dark"] .tutorial-reset-btn:disabled {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
+  color: #666;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+[data-theme="dark"] .tutorial-reset-btn:disabled:hover {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
 }
 
 /* ===== 子页面：当前角色栏 ===== */

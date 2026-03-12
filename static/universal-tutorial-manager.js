@@ -1761,7 +1761,42 @@ class UniversalTutorialManager {
                 });
             }
         }, 0);
+
+        // 显示跳过按钮
+        this.showSkipButton();
+
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
+    }
+
+    /**
+     * 在右上角显示「跳过」按钮，点击后直接跳到最后一步
+     * @param {number} totalSteps - 引导总步骤数
+     */
+    showSkipButton() {
+        // 避免重复创建
+        this.hideSkipButton();
+
+        const btn = document.createElement('button');
+        btn.id = 'neko-tutorial-skip-btn';
+        btn.textContent = this.t('tutorial.buttons.skip', '跳过');
+        btn.addEventListener('click', () => {
+            if (this.driver) {
+                this.driver.destroy();
+            }
+        });
+        document.body.appendChild(btn);
+        console.log('[Tutorial] 跳过按钮已显示');
+    }
+
+    /**
+     * 移除「跳过」按钮
+     */
+    hideSkipButton() {
+        const existing = document.getElementById('neko-tutorial-skip-btn');
+        if (existing) {
+            existing.remove();
+            console.log('[Tutorial] 跳过按钮已移除');
+        }
     }
 
     /**
@@ -2411,6 +2446,9 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
+
+        // 移除跳过按钮
+        this.hideSkipButton();
 
         // 清除刷新定时器
         if (this._refreshTimers) {

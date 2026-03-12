@@ -396,6 +396,20 @@
             });
         }
 
+        // 监听新手引导重置下拉框变化
+        const tutorialSelect = document.getElementById('tutorial-reset-select');
+        const tutorialResetBtn = document.getElementById('tutorial-reset-btn');
+        if (tutorialSelect && tutorialResetBtn) {
+            // 初始状态下禁用按钮（已经在HTML中设置，这里再次确保）
+            tutorialResetBtn.disabled = true;
+
+            // 监听下拉框变化
+            tutorialSelect.addEventListener('change', function() {
+                // 当选择非空值时启用按钮，否则禁用
+                tutorialResetBtn.disabled = !this.value;
+            });
+        }
+
         // Electron白屏修复
         if (document.body) {
             void document.body.offsetHeight;
