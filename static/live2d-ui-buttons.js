@@ -654,9 +654,10 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     triggerImg.className = `live2d-trigger-icon-${config.id}`;
                     Object.assign(triggerImg.style, {
                         width: '22px', height: '22px', objectFit: 'contain',
-                        pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges',
+                        pointerEvents: 'none', imageRendering: 'crisp-edges',
                         transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
                     });
+                    triggerImg.style.setProperty('-webkit-image-rendering', '-webkit-optimize-contrast');
                     triggerBtn.appendChild(triggerImg);
                     Object.assign(triggerBtn.style, {
                         width: '24px',
