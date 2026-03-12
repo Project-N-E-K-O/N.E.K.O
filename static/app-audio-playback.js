@@ -1,0 +1,506 @@
+/**
+ * app-audio-playback.js — Audio playback, scheduling, lip-sync & speaker volume
+ *
+ * Extracted from the monolithic app.js.
+ * Exposes functions via  window.appAudioPlayback  (mod)  and backward-compatible
+ * window.xxx globals where the rest of the code expects them.
+ *
+ * Dependencies (must be loaded first):
+ *   - app-state.js           → window.appState  (S), window.appConst (C), window.appUtils
+ *   - ogg-opus-decoder-wrapper.js → resetOggOpusDecoder(), decodeOggOpusChunk()
+ */
+(function () {
+    'use strict';
+
+    const mod = {};
+    const S = window.appState;
+    const C = window.appConst;
+
+    // ======================== Lip-sync smoothing (module-local) ========================
+    let _lastMouthOpen = 0;
+    let _lipSyncSkipCounter = 0;
+    const LIP_SYNC_EVERY_N_FRAMES = 2;
+
+    // ======================== Audio queue management ========================
+
+    /**
+     * clearAudioQueue — stop all scheduled sources, empty the buffer queue
+     * and reset the OGG Opus decoder.
+     */
+    async function clearAudioQueue() {
+        S.scheduledSources.forEach(function (source) {
+            try { source.stop(); } catch (_) { /* noop */ }
+        });
+        S.scheduledSources = [];
+        S.audioBufferQueue = [];
+        S.isPlaying = false;
+        S.audioStartTime = 0;
+        S.nextChunkTime = 0;
+
+        await resetOggOpusDecoder();
+    }
+
+    /**
+     * clearAudioQueueWithoutDecoderReset — same as clearAudioQueue but does NOT
+     * reset the decoder.  Used for precise interrupt control so that header info
+     * is preserved until the next speech_id arrives.
+     */
+    function clearAudioQueueWithoutDecoderReset() {
+        S.scheduledSources.forEach(function (source) {
+            try { source.stop(); } catch (_) { /* noop */ }
+        });
+        S.scheduledSources = [];
+        S.audioBufferQueue = [];
+        S.isPlaying = false;
+        S.audioStartTime = 0;
+        S.nextChunkTime = 0;
+        // Note: decoder is NOT reset here.
+    }
+
+    // ======================== Global analyser initialisation ========================
+
+    function initializeGlobalAnalyser() {
+        if (S.audioPlayerContext) {
+            if (S.audioPlayerContext.state === 'suspended') {
+                S.audioPlayerContext.resume().catch(function (err) {
+                    console.warn('[Audio] resume() failed:', err);
+                });
+            }
+            if (!S.globalAnalyser) {
+                try {
+                    S.globalAnalyser = S.audioPlayerContext.createAnalyser();
+                    S.globalAnalyser.fftSize = 2048;
+                    // Insert speaker gain node: source -> analyser -> gainNode -> destination
+                    S.speakerGainNode = S.audioPlayerContext.createGain();
+                    var vol = (typeof window.getSpeakerVolume === 'function')
+                        ? window.getSpeakerVolume() : 100;
+                    S.speakerGainNode.gain.value = vol / 100;
+                    S.globalAnalyser.connect(S.speakerGainNode);
+                    S.speakerGainNode.connect(S.audioPlayerContext.destination);
+                    console.log('[Audio] 全局分析器和扬声器增益节点已创建并连接');
+                } catch (e) {
+                    console.error('[Audio] 创建分析器失败:', e);
+                }
+            }
+            // Always sync global references (even when no new nodes were created)
+            window.syncAudioGlobals();
+
+            if (window.DEBUG_AUDIO) {
+                console.debug('[Audio] globalAnalyser 状态:', !!S.globalAnalyser);
+            }
+        } else {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] audioPlayerContext 未初始化，无法创建分析器');
+            }
+        }
+    }
+
+    // ======================== Lip-sync ========================
+
+    function startLipSync(model, analyser) {
+        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+        if (S.animationFrameId) {
+            cancelAnimationFrame(S.animationFrameId);
+        }
+
+        _lastMouthOpen = 0;
+        _lipSyncSkipCounter = 0;
+
+        var dataArray = new Uint8Array(analyser.fftSize);
+
+        function animate() {
+            if (!analyser) return;
+            S.animationFrameId = requestAnimationFrame(animate);
+
+            if (++_lipSyncSkipCounter < LIP_SYNC_EVERY_N_FRAMES) return;
+            _lipSyncSkipCounter = 0;
+
+            analyser.getByteTimeDomainData(dataArray);
+
+            var sum = 0;
+            for (var i = 0; i < dataArray.length; i++) {
+                var val = (dataArray[i] - 128) / 128;
+                sum += val * val;
+            }
+            var rms = Math.sqrt(sum / dataArray.length);
+
+            var mouthOpen = Math.min(1, rms * 10);
+            mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
+            _lastMouthOpen = mouthOpen;
+
+            if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
+                window.LanLan1.setMouth(mouthOpen);
+            }
+        }
+
+        animate();
+    }
+
+    function stopLipSync(model) {
+        console.log('[LipSync] 停止口型同步');
+        if (S.animationFrameId) {
+            cancelAnimationFrame(S.animationFrameId);
+            S.animationFrameId = null;
+        }
+        if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
+            window.LanLan1.setMouth(0);
+        } else if (model && model.internalModel && model.internalModel.coreModel) {
+            // Fallback
+            try { model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0); } catch (_) { /* noop */ }
+        }
+        S.lipSyncActive = false;
+    }
+
+    // ======================== Audio chunk scheduling ========================
+
+    function scheduleAudioChunks() {
+        if (S.scheduleAudioChunksRunning) return;
+        S.scheduleAudioChunksRunning = true;
+
+        try {
+            var scheduleAheadTime = 5;
+
+            initializeGlobalAnalyser();
+            // If init still failed, fall back to connecting sources directly to destination
+            var hasAnalyser = !!S.globalAnalyser;
+
+            // Pre-schedule all chunks within the lookahead window
+            while (S.nextChunkTime < S.audioPlayerContext.currentTime + scheduleAheadTime) {
+                if (S.audioBufferQueue.length > 0) {
+                    var item = S.audioBufferQueue.shift();
+                    var nextBuffer = item.buffer;
+                    if (window.DEBUG_AUDIO) {
+                        console.log('ctx', S.audioPlayerContext.sampleRate,
+                            'buf', nextBuffer.sampleRate);
+                    }
+
+                    var source = S.audioPlayerContext.createBufferSource();
+                    source.buffer = nextBuffer;
+                    if (hasAnalyser) {
+                        source.connect(S.globalAnalyser);
+                    } else {
+                        source.connect(S.audioPlayerContext.destination);
+                    }
+
+                    if (hasAnalyser && !S.lipSyncActive) {
+                        if (window.DEBUG_AUDIO) {
+                            console.log('[Audio] 尝试启动口型同步:', {
+                                hasLanLan1: !!window.LanLan1,
+                                hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
+                                hasVrmManager: !!window.vrmManager,
+                                hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
+                            });
+                        }
+                        if (window.LanLan1 && window.LanLan1.live2dModel) {
+                            startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
+                            S.lipSyncActive = true;
+                        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+                            // VRM model lip sync
+                            if (typeof window.vrmManager.animation.startLipSync === 'function') {
+                                window.vrmManager.animation.startLipSync(S.globalAnalyser);
+                                S.lipSyncActive = true;
+                            }
+                        } else {
+                            if (window.DEBUG_AUDIO) {
+                                console.warn('[Audio] 无法启动口型同步：没有可用的模型');
+                            }
+                        }
+                    }
+
+                    // Precise time scheduling
+                    source.start(S.nextChunkTime);
+
+                    // On-ended callback: handle lip sync stop & cleanup
+                    source.onended = (function (src) {
+                        return function () {
+                            var index = S.scheduledSources.indexOf(src);
+                            if (index !== -1) {
+                                S.scheduledSources.splice(index, 1);
+                            }
+
+                            if (S.scheduledSources.length === 0 && S.audioBufferQueue.length === 0) {
+                                if (window.LanLan1 && window.LanLan1.live2dModel) {
+                                    stopLipSync(window.LanLan1.live2dModel);
+                                } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+                                    if (typeof window.vrmManager.animation.stopLipSync === 'function') {
+                                        window.vrmManager.animation.stopLipSync();
+                                    }
+                                }
+                                S.lipSyncActive = false;
+                                S.isPlaying = false;
+                            }
+                        };
+                    })(source);
+
+                    // Update next chunk time
+                    S.nextChunkTime += nextBuffer.duration;
+
+                    S.scheduledSources.push(source);
+                } else {
+                    break;
+                }
+            }
+
+            // Continue the scheduling loop
+            setTimeout(scheduleAudioChunks, 25);
+
+        } finally {
+            S.scheduleAudioChunksRunning = false;
+        }
+    }
+
+    // ======================== Audio blob handling ========================
+
+    async function handleAudioBlob(blob, expectedEpoch) {
+        if (expectedEpoch === undefined) expectedEpoch = S.incomingAudioEpoch;
+
+        var arrayBuffer = await blob.arrayBuffer();
+        if (expectedEpoch !== S.incomingAudioEpoch) {
+            return;
+        }
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+            console.warn('收到空的音频数据，跳过处理');
+            return;
+        }
+
+        if (!S.audioPlayerContext) {
+            S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
+            window.syncAudioGlobals();
+        }
+
+        if (S.audioPlayerContext.state === 'suspended') {
+            await S.audioPlayerContext.resume();
+            if (expectedEpoch !== S.incomingAudioEpoch) {
+                return;
+            }
+        }
+
+        // Detect OGG format (magic number "OggS" = 0x4F 0x67 0x67 0x53)
+        var header = new Uint8Array(arrayBuffer, 0, 4);
+        var isOgg = header[0] === 0x4F && header[1] === 0x67 && header[2] === 0x67 && header[3] === 0x53;
+
+        var float32Data;
+        var sampleRate = 48000;
+
+        if (isOgg) {
+            // OGG OPUS: decode with WASM streaming decoder
+            try {
+                var result = await decodeOggOpusChunk(new Uint8Array(arrayBuffer));
+                if (expectedEpoch !== S.incomingAudioEpoch) {
+                    return;
+                }
+                if (!result) {
+                    // Not enough data yet
+                    return;
+                }
+                float32Data = result.float32Data;
+                sampleRate = result.sampleRate;
+            } catch (e) {
+                console.error('OGG OPUS 解码失败:', e);
+                return;
+            }
+        } else {
+            // PCM Int16: direct conversion
+            var int16Array = new Int16Array(arrayBuffer);
+            float32Data = new Float32Array(int16Array.length);
+            for (var i = 0; i < int16Array.length; i++) {
+                float32Data[i] = int16Array[i] / 32768.0;
+            }
+        }
+
+        if (!float32Data || float32Data.length === 0) {
+            return;
+        }
+        if (expectedEpoch !== S.incomingAudioEpoch) {
+            return;
+        }
+
+        var audioBuffer = S.audioPlayerContext.createBuffer(1, float32Data.length, sampleRate);
+        audioBuffer.copyToChannel(float32Data, 0);
+
+        var bufferObj = { seq: S.seqCounter++, buffer: audioBuffer };
+        S.audioBufferQueue.push(bufferObj);
+
+        var j = S.audioBufferQueue.length - 1;
+        while (j > 0 && S.audioBufferQueue[j].seq < S.audioBufferQueue[j - 1].seq) {
+            var tmp = S.audioBufferQueue[j];
+            S.audioBufferQueue[j] = S.audioBufferQueue[j - 1];
+            S.audioBufferQueue[j - 1] = tmp;
+            j--;
+        }
+
+        if (!S.isPlaying) {
+            var gap = (S.seqCounter <= 1) ? 0.03 : 0;
+            S.nextChunkTime = Math.max(
+                S.audioPlayerContext.currentTime + gap,
+                S.nextChunkTime
+            );
+            S.isPlaying = true;
+            scheduleAudioChunks();
+        }
+        // When isPlaying is already true the scheduler loop is already running via
+        // its own setTimeout; no need to spawn an extra call.
+    }
+
+    // ======================== Incoming audio blob queue ========================
+
+    function enqueueIncomingAudioBlob(blob) {
+        var meta = S.pendingAudioChunkMetaQueue.shift();
+        if (!meta) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到无匹配 header 的音频 blob，已丢弃');
+            }
+            return;
+        }
+        if (!meta.speechId) {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] 收到 speechId 为空的音频 blob，已丢弃');
+            }
+            return;
+        }
+        S.incomingAudioBlobQueue.push({
+            blob: blob,
+            shouldSkip: !!meta.shouldSkip,
+            speechId: meta.speechId,
+            epoch: meta.epoch
+        });
+        if (!S.isProcessingIncomingAudioBlob) {
+            void processIncomingAudioBlobQueue();
+        }
+    }
+
+    async function processIncomingAudioBlobQueue() {
+        if (S.isProcessingIncomingAudioBlob) return;
+        S.isProcessingIncomingAudioBlob = true;
+
+        try {
+            while (S.incomingAudioBlobQueue.length > 0) {
+                var item = S.incomingAudioBlobQueue.shift();
+                if (!item) continue;
+                if (item.epoch !== S.incomingAudioEpoch) {
+                    continue;
+                }
+
+                if (item.shouldSkip) {
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[Audio] 跳过被打断的音频 blob', item.speechId);
+                    }
+                    continue;
+                }
+
+                if (S.decoderResetPromise) {
+                    var resetTask = S.decoderResetPromise;
+                    try {
+                        await resetTask;
+                    } catch (e) {
+                        console.warn('等待 OGG OPUS 解码器重置失败:', e);
+                    } finally {
+                        // Only clear current task; avoid overwriting a newly-set promise
+                        if (S.decoderResetPromise === resetTask) {
+                            S.decoderResetPromise = null;
+                        }
+                    }
+                }
+                if (item.epoch !== S.incomingAudioEpoch) {
+                    continue;
+                }
+
+                await handleAudioBlob(item.blob, item.epoch);
+            }
+        } finally {
+            S.isProcessingIncomingAudioBlob = false;
+            if (S.incomingAudioBlobQueue.length > 0) {
+                void processIncomingAudioBlobQueue();
+            }
+        }
+    }
+
+    // ======================== Speaker volume control ========================
+
+    function saveSpeakerVolumeSetting() {
+        try {
+            localStorage.setItem('neko_speaker_volume', String(S.speakerVolume));
+            console.log('扬声器音量设置已保存: ' + S.speakerVolume + '%');
+        } catch (err) {
+            console.error('保存扬声器音量设置失败:', err);
+        }
+    }
+
+    function loadSpeakerVolumeSetting() {
+        try {
+            var saved = localStorage.getItem('neko_speaker_volume');
+            if (saved !== null) {
+                var vol = parseInt(saved, 10);
+                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                    S.speakerVolume = vol;
+                    console.log('已加载扬声器音量设置: ' + S.speakerVolume + '%');
+                } else {
+                    console.warn('无效的扬声器音量值 ' + saved + '，使用默认值 ' + C.DEFAULT_SPEAKER_VOLUME + '%');
+                    S.speakerVolume = C.DEFAULT_SPEAKER_VOLUME;
+                }
+            } else {
+                console.log('未找到扬声器音量设置，使用默认值 ' + C.DEFAULT_SPEAKER_VOLUME + '%');
+                S.speakerVolume = C.DEFAULT_SPEAKER_VOLUME;
+            }
+
+            // Apply immediately to audio pipeline if already initialised
+            if (S.speakerGainNode) {
+                S.speakerGainNode.gain.setTargetAtTime(S.speakerVolume / 100, S.speakerGainNode.context.currentTime, 0.05);
+            }
+        } catch (err) {
+            console.error('加载扬声器音量设置失败:', err);
+            S.speakerVolume = C.DEFAULT_SPEAKER_VOLUME;
+        }
+    }
+
+    // ======================== Window-level backward-compat exports ========================
+
+    window.setSpeakerVolume = function (vol) {
+        if (vol >= 0 && vol <= 100) {
+            S.speakerVolume = vol;
+            if (S.speakerGainNode) {
+                S.speakerGainNode.gain.setTargetAtTime(vol / 100, S.speakerGainNode.context.currentTime, 0.05);
+            }
+            saveSpeakerVolumeSetting();
+            // Update UI slider if it exists
+            var slider = document.getElementById('speaker-volume-slider');
+            var valueDisplay = document.getElementById('speaker-volume-value');
+            if (slider) slider.value = String(vol);
+            if (valueDisplay) valueDisplay.textContent = vol + '%';
+            console.log('扬声器音量已设置: ' + vol + '%');
+        }
+    };
+
+    window.getSpeakerVolume = function () {
+        return S.speakerVolume;
+    };
+
+    // ======================== Module exports ========================
+
+    mod.clearAudioQueue = clearAudioQueue;
+    mod.clearAudioQueueWithoutDecoderReset = clearAudioQueueWithoutDecoderReset;
+    mod.initializeGlobalAnalyser = initializeGlobalAnalyser;
+    mod.startLipSync = startLipSync;
+    mod.stopLipSync = stopLipSync;
+    mod.scheduleAudioChunks = scheduleAudioChunks;
+    mod.handleAudioBlob = handleAudioBlob;
+    mod.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
+    mod.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
+    mod.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
+    mod.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
+
+    // Backward-compatible window globals so existing callers keep working
+    window.clearAudioQueue = clearAudioQueue;
+    window.clearAudioQueueWithoutDecoderReset = clearAudioQueueWithoutDecoderReset;
+    window.initializeGlobalAnalyser = initializeGlobalAnalyser;
+    window.startLipSync = startLipSync;
+    window.stopLipSync = stopLipSync;
+    window.scheduleAudioChunks = scheduleAudioChunks;
+    window.handleAudioBlob = handleAudioBlob;
+    window.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
+    window.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
+    window.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
+    window.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
+
+    window.appAudioPlayback = mod;
+})();

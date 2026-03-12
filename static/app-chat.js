@@ -1,0 +1,571 @@
+/**
+ * app-chat.js — 聊天/消息渲染模块
+ * 从 app.js lines 2135-2634 提取：
+ *   - getCurrentTimeString()
+ *   - createGeminiBubble()
+ *   - processRealisticQueue()
+ *   - dispatchMusicPlay()
+ *   - processMusicCommands()
+ *   - appendMessage()
+ *   - checkAndUnlockFirstDialogueAchievement()
+ *   - 首次交互跟踪变量
+ */
+(function () {
+    'use strict';
+
+    const mod = {};
+    const S = window.appState;
+    // const C = window.appConst;  // unused in this module for now
+
+    // ======================== 模块级变量 ========================
+    let _musicDispatchId = 0;
+
+    // 首次交互跟踪
+    let isFirstUserInput = true;   // 跟踪是否为用户第一次输入
+    let isFirstAIResponse = true;  // 跟踪是否为AI第一次回复
+
+    // ======================== 工具函数 ========================
+
+    function getCurrentTimeString() {
+        return new Date().toLocaleTimeString('en-US', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    }
+
+    // ======================== 成就 ========================
+
+    /**
+     * 检查并解锁首次对话成就
+     * 当用户和AI都完成首次交互后调用API
+     */
+    async function checkAndUnlockFirstDialogueAchievement() {
+        if (!isFirstUserInput && !isFirstAIResponse) {
+            try {
+                console.log(window.t('console.firstConversationUnlockAchievement'));
+                const response = await fetch('/api/steam/set-achievement-status/ACH_FIRST_DIALOGUE', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    console.log(window.t('console.achievementUnlockSuccess'));
+                } else {
+                    console.error(window.t('console.achievementUnlockFailed'));
+                }
+            } catch (error) {
+                console.error(window.t('console.achievementUnlockError'), error);
+            }
+        }
+    }
+
+    // ======================== 气泡创建 ========================
+
+    function createGeminiBubble(sentence) {
+        const chatContainer = S.dom.chatContainer;
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', 'gemini');
+        const cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanSentence;
+        chatContainer.appendChild(messageDiv);
+        window.currentGeminiMessage = messageDiv;
+
+        // ========== 追踪本轮气泡 ==========
+        window.currentTurnGeminiBubbles.push(messageDiv);
+
+        // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
+        checkAndShowSubtitlePrompt(cleanSentence);
+
+        // 如果是AI第一次回复，更新状态并检查成就
+        if (isFirstAIResponse) {
+            isFirstAIResponse = false;
+            console.log(window.t('console.aiFirstReplyDetected'));
+            checkAndUnlockFirstDialogueAchievement();
+        }
+    }
+
+    // ======================== 拟真输出队列 ========================
+
+    async function processRealisticQueue(queueVersion) {
+        queueVersion = queueVersion || (window._realisticGeminiVersion || 0);
+        if (window._isProcessingRealisticQueue) return;
+        window._isProcessingRealisticQueue = true;
+
+        const chatContainer = S.dom.chatContainer;
+
+        try {
+            while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+                // 基于时间戳的延迟：确保每句之间至少间隔2秒
+                const now = Date.now();
+                const timeSinceLastBubble = now - (window._lastBubbleTime || 0);
+                if (window._lastBubbleTime > 0 && timeSinceLastBubble < 2000) {
+                    await new Promise(function (resolve) { setTimeout(resolve, 2000 - timeSinceLastBubble); });
+                }
+
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+
+                const s = window._realisticGeminiQueue.shift();
+                if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
+                    createGeminiBubble(s);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    window._lastBubbleTime = Date.now();
+                }
+            }
+        } finally {
+            window._isProcessingRealisticQueue = false;
+            // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
+            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        }
+    }
+
+    // ======================== 音乐播放调度 ========================
+
+    window.dispatchMusicPlay = function (trackInfo) {
+        if (!trackInfo || !trackInfo.url) {
+            console.warn('[MusicDispatch] 无效的音乐信息，跳过播放');
+            return;
+        }
+
+        var currentDispatchId = ++_musicDispatchId;
+
+        if (window.sendMusicMessage) {
+            var accepted = window.sendMusicMessage(trackInfo);
+            if (accepted) {
+                // Toast 现在由 window.sendMusicMessage 内部处理，以确保去重逻辑和 UI 状态同步
+            }
+        } else {
+            console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
+
+            var retryPlay = function () {
+                // 门闩校验：只允许最新的 dispatch 请求执行
+                if (currentDispatchId !== _musicDispatchId) {
+                    console.log('[MusicDispatch] \u653E\u5F03\u8FC7\u65F6\u7684\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
+                    cleanup();
+                    return;
+                }
+
+                if (window.sendMusicMessage) {
+                    console.log('[MusicDispatch] \u63A5\u53E3\u5DF2\u5C31\u7EEA\uFF0C\u8865\u53D1\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
+                    cleanup();
+                    window.dispatchMusicPlay(trackInfo);
+                }
+            };
+
+            var cleanup = function () {
+                clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
+                window.removeEventListener('music-ui-ready', retryPlay);
+            };
+
+            var pollTimer = setInterval(retryPlay, 500);
+            var timeoutTimer = setTimeout(cleanup, 5000);
+            window.addEventListener('music-ui-ready', retryPlay, { once: true });
+        }
+    };
+
+    // ======================== 音乐指令解析 ========================
+
+    /**
+     * 解析并处理 AI 文本中的音乐播放指令
+     *
+     * 【当前状态 - 预留功能】
+     * 此函数目前未被调用。当前主动搭话音乐功能走的是另一条路径：
+     *   后端 proactive_chat_prompt_music → 返回搜索关键词 → 后端搜索 → source_links → 前端播放
+     *
+     * 【未来用途】
+     * 当需要在普通对话中让 AI 主动触发音乐播放时，需要在角色系统提示词中添加指令说明，
+     * 让 AI 输出 [play_music: {"name": "歌曲名", "artist": "歌手名"}] 格式的指令。
+     * 届时在消息处理流程中调用此函数即可解析并播放音乐。
+     *
+     * 【指令格式】
+     * [play_music: {"name": "歌曲名", "artist": "歌手名"}]
+     * - name: 必填，歌曲名称
+     * - artist: 可选，歌手名称
+     *
+     * @param {string} text - 可能包含音乐指令的文本
+     */
+    window.processMusicCommands = async function (text) {
+        if (!text) return;
+        var musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
+        var match;
+
+        while ((match = musicRegex.exec(text)) !== null) {
+            try {
+                // 1. 解析 AI 传来的意图信息（通常只有 name 和 artist）
+                var aiTrackInfo = JSON.parse(match[1]);
+
+                // 校验 name 字段是否存在
+                if (!aiTrackInfo.name) {
+                    console.warn('[Music Parser] 缺少 name 字段，跳过:', match[1]);
+                    continue;
+                }
+
+                var query = (aiTrackInfo.name + ' ' + (aiTrackInfo.artist || '')).trim();
+
+                if (query) {
+                    // 【核心修复1】在发出请求前增加并锁定当前纪元
+                    // currentMusicSearchEpoch is a global defined at top of app.js (outside IIFE)
+                    var myEpoch = ++window._musicSearchEpoch;
+
+                    var response = await fetch('/api/music/search?query=' + encodeURIComponent(query));
+                    var result = await response.json();
+
+                    // 【核心修复2】门闩校验：如果纪元对不上（说明期间切猫或打断了），直接丢弃该结果
+                    if (myEpoch !== window._musicSearchEpoch) {
+                        console.log('[Music] 指令搜索结果过时，已丢弃: "' + query + '"');
+                        continue;
+                    }
+
+                    // 【核心修复3】细化错误区分：服务报错 vs 没搜到
+                    if (!result.success) {
+                        console.error('[Music] Search API failed:', result.error);
+                        if (window.showStatusToast) {
+                            var failMsg = window.safeT ? window.safeT('music.searchFailed', '音乐搜索失败') : '音乐搜索失败';
+                            window.showStatusToast(result.message || result.error || failMsg, 3000);
+                        }
+                        continue;
+                    }
+
+                    // 正常命中结果
+                    if (result.data && result.data.length > 0) {
+                        var realTrack = result.data[0];
+                        console.log('[Music] 指令搜歌命中:', realTrack.name);
+
+                        // 调用主分支统一的播放调度逻辑
+                        if (typeof window.dispatchMusicPlay === 'function') {
+                            window.dispatchMusicPlay(realTrack);
+                        } else {
+                            console.warn('[Music] dispatchMusicPlay 不可用，尝试直接发送');
+                            window.sendMusicMessage(realTrack);
+                        }
+                    } else {
+                        if (window.showStatusToast) {
+                            var defaultStr = '找不到歌曲: ' + aiTrackInfo.name;
+                            var notFoundMsg = window.t ? window.t('music.notFound', {
+                                query: aiTrackInfo.name,
+                                defaultValue: defaultStr
+                            }) : defaultStr;
+
+                            if (typeof notFoundMsg !== 'string') notFoundMsg = defaultStr;
+                            window.showStatusToast(notFoundMsg, 3000);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('[Music Parser] 音乐指令解析或请求失败:', e);
+            }
+        }
+    };
+
+    // ======================== appendMessage ========================
+
+    /**
+     * 添加消息到聊天界面
+     */
+    function appendMessage(text, sender, isNewMessage) {
+        if (typeof isNewMessage === 'undefined') isNewMessage = true;
+
+        var chatContainer = S.dom.chatContainer;
+
+        function isMergeMessagesEnabled() {
+            if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
+            return S.mergeMessagesEnabled;
+        }
+
+        function normalizeGeminiText(s) {
+            return (s || '').replace(/\r\n/g, '\n');
+        }
+
+        function cleanMusicFromChunk(rawText) {
+            var s = normalizeGeminiText(rawText);
+            if (window._pendingMusicCommand) {
+                s = window._pendingMusicCommand + s;
+                window._pendingMusicCommand = '';
+            }
+            var m = s.match(/\[[^\]]*$/);
+            if (m) {
+                var partial = m[0].toLowerCase();
+                var target = "[play_music:";
+                if (partial.startsWith(target) || target.startsWith(partial)) {
+                    window._pendingMusicCommand = m[0];
+                    s = s.slice(0, m.index);
+                }
+            }
+            return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        }
+
+        function splitIntoSentences(buffer) {
+            // 逐字符扫描，尽量兼容中英文标点与流式输入
+            var sentences = [];
+            var s = normalizeGeminiText(buffer);
+            var start = 0;
+
+            var isPunctForBoundary = function (ch) {
+                return ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F' || ch === '!' || ch === '?' || ch === '.' || ch === '\u2026';
+            };
+
+            var isBoundary = function (ch, next) {
+                if (ch === '\n') return true;
+                // 连续标点只在最后一个标点处分段，避免 "！？"、"..." 被拆开
+                if (isPunctForBoundary(ch) && next && isPunctForBoundary(next)) return false;
+                if (ch === '\u3002' || ch === '\uFF01' || ch === '\uFF1F') return true;
+                if (ch === '!' || ch === '?') return true;
+                if (ch === '\u2026') return true;
+                if (ch === '.') {
+                    // 英文句点：尽量避免把小数/缩写切断，要求后面是空白/换行/结束/常见结束符
+                    if (!next) return true;
+                    return /\s|\n|["')\]]/.test(next);
+                }
+                return false;
+            };
+
+            for (var i = 0; i < s.length; i++) {
+                var ch = s[i];
+                var next = i + 1 < s.length ? s[i + 1] : '';
+                if (isBoundary(ch, next)) {
+                    var piece = s.slice(start, i + 1);
+                    var trimmed = piece.replace(/^\s+/, '').replace(/\s+$/, '');
+                    if (trimmed) sentences.push(trimmed);
+                    start = i + 1;
+                }
+            }
+
+            var rest = s.slice(start);
+            return { sentences: sentences, rest: rest };
+        }
+
+        // 维护"本轮 AI 回复"的完整文本（用于 turn end 时整段翻译/情感分析）
+        if (sender === 'gemini') {
+            if (isNewMessage) {
+                window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                window._geminiTurnFullText = '';
+                window._pendingMusicCommand = '';
+                // ========== 重置本轮气泡追踪 ==========
+                window.currentTurnGeminiBubbles = [];
+            }
+            var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+            window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+        }
+
+        if (sender === 'gemini' && !isMergeMessagesEnabled()) {
+            // 拟真输出（合并消息关闭）：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
+            if (isNewMessage) {
+                window._realisticGeminiBuffer = '';
+                window._realisticGeminiQueue = []; // 新一轮开始时，清空队列
+                window._lastBubbleTime = 0; // 重置时间戳，第一句立即显示
+                window._pendingMusicCommand = ''; // 新一轮开始时，清空待闭合的音乐指令
+            }
+
+            var incoming = normalizeGeminiText(text);
+
+            // 处理未闭合的音乐指令片段
+            if (window._pendingMusicCommand) {
+                incoming = window._pendingMusicCommand + incoming;
+                window._pendingMusicCommand = '';
+            }
+
+            // 捕获字符串末尾尚未闭合的任意中括号块（防止 JSON 片段泄漏到聊天气泡）
+            var openBracketMatch = incoming.match(/\[[^\]]*$/);
+            if (openBracketMatch) {
+                var partialText = openBracketMatch[0];
+                var normalizedPartial = normalizeGeminiText(partialText).toLowerCase();
+
+                // 这样即使只收到 "[" 或 "[pl"，或者已经包含了部分 JSON 体
+                var targetPrefix = "[play_music:";
+                var isPlayMusicPrefix =
+                    normalizedPartial.startsWith(targetPrefix) ||
+                    targetPrefix.startsWith(normalizedPartial);
+
+                if (isPlayMusicPrefix) {
+                    window._pendingMusicCommand = partialText;
+                    incoming = incoming.slice(0, openBracketMatch.index);
+                    console.log('[Music] 拦截到不完整指令片段: ' + partialText);
+                }
+            }
+
+            var prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
+            var combined = prev + incoming;
+            combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+
+            var splitResult = splitIntoSentences(combined);
+            window._realisticGeminiBuffer = splitResult.rest;
+
+            if (splitResult.sentences.length > 0) {
+                window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
+                processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+            // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
+            window._realisticGeminiBuffer = '';
+            window._realisticGeminiQueue = [];
+            window._lastBubbleTime = 0;
+
+            // 1. 清洗文本（含未闭合指令片段的拦截）
+            var cleanNewText = cleanMusicFromChunk(text);
+
+            // 2. 只有当清洗后还有实质性文本时，才去创建气泡 DOM；否则清空指针以避免误追加
+            if (cleanNewText.trim()) {
+                var messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', 'gemini');
+                messageDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanNewText;
+
+                chatContainer.appendChild(messageDiv);
+                window.currentGeminiMessage = messageDiv;
+
+                // ========== 追踪本轮气泡 ==========
+                window.currentTurnGeminiBubbles.push(messageDiv);
+            } else {
+                window.currentGeminiMessage = null;
+            }
+
+            // 3. 对干净的文本调用字幕检测
+            checkAndShowSubtitlePrompt(cleanNewText);
+
+            if (isFirstAIResponse) {
+                isFirstAIResponse = false;
+                console.log(window.t('console.aiFirstReplyDetected'));
+                checkAndUnlockFirstDialogueAchievement();
+            }
+        } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
+            // 【核心重构】不再依赖 isNewMessage 标志，而是根据"本轮是否已有气泡"来决策。
+            // 解决首个 chunk 被清洗为空（纯指令）时导致的渲染坠落 Bug
+            var cleanText = cleanMusicFromChunk(text);
+
+            // 场景 A: 本轮尚未创建气泡
+            if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) {
+                if (cleanText.trim()) {
+                    var msgDiv = document.createElement('div');
+                    msgDiv.classList.add('message', 'gemini');
+                    msgDiv.textContent = "[" + getCurrentTimeString() + "] \u{1F380} " + cleanText;
+                    chatContainer.appendChild(msgDiv);
+
+                    window.currentGeminiMessage = msgDiv;
+                    window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
+                    window.currentTurnGeminiBubbles.push(msgDiv);
+
+                    checkAndShowSubtitlePrompt(cleanText);
+                } else {
+                    // 仅有指令无文本，继续保持指针为空，直到出现有意义的文本块
+                    window.currentGeminiMessage = null;
+                }
+            }
+            // 场景 B: 气泡已存在，执行平滑追加
+            else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
+                var fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
+                window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
+
+                // 触发字幕检测逻辑（防抖）
+                if (S.subtitleCheckDebounceTimer) {
+                    clearTimeout(S.subtitleCheckDebounceTimer);
+                }
+
+                S.subtitleCheckDebounceTimer = setTimeout(function () {
+                    if (!window.currentGeminiMessage ||
+                        window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
+                        !window.currentGeminiMessage.isConnected) {
+                        S.subtitleCheckDebounceTimer = null;
+                        return;
+                    }
+
+                    var currentFullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '');
+                    if (currentFullText && currentFullText.trim()) {
+                        if (typeof userLanguage !== 'undefined' && userLanguage === null) {
+                            getUserLanguage().then(function () {
+                                if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
+                                    var detectedLang = detectLanguage(currentFullText);
+                                    if (detectedLang !== 'unknown' && detectedLang !== userLanguage) {
+                                        showSubtitlePrompt();
+                                    }
+                                }
+                            }).catch(function (err) { console.warn('[i18n] Stream error:', err); });
+                        } else {
+                            var detectedLang = detectLanguage(currentFullText);
+                            if (detectedLang !== 'unknown' && typeof userLanguage !== 'undefined' && detectedLang !== userLanguage) {
+                                showSubtitlePrompt();
+                            }
+                        }
+                    }
+                    S.subtitleCheckDebounceTimer = null;
+                }, 300);
+            }
+        } else {
+            // 创建新消息 (user / 其他 sender)
+            var newDiv = document.createElement('div');
+            newDiv.classList.add('message', sender);
+
+            // 根据sender设置不同的图标
+            var icon = sender === 'user' ? '\u{1F4AC}' : '\u{1F380}';
+            var cleanedText = (text || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+            newDiv.textContent = "[" + getCurrentTimeString() + "] " + icon + " " + cleanedText;
+            chatContainer.appendChild(newDiv);
+
+            // 如果是Gemini消息，更新当前消息引用
+            if (sender === 'gemini') {
+                window.currentGeminiMessage = newDiv;
+                // ========== 追踪本轮气泡 ==========
+                window.currentTurnGeminiBubbles.push(newDiv);
+
+                // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
+                checkAndShowSubtitlePrompt(cleanedText);
+
+                // 如果是AI第一次回复，更新状态并检查成就
+                if (isFirstAIResponse) {
+                    isFirstAIResponse = false;
+                    console.log('\u68C0\u6D4B\u5230AI\u7B2C\u4E00\u6B21\u56DE\u590D');
+                    checkAndUnlockFirstDialogueAchievement();
+                }
+            }
+        }
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // ======================== 导出 ========================
+
+    mod.getCurrentTimeString = getCurrentTimeString;
+    mod.createGeminiBubble = createGeminiBubble;
+    mod.processRealisticQueue = processRealisticQueue;
+    mod.appendMessage = appendMessage;
+    mod.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+
+    /**
+     * 标记用户已完成首次输入（供外部模块调用）
+     */
+    mod.markFirstUserInput = function () {
+        if (isFirstUserInput) {
+            isFirstUserInput = false;
+        }
+    };
+
+    /**
+     * 查询首次输入/回复状态（供外部模块调用）
+     */
+    mod.isFirstUserInput = function () { return isFirstUserInput; };
+    mod.isFirstAIResponse = function () { return isFirstAIResponse; };
+
+    // 向后兼容：旧代码中直接使用 window.appendMessage 等
+    window.appendMessage = appendMessage;
+    window.createGeminiBubble = createGeminiBubble;
+    window.processRealisticQueue = processRealisticQueue;
+    window.checkAndUnlockFirstDialogueAchievement = checkAndUnlockFirstDialogueAchievement;
+    window.getCurrentTimeString = getCurrentTimeString;
+
+    // 音乐搜索纪元：向后兼容全局变量（原来定义在 app.js IIFE 外部的 currentMusicSearchEpoch）
+    if (typeof window._musicSearchEpoch === 'undefined') {
+        window._musicSearchEpoch = 0;
+    }
+
+    window.appChat = mod;
+})();
