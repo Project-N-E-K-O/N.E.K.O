@@ -1346,9 +1346,6 @@ def _normalize_prompt_language(lang: str) -> str:
     if not lang:
         return 'zh'
     lang_lower = lang.lower()
-    # 优先识别繁体
-    if 'tw' in lang_lower or 'hk' in lang_lower or 'hant' in lang_lower:
-        return 'zh-TW'
     if lang_lower.startswith('zh'):
         return 'zh'
     if lang_lower.startswith('ja'):
