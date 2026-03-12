@@ -112,8 +112,8 @@ def _read_port_overrides() -> dict:
             import json
             with open(port_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read port_config.json: %s", e, exc_info=True)
     return {}
 
 
@@ -142,8 +142,11 @@ def _read_port_env(port_name: str, default: int) -> int:
             value = int(override)
             if 1 <= value <= 65535:
                 return value
-        except Exception:
-            pass
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Invalid port_config.json override for %s=%r: %s",
+                port_name, override, e,
+            )
     return default
 
 # 服务器端口配置
