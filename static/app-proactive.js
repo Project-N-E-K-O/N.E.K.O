@@ -378,10 +378,12 @@
                                 cover: musicLink.cover
                             };
                             console.log('[ProactiveChat] 发送音乐消息:', track);
-                            window.dispatchMusicPlay(track, { source: 'proactive' });
+                            var dispatchResult = window.dispatchMusicPlay(track, { source: 'proactive' });
 
-                            // 标记已派发的音乐链接 URL，以便在聊天区域隐藏
-                            dispatchedTrackUrl = musicLink.url;
+                            // 仅在成功派发（非拦截）时标记，以便在聊天区域隐藏对应链接
+                            if (dispatchResult !== false) {
+                                dispatchedTrackUrl = musicLink.url;
+                            }
                         } else if (musicLink) {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
                         }
@@ -432,6 +434,9 @@
             var validLinks = [];
             for (var i = 0; i < links.length; i++) {
                 var link = links[i];
+
+                // 跳过 null/undefined 条目
+                if (!link) continue;
 
                 // 所有的音乐推荐链接都不显示在聊天框中（由播放器统一处理）
                 var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
