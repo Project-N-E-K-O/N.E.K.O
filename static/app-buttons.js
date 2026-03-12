@@ -540,8 +540,8 @@
                     chatContainerEl.classList.remove('minimized');
                     chatContainerEl.classList.remove('mobile-collapsed');
 
-                    var chatContentWrapper = chatContainerEl.querySelector('.chat-content-wrapper');
-                    var chatHeader = chatContainerEl.querySelector('.chat-header');
+                    var chatContentWrapper = document.getElementById('chat-content-wrapper');
+                    var chatHeader = document.getElementById('chat-header');
                     var tia = document.getElementById('text-input-area');
                     if (chatContentWrapper) chatContentWrapper.style.display = '';
                     if (chatHeader) chatHeader.style.display = '';

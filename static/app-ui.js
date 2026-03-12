@@ -157,18 +157,14 @@
             document.head.appendChild(style);
         }
 
-        // 更新消息内容
-        toast.innerHTML = `
-            <div style="
-                width: 20px;
-                height: 20px;
-                border: 3px solid rgba(255, 255, 255, 0.3);
-                border-top-color: white;
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
-            "></div>
-            <span>${message}</span>
-        `;
+        // 更新消息内容（使用 DOM API 避免 innerHTML 注入风险）
+        toast.innerHTML = '';
+        var spinner = document.createElement('div');
+        spinner.style.cssText = 'width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin 1s linear infinite;';
+        var msgSpan = document.createElement('span');
+        msgSpan.textContent = message;
+        toast.appendChild(spinner);
+        toast.appendChild(msgSpan);
 
         // 添加旋转动画
         const spinStyle = document.createElement('style');
@@ -646,7 +642,6 @@
         console.log('[App] showLive2d调用后，容器类列表:', container.classList.toString());
     }
 
-    mod.hideLive2d = hideLive2d;
     mod.showLive2d = showLive2d;
 
     // --- showCurrentModel ---
@@ -1596,17 +1591,7 @@
             });
         });
 
-        // 页面卸载前清理屏幕捕获流
-        window.addEventListener("beforeunload", () => {
-            try {
-                if (S.screenCaptureStream &&
-                    typeof S.screenCaptureStream.getTracks === 'function') {
-                    S.screenCaptureStream.getTracks().forEach(track => {
-                        try { track.stop(); } catch (e) { }
-                    });
-                }
-            } catch (e) { }
-        });
+        // beforeunload cleanup 已在 app.js orchestrator 中注册，此处不再重复
     }
 
     mod.initFinalUiGuards = initFinalUiGuards;

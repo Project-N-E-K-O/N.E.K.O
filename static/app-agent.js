@@ -1474,25 +1474,19 @@
 
         console.log('[App] \u542f\u52a8 Agent \u4efb\u52a1\u72b6\u6001\u8f6e\u8be2');
 
-        agentTaskPollingInterval = true;
         agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
+        agentTaskPollingInterval = agentTaskTimeUpdateInterval; // 复用 ID，使 stopAgentTaskPolling 能正确 clearInterval
     };
 
     window.stopAgentTaskPolling = function () {
         console.log('[App] \u505c\u6b62 Agent \u4efb\u52a1\u72b6\u6001\u8f6e\u8be2');
         console.trace('[App] stopAgentTaskPolling caller trace');
 
-        if (agentTaskPollingInterval) {
-            if (typeof agentTaskPollingInterval !== 'boolean') {
-                clearInterval(agentTaskPollingInterval);
-            }
-            agentTaskPollingInterval = null;
-        }
-
         if (agentTaskTimeUpdateInterval) {
             clearInterval(agentTaskTimeUpdateInterval);
             agentTaskTimeUpdateInterval = null;
         }
+        agentTaskPollingInterval = null;
 
         if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
             window.AgentHUD.hideAgentTaskHUD();
