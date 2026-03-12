@@ -278,6 +278,11 @@
                     window._geminiTurnFullText = '';
                     window._pendingMusicCommand = '';
 
+                    // 推进 epoch 并清空入站音频队列，防止在途 TTS blob 被消费播放
+                    S.incomingAudioEpoch += 1;
+                    S.incomingAudioBlobQueue = [];
+                    S.pendingAudioChunkMetaQueue = [];
+
                     (async function () {
                         if (typeof window.clearAudioQueue === 'function') await window.clearAudioQueue();
                     })();
