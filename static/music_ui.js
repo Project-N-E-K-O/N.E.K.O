@@ -428,7 +428,7 @@
 
     const isMusicPlaying = () => {
         try {
-            return !!(localPlayer && !localPlayer.paused && isPlayerInDOM());
+            return !!(localPlayer && localPlayer.audio && !localPlayer.audio.paused && isPlayerInDOM());
         } catch (e) {
             console.error('[Music UI] Error checking if music is playing:', e);
             return false;
