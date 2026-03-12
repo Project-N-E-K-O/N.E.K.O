@@ -14,6 +14,12 @@ const SNAP_CONFIG = {
     easingType: 'easeOutBack'
 };
 
+// ===== 缩放限制配置 =====
+const SCALE_LIMITS = {
+    MIN: 0.005, // 最小缩放比例
+    MAX: 5.0     // 最大缩放比例（暂不实施，保留供后续使用）
+};
+
 // 缓动函数集合
 const EasingFunctions = {
     // 线性
@@ -284,7 +290,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     // this.pixi_app.stage.interactive = true;
     // this.pixi_app.stage.hitArea = this.pixi_app.screen;
 
-    let isDragging = false;
+    this._isDraggingModel = false;
     let dragStartPos = new PIXI.Point();
 
     // 点击检测相关变量
@@ -517,7 +523,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             return;
         }
 
-        isDragging = true;
+        this._isDraggingModel = true;
         this.isFocusing = false; // 拖拽时禁用聚焦
         const globalPos = event.data.global;
         dragStartPos.x = globalPos.x - model.x;
@@ -536,8 +542,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     });
 
     const onDragEnd = async () => {
-        if (isDragging) {
-            isDragging = false;
+        if (this._isDraggingModel) {
+            this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
 
@@ -572,11 +578,11 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
-        if (isDragging) {
+        if (this._isDraggingModel) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
                 // 如果变成多点触摸，停止拖拽
-                isDragging = false;
+                this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
                 return;
             }
@@ -633,10 +639,14 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
 
         const oldScale = this.currentModel.scale.x;
         let newScale = event.deltaY < 0 ? oldScale * scaleFactor : oldScale / scaleFactor;
+
+        // 钳制缩放下限（MAX 暂不实施）
+        newScale = Math.max(SCALE_LIMITS.MIN, newScale);
+
         this.currentModel.scale.set(newScale);
 
-        // 使用防抖动保存缩放，避免滚轮过程中频繁保存
-        this._debouncedSavePosition();
+        // 缩放后触发分级恢复检测（含保存），替代原 _debouncedSavePosition
+        this._debouncedSnapCheck();
     };
 
     const view = this.pixi_app.view;
@@ -682,8 +692,8 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
             const scaleChange = currentDistance / initialDistance;
             let newScale = initialScale * scaleChange;
 
-            // 限制缩放范围，避免过大或过小
-            newScale = Math.max(0.1, Math.min(2.0, newScale));
+            // 限制缩放范围，与滚轮缩放保持一致
+            newScale = Math.max(SCALE_LIMITS.MIN, Math.min(SCALE_LIMITS.MAX, newScale));
 
             this.currentModel.scale.set(newScale);
         }
@@ -921,7 +931,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         this._lastMouseY = pointer.y;
 
         // 在拖拽期间不执行任何操作
-        if (model.interactive && model.dragging) {
+        if ((model.interactive && model.dragging) || this._isDraggingModel) {
             return;
         }
 
@@ -1008,7 +1018,14 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     if (isMouseTrackingEnabled) {
                         model.focus(pointer.x, pointer.y);
                     } else {
-                        model.focus(centerX, centerY);
+                        // 鼠标跟踪禁用时，清除 focusController 外部输入
+                        // 头部仍可按 updateNaturalMovements（呼吸、轻微摆动等）自主运动，
+                        // 但不受鼠标移动、拖拽等外部因素影响
+                        if (model.internalModel && model.internalModel.focusController) {
+                            const fc = model.internalModel.focusController;
+                            fc.targetX = 0;
+                            fc.targetY = 0;
+                        }
                     }
                 }
             } else {
@@ -1302,6 +1319,27 @@ Live2DManager.prototype._debouncedSavePosition = function () {
     }, 500);
 };
 
+// 防抖分级恢复检测（用于滚轮缩放后的边界检查 + 位置保存）
+Live2DManager.prototype._debouncedSnapCheck = function () {
+    if (this._snapCheckTimer) clearTimeout(this._snapCheckTimer);
+    // 同时取消可能残留的保存定时器，避免在吸附动画完成前保存中间状态
+    if (this._savePositionDebounceTimer) {
+        clearTimeout(this._savePositionDebounceTimer);
+    }
+    this._snapCheckTimer = setTimeout(async () => {
+        if (!this.currentModel || this._isSnapping) return;
+
+        // 统一复用现有吸附流程（含守卫、动画、保存）
+        // _checkSnapRequired 会根据 overflow 方向计算最近边缘，
+        // 无论模型是部分出界还是完全消失都能正确处理
+        const snapped = await this._checkAndPerformSnap(this.currentModel);
+        if (!snapped) {
+            // 未触发吸附（模型在合理范围内），仅保存缩放后的位置
+            await this._savePositionAfterInteraction();
+        }
+    }, 300);  // 300ms 防抖，等待连续滚轮操作结束
+};
+
 // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
 // Returns true if a display switch occurred (and position was saved internally), false otherwise
 Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
@@ -1541,6 +1579,12 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._savePositionDebounceTimer) {
         clearTimeout(this._savePositionDebounceTimer);
         this._savePositionDebounceTimer = null;
+    }
+
+    // 清理缩放后吸附检测定时器
+    if (this._snapCheckTimer) {
+        clearTimeout(this._snapCheckTimer);
+        this._snapCheckTimer = null;
     }
 
     // 清理点击效果恢复定时器和 ID
