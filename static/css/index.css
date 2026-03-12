@@ -1126,8 +1126,9 @@ button * {
     display: none;
 }
 
-#chat-container.minimized #chat-tooltip {
-    display: none;
+#chat-container.minimized #chat-tooltip,
+#chat-container.minimized .music-player-bar {
+    display: none !important;
 }
 
 #chat-container.minimized #toggle-chat-btn {
@@ -1349,8 +1350,9 @@ button * {
         position: relative;
     }
 
-    /* 移动端：折叠时隐藏输入区 */
-    #chat-container.mobile-collapsed #text-input-area {
+    /* 移动端：折叠时隐藏输入区和音乐调节条 */
+    #chat-container.mobile-collapsed #text-input-area,
+    #chat-container.mobile-collapsed .music-player-bar {
         display: none !important;
     }
 }
