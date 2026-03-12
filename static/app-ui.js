@@ -1612,6 +1612,20 @@
     mod.initFinalUiGuards = initFinalUiGuards;
 
     // ================================================================
+    //  向后兼容 window.xxx 全局导出
+    // ================================================================
+    // showStatusToast / showProminentNotice 已在上方直接赋值
+    window.showVoicePreparingToast = showVoicePreparingToast;
+    window.hideVoicePreparingToast = hideVoicePreparingToast;
+    window.showReadyToSpeakToast = showReadyToSpeakToast;
+    window.syncFloatingMicButtonState = syncFloatingMicButtonState;
+    window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
+    window.hideLive2d = hideLive2d;
+    window.showLive2d = showLive2d;
+    window.showCurrentModel = showCurrentModel;
+    window.ensureHiddenElements = ensureHiddenElements;
+
+    // ================================================================
     //  Publish module
     // ================================================================
     window.appUi = mod;

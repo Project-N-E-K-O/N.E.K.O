@@ -960,6 +960,13 @@
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing = stopScreenSharing;
     window.selectScreenSource = selectScreenSource;
+    window.captureCanvasFrame = captureCanvasFrame;
+    window.fetchBackendScreenshot = fetchBackendScreenshot;
+    window.getMobileCameraStream = getMobileCameraStream;
+    window.startScreenVideoStreaming = startScreenVideoStreaming;
+    window.stopScreening = stopScreening;
+    window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;
+    window.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
 
     // ======================== Export module ========================
     window.appScreen = mod;

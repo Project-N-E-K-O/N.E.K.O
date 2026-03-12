@@ -939,6 +939,7 @@
 
     // ======================== backward-compat window exports ========================
 
+    window.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
     window.resetProactiveChatBackoff = resetProactiveChatBackoff;
     window.stopProactiveChatSchedule = stopProactiveChatSchedule;
     window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;

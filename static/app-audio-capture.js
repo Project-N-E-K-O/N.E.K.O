@@ -894,6 +894,18 @@
     }
 
     // ======================== 暴露到 window（向后兼容） ========================
+    window.startMicCapture = startMicCapture;
+    window.stopMicCapture = stopMicCapture;
+    window.stopRecording = stopRecording;
+    window.startSilenceDetection = startSilenceDetection;
+    window.stopSilenceDetection = stopSilenceDetection;
+    window.monitorInputVolume = monitorInputVolume;
+    window.selectMicrophone = selectMicrophone;
+    window.loadSelectedMicrophone = loadSelectedMicrophone;
+    window.saveSelectedMicrophone = saveSelectedMicrophone;
+    window.saveMicGainSetting = saveMicGainSetting;
+    window.loadMicGainSetting = loadMicGainSetting;
+    window.formatGainDisplay = formatGainDisplay;
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
