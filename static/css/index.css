@@ -625,6 +625,8 @@ button * {
     margin-top: 8px;
     box-shadow: 0 2px 8px rgba(68, 183, 254, 0.1);
     box-sizing: border-box;
+    pointer-events: auto;
+    touch-action: manipulation;
 }
 
 .subtitle-prompt-content {
@@ -1327,6 +1329,9 @@ button * {
 
     /* 移动端：折叠时容器完全透明且不拦截触摸事件 */
     #chat-container.mobile-collapsed {
+        width: 48px !important;
+        min-width: 48px !important;
+        max-width: 48px !important;
         height: 48px;
         min-height: 48px;
         max-height: 48px;

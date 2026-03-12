@@ -573,10 +573,15 @@ function showSubtitlePrompt() {
         }
     };
     
-    // 绑定点击事件
+    // 绑定点击事件（桌面端）
     toggleWrapper.addEventListener('click', handleToggle);
     indicator.addEventListener('click', handleToggle);
     labelText.addEventListener('click', handleToggle);
+    
+    // 绑定触摸事件（移动端）
+    toggleWrapper.addEventListener('touchstart', handleToggle, { passive: false });
+    indicator.addEventListener('touchstart', handleToggle, { passive: false });
+    labelText.addEventListener('touchstart', handleToggle, { passive: false });
 }
 
 // 隐藏字幕提示框
