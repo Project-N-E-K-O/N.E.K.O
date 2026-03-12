@@ -2,8 +2,10 @@
 """config 包对外暴露的配置常量。"""
 
 from copy import deepcopy
+import json
 import logging
 import os
+import platform
 import uuid
 from types import MappingProxyType
 
@@ -95,11 +97,13 @@ LEGACY_FLAT_TO_RESERVED = {
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
 def _read_port_overrides() -> dict:
-    import platform
     try:
         system = platform.system()
         if system == "Windows":
-            base = os.path.join(os.environ.get("APPDATA", ""), "N.E.K.O")
+            appdata = os.environ.get("APPDATA") or os.path.join(
+                os.path.expanduser("~"), "AppData", "Roaming"
+            )
+            base = os.path.join(appdata, "N.E.K.O")
         elif system == "Darwin":
             base = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "N.E.K.O")
         else:
@@ -109,7 +113,6 @@ def _read_port_overrides() -> dict:
             )
         port_file = os.path.join(base, "port_config.json")
         if os.path.exists(port_file):
-            import json
             with open(port_file, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
