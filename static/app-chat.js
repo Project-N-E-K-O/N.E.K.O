@@ -131,19 +131,25 @@
 
     // ======================== 音乐播放调度 ========================
 
-    window.dispatchMusicPlay = function (trackInfo) {
+    window.dispatchMusicPlay = function (trackInfo, options) {
+        options = options || {};
+
+        // 拦截逻辑：如果是主动搭话触发的切歌，且当前正在放歌，则拦截
+        if (options.source === 'proactive' && typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
+            console.log('[MusicDispatch] 拦截来自主动搭话的切歌请求，保持当前播放');
+            return false;
+        }
+
         if (!trackInfo || !trackInfo.url) {
             console.warn('[MusicDispatch] 无效的音乐信息，跳过播放');
-            return;
+            return false;
         }
 
         var currentDispatchId = ++_musicDispatchId;
 
         if (window.sendMusicMessage) {
             var accepted = window.sendMusicMessage(trackInfo);
-            if (accepted) {
-                // Toast 现在由 window.sendMusicMessage 内部处理，以确保去重逻辑和 UI 状态同步
-            }
+            return accepted; // 返回布尔值表示是否成功派发
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
 
@@ -158,7 +164,7 @@
                 if (window.sendMusicMessage) {
                     console.log('[MusicDispatch] \u63A5\u53E3\u5DF2\u5C31\u7EEA\uFF0C\u8865\u53D1\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
                     cleanup();
-                    window.dispatchMusicPlay(trackInfo);
+                    window.dispatchMusicPlay(trackInfo, options);
                 }
             };
 
@@ -171,6 +177,8 @@
             var pollTimer = setInterval(retryPlay, 500);
             var timeoutTimer = setTimeout(cleanup, 5000);
             window.addEventListener('music-ui-ready', retryPlay, { once: true });
+
+            return 'queued'; // 返回特殊状态表示排队中
         }
     };
 

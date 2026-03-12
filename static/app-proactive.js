@@ -241,7 +241,9 @@
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
             var requestBody = {
                 lanlan_name: lanlanName,
-                enabled_modes: availableModes
+                enabled_modes: availableModes,
+                is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
+                current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null
             };
 
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
@@ -359,29 +361,37 @@
                 if (result.action === 'chat') {
                     console.log('主动搭话已发送:', result.message, result.source_mode ? '(来源: ' + result.source_mode + ')' : '');
 
-                    // 无论 source_mode 是什么，只要有链接就尝试显示
-                    if (result.source_links && result.source_links.length > 0) {
-                        setTimeout(function () {
-                            _showProactiveChatSourceLinks(result.source_links);
-                        }, 3000);
-                    }
+                    var dispatchedTrackUrl = null;
 
                     // 如果模式包含音乐信号，尝试播放第一条音轨
-                    if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && result.source_links.length > 0) {
+                    if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
                         // 优先寻找有 artist 字段或标记为音乐推荐的真实音轨
-                        var musicLink = result.source_links.find(function (link) { return link.artist || link.source === '音乐推荐'; }) || result.source_links[0];
-                        console.log('[ProactiveChat] 收到音乐链接:', musicLink);
-                        if (musicLink.url) {
+                        var normalizedLinks = result.source_links.filter(Boolean);
+                        var musicLink = normalizedLinks.find(function (link) { return link && (link.artist || link.source === '音乐推荐'); }) || normalizedLinks[0];
+
+                        if (musicLink && musicLink.url) {
+                            console.log('[ProactiveChat] 收到音乐链接:', musicLink);
                             var track = {
                                 name: musicLink.title || '未知曲目',
                                 artist: musicLink.artist || '未知艺术家',
-                                url: musicLink.url
+                                url: musicLink.url,
+                                cover: musicLink.cover
                             };
                             console.log('[ProactiveChat] 发送音乐消息:', track);
-                            window.dispatchMusicPlay(track);
-                        } else {
+                            window.dispatchMusicPlay(track, { source: 'proactive' });
+
+                            // 标记已派发的音乐链接 URL，以便在聊天区域隐藏
+                            dispatchedTrackUrl = musicLink.url;
+                        } else if (musicLink) {
                             console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
                         }
+                    }
+
+                    // 无论 source_mode 是什么，只要有链接就尝试显示（音乐推荐链接除外）
+                    if (result.source_links && result.source_links.length > 0) {
+                        setTimeout(function () {
+                            _showProactiveChatSourceLinks(result.source_links, dispatchedTrackUrl);
+                        }, 3000);
                     }
 
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
@@ -402,14 +412,31 @@
     /**
      * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
      */
-    function _showProactiveChatSourceLinks(links) {
+    function _showProactiveChatSourceLinks(links, dispatchedUrl) {
         try {
             var chatContent = document.getElementById('chat-content-wrapper');
             if (!chatContent) return;
 
+            // 鲁棒的 URL 比较函数
+            var isSameUrl = function (u1, u2) {
+                if (!u1 || !u2) return false;
+                if (u1 === u2) return true;
+                try {
+                    var url1 = new URL(u1, window.location.origin);
+                    var url2 = new URL(u2, window.location.origin);
+                    var getRef = function (u) { return (u.hostname + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); };
+                    return getRef(url1) === getRef(url2);
+                } catch (e) { return u1 === u2; }
+            };
+
             var validLinks = [];
             for (var i = 0; i < links.length; i++) {
                 var link = links[i];
+
+                // 所有的音乐推荐链接都不显示在聊天框中（由播放器统一处理）
+                var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
+                if (isMusicLink) continue;
+
                 var safeUrl = null;
                 try {
                     var u = new URL(String(link.url || ''), window.location.origin);
