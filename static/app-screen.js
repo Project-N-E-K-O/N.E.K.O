@@ -321,9 +321,10 @@
                 return displayStream;
             } catch (displayErr) {
                 console.warn('[acquireStream] getDisplayMedia 失败:', displayErr);
-                if (displayErr.name !== 'NotAllowedError') {
-                    S.screenCaptureAutoPromptFailed = true;
-                }
+                // 仅当非用户手势上下文时才标记自动弹窗失败，防止用户手势失败后
+                // 误抑制后续用户主动触发的 getDisplayMedia 重试
+                // 注意：当前 allowPrompt=true 只有用户手势上下文才会传入，
+                // 所以此处不设置 screenCaptureAutoPromptFailed
             }
         }
 

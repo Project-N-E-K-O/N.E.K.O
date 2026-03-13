@@ -742,6 +742,13 @@
             if (stream) {
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) return frame.dataUrl;
+                // 二次重试仍然失败，废弃这个流
+                console.warn('[主动搭话截图] 二次重试仍失败，废弃流');
+                if (S.screenCaptureStream === stream) {
+                    try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+                    S.screenCaptureStream = null;
+                    S.screenCaptureStreamLastUsed = null;
+                }
             }
         }
 
