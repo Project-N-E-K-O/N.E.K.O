@@ -67,14 +67,14 @@
 
     const showErrorToast = (msgKey, defaultMsg) => {
         if (typeof window.showStatusToast === 'function') {
-            const errMsg = window.t ? window.t(msgKey, { defaultValue: defaultMsg }) : defaultMsg;
+            const errMsg = window.t ? window.t(msgKey, defaultMsg) : defaultMsg;
             window.showStatusToast(errMsg, 3000);
         }
     };
 
     const showNowPlayingToast = (name) => {
         if (typeof window.showStatusToast === 'function') {
-            const unknownTrack = window.t ? window.t('music.unknownTrack', { defaultValue: '未知曲目' }) : '未知曲目';
+            const unknownTrack = window.t ? window.t('music.unknownTrack', '未知曲目') : '未知曲目';
             const displayName = name || unknownTrack;
             const defaultText = '为您播放: ' + displayName;
             let playMsg = window.t ? window.t('music.nowPlaying', {

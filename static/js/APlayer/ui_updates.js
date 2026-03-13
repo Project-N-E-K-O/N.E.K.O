@@ -84,15 +84,15 @@ export function updateUI(aplayer) {
     try {
         const trackInfo = getCurrentTrackInfo(aplayer);
         if (trackInfo && trackInfo.success) {
-            trackNameEl.textContent = trackInfo.name || t('music.unknownTrack', { defaultValue: '未知曲目' });
-            trackArtistEl.textContent = trackInfo.artist || t('music.unknownArtist', { defaultValue: '未知艺术家' });
+            trackNameEl.textContent = trackInfo.name || t('music.unknownTrack', '未知曲目');
+            trackArtistEl.textContent = trackInfo.artist || t('music.unknownArtist', '未知艺术家');
         } else {
-            trackNameEl.textContent = t('music.unknownTrack', { defaultValue: '未知曲目' });
-            trackArtistEl.textContent = t('music.unknownArtist', { defaultValue: '未知艺术家' });
+            trackNameEl.textContent = t('music.unknownTrack', '未知曲目');
+            trackArtistEl.textContent = t('music.unknownArtist', '未知艺术家');
         }
 
         const isPlaying = aplayer.playing;
-        statusEl.textContent = isPlaying ? t('music.playing', { defaultValue: '播放中' }) : t('music.paused', { defaultValue: '已暂停' });
+        statusEl.textContent = isPlaying ? t('music.playing', '播放中') : t('music.paused', '已暂停');
     } catch (e) {
         console.error('[APlayer] updateUI error:', e);
     }
