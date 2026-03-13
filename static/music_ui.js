@@ -126,6 +126,8 @@
         // 统一清理：即使不是 fullTeardown，切歌时也应该销毁旧实例释放资源
         if (localPlayer && typeof localPlayer.destroy === 'function') {
             try {
+                // 【核心修复】标记正在销毁，防止销毁过程中触发 error 事件导致界面弹出报错
+                localPlayer._destroying = true;
                 localPlayer.destroy();
             } catch (e) {
                 console.warn('[Music UI] Error during player destroy:', e);
@@ -361,10 +363,17 @@
                     autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), 3000);
                 });
                 localPlayer.on('error', (err) => {
+                    // 【核心修复】如果正在销毁中，静默错误，防止“幽灵报错”
+                    if (localPlayer && localPlayer._destroying) {
+                        console.log('[Music UI] Destruction in progress, ignoring error event');
+                        return;
+                    }
                     console.error('[Music UI] APlayer error:', err);
                     // 使用 latestMusicRequestToken 校验，确保是当前正在尝试的播放才有权弹窗
                     setTimeout(() => {
                         if (autoplayBlocked) return;
+                        // 再次检查销毁状态，防止延迟触发
+                        if (localPlayer && localPlayer._destroying) return;
                         showErrorToast('music.playError', '播放失败，音频源可能已失效');
                         updatePlayBtnState(false);
                     }, 200);
