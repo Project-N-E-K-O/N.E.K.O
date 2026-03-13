@@ -370,11 +370,10 @@
                 window.aplayer = localPlayer;
                 if (!window.aplayerInjected) window.aplayerInjected = {};
                 window.aplayerInjected.aplayer = localPlayer;
-
+                
                 // --- 绑定核心事件 (仅在初始化时绑定一次) ---
-                // 【核心修复】使用闭包固定当前的播放器实例与 Token，防止快速切歌时“错误回调”作用于新歌曲
+                // 【核心修复】使用闭包固定当前的播放器实例
                 const boundPlayer = localPlayer;
-                const boundToken = latestMusicRequestToken;
 
                 boundPlayer.on('play', () => {
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
@@ -384,17 +383,19 @@
                 boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
                     // 用户点击暂停后，启动 71 秒销毁计时
+                    const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
-                        if (latestMusicRequestToken === boundToken) destroyMusicPlayer(true, true, true);
+                        if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.paused);
                 });
                 boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     // 歌曲自然播放结束后，启动 21 秒销毁计时
+                    const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
-                        if (latestMusicRequestToken === boundToken) destroyMusicPlayer(true, true, true);
+                        if (latestMusicRequestToken === tokenAtEvent) destroyMusicPlayer(true, true, true);
                     }, MUSIC_CONFIG.timeouts.ended);
                 });
                 boundPlayer.on('error', (err) => {
@@ -402,9 +403,10 @@
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
                     
+                    const tokenAtEvent = boundPlayer._latestToken;
                     setTimeout(() => {
                         // 确保这个错误属于“当前”正在播放的请求
-                        if (boundToken !== latestMusicRequestToken) return;
+                        if (tokenAtEvent !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
                         if (boundPlayer._destroying) return;
                         
@@ -413,7 +415,7 @@
                         
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
-                            if (boundToken === latestMusicRequestToken) {
+                            if (tokenAtEvent === latestMusicRequestToken) {
                                 destroyMusicPlayer(true, true, true);
                             }
                         }, MUSIC_CONFIG.timeouts.idle);
@@ -562,10 +564,14 @@
                 updatePlayBtnState(false);
             }
 
+            // 【核心修复】同步更新实例的最新 Token，确保复用模式下事件回调中的 Token 校验依然有效
+            localPlayer._latestToken = currentToken;
+
             // 执行播放
             if (shouldAutoPlay) {
                 setTimeout(() => {
-                    if (localPlayer && typeof localPlayer.play === 'function') {
+                    // 【核心修复】延迟播放校验 Token，防止旧请求误触发新曲播放 (CodeRabbit 建议)
+                    if (currentToken === latestMusicRequestToken && localPlayer && typeof localPlayer.play === 'function') {
                         localPlayer.play();
                     }
                 }, 100);
