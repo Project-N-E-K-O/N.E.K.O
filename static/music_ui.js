@@ -28,9 +28,12 @@
     let aplayerLoadPromise = null;
     let latestMusicRequestToken = 0;
 
-    // --- 状态追踪：用于 5 秒去重 ---
+    // --- 状态追踪：用于 5 秒去重 与 进度条清理 ---
     let lastPlayedMusicUrl = null;
     let lastMusicPlayTime = 0;
+    
+    // 全局拖拽清理引用
+    let currentDragHandlers = null;
 
     // --- 2. 原始工具函数 (完全保留所有域名白名单) ---
     const isSafeUrl = (url) => {
@@ -128,6 +131,13 @@
             try {
                 // 【核心修复】标记正在销毁，防止销毁过程中触发 error 事件导致界面弹出报错
                 localPlayer._destroying = true;
+                
+                // 清理拖拽监听器 (CodeRabbit 建议)
+                if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
+                    currentDragHandlers.cleanup();
+                    currentDragHandlers = null;
+                }
+
                 localPlayer.destroy();
             } catch (e) {
                 console.warn('[Music UI] Error during player destroy:', e);
@@ -135,15 +145,19 @@
         }
 
         if (fullTeardown) {
+            // 【核心修复】先置空引用，再调用全局销毁，防止 APlayer/main.js 重复销毁同一实例 (CodeRabbit 建议)
+            const apToDestroy = localPlayer || window.aplayer;
+            localPlayer = null;
+            window.aplayer = null;
+            if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
+
             if (typeof window.destroyAPlayer === 'function') {
                 window.destroyAPlayer();
             }
-        }
-
-        localPlayer = null;
-        window.aplayer = null;
-        if (window.aplayerInjected) {
-            window.aplayerInjected.aplayer = null;
+        } else {
+            localPlayer = null;
+            window.aplayer = null;
+            if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
         }
 
         if (removeDOM) {
@@ -423,6 +437,18 @@
                     window.removeEventListener('mousemove', handleProgressMove); window.removeEventListener('mouseup', stopDrag);
                     window.removeEventListener('touchmove', handleProgressMove); window.removeEventListener('touchend', stopDrag);
                 };
+                
+                // 记录全局引用以便销毁时清理
+                currentDragHandlers = {
+                    cleanup: () => {
+                        window.removeEventListener('mousemove', handleProgressMove);
+                        window.removeEventListener('mouseup', stopDrag);
+                        window.removeEventListener('touchmove', handleProgressMove);
+                        window.removeEventListener('touchend', stopDrag);
+                        isDragging = false;
+                    }
+                };
+
                 progressContainer.addEventListener('mousedown', (e) => {
                     isDragging = true; handleProgressMove(e);
                     window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
@@ -461,6 +487,7 @@
                             console.log('[Music UI] 检测到用户交互，正在尝试通过代理触发延迟播放');
                             localPlayer.play();
                         }
+                        // CodeRabbit 建议：简化清理逻辑
                         window.removeEventListener('mousedown', startOnInteraction);
                         window.removeEventListener('touchstart', startOnInteraction);
                     };
@@ -501,14 +528,15 @@
         // 递归处理多次转义或复杂编码的 HTML 实体
         if (trackInfo.url && typeof trackInfo.url === 'string') {
             try {
-                // 处理常见的 &amp; 变体
-                let cleanedUrl = trackInfo.url
-                    .replace(/&amp;/g, '&')
-                    .replace(/&amp%3B/g, '&')
-                    .replace(/%26amp%3B/g, '&')
-                    .replace(/&amp;/g, '&'); // 再次处理可能残留的层级
-
-                trackInfo.url = cleanedUrl;
+                // CodeRabbit 建议：使用循环处理多次转义或复杂编码的 HTML 实体
+                let lastUrl = '';
+                while (trackInfo.url !== lastUrl) {
+                    lastUrl = trackInfo.url;
+                    trackInfo.url = trackInfo.url
+                        .replace(/&amp;/g, '&')
+                        .replace(/&amp%3B/g, '&')
+                        .replace(/%26amp%3B/g, '&');
+                }
             } catch (e) {
                 console.warn('[Music UI] URL sanitization failed:', e);
             }
