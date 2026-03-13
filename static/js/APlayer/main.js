@@ -278,12 +278,14 @@ function updateAPlayerConfig(aplayer, config) {
     if (config.ui) {
         initializeAPlayerUI(aplayer, config.ui);
     }
-    // 只要调用方显式传入了 audio 参数（哪怕是 []），就执行清空逻辑
-    if (options.audio !== undefined && Array.isArray(config.defaultPlaylist)) {
+    // 只要调用方显式传入了歌单，就执行清空并重新注入逻辑
+    if (config.defaultPlaylist !== undefined && Array.isArray(config.defaultPlaylist)) {
         aplayer.list.clear(); 
         // 只有当传入的数组真的有数据时，才注入新歌单
         if (config.defaultPlaylist.length > 0) {
             aplayer.list.add(config.defaultPlaylist);
+            // 明确切换到新添加的第一首歌, 确保加载 source
+            if (aplayer.list.switch) aplayer.list.switch(0);
         }
     }
 }

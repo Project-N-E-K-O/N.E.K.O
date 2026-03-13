@@ -88,26 +88,52 @@
         }
     };
 
-    const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
+    let autoDestroyTimer = null;
+    let domRemovalTimer = null;
+
+    const formatTime = (seconds) => {
+        if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    };
+
+    const destroyMusicPlayer = (removeDOM = true, fullTeardown = false, updateToken = false) => {
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
-        // 放在最前面以立即拦截还在 await 的 executePlay
-        latestMusicRequestToken++;
+        // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
+        if (updateToken || fullTeardown) {
+            latestMusicRequestToken++;
+        }
+
+        // 清除可能的自动销毁定时器
+        if (autoDestroyTimer) {
+            clearTimeout(autoDestroyTimer);
+            autoDestroyTimer = null;
+        }
+
+        // 重要：清除正在进行的 DOM 移除定时器，防止在切换歌曲时播放条被意外删除
+        if (domRemovalTimer) {
+            clearTimeout(domRemovalTimer);
+            domRemovalTimer = null;
+        }
 
         // 核心：优先执行本地暂停，避免声音残留
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
         }
 
+        // 统一清理：即使不是 fullTeardown，切歌时也应该销毁旧实例释放资源
+        if (localPlayer && typeof localPlayer.destroy === 'function') {
+            try {
+                localPlayer.destroy();
+            } catch (e) {
+                console.warn('[Music UI] Error during player destroy:', e);
+            }
+        }
+
         if (fullTeardown) {
             if (typeof window.destroyAPlayer === 'function') {
                 window.destroyAPlayer();
-            }
-            if (localPlayer && typeof localPlayer.destroy === 'function') {
-                try {
-                    localPlayer.destroy();
-                } catch (e) {
-                    console.warn('[Music UI] Error during player destroy:', e);
-                }
             }
         }
 
@@ -119,7 +145,18 @@
 
         if (removeDOM) {
             const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
-            if (bar) bar.remove();
+            if (bar) {
+                // 如果是手动关闭，执行动画
+                if (fullTeardown) {
+                    bar.classList.add('fading-out');
+                    domRemovalTimer = setTimeout(() => {
+                        bar.remove();
+                        domRemovalTimer = null;
+                    }, 300);
+                } else {
+                    bar.remove();
+                }
+            }
         }
         currentPlayingTrack = null;
     };
@@ -179,261 +216,277 @@
         return aplayerLoadPromise;
     };
 
-    // --- 5. 播放器挂载逻辑 (保留所有 DOM 安全赋值) ---
+    // --- 5. 播放器挂载逻辑 (支持原地更新与实例复用) ---
+    // 核心逻辑：复用 APlayer 实例可以保留浏览器的“音频解锁”状态，极大提高自动播放成功率
     const executePlay = async (trackInfo, currentToken, shouldAutoPlay = true) => {
-        if (currentToken !== latestMusicRequestToken)
-            return;
+        if (currentToken !== latestMusicRequestToken) return;
 
-        if (getMusicPlayerInstance())
-            destroyMusicPlayer(true);
-        document.querySelectorAll('.music-player-bar.fading-out').forEach(el => { el.remove(); });
-        currentPlayingTrack = trackInfo;
+        // 清除可能的自动销毁与 DOM 移除定时器
+        if (autoDestroyTimer) {
+            clearTimeout(autoDestroyTimer);
+            autoDestroyTimer = null;
+        }
+        if (domRemovalTimer) {
+            clearTimeout(domRemovalTimer);
+            domRemovalTimer = null;
+        }
 
-        const playerId = 'music-bar-player-' + Math.random().toString(36).slice(2, 10);
-        const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
         const hasCover = trackInfo.cover && trackInfo.cover.length > 0 && isSafeUrl(trackInfo.cover);
-
-        const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
-        const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-        if (!chatContainerEl)
-            return;
-
         let musicBar = document.getElementById(MUSIC_CONFIG.dom.barId);
-        if (!musicBar) {
+        let isFirstRender = !musicBar;
+
+        // --- 1. DOM 基础架构 ---
+        if (isFirstRender) {
+            const chatContainerEl = document.getElementById(MUSIC_CONFIG.dom.containerId);
+            const textInputArea = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
+            if (!chatContainerEl) return;
+
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
-            if (textInputArea)
-                chatContainerEl.insertBefore(musicBar, textInputArea);
-            else
-                chatContainerEl.appendChild(musicBar);
+            if (textInputArea) chatContainerEl.insertBefore(musicBar, textInputArea);
+            else chatContainerEl.appendChild(musicBar);
+
+            const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
+            musicBar.style.setProperty('--dynamic-random-color', randomColor);
+            musicBar.style.setProperty('--dynamic-primary-color', MUSIC_CONFIG.primaryColor);
+            musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
+
+            musicBar.innerHTML = `
+                <div class="music-bar-cover">
+                    <img>
+                    <span class="music-bar-fallback">🎵</span>
+                </div>
+                <div class="music-bar-info">
+                    <div class="music-bar-title"></div>
+                    <div class="music-bar-progress-container">
+                        <div class="music-bar-progress-fill"></div>
+                    </div>
+                    <div class="music-bar-time">
+                        <span class="music-bar-time-current">00:00</span>
+                        <span class="music-bar-time-total">00:00</span>
+                    </div>
+                    <div class="music-bar-artist"></div>
+                </div>
+                <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
+                <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
+                <div class="aplayer-internal-container" style="display: none;"></div>
+            `;
+        } else {
+            musicBar.classList.remove('fading-out');
         }
 
-        musicBar.style.setProperty('--dynamic-random-color', randomColor);
-        musicBar.style.setProperty('--dynamic-primary-color', MUSIC_CONFIG.primaryColor);
-        musicBar.style.setProperty('--dynamic-secondary-color', MUSIC_CONFIG.secondaryColor);
-
-        musicBar.innerHTML = `
-            <div class="music-bar-cover">
-                <img style="display: ${hasCover ? 'block' : 'none'};" alt="cover">
-                <span class="music-bar-fallback" style="display: ${hasCover ? 'none' : 'flex'};">🎵</span>
-            </div>
-            <div class="music-bar-info">
-                <div class="music-bar-title"></div>
-                <div class="music-bar-progress-container">
-                    <div class="music-bar-progress-fill"></div>
-                </div>
-                <div class="music-bar-time">
-                    <span class="music-bar-time-current">00:00</span>
-                    <span class="music-bar-time-total">00:00</span>
-                </div>
-                <div class="music-bar-artist"></div>
-            </div>
-            <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
-            <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
-            <div id="${playerId}" style="display: none;"></div>
-        `;
-
-        const formatTime = (seconds) => {
-            if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
-            const m = Math.floor(seconds / 60);
-            const s = Math.floor(seconds % 60);
-            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-        };
-
+        // --- 2. 原地更新 UI 文本/封面 (始终执行) ---
+        currentPlayingTrack = trackInfo;
         musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
-
+        
         const coverImg = musicBar.querySelector('img');
         const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
         if (hasCover && coverImg) {
             coverImg.src = trackInfo.cover;
+            coverImg.style.display = 'block';
+            fallbackIcon.style.display = 'none';
             coverImg.onerror = function () {
                 this.style.display = 'none';
-                if (fallbackIcon)
-                    fallbackIcon.style.display = 'flex';
+                fallbackIcon.style.display = 'flex';
             };
+        } else {
+            coverImg.style.display = 'none';
+            fallbackIcon.style.display = 'flex';
         }
 
-        const closeBtn = musicBar.querySelector('.music-bar-close');
-        closeBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            // 不再需要在这里手动递增，destroyMusicPlayer 内部已经包含此逻辑
-            destroyMusicPlayer(false, true); // 手动关闭时执行 full teardown
-            if (musicBar.parentNode) {
-                musicBar.classList.add('fading-out');
-                let isRemoved = false;
-                const safeRemove = () => {
-                    if (!isRemoved && musicBar.parentNode) {
-                        musicBar.remove();
-                        isRemoved = true;
-                    }
-                };
-                musicBar.addEventListener('animationend', safeRemove, { once: true });
-                setTimeout(safeRemove, 300);
-            }
-        });
+        const progressFill = musicBar.querySelector('.music-bar-progress-fill');
+        const timeCurrent = musicBar.querySelector('.music-bar-time-current');
+        const timeTotal = musicBar.querySelector('.music-bar-time-total');
+        if (progressFill) progressFill.style.width = '0%';
+        if (timeCurrent) timeCurrent.textContent = '00:00';
+        if (timeTotal) timeTotal.textContent = '00:00';
 
-        const container = musicBar.querySelector(`#${playerId}`);
-        const apBtn = musicBar.querySelector('.music-bar-play');
-        if (!container) {
-            musicBar.remove();
-            currentPlayingTrack = null;
-            return;
-        }
-
+        // --- 3. APlayer 实例管理 (复用或创建) ---
         try {
-            const playerConfig = {
-                container: container,
-                theme: MUSIC_CONFIG.primaryColor,
-                loop: 'none',
-                preload: shouldAutoPlay ? 'auto' : 'metadata',
-                autoplay: shouldAutoPlay,
-                mutex: true, volume: MUSIC_CONFIG.defaultVolume,
-                listFolded: true, order: 'normal',
-                audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]
+            const apBtn = musicBar.querySelector('.music-bar-play');
+            const updatePlayBtnState = (isPlaying) => {
+                const icon = isPlaying ? '⏸' : '▶';
+                const text = isPlaying ? 'Pause' : 'Play';
+                const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', { defaultValue: text }) : text;
+                apBtn.textContent = icon;
+                apBtn.setAttribute('title', tText);
+                apBtn.setAttribute('aria-label', tText);
             };
 
-            let aplayerInstance = null;
-            if (typeof window.initializeAPlayer === 'function')
-                aplayerInstance = await window.initializeAPlayer(playerConfig);
-            else
-                aplayerInstance = new window.APlayer(playerConfig);
+            let needsInit = isFirstRender || !localPlayer;
+            let autoplayBlocked = false;
 
-            if (!aplayerInstance)
-                throw new Error("APlayer init failed");
-
-            if (currentToken !== latestMusicRequestToken) {
-                if (typeof aplayerInstance.destroy === 'function')
-                    aplayerInstance.destroy();
-                return;
-            }
-
-            localPlayer = aplayerInstance;
-            window.aplayer = localPlayer;
-
-            if (!window.aplayerInjected)
-                window.aplayerInjected = {};
-            window.aplayerInjected.aplayer = localPlayer;
-
-            if (apBtn) {
-                // 定义更新按钮状态的统一函数
-                const updatePlayBtnState = (isPlaying) => {
-                    const icon = isPlaying ? '⏸' : '▶';
-                    const text = isPlaying ? 'Pause' : 'Play';
-                    const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', { defaultValue: text }) : text;
-                    apBtn.textContent = icon;
-                    apBtn.setAttribute('title', tText);
-                    apBtn.setAttribute('aria-label', tText);
+            if (needsInit) {
+                const container = musicBar.querySelector('.aplayer-internal-container');
+                const playerConfig = {
+                    container: container,
+                    theme: MUSIC_CONFIG.primaryColor,
+                    loop: 'none',
+                    preload: shouldAutoPlay ? 'auto' : 'metadata',
+                    autoplay: shouldAutoPlay,
+                    mutex: true, volume: MUSIC_CONFIG.defaultVolume,
+                    listFolded: true, order: 'normal',
+                    audio: [{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]
                 };
 
-                // 初始化 UI：即使 shouldAutoPlay 为 true，也先显示“暂停”图标（或者“加载中”），
-                // 状态更新完全依赖于 APlayer 的事件回调，确保 UI 与实际声音一致。
-                updatePlayBtnState(false);
+                let aplayerInstance = null;
+                if (typeof window.initializeAPlayer === 'function')
+                    aplayerInstance = await window.initializeAPlayer(playerConfig);
+                else
+                    aplayerInstance = new window.APlayer(playerConfig);
 
-                apBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    if (typeof window.setMusicUserDriven === 'function')
-                        window.setMusicUserDriven();
-                    
-                    // 处理播放结束后的重播逻辑
-                    // 由于 loop: 'none'，播放结束后直接 toggle 可能不会回到开头。
-                    if (localPlayer.audio.ended) {
-                        localPlayer.seek(0);
-                    }
-                    localPlayer.toggle();
+                if (!aplayerInstance) throw new Error("APlayer init failed");
+                if (currentToken !== latestMusicRequestToken) {
+                    if (aplayerInstance.destroy) aplayerInstance.destroy();
+                    return;
+                }
+
+                localPlayer = aplayerInstance;
+                window.aplayer = localPlayer;
+                if (!window.aplayerInjected) window.aplayerInjected = {};
+                window.aplayerInjected.aplayer = localPlayer;
+
+                // --- 绑定核心事件 (仅在初始化时绑定一次) ---
+                localPlayer.on('play', () => {
+                    if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
+                    updatePlayBtnState(true);
+                    autoplayBlocked = false;
                 });
-
-                localPlayer.on('play', () => updatePlayBtnState(true));
                 localPlayer.on('pause', () => updatePlayBtnState(false));
-                localPlayer.on('ended', () => updatePlayBtnState(false));
+                localPlayer.on('ended', () => {
+                    updatePlayBtnState(false);
+                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), 3000);
+                });
+                localPlayer.on('error', (err) => {
+                    console.error('[Music UI] APlayer error:', err);
+                    // 使用 latestMusicRequestToken 校验，确保是当前正在尝试的播放才有权弹窗
+                    setTimeout(() => {
+                        if (autoplayBlocked) return;
+                        showErrorToast('music.playError', '播放失败，音频源可能已失效');
+                        updatePlayBtnState(false);
+                    }, 200);
+                });
 
-                // --- 进度条同步逻辑 ---
-                const progressFill = musicBar.querySelector('.music-bar-progress-fill');
-                const timeCurrent = musicBar.querySelector('.music-bar-time-current');
-                const timeTotal = musicBar.querySelector('.music-bar-time-total');
+                // 进度条与播放按钮点击
+                musicBar.querySelector('.music-bar-close').onclick = (e) => {
+                    e.preventDefault();
+                    destroyMusicPlayer(true, true, true);
+                };
+                apBtn.onclick = (e) => {
+                    e.preventDefault();
+                    if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                    if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
+                    if (localPlayer.audio.ended) localPlayer.seek(0);
+                    localPlayer.toggle();
+                };
+
+                // 进度更新与拖拽 (保持原有逻辑)
+                let isDragging = false;
                 const progressContainer = musicBar.querySelector('.music-bar-progress-container');
-
                 localPlayer.on('timeupdate', () => {
-                    if (!localPlayer || !localPlayer.audio) return;
-                    const currentTime = localPlayer.audio.currentTime;
-                    const duration = localPlayer.audio.duration;
-                    if (duration > 0) {
-                        const percentage = (currentTime / duration) * 100;
-                        if (progressFill) progressFill.style.width = percentage + '%';
-                        if (timeCurrent) timeCurrent.textContent = formatTime(currentTime);
-                        if (timeTotal) timeTotal.textContent = formatTime(duration);
+                    if (!localPlayer || !localPlayer.audio || isDragging) return;
+                    const cur = localPlayer.audio.currentTime, dur = localPlayer.audio.duration;
+                    if (dur > 0) {
+                        if (progressFill) progressFill.style.width = (cur / dur * 100) + '%';
+                        if (timeCurrent) timeCurrent.textContent = formatTime(cur);
+                        if (timeTotal) timeTotal.textContent = formatTime(dur);
                     }
                 });
 
-                // --- 点击跳转逻辑 ---
-                if (progressContainer) {
-                    progressContainer.addEventListener('click', (e) => {
-                        if (!localPlayer || !localPlayer.audio) return;
-                        const rect = progressContainer.getBoundingClientRect();
-                        const clickX = e.clientX - rect.left;
-                        const width = rect.width;
-                        const percentage = clickX / width;
-                        const duration = localPlayer.audio.duration;
-                        if (duration > 0) {
-                            localPlayer.seek(percentage * duration);
-                        }
-                    });
-                }
+                const handleProgressMove = (e) => {
+                    if (!isDragging) return;
+                    const rect = progressContainer.getBoundingClientRect();
+                    let x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
+                    x = Math.max(0, Math.min(x, rect.width));
+                    const per = x / rect.width;
+                    if (progressFill) progressFill.style.width = (per * 100) + '%';
+                    if (timeCurrent && localPlayer.audio.duration) timeCurrent.textContent = formatTime(per * localPlayer.audio.duration);
+                };
+                const stopDrag = (e) => {
+                    if (!isDragging) return; isDragging = false;
+                    const rect = progressContainer.getBoundingClientRect();
+                    let x = (e.clientX || (e.changedTouches && e.changedTouches[0].clientX) || 0) - rect.left;
+                    const per = Math.max(0, Math.min(x, rect.width)) / rect.width;
+                    if (localPlayer.audio.duration) localPlayer.seek(per * localPlayer.audio.duration);
+                    window.removeEventListener('mousemove', handleProgressMove); window.removeEventListener('mouseup', stopDrag);
+                    window.removeEventListener('touchmove', handleProgressMove); window.removeEventListener('touchend', stopDrag);
+                };
+                progressContainer.addEventListener('mousedown', (e) => {
+                    isDragging = true; handleProgressMove(e);
+                    window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
+                    window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
+                });
+                progressContainer.addEventListener('touchstart', (e) => {
+                    isDragging = true; handleProgressMove(e);
+                    window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
+                    window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
+                });
 
-                // 同步当前实际状态以初始化按钮图标
-                updatePlayBtnState(!localPlayer.audio.paused);
-
-                // 处理浏览器拦截自动播放导致界面“假死”的问题
-                // APlayer 的 play() 实际上是一个 Promise，如果被拦截会抛出带有 'NotAllowedError' 的 DOMException
-                if (shouldAutoPlay) {
-                    // 由于 APlayer 内部也会调用 audio.play()，我们为其代理错误捕获
+                // 劫持 play() 进行拦截检测
+                if (localPlayer.audio && localPlayer.audio.play) {
                     const originalPlay = localPlayer.audio.play;
-                    if (originalPlay) {
-                        localPlayer.audio.play = function () {
-                            const playPromise = originalPlay.call(this);
-                            if (playPromise !== undefined) {
-                                playPromise.catch(error => {
-                                    if (error.name === 'NotAllowedError' || error.name === 'NotSupportedError') {
-                                        console.warn('[Music UI] 浏览器拦截了自动播放或不支持该格式:', error);
-                                        // 确保按钮图标切回播放状态
-                                        updatePlayBtnState(false);
-                                        showErrorToast('music.autoplayBlocked', '浏览器限制了自动播放，请点击播放按钮');
-                                    }
-                                });
-                            }
-                            return playPromise;
-                        };
-                    }
+                    localPlayer.audio.play = function() {
+                        const pp = originalPlay.call(this);
+                        if (pp && pp.catch) {
+                            pp.catch(err => {
+                                if (err.name === 'NotAllowedError') {
+                                    autoplayBlocked = true;
+                                    updatePlayBtnState(false);
+                                    showErrorToast('music.autoplayBlocked', '浏览器限制了自动播放，请点击播放按钮');
+                                }
+                            });
+                        }
+                        return pp;
+                    };
                 }
+            } else {
+                // --- 复用模式下的切歌逻辑 ---
+                if (localPlayer.list) {
+                    localPlayer.list.clear();
+                    localPlayer.list.add([{ name: trackInfo.name, artist: trackInfo.artist, url: trackInfo.url, cover: hasCover ? trackInfo.cover : '' }]);
+                    localPlayer.list.switch(0);
+                }
+                updatePlayBtnState(false);
             }
 
-            const apElement = container.querySelector('.aplayer');
-            if (apElement)
-                apElement.style.display = 'none';
-
+            // 执行播放
+            if (shouldAutoPlay) {
+                setTimeout(() => {
+                    if (localPlayer && typeof localPlayer.play === 'function') {
+                        localPlayer.play();
+                    }
+                }, 100);
+            }
         } catch (err) {
-            // 如果 token 已经改变（说明请求被取消或有新请求），则忽略错误，不弹出 Toast
-            if (currentToken !== latestMusicRequestToken) {
-                console.log('[Music UI] 播放器请求已失效或取消，忽略捕获的错误');
-                return;
-            }
-
-            console.error('[Music UI] 播放器出错:', err);
-            if (musicBar && musicBar.parentNode) {
-                musicBar.remove();
-            }
-            
-            if (currentToken === latestMusicRequestToken) {
-                currentPlayingTrack = null;
-                showErrorToast('music.playError', '音乐播放加载失败');
-            }
+            if (currentToken !== latestMusicRequestToken) return;
+            console.error('[Music UI] 播放器处理异常:', err);
+            if (isFirstRender && musicBar) musicBar.remove();
+            showErrorToast('music.playError', '音乐播放加载失败');
         }
     };
 
     // --- 6. 暴露全局接口 ---
     window.sendMusicMessage = function (trackInfo, shouldAutoPlay = true) {
         if (!trackInfo) return false;
+
+        // --- 核心修复：更鲁棒的 URL 预清理 ---
+        // 递归处理多次转义或复杂编码的 HTML 实体
+        if (trackInfo.url && typeof trackInfo.url === 'string') {
+            try {
+                // 处理常见的 &amp; 变体
+                let cleanedUrl = trackInfo.url
+                    .replace(/&amp;/g, '&')
+                    .replace(/&amp%3B/g, '&')
+                    .replace(/%26amp%3B/g, '&')
+                    .replace(/&amp;/g, '&'); // 再次处理可能残留的层级
+                
+                trackInfo.url = cleanedUrl;
+            } catch (e) {
+                console.warn('[Music UI] URL sanitization failed:', e);
+            }
+        }
 
         const now = Date.now();
         // 如果是 5 秒内相同的 URL 且播放器已在界面中，视为重复触发并略过（去重交回组件层处理）
