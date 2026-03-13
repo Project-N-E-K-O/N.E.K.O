@@ -448,16 +448,26 @@
                 const handleProgressMove = (e) => {
                     if (!isDragging) return;
                     const rect = progressContainer.getBoundingClientRect();
-                    let x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
+                    if (!rect.width) return;
+
+                    // 修复细节：判断 0 的写法，防止 clientX 为 0 时误触 fallback
+                    const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+                    let x = clientX - rect.left;
+                    
                     x = Math.max(0, Math.min(x, rect.width));
                     const per = x / rect.width;
                     if (progressFill) progressFill.style.width = (per * 100) + '%';
                     if (timeCurrent && localPlayer.audio.duration) timeCurrent.textContent = formatTime(per * localPlayer.audio.duration);
                 };
                 const stopDrag = (e) => {
-                    if (!isDragging) return; isDragging = false;
+                    if (!isDragging) return; 
+                    isDragging = false;
                     const rect = progressContainer.getBoundingClientRect();
-                    let x = (e.clientX || (e.changedTouches && e.changedTouches[0].clientX) || 0) - rect.left;
+                    if (!rect.width) return;
+
+                    const clientX = e.clientX !== undefined ? e.clientX : (e.changedTouches && e.changedTouches[0] ? e.changedTouches[0].clientX : 0);
+                    let x = clientX - rect.left;
+                    
                     const per = Math.max(0, Math.min(x, rect.width)) / rect.width;
                     if (localPlayer.audio.duration) localPlayer.seek(per * localPlayer.audio.duration);
                     window.removeEventListener('mousemove', handleProgressMove); window.removeEventListener('mouseup', stopDrag);
