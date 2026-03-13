@@ -151,15 +151,15 @@
         }
 
         if (fullTeardown) {
-            // 【核心修复】先置空引用，再调用全局销毁，防止 APlayer/main.js 重复销毁同一实例 (CodeRabbit 建议)
-            const apToDestroy = localPlayer || window.aplayer;
-            localPlayer = null;
-            window.aplayer = null;
-            if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
-
+            // 【核心修复】调整顺序：先调用外部销毁逻辑，再清理本地引用
+            // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理，不能提前置空
             if (typeof window.destroyAPlayer === 'function') {
                 window.destroyAPlayer();
             }
+
+            localPlayer = null;
+            window.aplayer = null;
+            if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
         } else {
             localPlayer = null;
             window.aplayer = null;
