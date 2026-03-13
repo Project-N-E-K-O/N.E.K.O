@@ -235,9 +235,15 @@
             container._originalMaxWidth = container.style.maxWidth;
         }
 
+        // ── Step 0.5：手机端特殊处理：向下展开而非向左/向右 ──
+        const screenWidth = window.innerWidth;
+        const isMobile = screenWidth <= 768;
+        const goDown = isMobile;
+
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──
         const popup = container._popupElement;
         // 如果 opensLeft 未设置，默认为 true（保守策略：面板放在按钮左侧）
+        // 手机端忽略此设置，始终向下展开
         const goLeft = popup ? (popup.dataset.opensLeft === 'true' || !popup.dataset.opensLeft) : true;
         container.dataset.goLeft = String(goLeft);
 
@@ -254,7 +260,29 @@
         const ownerPrefix = popupId.startsWith('vrm-') ? 'vrm'
                           : popupId.startsWith('live2d-') ? 'live2d' : '';
 
-        if (goLeft) {
+        if (goDown) {
+            // 手机端：向下展开到 popup 下方
+            let panelTop = popupRect.bottom + gap;
+            let panelLeft = popupRect.left;
+
+            // 超出屏幕右边缘时限制宽度
+            if (panelLeft + panelW > screenW - edgeMargin) {
+                panelLeft = edgeMargin;
+            }
+            // 超出屏幕底部时改为向上展开
+            if (panelTop + panelH > screenH - bottomSafe) {
+                panelTop = popupRect.top - gap - panelH;
+            }
+            // 再次检查顶部边界
+            if (panelTop < edgeMargin) {
+                panelTop = edgeMargin;
+            }
+
+            container.style.left = `${panelLeft}px`;
+            container.style.right = 'auto';
+            container.style.top = `${panelTop}px`;
+            container.style.transform = 'translateY(-6px)';
+        } else if (goLeft) {
             // popup 向左弹出 → 侧面板放在 popup 的左侧（更远离按钮）
             let panelRight = popupRect.left - gap;
             let panelLeft = panelRight - panelW;
@@ -280,15 +308,17 @@
             container.style.transform = 'translateX(-6px)';
         }
 
-        // ── Step 3：垂直定位（对齐 anchor） ──
-        let topVal = anchorRect.top;
+        // ── Step 3：垂直定位（对齐 anchor）── 非手机端执行
+        if (!goDown) {
+            let topVal = anchorRect.top;
 
-        // 边界钳制
-        if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
-        if (topVal < edgeMargin) topVal = edgeMargin;
-        container.style.top = `${topVal}px`;
+            // 边界钳制
+            if (topVal + panelH > screenH - bottomSafe) topVal = screenH - bottomSafe - panelH;
+            if (topVal < edgeMargin) topVal = edgeMargin;
+            container.style.top = `${topVal}px`;
+        }
 
-        // ── Step 4：按钮禁区安全验证（降级为 fallback，不再是主逻辑） ──
+        // ── Step 4：按钮禁区安全验证（降级为 fallback，不再是主逻辑）── 非手机端执行
         const zone = getButtonZone(ownerPrefix);
         if (zone.hasButtons) {
             const savedTransform = container.style.transform;
@@ -302,7 +332,10 @@
 
             if (overlapsH && overlapsV) {
                 // 紧急修正：强制推到按钮对侧
-                if (goLeft) {
+                if (goDown) {
+                    // 手机端：向上展开
+                    container.style.top = `${zone.top - gap - panelH}px`;
+                } else if (goLeft) {
                     container.style.left = `${edgeMargin}px`;
                     container.style.maxWidth = `${zone.left - gap - edgeMargin}px`;
                 } else {
@@ -312,11 +345,12 @@
             }
         }
 
-        // ── Step 5：动画结束后二次验证（自愈机制） ──
+        // ── Step 5：动画结束后二次验证（自愈机制）── 非手机端执行
         // 在动画完成后再次检查是否覆盖按钮，修正任何因动画/时序导致的偏差
         const _containerRef = container;
         const _ownerPrefix = ownerPrefix;
         const _goLeft = goLeft;
+        const _goDown = goDown;
         const _gap = gap;
         const _edgeMargin = edgeMargin;
         const _screenW = screenW;
@@ -328,7 +362,9 @@
             const oH = r.right > z.left && r.left < z.right;
             const oV = r.bottom > z.top && r.top < z.bottom;
             if (oH && oV) {
-                if (_goLeft) {
+                if (_goDown) {
+                    _containerRef.style.top = `${z.top - _gap - r.height}px`;
+                } else if (_goLeft) {
                     _containerRef.style.left = `${_edgeMargin}px`;
                     _containerRef.style.maxWidth = `${z.left - _gap - _edgeMargin}px`;
                 } else {
