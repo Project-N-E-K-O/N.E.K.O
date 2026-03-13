@@ -65,7 +65,11 @@
 
     const getMusicPlayerInstance = () => localPlayer;
 
-    const isPlayerInDOM = () => !!document.getElementById(MUSIC_CONFIG.dom.barId);
+    const isPlayerInDOM = () => {
+        const bar = document.getElementById(MUSIC_CONFIG.dom.barId);
+        // 如果正在淡出，视为已经不在 DOM 中，允许后续逻辑重用/创建新条
+        return !!(bar && !bar.classList.contains('fading-out'));
+    };
 
     const isSameTrack = (info) => {
         return currentPlayingTrack &&
@@ -132,35 +136,33 @@
             localPlayer.pause();
         }
 
-        // 统一清理：即使不是 fullTeardown，切歌时也应该销毁旧实例释放资源
-        if (localPlayer && typeof localPlayer.destroy === 'function') {
-            try {
-                // 【核心修复】标记正在销毁，防止销毁过程中触发 error 事件导致界面弹出报错
-                localPlayer._destroying = true;
-                
-                // 清理拖拽监听器 (CodeRabbit 建议)
-                if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
-                    currentDragHandlers.cleanup();
-                    currentDragHandlers = null;
-                }
-
-                localPlayer.destroy();
-            } catch (e) {
-                console.warn('[Music UI] Error during player destroy:', e);
-            }
-        }
-
         if (fullTeardown) {
             // 【核心修复】调整顺序：先调用外部销毁逻辑，再清理本地引用
-            // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理，不能提前置空
+            // 理由：APlayer/main.js 的 destroyAPlayer 依赖 window.aplayer 进行清理
+            // 且此处理由 window.destroyAPlayer 统一完成实例销毁，不再本地重复销毁
             if (typeof window.destroyAPlayer === 'function') {
                 window.destroyAPlayer();
+            } else if (localPlayer && typeof localPlayer.destroy === 'function') {
+                localPlayer.destroy();
             }
 
             localPlayer = null;
             window.aplayer = null;
             if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
         } else {
+            // 切歌模式下，手动销毁旧实例以防泄露
+            if (localPlayer && typeof localPlayer.destroy === 'function') {
+                try {
+                    localPlayer._destroying = true;
+                    if (currentDragHandlers && typeof currentDragHandlers.cleanup === 'function') {
+                        currentDragHandlers.cleanup();
+                        currentDragHandlers = null;
+                    }
+                    localPlayer.destroy();
+                } catch (e) {
+                    console.warn('[Music UI] Error during local player destroy:', e);
+                }
+            }
             localPlayer = null;
             window.aplayer = null;
             if (window.aplayerInjected) window.aplayerInjected.aplayer = null;
@@ -507,6 +509,8 @@
                 // 自动播放拦截器：精确区分“被拦截”与“加载失败”
                 if (localPlayer.audio && typeof localPlayer.audio.play === 'function') {
                     const originalPlay = localPlayer.audio.play;
+                    // 使用闭包捕获当前的播放器引用
+                    const boundPlayerForProxy = localPlayer;
                     localPlayer.audio.play = function () {
                         // 捕获触发播放时的 token
                         const tokenAtPlay = latestMusicRequestToken;
@@ -533,7 +537,7 @@
                                     }, MUSIC_CONFIG.timeouts.idle);
 
                                     // 交互式代理：一旦被拦截，监听全局下一次点击并尝试自动播放
-                                    setupAutoplayProxy();
+                                    setupAutoplayProxy(tokenAtPlay, boundPlayerForProxy);
                                 }
                             });
                         }
@@ -541,13 +545,15 @@
                     };
                 }
 
-                function setupAutoplayProxy() {
+                function setupAutoplayProxy(tokenAtProxy, bPlayer) {
                     const startOnInteraction = () => {
-                        if (localPlayer && localPlayer.audio && localPlayer.audio.paused) {
+                        // 【核心修复】增加 token 校验，且交互后移除监听
+                        // 如果在点击之前，用户已经切换到了新的请求，或者播放器已销毁，则不执行旧的播放操作
+                        if (tokenAtProxy === latestMusicRequestToken && bPlayer && bPlayer.audio && bPlayer.audio.paused) {
                             console.log('[Music UI] 检测到用户交互，正在尝试通过代理触发延迟播放');
-                            localPlayer.play();
+                            bPlayer.play();
                         }
-                        // CodeRabbit 建议：简化清理逻辑
+                        // 使用一旦触发即移除的特性，手动解绑所有潜在的代理监听
                         window.removeEventListener('mousedown', startOnInteraction);
                         window.removeEventListener('touchstart', startOnInteraction);
                     };
