@@ -327,7 +327,7 @@ class TestFindModelsCFA:
                 f"Documents model should use /user_live2d/ prefix, got: {docs_model['path']}"
             # Should NOT have /user_live2d_local/
             assert '/user_live2d_local/' not in docs_model['path'], \
-                f"Documents model should NOT use /user_live2d_local/ prefix"
+                "Documents model should NOT use /user_live2d_local/ prefix"
 
         if 'newly_imported_model' in model_map:
             appdata_model = model_map['newly_imported_model']
@@ -398,7 +398,7 @@ class TestFindModelDirectoryCFA:
 
         # Should ultimately return (None, None) or similar
         if result is not None:
-            path, url_prefix = result
+            path, _ = result
             assert path is None
 
     def test_normal_finds_model_in_documents(self, normal_env):
@@ -604,5 +604,5 @@ class TestBackwardCompatibility:
             result = find_model_directory('normal_model')
 
         assert result is not None
-        path, url_prefix = result
+        _path, url_prefix = result
         assert url_prefix == '/user_live2d'

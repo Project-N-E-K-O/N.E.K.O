@@ -1263,7 +1263,7 @@ def get_user_models():
                 # 正常场景
                 _scan_dirs.append((str(config_mgr.live2d_dir), '/user_live2d'))
 
-            existing_names = set()
+            existing_keys = set()
             for scan_dir, url_prefix in _scan_dirs:
                 if not os.path.exists(scan_dir):
                     continue
@@ -1271,10 +1271,13 @@ def get_user_models():
                     for file in files:
                         if file.endswith('.model3.json'):
                             model_name = os.path.basename(root)
-                            if model_name in existing_names:
+                            # 使用 (model_name, url_prefix) 作为去重键，
+                            # 避免 CFA 场景下同名模型在不同目录中互相覆盖
+                            dedup_key = (model_name, url_prefix)
+                            if dedup_key in existing_keys:
                                 dirs[:] = []
                                 break
-                            existing_names.add(model_name)
+                            existing_keys.add(dedup_key)
                             rel_path = os.path.relpath(root, scan_dir)
                             # Normalize '.' to empty string to avoid '/user_live2d/./' paths
                             if rel_path == '.':
