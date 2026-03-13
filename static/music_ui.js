@@ -334,7 +334,7 @@
             const updatePlayBtnState = (isPlaying) => {
                 const icon = isPlaying ? '⏸' : '▶';
                 const text = isPlaying ? 'Pause' : 'Play';
-                const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', { defaultValue: text }) : text;
+                const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', text) : text;
                 apBtn.textContent = icon;
                 apBtn.setAttribute('title', tText);
                 apBtn.setAttribute('aria-label', tText);
