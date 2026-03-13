@@ -107,9 +107,10 @@
      * 统一的截图辅助函数：从video元素捕获一帧到canvas，统一720p节流和JPEG压缩
      * @param {HTMLVideoElement} video - 视频源元素
      * @param {number} jpegQuality - JPEG压缩质量 (0-1)，默认0.8
+     * @param {boolean} detectBlack - 是否检测纯黑帧（窗口最小化等），默认false
      * @returns {{dataUrl: string, width: number, height: number}|null}
      */
-    function captureCanvasFrame(video, jpegQuality) {
+    function captureCanvasFrame(video, jpegQuality, detectBlack) {
         if (jpegQuality === undefined) jpegQuality = 0.8;
 
         // 流无效时 videoWidth/videoHeight 为 0，直接返回 null 避免生成空图
@@ -137,11 +138,191 @@
 
         // 绘制视频帧到canvas（缩放绘制）并转换为JPEG
         ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+        // 黑帧检测：采样中心16x16区域，全黑则返回null（窗口最小化等场景）
+        if (detectBlack) {
+            var sw = Math.min(16, targetWidth), sh = Math.min(16, targetHeight);
+            var sx = Math.floor((targetWidth - sw) / 2);
+            var sy = Math.floor((targetHeight - sh) / 2);
+            var sample = ctx.getImageData(sx, sy, sw, sh);
+            var allBlack = true;
+            for (var i = 0; i < sample.data.length; i += 4) {
+                if (sample.data[i] > 2 || sample.data[i + 1] > 2 || sample.data[i + 2] > 2) {
+                    allBlack = false;
+                    break;
+                }
+            }
+            if (allBlack) return null;
+        }
+
         var dataUrl = canvas.toDataURL('image/jpeg', jpegQuality);
 
         return { dataUrl: dataUrl, width: targetWidth, height: targetHeight };
     }
     mod.captureCanvasFrame = captureCanvasFrame;
+
+    // ======================== captureFrameFromStream ========================
+    /**
+     * 从MediaStream提取单帧截图（创建临时video元素，用后即销毁）
+     * @param {MediaStream} stream - 媒体流
+     * @param {number} jpegQuality - JPEG压缩质量 (0-1)
+     * @returns {Promise<{dataUrl: string, width: number, height: number}|null>}
+     */
+    async function captureFrameFromStream(stream, jpegQuality) {
+        if (!stream || !stream.active) return null;
+        var video = document.createElement('video');
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.muted = true;
+        try { await video.play(); } catch (e) { /* 某些情况下不需要 play() 成功也能读取帧 */ }
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+            await new Promise(function (resolve) {
+                video.addEventListener('loadeddata', resolve, { once: true });
+            });
+        }
+        var frame = captureCanvasFrame(video, jpegQuality, true); // detectBlack=true
+        video.srcObject = null;
+        video.remove();
+        return frame; // {dataUrl, width, height} or null
+    }
+    mod.captureFrameFromStream = captureFrameFromStream;
+
+    // ======================== acquireOrReuseCachedStream ========================
+    /**
+     * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
+     * @param {Object} opts
+     * @param {boolean} opts.allowPrompt - 是否允许 getDisplayMedia 弹窗（用户手势上下文传true）
+     * @returns {Promise<MediaStream|null>}
+     */
+    async function acquireOrReuseCachedStream(opts) {
+        if (!opts) opts = {};
+
+        // 1. 缓存流有效且 tracks live → 直接返回（~0ms）
+        if (S.screenCaptureStream && S.screenCaptureStream.active) {
+            var tracks = S.screenCaptureStream.getVideoTracks();
+            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                S.screenCaptureStreamLastUsed = Date.now();
+                scheduleScreenCaptureIdleCheck();
+                return S.screenCaptureStream;
+            }
+            // tracks 已结束，废弃流
+            console.warn('[acquireStream] 缓存流 tracks 已结束，废弃');
+            try { S.screenCaptureStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+        }
+
+        // 2. Electron selectedScreenSourceId → getUserMedia(chromeMediaSource)
+        var selectedSourceId = S.selectedScreenSourceId;
+        if (selectedSourceId && window.electronDesktopCapturer) {
+            try {
+                var newStream = await Promise.race([
+                    (async function () {
+                        // 验证源存在
+                        var currentSources = await window.electronDesktopCapturer.getSources({
+                            types: ['window', 'screen'],
+                            thumbnailSize: { width: 1, height: 1 }
+                        });
+                        var sourceExists = currentSources.some(function (s) { return s.id === selectedSourceId; });
+
+                        var captureSourceId = selectedSourceId;
+                        if (!sourceExists) {
+                            console.warn('[acquireStream] 选中的源已不可用，尝试回退到全屏源');
+                            var screenSources = currentSources.filter(function (s) { return s.id.startsWith('screen:'); });
+                            if (screenSources.length > 0) {
+                                captureSourceId = screenSources[0].id;
+                            } else {
+                                return null; // 无可用源
+                            }
+                        }
+
+                        return await navigator.mediaDevices.getUserMedia({
+                            audio: false,
+                            video: {
+                                mandatory: {
+                                    chromeMediaSource: 'desktop',
+                                    chromeMediaSourceId: captureSourceId,
+                                    maxFrameRate: 1
+                                }
+                            }
+                        });
+                    })(),
+                    new Promise(function (_, reject) {
+                        setTimeout(function () { reject(new Error('Electron capture timeout')); }, 500);
+                    })
+                ]);
+
+                if (newStream) {
+                    S.screenCaptureStream = newStream;
+                    S.screenCaptureStreamLastUsed = Date.now();
+                    S.screenCaptureAutoPromptFailed = false;
+                    scheduleScreenCaptureIdleCheck();
+
+                    // 添加 ended 监听
+                    newStream.getVideoTracks().forEach(function (track) {
+                        track.addEventListener('ended', function () {
+                            console.log('[acquireStream] 流被终止');
+                            if (S.screenCaptureStream === newStream) {
+                                S.screenCaptureStream = null;
+                                S.screenCaptureStreamLastUsed = null;
+                                if (S.screenCaptureStreamIdleTimer) {
+                                    clearTimeout(S.screenCaptureStreamIdleTimer);
+                                    S.screenCaptureStreamIdleTimer = null;
+                                }
+                            }
+                        });
+                    });
+
+                    console.log('[acquireStream] Electron 源获取成功');
+                    return newStream;
+                }
+            } catch (electronErr) {
+                console.warn('[acquireStream] Electron 源获取失败:', electronErr.message);
+            }
+        }
+
+        // 3. getDisplayMedia（仅 allowPrompt && !screenCaptureAutoPromptFailed）
+        if (opts.allowPrompt && !S.screenCaptureAutoPromptFailed &&
+            navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+            try {
+                var displayStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always', frameRate: { max: 1 } },
+                    audio: false,
+                });
+
+                S.screenCaptureStream = displayStream;
+                S.screenCaptureStreamLastUsed = Date.now();
+                S.screenCaptureAutoPromptFailed = false;
+                scheduleScreenCaptureIdleCheck();
+
+                displayStream.getVideoTracks().forEach(function (track) {
+                    track.addEventListener('ended', function () {
+                        console.log('[acquireStream] getDisplayMedia 流被用户终止');
+                        if (S.screenCaptureStream === displayStream) {
+                            S.screenCaptureStream = null;
+                            S.screenCaptureStreamLastUsed = null;
+                            if (S.screenCaptureStreamIdleTimer) {
+                                clearTimeout(S.screenCaptureStreamIdleTimer);
+                                S.screenCaptureStreamIdleTimer = null;
+                            }
+                        }
+                    });
+                });
+
+                console.log('[acquireStream] getDisplayMedia 获取成功');
+                return displayStream;
+            } catch (displayErr) {
+                console.warn('[acquireStream] getDisplayMedia 失败:', displayErr);
+                if (displayErr.name !== 'NotAllowedError') {
+                    S.screenCaptureAutoPromptFailed = true;
+                }
+            }
+        }
+
+        // 4. 返回 null，调用者自行 fallback 到 pyautogui
+        return null;
+    }
+    mod.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
 
     // ======================== fetchBackendScreenshot ========================
     /**
@@ -217,35 +398,23 @@
         video.muted = true;
 
         S.videoTrack = stream.getVideoTracks()[0];
-        var canvas = document.createElement('canvas');
-        var ctx = canvas.getContext('2d');
 
-        // 定时抓取当前帧并编码为jpeg
+        // 定时抓取当前帧并编码为jpeg（使用统一的 captureCanvasFrame）
         video.play().then(function () {
-            // 计算缩放后的尺寸（保持宽高比，限制到720p）
-            var targetWidth = video.videoWidth;
-            var targetHeight = video.videoHeight;
-
-            if (targetWidth > C.MAX_SCREENSHOT_WIDTH || targetHeight > C.MAX_SCREENSHOT_HEIGHT) {
-                var widthRatio = C.MAX_SCREENSHOT_WIDTH / targetWidth;
-                var heightRatio = C.MAX_SCREENSHOT_HEIGHT / targetHeight;
-                var scale = Math.min(widthRatio, heightRatio);
-                targetWidth = Math.round(targetWidth * scale);
-                targetHeight = Math.round(targetHeight * scale);
-                console.log('屏幕共享：原尺寸 ' + video.videoWidth + 'x' + video.videoHeight + ' -> 缩放到 ' + targetWidth + 'x' + targetHeight);
+            if (video.videoWidth && video.videoHeight) {
+                var vw = video.videoWidth, vh = video.videoHeight;
+                if (vw > C.MAX_SCREENSHOT_WIDTH || vh > C.MAX_SCREENSHOT_HEIGHT) {
+                    var scale = Math.min(C.MAX_SCREENSHOT_WIDTH / vw, C.MAX_SCREENSHOT_HEIGHT / vh);
+                    console.log('屏幕共享：原尺寸 ' + vw + 'x' + vh + ' -> 缩放到 ' + Math.round(vw * scale) + 'x' + Math.round(vh * scale));
+                }
             }
 
-            canvas.width = targetWidth;
-            canvas.height = targetHeight;
-
             S.videoSenderInterval = setInterval(function () {
-                ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-                var dataUrl = canvas.toDataURL('image/jpeg', 0.8); // base64 jpeg
-
-                if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                var frame = captureCanvasFrame(video, 0.8);
+                if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({
                         action: 'stream_data',
-                        data: dataUrl,
+                        data: frame.dataUrl,
                         input_type: input_type,
                     }));
 
@@ -563,37 +732,43 @@
     mod.startScreenSharing = startScreenSharing;
 
     // ======================== stopScreenSharing ========================
-    async function stopScreenSharing() {
+    /**
+     * 停止屏幕分享。
+     * @param {boolean} forceRelease - 是否强制释放流。false时若主动视觉仍活跃则保留缓存流。
+     */
+    async function stopScreenSharing(forceRelease) {
         stopScreening();
 
-        // 停止所有 tracks 并清除回调，防止隐私/资源泄漏
-        try {
-            if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
-                // 清除 onended 回调，防止重复触发
-                var vt = S.screenCaptureStream.getVideoTracks && S.screenCaptureStream.getVideoTracks()[0];
-                if (vt) {
-                    vt.onended = null;
-                }
-                // 停止所有 tracks（包括视频和音频）
-                S.screenCaptureStream.getTracks().forEach(function (track) {
-                    try {
-                        track.stop();
-                    } catch (e) {
-                        // 忽略已经停止的 track
+        // 判断主动视觉是否活跃
+        var proactiveVisionActive = S.proactiveVisionEnabled ||
+            (S.proactiveVisionChatEnabled && S.proactiveChatEnabled);
+
+        // 条件释放流
+        if (forceRelease || !proactiveVisionActive) {
+            // 完全释放流
+            try {
+                if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
+                    var vt = S.screenCaptureStream.getVideoTracks && S.screenCaptureStream.getVideoTracks()[0];
+                    if (vt) {
+                        vt.onended = null;
                     }
-                });
+                    S.screenCaptureStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (e) { }
+                    });
+                }
+            } catch (e) {
+                console.warn(window.t('console.screenShareStopTracksFailed'), e);
+            } finally {
+                S.screenCaptureStream = null;
+                S.screenCaptureStreamLastUsed = null;
+                if (S.screenCaptureStreamIdleTimer) {
+                    clearTimeout(S.screenCaptureStreamIdleTimer);
+                    S.screenCaptureStreamIdleTimer = null;
+                }
             }
-        } catch (e) {
-            console.warn(window.t('console.screenShareStopTracksFailed'), e);
-        } finally {
-            // 确保引用被清空，即使出错也能释放
-            S.screenCaptureStream = null;
-            S.screenCaptureStreamLastUsed = null;
-            // 清除闲置定时器
-            if (S.screenCaptureStreamIdleTimer) {
-                clearTimeout(S.screenCaptureStreamIdleTimer);
-                S.screenCaptureStreamIdleTimer = null;
-            }
+        } else {
+            // 主动视觉仍活跃，保留缓存流，仅停止发送和 UI
+            console.log('[屏幕分享] 主动视觉仍活跃，保留缓存流');
         }
 
         // 仅在主动录像/语音连接分享时更新 UI 状态，防止闲置释放导致 UI 错误锁定
@@ -673,14 +848,33 @@
 
         console.log('[屏幕源] 已选择:', sourceName, '(ID:', sourceId, ')');
 
+        // 切换窗口源时，强制释放旧的缓存流（无论是否在屏幕分享中）
+        // 这确保下次获取流时使用新选择的源
+        if (S.screenCaptureStream) {
+            console.log('[屏幕源] 窗口选择已切换，强制释放旧缓存流');
+            try {
+                if (typeof S.screenCaptureStream.getTracks === 'function') {
+                    S.screenCaptureStream.getTracks().forEach(function (track) {
+                        try { track.stop(); } catch (e) { }
+                    });
+                }
+            } catch (e) { }
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+            if (S.screenCaptureStreamIdleTimer) {
+                clearTimeout(S.screenCaptureStreamIdleTimer);
+                S.screenCaptureStreamIdleTimer = null;
+            }
+        }
+
         // 智能刷新：如果当前正在屏幕分享中，自动重启以应用新的屏幕源
         var stopBtn = document.getElementById('stopButton');
         var isScreenSharingActive = stopBtn && !stopBtn.disabled;
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
-            // 先停止当前分享
-            await stopScreenSharing();
+            // 先停止当前分享（流已释放，forceRelease 无所谓）
+            await stopScreenSharing(true);
             // 等待一小段时间
             await new Promise(function (resolve) { setTimeout(resolve, 300); });
             // 重新开始分享（使用新选择的源）
@@ -961,6 +1155,8 @@
     window.stopScreenSharing = stopScreenSharing;
     window.selectScreenSource = selectScreenSource;
     window.captureCanvasFrame = captureCanvasFrame;
+    window.captureFrameFromStream = captureFrameFromStream;
+    window.acquireOrReuseCachedStream = acquireOrReuseCachedStream;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.getMobileCameraStream = getMobileCameraStream;
     window.startScreenVideoStreaming = startScreenVideoStreaming;
