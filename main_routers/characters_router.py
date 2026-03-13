@@ -1594,6 +1594,109 @@ async def _read_limited_stream(stream: UploadFile, max_size: int) -> io.BytesIO:
     return buf
 
 
+def _select_voice_clone_sample_rate(sample_rate: int) -> int:
+    """为语音克隆参考音频选择允许的目标采样率。
+
+    阿里云 DashScope VoiceEnrollmentService 要求采样率至少为 16kHz。
+    规则：
+    1. 如果原采样率 >= 48000Hz，向下匹配到 48000Hz
+    2. 如果原采样率在 44100-47999Hz 之间，向下匹配到 44100Hz
+    3. 如果原采样率在 22050-44099Hz 之间，向下匹配到 22050Hz
+    4. 如果原采样率在 16000-22049Hz 之间，向下匹配到 16000Hz
+    5. 如果原采样率 < 16000Hz，抛出错误（API最低要求16kHz）
+
+    例如：32000 -> 22050，47000 -> 44100，96000 -> 48000。
+    低于16kHz的文件会被拒绝，需要用户自行提供符合要求的音频。
+    """
+    if sample_rate < 16000:
+        raise ValueError(
+            f"采样率过低: {sample_rate}Hz。"
+            f"阿里云语音克隆API要求参考音频采样率至少为16kHz，"
+            f"请提供16kHz、22.05kHz、44.1kHz或48kHz的音频文件。"
+        )
+    
+    allowed_sample_rates = [16000, 22050, 44100, 48000]
+    for allowed_rate in reversed(allowed_sample_rates):
+        if sample_rate >= allowed_rate:
+            return allowed_rate
+    return 16000  # 保底，理论上不会走到这里
+
+
+def _normalize_voice_clone_api_audio(
+    file_buffer: io.BytesIO,
+    filename: str,
+) -> tuple[io.BytesIO, str, dict]:
+    """将上传的语音克隆参考音频重新生成成规范化 WAV。
+
+    这里不是只做“校验”，而是无论原文件是否已经满足要求，都会：
+    1. 解析原始音频；
+    2. 将采样率按允许列表向下匹配；
+    3. 转为单声道；
+    4. 转为 16-bit；
+    5. 导出为新的 WAV 文件后再上传。
+
+    返回值：
+    - 规范化后的 WAV 二进制缓冲区
+    - 规范化后的文件名（统一为 .wav）
+    - 原始/规范化后的音频元信息，供日志记录使用
+    """
+    file_buffer.seek(0)
+    file_extension = pathlib.Path(filename or '').suffix.lower()
+
+    try:
+        from pydub import AudioSegment
+    except ImportError as err:
+        raise ValueError(
+            '缺少 pydub 依赖，无法自动转换语音克隆音频。请安装 pydub 和 ffmpeg。'
+        ) from err
+
+    try:
+        if file_extension == '.wav':
+            audio_seg = AudioSegment.from_wav(file_buffer)
+        else:
+            input_format = file_extension[1:] if file_extension.startswith('.') else None
+            audio_seg = AudioSegment.from_file(file_buffer, format=input_format)
+    except Exception as err:
+        raise ValueError(f'无法解析上传音频文件: {err}') from err
+
+    # 采样率按允许值集合向下匹配，保证生成出来的文件落在约定范围内。
+    target_sample_rate = _select_voice_clone_sample_rate(audio_seg.frame_rate)
+    original_info = {
+        'sample_rate': audio_seg.frame_rate,
+        'channels': audio_seg.channels,
+        'sample_width': audio_seg.sample_width,
+        'duration_ms': len(audio_seg),
+    }
+
+    # 统一重新生成：单声道 + 目标采样率 + 16-bit PCM WAV。
+    normalized_seg = (
+        audio_seg
+        .set_channels(1)
+        .set_frame_rate(target_sample_rate)
+        .set_sample_width(2)
+    )
+
+    normalized_buffer = io.BytesIO()
+    normalized_seg.export(normalized_buffer, format='wav')
+    normalized_buffer.seek(0)
+
+    # 再次读取导出后的 WAV 头，记录最终实际写入的参数，避免仅依赖 pydub 内存对象属性。
+    with wave.open(normalized_buffer, 'rb') as wav_file:
+        normalized_info = {
+            'sample_rate': wav_file.getframerate(),
+            'channels': wav_file.getnchannels(),
+            'sample_width': wav_file.getsampwidth(),
+            'n_frames': wav_file.getnframes(),
+        }
+
+    normalized_buffer.seek(0)
+    normalized_filename = f"{pathlib.Path(filename or 'prompt_audio').stem}.wav"
+    return normalized_buffer, normalized_filename, {
+        'original': original_info,
+        'normalized': normalized_info,
+    }
+
+
 @router.post('/audio/analyze_silence')
 async def analyze_silence(file: UploadFile = File(...)):
     """
@@ -1936,23 +2039,12 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         # 根据扩展名确定MIME类型
         if file_extension == '.wav':
             mime_type = "audio/wav"
-            # 检查WAV文件是否为16bit
             try:
                 file_buffer.seek(0)
                 with wave.open(file_buffer, 'rb') as wav_file:
-                    # 检查采样宽度（bit depth）
-                    if wav_file.getsampwidth() != 2:  # 2 bytes = 16 bits
-                        return "", f"WAV文件必须是16bit格式，当前文件是{wav_file.getsampwidth() * 8}bit。"
-                    
-                    # 检查声道数（建议单声道）
-                    channels = wav_file.getnchannels()
-                    if channels > 1:
-                        return "", f"建议使用单声道WAV文件，当前文件有{channels}个声道。"
-                    
-                    # 检查采样率
-                    sample_rate = wav_file.getframerate()
-                    if sample_rate not in [8000, 16000, 22050, 44100, 48000]:
-                        return "", f"建议使用标准采样率(8000, 16000, 22050, 44100, 48000)，当前文件采样率: {sample_rate}Hz。"
+                    wav_file.getsampwidth()
+                    wav_file.getnchannels()
+                    wav_file.getframerate()
                 file_buffer.seek(0)
             except Exception as e:
                 return "", f"WAV文件格式错误: {str(e)}。请确认您的文件是合法的WAV文件。"
@@ -2022,24 +2114,40 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
         if not mime_type:
             return JSONResponse({'error': error_msg}, status_code=400)
+
+        normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
+            _normalize_voice_clone_api_audio,
+            file_buffer,
+            file.filename or 'prompt_audio.wav',
+        )
+        mime_type = 'audio/wav'
+        logger.info(
+            "语音克隆API参考音频已重采样并重新生成: %sHz/%s声道/%sbyte -> %sHz/%s声道/%sbyte",
+            audio_meta['original']['sample_rate'],
+            audio_meta['original']['channels'],
+            audio_meta['original']['sample_width'],
+            audio_meta['normalized']['sample_rate'],
+            audio_meta['normalized']['channels'],
+            audio_meta['normalized']['sample_width'],
+        )
         
         # 检查文件大小（tfLink支持最大100MB）
-        file_size = len(file_content)
+        file_size = len(normalized_buffer.getvalue())
         if file_size > 100 * 1024 * 1024:  # 100MB
             return JSONResponse({'error': '文件大小超过100MB，超过tfLink的限制'}, status_code=400)
         
         # 2. 上传到 tfLink - 直接使用内存中的内容
-        file_buffer.seek(0)
+        normalized_buffer.seek(0)
         # 根据tfLink API文档，使用multipart/form-data上传文件
         # 参数名应为'file'
-        files = {'file': (file.filename, file_buffer, mime_type)}
+        files = {'file': (normalized_filename, normalized_buffer, mime_type)}
         
         # 添加更多的请求头，确保兼容性
         headers = {
             'Accept': 'application/json'
         }
         
-        logger.info(f"正在上传文件到tfLink，文件名: {file.filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
+        logger.info(f"正在上传文件到tfLink，文件名: {normalized_filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(TFLINK_UPLOAD_URL, files=files, headers=headers)
 

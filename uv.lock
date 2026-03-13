@@ -1680,6 +1680,7 @@ dependencies = [
     { name = "pillow" },
     { name = "psutil" },
     { name = "pyautogui" },
+    { name = "pydub" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise" },
@@ -1736,6 +1737,7 @@ requires-dist = [
     { name = "pillow" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyautogui" },
+    { name = "pydub", specifier = ">=0.25.1" },
     { name = "pygetwindow", marker = "sys_platform == 'win32'" },
     { name = "pyobjc", marker = "sys_platform == 'darwin'" },
     { name = "pyrnnoise", specifier = ">=0.4.0" },
@@ -2269,6 +2271,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/43/4b/ac7e0aae12027748076d72a8764ff1c9d82ca75a7a52622e67ed3f765c54/pydantic_settings-2.12.0.tar.gz", hash = "sha256:005538ef951e3c2a68e1c08b292b5f2e71490def8589d4221b95dab00dafcfd0", size = 194184, upload-time = "2025-11-10T14:25:47.013Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/60/5d4751ba3f4a40a6891f24eec885f51afd78d208498268c734e256fb13c4/pydantic_settings-2.12.0-py3-none-any.whl", hash = "sha256:fddb9fd99a5b18da837b29710391e945b1e30c135477f484084ee513adb93809", size = 51880, upload-time = "2025-11-10T14:25:45.546Z" },
+]
+
+[[package]]
+name = "pydub"
+version = "0.25.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload-time = "2021-03-10T02:09:54.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload-time = "2021-03-10T02:09:53.503Z" },
 ]
 
 [[package]]
