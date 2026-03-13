@@ -2312,7 +2312,9 @@
         "showPlaylist": "Show Playlist",
         "hidePlaylist": "Hide Playlist",
         "searchFailed": "Music search failed",
-        "playError": "Playback error",
+        "playError": "Music playback failed to load",
+        "loadError": "Music player failed to load",
+        "autoplayBlocked": "Browser blocked autoplay, please click the play button",
         "ended": "Ended"
     },
     "notice": {

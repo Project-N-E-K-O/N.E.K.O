@@ -240,7 +240,7 @@ async function translateAndShowSubtitle(text) {
             console.warn('字幕显示元素不存在');
             return;
         }
-        
+
         // 调用翻译API
         const response = await fetch('/api/translate', {
             method: 'POST',
@@ -255,7 +255,7 @@ async function translateAndShowSubtitle(text) {
             }),
             signal: currentTranslateAbortController.signal
         });
-        
+
         if (!response.ok) {
             console.warn('翻译请求失败:', response.status);
             if (pendingTranslation === currentTranslationText) {
@@ -269,28 +269,30 @@ async function translateAndShowSubtitle(text) {
             });
             return;
         }
-        
+
         const result = await response.json();
-        
+
         if (pendingTranslation !== currentTranslationText) {
             console.log('检测到更新的翻译请求，忽略旧的翻译结果');
             return;
         }
         pendingTranslation = null;
-        
+
         if (result.google_failed === true) {
             googleTranslateFailed = true;
             console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
         }
-        
+
         const frontendDetectedLang = detectLanguage(text);
         const isNonUserLanguage = frontendDetectedLang !== 'unknown' && frontendDetectedLang !== userLanguage;
-        
-        const subtitleDisplayAfter = document.getElementById('subtitle-display');
-        if (!subtitleDisplayAfter) {
-            console.warn('字幕显示元素在异步操作后不存在，可能已被移除');
+
+        // 异步等待后再次确认元素仍然存在
+        if (!subtitleDisplay.isConnected) {
+            console.warn('字幕显示元素在异步操作后已从DOM移除');
             return;
         }
+
+        const subtitleDisplayAfter = subtitleDisplay;
         
         if (result.success && result.translated_text && 
             result.source_lang && result.target_lang && 
@@ -299,17 +301,18 @@ async function translateAndShowSubtitle(text) {
             showSubtitlePrompt();
             
             if (subtitleEnabled) {
-                subtitleDisplayAfter.textContent = result.translated_text;
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = result.translated_text;
                 subtitleDisplayAfter.classList.add('show');
                 subtitleDisplayAfter.classList.remove('hidden');
                 subtitleDisplayAfter.style.opacity = '1';
                 console.log('字幕已更新（已翻译）:', result.translated_text.substring(0, 50) + '...');
-                
+
                 if (subtitleTimeout) {
                     clearTimeout(subtitleTimeout);
                     subtitleTimeout = null;
                 }
-                
+
                 subtitleTimeout = setTimeout(() => {
                     const subtitleDisplayForTimeout = document.getElementById('subtitle-display');
                     if (subtitleDisplayForTimeout && subtitleDisplayForTimeout.classList.contains('show')) {
@@ -318,7 +321,8 @@ async function translateAndShowSubtitle(text) {
                     }
                 }, 30000);
             } else {
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
@@ -327,14 +331,16 @@ async function translateAndShowSubtitle(text) {
         } else {
             if (isNonUserLanguage) {
                 showSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
                 console.log('前端检测到非用户语言，显示提示框');
             } else {
                 hideSubtitlePrompt();
-                subtitleDisplayAfter.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplayAfter.classList.remove('show');
                 subtitleDisplayAfter.classList.add('hidden');
                 subtitleDisplayAfter.style.opacity = '0';
@@ -534,7 +540,8 @@ function showSubtitlePrompt() {
         if (!subtitleEnabled) {
             const subtitleDisplay = document.getElementById('subtitle-display');
             if (subtitleDisplay) {
-                subtitleDisplay.textContent = '';
+                const subtitleText = document.getElementById('subtitle-text');
+                if (subtitleText) subtitleText.textContent = '';
                 subtitleDisplay.classList.remove('show');
                 subtitleDisplay.classList.add('hidden');
                 subtitleDisplay.style.opacity = '0';
@@ -590,6 +597,9 @@ function hideSubtitlePrompt() {
 
 // 初始化字幕开关（DOM加载完成后）
 document.addEventListener('DOMContentLoaded', async function() {
+    // 拖拽初始化只绑定 DOM 事件，不依赖语言数据，立即执行
+    initSubtitleDrag();
+
     // 初始化用户语言（等待完成，确保使用最新值）
     await getUserLanguage();
 
@@ -616,3 +626,154 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 });
+
+// 字幕拖拽功能
+function initSubtitleDrag() {
+    const subtitleDisplay = document.getElementById('subtitle-display');
+    const dragHandle = document.getElementById('subtitle-drag-handle');
+
+    console.log('[Subtitle] 调试 - 找到字幕元素:', !!subtitleDisplay);
+    console.log('[Subtitle] 调试 - 找到拖拽句柄:', !!dragHandle);
+
+    if (!subtitleDisplay || !dragHandle) {
+        console.warn('[Subtitle] 无法找到字幕元素或拖拽句柄');
+        return;
+    }
+
+    let isDragging = false;
+    let pendingDrag = false; // mousedown 后等待真实拖动
+    let isManualPosition = false;
+    let startX, startY;
+    let initialX, initialY;
+
+    // 鼠标按下事件
+    function handleMouseDown(e) {
+        // 只响应左键拖拽
+        if (e.button !== 0) return;
+
+        pendingDrag = true;
+        document.body.style.userSelect = 'none';
+
+        // 获取并记录当前元素位置（含 transform），在 mousedown 时快照
+        const rect = subtitleDisplay.getBoundingClientRect();
+        startX = e.clientX;
+        startY = e.clientY;
+        initialX = rect.left;
+        initialY = rect.top;
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    // 触摸开始事件
+    function handleTouchStart(e) {
+        const touch = e.touches[0];
+        handleMouseDown({
+            button: 0,
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+    }
+
+    // 提交手动定位（首次真实拖动时调用一次）
+    function commitDragPosition() {
+        isDragging = true;
+        pendingDrag = false;
+        isManualPosition = true;
+        subtitleDisplay.classList.add('dragging');
+        // 清除 transform 居中效果，改为绝对定位，保持当前位置
+        subtitleDisplay.style.transform = 'none';
+        subtitleDisplay.style.left = initialX + 'px';
+        subtitleDisplay.style.top = initialY + 'px';
+        subtitleDisplay.style.bottom = 'auto';
+        // 阻止 .show 类的 animation 效果覆盖拖拽后的位置
+        // CSS animation 优先级高于内联 transform，但 animation 属性本身遵循普通 cascade（内联 > class）
+        subtitleDisplay.style.animation = 'none';
+    }
+
+    // 鼠标移动事件
+    function handleMouseMove(e) {
+        if (!pendingDrag && !isDragging) return;
+
+        e.preventDefault();
+
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        // 超过 4px 阈值后才正式进入拖动模式，避免单纯点击破坏居中布局
+        if (!isDragging) {
+            if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+            commitDragPosition();
+        }
+
+        let newX = initialX + dx;
+        let newY = initialY + dy;
+
+        // 限制在窗口范围内
+        const maxX = window.innerWidth - subtitleDisplay.offsetWidth;
+        const maxY = window.innerHeight - subtitleDisplay.offsetHeight;
+
+        newX = Math.max(0, Math.min(newX, maxX));
+        newY = Math.max(0, Math.min(newY, maxY));
+
+        subtitleDisplay.style.left = newX + 'px';
+        subtitleDisplay.style.top = newY + 'px';
+    }
+
+    // 触摸移动事件
+    function handleTouchMove(e) {
+        const touch = e.touches[0];
+        handleMouseMove({
+            preventDefault: () => e.preventDefault(),
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        });
+    }
+
+    // 鼠标释放事件
+    function handleMouseUp() {
+        if (!pendingDrag && !isDragging) return;
+
+        pendingDrag = false;
+        isDragging = false;
+        document.body.style.userSelect = '';
+        subtitleDisplay.classList.remove('dragging');
+
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        // 注意：touchmove/touchend 是初始化时全局绑定的，不在这里移除
+    }
+
+    // 触摸结束事件
+    function handleTouchUp() {
+        handleMouseUp();
+    }
+
+    // 绑定事件到拖拽句柄
+    dragHandle.addEventListener('mousedown', handleMouseDown);
+    dragHandle.addEventListener('touchstart', handleTouchStart, { passive: false });
+
+    // 全局绑定移动和结束事件
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchUp);
+    document.addEventListener('touchcancel', handleTouchUp);
+
+    // 窗口大小改变时，确保手动定位的字幕不超出边界
+    // CSS 居中定位（left:50% + transform）由浏览器自动处理，无需干预
+    window.addEventListener('resize', () => {
+        if (!isManualPosition) return;
+
+        const rect = subtitleDisplay.getBoundingClientRect();
+        const maxX = Math.max(0, window.innerWidth - subtitleDisplay.offsetWidth);
+        const maxY = Math.max(0, window.innerHeight - subtitleDisplay.offsetHeight);
+
+        if (rect.right > window.innerWidth) {
+            subtitleDisplay.style.left = maxX + 'px';
+        }
+        if (rect.bottom > window.innerHeight) {
+            subtitleDisplay.style.top = maxY + 'px';
+        }
+    });
+
+    console.log('[Subtitle] 字幕拖拽功能已初始化');
+}

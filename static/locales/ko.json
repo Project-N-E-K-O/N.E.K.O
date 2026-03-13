@@ -2312,7 +2312,9 @@
         "showPlaylist": "재생 목록 표시",
         "hidePlaylist": "재생 목록 숨기기",
         "searchFailed": "음악 검색 실패",
-        "playError": "재생 오류",
+        "playError": "음악 재생을 로드하지 못했습니다",
+        "loadError": "음악 플레이어를 로드하지 못했습니다",
+        "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
         "ended": "종료"
     },
     "notice": {
