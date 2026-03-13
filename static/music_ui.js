@@ -372,54 +372,55 @@
                 window.aplayerInjected.aplayer = localPlayer;
 
                 // --- 绑定核心事件 (仅在初始化时绑定一次) ---
-                localPlayer.on('play', () => {
+                // 【核心修复】使用闭包固定当前的播放器实例与 Token，防止快速切歌时“错误回调”作用于新歌曲
+                const boundPlayer = localPlayer;
+                const boundToken = latestMusicRequestToken;
+
+                boundPlayer.on('play', () => {
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
                 });
-                localPlayer.on('pause', () => {
+                boundPlayer.on('pause', () => {
                     updatePlayBtnState(false);
                     // 用户点击暂停后，启动 71 秒销毁计时
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
-                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), MUSIC_CONFIG.timeouts.paused);
+                    autoDestroyTimer = setTimeout(() => {
+                        if (latestMusicRequestToken === boundToken) destroyMusicPlayer(true, true, true);
+                    }, MUSIC_CONFIG.timeouts.paused);
                 });
-                localPlayer.on('ended', () => {
+                boundPlayer.on('ended', () => {
                     updatePlayBtnState(false);
                     // 歌曲自然播放结束后，启动 21 秒销毁计时
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
-                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), MUSIC_CONFIG.timeouts.ended);
+                    autoDestroyTimer = setTimeout(() => {
+                        if (latestMusicRequestToken === boundToken) destroyMusicPlayer(true, true, true);
+                    }, MUSIC_CONFIG.timeouts.ended);
                 });
-                localPlayer.on('error', (err) => {
-                    // 【核心修复】如果正在销毁中，静默错误，防止“幽灵报错”
-                    if (localPlayer && localPlayer._destroying) {
-                        console.log('[Music UI] Destruction in progress, ignoring error event');
-                        return;
-                    }
+                boundPlayer.on('error', (err) => {
+                    // 如果正在销毁中，静默错误
+                    if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
                     
-                    const currentToken = latestMusicRequestToken;
-                    // 使用 latestMusicRequestToken 校验，确保是当前正在尝试的播放才有权弹窗
                     setTimeout(() => {
-                        // 如果已经切换到新请求，则不处理旧错误
-                        if (currentToken !== latestMusicRequestToken) return;
+                        // 确保这个错误属于“当前”正在播放的请求
+                        if (boundToken !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
-                        // 再次检查销毁状态，防止延迟触发
-                        if (localPlayer && localPlayer._destroying) return;
+                        if (boundPlayer._destroying) return;
                         
                         showErrorToast('music.playError', '播放失败，音频源可能已失效');
                         updatePlayBtnState(false);
                         
-                        // 播放失败且无新请求时，启动 24 秒销毁计时（防止失效播放条挂在界面上）
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                         autoDestroyTimer = setTimeout(() => {
-                            if (currentToken === latestMusicRequestToken) {
+                            if (boundToken === latestMusicRequestToken) {
                                 destroyMusicPlayer(true, true, true);
                             }
                         }, MUSIC_CONFIG.timeouts.idle);
                     }, 200);
                 });
 
-                // 进度条与播放按钮点击
+                // 进度条与播放按钮点击 (使用直接赋值防止重复挂载)
                 musicBar.querySelector('.music-bar-close').onclick = (e) => {
                     e.preventDefault();
                     destroyMusicPlayer(true, true, true);
@@ -428,8 +429,8 @@
                     e.preventDefault();
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
-                    if (localPlayer.audio.ended) localPlayer.seek(0);
-                    localPlayer.toggle();
+                    if (boundPlayer.audio.ended) boundPlayer.seek(0);
+                    boundPlayer.toggle();
                 };
 
                 // 进度更新与拖拽 (保持原有逻辑)
@@ -462,6 +463,12 @@
                 const stopDrag = (e) => {
                     if (!isDragging) return; 
                     isDragging = false;
+                    // 【核心修复】必须先移除全局监听，然后再执行可能的 early return (CodeRabbit 建议)
+                    window.removeEventListener('mousemove', handleProgressMove); 
+                    window.removeEventListener('mouseup', stopDrag);
+                    window.removeEventListener('touchmove', handleProgressMove); 
+                    window.removeEventListener('touchend', stopDrag);
+
                     const rect = progressContainer.getBoundingClientRect();
                     if (!rect.width) return;
 
@@ -469,9 +476,7 @@
                     let x = clientX - rect.left;
                     
                     const per = Math.max(0, Math.min(x, rect.width)) / rect.width;
-                    if (localPlayer.audio.duration) localPlayer.seek(per * localPlayer.audio.duration);
-                    window.removeEventListener('mousemove', handleProgressMove); window.removeEventListener('mouseup', stopDrag);
-                    window.removeEventListener('touchmove', handleProgressMove); window.removeEventListener('touchend', stopDrag);
+                    if (boundPlayer.audio.duration) boundPlayer.seek(per * boundPlayer.audio.duration);
                 };
                 
                 // 记录全局引用以便销毁时清理
@@ -485,16 +490,17 @@
                     }
                 };
 
-                progressContainer.addEventListener('mousedown', (e) => {
+                // 【核心修复】使用直接赋值绑定，防止 DOM 复用时监听器叠加 (CodeRabbit 建议)
+                progressContainer.onmousedown = (e) => {
                     isDragging = true; handleProgressMove(e);
                     window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
                     window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
-                });
-                progressContainer.addEventListener('touchstart', (e) => {
+                };
+                progressContainer.ontouchstart = (e) => {
                     isDragging = true; handleProgressMove(e);
                     window.addEventListener('mousemove', handleProgressMove); window.addEventListener('mouseup', stopDrag);
                     window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
-                });
+                };
 
                 // 自动播放拦截器：精确区分“被拦截”与“加载失败”
                 if (localPlayer.audio && typeof localPlayer.audio.play === 'function') {
