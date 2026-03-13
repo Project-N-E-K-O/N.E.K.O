@@ -20,7 +20,13 @@
         themeColors: ['#667eea', '#764ba2', '#f093fb', '#f5576c', '#4facfe', '#00f2fe', '#a8edea', '#fed6e3'],
         primaryColor: '#667eea',
         secondaryColor: '#764ba2',
-        defaultVolume: 0.5
+        defaultVolume: 0.5,
+        // 自动销毁时长配置 (ms)
+        timeouts: {
+            ended: 21000,  // 自然播放结束
+            idle: 24000,   // AI推荐未播放 (或被拦截)
+            paused: 71000  // 用户点击暂停
+        }
     };
 
     let currentPlayingTrack = null;
@@ -371,10 +377,17 @@
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
                 });
-                localPlayer.on('pause', () => updatePlayBtnState(false));
+                localPlayer.on('pause', () => {
+                    updatePlayBtnState(false);
+                    // 用户点击暂停后，启动 71 秒销毁计时
+                    if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), MUSIC_CONFIG.timeouts.paused);
+                });
                 localPlayer.on('ended', () => {
                     updatePlayBtnState(false);
-                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), 3000);
+                    // 歌曲自然播放结束后，启动 21 秒销毁计时
+                    if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                    autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), MUSIC_CONFIG.timeouts.ended);
                 });
                 localPlayer.on('error', (err) => {
                     // 【核心修复】如果正在销毁中，静默错误，防止“幽灵报错”
@@ -383,13 +396,26 @@
                         return;
                     }
                     console.error('[Music UI] APlayer error:', err);
+                    
+                    const currentToken = latestMusicRequestToken;
                     // 使用 latestMusicRequestToken 校验，确保是当前正在尝试的播放才有权弹窗
                     setTimeout(() => {
+                        // 如果已经切换到新请求，则不处理旧错误
+                        if (currentToken !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
                         // 再次检查销毁状态，防止延迟触发
                         if (localPlayer && localPlayer._destroying) return;
+                        
                         showErrorToast('music.playError', '播放失败，音频源可能已失效');
                         updatePlayBtnState(false);
+                        
+                        // 播放失败且无新请求时，启动 24 秒销毁计时（防止失效播放条挂在界面上）
+                        if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                        autoDestroyTimer = setTimeout(() => {
+                            if (currentToken === latestMusicRequestToken) {
+                                destroyMusicPlayer(true, true, true);
+                            }
+                        }, MUSIC_CONFIG.timeouts.idle);
                     }, 200);
                 });
 
@@ -464,14 +490,30 @@
                 if (localPlayer.audio && typeof localPlayer.audio.play === 'function') {
                     const originalPlay = localPlayer.audio.play;
                     localPlayer.audio.play = function () {
+                        // 捕获触发播放时的 token
+                        const tokenAtPlay = latestMusicRequestToken;
                         const pp = originalPlay.call(this);
                         if (pp && pp.catch) {
                             pp.catch(err => {
+                                // 逻辑漏洞修复：如果 play 失败的回调执行时，用户已经切换了下一首歌，则不应再为旧歌曲设置销毁定时器
+                                if (tokenAtPlay !== latestMusicRequestToken) {
+                                    console.log('[Music UI] Observed rejected play promise from obsolete token, ignoring.');
+                                    return;
+                                }
+
                                 if (err.name === 'NotAllowedError') {
                                     autoplayBlocked = true;
                                     updatePlayBtnState(false);
                                     showErrorToast('music.autoplayBlocked', '由于浏览器限制，已拦截自动播放。请点击页面任意位置恢复，或点击此处。');
                                     
+                                    // 自动播放被拦截视为“未播放”，保持 24 秒销毁计时
+                                    if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                                    autoDestroyTimer = setTimeout(() => {
+                                        if (tokenAtPlay === latestMusicRequestToken) {
+                                            destroyMusicPlayer(true, true, true);
+                                        }
+                                    }, MUSIC_CONFIG.timeouts.idle);
+
                                     // 交互式代理：一旦被拦截，监听全局下一次点击并尝试自动播放
                                     setupAutoplayProxy();
                                 }
@@ -511,6 +553,10 @@
                         localPlayer.play();
                     }
                 }, 100);
+            } else {
+                // AI 推荐但是未点击自动播放，启动 24 秒销毁计时
+                if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
+                autoDestroyTimer = setTimeout(() => destroyMusicPlayer(true, true, true), MUSIC_CONFIG.timeouts.idle);
             }
         } catch (err) {
             if (currentToken !== latestMusicRequestToken) return;
