@@ -192,12 +192,25 @@ def find_models():
         logging.warning(f"警告：static文件夹路径不存在: {static_dir}")
     
     # 添加用户文档目录下的live2d文件夹
+    # CFA (反勒索防护) 感知：如果原始 Documents 不可写但可读，
+    # 从原始路径读取模型（/user_live2d），可写回退路径作为辅助（/user_live2d_local）
     try:
         config_mgr = get_config_manager()
         config_mgr.ensure_live2d_directory()
         docs_live2d_dir = str(config_mgr.live2d_dir)
-        if os.path.exists(docs_live2d_dir):
-            search_dirs.append(('documents', docs_live2d_dir, '/user_live2d'))
+        readable_live2d = config_mgr.readable_live2d_dir
+
+        if readable_live2d:
+            # CFA 场景：原始 Documents 可读，回退路径可写
+            readable_str = str(readable_live2d)
+            if os.path.exists(readable_str):
+                search_dirs.append(('documents', readable_str, '/user_live2d'))
+            if os.path.exists(docs_live2d_dir) and docs_live2d_dir != readable_str:
+                search_dirs.append(('documents_local', docs_live2d_dir, '/user_live2d_local'))
+        else:
+            # 正常场景
+            if os.path.exists(docs_live2d_dir):
+                search_dirs.append(('documents', docs_live2d_dir, '/user_live2d'))
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
@@ -385,19 +398,41 @@ def find_model_directory(model_name: str):
     
     # 定义允许的基础目录列表
     allowed_base_dirs = []
-    
-    # 首先尝试在用户文档目录
+
+    # 获取 CFA 场景下的可读 live2d 目录（可能为 None）
+    readable_live2d = None
     try:
         config_mgr = get_config_manager()
+        readable_live2d = config_mgr.readable_live2d_dir
+    except Exception:
+        pass
+
+    # 首先尝试在用户文档目录（可写回退路径，如 AppData）
+    try:
+        config_mgr = get_config_manager()
+        # CFA 场景下，live2d_dir 指向 AppData 回退路径，使用 /user_live2d_local 前缀
+        _live2d_url_prefix = '/user_live2d_local' if readable_live2d else '/user_live2d'
         docs_model_dir = config_mgr.live2d_dir / model_name
         if docs_model_dir.exists():
             docs_model_dir_real = os.path.realpath(docs_model_dir)
             docs_live2d_dir_real = os.path.realpath(config_mgr.live2d_dir)
             if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) == docs_live2d_dir_real:
-                return (str(docs_model_dir), '/user_live2d')
+                return (str(docs_model_dir), _live2d_url_prefix)
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
-    
+
+    # CFA 场景：也检查原始 Documents 下的 live2d 目录（只读）
+    try:
+        if readable_live2d:
+            readable_model_dir = readable_live2d / model_name
+            if readable_model_dir.exists():
+                readable_model_dir_real = os.path.realpath(readable_model_dir)
+                readable_live2d_real = os.path.realpath(readable_live2d)
+                if os.path.commonpath([readable_model_dir_real, readable_live2d_real]) == readable_live2d_real:
+                    return (str(readable_model_dir), '/user_live2d')
+    except Exception as e:
+        logging.warning(f"检查原始文档目录模型时出错: {e}")
+
     # 然后尝试创意工坊目录
     try:
         if WORKSHOP_SEARCH_DIR and os.path.exists(WORKSHOP_SEARCH_DIR):
