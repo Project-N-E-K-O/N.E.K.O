@@ -220,12 +220,26 @@
             </div>
             <div class="music-bar-info">
                 <div class="music-bar-title"></div>
+                <div class="music-bar-progress-container">
+                    <div class="music-bar-progress-fill"></div>
+                </div>
+                <div class="music-bar-time">
+                    <span class="music-bar-time-current">00:00</span>
+                    <span class="music-bar-time-total">00:00</span>
+                </div>
                 <div class="music-bar-artist"></div>
             </div>
             <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
             <button type="button" class="music-bar-close" aria-label="Close" title="Close">✕</button>
             <div id="${playerId}" style="display: none;"></div>
         `;
+
+        const formatTime = (seconds) => {
+            if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        };
 
         musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
@@ -303,25 +317,72 @@
             window.aplayerInjected.aplayer = localPlayer;
 
             if (apBtn) {
-                apBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    if (typeof window.setMusicUserDriven === 'function')
-                        window.setMusicUserDriven();
-                    localPlayer.toggle();
-                });
+                // 定义更新按钮状态的统一函数
                 const updatePlayBtnState = (isPlaying) => {
                     const icon = isPlaying ? '⏸' : '▶';
                     const text = isPlaying ? 'Pause' : 'Play';
-                    const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', text) : text;
+                    const tText = window.t ? window.t(isPlaying ? 'music.pause' : 'music.play', { defaultValue: text }) : text;
                     apBtn.textContent = icon;
                     apBtn.setAttribute('title', tText);
                     apBtn.setAttribute('aria-label', tText);
                 };
 
-                updatePlayBtnState(shouldAutoPlay);
+                // 初始化 UI：即使 shouldAutoPlay 为 true，也先显示“暂停”图标（或者“加载中”），
+                // 状态更新完全依赖于 APlayer 的事件回调，确保 UI 与实际声音一致。
+                updatePlayBtnState(false);
+
+                apBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (typeof window.setMusicUserDriven === 'function')
+                        window.setMusicUserDriven();
+                    
+                    // 处理播放结束后的重播逻辑
+                    // 由于 loop: 'none'，播放结束后直接 toggle 可能不会回到开头。
+                    if (localPlayer.audio.ended) {
+                        localPlayer.seek(0);
+                    }
+                    localPlayer.toggle();
+                });
+
                 localPlayer.on('play', () => updatePlayBtnState(true));
                 localPlayer.on('pause', () => updatePlayBtnState(false));
                 localPlayer.on('ended', () => updatePlayBtnState(false));
+
+                // --- 进度条同步逻辑 ---
+                const progressFill = musicBar.querySelector('.music-bar-progress-fill');
+                const timeCurrent = musicBar.querySelector('.music-bar-time-current');
+                const timeTotal = musicBar.querySelector('.music-bar-time-total');
+                const progressContainer = musicBar.querySelector('.music-bar-progress-container');
+
+                localPlayer.on('timeupdate', () => {
+                    if (!localPlayer || !localPlayer.audio) return;
+                    const currentTime = localPlayer.audio.currentTime;
+                    const duration = localPlayer.audio.duration;
+                    if (duration > 0) {
+                        const percentage = (currentTime / duration) * 100;
+                        if (progressFill) progressFill.style.width = percentage + '%';
+                        if (timeCurrent) timeCurrent.textContent = formatTime(currentTime);
+                        if (timeTotal) timeTotal.textContent = formatTime(duration);
+                    }
+                });
+
+                // --- 点击跳转逻辑 ---
+                if (progressContainer) {
+                    progressContainer.addEventListener('click', (e) => {
+                        if (!localPlayer || !localPlayer.audio) return;
+                        const rect = progressContainer.getBoundingClientRect();
+                        const clickX = e.clientX - rect.left;
+                        const width = rect.width;
+                        const percentage = clickX / width;
+                        const duration = localPlayer.audio.duration;
+                        if (duration > 0) {
+                            localPlayer.seek(percentage * duration);
+                        }
+                    });
+                }
+
+                // 同步当前实际状态以初始化按钮图标
+                updatePlayBtnState(!localPlayer.audio.paused);
 
                 // 处理浏览器拦截自动播放导致界面“假死”的问题
                 // APlayer 的 play() 实际上是一个 Promise，如果被拦截会抛出带有 'NotAllowedError' 的 DOMException
@@ -333,10 +394,10 @@
                             const playPromise = originalPlay.call(this);
                             if (playPromise !== undefined) {
                                 playPromise.catch(error => {
-                                    if (error.name === 'NotAllowedError') {
-                                        console.warn('[Music UI] 浏览器拦截了自动播放:', error);
-                                        // 回退 UI 按钮状态并给用户提示
-                                        apBtn.textContent = '▶';
+                                    if (error.name === 'NotAllowedError' || error.name === 'NotSupportedError') {
+                                        console.warn('[Music UI] 浏览器拦截了自动播放或不支持该格式:', error);
+                                        // 确保按钮图标切回播放状态
+                                        updatePlayBtnState(false);
                                         showErrorToast('music.autoplayBlocked', '浏览器限制了自动播放，请点击播放按钮');
                                     }
                                 });

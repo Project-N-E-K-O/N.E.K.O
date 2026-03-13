@@ -208,6 +208,9 @@ export function destroyAPlayer() {
     
     let success = true;
     try {
+        // 【核心修复】标记正在销毁，防止销毁过程中触发 error 事件导致界面弹出报错
+        window.aplayer._destroying = true;
+
         // 尝试正常暂停并销毁实例
         if (typeof window.aplayer.pause === 'function') {
             window.aplayer.pause();
