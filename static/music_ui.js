@@ -67,14 +67,15 @@
 
     const showErrorToast = (msgKey, defaultMsg) => {
         if (typeof window.showStatusToast === 'function') {
-            const errMsg = window.t ? window.t(msgKey, defaultMsg) : defaultMsg;
+            const errMsg = window.t ? window.t(msgKey, { defaultValue: defaultMsg }) : defaultMsg;
             window.showStatusToast(errMsg, 3000);
         }
     };
 
     const showNowPlayingToast = (name) => {
         if (typeof window.showStatusToast === 'function') {
-            const displayName = name || '未知曲目';
+            const unknownTrack = window.t ? window.t('music.unknownTrack', { defaultValue: '未知曲目' }) : '未知曲目';
+            const displayName = name || unknownTrack;
             const defaultText = '为您播放: ' + displayName;
             let playMsg = window.t ? window.t('music.nowPlaying', {
                 name: displayName,
@@ -280,7 +281,7 @@
         currentPlayingTrack = trackInfo;
         musicBar.querySelector('.music-bar-title').textContent = trackInfo.name || '未知曲目';
         musicBar.querySelector('.music-bar-artist').textContent = trackInfo.artist || '未知艺术家';
-        
+
         const coverImg = musicBar.querySelector('img');
         const fallbackIcon = musicBar.querySelector('.music-bar-fallback');
         if (hasCover && coverImg) {
@@ -424,22 +425,38 @@
                     window.addEventListener('touchmove', handleProgressMove); window.addEventListener('touchend', stopDrag);
                 });
 
-                // 劫持 play() 进行拦截检测
-                if (localPlayer.audio && localPlayer.audio.play) {
+                // 自动播放拦截器：精确区分“被拦截”与“加载失败”
+                if (localPlayer.audio && typeof localPlayer.audio.play === 'function') {
                     const originalPlay = localPlayer.audio.play;
-                    localPlayer.audio.play = function() {
+                    localPlayer.audio.play = function () {
                         const pp = originalPlay.call(this);
                         if (pp && pp.catch) {
                             pp.catch(err => {
                                 if (err.name === 'NotAllowedError') {
                                     autoplayBlocked = true;
                                     updatePlayBtnState(false);
-                                    showErrorToast('music.autoplayBlocked', '浏览器限制了自动播放，请点击播放按钮');
+                                    showErrorToast('music.autoplayBlocked', '由于浏览器限制，已拦截自动播放。请点击页面任意位置恢复，或点击此处。');
+                                    
+                                    // 交互式代理：一旦被拦截，监听全局下一次点击并尝试自动播放
+                                    setupAutoplayProxy();
                                 }
                             });
                         }
                         return pp;
                     };
+                }
+
+                function setupAutoplayProxy() {
+                    const startOnInteraction = () => {
+                        if (localPlayer && localPlayer.audio && localPlayer.audio.paused) {
+                            console.log('[Music UI] 检测到用户交互，正在尝试通过代理触发延迟播放');
+                            localPlayer.play();
+                        }
+                        window.removeEventListener('mousedown', startOnInteraction);
+                        window.removeEventListener('touchstart', startOnInteraction);
+                    };
+                    window.addEventListener('mousedown', startOnInteraction, { once: true });
+                    window.addEventListener('touchstart', startOnInteraction, { once: true });
                 }
             } else {
                 // --- 复用模式下的切歌逻辑 ---
@@ -481,7 +498,7 @@
                     .replace(/&amp%3B/g, '&')
                     .replace(/%26amp%3B/g, '&')
                     .replace(/&amp;/g, '&'); // 再次处理可能残留的层级
-                
+
                 trackInfo.url = cleanedUrl;
             } catch (e) {
                 console.warn('[Music UI] URL sanitization failed:', e);
