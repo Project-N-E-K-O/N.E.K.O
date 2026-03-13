@@ -47,7 +47,8 @@
                 'bcbits.com', 'soundcloud.com', 'sndcdn.com',
                 'playback.media-streaming.soundcloud.cloud', 'api.soundcloud.com',
                 'itunes.apple.com', 'audio-ssl.itunes.apple.com',
-                'dummyimage.com', 'music.163.com'
+                'dummyimage.com', 'music.163.com',
+                'hdslb.com', 'bilivideo.com'
             ];
             return allowedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d));
         } catch { return false; }
@@ -88,6 +89,10 @@
     };
 
     const destroyMusicPlayer = (removeDOM = true, fullTeardown = false) => {
+        // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
+        // 放在最前面以立即拦截还在 await 的 executePlay
+        latestMusicRequestToken++;
+
         // 核心：优先执行本地暂停，避免声音残留
         if (localPlayer && typeof localPlayer.pause === 'function') {
             localPlayer.pause();
@@ -98,7 +103,11 @@
                 window.destroyAPlayer();
             }
             if (localPlayer && typeof localPlayer.destroy === 'function') {
-                localPlayer.destroy();
+                try {
+                    localPlayer.destroy();
+                } catch (e) {
+                    console.warn('[Music UI] Error during player destroy:', e);
+                }
             }
         }
 
@@ -235,7 +244,7 @@
         const closeBtn = musicBar.querySelector('.music-bar-close');
         closeBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            latestMusicRequestToken++; // 取消可能正在进行的异步加载请求
+            // 不再需要在这里手动递增，destroyMusicPlayer 内部已经包含此逻辑
             destroyMusicPlayer(false, true); // 手动关闭时执行 full teardown
             if (musicBar.parentNode) {
                 musicBar.classList.add('fading-out');
@@ -343,8 +352,17 @@
                 apElement.style.display = 'none';
 
         } catch (err) {
+            // 如果 token 已经改变（说明请求被取消或有新请求），则忽略错误，不弹出 Toast
+            if (currentToken !== latestMusicRequestToken) {
+                console.log('[Music UI] 播放器请求已失效或取消，忽略捕获的错误');
+                return;
+            }
+
             console.error('[Music UI] 播放器出错:', err);
-            musicBar.remove();
+            if (musicBar && musicBar.parentNode) {
+                musicBar.remove();
+            }
+            
             if (currentToken === latestMusicRequestToken) {
                 currentPlayingTrack = null;
                 showErrorToast('music.playError', '音乐播放加载失败');
@@ -392,8 +410,13 @@
         loadAPlayerLibrary().then(() => {
             executePlay(trackInfo, currentToken, shouldAutoPlay);
         }).catch(err => {
-            console.error('[Music UI] 库加载失败:', err);
-            showErrorToast('music.loadError', '音乐播放器加载失败');
+            // 库加载失败同样需要校验 token，防止关闭后弹出报错
+            if (currentToken === latestMusicRequestToken) {
+                console.error('[Music UI] 库加载失败:', err);
+                showErrorToast('music.loadError', '音乐播放器加载失败');
+            } else {
+                console.log('[Music UI] 库加载失败，但请求已取消，忽略报错');
+            }
         });
 
         return true;
@@ -425,6 +448,30 @@
     // 监听任何点击或按键
     document.addEventListener('click', unlockAudio, { once: true });
     document.addEventListener('keydown', unlockAudio, { once: true });
+
+    const isMusicPlaying = () => {
+        try {
+            return !!(localPlayer && localPlayer.audio && !localPlayer.audio.paused && isPlayerInDOM());
+        } catch (e) {
+            console.error('[Music UI] Error checking if music is playing:', e);
+            return false;
+        }
+    };
+
+    const getMusicCurrentTrack = () => {
+        try {
+            return currentPlayingTrack || null;
+        } catch (e) {
+            console.error('[Music UI] Error getting current track:', e);
+            return null;
+        }
+    };
+
+    // --- 暴露接口 ---
+    window.destroyMusicPlayer = destroyMusicPlayer;
+    window.getMusicPlayerInstance = getMusicPlayerInstance;
+    window.isMusicPlaying = isMusicPlaying;
+    window.getMusicCurrentTrack = getMusicCurrentTrack;
 
     window.dispatchEvent(new CustomEvent('music-ui-ready'));
     console.log('[Music UI] 接口已暴露，就绪信号已发送');

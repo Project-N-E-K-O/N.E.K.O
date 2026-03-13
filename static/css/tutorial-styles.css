@@ -255,6 +255,34 @@
 }
 
 /* ============================================
+   右上角「跳过」按钮
+   ============================================ */
+
+#neko-tutorial-skip-btn {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 100001; /* 高于 driver.js 遮罩层 */
+    padding: 6px 16px;
+    background: transparent;
+    color: rgba(60, 60, 60, 0.6);
+    border: 3px solid rgba(60, 60, 60, 0.5);
+    border-radius: 10px;
+    font-size: 30px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    backdrop-filter: blur(4px);
+    pointer-events: auto;
+}
+
+#neko-tutorial-skip-btn:hover {
+    color: rgba(255, 255, 255, 0.95);
+    border-color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* ============================================
    高亮框通用修正
    ============================================ */
 

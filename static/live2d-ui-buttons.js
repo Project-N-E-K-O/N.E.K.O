@@ -276,15 +276,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     this._floatingButtonsContainer = buttonsContainer;
     this._floatingButtons = this._floatingButtons || {};
 
-    // 响应式：小屏时固定在右下角并纵向排列（使用全局 isMobileWidth）
+    // 响应式：小屏时固定在左上角并纵向排列（使用全局 isMobileWidth）
     const applyResponsiveFloatingLayout = () => {
         if (isMobileWidth()) {
-            // 移动端：固定在右下角，纵向排布，整体上移100px
+            // 移动端：固定在左上角，纵向排布
             buttonsContainer.style.flexDirection = 'column';
-            buttonsContainer.style.bottom = '116px';
-            buttonsContainer.style.right = '16px';
-            buttonsContainer.style.left = '';
-            buttonsContainer.style.top = '';
+            buttonsContainer.style.top = '16px';
+            buttonsContainer.style.left = '16px';
+            buttonsContainer.style.bottom = '';
+            buttonsContainer.style.right = '';
         } else {
             // 桌面端：恢复纵向排布，由 ticker 动态定位
             buttonsContainer.style.flexDirection = 'column';
@@ -641,107 +641,110 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     };
                     return;
                 }
-                const popup = this.createPopup(config.id);
+                if (!isMobileWidth()) {
+                    const popup = this.createPopup(config.id);
 
-                // 创建三角按钮（用于触发弹出框）- Fluent Design
-                const triggerBtn = document.createElement('div');
-                triggerBtn.className = 'live2d-trigger-btn';
-                // 使用图片图标替代文字符号
-                const triggerImg = document.createElement('img');
-                triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
-                triggerImg.alt = '▶';
-                triggerImg.className = `live2d-trigger-icon-${config.id}`;
-                Object.assign(triggerImg.style, {
-                    width: '22px', height: '22px', objectFit: 'contain',
-                    pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges',
-                    transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
-                });
-                triggerBtn.appendChild(triggerImg);
-                Object.assign(triggerBtn.style, {
-                    width: '24px',
-                    height: '24px',
-                    borderRadius: '50%',
-                    background: 'var(--neko-btn-bg)',  // Fluent Acrylic
-                    backdropFilter: 'saturate(180%) blur(20px)',
-                    border: 'var(--neko-btn-border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    boxShadow: 'var(--neko-btn-shadow)',
-                    transition: 'all 0.1s ease',
-                    pointerEvents: 'auto',
-                    marginLeft: '-10px'
-                });
+                    // 创建三角按钮（用于触发弹出框）- Fluent Design
+                    const triggerBtn = document.createElement('div');
+                    triggerBtn.className = 'live2d-trigger-btn';
+                    // 使用图片图标替代文字符号
+                    const triggerImg = document.createElement('img');
+                    triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+                    triggerImg.alt = '▶';
+                    triggerImg.className = `live2d-trigger-icon-${config.id}`;
+                    Object.assign(triggerImg.style, {
+                        width: '22px', height: '22px', objectFit: 'contain',
+                        pointerEvents: 'none', imageRendering: 'crisp-edges',
+                        transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
+                    });
+                    triggerImg.style.setProperty('-webkit-image-rendering', '-webkit-optimize-contrast');
+                    triggerBtn.appendChild(triggerImg);
+                    Object.assign(triggerBtn.style, {
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        background: 'var(--neko-btn-bg)',  // Fluent Acrylic
+                        backdropFilter: 'saturate(180%) blur(20px)',
+                        border: 'var(--neko-btn-border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        boxShadow: 'var(--neko-btn-shadow)',
+                        transition: 'all 0.1s ease',
+                        pointerEvents: 'auto',
+                        marginLeft: '-10px'
+                    });
 
-                // 阻止三角按钮上的指针事件传播到window，避免触发live2d拖拽
-                const stopTriggerEvent = (e) => {
-                    e.stopPropagation();
-                };
-                triggerBtn.addEventListener('pointerdown', stopTriggerEvent);
-                triggerBtn.addEventListener('pointermove', stopTriggerEvent);
-                triggerBtn.addEventListener('pointerup', stopTriggerEvent);
-                triggerBtn.addEventListener('mousedown', stopTriggerEvent);
-                triggerBtn.addEventListener('mousemove', stopTriggerEvent);
-                triggerBtn.addEventListener('mouseup', stopTriggerEvent);
-                triggerBtn.addEventListener('touchstart', stopTriggerEvent);
-                triggerBtn.addEventListener('touchmove', stopTriggerEvent);
-                triggerBtn.addEventListener('touchend', stopTriggerEvent);
+                    // 阻止三角按钮上的指针事件传播到window，避免触发live2d拖拽
+                    const stopTriggerEvent = (e) => {
+                        e.stopPropagation();
+                    };
+                    triggerBtn.addEventListener('pointerdown', stopTriggerEvent);
+                    triggerBtn.addEventListener('pointermove', stopTriggerEvent);
+                    triggerBtn.addEventListener('pointerup', stopTriggerEvent);
+                    triggerBtn.addEventListener('mousedown', stopTriggerEvent);
+                    triggerBtn.addEventListener('mousemove', stopTriggerEvent);
+                    triggerBtn.addEventListener('mouseup', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchstart', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchmove', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchend', stopTriggerEvent);
 
-                triggerBtn.addEventListener('mouseenter', () => {
-                    triggerBtn.style.transform = 'scale(1.05)';
-                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
-                    triggerBtn.style.background = 'var(--neko-btn-bg-hover)';
-                });
-                triggerBtn.addEventListener('mouseleave', () => {
-                    triggerBtn.style.transform = 'scale(1)';
-                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow)';
-                    triggerBtn.style.background = 'var(--neko-btn-bg)';
-                });
+                    triggerBtn.addEventListener('mouseenter', () => {
+                        triggerBtn.style.transform = 'scale(1.05)';
+                        triggerBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
+                        triggerBtn.style.background = 'var(--neko-btn-bg-hover)';
+                    });
+                    triggerBtn.addEventListener('mouseleave', () => {
+                        triggerBtn.style.transform = 'scale(1)';
+                        triggerBtn.style.boxShadow = 'var(--neko-btn-shadow)';
+                        triggerBtn.style.background = 'var(--neko-btn-bg)';
+                    });
 
-                triggerBtn.addEventListener('click', async (e) => {
-                    console.log(`[Live2D] 小三角被点击: ${config.id}`);
-                    e.stopPropagation();
+                    triggerBtn.addEventListener('click', async (e) => {
+                        console.log(`[Live2D] 小三角被点击: ${config.id}`);
+                        e.stopPropagation();
 
-                    // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
-                    const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+                        // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
+                        const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
 
-                    // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
-                    if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
-                        await window.renderFloatingMicList();
-                    }
-                    
-                    // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
-                    if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
-                        await window.renderFloatingScreenSourceList();
-                    }
+                        // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
+                        if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
+                            await window.renderFloatingMicList();
+                        }
+                        
+                        // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
+                        if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
+                            await window.renderFloatingScreenSourceList();
+                        }
 
-                    this.showPopup(config.id, popup);
-                });
+                        this.showPopup(config.id, popup);
+                    });
 
-                // 创建包装器用于三角按钮和弹出框（相对定位）
-                const triggerWrapper = document.createElement('div');
-                triggerWrapper.style.position = 'relative';
+                    // 创建包装器用于三角按钮和弹出框（相对定位）
+                    const triggerWrapper = document.createElement('div');
+                    triggerWrapper.style.position = 'relative';
 
-                // 阻止包装器上的指针事件传播到window，避免触发live2d拖拽
-                const stopTriggerWrapperEvent = (e) => {
-                    e.stopPropagation();
-                };
-                triggerWrapper.addEventListener('pointerdown', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('pointermove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('pointerup', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mousedown', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mousemove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mouseup', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchstart', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchmove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchend', stopTriggerWrapperEvent);
+                    // 阻止包装器上的指针事件传播到window，避免触发live2d拖拽
+                    const stopTriggerWrapperEvent = (e) => {
+                        e.stopPropagation();
+                    };
+                    triggerWrapper.addEventListener('pointerdown', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('pointermove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('pointerup', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mousedown', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mousemove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mouseup', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchstart', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchmove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchend', stopTriggerWrapperEvent);
 
-                triggerWrapper.appendChild(triggerBtn);
-                triggerWrapper.appendChild(popup);
+                    triggerWrapper.appendChild(triggerBtn);
+                    triggerWrapper.appendChild(popup);
 
-                btnWrapper.appendChild(triggerWrapper);
+                    btnWrapper.appendChild(triggerWrapper);
+                }
             }
         } else {
             // 普通点击按钮

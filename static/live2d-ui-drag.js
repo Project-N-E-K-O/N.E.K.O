@@ -715,6 +715,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             if (buttonId === 'settings' || buttonId === 'agent') {
                 popup.style.maxHeight = '200px';
                 popup.style.overflowY = 'auto';
+                popup.style.maxWidth = '';
+                popup.style.width = '';
             }
         }, 200);
     } else {
@@ -729,9 +731,21 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         popup.style.pointerEvents = 'none'; // 阻止 positionPopup 完成前的 hover 事件
 
         // 关键：在计算位置之前，先移除高度限制，确保获取真实尺寸
+        const isMobile = typeof isMobileWidth === 'function' && isMobileWidth();
         if (buttonId === 'settings' || buttonId === 'agent') {
-            popup.style.maxHeight = 'none';
-            popup.style.overflowY = 'visible';
+            if (isMobile) {
+                const maxHeight = Math.max(180, window.innerHeight - 120);
+                const maxWidth = Math.max(200, window.innerWidth - 32);
+                popup.style.maxHeight = `${maxHeight}px`;
+                popup.style.overflowY = 'auto';
+                popup.style.maxWidth = `${maxWidth}px`;
+                popup.style.width = 'auto';
+            } else {
+                popup.style.maxHeight = 'none';
+                popup.style.overflowY = 'visible';
+                popup.style.maxWidth = '';
+                popup.style.width = '';
+            }
         }
 
         // 等待popup内的所有图片加载完成，确保尺寸准确
@@ -763,7 +777,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                     bottomMargin: 60,
                     topMargin: 8,
                     gap: 8,
-                    sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') ? 320 : 0
+                    sidePanelWidth: (buttonId === 'settings' || buttonId === 'agent') && !isMobile ? 320 : 0
                 });
                 popup.style.transform = pos && pos.opensLeft ? 'translateX(10px)' : 'translateX(-10px)';
             }

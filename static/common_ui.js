@@ -580,7 +580,13 @@ if (toggleBtn) {
     // 获取聊天框当前的位置（left, bottom）
     function getChatContainerPosition() {
         const computedStyle = window.getComputedStyle(chatContainer);
-        const rect = chatContainer.getBoundingClientRect();
+        let rect = chatContainer.getBoundingClientRect();
+        if (isCollapsed() && toggleBtn) {
+            const toggleRect = toggleBtn.getBoundingClientRect();
+            if (toggleRect.width > 0 && toggleRect.height > 0) {
+                rect = toggleRect;
+            }
+        }
 
         let left = parseFloat(computedStyle.left);
         if (!Number.isFinite(left)) {
@@ -744,8 +750,17 @@ if (toggleBtn) {
         const newBottom = startContainerBottom - deltaY;
 
         // 限制在视口内
-        const maxLeft = window.innerWidth - chatContainer.offsetWidth;
-        const maxBottomRaw = window.innerHeight - chatContainer.offsetHeight;
+        let effectiveWidth = chatContainer.offsetWidth;
+        let effectiveHeight = chatContainer.offsetHeight;
+        if (isCollapsed() && toggleBtn) {
+            const toggleRect = toggleBtn.getBoundingClientRect();
+            if (toggleRect.width > 0 && toggleRect.height > 0) {
+                effectiveWidth = toggleRect.width;
+                effectiveHeight = toggleRect.height;
+            }
+        }
+        const maxLeft = window.innerWidth - effectiveWidth;
+        const maxBottomRaw = window.innerHeight - effectiveHeight;
         const topBoundary = CHAT_SNAP_CONFIG.margin;
         const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
 
