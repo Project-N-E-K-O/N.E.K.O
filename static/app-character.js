@@ -775,6 +775,33 @@
                                 console.error('[猫娘切换] Ticker 启动失败:', tickerError);
                             }
                         }
+                    } else {
+                        // 模型配置获取失败（可能因 CFA/反勒索防护导致路径不可用），回退到默认模型
+                        console.warn(`[猫娘切换] 模型配置获取失败 (HTTP ${modelConfigRes.status}: ${modelData.model_info.path}), 回退到默认模型 mao_pro`);
+                        try {
+                            const defaultPath = '/static/mao_pro/mao_pro.model3.json';
+                            const defaultRes = await fetch(defaultPath);
+                            if (defaultRes.ok) {
+                                const defaultConfig = await defaultRes.json();
+                                defaultConfig.url = defaultPath;
+                                await window.live2dManager.loadModel(defaultConfig, {
+                                    isMobile: window.innerWidth <= 768
+                                });
+                                if (window.LanLan1) {
+                                    window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                                    window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                                }
+                                // 确保 ticker 启动
+                                if (window.live2dManager?.pixi_app?.ticker && !window.live2dManager.pixi_app.ticker.started) {
+                                    window.live2dManager.pixi_app.ticker.start();
+                                }
+                                console.log('[猫娘切换] 已回退加载默认模型 mao_pro');
+                            } else {
+                                console.error('[猫娘切换] 默认模型也无法加载');
+                            }
+                        } catch (fallbackErr) {
+                            console.error('[猫娘切换] 默认模型加载失败:', fallbackErr);
+                        }
                     }
                 }
 
