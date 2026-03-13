@@ -543,10 +543,23 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_chara_directory()
-    user_live2d_path = str(_config_manager.live2d_dir)
-    if os.path.exists(user_live2d_path):
-        app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
-        logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
+
+    # CFA (反勒索防护) 感知挂载：
+    # 优先从原始 Documents 目录（可读）提供模型文件，
+    # 可写回退目录（AppData）作为辅助挂载供新导入的模型使用
+    _readable_live2d = _config_manager.readable_live2d_dir
+    _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
+
+    if os.path.exists(_serve_live2d_path):
+        app.mount("/user_live2d", CustomStaticFiles(directory=_serve_live2d_path), name="user_live2d")
+        logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
+
+    # CFA 场景：可写回退目录额外挂载，供新导入的模型使用
+    if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
+        _writable_live2d_path = str(_config_manager.live2d_dir)
+        if os.path.exists(_writable_live2d_path):
+            app.mount("/user_live2d_local", CustomStaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
+            logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
     # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
     vrm_animation_path = str(_config_manager.vrm_animation_dir)
