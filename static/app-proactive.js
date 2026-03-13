@@ -761,20 +761,20 @@
 
     /**
      * 主动视觉开关切换时的流生命周期管理
-     * 开启时：尝试获取前端流（用户手势上下文，可弹 getDisplayMedia），失败则依赖后端 pyautogui
+     * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
-        // 用户手势上下文，可弹 getDisplayMedia
-        var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
-        if (stream) {
-            console.log('[主动视觉] 前端流获取/复用成功');
+        // 策略1: 测试后端 pyautogui 是否可用（静默，无弹窗）
+        var backendResult = await fetchBackendScreenshot();
+        if (backendResult.dataUrl) {
+            console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
             return true;
         }
 
-        // 前端流全部失败，测试后端 pyautogui 作为兜底
-        var backendResult = await fetchBackendScreenshot();
-        if (backendResult.dataUrl) {
-            console.log('[主动视觉] 后端 pyautogui 可用，作为兜底');
+        // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
+        var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
+        if (stream) {
+            console.log('[主动视觉] 前端流获取/复用成功');
             return true;
         }
 
@@ -790,6 +790,12 @@
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) {
             console.log('[主动视觉] 手动屏幕共享活跃中，不释放流');
+            return;
+        }
+
+        // 如果正在录音（语音模式），流可能正在被使用，不释放
+        if (S.isRecording) {
+            console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 

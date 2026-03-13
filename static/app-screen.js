@@ -216,6 +216,7 @@
         var selectedSourceId = S.selectedScreenSourceId;
         if (selectedSourceId && window.electronDesktopCapturer) {
             try {
+                var timedOut = false;
                 var newStream = await Promise.race([
                     (async function () {
                         // 验证源存在
@@ -236,7 +237,7 @@
                             }
                         }
 
-                        return await navigator.mediaDevices.getUserMedia({
+                        var stream = await navigator.mediaDevices.getUserMedia({
                             audio: false,
                             video: {
                                 mandatory: {
@@ -246,9 +247,16 @@
                                 }
                             }
                         });
+                        // 超时后晚到的流需要立即释放，防止资源泄漏
+                        if (timedOut) {
+                            console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
+                            stream.getTracks().forEach(function (t) { t.stop(); });
+                            return null;
+                        }
+                        return stream;
                     })(),
                     new Promise(function (_, reject) {
-                        setTimeout(function () { reject(new Error('Electron capture timeout')); }, 500);
+                        setTimeout(function () { timedOut = true; reject(new Error('Electron capture timeout')); }, 500);
                     })
                 ]);
 
