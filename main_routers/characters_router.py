@@ -14,6 +14,7 @@ import os
 import asyncio
 import copy
 import base64
+import hashlib
 from datetime import datetime
 import pathlib
 import wave
@@ -27,6 +28,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
+from utils.file_utils import atomic_write_json
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from utils.logger_config import get_module_logger
@@ -756,23 +758,38 @@ async def update_catgirl_voice_id(name: str, request: Request):
     data = await request.json()
     if not data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
+    if 'voice_id' not in data:
+        logger.debug("猫娘 %s 的 voice_id 更新请求缺少字段，按无变更处理", name)
+        return {"success": True, "session_restarted": False, "voice_id_changed": False}
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
-    if 'voice_id' in data:
-        voice_id = data['voice_id']
-        # 验证voice_id是否在voice_storage中
-        if not _config_manager.validate_voice_id(voice_id):
-            voices = _config_manager.get_voices_for_current_api()
-            available_voices = list(voices.keys())
-            return JSONResponse({
-                'success': False, 
-                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
-                'available_voices': available_voices
-            }, status_code=400)
-        set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
+    voice_id = str(data.get('voice_id') or '').strip()
+    old_voice_id = str(get_reserved(
+        characters['猫娘'][name],
+        'voice_id',
+        default='',
+        legacy_keys=('voice_id',)
+    ) or '').strip()
+
+    # 幂等保护：提交同值时直接返回，避免无实际变更触发 reload_page。
+    if old_voice_id == voice_id:
+        logger.info("猫娘 %s 的 voice_id 未变化，跳过刷新流程", name)
+        return {"success": True, "session_restarted": False, "voice_id_changed": False}
+
+    # 验证voice_id是否在voice_storage中
+    if not _config_manager.validate_voice_id(voice_id):
+        voices = _config_manager.get_voices_for_current_api()
+        available_voices = list(voices.keys())
+        return JSONResponse({
+            'success': False,
+            'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+            'available_voices': available_voices
+        }, status_code=400)
+
+    set_reserved(characters['猫娘'][name], 'voice_id', voice_id)
     _config_manager.save_characters(characters)
     
     # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
@@ -782,7 +799,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if is_current_catgirl and name in session_manager:
         # 检查是否有活跃的session
         if session_manager[name].is_active:
-            logger.info(f"检测到 {name} 的voice_id已更新，准备刷新...")
+            logger.info(f"检测到 {name} 的voice_id已更新（{old_voice_id} -> {voice_id}），准备刷新...")
             
             # 1. 先发送刷新消息（WebSocket还连着）
             await send_reload_page_notice(session_manager[name])
@@ -805,7 +822,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
         logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
     
-    return {"success": True, "session_restarted": session_ended}
+    return {"success": True, "session_restarted": session_ended, "voice_id_changed": True}
 
 @router.get('/catgirl/{name}/voice_mode_status')
 async def get_catgirl_voice_mode_status(name: str):
@@ -1929,6 +1946,15 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         logger.error(f"读取文件到内存失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
     
+    # 计算参考音频的 MD5，用于去重
+    audio_md5 = hashlib.md5(file_content).hexdigest()
+    
+    # 提前规范化 ref_language
+    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
+    ref_language = ref_language.lower().strip() if ref_language else 'ch'
+    if ref_language not in valid_languages:
+        ref_language = 'ch'
+    
     # 检测是否使用本地 TTS（ws/wss 协议）
     _config_manager = get_config_manager()
     tts_config = _config_manager.get_model_api_config('tts_custom')
@@ -1937,6 +1963,18 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
     
     if is_local_tts:
         # ==================== 本地 TTS 注册流程 ====================
+        # MD5 + ref_language 去重：检查是否已有相同音频 + 相同语言注册过的音色
+        existing = _config_manager.find_voice_by_audio_md5('__LOCAL_TTS__', audio_md5, ref_language)
+        if existing:
+            voice_id, voice_data = existing
+            logger.info(f"本地 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
+            return JSONResponse({
+                'voice_id': voice_id,
+                'message': '已复用现有音色，跳过上传',
+                'reused': True,
+                'is_local': True
+            })
+        
         # 将 ws(s):// 转换为 http(s):// 用于 REST API 调用
         if base_url.startswith('wss://'):
             http_base = 'https://' + base_url[6:]
@@ -1977,6 +2015,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                         'voice_id': voice_id,
                         'prefix': prefix,
                         'is_local': True,
+                        'audio_md5': audio_md5,
+                        'ref_language': ref_language,
                         'created_at': datetime.now().isoformat()
                     }
                     try:
@@ -2011,14 +2051,23 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
     
     # ==================== 阿里云 TTS 注册流程（原有逻辑） ====================
     
-    # 根据参考音频语言计算 language_hints
+    # MD5 去重：提前获取 api_key 并检查是否有相同音频已注册
+    tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
+    dedup_api_key = tts_config_for_dedup.get('api_key', '')
+    if dedup_api_key:
+        existing = _config_manager.find_voice_by_audio_md5(dedup_api_key, audio_md5, ref_language)
+        if existing:
+            voice_id, voice_data = existing
+            logger.info(f"阿里云 TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
+            return JSONResponse({
+                'voice_id': voice_id,
+                'message': '已复用现有音色，跳过上传',
+                'reused': True
+            })
+    
+    # 根据参考音频语言计算 language_hints（ref_language 已在上方归一化）
     # 对于中文 (ch)，language_hints 为空列表
     # 对于其他语言，language_hints 为包含该语言代码的单元素列表
-    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
-    if ref_language not in valid_languages:
-        logger.warning(f"无效的语言代码 '{ref_language}'，使用默认值 'ch'")
-        ref_language = 'ch'
-    
     language_hints = [] if ref_language == 'ch' else [ref_language]
     logger.info(f"参考音频语言（阿里云）: {ref_language}, language_hints: {language_hints}")
 
@@ -2226,6 +2275,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                     'voice_id': voice_id,
                     'prefix': prefix,
                     'file_url': tmp_url,
+                    'audio_md5': audio_md5,
+                    'ref_language': ref_language,
                     'created_at': datetime.now().isoformat()
                 }
                 try:
@@ -2399,8 +2450,7 @@ async def save_catgirl_to_model_folder(request: Request):
             
         # 保存角色卡到模型文件夹
         file_path = os.path.join(model_folder_path, safe_name)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(chara_data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(file_path, chara_data, ensure_ascii=False, indent=2)
         
         logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
         return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}

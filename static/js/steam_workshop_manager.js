@@ -1084,8 +1084,8 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageElement.style.zIndex = '1000';
 
     // 为不同类型设置背景色和前景色
-    const bgColors = { error: '#ffebee', warning: '#fff8e1', success: '#e8f5e9', info: '#e3f2fd' };
-    const fgColors = { error: '#c62828', warning: '#e65100', success: '#2e7d32', info: '#1565c0' };
+    const bgColors = { error: '#fde8e8', warning: '#fdf6e3', success: '#e3f7f1', info: '#e8f4fd' };
+    const fgColors = { error: '#d04848', warning: '#c47e00', success: '#1a8a5c', info: '#2d8ec9' };
     messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
     messageElement.style.color = fgColors[type] || '#333';
 
@@ -1492,21 +1492,6 @@ function uploadItem() {
                         console.error('无法打开Steam overlay:', e);
                     }
 
-                    // 【成就】解锁创意工坊成就
-                    if (window.parent && window.parent.unlockAchievement) {
-                        window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    } else if (window.opener && window.opener.unlockAchievement) {
-                        window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    } else if (window.unlockAchievement) {
-                        window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    }
-
                     // 延迟关闭modal并跳转到角色卡页面
                     setTimeout(() => {
                         // 关闭上传modal
@@ -1667,6 +1652,23 @@ function loadSubscriptions() {
 
             // 保存所有订阅物品到全局变量
             allSubscriptions = data.items || [];
+
+            // 【成就】有订阅物品时解锁创意工坊成就
+            if (allSubscriptions.length > 0) {
+                if (window.parent && window.parent.unlockAchievement) {
+                    window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.opener && window.opener.unlockAchievement) {
+                    window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.unlockAchievement) {
+                    window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                }
+            }
 
             // 应用排序（从下拉框获取排序方式）
             const sortSelect = document.getElementById('sort-subscription');
@@ -3431,7 +3433,11 @@ function registerVoice() {
         .then(res => res.json())
         .then(data => {
             if (data.voice_id) {
-                resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                if (data.reused) {
+                    resultDiv.innerHTML = window.t ? window.t('voice.reusedExisting', { voiceId: data.voice_id }) : '已复用现有音色，跳过上传。voice_id: ' + data.voice_id;
+                } else {
+                    resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+                }
                 resultDiv.style.color = 'green';
 
                 // 自动更新voice_id到后端

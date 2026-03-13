@@ -13,6 +13,7 @@ from enum import Enum
 from config import NATIVE_IMAGE_MIN_INTERVAL, IMAGE_IDLE_RATE_MULTIPLIER
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
+from utils.file_utils import atomic_write_json
 from utils.frontend_utils import calculate_text_similarity
 from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
@@ -97,16 +98,15 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
                 logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
                 try:
                     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-                    with open(sentinel_path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {
-                                "path": diag_path,
-                                "timestamp": now_ts,
-                            },
-                            f,
-                            ensure_ascii=False,
-                            indent=2,
-                        )
+                    atomic_write_json(
+                        sentinel_path,
+                        {
+                            "path": diag_path,
+                            "timestamp": now_ts,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
                 except Exception as sentinel_write_err:
                     logger.error(f"Gemini diagnostic sentinel write failed: {sentinel_write_err}")
         except Exception as diag_err:
@@ -200,6 +200,7 @@ class OmniRealtimeClient:
         self._modalities = ["text", "audio"]
         self._audio_in_buffer = False
         self._skip_until_next_response = False
+        self._audio_delta_count = 0  # diagnostic: count audio.delta events per session
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -1100,18 +1101,34 @@ class OmniRealtimeClient:
                         await self.close()
                     continue
                 elif event_type == "response.done":
+                    # 解析实时 API 返回的 token 用量
+                    try:
+                        resp_data = event.get("response", {})
+                        _rt_usage = resp_data.get("usage")
+                        if _rt_usage:
+                            from utils.token_tracker import TokenTracker
+                            TokenTracker.get_instance().record(
+                                model=resp_data.get("model", self.model or "realtime"),
+                                prompt_tokens=_rt_usage.get("input_tokens", 0),
+                                completion_tokens=_rt_usage.get("output_tokens", 0),
+                                total_tokens=_rt_usage.get("total_tokens", 0),
+                                call_type="conversation_realtime",
+                                source="main_logic/omni_realtime_client",
+                            )
+                    except Exception:
+                        pass
                     self._is_responding = False
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
-                        # 不使用logger.info，避免日志文件泄露实际对话内容
-                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
+                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
-                        print("OmniRealtimeClient: response.done - 没有转录文本")
+                        print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    self._audio_delta_count = 0
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False
@@ -1160,6 +1177,9 @@ class OmniRealtimeClient:
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
+                        self._audio_delta_count += 1
+                        if self._audio_delta_count == 1:
+                            logger.info(f"🔊 首个 audio.delta 已收到 (type={event_type}, bytes={len(event.get('delta',''))})")
                         if self.on_audio_delta:
                             audio_bytes = base64.b64decode(event["delta"])
                             await self.on_audio_delta(audio_bytes)
@@ -1383,6 +1403,17 @@ class OmniRealtimeClient:
                 
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
                 if getattr(server_content, 'turn_complete', False):
+                    # Gemini Live API 不返回 token 数，仅记录调用次数
+                    try:
+                        from utils.token_tracker import TokenTracker
+                        TokenTracker.get_instance().record(
+                            model=self.model or "gemini-live",
+                            prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                            call_type="conversation_realtime_gemini",
+                            source="main_logic/omni_realtime_client",
+                        )
+                    except Exception:
+                        pass
                     self._is_responding = False
                     # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
                     if self.on_response_done:

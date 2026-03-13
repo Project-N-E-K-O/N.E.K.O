@@ -610,8 +610,8 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-btn-agent',
                 popover: {
-                    title: window.t ? window.t('tutorial.step8.title', '🔨 Agent工具') : '🔨 Agent工具',
-                    description: window.t ? window.t('tutorial.step8.desc', '打开 Agent 工具面板，使用各类辅助功能~') : '打开 Agent 工具面板，使用各类辅助功能~',
+                    title: window.t ? window.t('tutorial.step8.title', '🔨 NekoClaw') : '🔨 NekoClaw',
+                    description: window.t ? window.t('tutorial.step8.desc', '打开 NekoClaw 面板，使用 computer use、browser use 和 plugin 等功能~') : '打开 NekoClaw 面板，使用 computer use、browser use 和 plugin 等功能~',
                 },
                 disableActiveInteraction: true
             },
@@ -1761,7 +1761,41 @@ class UniversalTutorialManager {
                 });
             }
         }, 0);
+
+        // 显示跳过按钮
+        this.showSkipButton();
+
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
+    }
+
+    /**
+     * 在右上角显示「跳过」按钮，点击后结束引导
+     */
+    showSkipButton() {
+        // 避免重复创建
+        this.hideSkipButton();
+
+        const btn = document.createElement('button');
+        btn.id = 'neko-tutorial-skip-btn';
+        btn.textContent = this.t('tutorial.buttons.skip', '跳过');
+        btn.addEventListener('click', () => {
+            if (this.driver) {
+                this.driver.destroy();
+            }
+        });
+        document.body.appendChild(btn);
+        console.log('[Tutorial] 跳过按钮已显示');
+    }
+
+    /**
+     * 移除「跳过」按钮
+     */
+    hideSkipButton() {
+        const existing = document.getElementById('neko-tutorial-skip-btn');
+        if (existing) {
+            existing.remove();
+            console.log('[Tutorial] 跳过按钮已移除');
+        }
     }
 
     /**
@@ -2411,6 +2445,9 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
+
+        // 移除跳过按钮
+        this.hideSkipButton();
 
         // 清除刷新定时器
         if (this._refreshTimers) {

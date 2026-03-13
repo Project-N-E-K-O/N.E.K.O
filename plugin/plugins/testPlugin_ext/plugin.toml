@@ -4,7 +4,7 @@ name = "Test Plugin Extension"
 description = "示例 Extension，注入到 testPlugin 宿主进程中，演示 Hook 和扩展 entry"
 version = "0.1.0"
 type = "extension"
-entry = "plugins.testPlugin_ext:TestExtensionRouter"
+entry = "plugin.plugins.testPlugin_ext:TestExtensionRouter"
 
 [plugin.host]
 plugin_id = "testPlugin"

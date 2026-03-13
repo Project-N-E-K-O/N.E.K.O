@@ -9,6 +9,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -288,7 +289,8 @@ class OmniOfflineClient:
         try:
             self._is_responding = True
             reroll_count = 0
-            
+            set_call_type("conversation")
+
             # 防御性检查：确保对话历史中至少有用户消息
             has_user_message = any(isinstance(msg, HumanMessage) for msg in self._conversation_history)
             if not has_user_message:
@@ -487,6 +489,7 @@ class OmniOfflineClient:
 
         try:
             self._is_responding = True
+            set_call_type("proactive")
             async for chunk in self.llm.astream(messages_to_send):
                 if not self._is_responding:
                     break

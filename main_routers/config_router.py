@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
+from utils.file_utils import atomic_write_json
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
@@ -547,8 +548,7 @@ async def update_core_config(request: Request):
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
-        with open(core_config_path, 'w', encoding='utf-8') as f:
-            json.dump(core_cfg, f, indent=2, ensure_ascii=False)
+        atomic_write_json(core_config_path, core_cfg, indent=2, ensure_ascii=False)
         
         # API配置更新后，需要先通知所有客户端，再关闭session，最后重新加载配置
         logger.info("API配置已更新，准备通知客户端并重置所有session...")

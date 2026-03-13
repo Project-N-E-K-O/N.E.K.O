@@ -67,6 +67,7 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
         cursor: 'pointer',
         userSelect: 'none',
         pointerEvents: 'auto',
+        transition: 'opacity 0.3s ease',
         display: 'none' // 默认隐藏
     });
 
@@ -149,6 +150,33 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
             // 边界限制（现在窗口只覆盖一个屏幕，使用简单的边界检测）
             lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
             lockIcon.style.top = `${Math.max(0, Math.min(targetY, screenHeight - 40))}px`;
+
+            // 检测锁图标是否被弹出菜单或侧面板覆盖，覆盖时降低不透明度
+            const lockRect = lockIcon.getBoundingClientRect();
+            let isOverlapped = false;
+            // 检测所有可见的 popup
+            document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
+                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
+                    const popupRect = popup.getBoundingClientRect();
+                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
+                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
+                        isOverlapped = true;
+                    }
+                }
+            });
+            // 检测所有可见的侧面板
+            if (!isOverlapped) {
+                document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
+                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
+                        const panelRect = panel.getBoundingClientRect();
+                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
+                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
+                            isOverlapped = true;
+                        }
+                    }
+                });
+            }
+            lockIcon.style.opacity = isOverlapped ? '0.3' : '';
         } catch (_) {
             // 忽略单帧异常
         }
@@ -248,15 +276,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     this._floatingButtonsContainer = buttonsContainer;
     this._floatingButtons = this._floatingButtons || {};
 
-    // 响应式：小屏时固定在右下角并纵向排列（使用全局 isMobileWidth）
+    // 响应式：小屏时固定在左上角并纵向排列（使用全局 isMobileWidth）
     const applyResponsiveFloatingLayout = () => {
         if (isMobileWidth()) {
-            // 移动端：固定在右下角，纵向排布，整体上移100px
+            // 移动端：固定在左上角，纵向排布
             buttonsContainer.style.flexDirection = 'column';
-            buttonsContainer.style.bottom = '116px';
-            buttonsContainer.style.right = '16px';
-            buttonsContainer.style.left = '';
-            buttonsContainer.style.top = '';
+            buttonsContainer.style.top = '16px';
+            buttonsContainer.style.left = '16px';
+            buttonsContainer.style.bottom = '';
+            buttonsContainer.style.right = '';
         } else {
             // 桌面端：恢复纵向排布，由 ticker 动态定位
             buttonsContainer.style.flexDirection = 'column';
@@ -487,29 +515,36 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
-                    this.closePopupById(config.exclusive);
-                    // 更新被关闭的互斥按钮的图标
-                    const exclusiveData = this._floatingButtons[config.exclusive];
-                    if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
-                        exclusiveData.imgOff.style.opacity = '0.75';
-                        exclusiveData.imgOn.style.opacity = '0';
+                    const closed = this.closePopupById(config.exclusive);
+                    if (closed) {
+                        // 关闭成功，更新被关闭的互斥按钮的背景和图标
+                        const exclusiveData = this._floatingButtons[config.exclusive];
+                        if (exclusiveData && exclusiveData.button) {
+                            exclusiveData.button.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        }
+                        if (exclusiveData && exclusiveData.imgOff && exclusiveData.imgOn) {
+                            exclusiveData.imgOff.style.opacity = '0.75';
+                            exclusiveData.imgOn.style.opacity = '0';
+                        }
                     }
                 }
 
                 // 切换弹出框
                 this.showPopup(config.id, popup);
 
-                // 等待弹出框状态更新后更新图标状态
+                // 等待弹出框状态更新后更新图标和背景状态
                 setTimeout(() => {
                     const newPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-                    // 根据弹出框状态更新图标
-                    if (imgOff && imgOn) {
-                        if (newPopupVisible) {
-                            // 弹出框显示：显示on图标
+                    // 根据弹出框状态更新背景色和图标
+                    if (newPopupVisible) {
+                        btn.style.background = 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0';
                             imgOn.style.opacity = '1';
-                        } else {
-                            // 弹出框隐藏：显示off图标
+                        }
+                    } else {
+                        btn.style.background = 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
+                        if (imgOff && imgOn) {
                             imgOff.style.opacity = '0.75';
                             imgOn.style.opacity = '0';
                         }
@@ -606,107 +641,110 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     };
                     return;
                 }
-                const popup = this.createPopup(config.id);
+                if (!isMobileWidth()) {
+                    const popup = this.createPopup(config.id);
 
-                // 创建三角按钮（用于触发弹出框）- Fluent Design
-                const triggerBtn = document.createElement('div');
-                triggerBtn.className = 'live2d-trigger-btn';
-                // 使用图片图标替代文字符号
-                const triggerImg = document.createElement('img');
-                triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
-                triggerImg.alt = '▶';
-                triggerImg.className = `live2d-trigger-icon-${config.id}`;
-                Object.assign(triggerImg.style, {
-                    width: '22px', height: '22px', objectFit: 'contain',
-                    pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges',
-                    transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
-                });
-                triggerBtn.appendChild(triggerImg);
-                Object.assign(triggerBtn.style, {
-                    width: '24px',
-                    height: '24px',
-                    borderRadius: '50%',
-                    background: 'var(--neko-btn-bg)',  // Fluent Acrylic
-                    backdropFilter: 'saturate(180%) blur(20px)',
-                    border: 'var(--neko-btn-border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    boxShadow: 'var(--neko-btn-shadow)',
-                    transition: 'all 0.1s ease',
-                    pointerEvents: 'auto',
-                    marginLeft: '-10px'
-                });
+                    // 创建三角按钮（用于触发弹出框）- Fluent Design
+                    const triggerBtn = document.createElement('div');
+                    triggerBtn.className = 'live2d-trigger-btn';
+                    // 使用图片图标替代文字符号
+                    const triggerImg = document.createElement('img');
+                    triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+                    triggerImg.alt = '▶';
+                    triggerImg.className = `live2d-trigger-icon-${config.id}`;
+                    Object.assign(triggerImg.style, {
+                        width: '22px', height: '22px', objectFit: 'contain',
+                        pointerEvents: 'none', imageRendering: 'crisp-edges',
+                        transition: 'transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1)'
+                    });
+                    triggerImg.style.setProperty('-webkit-image-rendering', '-webkit-optimize-contrast');
+                    triggerBtn.appendChild(triggerImg);
+                    Object.assign(triggerBtn.style, {
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        background: 'var(--neko-btn-bg)',  // Fluent Acrylic
+                        backdropFilter: 'saturate(180%) blur(20px)',
+                        border: 'var(--neko-btn-border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        boxShadow: 'var(--neko-btn-shadow)',
+                        transition: 'all 0.1s ease',
+                        pointerEvents: 'auto',
+                        marginLeft: '-10px'
+                    });
 
-                // 阻止三角按钮上的指针事件传播到window，避免触发live2d拖拽
-                const stopTriggerEvent = (e) => {
-                    e.stopPropagation();
-                };
-                triggerBtn.addEventListener('pointerdown', stopTriggerEvent);
-                triggerBtn.addEventListener('pointermove', stopTriggerEvent);
-                triggerBtn.addEventListener('pointerup', stopTriggerEvent);
-                triggerBtn.addEventListener('mousedown', stopTriggerEvent);
-                triggerBtn.addEventListener('mousemove', stopTriggerEvent);
-                triggerBtn.addEventListener('mouseup', stopTriggerEvent);
-                triggerBtn.addEventListener('touchstart', stopTriggerEvent);
-                triggerBtn.addEventListener('touchmove', stopTriggerEvent);
-                triggerBtn.addEventListener('touchend', stopTriggerEvent);
+                    // 阻止三角按钮上的指针事件传播到window，避免触发live2d拖拽
+                    const stopTriggerEvent = (e) => {
+                        e.stopPropagation();
+                    };
+                    triggerBtn.addEventListener('pointerdown', stopTriggerEvent);
+                    triggerBtn.addEventListener('pointermove', stopTriggerEvent);
+                    triggerBtn.addEventListener('pointerup', stopTriggerEvent);
+                    triggerBtn.addEventListener('mousedown', stopTriggerEvent);
+                    triggerBtn.addEventListener('mousemove', stopTriggerEvent);
+                    triggerBtn.addEventListener('mouseup', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchstart', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchmove', stopTriggerEvent);
+                    triggerBtn.addEventListener('touchend', stopTriggerEvent);
 
-                triggerBtn.addEventListener('mouseenter', () => {
-                    triggerBtn.style.transform = 'scale(1.05)';
-                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
-                    triggerBtn.style.background = 'var(--neko-btn-bg-hover)';
-                });
-                triggerBtn.addEventListener('mouseleave', () => {
-                    triggerBtn.style.transform = 'scale(1)';
-                    triggerBtn.style.boxShadow = 'var(--neko-btn-shadow)';
-                    triggerBtn.style.background = 'var(--neko-btn-bg)';
-                });
+                    triggerBtn.addEventListener('mouseenter', () => {
+                        triggerBtn.style.transform = 'scale(1.05)';
+                        triggerBtn.style.boxShadow = 'var(--neko-btn-shadow-hover)';
+                        triggerBtn.style.background = 'var(--neko-btn-bg-hover)';
+                    });
+                    triggerBtn.addEventListener('mouseleave', () => {
+                        triggerBtn.style.transform = 'scale(1)';
+                        triggerBtn.style.boxShadow = 'var(--neko-btn-shadow)';
+                        triggerBtn.style.background = 'var(--neko-btn-bg)';
+                    });
 
-                triggerBtn.addEventListener('click', async (e) => {
-                    console.log(`[Live2D] 小三角被点击: ${config.id}`);
-                    e.stopPropagation();
+                    triggerBtn.addEventListener('click', async (e) => {
+                        console.log(`[Live2D] 小三角被点击: ${config.id}`);
+                        e.stopPropagation();
 
-                    // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
-                    const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+                        // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
+                        const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
 
-                    // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
-                    if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
-                        await window.renderFloatingMicList();
-                    }
-                    
-                    // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
-                    if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
-                        await window.renderFloatingScreenSourceList();
-                    }
+                        // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
+                        if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
+                            await window.renderFloatingMicList();
+                        }
+                        
+                        // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
+                        if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
+                            await window.renderFloatingScreenSourceList();
+                        }
 
-                    this.showPopup(config.id, popup);
-                });
+                        this.showPopup(config.id, popup);
+                    });
 
-                // 创建包装器用于三角按钮和弹出框（相对定位）
-                const triggerWrapper = document.createElement('div');
-                triggerWrapper.style.position = 'relative';
+                    // 创建包装器用于三角按钮和弹出框（相对定位）
+                    const triggerWrapper = document.createElement('div');
+                    triggerWrapper.style.position = 'relative';
 
-                // 阻止包装器上的指针事件传播到window，避免触发live2d拖拽
-                const stopTriggerWrapperEvent = (e) => {
-                    e.stopPropagation();
-                };
-                triggerWrapper.addEventListener('pointerdown', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('pointermove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('pointerup', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mousedown', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mousemove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('mouseup', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchstart', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchmove', stopTriggerWrapperEvent);
-                triggerWrapper.addEventListener('touchend', stopTriggerWrapperEvent);
+                    // 阻止包装器上的指针事件传播到window，避免触发live2d拖拽
+                    const stopTriggerWrapperEvent = (e) => {
+                        e.stopPropagation();
+                    };
+                    triggerWrapper.addEventListener('pointerdown', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('pointermove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('pointerup', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mousedown', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mousemove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('mouseup', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchstart', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchmove', stopTriggerWrapperEvent);
+                    triggerWrapper.addEventListener('touchend', stopTriggerWrapperEvent);
 
-                triggerWrapper.appendChild(triggerBtn);
-                triggerWrapper.appendChild(popup);
+                    triggerWrapper.appendChild(triggerBtn);
+                    triggerWrapper.appendChild(popup);
 
-                btnWrapper.appendChild(triggerWrapper);
+                    btnWrapper.appendChild(triggerWrapper);
+                }
             }
         } else {
             // 普通点击按钮

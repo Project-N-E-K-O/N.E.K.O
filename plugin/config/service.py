@@ -19,7 +19,7 @@ from loguru import logger
 
 from fastapi import HTTPException
 
-from plugin.settings import PLUGIN_CONFIG_ROOT
+from plugin.settings import PLUGIN_CONFIG_ROOTS
 
 # Schema 验证开关（可通过环境变量禁用）
 _SCHEMA_VALIDATION_ENABLED = os.getenv("NEKO_CONFIG_SCHEMA_VALIDATION", "true").lower() in ("true", "1", "yes", "on")
@@ -147,44 +147,33 @@ def get_plugin_config_path(plugin_id: str) -> Path:
             detail=f"Invalid plugin_id: '{plugin_id}'. Only alphanumeric characters, underscores, and hyphens are allowed."
         )
     
-    # 构建配置文件路径
-    config_file = PLUGIN_CONFIG_ROOT / plugin_id / "plugin.toml"
-    
-    # 解析路径并验证它在安全目录内(防止路径遍历攻击)
-    try:
-        resolved_path = config_file.resolve()
-        # Python 3.9+ 支持 is_relative_to
-        if hasattr(resolved_path, 'is_relative_to'):
-            if not resolved_path.is_relative_to(PLUGIN_CONFIG_ROOT.resolve()):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected."
-                )
-        else:
-            # Python 3.8 兼容:使用 str.startswith 检查
-            root_resolved = PLUGIN_CONFIG_ROOT.resolve()
-            resolved_str = str(resolved_path)
-            root_str = str(root_resolved)
-            if not resolved_str.startswith(root_str):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected."
-                )
-    except (OSError, ValueError) as e:
-        # 路径解析失败(例如包含无效字符)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
-        ) from e
-    
-    # 检查文件是否存在
-    if not config_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_id}' configuration not found"
-        )
-    
-    return config_file
+    for root in PLUGIN_CONFIG_ROOTS:
+        config_file = root / plugin_id / "plugin.toml"
+
+        try:
+            resolved_path = config_file.resolve()
+            if hasattr(resolved_path, 'is_relative_to'):
+                if not resolved_path.is_relative_to(root.resolve()):
+                    continue
+            else:
+                root_resolved = root.resolve()
+                resolved_str = str(resolved_path)
+                root_str = str(root_resolved)
+                if not resolved_str.startswith(root_str):
+                    continue
+        except (OSError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
+            ) from e
+
+        if config_file.exists():
+            return config_file
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Plugin '{plugin_id}' configuration not found"
+    )
 
 
 def load_plugin_config(plugin_id: str, *, validate: bool = True) -> Dict[str, Any]:

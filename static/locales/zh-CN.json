@@ -457,7 +457,7 @@
         "API_RATE_LIMIT_SESSION": "💥 API请求频率过高，请稍后再试。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 连接失败。请检查网络连接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 连接异常关闭: {{error}}",
-        "AGENT_QUOTA_EXCEEDED": "💥 免费 Agent 模型今日试用次数已达上限 ({{used}}/{{limit}})，请明日再试。",
+        "AGENT_QUOTA_EXCEEDED": "💥 免费猫爪模型今日试用次数已达上限 ({{used}}/{{limit}})，请明日再试。",
         "SESSION_START_CRITICAL": "⛔ Session启动连续失败{{count}}次，已停止自动重试。请检查网络连接和API配置，然后刷新页面重试。",
         "SESSION_START_FAILED": "💥 Session启动失败: {{error}} (失败{{count}}次)",
         "INTERNAL_UPDATE_FAILED": "💥 内部更新切换失败: {{error}}",
@@ -475,18 +475,18 @@
         "RELOAD_PAGE": "语音已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
-        "AGENT_LLM_CHECK_ERROR": "Agent LLM 连接检查异常",
+        "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
         "INVALID_INPUT_TYPE": "无效的输入类型: {{input_type}}",
         "UNKNOWN_ACTION": "未知操作: {{action}}",
         "SERVER_ERROR": "服务器内部错误",
         "AGENT_CU_MODULE_NOT_LOADED": "无法开启 Computer Use：模块未加载",
-        "AGENT_CU_ENABLED_CHECKING": "键鼠控制已开启，Agent LLM 连接确认中...",
+        "AGENT_CU_ENABLED_CHECKING": "键鼠控制已开启，猫爪 LLM 连接确认中...",
         "AGENT_CU_UNAVAILABLE": "无法开启 Computer Use：$t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "开启 Computer Use 失败：{{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "无法开启 Browser Use：模块未加载",
         "AGENT_BU_NOT_INSTALLED": "无法开启 Browser Use：{{error}}",
         "AGENT_UP_ENABLED_CHECKING": "用户插件已开启，正在启动插件服务...",
-        "AGENT_BU_ENABLED_CHECKING": "浏览器控制已开启，Agent LLM 连接确认中...",
+        "AGENT_BU_ENABLED_CHECKING": "浏览器控制已开启，猫爪 LLM 连接确认中...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 模块未加载，已自动关闭",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use 不可用：$t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS服务连接失败: {{msg}}",
@@ -1030,6 +1030,7 @@
         "prefixFormatError": "前缀格式错误：不超过10个字符，只支持数字和英文字母",
         "registering": "正在注册声音，请稍后！",
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
+        "reusedExisting": "已复用现有音色，跳过上传。voice_id: {{voiceId}}",
         "registerFailed": "注册失败：{{error}}",
         "requestError": "请求出错：{{error}}",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
@@ -1304,7 +1305,7 @@
     "buttons": {
         "voiceControl": "语音控制",
         "screenShare": "屏幕分享",
-        "agentTools": "Agent工具",
+        "agentTools": "猫爪",
         "settings": "设置",
         "leave": "请她离开",
         "return": "请她回来"
@@ -1354,7 +1355,7 @@
             "proactivePersonalChatTooltip": "使用已连接平台的个人动态进行搭话",
             "proactiveMusicChat": "音乐推荐",
             "proactiveMusicChatTooltip": "使用推荐音乐进行搭话",
-            "agentMaster": "Agent总开关",
+            "agentMaster": "猫爪总开关",
             "keyboardControl": "键鼠控制",
             "userPlugin": "用户插件",
             "pluginConfigPage": "配置页",
@@ -1364,8 +1365,8 @@
             "focusMode": "允许打断",
             "unavailable": "{{name}}不可用",
             "checking": "查询中...",
-            "serverOffline": "Agent服务器未启动",
-            "masterRequired": "请先开启Agent总开关",
+            "serverOffline": "猫爪服务器未启动",
+            "masterRequired": "请先开启猫爪总开关",
             "capabilityNotReady": "{{name}}尚未就绪，点击尝试启用",
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
@@ -1394,38 +1395,38 @@
     },
     "agent": {
         "status": {
-            "connecting": "Agent服务器连接中...",
-            "ready": "Agent服务器就绪",
-            "enabled": "Agent模式已开启",
-            "disabled": "Agent模式已关闭",
-            "disabledError": "Agent模式已关闭（部分清理失败）",
+            "connecting": "猫爪服务器连接中...",
+            "ready": "猫爪服务器就绪",
+            "enabled": "猫爪模式已开启",
+            "disabled": "猫爪模式已关闭",
+            "disabledError": "猫爪模式已关闭（部分清理失败）",
             "enableFailed": "开启失败",
             "disconnected": "服务器连接已断开",
-            "agentDisconnected": "Agent 服务器连接已断开",
-            "freeModelWarning": "由于限额问题，免费模型使用Agent模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
+            "agentDisconnected": "猫爪服务器连接已断开",
+            "freeModelWarning": "由于限额问题，免费模型使用猫爪模式容易阻塞，建议您切换至自费模型。\n\n如果您已经配置好自费API，请尝试重启NEKO。",
             "freeModelWarningTitle": "免费模型提示",
-            "connectivityCheck": "Agent LLM 连接检查中...",
-            "precheckFailed": "Agent 预检失败：{{reason}}"
+            "connectivityCheck": "猫爪 LLM 连接检查中...",
+            "precheckFailed": "猫爪预检失败：{{reason}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "连接检查中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安装",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安装",
-            "AGENT_NOT_INITIALIZED": "Agent 初始化失败",
-            "AGENT_LLM_UNREACHABLE": "Agent LLM 连接失败",
-            "AGENT_MODEL_NOT_CONFIGURED": "Agent 模型未配置",
+            "AGENT_NOT_INITIALIZED": "猫爪初始化失败",
+            "AGENT_LLM_UNREACHABLE": "猫爪 LLM 连接失败",
+            "AGENT_MODEL_NOT_CONFIGURED": "猫爪模型未配置",
             "AGENT_URL_NOT_CONFIGURED": "Agent API URL 未配置",
             "AGENT_KEY_NOT_CONFIGURED": "Agent API Key 未配置或不可用",
             "AGENT_NO_PLUGINS": "未发现可用插件",
             "AGENT_NO_PLUGINS_FOUND": "未发现可用插件",
             "AGENT_PLUGIN_SERVER_ERROR": "插件服务器连接失败",
-            "AGENT_CONNECTIVITY_FAILED": "Agent LLM 连接失败"
+            "AGENT_CONNECTIVITY_FAILED": "猫爪 LLM 连接失败"
         },
-        "quotaExceeded": "免费 Agent 模型今日试用次数已达上限（{{limit}}次），请明日再试。",
-        "contentFilterError": "Agent 浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。",
+        "quotaExceeded": "免费猫爪模型今日试用次数已达上限（{{limit}}次），请明日再试。",
+        "contentFilterError": "猫爪浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。",
         "taskHud": {
-            "title": "Agent 任务",
+            "title": "猫爪任务",
             "running": "运行中",
             "queued": "队列中",
             "noTasks": "暂无活动任务",
@@ -1435,7 +1436,11 @@
             "statusFailed": "失败",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
-            "cancelConfirm": "确定要终止所有正在进行的任务吗？"
+            "cancelConfirm": "确定要终止所有正在进行的任务吗？",
+            "typeUserPlugin": "用户插件",
+            "typeComputerUse": "键鼠控制",
+            "typeBrowserUse": "浏览器控制",
+            "typeMCP": "MCP工具"
         }
     },
     "vrm": {
@@ -1620,8 +1625,8 @@
             "desc": "分享屏幕/窗口/标签页，让猫娘看到你的画面~"
         },
         "step8": {
-            "title": "🔨 Agent工具",
-            "desc": "打开 Agent 工具面板，使用各类辅助功能~"
+            "title": "🔨 猫爪",
+            "desc": "打开猫爪面板，使用 computer use、browser use 和 plugin 等功能~"
         },
         "step9": {
             "title": "💤 请她离开",
@@ -1952,7 +1957,8 @@
             "next": "下一步",
             "prev": "上一步",
             "done": "完成",
-            "close": "关闭"
+            "close": "关闭",
+            "skip": "跳过"
         },
         "fullscreenPrompt": {
             "title": "🎓 开始新手引导",
@@ -2306,7 +2312,9 @@
         "showPlaylist": "显示播放列表",
         "hidePlaylist": "隐藏播放列表",
         "searchFailed": "音乐搜索失败",
-        "playError": "播放出错",
+        "playError": "音乐播放加载失败",
+        "loadError": "音乐播放器加载失败",
+        "autoplayBlocked": "浏览器限制了自动播放，请点击播放按钮",
         "ended": "已结束"
     },
     "notice": {

@@ -2,6 +2,7 @@ import json
 import os
 from typing import Dict, Any, Optional, List
 from utils.config_manager import get_config_manager
+from utils.file_utils import atomic_write_json
 
 # 初始化配置管理器
 _config_manager = get_config_manager()
@@ -51,8 +52,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         global PREFERENCES_FILE
         PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
         
-        with open(PREFERENCES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(preferences, f, ensure_ascii=False, indent=2)
+        atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"保存用户偏好失败: {e}")

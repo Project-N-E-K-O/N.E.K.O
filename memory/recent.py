@@ -1,5 +1,6 @@
 from config import get_extra_body
 from utils.config_manager import get_config_manager
+from utils.token_tracker import set_call_type
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
 import json
@@ -11,6 +12,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config.prompts_sys import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
 
 # Setup logger
+from utils.file_utils import atomic_write_json
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
@@ -25,10 +27,40 @@ class CompressedRecentHistoryManager:
         self.user_histories = {}
         for ln in self.log_file_path:
             if os.path.exists(self.log_file_path[ln]):
-                with open(self.log_file_path[ln], encoding='utf-8') as f:
-                    self.user_histories[ln] = messages_from_dict(json.load(f))
+                self.user_histories[ln] = self._load_history_from_file(self.log_file_path[ln], ln)
             else:
                 self.user_histories[ln] = []
+
+    def _reset_history_file(self, file_path, lanlan_name, reason):
+        """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
+        try:
+            atomic_write_json(file_path, [], indent=2, ensure_ascii=False)
+            logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
+        except Exception as reset_error:
+            logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
+
+    def _load_history_from_file(self, file_path, lanlan_name):
+        """安全读取 recent 文件，遇到空文件或非法 JSON 时自动重置。"""
+        try:
+            with open(file_path, encoding='utf-8') as f:
+                raw_content = f.read()
+
+            if not raw_content.strip():
+                self._reset_history_file(file_path, lanlan_name, "文件为空")
+                return []
+
+            file_content = json.loads(raw_content)
+            if not isinstance(file_content, list):
+                self._reset_history_file(file_path, lanlan_name, "JSON 根节点不是列表")
+                return []
+
+            return messages_from_dict(file_content)
+        except json.JSONDecodeError as e:
+            self._reset_history_file(file_path, lanlan_name, f"JSON 解析失败: {e}")
+            return []
+        except Exception as e:
+            logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
+            return []
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
@@ -88,14 +120,10 @@ class CompressedRecentHistoryManager:
         
         # 如果文件存在，加载历史记录
         if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            try:
-                with open(self.log_file_path[lanlan_name], encoding='utf-8') as f:
-                    file_content = json.load(f)
-                    if file_content:
-                        self.user_histories[lanlan_name] = messages_from_dict(file_content)
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
-                self.user_histories[lanlan_name] = []
+            self.user_histories[lanlan_name] = self._load_history_from_file(
+                self.log_file_path[lanlan_name],
+                lanlan_name
+            )
 
         try:
             self.user_histories[lanlan_name].extend(new_messages)
@@ -105,8 +133,12 @@ class CompressedRecentHistoryManager:
             file_path = self.log_file_path[lanlan_name]
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            with open(file_path, "w", encoding='utf-8') as f:  # Save the updated history to file before compressing
-                json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
+            atomic_write_json(
+                file_path,
+                messages_to_dict(self.user_histories[lanlan_name]),
+                indent=2,
+                ensure_ascii=False,
+            )  # Save the updated history to file before compressing
 
             if compress and len(self.user_histories[lanlan_name]) > self.max_history_length:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
@@ -118,8 +150,12 @@ class CompressedRecentHistoryManager:
             try:
                 file_path = self.log_file_path[lanlan_name]
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                with open(file_path, "w", encoding='utf-8') as f:
-                    json.dump(messages_to_dict(self.user_histories.get(lanlan_name, [])), f, indent=2, ensure_ascii=False)
+                atomic_write_json(
+                    file_path,
+                    messages_to_dict(self.user_histories.get(lanlan_name, [])),
+                    indent=2,
+                    ensure_ascii=False,
+                )
             except Exception as save_error:
                 logger.error(f"[RecentHistory] 保存历史记录失败: {save_error}", exc_info=True)
             return
@@ -128,8 +164,12 @@ class CompressedRecentHistoryManager:
         try:
             file_path = self.log_file_path[lanlan_name]
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            with open(file_path, "w", encoding='utf-8') as f:
-                json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
+            atomic_write_json(
+                file_path,
+                messages_to_dict(self.user_histories[lanlan_name]),
+                indent=2,
+                ensure_ascii=False,
+            )
             logger.debug(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
         except Exception as e:
             logger.error(f"[RecentHistory] 最终保存历史记录失败: {e}", exc_info=True)
@@ -169,6 +209,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(prompt)).content
                 # 修复类型问题：确保response_content是字符串
@@ -213,6 +254,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
                 # 修复类型问题：确保response_content是字符串
@@ -276,14 +318,10 @@ class CompressedRecentHistoryManager:
         
         # 如果文件存在，加载历史记录
         if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            try:
-                with open(self.log_file_path[lanlan_name], encoding='utf-8') as f:
-                    file_content = json.load(f)
-                    if file_content:
-                        self.user_histories[lanlan_name] = messages_from_dict(file_content)
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
-                self.user_histories[lanlan_name] = []
+            self.user_histories[lanlan_name] = self._load_history_from_file(
+                self.log_file_path[lanlan_name],
+                lanlan_name
+            )
         
         return self.user_histories.get(lanlan_name, [])
 
@@ -358,6 +396,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 使用LLM审阅历史记录
+                set_call_type("memory_review")
                 prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
                 response_content = (await review_llm.ainvoke(prompt)).content
@@ -401,8 +440,12 @@ class CompressedRecentHistoryManager:
                     self.user_histories[lanlan_name] = corrected_messages
                     
                     # 保存到文件
-                    with open(self.log_file_path[lanlan_name], "w", encoding='utf-8') as f:
-                        json.dump(messages_to_dict(corrected_messages), f, indent=2, ensure_ascii=False)
+                    atomic_write_json(
+                        self.log_file_path[lanlan_name],
+                        messages_to_dict(corrected_messages),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
                     
                     print(f"✅ {lanlan_name} 的记忆已修正并保存")
                     return True

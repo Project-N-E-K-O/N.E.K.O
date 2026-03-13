@@ -44,7 +44,7 @@ window.LIPSYNC_PARAMS = [
 
 // 模型偏好验证常量
 const MODEL_PREFERENCES = {
-    SCALE_MIN: 0,
+    SCALE_MIN: 0.005,
     SCALE_MAX: 10,
     POSITION_MAX: 100000
 };
@@ -56,8 +56,8 @@ function isValidModelPreferences(scale, position) {
     const scaleY = scale.y;
     const posX = position.x;
     const posY = position.y;
-    const isValidScale = Number.isFinite(scaleX) && scaleX > MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
-                        Number.isFinite(scaleY) && scaleY > MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
+    const isValidScale = Number.isFinite(scaleX) && scaleX >= MODEL_PREFERENCES.SCALE_MIN && scaleX < MODEL_PREFERENCES.SCALE_MAX &&
+                        Number.isFinite(scaleY) && scaleY >= MODEL_PREFERENCES.SCALE_MIN && scaleY < MODEL_PREFERENCES.SCALE_MAX;
     const isValidPosition = Number.isFinite(posX) && Number.isFinite(posY) &&
                            Math.abs(posX) < MODEL_PREFERENCES.POSITION_MAX && Math.abs(posY) < MODEL_PREFERENCES.POSITION_MAX;
     return isValidScale && isValidPosition;
@@ -652,14 +652,14 @@ class Live2DManager {
         // 更新 dataset
         buttonData.button.dataset.active = active ? 'true' : 'false';
 
-        // 更新背景色
+        // 更新背景色（使用 CSS 变量，确保暗色模式正确）
         buttonData.button.style.background = active
-            ? 'rgba(68, 183, 254, 0.3)'
-            : 'rgba(255, 255, 255, 0.65)';
+            ? 'var(--neko-btn-bg-active, rgba(255, 255, 255, 0.75))'
+            : 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))';
 
         // 更新图标
         if (buttonData.imgOff) {
-            buttonData.imgOff.style.opacity = active ? '0' : '1';
+            buttonData.imgOff.style.opacity = active ? '0' : '0.75';
         }
         if (buttonData.imgOn) {
             buttonData.imgOn.style.opacity = active ? '1' : '0';
@@ -720,9 +720,14 @@ class Live2DManager {
             }
         } else {
             this.isFocusing = false;
-            if (this.currentModel) {
-                const b = this.currentModel.getBounds();
-                this.currentModel.focus((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+            // 清除 focusController 的外部输入，使头部不受鼠标/拖拽等外部因素影响
+            // 自主运动（updateNaturalMovements：呼吸、轻微摆动）通过独立管线叠加，不受影响
+            // 注意：不能用 model.focus(center) — 它经过 toModelPosition + atan2 + 单位圆投影，
+            // 永远产生非零值（如 targetX=1），无法真正归零
+            if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.focusController) {
+                const fc = this.currentModel.internalModel.focusController;
+                fc.targetX = 0;
+                fc.targetY = 0;
             }
         }
     }
@@ -750,53 +755,109 @@ window.addEventListener('neko-frame-rate-changed', (e) => {
 });
 
 // 监听画质变更事件：需要重新加载模型以应用新的纹理降采样
+let _qualityChangePending = false;
+let _qualityChangeQueued = null;
+
 window.addEventListener('neko-render-quality-changed', (e) => {
     const quality = e.detail?.quality;
     if (!quality || !window.live2dManager) return;
-    const mgr = window.live2dManager;
-    const modelPath = mgr._lastLoadedModelPath;
-    if (modelPath && mgr.currentModel) {
-        console.log(`[Live2D] 画质变更为 ${quality}，重新加载模型以应用纹理降采样`);
-        // 显式销毁当前模型的 BaseTexture，清除 PIXI 纹理缓存
-        // 否则 PIXI.BaseTexture.from(url) 会返回被降采样过的缓存纹理
+    
+    _qualityChangeQueued = quality;
+    
+    if (_qualityChangePending) {
+        console.log(`[Live2D] 画质变更请求排队中: ${quality}`);
+        return;
+    }
+    
+    const processQualityChange = async () => {
+        const mgr = window.live2dManager;
+        if (!mgr || !mgr.currentModel) return;
+        
+        const currentQuality = _qualityChangeQueued;
+        _qualityChangeQueued = null;
+        
+        if (!currentQuality) return;
+        
+        if (!mgr.currentModel) return;
+        
+        _qualityChangePending = true;
+        
         try {
-            const textures = mgr.currentModel.textures;
-            if (textures) {
-                textures.forEach(tex => {
-                    if (tex?.baseTexture) {
-                        tex.baseTexture.destroy();
-                    }
+            if (mgr._isLoadingModel) {
+                console.log('[Live2D] 等待当前模型加载完成后重新加载...');
+                await new Promise((resolve) => {
+                    const checkInterval = setInterval(() => {
+                        if (!mgr._isLoadingModel) {
+                            clearInterval(checkInterval);
+                            clearTimeout(waitTimeout);
+                            resolve();
+                        }
+                    }, 100);
+                    const waitTimeout = setTimeout(() => {
+                        clearInterval(checkInterval);
+                        console.warn('[Live2D] 等待模型加载超时(30秒)，继续执行...');
+                        resolve();
+                    }, 30000);
                 });
             }
+            
+            if (!mgr.currentModel) return;
+            
+            const modelPath = mgr._lastLoadedModelPath;
+            if (!modelPath) return;
+            
+            console.log(`[Live2D] 画质变更为 ${currentQuality}，重新加载模型以应用纹理降采样`);
+            
+            const modelForSave = mgr.currentModel;
+            
+            try {
+                const textures = modelForSave.textures;
+                if (textures) {
+                    textures.forEach(tex => {
+                        if (tex?.baseTexture) {
+                            tex.baseTexture.destroy();
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn('[Live2D] 清理纹理缓存时出错:', err);
+            }
+            
+            const scaleX = modelForSave.scale.x;
+            const scaleY = modelForSave.scale.y;
+            const posX = modelForSave.x;
+            const posY = modelForSave.y;
+            
+            const scaleObj = { x: scaleX, y: scaleY };
+            const positionObj = { x: posX, y: posY };
+            let savedPreferences = null;
+            
+            if (isValidModelPreferences(scaleObj, positionObj)) {
+                savedPreferences = {
+                    scale: scaleObj,
+                    position: positionObj
+                };
+            } else {
+                console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
+                    scaleX, scaleY, posX, posY
+                });
+            }
+            
+            if (mgr._lastLoadedModelPath !== modelPath) {
+                console.warn('[Live2D] 模型已切换，跳过此次画质变更加载');
+                return;
+            }
+            
+            await mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined);
         } catch (err) {
-            console.warn('[Live2D] 清理纹理缓存时出错:', err);
-        }
-        
-        // 保存当前模型的 scale 和 position，以便重新加载后恢复
-        const modelForSave = mgr.currentModel;
-        
-        const scaleX = modelForSave.scale.x;
-        const scaleY = modelForSave.scale.y;
-        const posX = modelForSave.x;
-        const posY = modelForSave.y;
-        
-        const scaleObj = { x: scaleX, y: scaleY };
-        const positionObj = { x: posX, y: posY };
-        let savedPreferences = null;
-        
-        if (isValidModelPreferences(scaleObj, positionObj)) {
-            savedPreferences = {
-                scale: scaleObj,
-                position: positionObj
-            };
-        } else {
-            console.warn('[Live2D] 当前模型的 scale/position 无效，跳过保存偏好:', {
-                scaleX, scaleY, posX, posY
-            });
-        }
-        
-        mgr.loadModel(modelPath, savedPreferences ? { preferences: savedPreferences } : undefined).catch(err => {
             console.warn('[Live2D] 画质变更后重新加载模型失败:', err);
-        });
-    }
+        } finally {
+            _qualityChangePending = false;
+            if (_qualityChangeQueued) {
+                setTimeout(processQualityChange, 50);
+            }
+        }
+    };
+    
+    processQualityChange();
 });

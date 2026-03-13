@@ -33,6 +33,8 @@ from config import get_extra_body, MEMORY_SERVER_PORT
 from config.prompts_sys import (
     emotion_analysis_prompt,
     get_proactive_screen_prompt, get_proactive_generate_prompt,
+    get_proactive_music_playing_hint,
+    get_proactive_music_unknown_track_name,
     get_proactive_format_sections,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
@@ -64,6 +66,13 @@ from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+
+
+@router.get("/token-usage")
+async def get_token_usage(days: int = 7):
+    """返回最近 N 天的 LLM token 用量统计。"""
+    from utils.token_tracker import TokenTracker
+    return TokenTracker.get_instance().get_stats(days=min(days, 90))
 
 
 @router.get("/pending-notices")
@@ -714,8 +723,10 @@ async def emotion_analysis(request: Request):
         if extra_body:
             request_params["extra_body"] = extra_body
         
+        from utils.token_tracker import set_call_type
+        set_call_type("emotion")
         response = await client.chat.completions.create(**request_params)
-        
+
         # 解析响应
         result_text = response.choices[0].message.content.strip()
 
@@ -1346,6 +1357,20 @@ async def backend_screenshot(request: Request):
         shot = pyautogui.screenshot()
         if shot.mode in ('RGBA', 'LA', 'P'):
             shot = shot.convert('RGB')
+
+        # macOS 黑屏检测：仅在 macOS 上执行——未授权 Screen Recording 时 pyautogui 返回全黑图片
+        # 其他平台（Windows/Linux）全黑截图属正常内容，不应拦截
+        if sys.platform == "darwin":
+            # 低分辨率采样：把图缩到 16×16 后用 PIL extrema 检测，避免全量 numpy 数组的内存开销
+            try:
+                thumb = shot.resize((16, 16))
+                extrema = thumb.getextrema()  # ((min_r, max_r), (min_g, max_g), (min_b, max_b))
+                if all(mx <= 1 for _, mx in extrema):
+                    logger.warning("后端截图检测到全黑图片，可能缺少 Screen Recording 权限")
+                    return JSONResponse({"success": False, "error": "screenshot is blank (Screen Recording permission may be denied)"}, status_code=403)
+            except Exception:
+                logger.debug("macOS blank-screen detection failed, skipping check", exc_info=True)
+
         jpg_bytes = compress_screenshot(shot, target_h=COMPRESS_TARGET_HEIGHT, quality=COMPRESS_JPEG_QUALITY)
         b64 = base64.b64encode(jpg_bytes).decode('utf-8')
         data_url = f"data:image/jpeg;base64,{b64}"
@@ -1368,6 +1393,8 @@ async def proactive_chat(request: Request):
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
+        is_playing_music = data.get('is_playing_music', False)
+        current_track = data.get('current_track', None)
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
@@ -1646,6 +1673,8 @@ async def proactive_chat(request: Request):
                 human_content = begin_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
+            from utils.token_tracker import set_call_type
+            set_call_type("proactive")
             max_retries = 3
             retry_delays = [1, 2]
             for attempt in range(max_retries):
@@ -1748,7 +1777,10 @@ async def proactive_chat(request: Request):
         selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
         
         # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
-        if music_content and music_content.get('placeholder'):
+        if is_playing_music and music_content:
+            logger.info(f"[{lanlan_name}] 音乐正在播放，跳过音乐搜索（music_playing_hint 仍会注入）")
+            music_content = None
+        elif music_content and music_content.get('placeholder'):
             logger.info(f"[{lanlan_name}] 音乐模式：开始生成搜索关键词...")
             try:
                 from config.prompts_sys import get_proactive_music_keyword_prompt
@@ -1966,7 +1998,12 @@ async def proactive_chat(request: Request):
             screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
             output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
 
-        generate_prompt = get_proactive_generate_prompt(proactive_lang).format(
+        music_playing_hint = ""
+        if is_playing_music and current_track:
+            track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
+            music_playing_hint = get_proactive_music_playing_hint(track_name, proactive_lang)
+
+        generate_prompt = get_proactive_generate_prompt(proactive_lang, music_playing_hint).format(
             character_prompt=character_prompt,
             inner_thoughts=inner_thoughts,
             memory_context=memory_context,
@@ -2023,6 +2060,8 @@ async def proactive_chat(request: Request):
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
         
         # --- 流式调用 + 在线拦截 ---
+        from utils.token_tracker import set_call_type
+        set_call_type("proactive")
         buffer = ""
         tag_parsed = False
         source_tag = ""

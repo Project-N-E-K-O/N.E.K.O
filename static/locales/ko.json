@@ -457,7 +457,7 @@
         "API_RATE_LIMIT_SESSION": "💥 API 요청 빈도가 너무 높습니다. 잠시 후 다시 시도해 주세요.",
         "LLM_CONNECTION_FAILED": "💥 LLM API 연결에 실패했습니다. 네트워크 연결과 API 설정을 확인하세요.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 연결이 비정상적으로 종료되었습니다: {{error}}",
-        "AGENT_QUOTA_EXCEEDED": "💥 무료 Agent 모델 일일 체험 한도에 도달했습니다 ({{used}}/{{limit}}). 내일 다시 시도해 주세요.",
+        "AGENT_QUOTA_EXCEEDED": "💥 무료 네코클로 모델 일일 체험 한도에 도달했습니다 ({{used}}/{{limit}}). 내일 다시 시도해 주세요.",
         "SESSION_START_CRITICAL": "⛔ Session 시작이 {{count}}회 연속 실패했습니다. 자동 재시도가 중지되었습니다. 네트워크와 API 설정을 확인한 후 페이지를 새로고침하세요.",
         "SESSION_START_FAILED": "💥 Session 시작 실패: {{error}} (실패 {{count}}회)",
         "INTERNAL_UPDATE_FAILED": "💥 내부 업데이트 전환 실패: {{error}}",
@@ -475,18 +475,18 @@
         "RELOAD_PAGE": "음성이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
         "AGENT_AUTO_DISABLED_COMPUTER": "키보드/마우스 제어가 자동 비활성화되었습니다: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "브라우저 제어가 자동 비활성화되었습니다: $t(agent.precheck.{{reason_code}})",
-        "AGENT_LLM_CHECK_ERROR": "Agent LLM 연결 확인 오류",
+        "AGENT_LLM_CHECK_ERROR": "네코클로 LLM 연결 확인 오류",
         "INVALID_INPUT_TYPE": "잘못된 입력 유형: {{input_type}}",
         "UNKNOWN_ACTION": "알 수 없는 작업: {{action}}",
         "SERVER_ERROR": "서버 내부 오류",
         "AGENT_CU_MODULE_NOT_LOADED": "Computer Use를 활성화할 수 없습니다: 모듈이 로드되지 않았습니다",
-        "AGENT_CU_ENABLED_CHECKING": "키보드/마우스 제어가 활성화되었습니다. Agent LLM 연결 확인 중...",
+        "AGENT_CU_ENABLED_CHECKING": "키보드/마우스 제어가 활성화되었습니다. 네코클로 LLM 연결 확인 중...",
         "AGENT_CU_UNAVAILABLE": "Computer Use를 활성화할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "AGENT_CU_ENABLE_FAILED": "Computer Use 활성화 실패: {{error}}",
         "AGENT_BU_MODULE_NOT_LOADED": "Browser Use를 활성화할 수 없습니다: 모듈이 로드되지 않았습니다",
         "AGENT_BU_NOT_INSTALLED": "Browser Use를 활성화할 수 없습니다: {{error}}",
         "AGENT_UP_ENABLED_CHECKING": "사용자 플러그인이 활성화되었습니다. 플러그인 서비스 시작 중...",
-        "AGENT_BU_ENABLED_CHECKING": "브라우저 제어가 활성화되었습니다. Agent LLM 연결 확인 중...",
+        "AGENT_BU_ENABLED_CHECKING": "브라우저 제어가 활성화되었습니다. 네코클로 LLM 연결 확인 중...",
         "AGENT_CU_AUTO_CLOSED": "Computer Use 모듈이 로드되지 않아 자동 비활성화되었습니다",
         "AGENT_CU_CAPABILITY_LOST": "Computer Use를 사용할 수 없습니다: $t(agent.precheck.{{reason_code}})",
         "TTS_CONNECTION_FAILED": "TTS 서비스 연결 실패: {{msg}}",
@@ -1030,6 +1030,7 @@
         "prefixFormatError": "접두사 형식 오류: 최대 10자, 숫자, 영문만 가능",
         "registering": "음성을 등록하는 중입니다. 잠시 기다려 주세요!",
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
+        "reusedExisting": "기존 음색을 재사용했습니다. 업로드를 건너뛰었습니다. voice_id: {{voiceId}}",
         "registerFailed": "등록 실패: {{error}}",
         "requestError": "요청 오류: {{error}}",
         "voiceIdSaveFailed": "voice_id를 자동으로 저장하지 못했습니다: {{error}}",
@@ -1304,7 +1305,7 @@
     "buttons": {
         "voiceControl": "음성 제어",
         "screenShare": "화면 공유",
-        "agentTools": "에이전트 도구",
+        "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
         "return": "복귀"
@@ -1354,7 +1355,7 @@
             "proactivePersonalChatTooltip": "연결된 플랫폼의 개인 업데이트를 사용하여 채팅",
             "proactiveMusicChat": "음악 추천",
             "proactiveMusicChatTooltip": "추천 음악을 사용하여 채팅",
-            "agentMaster": "에이전트 마스터 스위치",
+            "agentMaster": "네코클로 마스터 스위치",
             "keyboardControl": "키보드/마우스 제어",
             "userPlugin": "사용자 플러그인",
             "pluginConfigPage": "설정 페이지",
@@ -1364,8 +1365,8 @@
             "focusMode": "인터럽트 허용",
             "unavailable": "{{name}} 사용할 수 없음",
             "checking": "확인 중...",
-            "serverOffline": "에이전트 서버 오프라인",
-            "masterRequired": "먼저 에이전트 마스터 스위치를 활성화하십시오.",
+            "serverOffline": "네코클로 서버 오프라인",
+            "masterRequired": "먼저 네코클로 마스터 스위치를 활성화하십시오.",
             "capabilityNotReady": "{{name}}이(가) 아직 준비되지 않았습니다. 클릭하여 활성화를 시도하세요",
             "enabled": "{{name}} 활성화됨",
             "disabled": "{{name}} 비활성화됨",
@@ -1394,38 +1395,38 @@
     },
     "agent": {
         "status": {
-            "connecting": "에이전트 서버에 연결하는 중...",
-            "ready": "에이전트 서버 준비됨",
-            "enabled": "에이전트 모드 활성화됨",
-            "disabled": "에이전트 모드 비활성화됨",
-            "disabledError": "에이전트 모드 비활성화됨(부분 정리 실패)",
+            "connecting": "네코클로 서버에 연결하는 중...",
+            "ready": "네코클로 서버 준비됨",
+            "enabled": "네코클로 모드 활성화됨",
+            "disabled": "네코클로 모드 비활성화됨",
+            "disabledError": "네코클로 모드 비활성화됨(부분 정리 실패)",
             "enableFailed": "활성화 실패",
             "disconnected": "서버 연결이 끊어졌습니다.",
-            "agentDisconnected": "에이전트 서버 연결이 끊어졌습니다.",
-            "freeModelWarning": "할당량 제한으로 인해 무료 모델은 Agent 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
+            "agentDisconnected": "네코클로 서버 연결이 끊어졌습니다.",
+            "freeModelWarning": "할당량 제한으로 인해 무료 모델은 네코클로 모드에서 차단되기 쉽습니다. 유료 모델로 전환하는 것을 권장합니다.\n\n이미 유료 API를 설정한 경우 NEKO를 재시작해 보세요.",
             "freeModelWarningTitle": "무료 모델 안내",
-            "connectivityCheck": "Agent LLM 연결 확인 중...",
-            "precheckFailed": "Agent 사전 검사 실패: {{reason}}"
+            "connectivityCheck": "네코클로 LLM 연결 확인 중...",
+            "precheckFailed": "네코클로 사전 검사 실패: {{reason}}"
         },
         "precheck": {
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
-            "AGENT_NOT_INITIALIZED": "Agent 초기화 실패",
-            "AGENT_LLM_UNREACHABLE": "Agent LLM에 연결할 수 없습니다",
-            "AGENT_MODEL_NOT_CONFIGURED": "Agent 모델이 구성되지 않았습니다",
+            "AGENT_NOT_INITIALIZED": "네코클로 초기화 실패",
+            "AGENT_LLM_UNREACHABLE": "네코클로 LLM에 연결할 수 없습니다",
+            "AGENT_MODEL_NOT_CONFIGURED": "네코클로 모델이 구성되지 않았습니다",
             "AGENT_URL_NOT_CONFIGURED": "Agent API URL이 구성되지 않았습니다",
             "AGENT_KEY_NOT_CONFIGURED": "Agent API Key가 구성되지 않았거나 사용할 수 없습니다",
             "AGENT_NO_PLUGINS": "사용 가능한 플러그인이 없습니다",
             "AGENT_NO_PLUGINS_FOUND": "사용 가능한 플러그인이 없습니다",
             "AGENT_PLUGIN_SERVER_ERROR": "플러그인 서버 연결 실패",
-            "AGENT_CONNECTIVITY_FAILED": "Agent LLM 연결 실패"
+            "AGENT_CONNECTIVITY_FAILED": "네코클로 LLM 연결 실패"
         },
-        "quotaExceeded": "무료 Agent 모델의 일일 체험 한도({{limit}}회)에 도달했습니다. 내일 다시 시도해 주세요.",
-        "contentFilterError": "Agent가 탐색한 웹 페이지 내용이 AI 모델의 안전 필터에 의해 거부되어 작업이 중단되었습니다. 페이지에 민감한 주제가 포함된 경우 발생합니다. 다른 키워드나 웹사이트를 시도해 주세요.",
+        "quotaExceeded": "무료 네코클로 모델의 일일 체험 한도({{limit}}회)에 도달했습니다. 내일 다시 시도해 주세요.",
+        "contentFilterError": "네코클로가 탐색한 웹 페이지 내용이 AI 모델의 안전 필터에 의해 거부되어 작업이 중단되었습니다. 페이지에 민감한 주제가 포함된 경우 발생합니다. 다른 키워드나 웹사이트를 시도해 주세요.",
         "taskHud": {
-            "title": "에이전트 작업",
+            "title": "네코클로 작업",
             "running": "실행 중",
             "queued": "대기 중",
             "noTasks": "활성 작업 없음",
@@ -1435,7 +1436,11 @@
             "statusFailed": "실패",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
-            "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?"
+            "cancelConfirm": "진행 중인 모든 작업을 취소하시겠습니까?",
+            "typeUserPlugin": "사용자 플러그인",
+            "typeComputerUse": "컴퓨터 제어",
+            "typeBrowserUse": "브라우저 제어",
+            "typeMCP": "MCP 도구"
         }
     },
     "vrm": {
@@ -1620,8 +1625,8 @@
             "desc": "화면/창/탭을 동료와 공유하세요~"
         },
         "step8": {
-            "title": "🔨 에이전트 도구",
-            "desc": "다양한 도우미 기능을 갖춘 오픈 에이전트 도구 패널~"
+            "title": "🔨 네코클로",
+            "desc": "네코클로 패널을 열어 computer use, browser use, plugin 등의 기능을 사용하세요~"
         },
         "step9": {
             "title": "💤 그녀에게 떠나라고 요청하세요",
@@ -1952,7 +1957,8 @@
             "next": "다음",
             "prev": "이전",
             "done": "완료",
-            "close": "닫기"
+            "close": "닫기",
+            "skip": "건너뛰기"
         },
         "fullscreenPrompt": {
             "title": "🎓 튜토리얼 시작",
@@ -2306,7 +2312,9 @@
         "showPlaylist": "재생 목록 표시",
         "hidePlaylist": "재생 목록 숨기기",
         "searchFailed": "음악 검색 실패",
-        "playError": "재생 오류",
+        "playError": "음악 재생을 로드하지 못했습니다",
+        "loadError": "음악 플레이어를 로드하지 못했습니다",
+        "autoplayBlocked": "브라우저에서 자동 재생이 차단되었습니다. 재생 버튼을 클릭하세요",
         "ended": "종료"
     },
     "notice": {

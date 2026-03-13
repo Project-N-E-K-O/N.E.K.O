@@ -4,6 +4,7 @@ from datetime import datetime
 from memory.recent import CompressedRecentHistoryManager
 from config import SEMANTIC_MODEL, RERANKER_MODEL, get_extra_body
 from utils.config_manager import get_config_manager
+from utils.token_tracker import set_call_type
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from config.prompts_sys import semantic_manager_prompt, _loc, MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER
 from utils.language_utils import get_global_language
@@ -70,6 +71,7 @@ class SemanticMemory:
         max_retries = 3
         while retries < max_retries:
             try:
+                set_call_type("memory_rerank")
                 reranker = self._get_reranker()
                 response = await reranker.ainvoke(prompt)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:

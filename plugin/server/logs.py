@@ -14,7 +14,8 @@ from collections import deque
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from plugin.logging_config import get_logger
 
-from plugin.settings import PLUGIN_CONFIG_ROOT
+from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
 
 
 logger = get_logger("server.logs")
@@ -105,7 +106,7 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
             except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError):
                 import importlib.util
 
-                project_root = PLUGIN_CONFIG_ROOT.parent.parent
+                project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
                 logger_config_path = project_root / "utils" / "logger_config.py"
                 spec = importlib.util.spec_from_file_location("utils.logger_config", logger_config_path)
                 if spec is None or spec.loader is None:
@@ -123,16 +124,16 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
             logger.warning(f"Failed to get server log directory, using fallback: {e}")
             # 降级方案：使用项目根目录下的 log 文件夹
-            # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
-            project_root = PLUGIN_CONFIG_ROOT.parent.parent
+            # 内置插件位于 plugin/plugins，需要向上两级到项目根目录
+            project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
             fallback_dir = project_root / "log"
             fallback_dir.mkdir(parents=True, exist_ok=True)
             return fallback_dir
     
     # 插件日志：优先使用项目根目录下的 log/plugins/{plugin_id} 目录
     try:
-        # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
-        project_root = PLUGIN_CONFIG_ROOT.parent.parent
+        # 内置插件位于 plugin/plugins，需要向上两级到项目根目录
+        project_root = BUILTIN_PLUGIN_CONFIG_ROOT.parent.parent
         log_dir = project_root / "log" / "plugins" / plugin_id
         
         # 解析路径并验证它在安全目录内（防止路径遍历攻击）
@@ -161,12 +162,12 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
             return log_dir
         except (OSError, PermissionError):
             # 如果不可写，使用降级方案：插件目录下的logs子目录
-            plugin_dir = PLUGIN_CONFIG_ROOT / plugin_id
+            plugin_dir = get_plugin_config_path(plugin_id).parent
             
             # 再次验证降级路径的安全性
             try:
                 resolved_plugin_dir = plugin_dir.resolve()
-                config_root_resolved = PLUGIN_CONFIG_ROOT.resolve()
+                config_root_resolved = plugin_dir.parent.resolve()
                 resolved_plugin_str = str(resolved_plugin_dir)
                 config_root_str = str(config_root_resolved)
                 if not resolved_plugin_str.startswith(config_root_str):
@@ -188,12 +189,12 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError) as e:
         logger.warning(f"Failed to use project log directory, using plugin directory: {e}")
         # 降级方案：使用插件目录下的logs子目录
-        plugin_dir = PLUGIN_CONFIG_ROOT / plugin_id
+        plugin_dir = get_plugin_config_path(plugin_id).parent
         
         # 验证降级路径的安全性
         try:
             resolved_plugin_dir = plugin_dir.resolve()
-            config_root_resolved = PLUGIN_CONFIG_ROOT.resolve()
+            config_root_resolved = plugin_dir.parent.resolve()
             resolved_plugin_str = str(resolved_plugin_dir)
             config_root_str = str(config_root_resolved)
             if not resolved_plugin_str.startswith(config_root_str):

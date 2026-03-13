@@ -125,7 +125,7 @@ html #chat-container {
 
 /* ===== 暗色模式：聊天标题栏 ===== */
 [data-theme="dark"] #chat-header {
-  background: rgba(40, 40, 40, 0.7);
+  background: #2a2a2a;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -318,12 +318,21 @@ html #chat-container {
 }
 
 /* ===== 暗色模式：滚动条 ===== */
+/* Firefox 滚动条 */
+[data-theme="dark"] #chat-content-wrapper {
+  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(25, 25, 25, 0.95);
+}
+
+[data-theme="dark"] #chat-content-wrapper:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.25) rgba(25, 25, 25, 0.95);
+}
+
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar {
   width: 6px;
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(25, 25, 25, 0.95);
 }
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-thumb {
@@ -567,6 +576,11 @@ html #chat-container {
   color: #fff !important;
 }
 
+[data-theme="dark"] #neko-tutorial-skip-btn{
+  color: #b1b1b1 ;
+  border: 3px solid rgb(178, 178, 178);
+}
+
 /* ===== 暗色模式：通用链接颜色 ===== */
 [data-theme="dark"] a {
   color: #5cb8f0;
@@ -614,7 +628,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] .container-header {
-  background: #2a7bc4;
+  background: linear-gradient(to right, #1880aa, #0a3585);
 }
 
 [data-theme="dark"] .container-content {
@@ -1122,6 +1136,19 @@ html #chat-container {
   background: #383838;
 }
 
+[data-theme="dark"] .tutorial-reset-btn:disabled {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
+  color: #666;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+[data-theme="dark"] .tutorial-reset-btn:disabled:hover {
+  background: #1a1a1a;
+  border-color: #2a2a2a;
+}
+
 /* ===== 子页面：当前角色栏 ===== */
 [data-theme="dark"] .current-catgirl-bar {
   background: #2a7bc4;
@@ -1296,6 +1323,26 @@ html #chat-container {
 [data-theme="dark"] .container-header img,
 [data-theme="dark"] .btn img {
   filter: brightness(0.85);
+}
+
+/* ===== 模型管理器：指定按钮暗色模式保持与白天一致 ===== */
+/* 三个小动作按钮（删除模型、播放动作、播放表情）的图标不降亮度 */
+[data-theme="dark"] #delete-model-btn img,
+[data-theme="dark"] #play-motion-btn img,
+[data-theme="dark"] #play-expression-btn img,
+[data-theme="dark"] #play-vrm-animation-btn img,
+[data-theme="dark"] #trigger-vrm-expression-btn img {
+  filter: none !important;
+}
+
+/* 保存设置、情感配置按钮 — 背景图和样式不被暗色模式覆盖 */
+[data-theme="dark"] #save-position-btn,
+[data-theme="dark"] #emotion-config-btn,
+[data-theme="dark"] #vrm-emotion-config-btn {
+  background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+  background-color: transparent !important;
+  filter: none !important;
+  opacity: 1 !important;
 }
 
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */

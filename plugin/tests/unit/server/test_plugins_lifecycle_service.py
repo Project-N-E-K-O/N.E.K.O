@@ -14,7 +14,7 @@ def test_get_plugin_config_path_returns_existing_file(monkeypatch: pytest.Monkey
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
 
-    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOT", root)
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
 
     resolved = module._get_plugin_config_path("demo")
     assert resolved == config_file.resolve()
@@ -29,7 +29,7 @@ def test_get_plugin_config_path_rejects_invalid_plugin_id(
 ) -> None:
     root = tmp_path / "plugins"
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOT", root)
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
 
     assert module._get_plugin_config_path(plugin_id) is None
 
@@ -38,6 +38,6 @@ def test_get_plugin_config_path_rejects_invalid_plugin_id(
 def test_get_plugin_config_path_returns_none_for_missing_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "plugins"
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOT", root)
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
 
     assert module._get_plugin_config_path("demo") is None

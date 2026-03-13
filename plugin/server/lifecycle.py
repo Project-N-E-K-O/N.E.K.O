@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from plugin.core.host import PluginProcessHost
-from plugin.core.registry import load_plugins_from_toml
+from plugin.core.registry import load_plugins_from_roots
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
@@ -21,7 +21,7 @@ from plugin.server.messaging.proactive_bridge import start_proactive_bridge, sto
 from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_message_plane_runner
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
-from plugin.settings import PLUGIN_CONFIG_ROOT, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
+from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
 from utils.logger_config import get_module_logger
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
@@ -191,7 +191,7 @@ class ServerLifecycleService:
             )
             self._message_plane_runner = None
 
-        load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, self._plugin_factory)
+        load_plugins_from_roots(PLUGIN_CONFIG_ROOTS, logger, self._plugin_factory)
 
         await bus_subscription_manager.start()
         logger.debug("bus subscription manager started")
