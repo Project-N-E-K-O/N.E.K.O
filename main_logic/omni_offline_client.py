@@ -372,7 +372,7 @@ class OmniOfflineClient:
                             
                             logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
                             if self.on_status_message:
-                                await self.on_status_message(f"⚠️ {final_message}")
+                                await self.on_status_message(final_message)
                                 status_reported = True
                             assistant_message = ""
                             guard_exhausted = True
