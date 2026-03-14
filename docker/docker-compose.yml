@@ -2,56 +2,127 @@ version: '3.8'
 
 services:
   neko-main:
+    # 容器镜像配置
     image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-#    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    # 备用镜像源（如果上面的镜像源不可用）
+    # image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    
+    # 容器配置
     container_name: neko
     restart: unless-stopped
+    
+    # 端口映射配置
     ports:
-      #webui端口（默认48911）
-#      - "48911(服务器外部端口):80(N.E.K.O项目容器内部Nginx反代端口)"
+      # HTTP端口映射：外部端口48911 -> 容器内部Nginx端口80
+      # 访问方式: http://服务器IP:48911
       - "48911:80"
+      
+      # HTTPS端口映射：外部端口48912 -> 容器内部Nginx端口443
+      # 访问方式: https://服务器IP:48912
       - "48912:443"
-# 环境变量被废弃（在实际调用中无效,源代码有冗余机制，取消编排中变量不影响）
-#    environment:
-      # API Keys
-#      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-#      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
-#      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
-#      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
-#      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
-#      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-#      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
-      
-      # API Providers
-#      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-#      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-      
-      # Server Ports
-#      - NEKO_MAIN_SERVER_PORT=48911
-#      - NEKO_MEMORY_SERVER_PORT=48912
-#      - NEKO_MONITOR_SERVER_PORT=48913
-#      - NEKO_TOOL_SERVER_PORT=48915
-      
-      # Models (Optional)
-#      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
-#      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
-#      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
-#      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
-      
-      # MCP
-#      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
     
+    # 注意：环境变量配置被注释，因为实际调用中可能无效
+    # 源代码有冗余机制，取消编排中的环境变量不会影响功能
+    # 以下为保留的环境变量示例，供参考：
+    
+    # API密钥配置（示例，实际使用时需替换为真实值）
+    # environment:
+    #   # 核心API密钥
+    #   - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY:-your_core_api_key_here}
+    #   
+    #   # 辅助API密钥（支持多种模型）
+    #   - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-your_qwen_api_key}
+    #   - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-your_openai_api_key}
+    #   - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-your_glm_api_key}
+    #   - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-your_step_api_key}
+    #   - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-your_silicon_api_key}
+    #   
+    #   # MCP令牌
+    #   - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-your_mcp_token}
+    #   
+    #   # API提供商选择
+    #   - NEKO_CORE_API=${NEKO_CORE_API:-qwen}  # 可选: qwen, openai, glm, step, silicon
+    #   - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}  # 可选: qwen, openai, glm, step, silicon
+    #   
+    #   # 服务器端口配置（内部使用，不建议修改）
+    #   - NEKO_MAIN_SERVER_PORT=48911
+    #   - NEKO_MEMORY_SERVER_PORT=48912
+    #   - NEKO_MONITOR_SERVER_PORT=48913
+    #   - NEKO_TOOL_SERVER_PORT=48915
+    #   
+    #   # 模型选择配置（可选，使用默认值即可）
+    #   - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+    #   - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+    #   - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+    #   - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+    #   
+    #   # MCP路由配置
+    #   - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
+    #   
+    #   # SSL证书相关配置
+    #   - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}  # SSL证书域名
+    #   - SSL_DAYS=${SSL_DAYS:-365000}  # SSL证书有效期（天），默认1000年
+    #   - DISABLE_SSL=${DISABLE_SSL:-0}  # 是否禁用SSL，0=启用，1=禁用
+    #   - AUTO_REGENERATE_CERT=${AUTO_REGENERATE_CERT:-1}  # 证书验证失败时是否自动重新生成
+    #   - NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用Nginx自动重载，默认每5分钟一次
+    
+    # 卷挂载配置
     volumes:
-      # 持久化配置
+      # 1. 持久化配置目录
+      # 将容器内的 /root/Documents/N.E.K.O 映射到本地的 ./N.E.K.O 目录
+      # 用于保存应用配置和数据，容器重启后不会丢失
       - ./N.E.K.O:/root/Documents/N.E.K.O
-      # 日志
+      
+      # 2. 日志目录
+      # 将容器内的 /app/logs 映射到本地的 ./logs 目录
+      # 用于保存应用日志，方便排查问题
       - ./logs:/app/logs
-      # SSL证书目录
+      
+      # 3. SSL证书目录
+      # 将容器内的 /root/ssl 映射到本地的 ./ssl 目录
+      # 用于保存SSL证书文件，支持自定义证书
       - ./ssl:/root/ssl
+      
+      # 4. 可选：临时文件目录（如果需要）
+      # - ./tmp:/tmp
+      #
+      # 5. 可选：上传文件目录（如果需要）
+      # - ./uploads:/app/uploads
     
+    # 网络配置
     networks:
       - neko-network
 
+# 网络定义
 networks:
   neko-network:
     driver: bridge
+    # 网络配置选项
+    # ipam:
+    #   config:
+    #     - subnet: 172.20.0.0/16
+    #       gateway: 172.20.0.1
+
+# 可选：卷定义（如果需要独立卷）
+# volumes:
+#   neko-data:
+#     driver: local
+#   neko-logs:
+#     driver: local
+#   neko-ssl:
+#     driver: local
+
+# 部署配置（可选）
+# deploy:
+#   resources:
+#     limits:
+#       cpus: '2.0'
+#       memory: 4G
+#     reservations:
+#       cpus: '1.0'
+#       memory: 2G
+#   restart_policy:
+#     condition: on-failure
+#     delay: 5s
+#     max_attempts: 3
+#     window: 120s
