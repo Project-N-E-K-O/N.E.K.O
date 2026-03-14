@@ -280,6 +280,7 @@ class WebSearchPlugin(NekoPluginBase):
         id="search",
         name="网络搜索",
         description="通过 DuckDuckGo 搜索网络内容。返回标题、链接和摘要。",
+        llm_result_fields=["count"],
         input_schema={
             "type": "object",
             "properties": {
@@ -335,6 +336,7 @@ class WebSearchPlugin(NekoPluginBase):
         id="search_news",
         name="新闻搜索",
         description="通过 DuckDuckGo 搜索最新新闻（需要 duckduckgo-search 库）。",
+        llm_result_fields=["count"],
         input_schema={
             "type": "object",
             "properties": {
@@ -395,6 +397,7 @@ class WebSearchPlugin(NekoPluginBase):
         id="search_summary",
         name="搜索摘要",
         description="搜索并返回适合 AI 阅读的纯文本摘要格式。",
+        llm_result_fields=["summary", "count"],
         input_schema={
             "type": "object",
             "properties": {

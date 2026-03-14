@@ -31,6 +31,11 @@ try:
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
+    from brain.result_parser import (
+        parse_computer_use_result,
+        parse_browser_use_result,
+        parse_plugin_result,
+    )
 except Exception as e:
     logger.exception(f"[Agent] Module import failed during startup: {e}")
     raise
@@ -619,6 +624,25 @@ async def _emit_task_result(
     )
 
 
+def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
+    """从 plugin_list 中查找指定 entry 的 llm_result_fields 声明。"""
+    try:
+        plugins = getattr(Modules.task_executor, "plugin_list", None) or []
+        for p in plugins:
+            if not isinstance(p, dict) or p.get("id") != plugin_id:
+                continue
+            for e in p.get("entries") or []:
+                if not isinstance(e, dict):
+                    continue
+                if e.get("id") == entry_id:
+                    fields = e.get("llm_result_fields")
+                    return list(fields) if isinstance(fields, list) else None
+            break
+    except Exception:
+        pass
+    return None
+
+
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
     try:
@@ -850,10 +874,7 @@ async def _run_computer_use_task(
                 res["success"] = True
             success = bool(res.get("success", False))
             info["result"] = res
-            if isinstance(res, dict):
-                cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
-            else:
-                cu_detail = str(res) if res is not None else ""
+            cu_detail = parse_computer_use_result(res)
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
@@ -1170,7 +1191,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                         up_terminal = "completed" if up_result.success else "failed"
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
-                        detail = str(run_data)[:500] if run_data else ""
+                        run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
+                        _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                        _plugin_msg = str(up_result.result.get("message") or "") if isinstance(up_result.result, dict) else ""
+                        detail = parse_plugin_result(
+                            run_data,
+                            llm_result_fields=_llm_fields,
+                            plugin_message=_plugin_msg,
+                            error=run_error if not up_result.success else None,
+                        )
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1336,18 +1365,13 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             session_id=bu_session.session_id,
                         )
                         success = bres.get("success", False) if isinstance(bres, dict) else False
-                        summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                        result_detail = ""
-                        error_detail = ""
-                        if isinstance(bres, dict):
-                            result_detail = str(bres.get("result") or bres.get("message") or "")
-                            error_detail = str(bres.get("error") or "") if not success else ""
-                            display_detail = result_detail or error_detail
-                            if success:
-                                summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
-                            else:
-                                summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                        bu_session.complete_task(result_detail or summary, success)
+                        bu_parsed = parse_browser_use_result(bres)
+                        if success:
+                            summary = f'你的任务"{result.task_description}"已完成：{bu_parsed}'
+                        else:
+                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{bu_parsed}'
+                        error_detail = bu_parsed if not success else ""
+                        bu_session.complete_task(bu_parsed or summary, success)
                         bu_info["status"] = "completed" if success else "failed"
                         bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
@@ -1357,7 +1381,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             task_id=bu_task_id,
                             success=success,
                             summary=summary,
-                            detail=result_detail,
+                            detail=bu_parsed,
                             error_message=error_detail,
                         )
                         try:
@@ -1767,7 +1791,15 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 info["error"] = str(res.error)[:500]
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
-                detail = str(run_data)[:500] if run_data else ""
+                run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
+                _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
+                detail = parse_plugin_result(
+                    run_data,
+                    llm_result_fields=_llm_fields,
+                    plugin_message=_plugin_msg,
+                    error=run_error if not res.success else None,
+                )
                 if res.success:
                     summary = f'插件任务 "{plugin_id}" 已完成'
                     if detail:

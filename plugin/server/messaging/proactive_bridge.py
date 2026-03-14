@@ -120,7 +120,26 @@ class ProactiveBridge:
                 if payload.get("message_type") != "proactive_notification":
                     continue
 
-                content = str(payload.get("content") or "").strip()
+                raw_content = payload.get("content")
+                # 通过 result_parser 确保 content 不含原始 JSON
+                try:
+                    from brain.result_parser import parse_push_message_content
+                    content = parse_push_message_content(raw_content)
+                except Exception:
+                    content = str(raw_content or "").strip()
+
+                raw_str = str(raw_content or "")
+                if content != raw_str.strip():
+                    logger.info(
+                        "proactive bridge: content parsed: '{}' → '{}'",
+                        raw_str[:120], content[:120],
+                    )
+                else:
+                    logger.info(
+                        "proactive bridge: content passthrough: '{}'",
+                        content[:120],
+                    )
+
                 if not content:
                     continue
 

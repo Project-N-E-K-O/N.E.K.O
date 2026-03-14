@@ -196,6 +196,7 @@ def plugin_entry(
     timeout: float | None = None,  # 自定义超时时间（秒），None 表示使用默认值
     metadata: dict | None = None,
     extra: dict | None = None,  # 向后兼容别名，已弃用
+    llm_result_fields: List[str] | None = None,  # 声明需要提供给对话模型的结果字段
 ) -> Callable:
     """
     语法糖：专门用来声明"对外可调用入口"的装饰器。
@@ -221,6 +222,9 @@ def plugin_entry(
             - 正数: 使用指定的超时时间
         metadata: 额外的元数据字典
         extra: metadata 的向后兼容别名（已弃用）
+        llm_result_fields: 声明该 entry 的 ok(data=...) 返回中，哪些字段需要
+            提供给对话模型作为结果摘要。未声明时结果不会以结构化形式注入 LLM 上下文。
+            示例: ["summary", "count"] — 只将 data["summary"] 和 data["count"] 注入。
     """
     # Pydantic model → extract JSON Schema
     effective_schema = input_schema
@@ -235,6 +239,8 @@ def plugin_entry(
     effective_metadata = dict(metadata) if metadata else (dict(extra) if extra else {})
     if timeout is not None:
         effective_metadata["timeout"] = timeout
+    if llm_result_fields is not None:
+        effective_metadata["llm_result_fields"] = list(llm_result_fields)
 
     _inner = on_event(
         event_type="plugin_entry",
