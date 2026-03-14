@@ -130,7 +130,7 @@ NEKO_BASE_PATH="/home/neko/neko-data" && docker network create --driver bridge n
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
 
-**注：** 目前docker部署方案由 *倒霉蛋HINS* 提供
+**注：** 目前docker部署方案由 [*倒霉蛋HINS*](https://home.hinswu.top) 提供
 
 ## 进阶使用
 
