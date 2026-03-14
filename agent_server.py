@@ -1374,14 +1374,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                         success = bres.get("success", False) if isinstance(bres, dict) else False
                         _bu_ok, bu_parsed = parse_browser_use_result(bres)
-                        if success:
-                            summary = f'你的任务"{result.task_description}"已完成：{bu_parsed}'
+                        _lang = _rp_lang(None)
+                        _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
+                        if bu_parsed:
+                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=bu_parsed)
                         else:
-                            summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{bu_parsed}'
+                            summary = _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
                         bu_session.complete_task(bu_parsed or summary, success)
                         bu_info["status"] = "completed" if success else "failed"
                         bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
+                        if not success:
+                            bu_info["error"] = (bu_parsed or "")[:500]
                         await _emit_task_result(
                             lanlan_name,
                             channel="browser_use",
