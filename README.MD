@@ -87,6 +87,8 @@ QQ群：1022939659
 对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（Macbook用户需要手动解除系统隔离）
 
 ## Docker 部署指南 (Linux)
+<details>
+
 ### 快速开始
 ### 部署方式一：Docker Compose（推荐）
 <details>
@@ -216,6 +218,7 @@ docker exec neko openssl x509 -in /root/ssl/N.E.K.O.crt -noout -text
 ### ⚙️ 环境变量配置
 <details>
 <summary>点击展开查看环境变量配置说明</summary>
+
 > **注意**：部分环境变量在源代码中可能无效，建议优先在 Web UI 中配置。
 在 `docker-compose.yml` 中取消 `environment` 部分的注释并按需配置：
 
@@ -267,6 +270,7 @@ docker-compose --env-file .env up -d
 ### 🔧 故障排除
 <details>
 <summary>点击展开查看常见问题解决方案</summary>
+
 #### 1. 端口冲突
 ```bash
 # 检查端口占用
@@ -432,6 +436,8 @@ curl -k https://localhost:48912
 | 清理日志 | `docker-compose logs --tail=0` |
 | 备份数据 | 参考上方"数据备份"部分 |
 ---
+
+</details>
 **注**：当前 Docker 部署方案由 https://home.hinswu.top 提供
 
 
