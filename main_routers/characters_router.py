@@ -395,7 +395,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         item_id = data.get('item_id')  # 获取可选的item_id
         vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
-        
+        touch_set = data.get('touch_set', {})  # 获取可选的live2d(与VRM?)触摸动作
+
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
         
@@ -602,6 +603,14 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
+        
+        #一个角色切换模型后得重新配置触摸动画好像蛮麻烦 先留着吧出问题再说
+        existing_touch_set = get_reserved(characters['猫娘'][name], 'avatar', 'touch_set', default={})
+        existing_touch_set.update(touch_set)
+        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
+        logger.debug(f"已保存角色 {name} 的 触摸/点击 配置")
+
+
         # 保存配置
         _config_manager.save_characters(characters)
         # 自动重新加载配置
@@ -1626,7 +1635,7 @@ async def analyze_silence(file: UploadFile = File(...)):
         - has_silence: 是否检测到可移除静音
     """
     from utils.audio_silence_remover import (
-        detect_silence, convert_to_wav_if_needed, format_duration_mmss, CancelledError
+        detect_silence, convert_to_wav_if_needed, format_duration_mmss
     )
 
     try:
