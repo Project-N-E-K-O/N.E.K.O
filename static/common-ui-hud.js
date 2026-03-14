@@ -762,7 +762,8 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     }
 
     if (cancelBtn) {
-        cancelBtn.style.display = activeTasks.length > 0 ? 'flex' : 'none';
+        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued');
+        cancelBtn.style.display = hasCancelable ? 'flex' : 'none';
     }
 
     // 显示/隐藏空状态（保留折叠状态）
@@ -852,7 +853,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusColor = 'var(--neko-popup-text-sub, #666)';
         statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
-        cardBorder = 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     }
 
     // Only touch style properties that actually changed
@@ -875,6 +876,13 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     if (headerDiv) {
         const expectedMB = isRunning ? '6px' : '0';
         if (headerDiv.style.marginBottom !== expectedMB) headerDiv.style.marginBottom = expectedMB;
+    }
+
+    // Hide per-card cancel button for terminal tasks
+    const cardCancelBtn = card.querySelector('.task-card-cancel');
+    if (cardCancelBtn) {
+        const cancelDisplay = isTerminal ? 'none' : 'flex';
+        if (cardCancelBtn.style.display !== cancelDisplay) cardCancelBtn.style.display = cancelDisplay;
     }
 
     // Handle progress row: add if now running but missing, remove if no longer running
@@ -983,7 +991,7 @@ window.AgentHUD._createTaskCard = function (task) {
         statusColor = 'var(--neko-popup-text-sub, #666)';
         statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
-        cardBorder = 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     }
 
     Object.assign(card.style, {
@@ -1080,7 +1088,7 @@ window.AgentHUD._createTaskCard = function (task) {
         height: '18px',
         borderRadius: '4px',
         background: 'var(--neko-hud-subtle-bg, rgba(0, 0, 0, 0.06))',
-        display: 'flex',
+        display: isTerminal ? 'none' : 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '10px',

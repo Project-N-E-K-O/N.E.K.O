@@ -51,6 +51,7 @@ html #chat-container {
 :root {
   --neko-popup-bg: rgba(255, 255, 255, 0.65);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.18);
+  --neko-popup-border-color: rgba(0, 0, 0, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
   --neko-popup-text: #333;
   --neko-popup-text-sub: #666;
@@ -85,6 +86,7 @@ html #chat-container {
 [data-theme="dark"] {
   --neko-popup-bg: rgba(30, 30, 30, 0.82);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.1);
+  --neko-popup-border-color: rgba(255, 255, 255, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.15), 0 8px 16px rgba(0, 0, 0, 0.25), 0 16px 32px rgba(0, 0, 0, 0.15);
   --neko-popup-text: #f0f0f0;
   --neko-popup-text-sub: #b0b0b0;
