@@ -294,9 +294,10 @@
                     }
 
                     if (!response.will_retry && response.message) {
+                        var translatedDiscardMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                         var messageDiv = document.createElement('div');
                         messageDiv.classList.add('message', 'gemini');
-                        messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + response.message;
+                        messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + translatedDiscardMsg;
                         var cc2 = chatContainer();
                         if (cc2) {
                             cc2.appendChild(messageDiv);

@@ -44,6 +44,11 @@ export function initEventListeners(aplayer) {
     });
 
     aplayer.on('error', (e) => {
+        // 如果播放器正在被手动销毁或关闭，忽略其产生的所有报错（通常是由于音频加载被中止引起）
+        if (aplayer._destroying) {
+            console.log('[APlayer] Destruction in progress, ignoring error event');
+            return;
+        }
         console.error('[APlayer] Error:', e);
         showNotification(t('music.playError', '播放出错'), 'error');
         dispatchCustomEvent('aplayer-error', { error: e });
