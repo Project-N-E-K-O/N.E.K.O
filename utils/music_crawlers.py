@@ -33,10 +33,37 @@ logger = get_module_logger(__name__)
 
 # User-Agent 池
 USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Chrome - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Chrome - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Chrome - Linux
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Firefox - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Firefox - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Firefox - Linux
+    'Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Safari - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    # Safari - iOS
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+    # Edge - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+    # Edge - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+    # Opera - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
 
 # ==================================================
@@ -1034,7 +1061,42 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         logger.warning("去重后无可用音乐")
         return {'success': False, 'error': '去重后无可用音乐', 'data': []}
     
-    # 【核心修复】提前截取实际需要下发的数据切片
+    # 当用户指定了关键词时，进行匹配度排序
+    if keyword and keyword.strip():
+        def calculate_match_score(track):
+            track_name = (track.get('name', '') or '').lower()
+            track_artist = (track.get('artist', '') or '').lower()
+            kw_lower = keyword.lower()
+            
+            score = 0
+            
+            if kw_lower in track_name:
+                score += 100
+            if kw_lower in track_artist:
+                score += 50
+            
+            kw_words = kw_lower.split()
+            for word in kw_words:
+                if len(word) >= 2:
+                    if word in track_name:
+                        score += 30
+                    if word in track_artist:
+                        score += 15
+            
+            return score
+        
+        scored_results = [(calculate_match_score(t), t) for t in unique_results]
+        scored_results.sort(key=lambda x: x[0], reverse=True)
+        
+        best_score = scored_results[0][0] if scored_results else 0
+        
+        if best_score >= 30:
+            unique_results = [t for score, t in scored_results if score >= best_score * 0.5]
+            logger.info(f"[匹配度排序] 最高匹配分: {best_score}, 筛选后剩余 {len(unique_results)} 首")
+        else:
+            logger.info(f"[匹配度排序] 最高匹配分仅 {best_score}，可能搜索结果不相关")
+    
+    # 提前截取实际需要下发的数据切片
     final_results = unique_results[:limit]
 
     # 基于“实际返回的歌曲”来评估多样性
