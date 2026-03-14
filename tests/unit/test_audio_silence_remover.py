@@ -15,8 +15,6 @@
 """
 
 import io
-import math
-import struct
 import wave
 import hashlib
 import pytest
@@ -37,7 +35,6 @@ from utils.audio_silence_remover import (
     convert_to_wav_if_needed,
     CancelledError,
     SilenceAnalysisResult,
-    SilenceSegment,
     SILENCE_THRESHOLD_DBFS,
     MIN_SILENCE_DURATION_MS,
     RETAINED_SILENCE_MS,

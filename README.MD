@@ -80,59 +80,374 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **创作者 (Creators):** 优秀的画师、Live2D/3D建模师、配音演员、文案写手，你们赋予“她”灵魂。
 * **梦想家 (Dreamers):** 即使你没有专业技能，但你对这个未来充满向往，你的反馈和传播也是宝贵的贡献。
 
-QQ群：1022939659
+
+**QQ群**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW)
 
 ## 快速开始（Windows用户、Macbook用户）
 
 对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`或`N.E.K.O.app`即可启动。（Macbook用户需要手动解除系统隔离）
 
-## Docker部署（Linux用户）
+## Docker 部署指南 (Linux)
+<details>
 
-### 1. 使用 docker-compose 部署 (目前唯一docker部署方案)
+### 快速开始
+### 部署方式一：Docker Compose（推荐）
+<details>
+<summary>点击展开查看 docker-compose.yml 配置文件</summary>
 
-#### docker-compose.yml
 ```yaml
-version: '3.8'
 
+version: '3.8'
 services:
   neko-main:
     image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-#    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
     container_name: neko
     restart: unless-stopped
     ports:
-      #webui端口（默认48911）
-#      - "48911(服务器外部端口):80(N.E.K.O项目容器内部Nginx反代端口)"
-      - "48911:80"
-# 环境变量被废弃（在实际调用中无效,源代码有冗余机制，取消编排中变量不影响）
+      - "48911:80"   # HTTP 访问端口
+      - "48912:443"  # HTTPS 访问端口
     volumes:
-      # 持久化配置
       - ./N.E.K.O:/root/Documents/N.E.K.O
-      # 日志
       - ./logs:/app/logs
-    
+      - ./ssl:/root/ssl
     networks:
       - neko-network
-
 networks:
   neko-network:
     driver: bridge
 ```
-#### docker run
+
+
+**启动命令：**
 ```bash
-NEKO_BASE_PATH="/home/neko/neko-data" && docker network create --driver bridge neko-network 2>/dev/null || true && docker run -d \
+docker-compose up -d
+```
+
+**常用命令：**
+- 查看日志：`docker-compose logs -f`
+- 停止服务：`docker-compose down`
+- 重启服务：`docker-compose restart`
+
+</details>
+
+### 部署方式二：Docker Run
+<details>
+<summary>点击展开查看 docker run 启动命令</summary>
+
+```bash
+
+NEKO_BASE_PATH="/home/neko/neko-data" && \
+docker network create --driver bridge neko-network 2>/dev/null || true
+docker run -d \
   --name neko \
   --restart unless-stopped \
   -p 48911:80 \
+  -p 48912:443 \
   -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
+  -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
 
-**注：** 目前docker部署方案由 [*倒霉蛋HINS*](https://home.hinswu.top) 提供
+#### 📁 目录结构
+启动后会自动生成以下目录结构：
+```plaintext
+
+当前目录/
+├── N.E.K.O/      # 配置文件和数据
+├── logs/         # 应用日志
+├── ssl/          # SSL证书
+└── docker-compose.yml
+```
+
+</details>
+
+#### 🔐 SSL 证书配置
+<details>
+<summary>点击展开查看 SSL 证书详细说明</summary>
+
+#### 自动证书
+容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./ssl/` 目录。
+
+##### 自定义证书
+如需使用自己的 SSL 证书：
+
+**方法一：启动前配置（推荐）**
+
+```bash
+# 创建证书目录
+mkdir -p ./ssl
+
+# 放入您的证书文件（必须命名为特定名称）
+cp your-cert.crt ./ssl/N.E.K.O.crt
+cp your-cert.key ./ssl/N.E.K.O.key
+```
+
+**方法二：启动后替换**
+
+```bash
+# 1. 停止容器
+docker-compose down
+
+# 2. 替换证书文件
+cp your-cert.crt ./ssl/N.E.K.O.crt
+cp your-cert.key ./ssl/N.E.K.O.key
+
+# 3. 重新启动
+docker-compose up -d
+```
+
+#### 证书要求
+- ✅ 必须为 **PEM 格式**
+- ✅ 证书和私钥必须匹配
+- ✅ 私钥不能有密码保护
+- ✅ 证书必须在有效期内
+- ❌ 不支持加密的私钥
+
+#### 证书验证
+容器启动时会自动验证 SSL 证书：
+- ✅ **验证通过**：正常启动 HTTPS
+- ❌ **验证失败**：容器启动失败，请查看日志
+- ⚠️ **跳过验证**：设置 `DISABLE_SSL=1` 可临时禁用 SSL
+
+#### 查看证书信息
+```bash
+docker exec neko openssl x509 -in /root/ssl/N.E.K.O.crt -noout -text
+```
+</details>
+
+### ⚙️ 环境变量配置
+<details>
+<summary>点击展开查看环境变量配置说明</summary>
+
+> **注意**：部分环境变量在源代码中可能无效，建议优先在 Web UI 中配置。
+在 `docker-compose.yml` 中取消 `environment` 部分的注释并按需配置：
+
+```yaml
+environment:
+  # API 密钥配置
+  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+  - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN}
+  - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI}
+  - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM}
+  - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP}
+  - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON}
+  - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN} 
+
+  # API 提供商选择
+  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
+  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen} 
+
+  # 模型配置
+  - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+  - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+  - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+  - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+
+  # SSL 配置
+  - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
+  - SSL_DAYS=${SSL_DAYS:-365000}
+  - DISABLE_SSL=${DISABLE_SSL:-0}
+  - AUTO_REGENERATE_CERT=${AUTO_REGENERATE_CERT:-1}
+  - NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}
+```
+
+**快速设置示例**：
+
+```bash
+# 创建 .env 文件
+cat > .env << EOF
+NEKO_CORE_API_KEY=your_core_api_key_here
+NEKO_ASSIST_API_KEY_QWEN=your_qwen_api_key
+NEKO_MCP_TOKEN=your_mcp_token
+SSL_DOMAIN=your-domain.com
+EOF
+
+# 启动时加载环境变量
+docker-compose --env-file .env up -d
+```
+</details>
+
+### 🔧 故障排除
+<details>
+<summary>点击展开查看常见问题解决方案</summary>
+
+#### 1. 端口冲突
+```bash
+# 检查端口占用
+ss -tulpn | grep ':4891[12]'
+# 解决方案：修改 docker-compose.yml 中的端口映射
+# 例如：- "8080:80" 和 - "8443:443"
+```
+
+#### 2. 权限问题
+```bash
+# 确保目录有正确权限
+mkdir -p N.E.K.O logs ssl
+chmod 755 N.E.K.O logs ssl
+```
+
+#### 3. 容器启动失败
+```bash
+# 查看详细日志
+docker-compose logs --tail=100
+
+# 或直接查看容器日志
+docker logs neko --tail=100
+```
+
+#### 4. SSL 证书错误
+```bash
+# 删除错误证书，让容器重新生成
+rm -f ssl/N.E.K.O.crt ssl/N.E.K.O.key
+docker-compose up -d
+```
+
+#### 5. 网络问题
+```bash
+# 检查网络连通性
+curl -v http://localhost:48911/health
+curl -v -k https://localhost:48912/health
+```
+
+#### 6. 容器无法访问
+```bash
+# 检查容器状态
+docker ps | grep neko
+
+# 检查容器日志
+docker logs neko
+
+# 进入容器调试
+docker exec -it neko bash
+
+```
+
+#### 7. 磁盘空间不足
+```bash
+# 清理无用镜像
+docker system prune -f
+
+# 清理容器日志
+docker-compose down && docker volume prune -f
+```
+
+#### 8. 镜像拉取失败
+
+```bash
+# 尝试使用备用镜像源
+# 在 docker-compose.yml 中将镜像改为：
+# image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+```
+
+</details>
+
+#### 📊 系统监控
+
+<details>
+<summary>点击展开查看监控和管理命令</summary>
+
+#### 健康检查
+```bash
+# 检查服务健康状态
+curl http://localhost:48911/health
+curl -k https://localhost:48912/health
+```
+
+#### 资源监控
+```bash
+# 查看容器资源使用
+docker stats neko
+
+# 查看容器进程
+docker top neko
+
+# 查看容器详细信息
+docker inspect neko
+```
+
+#### 日志管理
+```bash
+# 实时查看日志
+docker-compose logs -f
+
+# 查看最近100行日志
+docker-compose logs --tail=100
+
+# 查看错误日志
+docker-compose logs | grep -i error
+
+# 清理日志文件
+docker-compose down
+rm -rf logs/*.log
+docker-compose up -d
+```
+
+#### 数据备份
+```bash
+# 备份重要数据
+tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
+  N.E.K.O/ \
+  ssl/ \
+  docker-compose.yml
+
+```
+#### 版本升级
+```bash
+# 拉取最新镜像
+docker-compose pull
+
+# 重启服务
+docker-compose up -d
+```
+
+</details>
+
+### 🌐 访问地址
+容器启动后，可通过以下地址访问：
+- **HTTP 访问**: `http://你的服务器IP:48911`
+- **HTTPS 访问**: `https://你的服务器IP:48912`
+
+#### 本地测试
+```bash
+
+# 本地 HTTP 访问测试
+curl http://localhost:48911
+
+# 本地 HTTPS 访问测试（忽略证书验证）
+curl -k https://localhost:48912
+```
+
+#### 公网访问
+如果需要在公网访问，请确保：
+1. 服务器防火墙开放 48911 和 48912 端口
+2. 使用有效的 SSL 证书（非自签名证书）
+3. 配置域名解析到服务器 IP
+
+### ⏱️ 快速参考
+
+| 操作 | 命令 |
+|------|------|
+| 启动服务 | `docker-compose up -d` |
+| 停止服务 | `docker-compose down` |
+| 查看日志 | `docker-compose logs -f` |
+| 重启服务 | `docker-compose restart` |
+| 更新镜像 | `docker-compose pull && docker-compose up -d` |
+| 进入容器 | `docker exec -it neko bash` |
+| 查看状态 | `docker-compose ps` |
+| 清理日志 | `docker-compose logs --tail=0` |
+| 备份数据 | 参考上方"数据备份"部分 |
+
+---
+
+</details>
+
+**注**：当前 Docker 部署方案由 [**HINS**](https://home.hinswu.top) 提供
+
 
 ## 进阶使用
+<details>
 
 #### 配置API Key
 
@@ -158,7 +473,10 @@ NEKO_BASE_PATH="/home/neko/neko-data" && docker network create --driver bridge n
 
 - 通过访问`http://localhost:48911/memory_browser`可以浏览和校对近期记忆与摘要，一定程度上缓解模型复读、认知错误等问题。
 
+</details>
+
 # 项目细节
+<details>
 
 **项目架构**
 
@@ -207,6 +525,8 @@ v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月
 v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
 
 v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
+
+</details>
 
 ## Star History
 
