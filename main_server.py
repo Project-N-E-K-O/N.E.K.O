@@ -910,6 +910,14 @@ async def on_shutdown():
             except Exception as e:
                 logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
         
+        # 释放 soxr ResampleStream（nanobind C 扩展），避免解释器退出时泄漏警告
+        try:
+            for mgr in session_manager.values():
+                if hasattr(mgr, 'audio_resampler'):
+                    mgr.audio_resampler = None
+        except Exception as e:
+            logger.debug(f"soxr resampler cleanup failed: {e}")
+
         # 保存 Token 用量数据
         try:
             from utils.token_tracker import TokenTracker

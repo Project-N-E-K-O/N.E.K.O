@@ -96,42 +96,15 @@ version: '3.8'
 
 services:
   neko-main:
-    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
+#    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
     container_name: neko
     restart: unless-stopped
     ports:
       #webui端口（默认48911）
 #      - "48911(服务器外部端口):80(N.E.K.O项目容器内部Nginx反代端口)"
       - "48911:80"
-    environment:
-      # API Keys
-      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
-      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
-      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
-      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
-      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
-      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
-
-      # API Providers
-      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-
-      # Server Ports
-      - NEKO_MAIN_SERVER_PORT=48911
-      - NEKO_MEMORY_SERVER_PORT=48912
-      - NEKO_MONITOR_SERVER_PORT=48913
-      - NEKO_TOOL_SERVER_PORT=48915
-
-      # Models (Optional)
-      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
-      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
-      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
-      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
-
-      # MCP
-      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
-
+# 环境变量被废弃（在实际调用中无效,源代码有冗余机制，取消编排中变量不影响）
     volumes:
       # 持久化配置
       - ./N.E.K.O:/root/Documents/N.E.K.O
@@ -145,8 +118,19 @@ networks:
   neko-network:
     driver: bridge
 ```
+#### docker run
+```bash
+NEKO_BASE_PATH="/home/neko/neko-data" && docker network create --driver bridge neko-network 2>/dev/null || true && docker run -d \
+  --name neko \
+  --restart unless-stopped \
+  -p 48911:80 \
+  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/logs:/app/logs" \
+  --network neko-network \
+  docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
+```
 
-**注：** 目前docker部署方案由 *倒霉蛋HINS* 提供
+**注：** 目前docker部署方案由 [*倒霉蛋HINS*](https://home.hinswu.top) 提供
 
 ## 进阶使用
 

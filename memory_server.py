@@ -10,7 +10,10 @@ import uvicorn
 from langchain_core.messages import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
-from config.prompts_sys import _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY
+from config.prompts_sys import (
+    _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
+    CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, ELAPSED_TIME_HM, ELAPSED_TIME_H,
+)
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
@@ -391,6 +394,29 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
     )
+
+    # ── 距上次聊天间隔提示 ──
+    try:
+        from datetime import datetime as _dt
+        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        if last_time:
+            gap = _dt.now() - last_time
+            gap_seconds = gap.total_seconds()
+            if gap_seconds >= 3600:  # ≥ 1小时才显示
+                hours = int(gap_seconds // 3600)
+                minutes = int((gap_seconds % 3600) // 60)
+                if minutes:
+                    elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
+                else:
+                    elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+
+                result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
+
+                if gap_seconds >= 18000:  # ≥ 5小时追加长间隔提示
+                    result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
+    except Exception as e:
+        logger.warning(f"计算聊天间隔失败: {e}")
+
     for i in recent_history_manager.get_recent_history(lanlan_name):
         if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()

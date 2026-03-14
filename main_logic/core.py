@@ -28,6 +28,7 @@ from config.prompts_sys import (
     SYSTEM_NOTIFICATION_TASKS_DONE,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
     AGENT_CALLBACK_NOTIFICATION,
+    RESULT_PARSER_PHRASES,
 )
 # Historical imports kept here (commented) for easy rollback:
 # from config import USER_PLUGIN_SERVER_PORT
@@ -1992,7 +1993,9 @@ class LLMSessionManager:
             tag = "✅" if status == "completed" else ("⚠️" if status == "partial" else "❌")
             detail = (cb.get("detail") or "").strip()
             if detail and detail != summary and len(detail) > len(summary):
-                items.append(f"{tag} {summary}\n详细结果：{detail}")
+                _cb_lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+                detail_label = _loc(RESULT_PARSER_PHRASES['detail_result'], _cb_lang)
+                items.append(f"{tag} {summary}\n{detail_label}{detail}")
             else:
                 items.append(f"{tag} {summary}")
 
@@ -2088,20 +2091,22 @@ class LLMSessionManager:
         """
         if not self.pending_agent_callbacks:
             return ""
+        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
         lines: list[str] = []
         for cb in self.pending_agent_callbacks:
             status = cb.get("status", "completed")
             summary = (cb.get("summary") or "").strip()
             detail = (cb.get("detail") or "").strip()
             if status == "completed":
-                tag = "[任务完成]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
             elif status == "partial":
-                tag = "[任务部分完成]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
             else:
-                tag = "[任务失败]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
             lines.append(f"{tag} {summary}")
             if detail and detail != summary:
-                lines.append(f"  详情：{detail[:300]}")
+                prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
+                lines.append(f"{prefix}{detail[:300]}")
         self.pending_agent_callbacks.clear()
         return "\n".join(lines)
 
