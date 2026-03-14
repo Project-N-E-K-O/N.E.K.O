@@ -337,7 +337,8 @@ window.AgentHUD.createAgentTaskHUD = function () {
         cursor: 'move',
         userSelect: 'none',
         willChange: 'transform, width',
-        touchAction: 'none'
+        touchAction: 'none',
+        contain: 'layout style paint'
     });
 
     // 应用保存的位置
@@ -475,7 +476,8 @@ window.AgentHUD.createAgentTaskHUD = function () {
         padding: '0 16px 16px 16px',
         maxHeight: 'calc(60vh - 80px)',
         overflowY: 'auto',
-        transition: 'max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease'
+        transition: 'max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease',
+        contain: 'layout style'
     });
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
@@ -653,6 +655,20 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+
+    // RAF throttle: coalesce rapid-fire WebSocket updates into a single frame
+    if (this._updateRafId) return;
+    this._updateRafId = requestAnimationFrame(() => {
+        this._updateRafId = null;
+        this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Internal: actual HUD update logic (called via RAF throttle)
+window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    const tasksData = this._latestTasksData;
+    if (!tasksData) return;
+
     const taskList = document.getElementById('agent-task-list');
     const emptyState = document.getElementById('agent-task-empty');
     const runningCount = document.getElementById('hud-running-count');
@@ -667,7 +683,7 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         const retryList = document.getElementById('agent-task-list');
         if (!retryList) return;
         // Re-call with the now-created HUD
-        return window.AgentHUD.updateAgentTaskHUD(tasksData);
+        return this._doUpdateAgentTaskHUD();
     }
 
     // 更新统计数据
@@ -762,10 +778,6 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         }
     }
 
-    // 清除旧的任务卡片（保留空状态）
-    const existingCards = taskList.querySelectorAll('.task-card');
-    existingCards.forEach(card => card.remove());
-
     // 排序：前台任务（computer_use / mcp）优先，插件任务沉底
     const _taskSortPriority = (t) => {
         if (t.type === 'computer_use' || t.type === 'browser_use') return 0;
@@ -775,11 +787,120 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     };
     activeTasks.sort((a, b) => _taskSortPriority(a) - _taskSortPriority(b));
 
-    // 添加任务卡片
-    activeTasks.forEach(task => {
-        const card = this._createTaskCard(task);
-        taskList.appendChild(card);
+    // --- Differential DOM update: avoid full rebuild to prevent backdrop-filter recomposite flicker ---
+    const activeIds = new Set(activeTasks.map(t => t.id));
+    const existingCards = taskList.querySelectorAll('.task-card');
+    const existingById = new Map();
+    existingCards.forEach(card => {
+        const tid = card.dataset.taskId;
+        if (tid && activeIds.has(tid)) {
+            existingById.set(tid, card);
+        } else {
+            card.remove(); // remove cards no longer active
+        }
     });
+
+    // Build the desired card order, reusing/updating existing cards
+    const fragment = document.createDocumentFragment();
+    activeTasks.forEach(task => {
+        const existing = existingById.get(task.id);
+        if (existing) {
+            this._updateTaskCard(existing, task);
+            fragment.appendChild(existing);
+        } else {
+            const card = this._createTaskCard(task);
+            fragment.appendChild(card);
+        }
+    });
+
+    // Re-append empty state first (it should stay at top), then task cards
+    if (emptyState && emptyState.parentNode === taskList) {
+        taskList.insertBefore(fragment, emptyState.nextSibling);
+    } else {
+        taskList.appendChild(fragment);
+    }
+};
+
+// 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
+window.AgentHUD._updateTaskCard = function (card, task) {
+    const isRunning = task.status === 'running';
+    const isCompleted = task.status === 'completed';
+    const isFailed = task.status === 'failed';
+    const isTerminal = isCompleted || isFailed;
+
+    // Update start_time data attribute
+    if (task.start_time) card.dataset.startTime = task.start_time;
+
+    // Compute status visuals
+    let statusColor, statusText, cardBg, cardBorder;
+    if (isCompleted) {
+        statusColor = '#16a34a';
+        statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
+        cardBg = 'rgba(22, 163, 74, 0.06)';
+        cardBorder = 'rgba(22, 163, 74, 0.2)';
+    } else if (isFailed) {
+        statusColor = '#dc2626';
+        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        cardBg = 'rgba(220, 38, 38, 0.06)';
+        cardBorder = 'rgba(220, 38, 38, 0.2)';
+    } else if (isRunning) {
+        statusColor = 'var(--neko-popup-accent, #2a7bc4)';
+        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
+        cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
+    } else {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))';
+    }
+
+    // Only touch style properties that actually changed
+    if (card.style.background !== cardBg) card.style.background = cardBg;
+    if (card.style.borderColor !== cardBorder) card.style.border = `1px solid ${cardBorder}`;
+    const targetOpacity = isTerminal ? '0.6' : '1';
+    if (card.style.opacity !== targetOpacity) card.style.opacity = targetOpacity;
+
+    // Update status badge text & color
+    const badge = card.querySelector('.task-status-badge');
+    if (badge) {
+        if (badge.textContent !== statusText) badge.textContent = statusText;
+        if (badge.style.color !== statusColor) badge.style.color = statusColor;
+        const badgeBg = isCompleted ? 'rgba(22, 163, 74, 0.1)' : isFailed ? 'rgba(220, 38, 38, 0.1)' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
+        if (badge.style.background !== badgeBg) badge.style.background = badgeBg;
+    }
+
+    // Update header marginBottom (running tasks have extra space for progress row)
+    const headerDiv = card.firstElementChild;
+    if (headerDiv) {
+        const expectedMB = isRunning ? '6px' : '0';
+        if (headerDiv.style.marginBottom !== expectedMB) headerDiv.style.marginBottom = expectedMB;
+    }
+
+    // Handle progress row: add if now running but missing, remove if no longer running
+    const progressRow = card.querySelector('.task-progress-row');
+    if (isRunning && !progressRow) {
+        // Status just changed to running — rebuild the card cleanly
+        const parent = card.parentNode;
+        const newCard = this._createTaskCard(task);
+        if (parent) parent.replaceChild(newCard, card);
+        return;
+    } else if (!isRunning && progressRow) {
+        // No longer running — remove progress row
+        progressRow.remove();
+    }
+
+    // Update running timer inline so it stays current between setInterval ticks
+    if (isRunning && task.start_time) {
+        const timeEl = card.querySelector('[id^="task-time-"]');
+        if (timeEl) {
+            const startTime = new Date(task.start_time);
+            const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            timeEl.textContent = `\u23f1\ufe0f ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+    }
 };
 
 // 创建单个任务卡片
@@ -888,6 +1009,7 @@ window.AgentHUD._createTaskCard = function (task) {
     typeLabel.appendChild(nameSpan);
 
     const statusBadge = document.createElement('span');
+    statusBadge.className = 'task-status-badge';
     statusBadge.textContent = statusText;
     Object.assign(statusBadge.style, {
         color: statusColor,
@@ -964,6 +1086,7 @@ window.AgentHUD._createTaskCard = function (task) {
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {
         const secondRow = document.createElement('div');
+        secondRow.className = 'task-progress-row';
         Object.assign(secondRow.style, {
             display: 'flex',
             alignItems: 'center',

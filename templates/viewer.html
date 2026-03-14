@@ -79,11 +79,10 @@
         }
 
         #chat-container {
-            margin-bottom: 50px;
             pointer-events: auto;
             position: fixed;
             left: 20px;
-            bottom: 20px;
+            bottom: 70px;
             width: 400px;
             max-height: 500px;
             height: 500px;
@@ -106,6 +105,7 @@
             flex-grow: 1;
             padding: 16px;
             padding-top: 48px;
+            overflow-x: hidden;
             overflow-y: auto;
             scroll-behavior: smooth;
             transition: opacity 0.2s ease, visibility 0.2s ease;
@@ -129,6 +129,10 @@
 
         #chat-content-wrapper::-webkit-scrollbar-thumb:hover {
             background: rgba(0, 0, 0, 0.25);
+        }
+
+        #chat-content-wrapper::-webkit-scrollbar-corner {
+            background: rgba(255, 255, 255, 0.95);
         }
 
         #toggle-chat-btn {
@@ -287,11 +291,10 @@
             #chat-container {
                 width: 90vw;
                 left: 5vw;
-                bottom: 5px;
+                bottom: 10px;
                 max-height: 60vh;
                 height: 60vh;
                 padding: 0;
-                margin-bottom: 5px;
             }
 
             #chat-header {

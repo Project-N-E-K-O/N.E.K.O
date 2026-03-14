@@ -108,14 +108,17 @@ html #chat-container {
 
 /* ===== 暗色模式：聊天容器 ===== */
 [data-theme="dark"] #chat-container {
-  background: rgba(30, 30, 30, 0.75);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
     0 2px 4px rgba(0, 0, 0, 0.12),
     0 8px 16px rgba(0, 0, 0, 0.2),
     0 16px 32px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"] #chat-container::before {
+  background: rgba(30, 30, 30, 0.75);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
 /* ===== 暗色模式：聊天内容区 ===== */
@@ -342,6 +345,10 @@ html #chat-container {
 
 [data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
+}
+
+[data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-corner {
+  background: rgba(25, 25, 25, 0.95);
 }
 
 /* ===== 暗色模式：图标亮度调整 ===== */

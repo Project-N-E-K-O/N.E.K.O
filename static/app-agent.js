@@ -1508,6 +1508,7 @@
             if (agentTaskTimeUpdateInterval) {
                 clearInterval(agentTaskTimeUpdateInterval);
                 agentTaskTimeUpdateInterval = null;
+                agentTaskPollingInterval = null;
             }
             return;
         }
@@ -1602,6 +1603,7 @@
 
     window.checkAndToggleTaskHUD = checkAndToggleTaskHUD;
     mod.checkAndToggleTaskHUD = checkAndToggleTaskHUD;
+    window.updateTaskRunningTimes = updateTaskRunningTimes;
 
     // ====================================================================
     // HUD sub-checkbox change listener binding
