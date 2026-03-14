@@ -63,6 +63,7 @@ html #chat-container {
   --neko-popup-separator: rgba(0, 0, 0, 0.1);
   --neko-popup-accent: #2a7bc4;
   --neko-popup-accent-bg: rgba(42, 123, 196, 0.05);
+  --neko-popup-accent-border: rgba(42, 123, 196, 0.25);
   --neko-popup-error: #dc3545;
   /* HUD 状态变量 */
   --neko-hud-header-bg: rgba(255, 255, 255, 0.85);
@@ -96,6 +97,7 @@ html #chat-container {
   --neko-popup-separator: rgba(255, 255, 255, 0.1);
   --neko-popup-accent: #3a9fd8;
   --neko-popup-accent-bg: rgba(58, 159, 216, 0.1);
+  --neko-popup-accent-border: rgba(58, 159, 216, 0.25);
   --neko-popup-error: #ff6b6b;
   /* HUD 状态变量 - 暗色 */
   --neko-hud-header-bg: rgba(40, 40, 40, 0.85);

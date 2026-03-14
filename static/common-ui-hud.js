@@ -901,6 +901,42 @@ window.AgentHUD._updateTaskCard = function (card, task) {
             timeEl.textContent = `\u23f1\ufe0f ${minutes}:${seconds.toString().padStart(2, '0')}`;
         }
     }
+
+    // Update progress bar and step counter for running tasks
+    if (isRunning && progressRow) {
+        const fill = progressRow.querySelector('.task-progress-fill');
+        if (fill) {
+            const hasDeterminateProgress = typeof task.progress === 'number' && task.progress >= 0;
+            if (hasDeterminateProgress) {
+                const pct = Math.min(100, Math.max(0, Math.round(task.progress * 100)));
+                const newWidth = pct + '%';
+                if (fill.style.width !== newWidth) fill.style.width = newWidth;
+                // Switch from indeterminate animation to determinate if needed
+                if (fill.style.animation) {
+                    fill.style.animation = '';
+                    fill.style.transition = 'width 0.3s ease';
+                }
+            }
+        }
+        const stepEl = progressRow.querySelector('.task-progress-step');
+        if (typeof task.step === 'number' && typeof task.step_total === 'number' && task.step_total > 0) {
+            const stepText = `${task.step}/${task.step_total}`;
+            if (stepEl) {
+                if (stepEl.textContent !== stepText) stepEl.textContent = stepText;
+            } else {
+                // Step counter appeared after card was created — append it
+                const newStep = document.createElement('span');
+                newStep.className = 'task-progress-step';
+                newStep.textContent = stepText;
+                Object.assign(newStep.style, {
+                    color: 'var(--neko-popup-text-sub, #999)',
+                    fontSize: '10px',
+                    flexShrink: '0'
+                });
+                progressRow.appendChild(newStep);
+            }
+        }
+    }
 };
 
 // 创建单个任务卡片
@@ -1124,6 +1160,7 @@ window.AgentHUD._createTaskCard = function (task) {
         });
 
         const progressFill = document.createElement('div');
+        progressFill.className = 'task-progress-fill';
         if (hasDeterminateProgress) {
             const pct = Math.min(100, Math.max(0, Math.round(task.progress * 100)));
             Object.assign(progressFill.style, {
@@ -1148,6 +1185,7 @@ window.AgentHUD._createTaskCard = function (task) {
         // Step counter (e.g. "2/3") — 紧凑显示在进度条右侧
         if (typeof task.step === 'number' && typeof task.step_total === 'number' && task.step_total > 0) {
             const stepSpan = document.createElement('span');
+            stepSpan.className = 'task-progress-step';
             stepSpan.textContent = `${task.step}/${task.step_total}`;
             Object.assign(stepSpan.style, {
                 color: 'var(--neko-popup-text-sub, #999)',
