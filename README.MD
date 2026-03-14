@@ -438,10 +438,12 @@ curl -k https://localhost:48912
 ---
 
 </details>
+
 **注**：当前 Docker 部署方案由 https://home.hinswu.top 提供
 
 
 ## 进阶使用
+<details>
 
 #### 配置API Key
 
@@ -467,7 +469,10 @@ curl -k https://localhost:48912
 
 - 通过访问`http://localhost:48911/memory_browser`可以浏览和校对近期记忆与摘要，一定程度上缓解模型复读、认知错误等问题。
 
+</details>
+
 # 项目细节
+<details>
 
 **项目架构**
 
@@ -516,6 +521,8 @@ v0.8：完善记忆相关功能，完善OpenClaw类似功能。预计2026年3月
 v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年4月完成。
 
 v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年6月完成。
+
+</details>
 
 ## Star History
 
