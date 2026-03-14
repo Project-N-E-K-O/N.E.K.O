@@ -426,6 +426,7 @@ curl -k https://localhost:48912
 3. 配置域名解析到服务器 IP
 
 ### ⏱️ 快速参考
+
 | 操作 | 命令 |
 |------|------|
 | 启动服务 | `docker-compose up -d` |
@@ -437,6 +438,7 @@ curl -k https://localhost:48912
 | 查看状态 | `docker-compose ps` |
 | 清理日志 | `docker-compose logs --tail=0` |
 | 备份数据 | 参考上方"数据备份"部分 |
+
 ---
 
 </details>
