@@ -321,6 +321,10 @@
 
                     if (result.data && result.data.length > 0) {
                         var realTrack = findBestMatch(result.data, aiTrackInfo.name, aiTrackInfo.artist);
+                        if (!realTrack) {
+                            console.warn('[Music] 智能匹配失败，使用第一条结果');
+                            realTrack = result.data[0];
+                        }
                         console.log('[Music] 指令搜歌最终选择:', realTrack.name, '-', realTrack.artist);
 
                         if (typeof window.dispatchMusicPlay === 'function') {
