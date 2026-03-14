@@ -57,7 +57,7 @@ check_dependencies() {
     # 检查openssl可用性（用于证书验证和生成）
     if ! command -v openssl &> /dev/null; then
         echo "⚠️ OpenSSL not found. Installing openssl..."
-        apt-get update && apt-get install -y --no-install-recommends openssl
+        apt-get update && apt-get install -y --no-install-recommends openssl bc
     fi
     
     echo "✅ Dependencies checked:"
