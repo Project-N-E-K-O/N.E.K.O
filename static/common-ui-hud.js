@@ -317,14 +317,14 @@ window.AgentHUD.createAgentTaskHUD = function () {
         position: 'fixed',
         width: '320px',
         maxHeight: '60vh',
-        background: 'rgba(255, 255, 255, 0.65)',
+        background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.65))',
         backdropFilter: 'saturate(180%) blur(20px)',
         WebkitBackdropFilter: 'saturate(180%) blur(20px)',
         borderRadius: '8px',
         padding: '0',
-        border: '1px solid rgba(255, 255, 255, 0.18)',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)',
-        color: '#333',
+        border: 'var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18))',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
+        color: 'var(--neko-popup-text, #333)',
         fontFamily: "'Segoe UI', 'SF Pro Display', -apple-system, sans-serif",
         fontSize: '13px',
         zIndex: '9999',
@@ -337,7 +337,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
         cursor: 'move',
         userSelect: 'none',
         willChange: 'transform, width',
-        touchAction: 'none',
         contain: 'layout style paint'
     });
 
@@ -355,10 +354,11 @@ window.AgentHUD.createAgentTaskHUD = function () {
         justifyContent: 'space-between',
         padding: '12px 16px',
         margin: '0',
-        backgroundColor: 'rgba(255, 255, 255, 0.85)',
+        backgroundColor: 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))',
         borderTopLeftRadius: '8px',
         borderTopRightRadius: '8px',
-        borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
+        borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.08))',
+        touchAction: 'none',
         transition: 'padding 0.4s ease, margin 0.4s ease, border-color 0.4s ease, border-radius 0.4s ease, background-color 0.4s ease'
     });
 
@@ -368,7 +368,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
     Object.assign(title.style, {
         fontWeight: '600',
         fontSize: '15px',
-        color: '#333',
+        color: 'var(--neko-popup-text, #333)',
         transition: 'width 0.3s ease, opacity 0.3s ease',
         overflow: 'hidden',
         whiteSpace: 'nowrap'
@@ -425,13 +425,13 @@ window.AgentHUD.createAgentTaskHUD = function () {
         width: '22px',
         height: '22px',
         borderRadius: '6px',
-        background: 'rgba(220, 53, 69, 0.12)',
+        background: 'var(--neko-popup-error-bg, rgba(220, 53, 69, 0.12))',
         display: 'none',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '11px',
         fontWeight: 'bold',
-        color: '#dc3545',
+        color: 'var(--neko-popup-error, #dc3545)',
         cursor: 'pointer',
         transition: 'all 0.2s ease',
         flexShrink: '0'
@@ -507,7 +507,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
             hud.style.gap = '0'; 
             
             header.style.padding = '12px 16px';
-            header.style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
+            header.style.backgroundColor = 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))';
             header.style.borderBottom = 'none';
             header.style.justifyContent = 'center';
             header.style.borderRadius = '8px'; // round all corners
@@ -522,8 +522,8 @@ window.AgentHUD.createAgentTaskHUD = function () {
             hud.style.gap = '12px'; 
             
             header.style.padding = '12px 16px';
-            header.style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
-            header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
+            header.style.backgroundColor = 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))';
+            header.style.borderBottom = '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.08))';
             header.style.justifyContent = 'space-between';
             header.style.borderRadius = '8px 8px 0 0'; // round only top corners
             
@@ -558,7 +558,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
     emptyContent.textContent = window.t ? window.t('agent.taskHud.noTasks') : '暂无活动任务';
     Object.assign(emptyContent.style, {
         textAlign: 'center',
-        color: '#64748b',
+        color: 'var(--neko-popup-text-sub, #64748b)',
         padding: '20px',
         fontSize: '12px',
         transition: 'all 0.3s ease'
@@ -805,8 +805,8 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     activeTasks.forEach(task => {
         const existing = existingById.get(task.id);
         if (existing) {
-            this._updateTaskCard(existing, task);
-            fragment.appendChild(existing);
+            const node = this._updateTaskCard(existing, task);
+            fragment.appendChild(node || existing);
         } else {
             const card = this._createTaskCard(task);
             fragment.appendChild(card);
@@ -834,15 +834,15 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     // Compute status visuals
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
-        statusColor = '#16a34a';
+        statusColor = 'var(--neko-popup-success, #16a34a)';
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
-        cardBg = 'rgba(22, 163, 74, 0.06)';
-        cardBorder = 'rgba(22, 163, 74, 0.2)';
+        cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
+        cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
     } else if (isFailed) {
-        statusColor = '#dc2626';
+        statusColor = 'var(--neko-popup-error, #dc2626)';
         statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
-        cardBg = 'rgba(220, 38, 38, 0.06)';
-        cardBorder = 'rgba(220, 38, 38, 0.2)';
+        cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
+        cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isRunning) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
         statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
@@ -866,7 +866,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     if (badge) {
         if (badge.textContent !== statusText) badge.textContent = statusText;
         if (badge.style.color !== statusColor) badge.style.color = statusColor;
-        const badgeBg = isCompleted ? 'rgba(22, 163, 74, 0.1)' : isFailed ? 'rgba(220, 38, 38, 0.1)' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
+        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
         if (badge.style.background !== badgeBg) badge.style.background = badgeBg;
     }
 
@@ -881,10 +881,10 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     const progressRow = card.querySelector('.task-progress-row');
     if (isRunning && !progressRow) {
         // Status just changed to running — rebuild the card cleanly
-        const parent = card.parentNode;
         const newCard = this._createTaskCard(task);
+        const parent = card.parentNode;
         if (parent) parent.replaceChild(newCard, card);
-        return;
+        return newCard;
     } else if (!isRunning && progressRow) {
         // No longer running — remove progress row
         progressRow.remove();
@@ -919,15 +919,15 @@ window.AgentHUD._createTaskCard = function (task) {
 
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
-        statusColor = '#16a34a';
+        statusColor = 'var(--neko-popup-success, #16a34a)';
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
-        cardBg = 'rgba(22, 163, 74, 0.06)';
-        cardBorder = 'rgba(22, 163, 74, 0.2)';
+        cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
+        cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
     } else if (isFailed) {
-        statusColor = '#dc2626';
+        statusColor = 'var(--neko-popup-error, #dc2626)';
         statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
-        cardBg = 'rgba(220, 38, 38, 0.06)';
-        cardBorder = 'rgba(220, 38, 38, 0.2)';
+        cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
+        cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isRunning) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
         statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
@@ -1016,7 +1016,7 @@ window.AgentHUD._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '1px 8px',
-        background: isCompleted ? 'rgba(22, 163, 74, 0.1)' : isFailed ? 'rgba(220, 38, 38, 0.1)' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
+        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px',
         flexShrink: '0'
     });
@@ -1033,7 +1033,7 @@ window.AgentHUD._createTaskCard = function (task) {
         width: '18px',
         height: '18px',
         borderRadius: '4px',
-        background: 'rgba(0, 0, 0, 0.06)',
+        background: 'var(--neko-hud-subtle-bg, rgba(0, 0, 0, 0.06))',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

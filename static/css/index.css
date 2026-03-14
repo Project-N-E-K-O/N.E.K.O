@@ -1167,6 +1167,12 @@ button * {
 }
 
 /* --- 最小化状态 --- */
+#chat-container.minimized::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: transparent;
+}
+
 #chat-container.minimized {
     background: rgba(68, 183, 254, 0.15);
     opacity: 1;
@@ -1417,6 +1423,12 @@ button * {
         border: none !important;
     }
 
+    #chat-container.mobile-collapsed::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
+    }
+
     /* 移动端：折叠时仅切换按钮可交互 */
     #chat-container.mobile-collapsed #toggle-chat-btn {
         pointer-events: auto !important;
@@ -1455,6 +1467,12 @@ button * {
         animation: none;
         /* 移动端不需要呼吸效果 */
         background: transparent;
+    }
+
+    #chat-container.minimized::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
     }
 }
 

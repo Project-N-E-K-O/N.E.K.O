@@ -1486,6 +1486,11 @@
             clearInterval(agentTaskTimeUpdateInterval);
             agentTaskTimeUpdateInterval = null;
         }
+        // 同步清理 WebSocket 创建的全局定时器
+        if (window._agentTaskTimeUpdateInterval) {
+            clearInterval(window._agentTaskTimeUpdateInterval);
+            window._agentTaskTimeUpdateInterval = null;
+        }
         agentTaskPollingInterval = null;
 
         if (window.AgentHUD && window.AgentHUD.hideAgentTaskHUD) {
@@ -1509,6 +1514,11 @@
                 clearInterval(agentTaskTimeUpdateInterval);
                 agentTaskTimeUpdateInterval = null;
                 agentTaskPollingInterval = null;
+            }
+            // 同步清理 WebSocket 创建的全局定时器，避免重复间隔
+            if (window._agentTaskTimeUpdateInterval) {
+                clearInterval(window._agentTaskTimeUpdateInterval);
+                window._agentTaskTimeUpdateInterval = null;
             }
             return;
         }
