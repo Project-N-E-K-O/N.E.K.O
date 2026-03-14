@@ -89,144 +89,72 @@ QQ群：1022939659
 ## Docker部署（Linux用户）
 
 # N.E.K.O. Docker 部署指南
-
-
-
-
 ## 部署方式
-
-
-
-
 ### 方式一：Docker Compose（推荐）
-
-
-
-
 <details>
 
 <summary>点击查看 docker-compose.yml 配置文件</summary>
 
-
-
-
 ```yaml
 
 version: '3.8'
-
-
-
-
 services:
-
   neko-main:
-
     image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-
     # image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
-
     container_name: neko
-
     restart: unless-stopped
-
     ports:
-
       # WebUI端口映射
-
       # 48911(服务器外部HTTP端口):80(容器内部Nginx端口)
-
       - "48911:80"
 
       # 48912(服务器外部HTTPS端口):443(容器内部Nginx HTTPS端口)
-
       - "48912:443"
-
     volumes:
-
       # 持久化配置目录
-
       - ./N.E.K.O:/root/Documents/N.E.K.O
-
       # 应用日志目录
-
       - ./logs:/app/logs
-
       # SSL证书目录
-
       - ./ssl:/root/ssl
-
     networks:
-
       - neko-network
 
-
-
-
 networks:
-
   neko-network:
-
     driver: bridge
-
 ```
-
 </details>
-
-
-
 
 **启动命令：**
-
 ```bash
-
 docker-compose up -d
-
 ```
 
-
-
-
 ### 方式二：Docker Run
-
-
-
-
 <details>
-
 <summary>点击查看 docker run 启动命令</summary>
-
-
-
-
 ```bash
-
 NEKO_BASE_PATH="/home/neko/neko-data" && \
-
 docker network create --driver bridge neko-network 2>/dev/null || true && \
-
 docker run -d \
-
   --name neko \
-
   --restart unless-stopped \
-
   -p 48911:80 \
-
   -p 48912:443 \
-
   -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
-
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-
   -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
-
   --network neko-network \
-
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-
 ```
 
 </details>
+
+### SSL相关
+<summary>点击查看SSL相关</summary>
+<details>
 ## 使用自定义 SSL 证书
 容器支持自动生成自签名证书，但您也可以使用自己的 SSL 证书。以下是详细步骤：
 ### 方法一：启动前配置（推荐）
@@ -279,6 +207,8 @@ docker run -d \
 - ✅ **验证通过**：正常启动，可通过 HTTPS 访问
 
 - ❌ **验证失败**：容器启动失败，查看日志获取错误详情
+
+</details>
 
 **日志查看命令：**
 ```bash
