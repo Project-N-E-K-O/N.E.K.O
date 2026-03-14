@@ -1535,7 +1535,7 @@
                 const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000);
                 const minutes = Math.floor(elapsed / 60);
                 const seconds = elapsed % 60;
-                timeEl.innerHTML = `<span style="color: #64748b;">\u23f1\ufe0f</span> ${minutes}:${seconds.toString().padStart(2, '0')}`;
+                timeEl.textContent = `\u23f1\ufe0f ${minutes}:${seconds.toString().padStart(2, '0')}`;
             }
         });
     }
