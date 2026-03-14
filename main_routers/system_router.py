@@ -68,6 +68,13 @@ router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
 
 
+@router.get("/token-usage")
+async def get_token_usage(days: int = 7):
+    """返回最近 N 天的 LLM token 用量统计。"""
+    from utils.token_tracker import TokenTracker
+    return TokenTracker.get_instance().get_stats(days=min(days, 90))
+
+
 @router.get("/pending-notices")
 async def get_pending_notices():
     """前端页面加载时拉取待弹通知（只读快照，不清空队列）。
@@ -716,8 +723,10 @@ async def emotion_analysis(request: Request):
         if extra_body:
             request_params["extra_body"] = extra_body
         
+        from utils.token_tracker import set_call_type
+        set_call_type("emotion")
         response = await client.chat.completions.create(**request_params)
-        
+
         # 解析响应
         result_text = response.choices[0].message.content.strip()
 
@@ -1664,6 +1673,8 @@ async def proactive_chat(request: Request):
                 human_content = begin_text
             messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_content)]
 
+            from utils.token_tracker import set_call_type
+            set_call_type("proactive")
             max_retries = 3
             retry_delays = [1, 2]
             for attempt in range(max_retries):
@@ -2049,6 +2060,8 @@ async def proactive_chat(request: Request):
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
         
         # --- 流式调用 + 在线拦截 ---
+        from utils.token_tracker import set_call_type
+        set_call_type("proactive")
         buffer = ""
         tag_parsed = False
         source_tag = ""

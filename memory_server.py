@@ -110,11 +110,26 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.on_event("startup")
+async def startup_event_handler():
+    """应用启动时初始化"""
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+        install_hooks()
+        TokenTracker.get_instance().start_periodic_save()
+    except Exception as e:
+        logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_event_handler():
     """应用关闭时执行清理工作"""
     logger.info("Memory server正在关闭...")
-    # 这里可以添加任何需要的清理工作
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().save()
+    except Exception:
+        pass
     logger.info("Memory server已关闭")
 
 

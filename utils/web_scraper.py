@@ -13,6 +13,7 @@ import platform
 from typing import Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from bs4 import BeautifulSoup
@@ -1285,6 +1286,7 @@ Please output 3 search keywords."""
 
         # Gemini 的 OpenAI 兼容接口需要实际的 user content；
         # 仅发送 system message 可能被底层适配为空 contents。
+        set_call_type("web_scraper")
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),

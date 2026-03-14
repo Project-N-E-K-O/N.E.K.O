@@ -1,6 +1,7 @@
 import os
 
 import backoff
+from utils.token_tracker import set_call_type
 from anthropic import Anthropic
 from openai import (
     AzureOpenAI,
@@ -45,6 +46,7 @@ class LMMEngineOpenAI(LMMEngine):
             raise ValueError(
                 "An API Key needs to be provided in either the api_key parameter or as an environment variable named OPENAI_API_KEY"
             )
+        set_call_type("agent_cua")
         organization = self.organization or os.getenv("OPENAI_ORG_ID")
         if not self.llm_client:
             if not self.base_url:
@@ -294,6 +296,7 @@ class LMMEngineAzureOpenAI(LMMEngine):
                 api_version=api_version,
             )
         # Use self.temperature if set, otherwise use the temperature argument
+        set_call_type("agent_cua")
         temp = self.temperature if self.temperature is not None else temperature
         completion = self.llm_client.chat.completions.create(
             model=self.model,
@@ -350,6 +353,7 @@ class LMMEnginevLLM(LMMEngine):
         if not self.llm_client:
             self.llm_client = OpenAI(base_url=base_url, api_key=api_key)
         # Use self.temperature if set, otherwise use the temperature argument
+        set_call_type("agent_cua")
         temp = self.temperature if self.temperature is not None else temperature
         completion = self.llm_client.chat.completions.create(
             model=self.model,

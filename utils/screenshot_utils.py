@@ -5,6 +5,7 @@
 import base64
 from typing import Optional
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 import asyncio
 from io import BytesIO
 from PIL import Image
@@ -145,6 +146,7 @@ async def analyze_image_with_vision_model(
             system_content = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
             user_text = "请描述这张图片的内容。"
         
+        set_call_type("vision")
         response = await client.chat.completions.create(
             model=vision_model,
             messages = [

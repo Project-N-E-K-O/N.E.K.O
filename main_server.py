@@ -861,6 +861,15 @@ async def on_startup():
             _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
             _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
         
+        # 初始化全局 LLM Token 用量追踪器
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            logger.info("Token usage tracker initialized")
+        except Exception as e:
+            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
+
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
         # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
@@ -901,6 +910,13 @@ async def on_shutdown():
             except Exception as e:
                 logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
         
+        # 保存 Token 用量数据
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception as e:
+            logger.debug(f"Token usage save on shutdown failed: {e}")
+
         # 关闭音乐爬虫连接池
         try:
             from utils.music_crawlers import close_all_crawlers
