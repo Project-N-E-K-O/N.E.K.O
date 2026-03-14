@@ -300,7 +300,7 @@ validate_ssl_certificate() {
     elif [ "$key_type" = "ec" ] || [ "$key_type" = "pkey" ]; then
         # EC或通用密钥验证
         cert_pubkey=$(openssl x509 -in "$cert_file" -pubkey -noout 2>/dev/null)
-        key_pubkey=$(openssl pkey -in "$key_file" -pubout 2>/dev/null 2>/dev/null)
+        key_pubkey=$(openssl pkey -in "$key_file" -pubout 2>/dev/null)
         
         if [ -z "$cert_pubkey" ] || [ -z "$key_pubkey" ]; then
             echo "❌ Failed to extract public key from certificate or key"
