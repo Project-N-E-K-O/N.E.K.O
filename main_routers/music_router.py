@@ -32,7 +32,9 @@ async def search_music(
     
     # 异常保护
     try:
-        results = await fetch_music_content(keyword=query, limit=5)
+        # 确保至少返回 5 个候选项供前端智能匹配，同时尊重用户传入的 limit
+        effective_limit = max(limit, 5)
+        results = await fetch_music_content(keyword=query, limit=effective_limit)
         
         if results.get('success'):
             track_count = len(results.get('data', []))
