@@ -31,6 +31,13 @@ try:
     from brain.deduper import TaskDeduper
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
+    from brain.result_parser import (
+        parse_computer_use_result,
+        parse_browser_use_result,
+        parse_plugin_result,
+        _phrase as _rp_phrase,
+        _get_lang as _rp_lang,
+    )
 except Exception as e:
     logger.exception(f"[Agent] Module import failed during startup: {e}")
     raise
@@ -619,6 +626,25 @@ async def _emit_task_result(
     )
 
 
+def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
+    """从 plugin_list 中查找指定 entry 的 llm_result_fields 声明。"""
+    try:
+        plugins = getattr(Modules.task_executor, "plugin_list", None) or []
+        for p in plugins:
+            if not isinstance(p, dict) or p.get("id") != plugin_id:
+                continue
+            for e in p.get("entries") or []:
+                if not isinstance(e, dict):
+                    continue
+                if e.get("id") == entry_id:
+                    fields = e.get("llm_result_fields")
+                    return list(fields) if isinstance(fields, list) else None
+            break
+    except Exception as e:
+        logger.debug("_lookup_llm_result_fields failed: plugin_id=%s entry_id=%s error=%s", plugin_id, entry_id, e)
+    return None
+
+
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
     try:
@@ -850,10 +876,7 @@ async def _run_computer_use_task(
                 res["success"] = True
             success = bool(res.get("success", False))
             info["result"] = res
-            if isinstance(res, dict):
-                cu_detail = res.get("result") or res.get("message") or res.get("reason") or ""
-            else:
-                cu_detail = str(res) if res is not None else ""
+            _cu_ok, cu_detail = parse_computer_use_result(res)
     except asyncio.CancelledError:
         info["error"] = "Task was cancelled"
         logger.info("[ComputerUse] Task %s was cancelled", task_id)
@@ -870,6 +893,9 @@ async def _run_computer_use_task(
     finally:
         info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
         info["end_time"] = _now_iso()
+        # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
+        if not success and not info.get("error") and cu_detail:
+            info["error"] = cu_detail[:500]
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
@@ -881,7 +907,7 @@ async def _run_computer_use_task(
                 task={
                     "id": task_id, "status": info["status"], "type": "computer_use",
                     "start_time": info.get("start_time"), "end_time": _now_iso(),
-                    "error": info.get("error"),
+                    "error": info.get("error") if not success else None,
                 },
             ))
             Modules._background_tasks.add(task_obj)
@@ -891,25 +917,26 @@ async def _run_computer_use_task(
 
         # Emit structured task_result
         try:
-            _done = "已完成" if success else "已结束"
+            _lang = _rp_lang(None)
+            _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
             params = info.get("params") or {}
             desc = params.get("query") or params.get("instruction") or ""
             if cu_detail and desc:
-                summary = f'你的任务“{desc}”{_done}：{cu_detail}'
+                summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
             elif cu_detail:
-                summary = f'你的任务{_done}：{cu_detail}'
+                summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
             elif desc:
-                summary = f'你的任务“{desc}”{_done}'
+                summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
             else:
-                summary = "任务已完成" if success else "任务执行失败"
+                summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
             task_obj = asyncio.create_task(_emit_task_result(
                 lanlan_name,
                 channel="computer_use",
                 task_id=task_id,
                 success=success,
                 summary=summary,
-                detail=cu_detail,
-                error_message=(info.get("error") or "") if not success else "",
+                detail=cu_detail if success else "",
+                error_message=cu_detail if not success else "",
             ))
             Modules._background_tasks.add(task_obj)
             task_obj.add_done_callback(Modules._background_tasks.discard)
@@ -1170,7 +1197,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                         up_terminal = "completed" if up_result.success else "failed"
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
-                        detail = str(run_data)[:500] if run_data else ""
+                        run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
+                        _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                        _plugin_msg = str(up_result.result.get("message") or "") if isinstance(up_result.result, dict) else ""
+                        _error_to_pass = (run_error or up_result.error) if not up_result.success else None
+                        detail = parse_plugin_result(
+                            run_data,
+                            llm_result_fields=_llm_fields,
+                            plugin_message=_plugin_msg,
+                            error=_error_to_pass,
+                        )
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1179,8 +1215,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["status"] = up_terminal
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = up_result.result
-                            if not up_result.success and up_result.error:
-                                _reg["error"] = str(up_result.error)[:500]
+                            if not up_result.success:
+                                _reg["error"] = (detail or str(up_result.error or ""))[:500]
                         if up_result.success and is_deferred:
                             # 保持任务为 running 状态，等待 daemon 触发后回调完成
                             reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
@@ -1195,9 +1231,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # 不进入后续 completed/failed 流程
                         elif up_result.success:
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
-                            summary = f'插件任务 "{plugin_id}" 已完成'
-                            if detail:
-                                summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                            _lang = _rp_lang(None)
+                            summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
                             try:
                                 await _emit_task_result(
                                     lanlan_name,
@@ -1211,14 +1246,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         else:
                             logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                            _lang = _rp_lang(None)
                             try:
+                                _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
                                 await _emit_task_result(
                                     lanlan_name,
                                     channel="user_plugin",
                                     task_id=str(up_result.task_id or ""),
                                     success=False,
-                                    summary=f'插件任务 "{plugin_id}" 执行失败',
-                                    error_message=str(up_result.error or "unknown error")[:500],
+                                    summary=_fail_summary[:500],
+                                    error_message=(detail or str(up_result.error or ""))[:500],
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1230,7 +1267,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
                                           "start_time": up_start, "end_time": _now_iso(),
                                           "params": task_params,
-                                          "error": str(up_result.error or "")[:500] if not up_result.success else None},
+                                          "error": (detail or str(up_result.error or ""))[:500] if not up_result.success else None},
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
@@ -1246,7 +1283,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="user_plugin",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary='插件任务已取消',
+                                summary=_rp_phrase('plugin_cancelled', _rp_lang(None)),
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -1336,36 +1373,34 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             session_id=bu_session.session_id,
                         )
                         success = bres.get("success", False) if isinstance(bres, dict) else False
-                        summary = f'你的任务"{result.task_description}"已完成' if success else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                        result_detail = ""
-                        error_detail = ""
-                        if isinstance(bres, dict):
-                            result_detail = str(bres.get("result") or bres.get("message") or "")
-                            error_detail = str(bres.get("error") or "") if not success else ""
-                            display_detail = result_detail or error_detail
-                            if success:
-                                summary = f'你的任务"{result.task_description}"已完成：{result_detail}' if result_detail else f'你的任务"{result.task_description}"已完成'
-                            else:
-                                summary = f'你的任务"{result.task_description}"已结束（未完全成功）：{display_detail}' if display_detail else f'你的任务"{result.task_description}"已结束（未完全成功）'
-                        bu_session.complete_task(result_detail or summary, success)
+                        _bu_ok, bu_parsed = parse_browser_use_result(bres)
+                        _lang = _rp_lang(None)
+                        _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
+                        if bu_parsed:
+                            summary = _rp_phrase('cu_task_done', _lang, desc=result.task_description, status=_done, detail=bu_parsed)
+                        else:
+                            summary = _rp_phrase('cu_task_desc_only', _lang, desc=result.task_description, status=_done)
+                        bu_session.complete_task(bu_parsed or summary, success)
                         bu_info["status"] = "completed" if success else "failed"
                         bu_info["end_time"] = _now_iso()
                         bu_info["result"] = bres
+                        if not success:
+                            bu_info["error"] = (bu_parsed or "")[:500]
                         await _emit_task_result(
                             lanlan_name,
                             channel="browser_use",
                             task_id=bu_task_id,
                             success=success,
                             summary=summary,
-                            detail=result_detail,
-                            error_message=error_detail,
+                            detail=bu_parsed if success else "",
+                            error_message=bu_parsed if not success else "",
                         )
                         try:
                             await _emit_main_event(
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": bu_info["status"],
                                       "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": error_detail[:500] if error_detail else "",
+                                      "error": (bu_parsed[:500] if bu_parsed else "") if not success else None,
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -1763,17 +1798,25 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
             info["end_time"] = _now_iso()
-            if not res.success and res.error:
-                info["error"] = str(res.error)[:500]
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
-                detail = str(run_data)[:500] if run_data else ""
+                run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
+                _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
+                _error_to_pass = (run_error or res.error) if not res.success else None
+                detail = parse_plugin_result(
+                    run_data,
+                    llm_result_fields=_llm_fields,
+                    plugin_message=_plugin_msg,
+                    error=_error_to_pass,
+                )
+                if not res.success:
+                    info["error"] = (detail or str(res.error or ""))[:500]
+                _lang = _rp_lang(None)
                 if res.success:
-                    summary = f'插件任务 "{plugin_id}" 已完成'
-                    if detail:
-                        summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                    summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
                 else:
-                    summary = f'插件任务 "{plugin_id}" 执行失败'
+                    summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
                 await _emit_task_result(
                     lanlan_name,
                     channel="user_plugin",
@@ -1781,7 +1824,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     success=res.success,
                     summary=summary[:500],
                     detail=detail if res.success else "",
-                    error_message=str(res.error or "")[:500] if not res.success else "",
+                    error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
@@ -1795,7 +1838,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=f'插件任务 "{plugin_id}" 已取消',
+                    summary=_rp_phrase('plugin_cancelled_id', _rp_lang(None), id=plugin_id),
                     error_message="cancelled",
                 )
             except Exception as emit_err:
@@ -1812,7 +1855,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=f'插件任务 "{plugin_id}" 执行异常: {str(e)[:200]}',
+                    summary=_rp_phrase('plugin_exception', _rp_lang(None), id=plugin_id, err=str(e)[:200]),
                     error_message=str(e)[:500],
                 )
             except Exception as emit_err:

@@ -537,8 +537,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
-            results.append(
-                {
+            entry_preview: Dict[str, Any] = {
                     "id": eid,
                     "name": str(getattr(event_meta, "name", "") or ""),
                     "description": str(getattr(event_meta, "description", "") or ""),
@@ -546,7 +545,10 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                     "input_schema": input_schema,
                     "return_message": str(getattr(event_meta, "return_message", "") or ""),
                 }
-            )
+            meta_dict = getattr(event_meta, "metadata", None)
+            if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+                entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+            results.append(entry_preview)
     except Exception:
         # Best-effort: preview must never break plugin listing.
         pass

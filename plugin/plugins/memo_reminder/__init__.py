@@ -464,6 +464,7 @@ class MemoReminderPlugin(NekoPluginBase):
             },
             "required": ["time", "message"],
         },
+        llm_result_fields=["message", "trigger_at_local"],
     )
     async def add_reminder(self, time: str, message: str, repeat: str = "once", **kwargs):
         tz = getattr(self, "_tz", ZoneInfo(_DEFAULT_TZ))
@@ -582,6 +583,7 @@ class MemoReminderPlugin(NekoPluginBase):
         id="list_reminders",
         name="查看提醒列表",
         description="列出所有待触发的提醒",
+        llm_result_fields=["count"],
     )
     async def list_reminders(self, **_):
         reminders = self._load_reminders()
@@ -592,6 +594,7 @@ class MemoReminderPlugin(NekoPluginBase):
         id="delete_reminder",
         name="删除提醒",
         description="根据 reminder_id 删除一个提醒",
+        llm_result_fields=["deleted"],
         input_schema={
             "type": "object",
             "properties": {
@@ -616,6 +619,7 @@ class MemoReminderPlugin(NekoPluginBase):
         id="clear_reminders",
         name="清空所有提醒",
         description="删除所有待触发的提醒",
+        llm_result_fields=["cleared"],
     )
     async def clear_reminders(self, **_):
         with self._reminders_lock:
