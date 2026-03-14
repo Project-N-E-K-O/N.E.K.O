@@ -195,7 +195,6 @@ async def get_recent_file(filename: str):
 
 @router.post('/recent_file/save')
 async def save_recent_file(request: Request):
-    import json
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
