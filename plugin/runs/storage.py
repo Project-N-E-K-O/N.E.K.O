@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 from loguru import logger
 
