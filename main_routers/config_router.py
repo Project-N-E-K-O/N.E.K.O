@@ -375,6 +375,7 @@ async def get_core_config_api():
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),  
             "enableCustomApi": core_cfg.get('enableCustomApi', False),  
             # 自定义API相关字段
@@ -484,6 +485,8 @@ async def update_core_config(request: Request):
             core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
         if 'assistApiKeyGemini' in data:
             core_cfg['assistApiKeyGemini'] = data['assistApiKeyGemini']
+        if 'assistApiKeyKimi' in data:
+            core_cfg['assistApiKeyKimi'] = data['assistApiKeyKimi']
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'enableCustomApi' in data:
