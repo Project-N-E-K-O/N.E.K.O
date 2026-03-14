@@ -916,6 +916,13 @@ window.AgentHUD._updateTaskCard = function (card, task) {
                     fill.style.animation = '';
                     fill.style.transition = 'width 0.3s ease';
                 }
+            } else {
+                // Revert to indeterminate state
+                if (!fill.style.animation || fill.style.width !== '30%') {
+                    fill.style.width = '30%';
+                    fill.style.transition = '';
+                    fill.style.animation = 'taskProgress 1.5s ease-in-out infinite';
+                }
             }
         }
         const stepEl = progressRow.querySelector('.task-progress-step');
@@ -935,6 +942,9 @@ window.AgentHUD._updateTaskCard = function (card, task) {
                 });
                 progressRow.appendChild(newStep);
             }
+        } else if (stepEl) {
+            // Step info no longer available — remove stale element
+            stepEl.remove();
         }
     }
 };
