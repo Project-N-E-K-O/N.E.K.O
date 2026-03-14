@@ -91,7 +91,9 @@ QQ群：1022939659
 ### 部署方式一：Docker Compose（推荐）
 <details>
 <summary>点击展开查看 docker-compose.yml 配置文件</summary>
+
 ```yaml
+
 version: '3.8'
 services:
   neko-main:
@@ -111,7 +113,7 @@ networks:
   neko-network:
     driver: bridge
 ```
-</details>
+
 
 **启动命令：**
 ```bash
@@ -123,11 +125,14 @@ docker-compose up -d
 - 停止服务：`docker-compose down`
 - 重启服务：`docker-compose restart`
 
+</details>
+
 ### 部署方式二：Docker Run
 <details>
 <summary>点击展开查看 docker run 启动命令</summary>
 
 ```bash
+
 NEKO_BASE_PATH="/home/neko/neko-data" && \
 docker network create --driver bridge neko-network 2>/dev/null || true
 docker run -d \
@@ -141,7 +146,7 @@ docker run -d \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
-</details>
+
 #### 📁 目录结构
 启动后会自动生成以下目录结构：
 ```
@@ -151,9 +156,13 @@ docker run -d \
 ├── ssl/          # SSL证书
 └── docker-compose.yml
 ```
+
+</details>
+
 #### 🔐 SSL 证书配置
 <details>
 <summary>点击展开查看 SSL 证书详细说明</summary>
+
 #### 自动证书
 容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./ssl/` 目录。
 
