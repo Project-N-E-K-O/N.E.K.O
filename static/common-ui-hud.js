@@ -862,19 +862,23 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     }
 
-    // Only touch style properties that actually changed
-    if (card.style.background !== cardBg) card.style.background = cardBg;
-    if (card.style.borderColor !== cardBorder) card.style.border = `1px solid ${cardBorder}`;
-    const targetOpacity = isTerminal ? '0.6' : '1';
-    if (card.style.opacity !== targetOpacity) card.style.opacity = targetOpacity;
+    // Use semantic state key to avoid comparing CSS var() strings against resolved style values
+    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isFailed ? 'failed' : isRunning ? 'running' : 'queued';
+    if (card.dataset.cardState !== stateKey) {
+        card.dataset.cardState = stateKey;
+        card.style.background = cardBg;
+        card.style.border = `1px solid ${cardBorder}`;
+        card.style.opacity = isTerminal ? '0.6' : '1';
+    }
 
-    // Update status badge text & color
+    // Update status badge text & color (keyed by same state)
     const badge = card.querySelector('.task-status-badge');
-    if (badge) {
-        if (badge.textContent !== statusText) badge.textContent = statusText;
-        if (badge.style.color !== statusColor) badge.style.color = statusColor;
+    if (badge && badge.dataset.statusState !== stateKey) {
+        badge.dataset.statusState = stateKey;
+        badge.textContent = statusText;
+        badge.style.color = statusColor;
         const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
-        if (badge.style.background !== badgeBg) badge.style.background = badgeBg;
+        badge.style.background = badgeBg;
     }
 
     // Update header marginBottom (running tasks have extra space for progress row)
@@ -1365,8 +1369,6 @@ window.AgentHUD._setupDragging = function (hud) {
 
     // 触摸事件支持（移动设备）- 全局拖拽
     let touchDragging = false;
-    let touchOffsetX = 0;
-    let touchOffsetY = 0;
 
     // 触摸开始
     const handleTouchStart = (e) => {
