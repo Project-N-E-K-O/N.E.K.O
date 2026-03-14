@@ -44,6 +44,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     portaudio19-dev \
     nginx \
     openssl \
+    bc \
     && rm -rf /var/lib/apt/lists/* && \
     unset http_proxy && \
     unset https_proxy
