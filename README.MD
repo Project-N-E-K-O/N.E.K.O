@@ -80,7 +80,8 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 * **创作者 (Creators):** 优秀的画师、Live2D/3D建模师、配音演员、文案写手，你们赋予“她”灵魂。
 * **梦想家 (Dreamers):** 即使你没有专业技能，但你对这个未来充满向往，你的反馈和传播也是宝贵的贡献。
 
-QQ群：1022939659
+
+**QQ群**：[1022939659](https://qm.qq.com/q/HxeaMdSkQW)
 
 ## 快速开始（Windows用户、Macbook用户）
 
