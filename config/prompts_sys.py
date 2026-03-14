@@ -1904,6 +1904,21 @@ RESULT_PARSER_PHRASES = {
     'task_failed_tag':    {'zh': '[任务失败]', 'en': '[Task failed]', 'ja': '[タスク失敗]', 'ko': '[작업 실패]', 'ru': '[Задача не выполнена]'},
     'detail_prefix':      {'zh': '  详情：', 'en': '  Details: ', 'ja': '  詳細：', 'ko': '  상세: ', 'ru': '  Подробности: '},
     'detail_result':      {'zh': '详细结果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: '},
+    # agent_server task summary 模板
+    'plugin_done':        {'zh': '插件任务 "{id}" 已完成', 'en': 'Plugin task "{id}" completed', 'ja': 'プラグインタスク "{id}" 完了', 'ko': '플러그인 작업 "{id}" 완료', 'ru': 'Задача плагина «{id}» выполнена'},
+    'plugin_done_with':   {'zh': '插件任务 "{id}" 已完成：{detail}', 'en': 'Plugin task "{id}" completed: {detail}', 'ja': 'プラグインタスク "{id}" 完了：{detail}', 'ko': '플러그인 작업 "{id}" 완료: {detail}', 'ru': 'Задача плагина «{id}» выполнена: {detail}'},
+    'plugin_failed':      {'zh': '插件任务 "{id}" 执行失败', 'en': 'Plugin task "{id}" failed', 'ja': 'プラグインタスク "{id}" 失敗', 'ko': '플러그인 작업 "{id}" 실패', 'ru': 'Задача плагина «{id}» не выполнена'},
+    'plugin_failed_with': {'zh': '插件任务 "{id}" 执行失败：{detail}', 'en': 'Plugin task "{id}" failed: {detail}', 'ja': 'プラグインタスク "{id}" 失敗：{detail}', 'ko': '플러그인 작업 "{id}" 실패: {detail}', 'ru': 'Задача плагина «{id}» не выполнена: {detail}'},
+    'plugin_cancelled':   {'zh': '插件任务已取消', 'en': 'Plugin task cancelled', 'ja': 'プラグインタスクがキャンセルされました', 'ko': '플러그인 작업 취소됨', 'ru': 'Задача плагина отменена'},
+    'plugin_cancelled_id': {'zh': '插件任务 "{id}" 已取消', 'en': 'Plugin task "{id}" cancelled', 'ja': 'プラグインタスク "{id}" キャンセル', 'ko': '플러그인 작업 "{id}" 취소됨', 'ru': 'Задача плагина «{id}» отменена'},
+    'plugin_exception':   {'zh': '插件任务 "{id}" 执行异常: {err}', 'en': 'Plugin task "{id}" exception: {err}', 'ja': 'プラグインタスク "{id}" 例外: {err}', 'ko': '플러그인 작업 "{id}" 예외: {err}', 'ru': 'Задача плагина «{id}» — исключение: {err}'},
+    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}'},
+    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}'},
+    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}'},
+    'cu_done':            {'zh': '任务已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена'},
+    'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена'},
+    'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
+    'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
 }
 
 # ---------- 距上次聊天间隔提示 ----------

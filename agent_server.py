@@ -35,6 +35,8 @@ try:
         parse_computer_use_result,
         parse_browser_use_result,
         parse_plugin_result,
+        _phrase as _rp_phrase,
+        _get_lang as _rp_lang,
     )
 except Exception as e:
     logger.exception(f"[Agent] Module import failed during startup: {e}")
@@ -891,6 +893,9 @@ async def _run_computer_use_task(
     finally:
         info["status"] = "cancelled" if info.get("error") == "Task was cancelled" else ("completed" if success else "failed")
         info["end_time"] = _now_iso()
+        # 失败时将解析后的 cu_detail 写入 info["error"]（仅在非异常路径下补全）
+        if not success and not info.get("error") and cu_detail:
+            info["error"] = cu_detail[:500]
         Modules.computer_use_running = False
         Modules.active_computer_use_task_id = None
         Modules.active_computer_use_async_task = None
@@ -902,7 +907,7 @@ async def _run_computer_use_task(
                 task={
                     "id": task_id, "status": info["status"], "type": "computer_use",
                     "start_time": info.get("start_time"), "end_time": _now_iso(),
-                    "error": info.get("error"),
+                    "error": info.get("error") if not success else None,
                 },
             ))
             Modules._background_tasks.add(task_obj)
@@ -912,17 +917,18 @@ async def _run_computer_use_task(
 
         # Emit structured task_result
         try:
-            _done = "已完成" if success else "已结束"
+            _lang = _rp_lang(None)
+            _done = _rp_phrase('cu_status_done', _lang) if success else _rp_phrase('cu_status_ended', _lang)
             params = info.get("params") or {}
             desc = params.get("query") or params.get("instruction") or ""
             if cu_detail and desc:
-                summary = f'你的任务“{desc}”{_done}：{cu_detail}'
+                summary = _rp_phrase('cu_task_done', _lang, desc=desc, status=_done, detail=cu_detail)
             elif cu_detail:
-                summary = f'你的任务{_done}：{cu_detail}'
+                summary = _rp_phrase('cu_task_done_no_desc', _lang, status=_done, detail=cu_detail)
             elif desc:
-                summary = f'你的任务“{desc}”{_done}'
+                summary = _rp_phrase('cu_task_desc_only', _lang, desc=desc, status=_done)
             else:
-                summary = "任务已完成" if success else "任务执行失败"
+                summary = _rp_phrase('cu_done', _lang) if success else _rp_phrase('cu_fail', _lang)
             task_obj = asyncio.create_task(_emit_task_result(
                 lanlan_name,
                 channel="computer_use",
@@ -1209,8 +1215,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             _reg["status"] = up_terminal
                             _reg["end_time"] = _now_iso()
                             _reg["result"] = up_result.result
-                            if not up_result.success and up_result.error:
-                                _reg["error"] = str(up_result.error)[:500]
+                            if not up_result.success:
+                                _reg["error"] = (detail or str(up_result.error or ""))[:500]
                         if up_result.success and is_deferred:
                             # 保持任务为 running 状态，等待 daemon 触发后回调完成
                             reminder_id = run_data.get("reminder_id") if isinstance(run_data, dict) else None
@@ -1225,9 +1231,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # 不进入后续 completed/failed 流程
                         elif up_result.success:
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
-                            summary = f'插件任务 "{plugin_id}" 已完成'
-                            if detail:
-                                summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                            _lang = _rp_lang(None)
+                            summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
                             try:
                                 await _emit_task_result(
                                     lanlan_name,
@@ -1241,17 +1246,16 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         else:
                             logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
+                            _lang = _rp_lang(None)
                             try:
-                                _fail_summary = f'插件任务 "{plugin_id}" 执行失败'
-                                if detail:
-                                    _fail_summary = f'插件任务 "{plugin_id}" 执行失败：{detail}'
+                                _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
                                 await _emit_task_result(
                                     lanlan_name,
                                     channel="user_plugin",
                                     task_id=str(up_result.task_id or ""),
                                     success=False,
                                     summary=_fail_summary[:500],
-                                    error_message=detail or str(up_result.error or "unknown error")[:500],
+                                    error_message=(detail or str(up_result.error or ""))[:500],
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
@@ -1263,7 +1267,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                     task={"id": result.task_id, "status": up_terminal, "type": "user_plugin",
                                           "start_time": up_start, "end_time": _now_iso(),
                                           "params": task_params,
-                                          "error": str(up_result.error or "")[:500] if not up_result.success else None},
+                                          "error": (detail or str(up_result.error or ""))[:500] if not up_result.success else None},
                                 )
                             except Exception as emit_err:
                                 logger.debug("[TaskExecutor] emit task_update(terminal) failed: task_id=%s plugin_id=%s error=%s", result.task_id, plugin_id, emit_err)
@@ -1279,7 +1283,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 channel="user_plugin",
                                 task_id=str(result.task_id or ""),
                                 success=False,
-                                summary='插件任务已取消',
+                                summary=_rp_phrase('plugin_cancelled', _rp_lang(None)),
                                 error_message=cancel_msg,
                             )
                         except Exception as emit_err:
@@ -1790,8 +1794,6 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["result"] = res.result
             info["status"] = "completed" if res.success else "failed"
             info["end_time"] = _now_iso()
-            if not res.success and res.error:
-                info["error"] = str(res.error)[:500]
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
                 run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
@@ -1804,14 +1806,13 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
                 )
+                if not res.success:
+                    info["error"] = (detail or str(res.error or ""))[:500]
+                _lang = _rp_lang(None)
                 if res.success:
-                    summary = f'插件任务 "{plugin_id}" 已完成'
-                    if detail:
-                        summary = f'插件任务 "{plugin_id}" 已完成：{detail}'
+                    summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
                 else:
-                    summary = f'插件任务 "{plugin_id}" 执行失败'
-                    if detail:
-                        summary = f'插件任务 "{plugin_id}" 执行失败：{detail}'
+                    summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
                 await _emit_task_result(
                     lanlan_name,
                     channel="user_plugin",
@@ -1819,7 +1820,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     success=res.success,
                     summary=summary[:500],
                     detail=detail if res.success else "",
-                    error_message=detail or str(res.error or "")[:500] if not res.success else "",
+                    error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
                 )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
@@ -1833,7 +1834,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=f'插件任务 "{plugin_id}" 已取消',
+                    summary=_rp_phrase('plugin_cancelled_id', _rp_lang(None), id=plugin_id),
                     error_message="cancelled",
                 )
             except Exception as emit_err:
@@ -1850,7 +1851,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     channel="user_plugin",
                     task_id=task_id,
                     success=False,
-                    summary=f'插件任务 "{plugin_id}" 执行异常: {str(e)[:200]}',
+                    summary=_rp_phrase('plugin_exception', _rp_lang(None), id=plugin_id, err=str(e)[:200]),
                     error_message=str(e)[:500],
                 )
             except Exception as emit_err:
