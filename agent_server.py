@@ -638,8 +638,8 @@ def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Option
                     fields = e.get("llm_result_fields")
                     return list(fields) if isinstance(fields, list) else None
             break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("_lookup_llm_result_fields failed: plugin_id=%s entry_id=%s error=%s", plugin_id, entry_id, e)
     return None
 
 
@@ -1194,11 +1194,12 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
                         _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
                         _plugin_msg = str(up_result.result.get("message") or "") if isinstance(up_result.result, dict) else ""
+                        _error_to_pass = (run_error or up_result.error) if not up_result.success else None
                         detail = parse_plugin_result(
                             run_data,
                             llm_result_fields=_llm_fields,
                             plugin_message=_plugin_msg,
-                            error=run_error if not up_result.success else None,
+                            error=_error_to_pass,
                         )
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
@@ -1391,7 +1392,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": bu_info["status"],
                                       "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": bu_parsed[:500] if bu_parsed else "",
+                                      "error": (bu_parsed[:500] if bu_parsed else "") if not success else None,
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
@@ -1796,11 +1797,12 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
                 _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
                 _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
+                _error_to_pass = (run_error or res.error) if not res.success else None
                 detail = parse_plugin_result(
                     run_data,
                     llm_result_fields=_llm_fields,
                     plugin_message=_plugin_msg,
-                    error=run_error if not res.success else None,
+                    error=_error_to_pass,
                 )
                 if res.success:
                     summary = f'插件任务 "{plugin_id}" 已完成'
