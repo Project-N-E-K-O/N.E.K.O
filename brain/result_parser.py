@@ -99,56 +99,42 @@ def _truncate(s: str, limit: int = 300) -> str:
     return s[:limit] + "…"
 
 
-# ── ComputerUse ─────────────────────────────────────────────────────────
+# ── ComputerUse / BrowserUse 共用 ───────────────────────────────────────
 
-def parse_computer_use_result(res: Any, *, lang: str | None = None) -> str:
-    """解析 ComputerUse run_instruction 返回值 → 自然语言摘要。"""
-    lang = _get_lang(lang)
+def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
+    """解析 ComputerUse / BrowserUse 返回值 → (succeeded, 自然语言摘要)。
+
+    返回二元组方便调用方区分成功/失败，将 detail 和 error_message 放入正确字段。
+    """
     if not isinstance(res, dict):
-        return _phrase('no_result', lang)
+        return False, _phrase('no_result', lang)
 
     if res.get("success"):
         result = _truncate(str(res.get("result") or "").strip())
         steps = res.get("steps")
         if steps and result:
-            return _phrase('steps_done_with', lang, n=steps, detail=result)
+            return True, _phrase('steps_done_with', lang, n=steps, detail=result)
         if steps:
-            return _phrase('steps_done', lang, n=steps)
+            return True, _phrase('steps_done', lang, n=steps)
         if result:
-            return _phrase('completed_with', lang, detail=result)
-        return _phrase('completed', lang)
+            return True, _phrase('completed_with', lang, detail=result)
+        return True, _phrase('completed', lang)
 
     raw_err = res.get("error")
     err = _format_error(raw_err, lang)
     if err:
-        return _phrase('failed', lang, detail=_truncate(err))
-    return _phrase('exec_failed', lang)
+        return False, _phrase('failed', lang, detail=_truncate(err))
+    return False, _phrase('exec_failed', lang)
 
 
-# ── BrowserUse ──────────────────────────────────────────────────────────
+def parse_computer_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
+    """解析 ComputerUse run_instruction 返回值 → (succeeded, 自然语言摘要)。"""
+    return _parse_tool_result(res, _get_lang(lang))
 
-def parse_browser_use_result(res: Any, *, lang: str | None = None) -> str:
-    """解析 BrowserUse run_instruction 返回值 → 自然语言摘要。"""
-    lang = _get_lang(lang)
-    if not isinstance(res, dict):
-        return _phrase('no_result', lang)
 
-    if res.get("success"):
-        result = _truncate(str(res.get("result") or "").strip())
-        steps = res.get("steps")
-        if steps and result:
-            return _phrase('steps_done_with', lang, n=steps, detail=result)
-        if steps:
-            return _phrase('steps_done', lang, n=steps)
-        if result:
-            return _phrase('completed_with', lang, detail=result)
-        return _phrase('completed', lang)
-
-    raw_err = res.get("error")
-    err = _format_error(raw_err, lang)
-    if err:
-        return _phrase('failed', lang, detail=_truncate(err))
-    return _phrase('exec_failed', lang)
+def parse_browser_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
+    """解析 BrowserUse run_instruction 返回值 → (succeeded, 自然语言摘要)。"""
+    return _parse_tool_result(res, _get_lang(lang))
 
 
 # ── Plugin ──────────────────────────────────────────────────────────────

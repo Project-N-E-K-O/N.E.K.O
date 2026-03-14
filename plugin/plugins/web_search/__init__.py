@@ -397,7 +397,7 @@ class WebSearchPlugin(NekoPluginBase):
         id="search_summary",
         name="搜索摘要",
         description="搜索并返回适合 AI 阅读的纯文本摘要格式。",
-        llm_result_fields=["summary", "count"],
+        llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {

@@ -1316,7 +1316,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="call_tool",
         name="Call MCP Tool",
         description="调用指定 MCP server 的 tool",
-        llm_result_fields=["message"],
+        llm_result_fields=["result"],
         input_schema={
             "type": "object",
             "properties": {
