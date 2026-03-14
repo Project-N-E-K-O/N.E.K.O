@@ -88,9 +88,8 @@ QQ群：1022939659
 
 ## Docker部署（Linux用户）
 
-# N.E.K.O. Docker 部署指南
-## 部署方式
-### 方式一：Docker Compose（推荐）
+### 部署方式
+#### 方式一：Docker Compose（推荐）
 <details>
 
 <summary>点击查看 docker-compose.yml 配置文件</summary>
@@ -132,7 +131,7 @@ networks:
 docker-compose up -d
 ```
 
-### 方式二：Docker Run
+#### 方式二：Docker Run
 <details>
 <summary>点击查看 docker run 启动命令</summary>
 
@@ -155,7 +154,7 @@ docker run -d \
 
 </details>
 
-### SSL相关
+##### SSL相关
 <details>
 <summary> 点击查看SSL相关 </summary>
 
