@@ -32,7 +32,7 @@ async def search_music(
     
     # 异常保护
     try:
-        results = await fetch_music_content(keyword=query, limit=1)
+        results = await fetch_music_content(keyword=query, limit=5)
         
         if results.get('success'):
             track_count = len(results.get('data', []))
