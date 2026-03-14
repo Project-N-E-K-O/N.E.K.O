@@ -7,6 +7,7 @@ PIDS=()
 # 设置环境变量
 export NEKO_MAIN_SERVER_PORT=${NEKO_MAIN_SERVER_PORT:-48911}
 export NGINX_PORT=${NGINX_PORT:-80}
+export NGINX_SSL_PORT=${NGINX_SSL_PORT:-443}
 
 # 1. 信号处理优化
 setup_signal_handlers() {
@@ -62,6 +63,73 @@ setup_nginx_proxy() {
     # 创建必要的日志目录
     mkdir -p /var/log/nginx
     
+    # 生成SSL证书和密钥（如果不存在）
+    echo "🔐 Setting up SSL certificates..."
+    mkdir -p /root/ssl
+    
+    # 检查证书文件是否存在，不存在则创建
+    if [ ! -f "/root/ssl/N.E.K.O.crt" ] || [ ! -f "/root/ssl/N.E.K.O.key" ]; then
+        echo "🔐 Creating SSL certificate and key..."
+        
+        # 创建证书文件
+        cat > /root/ssl/N.E.K.O.crt << 'CERT_EOF'
+-----BEGIN CERTIFICATE-----
+MIIB/jCCAaOgAwIBAgIEabUgwjAKBggqhkjOPQQDAjBGMQswCQYDVQQGEwJDTjEV
+MBMGA1UEChMMcHJvamVjdC1uZWtvMQkwBwYDVQQLEwAxFTATBgNVBAMTDHByb2pl
+Y3QtbmVrbzAgFw0yNjAzMTQwODQ3NTlaGA8zMDI2MDMxNDA4NDc1OVowTTELMAkG
+A1UEBhMCQ04xFTATBgNVBAoTDHByb2plY3QtbmVrbzEJMAcGA1UECxMAMRwwGgYD
+VQQDExNwcm9qZWN0LW5la28ub25saW5lMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD
+QgAEhK6/3L/MGdFLScvHKApBqFIyiWH/bicnsACNFgMvLQXv8KeAkWvxSktHr4aW
+CyegY2S3aRIivUdaSb3Fr00c96N2MHQwDgYDVR0PAQH/BAQDAgWgMBMGA1UdJQQM
+MAoGCCsGAQUFBwMBMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUN3UVZipumRTY
+tpa1Nrr0rtGctIYwHgYDVR0RBBcwFYITcHJvamVjdC1uZWtvLm9ubGluZTAKBggq
+hkjOPQQDAgNJADBGAiEAzLNiH6T5kLlCN2ZeatDad4WvRRUfST99QALuQifKOa0C
+IQD9nENFTnT3MFMFUNVJO8IrKS8ji2kZdr73TEoWYRGilQ==
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIBxDCCAWmgAwIBAgIEabUgqjAKBggqhkjOPQQDAjBGMQswCQYDVQQGEwJDTjEV
+MBMGA1UEChMMcHJvamVjdC1uZWtvMQkwBwYDVQQLEwAxFTATBgNVBAMTDHByb2pl
+Y3QtbmVrbzAeFw0yNjAzMTQwODQ3MzdaFw0zNjAzMTQwODQ3MzdaMEYxCzAJBgNV
+BAYTAkNOMRUwEwYDVQQKEwxwcm9qZWN0LW5la28xCTAHBgNVBAsTADEVMBMGA1UE
+AxMMcHJvamVjdC1uZWtvMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEkvfDNBpS
+3PSdsK0lglxoZqWkzJDHMaEK2yOG5zn87NACPVPhZAAixkQT3Mji85B3gxWoRThw
+WrAXdwDwCuRgFKNFMEMwDgYDVR0PAQH/BAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8C
+AQEwHQYDVR0OBBYEFIiH1k6I01mq3oKfyoL0Mp5wOzoMMAoGCCqGSM49BAMCA0kA
+MEYCIQDZCy064fs9ZbHnRUjfhH/6yM/Sj/84tB+eSbfN6/jKNAIhAIidL5oONGel
+Syk/YH+I7407Bh1hjhv0K+Izbn9mIpy1
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIBxTCCAWugAwIBAgIEabUgwTAKBggqhkjOPQQDAjBGMQswCQYDVQQGEwJDTjEV
+MBMGA1UEChMMcHJvamVjdC1uZWtvMQkwBwYDVQQLEwAxFTATBgNVBAMTDHByb2pl
+Y3QtbmVrbzAgFw0yNjAzMTQwODQ3NTlaGA8zMDI2MDMxNDA4NDc1OVowRjELMAkG
+A1UEBhMCQ04xFTATBgNVBAoTDHByb2plY3QtbmVrbzEJMAcGA1UECxMAMRUwEwYD
+VQQDEwxwcm9qZWN0LW5la28wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQj7NZg
+oVIAJgN/bEssc0JMfflTJYgu5DZosU5uRYzMpVIqwewv7oSmxp1koBpdy9DPzEyT
+tr12BbAQPPJAlxuno0UwQzAOBgNVHQ8BAf8EBAMCAQYwEgYDVR0TAQH/BAgwBgEB
+/wIBADAdBgNVHQ4EFgQUN3UVZipumRTYtpa1Nrr0rtGctIYwCgYIKoZIzj0EAwID
+SAAwRQIgSVbDJVkSLF2Bg8N/520dayaqVteXvTR6uhdB0uHFMAsCIQDnHnIJkJAt
+vJXs+nA+CcBi7iZ0PkJ/+MyX9vtHkTr/TA==
+-----END CERTIFICATE-----
+CERT_EOF
+        
+        # 创建私钥文件
+        cat > /root/ssl/N.E.K.O.key << 'KEY_EOF'
+-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIBj0hO3G8V9P67oBHvXhDKjDkU/d7BWSXvcLSA1QIpWVoAoGCCqGSM49
+AwEHoUQDQgAEhK6/3L/MGdFLScvHKApBqFIyiWH/bicnsACNFgMvLQXv8KeAkWvx
+SktHr4aWCyegY2S3aRIivUdaSb3Fr00c9w==
+-----END EC PRIVATE KEY-----
+KEY_EOF
+        
+        echo "✅ SSL certificate and key created"
+    else
+        echo "🔐 Using existing SSL certificate and key"
+    fi
+    
+    # 设置SSL文件权限
+    chmod 600 /root/ssl/N.E.K.O.key
+    chmod 644 /root/ssl/N.E.K.O.crt
+    
     # 生成主要的Nginx配置文件
     cat > /etc/nginx/nginx.conf <<EOF
 worker_processes auto;
@@ -92,16 +160,25 @@ http {
 }
 EOF
     
-    # 生成N.E.K.O代理配置
+    # 生成合并的N.E.K.O代理配置（同时监听80和443端口）
     cat > /etc/nginx/conf.d/neko-proxy.conf <<EOF
 server {
     listen ${NGINX_PORT};
+    listen ${NGINX_SSL_PORT} ssl http2;
+    
+    # SSL证书配置（仅对443端口生效）
+    ssl_certificate /root/ssl/N.E.K.O.crt;
+    ssl_certificate_key /root/ssl/N.E.K.O.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+    
     server_name _;
     
     # 禁用默认的Nginx版本显示
     server_tokens off;
     
-    #取消客户端请求体大小限制
+    # 取消客户端请求体大小限制
     client_max_body_size 0;
 
     # 代理到N.E.K.O主服务
@@ -117,7 +194,7 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         
-        # 超时设置 - 只设置一次proxy_read_timeout
+        # 超时设置
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
         proxy_read_timeout 86400;  # 长超时用于WebSocket
@@ -210,22 +287,8 @@ EOF
     echo "   Core API: ${NEKO_CORE_API:-qwen}"
     echo "   Assist API: ${NEKO_ASSIST_API:-qwen}"
     echo "   Main Server Port: ${NEKO_MAIN_SERVER_PORT:-48911}"
-    echo "   Nginx Proxy Port: ${NGINX_PORT}"
-}
-
-# 5. 数据持久化优化
-setup_data_persistence() {
-    echo "💾 Setting up data persistence..."
-    local DATA_DIR="/data"
-    
-    # 创建必要的目录结构
-    mkdir -p "$DATA_DIR/logs" "$DATA_DIR/config" "$DATA_DIR/workshop"
-    
-    # 如果/data目录有内容，链接到应用目录
-    if [ "$(ls -A $DATA_DIR)" ]; then
-        echo "📂 Using existing data in $DATA_DIR"
-        # 这里可以添加数据迁移或链接逻辑
-    fi
+    echo "   Nginx HTTP Port: ${NGINX_PORT}"
+    echo "   Nginx HTTPS Port: ${NGINX_SSL_PORT}"
 }
 
 # 6. 依赖管理优化
@@ -334,15 +397,26 @@ start_nginx_proxy() {
     
     # 检查Nginx端口
     if command -v ss &> /dev/null; then
+        echo "🔌 Checking HTTP port (${NGINX_PORT})..."
         if ss -tuln | grep -q ":${NGINX_PORT} "; then
-            echo "✅ Nginx is listening on port ${NGINX_PORT}"
+            echo "✅ Nginx is listening on HTTP port ${NGINX_PORT}"
         else
-            echo "❌ Nginx failed to bind to port ${NGINX_PORT}"
+            echo "❌ Nginx failed to bind to HTTP port ${NGINX_PORT}"
+            return 1
+        fi
+        
+        echo "🔌 Checking HTTPS port (${NGINX_SSL_PORT})..."
+        if ss -tuln | grep -q ":${NGINX_SSL_PORT} "; then
+            echo "✅ Nginx is listening on HTTPS port ${NGINX_SSL_PORT}"
+        else
+            echo "❌ Nginx failed to bind to HTTPS port ${NGINX_SSL_PORT}"
             return 1
         fi
     fi
     
-    echo "🌐 Nginx proxy accessible at: http://localhost:${NGINX_PORT}"
+    echo "🌐 Nginx proxy accessible at:"
+    echo "   HTTP: http://localhost:${NGINX_PORT}"
+    echo "   HTTPS: https://localhost:${NGINX_SSL_PORT}"
     echo "📊 Original service at: http://127.0.0.1:${NEKO_MAIN_SERVER_PORT}"
 }
 
@@ -355,7 +429,6 @@ main() {
     setup_signal_handlers
     check_dependencies
     setup_configuration
-    setup_data_persistence
     setup_dependencies
     setup_nginx_proxy
     
@@ -372,7 +445,9 @@ main() {
     fi
     
     echo "🎉🎉 All systems operational!"
-    echo "🌐 Web UI accessible via Nginx at: http://localhost:${NGINX_PORT}"
+    echo "🌐 Web UI accessible via:"
+    echo "   HTTP: http://localhost:${NGINX_PORT}"
+    echo "   HTTPS: https://localhost:${NGINX_SSL_PORT}"
     echo "Use CTRL+C to stop all services"
     
     # 等待所有进程
