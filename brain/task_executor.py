@@ -13,6 +13,7 @@ import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 from .computer_use import ComputerUseAdapter
 from .browser_use_adapter import BrowserUseAdapter
 
@@ -123,6 +124,7 @@ class DirectTaskExecutor:
 
     def _get_client(self):
         """动态获取 OpenAI 客户端"""
+        set_call_type("agent")
         api_config = self._config_manager.get_model_api_config('summary')
         return AsyncOpenAI(
             api_key=api_config['api_key'],

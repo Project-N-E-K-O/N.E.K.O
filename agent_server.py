@@ -1454,6 +1454,14 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
 
 @app.on_event("startup")
 async def startup():
+    # Install token tracking hooks for this process
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+        install_hooks()
+        TokenTracker.get_instance().start_periodic_save()
+    except Exception as e:
+        logger.warning(f"[Agent] Token tracker init failed: {e}")
+
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
     Modules.browser_use = BrowserUseAdapter()
@@ -1523,6 +1531,12 @@ async def startup():
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().save()
+    except Exception:
+        pass
 
     if Modules.computer_use:
         Modules.computer_use.cancel_running()

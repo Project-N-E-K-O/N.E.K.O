@@ -1,5 +1,6 @@
 from config import get_extra_body
 from utils.config_manager import get_config_manager
+from utils.token_tracker import set_call_type
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
 import json
@@ -208,6 +209,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(prompt)).content
                 # 修复类型问题：确保response_content是字符串
@@ -252,6 +254,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
                 # 修复类型问题：确保response_content是字符串
@@ -393,6 +396,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 使用LLM审阅历史记录
+                set_call_type("memory_review")
                 prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
                 response_content = (await review_llm.ainvoke(prompt)).content

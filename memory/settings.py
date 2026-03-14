@@ -5,6 +5,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
+from utils.token_tracker import set_call_type
 from utils.file_utils import atomic_write_json
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
 
@@ -61,6 +62,7 @@ class ImportantSettingsManager:
         max_retries = 3
         while retries < max_retries:
             try:
+                set_call_type("memory_settings")
                 verifier = self._get_verifier()
                 response = await verifier.ainvoke(prompt)
                 result = response.content
@@ -114,6 +116,7 @@ class ImportantSettingsManager:
         new_settings = ""
         while retries < max_retries:
             try:
+                set_call_type("memory_settings")
                 proposer = self._get_proposer()
                 response = await proposer.ainvoke(prompt)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
