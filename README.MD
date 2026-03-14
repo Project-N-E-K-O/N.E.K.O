@@ -104,7 +104,7 @@ services:
       #webui端口（默认48911）
 #      - "48911(服务器外部端口):80(N.E.K.O项目容器内部Nginx反代端口)"
       - "48911:80"
-# 环境变量被废弃（在实际调用中无效）
+# 环境变量被废弃（在实际调用中无效,源代码有冗余机制，取消编排中变量不影响）
     volumes:
       # 持久化配置
       - ./N.E.K.O:/root/Documents/N.E.K.O
@@ -117,6 +117,17 @@ services:
 networks:
   neko-network:
     driver: bridge
+```
+#### docker run
+```bash
+NEKO_BASE_PATH="/home/neko/neko-data" && docker network create --driver bridge neko-network 2>/dev/null || true && docker run -d \
+  --name neko \
+  --restart unless-stopped \
+  -p 48911:80 \
+  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/logs:/app/logs" \
+  --network neko-network \
+  docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
 
 **注：** 目前docker部署方案由 *倒霉蛋HINS* 提供
