@@ -1391,7 +1391,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                                 "task_update", lanlan_name,
                                 task={"id": bu_task_id, "status": bu_info["status"],
                                       "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
-                                      "error": error_detail[:500] if error_detail else "",
+                                      "error": bu_parsed[:500] if bu_parsed else "",
                                       "session_id": bu_session.session_id},
                             )
                         except Exception as emit_err:
