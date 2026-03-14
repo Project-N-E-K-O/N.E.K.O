@@ -5,25 +5,25 @@ function touchPage_open(){
     try {
         const live2dManager = window.live2dManager
         if (!live2dManager) {
-            createFloatingWindow({ content: t('live2d.touchAnim.managerNotFound', 'Live2DManager 未找到') })
+            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.managerNotFound', 'Live2DManager 未找到') })
             return
         }
         
         const model = live2dManager.getCurrentModel()
         if (!model) {
-            createFloatingWindow({ content: t('live2d.touchAnim.modelNotFound', '当前没有加载模型') })
+            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.modelNotFound', '当前没有加载模型') })
             return
         }
         
         const internalModel = model.internalModel
         if (!internalModel || !internalModel.settings) {
-            createFloatingWindow({ content: t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
+            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
             return
         }
         
         const hitAreas = internalModel.settings.hitAreas
         if (!hitAreas || hitAreas.length === 0) {
-            createFloatingWindow({ content: t('live2d.touchAnim.noHitAreas', '模型没有定义可触摸位置') })
+            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.noHitAreas', '模型没有定义可触摸位置') })
             return
         }
         
@@ -33,7 +33,7 @@ function touchPage_open(){
         
         showTouchSetConfigWindow(hitAreas, motions, expressions)
     } catch (error) {
-        createFloatingWindow({ content: `错误: ${error.message}` })
+        createTouchConfigFloatingWindow({ content: `错误: ${error.message}` })
         console.error("获取 HitAreas 失败:", error)
     }
 }
@@ -142,7 +142,7 @@ function saveTempTouchSet(){
 function showTouchSetConfigWindow(hitAreas, motions, expressions){
     const t = (key, fallback) => (typeof window.t === 'function') ? window.t(key) : fallback
     
-    const floatingWindow = createFloatingWindow({
+    const floatingWindow = createTouchConfigFloatingWindow({
         title: t('live2d.touchAnim.title', '触摸动画配置'),
         showCloseButton: false
     })
@@ -400,9 +400,14 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     const closeButton = document.createElement("button")
     closeButton.className = "hitarea-btn hitarea-btn-secondary"
     closeButton.textContent = t('live2d.touchAnim.close', '关闭')
+
+    const cleanupMultiselect = () => {
+        document.removeEventListener('click', closeAllMultiselects);
+    };
     closeButton.onclick = function(){
         console.error("closeButton.onclick()")
         saveTempTouchSet()
+        cleanupMultiselect()
         floatingWindow.close()
     }
     
@@ -505,8 +510,8 @@ function updateMultiSelectHeader(multiselect){
     }
 }
 
-function createFloatingWindow(options = {}){
-    // console.error("createFloatingWindow()")
+function createTouchConfigFloatingWindow(options = {}){
+    // console.error("createTouchConfigFloatingWindow()")
     const {
         title = "HitArea 信息",
         content = null,
@@ -597,7 +602,8 @@ function createFloatingWindow(options = {}){
         getContentContainer: function(){
             return contentContainer
         },
-        close: function(){
+        close: function(cleanup){
+            if (typeof cleanup === 'function') cleanup();
             document.body.removeChild(overlay)
         },
         setTitle: function(text){
@@ -624,15 +630,15 @@ function touchPage_init(){
     //     // 先弄着live2d罢
     //     return
     // }
-    const tuoch_set_block =  document.getElementById("tuoch_set")
+    const touch_set_block =  document.getElementById("touch_set")
 
-    if( tuoch_set_block == null){
+    if( touch_set_block == null){
         // 是主界面
         return 
     }
 
     const d = document.createElement("button")
-    tuoch_set_block.appendChild(d)
+    touch_set_block.appendChild(d)
     sset(d,{id:"touch-anim-btn","class":"btn btn-primary",type:"button","data-i18n-title":"live2d.touchAnim.title"})
     
     const icon = document.createElement("img")

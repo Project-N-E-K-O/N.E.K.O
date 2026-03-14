@@ -2816,7 +2816,8 @@ html[lang|="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
 html[lang|="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
 html[lang|="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
 html[lang|="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
+html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow),
+html[lang|="en"] #touch-anim-btn span:not(.dropdown-arrow) {
     margin-left: 0 !important;
     margin-right: 0 !important;
     flex: none !important;

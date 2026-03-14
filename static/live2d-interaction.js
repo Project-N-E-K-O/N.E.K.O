@@ -1737,7 +1737,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
     // const live2d的touch = window.live2dManager.touchSet
     // const window的touch = window.touchSet
 
-    if (!hitAreaId ==null || !this.currentModel) {
+    if ( hitAreaId ==null || !this.currentModel) {
         return;
     }
     let faceHoldingTime = window.live2dManager.CLICK_EFFECT_DURATION;

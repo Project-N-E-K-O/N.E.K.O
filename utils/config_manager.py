@@ -318,7 +318,7 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if isinstance(lighting, dict):
         result["lighting"] = lighting
     
-    touch_set = get_reserved(result, 'avatar', 'touch_set', default=None)
+    touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
         result['touch_set'] = touch_set
     return result
