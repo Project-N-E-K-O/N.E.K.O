@@ -282,7 +282,7 @@ async def get_steam_language():
             
             if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
                 get_steam_language._logged = True
-                logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+                logger.info(f"[GeoIP] 用户 IP 地区: {ip_country}, 是否大陆: {is_mainland_china}")
             # Write Steam result to ConfigManager's steam-specific cache
             try:
                 from utils.config_manager import ConfigManager
@@ -292,7 +292,7 @@ async def get_steam_language():
                 pass
         except Exception as geo_error:
             get_steam_language._logged = False
-            logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
+            logger.warning(f"[GeoIP] 获取用户 IP 地区失败: {geo_error}，默认为非大陆用户")
             ip_country = None
             is_mainland_china = False
         
