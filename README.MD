@@ -110,6 +110,8 @@ services:
       - ./N.E.K.O:/root/Documents/N.E.K.O
       # 日志
       - ./logs:/app/logs
+      # SSL证书目录
+      - ./ssl:/root/ssl
     
     networks:
       - neko-network
