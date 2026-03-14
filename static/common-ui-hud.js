@@ -827,7 +827,8 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     const isRunning = task.status === 'running';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
-    const isTerminal = isCompleted || isFailed;
+    const isCancelled = task.status === 'cancelled';
+    const isTerminal = isCompleted || isFailed || isCancelled;
 
     // Update start_time data attribute
     if (task.start_time) card.dataset.startTime = task.start_time;
@@ -844,6 +845,11 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
+    } else if (isCancelled) {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     } else if (isRunning) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
         statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
@@ -969,7 +975,8 @@ window.AgentHUD._createTaskCard = function (task) {
     const isRunning = task.status === 'running';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
-    const isTerminal = isCompleted || isFailed;
+    const isCancelled = task.status === 'cancelled';
+    const isTerminal = isCompleted || isFailed || isCancelled;
 
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
@@ -982,6 +989,11 @@ window.AgentHUD._createTaskCard = function (task) {
         statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
+    } else if (isCancelled) {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     } else if (isRunning) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
         statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
