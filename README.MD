@@ -135,7 +135,9 @@ docker-compose up -d
 ### 方式二：Docker Run
 <details>
 <summary>点击查看 docker run 启动命令</summary>
+
 ```bash
+
 NEKO_BASE_PATH="/home/neko/neko-data" && \
 docker network create --driver bridge neko-network 2>/dev/null || true && \
 docker run -d \
@@ -148,6 +150,7 @@ docker run -d \
   -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
+
 ```
 
 </details>
@@ -155,10 +158,11 @@ docker run -d \
 ### SSL相关
 <details>
 <summary> 点击查看SSL相关 </summary>
-## 使用自定义 SSL 证书
+
+使用自定义 SSL 证书
 容器支持自动生成自签名证书，但您也可以使用自己的 SSL 证书。以下是详细步骤：
-### 方法一：启动前配置（推荐）
-1. **创建证书目录和文件**
+方法一：启动前配置（推荐）
+1. 创建证书目录和文件
 
    ```bash
    # 创建SSL证书目录
@@ -168,45 +172,45 @@ docker run -d \
    # 将您的私钥文件重命名为 N.E.K.O.key
    cp your-private-key.key ./ssl/N.E.K.O.key
    ```
-2. **证书要求**
-   - 证书必须为 **PEM 格式**
-   - 私钥必须为 **PEM 格式**（RSA 或 EC 密钥）
-   - 证书和私钥**必须匹配**
-   - 私钥**不能有密码保护**
+2. 证书要求
+   - 证书必须为 PEM 格式
+   - 私钥必须为 PEM 格式（RSA 或 EC 密钥）
+   - 证书和私钥必须匹配
+   - 私钥不能有密码保护
    - 证书必须在有效期内
 
-3. **启动容器**
+3. 启动容器
 
    ```bash
    docker-compose up -d
    ```
-### 方法二：启动后替换
+方法二：启动后替换
 如果容器已启动，需要更换证书：
-1. **停止容器**
+1. 停止容器
 
    ```bash
    docker-compose down
    ```
-2. **替换证书文件**
+2. 替换证书文件
 
    ```bash
    # 替换证书文件
    cp your-certificate.crt ./ssl/N.E.K.O.crt
    cp your-private-key.key ./ssl/N.E.K.O.key
    ```
-3. **重新启动容器**
+3. 重新启动容器
 
    ```bash
    docker-compose up -d
    ```
 
-### 证书验证说明
+证书验证说明
 
 容器启动时会自动验证 SSL 证书：
 
-- ✅ **验证通过**：正常启动，可通过 HTTPS 访问
+- ✅ 验证通过：正常启动，可通过 HTTPS 访问
 
-- ❌ **验证失败**：容器启动失败，查看日志获取错误详情
+- ❌ 验证失败：容器启动失败，查看日志获取错误详情
 
 </details>
 
@@ -220,21 +224,6 @@ docker logs neko
 容器启动后，可通过以下地址访问：
 - **HTTP**: `http://你的服务器IP:48911`
 - **HTTPS**: `https://你的服务器IP:48912`
-
-## 故障排除
-### 证书相关错误
-| 错误类型 | 解决方案 |
-
-|---------|---------|
-
-| 证书格式无效 | 确保证书为 PEM 格式，可使用 `openssl x509 -in cert.crt -text` 验证 |
-
-| 私钥格式无效 | 确保私钥为 PEM 格式，无密码保护 |
-
-| 证书密钥不匹配 | 确保证书和私钥是同一对 |
-
-| 证书已过期 | 更换有效期的证书 |
-
 
 **注：** 当前 Docker 部署方案由 [**HINS**](https://home.hinswu.top) 提供
 
