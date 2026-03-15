@@ -274,19 +274,12 @@ def setup_job_object():
         print(f"[Launcher] Warning: Job Object setup failed: {e}", flush=True)
         return None
 
-# 服务器配置
+# 服务器配置（按内存占用从轻到重排列，用于分步启动以降低峰值内存）
 SERVERS = [
     {
         'name': 'Memory Server',
         'module': 'memory_server',
         'port': MEMORY_SERVER_PORT,
-        'process': None,
-        'ready_event': None,
-    },
-    {
-        'name': 'Agent Server', 
-        'module': 'agent_server',
-        'port': TOOL_SERVER_PORT,
         'process': None,
         'ready_event': None,
     },
@@ -297,11 +290,18 @@ SERVERS = [
         'process': None,
         'ready_event': None,
     },
+    {
+        'name': 'Agent Server',
+        'module': 'agent_server',
+        'port': TOOL_SERVER_PORT,
+        'process': None,
+        'ready_event': None,
+    },
 ]
 
 # 不再启动主程序，用户自己启动 lanlan_frd.exe
 
-def run_memory_server(ready_event: Event):
+def run_memory_server(ready_event: Event, import_event: Event | None = None):
     """运行 Memory Server"""
     try:
         # 确保工作目录正确
@@ -325,6 +325,8 @@ def run_memory_server(ready_event: Event):
         
         import memory_server
         import uvicorn
+        if import_event:
+            import_event.set()
         
         print(f"[Memory Server] Starting on port {MEMORY_SERVER_PORT}")
         
@@ -368,7 +370,7 @@ def run_memory_server(ready_event: Event):
         import traceback
         traceback.print_exc()
 
-def run_agent_server(ready_event: Event):
+def run_agent_server(ready_event: Event, import_event: Event | None = None):
     """运行 Agent Server (不需要等待初始化)"""
     try:
         # 确保工作目录正确
@@ -392,6 +394,8 @@ def run_agent_server(ready_event: Event):
         
         import agent_server
         import uvicorn
+        if import_event:
+            import_event.set()
         
         print(f"[Agent Server] Starting on port {TOOL_SERVER_PORT}")
         
@@ -404,7 +408,7 @@ def run_agent_server(ready_event: Event):
         import traceback
         traceback.print_exc()
 
-def run_main_server(ready_event: Event):
+def run_main_server(ready_event: Event, import_event: Event | None = None):
     """运行 Main Server"""
     try:
         # 确保工作目录正确
@@ -419,6 +423,8 @@ def run_main_server(ready_event: Event):
         print("[Main Server] Importing main_server module...")
         import main_server
         import uvicorn
+        if import_event:
+            import_event.set()
         
         print(f"[Main Server] Starting on port {MAIN_SERVER_PORT}")
         
@@ -780,10 +786,15 @@ def start_server(server: Dict) -> bool:
         
         # 创建进程间同步事件
         server['ready_event'] = Event()
+        server['import_event'] = Event()
         
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
-        server['process'] = Process(target=target_func, args=(server['ready_event'],), daemon=False)
+        server['process'] = Process(
+            target=target_func,
+            args=(server['ready_event'], server['import_event']),
+            daemon=False,
+        )
         server['process'].start()
         
         print(f"✓ {server['name']} 已启动 (PID: {server['process'].pid})", flush=True)
@@ -1050,13 +1061,39 @@ def main():
         print("N.E.K.O. 服务器启动器", flush=True)
         print("=" * 60, flush=True)
 
-        # 1. 启动所有服务器
+        # 1. 分步启动服务器（错开 import 阶段以降低内存峰值）
+        #    Windows spawn 模式下每个子进程独立加载所有依赖，
+        #    同时 import 会导致 3 个进程同时分配大量临时对象，
+        #    在 <=4GB 内存的机器上容易 OOM。
+        #    只需等 import 完成（内存稳定）即可放行下一个，
+        #    后续 uvicorn 初始化很轻量，可并行。
         print("\n正在启动服务器...\n", flush=True)
         all_started = True
-        for server in SERVERS:
+        import_timeout = 90  # 单个服务 import 阶段超时秒数
+        for i, server in enumerate(SERVERS):
             if not start_server(server):
                 all_started = False
                 break
+
+            evt = server.get('import_event')
+            is_last = (i == len(SERVERS) - 1)
+            if evt and not is_last:
+                print(f"  等待 {server['name']} 模块加载...", flush=True)
+                if not evt.wait(timeout=import_timeout):
+                    proc = server.get('process')
+                    if proc and not proc.is_alive():
+                        report_startup_failure(
+                            f"Startup failed: {server['name']} exited early "
+                            f"(exitcode={proc.exitcode})"
+                        )
+                    else:
+                        report_startup_failure(
+                            f"Startup timeout: {server['name']} import not complete "
+                            f"within {import_timeout}s"
+                        )
+                    all_started = False
+                    break
+                print(f"  ✓ {server['name']} 模块加载完成", flush=True)
 
         if not all_started:
             print("\n启动失败，正在清理...", flush=True)
@@ -1064,7 +1101,7 @@ def main():
             cleanup_servers()
             return 1
 
-        # 2. 等待服务器准备就绪
+        # 2. 等待最后一个服务器也准备就绪
         if not wait_for_servers():
             print("\n启动失败，正在清理...", flush=True)
             report_startup_failure("Startup aborted: services did not become ready before timeout", show_dialog=False)

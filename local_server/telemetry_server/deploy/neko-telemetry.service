@@ -1,0 +1,51 @@
+# /etc/systemd/system/neko-telemetry.service
+#
+# 安装步骤：
+#   1. 把项目放到服务器上，比如 /opt/neko-telemetry/
+#   2. cd /opt/neko-telemetry && pip install -r requirements.txt
+#   3. cp deploy/neko-telemetry.service /etc/systemd/system/
+#   4. 编辑 /etc/systemd/system/neko-telemetry.service，修改路径和 token
+#   5. systemctl daemon-reload
+#   6. systemctl enable --now neko-telemetry
+#
+# 常用命令：
+#   systemctl status neko-telemetry    # 查看状态
+#   journalctl -u neko-telemetry -f    # 实时日志
+#   systemctl restart neko-telemetry   # 重启
+
+[Unit]
+Description=N.E.K.O Telemetry Collection Server
+After=network.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+
+# ★ 修改为实际路径
+WorkingDirectory=/opt/neko-telemetry
+ExecStart=/usr/bin/python3 server.py --port 8099
+
+# ★ 必须修改：管理端鉴权 token
+Environment=TELEMETRY_ADMIN_TOKEN=changeme
+
+# 数据目录（默认 ./data/）
+Environment=TELEMETRY_DB_PATH=/opt/neko-telemetry/data/telemetry.db
+
+# 自动重启
+Restart=always
+RestartSec=5
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# 允许写入数据目录
+ReadWritePaths=/opt/neko-telemetry/data
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
