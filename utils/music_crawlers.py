@@ -1127,30 +1127,25 @@ def expand_style_keyword(keyword: str) -> List[str]:
     
     return [keyword]
 
-def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]] | str) -> Dict[str, Any]:
+def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     鉴别音乐资源提取逻辑（重构后的核心提取逻辑）。
     
     Args:
         target_song: AI 识别的目标歌曲名/关键词
-        search_results: 搜索结果列表或错误字符串
+        search_results: 搜索结果列表（非空，由上层保证）
         
     Returns:
-        Dict: {"status": "exact" | "fuzzy" | "no_resource", "resource": item | None, "real_name": name | None}
+        Dict: {"status": "exact" | "fuzzy" | "random", "resource": item, "real_name": name}
     """
-    # 1. 判空拦截
-    if not search_results or search_results == "NO resource" or isinstance(search_results, str):
-        return {"status": "no_resource", "resource": None, "real_name": None}
-    
     target_lower = (target_song or "").lower().strip()
     if not target_lower:
         return {
             "status": "random",
-            "resource": search_results[0] if search_results else None,
-            "real_name": search_results[0].get('name') if search_results else None
+            "resource": search_results[0],
+            "real_name": search_results[0].get('name')
         }
 
-    # 2. 匹配逻辑优化：使用 difflib 计算相似度
     best_item = None
     max_score = 0.0
     
@@ -1158,15 +1153,12 @@ def identify_best_music_resource(target_song: str, search_results: List[Dict[str
         name = (item.get('name') or "").lower()
         artist = (item.get('artist') or "").lower()
         
-        # 计算歌曲名的相似度
         score_name = difflib.SequenceMatcher(None, target_lower, name).ratio()
-        # 兼容 "关键词" 匹配 "歌曲 - 歌手" 或 "歌手 - 歌曲" 的情况
         full_title = f"{name} {artist}".lower()
         score_full = difflib.SequenceMatcher(None, target_lower, full_title).ratio()
         
         current_max = max(score_name, score_full)
         
-        # 如果包含（子串匹配），给予权重提升或直接判定为高分
         if target_lower in name or target_lower in full_title:
             current_max = max(current_max, 0.85)
 
@@ -1174,15 +1166,13 @@ def identify_best_music_resource(target_song: str, search_results: List[Dict[str
             max_score = current_max
             best_item = item
 
-    # 3. 根据得分判定状态
-    if max_score > 0.6:  # 设定阈值，超过 0.6 视为精确匹配
+    if max_score > 0.6:
         return {
             "status": "exact",
             "resource": best_item,
             "real_name": best_item.get('name')
         }
     
-    # 低于阈值则判定为模糊兜底，取第 1 项
     first_item = search_results[0]
     return {
         "status": "fuzzy",
