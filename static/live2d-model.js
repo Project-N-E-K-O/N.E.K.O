@@ -497,8 +497,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
 
-    // 设置 HitArea 交互（点击 HitArea 播放对应动画）
-    this.setupHitAreaInteraction(model);
+    // // 设置 HitArea 交互（点击 HitArea 播放对应动画）
+    // this.setupHitAreaInteraction(model);
 
     // 设置滚轮缩放
     if (options.wheelEnabled !== false) {
