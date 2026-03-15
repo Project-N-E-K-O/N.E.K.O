@@ -1758,11 +1758,14 @@ def _normalize_voice_clone_api_audio(
         
         # 确保是 16-bit 整数格式
         if audio_array.dtype != np.int16:
-            # 将 float 转换为 int16
-            if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
-                audio_array = (audio_array * 32767).clip(-32768, 32767).astype(np.int16)
+            if np.issubdtype(audio_array.dtype, np.floating):
+                max_abs = float(np.max(np.abs(audio_array))) if audio_array.size else 0.0
+                # 仅对归一化浮点 [-1, 1] 做放大；否则按 PCM 幅值直接裁剪
+                if max_abs <= 1.0:
+                    audio_array = audio_array * 32767.0
+                audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
             else:
-                audio_array = audio_array.astype(np.int16)
+                audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
         
         # 使用 pyav 导出为 WAV
         output_buffer = io.BytesIO()
