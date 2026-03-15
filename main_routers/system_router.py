@@ -2182,17 +2182,18 @@ async def proactive_chat(request: Request):
         has_music_topic = 'music' in active_channels
 
         # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
+        # 注意：只要 source_tag 是 MUSIC 或 BOTH，就视为 AI 想要使用音乐，无论 has_music_topic 状态
         is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
-        if is_playing_music and is_music_used:
+        ai_wants_music = source_tag in ('MUSIC', 'BOTH')
+        
+        if is_playing_music and ai_wants_music:
             print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
-            music_content = None # 物理断绝 append 可能性
+            music_content = None
             if source_tag == 'MUSIC':
-                # 如果是纯音乐模式则降级到 pass
                 source_tag = 'PASS'
                 aborted = True
             elif source_tag == 'BOTH':
-                # BOTH 模式降级到 WEB 模式
                 source_tag = 'WEB'
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回

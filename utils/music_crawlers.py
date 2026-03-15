@@ -1120,8 +1120,9 @@ def expand_style_keyword(keyword: str) -> List[str]:
     
     for style_key, expansions in style_expansions.items():
         if style_key in kw_lower:
-            result = [keyword] + [kw for kw in expansions if kw.lower() != kw_lower]
-            random.shuffle(result)
+            expansion_list = [kw for kw in expansions if kw.lower() != kw_lower]
+            random.shuffle(expansion_list)
+            result = [keyword] + expansion_list
             return result
     
     return [keyword]
