@@ -944,8 +944,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in indie_keywords):
             logger.info(f"[智能调度] 识别到独立/电子风格意图，优先调度 Bandcamp/SoundCloud: {keyword}")
-            primary_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
-            primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+            expanded_keywords = expand_style_keyword(keyword)
+            for exp_kw in expanded_keywords[:2]:
+                primary_tasks.append(all_crawlers['bandcamp'].search(exp_kw, limit))
+                primary_tasks.append(all_crawlers['soundcloud'].search(exp_kw, limit))
             
         # 4. 默认兜底：按地域偏好
         else:
@@ -1095,6 +1097,35 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         'best_match': best_match  # 将匹配状态透传给业务层，用于后续生成动态提示词
     }
 
+def expand_style_keyword(keyword: str) -> List[str]:
+    """
+    将风格关键词扩展为多样化的搜索词列表，避免搜索结果过于单一。
+    
+    例如: "lofi" -> ["lofi hip hop", "chill beats", "study music", "lofi"]
+    """
+    kw_lower = keyword.lower().strip()
+    
+    style_expansions = {
+        'lofi': ['lofi hip hop', 'chill beats', 'study music', 'relaxing piano', 'ambient lofi'],
+        'chill': ['chill music', 'chill vibes', 'relaxing', 'downtempo', 'ambient chill'],
+        'relax': ['relaxing music', 'calm', 'peaceful', 'meditation', 'ambient'],
+        'electronic': ['electronic music', 'synth', 'ambient electronic', 'downtempo'],
+        'ambient': ['ambient music', 'atmospheric', 'soundscape', 'drone'],
+        'hiphop': ['hip hop beats', 'rap instrumental', 'trap beats', 'boom bap'],
+        'indie': ['indie folk', 'indie rock', 'indie pop', 'alternative'],
+        '电音': ['electronic', 'EDM', 'house music', 'trance'],
+        '独立': ['indie', 'alternative', 'underground'],
+        '环境音': ['ambient', 'nature sounds', 'white noise', 'meditation'],
+    }
+    
+    for style_key, expansions in style_expansions.items():
+        if style_key in kw_lower:
+            result = [keyword] + [kw for kw in expansions if kw.lower() != kw_lower]
+            random.shuffle(result)
+            return result
+    
+    return [keyword]
+
 def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]] | str) -> Dict[str, Any]:
     """
     鉴别音乐资源提取逻辑（重构后的核心提取逻辑）。
@@ -1112,9 +1143,8 @@ def identify_best_music_resource(target_song: str, search_results: List[Dict[str
     
     target_lower = (target_song or "").lower().strip()
     if not target_lower:
-        # 如果没有关键词，直接算兜底
         return {
-            "status": "fuzzy",
+            "status": "random",
             "resource": search_results[0] if search_results else None,
             "real_name": search_results[0].get('name') if search_results else None
         }

@@ -2041,7 +2041,9 @@ async def proactive_chat(request: Request):
                 )
 
             # 【核心补齐】如果搜索结果是模糊匹配或无对应资源（兜底推荐），注入 failsafe hint
-            if music_content and music_content.get('best_match', {}).get('status') in ['fuzzy', 'no_resource']:
+            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
+            raw_data = music_content.get('raw_data', {}) if music_content else {}
+            if raw_data.get('best_match', {}).get('status') in ['fuzzy', 'no_resource']:
                 generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
         
         # 【强制约束】放歌时禁止产生任何换歌念头
