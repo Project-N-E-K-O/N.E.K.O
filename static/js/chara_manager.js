@@ -144,6 +144,8 @@ function setFieldLabelText(labelEl, text) {
     const units = profileNameCountUnits(text);
     if (units > FIELD_LABEL_MAX_UNITS) {
         labelEl.title = text;
+    } else {
+        labelEl.removeAttribute('title');
     }
 }
 

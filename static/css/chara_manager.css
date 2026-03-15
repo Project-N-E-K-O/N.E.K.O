@@ -997,7 +997,11 @@ body .container-header {
 
     .field-row-wrapper label {
         min-width: auto;
+        max-width: none;
         width: 100%;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
     }
 
     .field-row {
