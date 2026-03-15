@@ -182,6 +182,136 @@
     <!-- 通用教程管理器（支持所有页面） -->
     <script src="/static/universal-tutorial-manager.js"></script>
     <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
+
+    <!-- 角色甄选 Overlay 容器（visibility:hidden 防止 CSS 加载前 FOUC，由入口脚本在 CSS 就绪后移除） -->
+    <div id="character-selection-overlay" class="character-overlay" style="visibility: hidden;">
+        <!-- 跳过按钮 -->
+        <button id="skip-btn" class="skip-button" data-i18n="memory.characterSelection.skip">跳过</button>
+
+        <!-- 阶段一：氛围唤醒 -->
+        <div id="stage-1" class="character-stage active">
+            <div class="stage-content">
+                <h1 class="guide-text" data-i18n="memory.characterSelection.guideText">在这个数字宇宙中，有一个生命正等待与你建立连接。你希望，TA 是谁？</h1>
+                <button id="start-btn" class="start-button" data-i18n="memory.characterSelection.activate">点击激活</button>
+            </div>
+        </div>
+
+        <!-- 阶段二：性格挑选 -->
+        <div id="stage-2" class="character-stage">
+            <div class="cards-container">
+                <h2 class="cards-title" data-i18n="memory.characterSelection.chooseTitle">选择你的本命羁绊</h2>
+
+                <div class="cards-grid">
+                    <div class="character-card" data-id="tsundere_neko">
+                        <div class="card-icon">😺</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.tsundere_neko.name">傲娇/猫系</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.tsundere_neko.desc">嘴硬心软，偶尔撒娇</p>
+                    </div>
+
+                    <div class="character-card" data-id="cool_mech">
+                        <div class="card-icon">🤖</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.cool_mech.name">高冷/机械</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.cool_mech.desc">理性冷静，数据驱动</p>
+                    </div>
+
+                    <div class="character-card" data-id="intellectual_healer">
+                        <div class="card-icon">🌸</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.intellectual_healer.name">知性/治愈</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.intellectual_healer.desc">温柔体贴，善于倾听</p>
+                    </div>
+
+                    <div class="character-card" data-id="efficiency_expert">
+                        <div class="card-icon">⚡</div>
+                        <h3 class="card-name" data-i18n="memory.characterSelection.efficiency_expert.name">效率专家</h3>
+                        <p class="card-desc" data-i18n="memory.characterSelection.efficiency_expert.desc">简洁高效，直击要点</p>
+                    </div>
+                </div>
+
+                <p class="cards-hint" data-i18n="memory.characterSelection.chooseHint">别担心，你随时可以在设置中"重塑"我的性格</p>
+            </div>
+        </div>
+
+        <!-- 阶段三：真情互动 -->
+        <div id="stage-3" class="character-stage">
+            <div class="greeting-modal">
+                <div class="modal-content">
+                    <div class="character-avatar" id="greeting-avatar">😺</div>
+                    <h2 class="greeting-title" id="greeting-title">正在建立灵魂共鸣...</h2>
+                    <p class="greeting-text" id="greeting-text"></p>
+                    <button id="confirm-greeting-btn" class="confirm-btn" style="display: none;" data-i18n="memory.characterSelection.confirmGreeting">
+                        听到了，签订契约
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 阶段四：用户确认 -->
+        <div id="stage-4" class="character-stage">
+            <div class="final-confirm">
+                <div class="confirm-icon">✨</div>
+                <h2 class="confirm-title" data-i18n="memory.characterSelection.readyTitle">准备就绪</h2>
+                <p class="confirm-desc" id="confirm-desc" data-i18n="memory.characterSelection.readyDesc">
+                    你已选择 {{name}} 作为你的 AI 伙伴
+                </p>
+
+                <div class="confirm-actions">
+                    <button id="final-confirm-btn" class="primary-btn" data-i18n="memory.characterSelection.finalConfirm">
+                        签订契约，开始对话
+                    </button>
+                    <button id="restart-btn" class="secondary-btn" data-i18n="memory.characterSelection.restart">
+                        重新选择
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 角色甄选入口检测 -->
+    <script>
+        (function() {
+            const completed = localStorage.getItem('neko_character_selection_completed');
+            const overlay = document.getElementById('character-selection-overlay');
+
+            if (!completed) {
+                // 动态加载角色甄选样式，加载完成后再显示 overlay（防止 FOUC）
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = '/static/css/character-selection.css';
+                link.onload = function() {
+                    if (overlay) overlay.style.visibility = '';
+                };
+                link.onerror = function() {
+                    // CSS 加载失败时也显示 overlay，保证流程可用
+                    if (overlay) overlay.style.visibility = '';
+                };
+                document.head.appendChild(link);
+
+                // 加载脚本
+                const script = document.createElement('script');
+                script.src = '/static/js/character-selection.js';
+                script.onload = function() {
+                    // 确保 DOM 完全加载后再初始化
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', function() {
+                            const characterSelection = new window.CharacterSelection();
+                            characterSelection.start();
+                        });
+                    } else {
+                        const characterSelection = new window.CharacterSelection();
+                        characterSelection.start();
+                    }
+                };
+                script.onerror = function() {
+                    console.error('[CharacterSelection] Failed to load script');
+                };
+                document.body.appendChild(script);
+            } else if (overlay) {
+                // 已完成角色甄选，移除 overlay 元素
+                overlay.style.display = 'none';
+                overlay.remove();
+            }
+        })();
+    </script>
 </body>
 
 </html>

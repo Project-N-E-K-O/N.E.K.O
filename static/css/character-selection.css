@@ -1,0 +1,528 @@
+/* 角色甄选引导样式 - 简化版 */
+
+/* Overlay 容器 - 深邃星空背景 */
+.character-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 100010;
+
+    /* 深邃径向渐变底层 - 完全不透明 */
+    background: radial-gradient(ellipse at center bottom, #0d1b2a 0%, #000000 60%, #000000 100%);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 1;
+    transition: opacity 0.3s ease;
+    pointer-events: auto;
+    overflow: hidden;
+}
+
+/* 星星粒子层 - 使用伪元素实现独立闪烁 */
+.character-overlay::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image:
+        radial-gradient(2px 2px at 15% 25%, rgba(255,255,255,0.6) 0%, transparent 100%),
+        radial-gradient(2px 2px at 75% 15%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 45% 65%, rgba(255,255,255,0.4) 0%, transparent 100%),
+        radial-gradient(2px 2px at 85% 55%, rgba(255,255,255,0.3) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 25% 85%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(2px 2px at 65% 35%, rgba(255,255,255,0.4) 0%, transparent 100%),
+        radial-gradient(3px 3px at 35% 45%, rgba(255,255,255,0.7) 0%, transparent 100%),
+        radial-gradient(2.5px 2.5px at 55% 75%, rgba(255,255,255,0.6) 0%, transparent 100%),
+        radial-gradient(2px 2px at 95% 45%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 5% 55%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(2px 2px at 30% 10%, rgba(255,255,255,0.4) 0%, transparent 100%),
+        radial-gradient(2px 2px at 90% 80%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 10% 70%, rgba(255,255,255,0.3) 0%, transparent 100%),
+        radial-gradient(2.5px 2.5px at 70% 90%, rgba(255,255,255,0.6) 0%, transparent 100%),
+        radial-gradient(2px 2px at 40% 30%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 80% 40%, rgba(255,255,255,0.4) 0%, transparent 100%),
+        radial-gradient(3px 3px at 20% 60%, rgba(255,255,255,0.7) 0%, transparent 100%),
+        radial-gradient(2px 2px at 60% 20%, rgba(255,255,255,0.5) 0%, transparent 100%),
+        radial-gradient(1.5px 1.5px at 50% 50%, rgba(255,255,255,0.3) 0%, transparent 100%),
+        radial-gradient(2px 2px at 95% 5%, rgba(255,255,255,0.5) 0%, transparent 100%);
+    background-size: 100% 100%;
+    animation: starlight 6s ease-in-out infinite;
+    pointer-events: none;
+    z-index: 1;
+}
+/* 星星闪烁动画 - 明显但柔和 */
+@keyframes starlight {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+.character-overlay.fade-out {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* 跳过按钮 */
+.skip-button {
+    position: fixed;
+    top: 20px;
+    right: 24px;
+    z-index: 100012;
+    padding: 10px 24px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(10px);
+    pointer-events: auto;
+
+    /* 入场动画 */
+    opacity: 0;
+    animation: fadeIn 0.8s ease-out forwards;
+    animation-delay: 1.2s;
+}
+
+/* 淡入动画 */
+@keyframes fadeIn {
+    to {
+        opacity: 1;
+    }
+}
+
+.skip-button:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.9);
+    border-color: rgba(255, 255, 255, 0.4);
+    transform: translateY(-1px);
+}
+
+/* 内容容器 */
+.stage-content {
+    text-align: center;
+}
+
+/* 引导文字 */
+.guide-text {
+    font-size: 28px;
+    color: rgba(255, 255, 255, 0.95);
+    margin-bottom: 70px;
+    max-width: 700px;
+    line-height: 1.8;
+    font-weight: 300;
+    letter-spacing: 1px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    text-shadow:
+        0 2px 12px rgba(0, 0, 0, 0.5),
+        0 0 40px rgba(68, 183, 254, 0.25),
+        0 0 80px rgba(68, 183, 254, 0.1);
+
+    /* 入场动画 */
+    opacity: 0;
+    transform: translateY(30px);
+    animation: fadeInUp 1.2s ease-out forwards;
+    animation-delay: 0.3s;
+}
+
+/* 文字入场动画 */
+@keyframes fadeInUp {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 开始按钮 */
+.start-button {
+    position: relative;
+    width: 150px;
+    height: 150px;
+    padding: 0;
+    background: linear-gradient(135deg, #44b7fe, #40C5F1);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.4s ease;
+    pointer-events: auto;
+
+    /* 多层阴影 */
+    box-shadow:
+        0 4px 20px rgba(68, 183, 254, 0.4),
+        0 0 40px rgba(68, 183, 254, 0.2),
+        inset 0 2px 10px rgba(255, 255, 255, 0.15);
+
+    /* 入场动画 - 柔和弹性 */
+    opacity: 0;
+    transform: scale(0.5);
+    animation: characterButtonEntrance 1.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    animation-delay: 0.8s;
+}
+
+/* 按钮入场动画 */
+@keyframes characterButtonEntrance {
+    0% {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+    60% {
+        opacity: 1;
+        transform: scale(1.08);
+    }
+    80% {
+        transform: scale(0.95);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.start-button:hover {
+    transform: scale(1.1);
+    box-shadow:
+        0 8px 30px rgba(68, 183, 254, 0.6),
+        0 0 60px rgba(68, 183, 254, 0.4),
+        inset 0 2px 15px rgba(255, 255, 255, 0.25);
+}
+
+.start-button:active {
+    transform: scale(0.95);
+    box-shadow:
+        0 2px 10px rgba(68, 183, 254, 0.5),
+        0 0 30px rgba(68, 183, 254, 0.3),
+        inset 0 2px 8px rgba(255, 255, 255, 0.2);
+}
+
+/* ========================================
+   阶段管理
+   ======================================== */
+
+.character-stage {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+}
+
+.character-stage.active {
+    display: flex;
+}
+
+/* ========================================
+   阶段二：性格挑选 - 基础布局
+   ======================================== */
+
+.cards-container {
+    text-align: center;
+    max-width: 1000px;
+    padding: 40px;
+}
+
+.cards-title {
+    font-size: 32px;
+    color: rgba(255, 255, 255, 0.95);
+    margin-bottom: 50px;
+    font-weight: 300;
+    letter-spacing: 1px;
+
+    /* 入场动画 */
+    opacity: 0;
+    transform: translateY(20px);
+    animation: fadeInUp 0.8s ease-out forwards;
+}
+
+/* 阶段二卡片入场动画 - 错开时序 */
+.character-card:nth-child(1) {
+    opacity: 0;
+    animation: fadeInUp 0.6s ease-out forwards;
+    animation-delay: 0.2s;
+}
+
+.character-card:nth-child(2) {
+    opacity: 0;
+    animation: fadeInUp 0.6s ease-out forwards;
+    animation-delay: 0.3s;
+}
+
+.character-card:nth-child(3) {
+    opacity: 0;
+    animation: fadeInUp 0.6s ease-out forwards;
+    animation-delay: 0.4s;
+}
+
+.character-card:nth-child(4) {
+    opacity: 0;
+    animation: fadeInUp 0.6s ease-out forwards;
+    animation-delay: 0.5s;
+}
+
+.cards-hint {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.5);
+    font-weight: 300;
+
+    /* 入场动画 */
+    opacity: 0;
+    animation: fadeIn 0.8s ease-out forwards;
+    animation-delay: 0.7s;
+}
+
+.cards-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+    margin-bottom: 40px;
+}
+
+.character-card {
+    background: rgba(30, 30, 40, 0.6);
+    backdrop-filter: blur(10px);
+    border: 2px solid rgba(68, 183, 254, 0.3);
+    border-radius: 16px;
+    padding: 30px 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+    .character-card {
+        background: rgba(20, 20, 32, 0.92);
+    }
+}
+
+.character-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at center, rgba(68, 183, 254, 0.1) 0%, transparent 70%);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.character-card:hover {
+    transform: translateY(-8px);
+    border-color: rgba(68, 183, 254, 0.5);
+    box-shadow: 0 12px 30px rgba(68, 183, 254, 0.2);
+}
+
+.character-card:hover::before {
+    opacity: 1;
+}
+
+.character-card.selected {
+    border-color: #44b7fe;
+    background: rgba(68, 183, 254, 0.15);
+    box-shadow: 0 0 20px rgba(68, 183, 254, 0.4);
+    transform: translateY(-4px);
+}
+
+.character-card.selected::before {
+    opacity: 1;
+}
+
+.card-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
+}
+
+.card-name {
+    font-size: 20px;
+    color: #44b7fe;
+    margin-bottom: 12px;
+    font-weight: 500;
+}
+
+.card-desc {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.6;
+    font-weight: 300;
+}
+
+/* 响应式布局 */
+@media (max-width: 900px) {
+    .cards-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 600px) {
+    .cards-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .cards-title {
+        font-size: 24px;
+    }
+}
+
+/* ========================================
+   阶段三：真情互动
+   ======================================== */
+
+.greeting-modal {
+    background: rgba(20, 20, 30, 0.95);
+    backdrop-filter: blur(20px);
+    border: 2px solid rgba(68, 183, 254, 0.4);
+    border-radius: 20px;
+    padding: 50px 40px;
+    max-width: 500px;
+    text-align: center;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+    .greeting-modal {
+        background: rgba(10, 10, 20, 0.98);
+    }
+}
+
+.character-avatar {
+    font-size: 80px;
+    margin-bottom: 30px;
+    filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.5));
+}
+
+.greeting-title {
+    font-size: 20px;
+    color: rgba(255, 255, 255, 0.9);
+    margin-bottom: 20px;
+    font-weight: 300;
+}
+
+.greeting-text {
+    font-size: 18px;
+    color: #44b7fe;
+    line-height: 1.8;
+    min-height: 60px;
+    margin-bottom: 30px;
+    font-weight: 300;
+}
+
+/* 打字机效果 */
+.greeting-text.typing::after {
+    content: '|';
+    animation: blink 0.8s infinite;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.confirm-btn {
+    padding: 12px 32px;
+    background: linear-gradient(135deg, #44b7fe, #40C5F1);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.confirm-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(68, 183, 254, 0.4);
+}
+
+/* ========================================
+   阶段四：用户确认
+   ======================================== */
+
+.final-confirm {
+    text-align: center;
+    max-width: 500px;
+}
+
+.confirm-icon {
+    font-size: 100px;
+    margin-bottom: 30px;
+    filter: drop-shadow(0 4px 20px rgba(68, 183, 254, 0.3));
+}
+
+.confirm-title {
+    font-size: 36px;
+    color: rgba(255, 255, 255, 0.95);
+    margin-bottom: 20px;
+    font-weight: 300;
+}
+
+.confirm-desc {
+    font-size: 18px;
+    color: rgba(255, 255, 255, 0.7);
+    margin-bottom: 40px;
+    font-weight: 300;
+}
+
+.confirm-desc strong {
+    color: #44b7fe;
+    font-weight: 500;
+}
+
+.confirm-actions {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.primary-btn {
+    padding: 14px 36px;
+    background: linear-gradient(135deg, #44b7fe, #40C5F1);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.primary-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(68, 183, 254, 0.5);
+}
+
+.secondary-btn {
+    padding: 14px 28px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 12px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.secondary-btn:hover {
+    color: rgba(255, 255, 255, 0.95);
+    border-color: rgba(255, 255, 255, 0.6);
+}
+
+
