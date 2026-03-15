@@ -12,7 +12,8 @@ from uuid import uuid4
 from config import MEMORY_SERVER_PORT
 from config.prompts_sys import (
     _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
-    CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, ELAPSED_TIME_HM, ELAPSED_TIME_H,
+    CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
+    ELAPSED_TIME_HM, ELAPSED_TIME_H,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
 )
 from utils.language_utils import get_global_language
@@ -290,7 +291,6 @@ def get_recent_history(lanlan_name: str):
 async def get_memory(query: str, lanlan_name: str):
     """语义记忆已退环境，返回空结果占位。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    from config.prompts_sys import MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER
     _lang = get_global_language()
     return (
         _loc(MEMORY_RECALL_HEADER, _lang).format(name=lanlan_name)
@@ -417,10 +417,13 @@ async def new_dialog(lanlan_name: str):
                 else:
                     elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
 
-                result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
-
-                if gap_seconds >= 18000:  # ≥ 5小时追加长间隔提示
+                if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
+                    now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
+                    result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
+                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
                     result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
+                else:
+                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
     except Exception as e:
         logger.warning(f"计算聊天间隔失败: {e}")
 

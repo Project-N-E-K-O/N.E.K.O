@@ -34,6 +34,8 @@ from config.prompts_sys import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
+    get_proactive_music_failsafe_hint,
+    get_proactive_music_strict_constraint,
     get_proactive_format_sections,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
@@ -1776,11 +1778,14 @@ async def proactive_chat(request: Request):
         selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
         
         # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
-        if is_playing_music and music_content:
-            logger.info(f"[{lanlan_name}] 音乐正在播放，跳过音乐搜索（music_playing_hint 仍会注入）")
+        # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
+        if is_playing_music:
+            if music_content:
+                logger.info(f"[{lanlan_name}]-音乐正在播放，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
-        elif music_content and music_content.get('placeholder'):
-            logger.info(f"[{lanlan_name}] 音乐模式：开始生成搜索关键词...")
+
+        if music_content and music_content.get('placeholder'):
+            logger.info(f"[{lanlan_name}]-音乐模式：开始生成搜索关键词...")
             try:
                 from config.prompts_sys import get_proactive_music_keyword_prompt
                 music_keyword_prompt = get_proactive_music_keyword_prompt(proactive_lang).format(
@@ -1797,17 +1802,17 @@ async def proactive_chat(request: Request):
                 keyword = keyword.strip('\'"「」【】[]《》<> \n\r\t')
 
                 if re.fullmatch(r'\[?\s*pass\s*\]?', keyword, re.IGNORECASE):
-                    print(f"[{lanlan_name}] 音乐模式：AI 判断不适合播放音乐")
+                    print(f"[{lanlan_name}]-音乐模式：AI 判断不适合播放音乐")
                     music_content = None
                 else:
                     music_raw = None
                     if keyword:
                         music_raw = await fetch_music_content(keyword=keyword, limit=5)
                         if not (music_raw and music_raw.get('success')):
-                            logger.warning(f"[{lanlan_name}] 音乐模式：关键词 '{keyword}' 搜索失败，尝试随机推荐")
+                            logger.warning(f"[{lanlan_name}]-音乐模式：关键词 '{keyword}' 搜索失败，尝试随机推荐")
                             music_raw = await fetch_music_content(keyword="", limit=5)
                     else:
-                        logger.warning(f"[{lanlan_name}] 音乐模式：AI 未返回有效关键词，尝试随机推荐")
+                        logger.warning(f"[{lanlan_name}]-音乐模式：AI 未返回有效关键词，尝试随机推荐")
                         music_raw = await fetch_music_content(keyword="", limit=5)
 
                     if music_raw and music_raw.get('success'):
@@ -1819,7 +1824,7 @@ async def proactive_chat(request: Request):
                     else:
                         music_content = None
             except Exception as e:
-                logger.warning(f"[{lanlan_name}] 音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
+                logger.warning(f"[{lanlan_name}]-音乐模式关键词生成异常: {type(e).__name__}: {e}，尝试随机推荐")
                 try:
                     music_raw = await fetch_music_content(keyword="", limit=5)
                     if music_raw and music_raw.get('success'):
@@ -1897,9 +1902,9 @@ async def proactive_chat(request: Request):
                     )
                     
                     if _is_recent_topic_used(lanlan_name, music_topic_key):
-                        print(f"[{lanlan_name}] Phase 1 音乐话题去重命中，跳过: {track_name}")
+                        print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                     else:
-                        logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
+                        logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         phase1_topics.append(('music', music_topic))
                         # 暂存音乐话题 key，等 Phase 2 成功后再记录
                         selected_music_topic_key = music_topic_key
@@ -1979,9 +1984,13 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        if music_topic:
+        # 如果正在放歌，强行屏蔽音乐素材推荐，避免 AI 误触
+        if music_topic and not is_playing_music:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+        elif is_playing_music:
+            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+            music_section = ""
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
@@ -2030,6 +2039,16 @@ async def proactive_chat(request: Request):
                     proactive_lang,
                     PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
                 )
+
+            # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
+            # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
+            raw_data = music_content.get('raw_data', {}) if music_content else {}
+            if raw_data.get('best_match', {}).get('status') == 'fuzzy':
+                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+
+        # 【强制约束】放歌时禁止产生任何换歌念头
+        if is_playing_music:
+            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
@@ -2162,8 +2181,29 @@ async def proactive_chat(request: Request):
 
         has_music_topic = 'music' in active_channels
 
-        # 【核心修复】重新对齐 source_mode 处理逻辑，确保 BOTH 模式下音乐能播放
+        # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
+        # 注意：只要 source_tag 是 MUSIC 或 BOTH，就视为 AI 想要使用音乐，无论 has_music_topic 状态
         is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
+        ai_wants_music = source_tag in ('MUSIC', 'BOTH')
+        
+        if is_playing_music and ai_wants_music:
+            print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
+            is_music_used = False
+            music_content = None
+            if source_tag == 'MUSIC':
+                source_tag = 'PASS'
+                aborted = True
+            elif source_tag == 'BOTH':
+                source_tag = 'WEB'
+        
+        # 【加固补齐】如果触发了降级拦截（aborted），立即返回
+        if aborted:
+            await mgr.handle_new_message()
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
+            })
 
         if source_tag == 'SCREEN':
             source_links = []
@@ -2182,8 +2222,8 @@ async def proactive_chat(request: Request):
                 primary_channel = 'web'
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
-        # 即使 source_tag 没有明确标记 MUSIC/BOTH，也尽量补齐可播放曲目。
-        should_try_music_fallback = (
+        # 【加固】播放中严禁任何形式的自动补全或兜底推荐
+        should_try_music_fallback = not is_playing_music and (
             primary_channel == 'music'
             or (has_music_topic and not any(ch in ('vision', 'web') for ch in active_channels))
         )
