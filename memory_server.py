@@ -2,17 +2,18 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from memory import CompressedRecentHistoryManager, SemanticMemory, ImportantSettingsManager, TimeIndexedMemory
+from memory import CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 import json
 import uvicorn
-from langchain_core.messages import convert_to_messages
+from utils.llm_client import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
 from config.prompts_sys import (
     _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, ELAPSED_TIME_HM, ELAPSED_TIME_H,
+    MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
 )
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
@@ -54,7 +55,6 @@ def validate_lanlan_name(name: str) -> str:
 # 初始化组件
 _config_manager = get_config_manager()
 recent_history_manager = CompressedRecentHistoryManager()
-semantic_manager = SemanticMemory(recent_history_manager)
 settings_manager = ImportantSettingsManager()
 time_manager = TimeIndexedMemory(recent_history_manager)
 
@@ -67,19 +67,17 @@ async def reload_memory_components():
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
     """
-    global recent_history_manager, semantic_manager, settings_manager, time_manager
+    global recent_history_manager, settings_manager, time_manager
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         try:
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
-            new_semantic = SemanticMemory(new_recent)
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(new_recent)
             
             # 然后原子性地交换引用
             recent_history_manager = new_recent
-            semantic_manager = new_semantic
             settings_manager = new_settings
             time_manager = new_time
             
@@ -276,7 +274,7 @@ def get_recent_history(lanlan_name: str):
         return "开始聊天前，没有历史记录。\n"
     
     history = recent_history_manager.get_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
+    _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in history:
@@ -289,9 +287,18 @@ def get_recent_history(lanlan_name: str):
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
-async def get_memory(query: str, lanlan_name:str):
+async def get_memory(query: str, lanlan_name: str):
+    """语义记忆已退环境，返回空结果占位。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    return await semantic_manager.query(query, lanlan_name)
+    from config.prompts_sys import MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER
+    _lang = get_global_language()
+    return (
+        _loc(MEMORY_RECALL_HEADER, _lang).format(name=lanlan_name)
+        + query
+        + "\n\n"
+        + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
+        + "\n（语义记忆已下线，暂无相关记忆片段。）"
+    )
 
 @app.get("/get_settings/{lanlan_name}")
 def get_settings(lanlan_name: str):
@@ -382,7 +389,7 @@ async def new_dialog(lanlan_name: str):
     
     # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
     brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-    master_name, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
+    master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     _lang = get_global_language()
     result = (

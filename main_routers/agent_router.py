@@ -53,7 +53,7 @@ async def update_agent_flags(request: Request):
         data = await request.json()
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
+        _, her_name_current, _, _, _, _, _, _, _ = _config_manager.get_character_data()
         lanlan = data.get('lanlan_name') or her_name_current
         flags = data.get('flags') or {}
         mgr = session_manager.get(lanlan)
@@ -127,7 +127,7 @@ async def post_agent_command(request: Request):
         cfg = get_config_manager()
         if not lanlan:
             try:
-                _, her_name_current, _, _, _, _, _, _, _, _ = cfg.get_character_data()
+                _, her_name_current, _, _, _, _, _, _, _ = cfg.get_character_data()
                 lanlan = her_name_current
                 data["lanlan_name"] = lanlan
             except Exception:

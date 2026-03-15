@@ -1189,7 +1189,6 @@ class ConfigManager:
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        semantic_store = {name: f'{memory_base}/semantic_memory_{name}' for name in catgirl_names}
         time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
         setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
         recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
@@ -1201,7 +1200,6 @@ class ConfigManager:
             catgirl_data,
             name_mapping,
             lanlan_prompt_map,
-            semantic_store,
             time_store,
             setting_store,
             recent_log,

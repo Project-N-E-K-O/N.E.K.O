@@ -24,8 +24,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
 import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -1389,7 +1388,7 @@ async def proactive_chat(request: Request):
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
         # 获取当前角色数据（包括完整人设）
-        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _, _ = _config_manager.get_character_data()
+        master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = _config_manager.get_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current

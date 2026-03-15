@@ -1499,11 +1499,23 @@ async def startup():
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
-    Modules.browser_use = BrowserUseAdapter()
-    Modules.task_executor = DirectTaskExecutor(computer_use=Modules.computer_use, browser_use=Modules.browser_use)
+    Modules.task_executor = DirectTaskExecutor(computer_use=Modules.computer_use, browser_use=None)
     Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
+
+    async def _init_browser_use_background():
+        try:
+            bu = await asyncio.to_thread(BrowserUseAdapter)
+            Modules.browser_use = bu
+            Modules.task_executor.browser_use = bu
+            logger.info("[Agent] BrowserUseAdapter ready (background init)")
+        except Exception as exc:
+            logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
+
+    _bu_task = asyncio.create_task(_init_browser_use_background())
+    Modules._persistent_tasks.add(_bu_task)
+    _bu_task.add_done_callback(Modules._persistent_tasks.discard)
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:

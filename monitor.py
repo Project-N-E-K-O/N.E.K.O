@@ -74,7 +74,7 @@ async def get_page_config(lanlan_name: str = ""):
     """获取页面配置（lanlan_name 和 model_path）"""
     try:
         # 获取角色数据
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
+        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name

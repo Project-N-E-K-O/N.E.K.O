@@ -2,7 +2,7 @@
 import os
 import json
 import logging
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

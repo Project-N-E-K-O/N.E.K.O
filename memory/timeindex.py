@@ -1,5 +1,4 @@
-from langchain_community.chat_message_histories import SQLChatMessageHistory
-from langchain_core.messages import SystemMessage
+from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
 from utils.config_manager import get_config_manager
@@ -14,7 +13,7 @@ class TimeIndexedMemory:
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self.recent_history_manager = recent_history_manager
-        _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+        _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for name in time_store:
             self._ensure_engine_exists(name, time_store[name])
 
@@ -25,7 +24,7 @@ class TimeIndexedMemory:
 
         try:
             if not db_path:
-                _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+                _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
                 if lanlan_name in time_store:
                     db_path = time_store[lanlan_name]
                 else:

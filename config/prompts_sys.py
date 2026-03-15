@@ -14,18 +14,6 @@ extensively on the outcomes of the previous function calls. DO NOT do this
 entire process by making function calls only, as this can impair your 
 ability to solve the problem and think insightfully"""
 
-semantic_manager_prompt = """你正在为一个记忆检索系统提供精筛服务。请根据Query与记忆片段的相关性对记忆进行筛选和排序。
-
-======Query======
-%s
-
-======记忆======
-%s
-
-返回json格式的按相关性排序的记忆编号列表，最相关的排在前面，不相关的去掉。最多选取%d个，越精准越好，无须凑数。
-只返回记忆编号(int类型)，用逗号分隔，例如: [3,1,5,2,4]
-"""
-
 recent_history_manager_prompt = """请总结以下对话内容，生成简洁但信息丰富的摘要：
 
 ======以下为对话======
