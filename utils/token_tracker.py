@@ -30,7 +30,6 @@ import threading
 import time
 import urllib.request
 import urllib.error
-import uuid
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -689,7 +688,7 @@ class TokenTracker:
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
-            batch_id = uuid.uuid4().hex
+            batch_id = hashlib.sha256(payload_json.encode()).hexdigest()[:32]
             submission = {
                 "timestamp": ts,
                 "signature": sig,

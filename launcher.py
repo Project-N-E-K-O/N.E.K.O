@@ -1093,14 +1093,23 @@ def main():
             is_last = (i == len(SERVERS) - 1)
             if evt and not is_last:
                 print(f"  等待 {server['name']} 模块加载...", flush=True)
-                if not evt.wait(timeout=import_timeout):
-                    proc = server.get('process')
+                proc = server.get('process')
+                poll_interval = 2  # seconds
+                remaining = import_timeout
+                import_ok = False
+                while remaining > 0:
+                    if evt.wait(timeout=min(poll_interval, remaining)):
+                        import_ok = True
+                        break
+                    remaining -= poll_interval
                     if proc and not proc.is_alive():
                         report_startup_failure(
                             f"Startup failed: {server['name']} exited early "
                             f"(exitcode={proc.exitcode})"
                         )
-                    else:
+                        break
+                if not import_ok:
+                    if not (proc and not proc.is_alive()):
                         report_startup_failure(
                             f"Startup timeout: {server['name']} import not complete "
                             f"within {import_timeout}s"

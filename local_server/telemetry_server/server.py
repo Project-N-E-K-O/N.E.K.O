@@ -299,7 +299,7 @@ async def admin_dashboard(request: Request, days: int = 30):
             <td>{d['recent_tokens']:,}</td>
         </tr>"""
 
-    html = f"""<!DOCTYPE html>
+    page_html = f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"><title>N.E.K.O Telemetry Dashboard</title>
 <style>
@@ -384,7 +384,7 @@ async def admin_dashboard(request: Request, days: int = 30):
 
 </body></html>"""
 
-    return HTMLResponse(html)
+    return HTMLResponse(page_html)
 
 
 # ---------------------------------------------------------------------------
