@@ -10,13 +10,13 @@ import os
 logger = get_module_logger(__name__, "Memory")
 
 class TimeIndexedMemory:
-    def __init__(self, recent_history_manager):
+    def __init__(self, recent_history_manager, time_store=None):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self.recent_history_manager = recent_history_manager
-        _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
-        for name in time_store:
-            self._ensure_engine_exists(name, time_store[name])
+        if time_store is None:
+            _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+        self._time_store = dict(time_store)  # 路径映射，engine 在首次访问时懒创建
 
     def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
@@ -25,14 +25,20 @@ class TimeIndexedMemory:
 
         try:
             if not db_path:
-                _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
-                if lanlan_name in time_store:
-                    db_path = time_store[lanlan_name]
+                # 优先从已缓存的路径映射中查找，避免重复调用 get_character_data()
+                if lanlan_name in self._time_store:
+                    db_path = self._time_store[lanlan_name]
                 else:
-                    config_mgr = get_config_manager()
-                    config_mgr.ensure_memory_directory()
-                    db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
-                    logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
+                    _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+                    self._time_store.update(time_store)
+                    if lanlan_name in time_store:
+                        db_path = time_store[lanlan_name]
+                    else:
+                        config_mgr = get_config_manager()
+                        config_mgr.ensure_memory_directory()
+                        db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
+                        self._time_store[lanlan_name] = db_path
+                        logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
 
             self.db_paths[lanlan_name] = db_path
             self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")

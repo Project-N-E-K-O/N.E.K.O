@@ -13,14 +13,17 @@ import asyncio
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
 class SemanticMemory:
-    def __init__(self, recent_history_manager: CompressedRecentHistoryManager, persist_directory=None):
+    def __init__(self, recent_history_manager: CompressedRecentHistoryManager, persist_directory=None, name_mapping=None):
         self._config_manager = get_config_manager()
-        # 通过get_character_data获取相关变量
-        _, _, _, _, name_mapping, _, semantic_store, _, _, _ = self._config_manager.get_character_data()
+        if persist_directory is None or name_mapping is None:
+            # 向后兼容：若未传入则自己调用
+            _, _, _, _, _nm, _, _ss, _, _, _ = self._config_manager.get_character_data()
+            if persist_directory is None:
+                persist_directory = _ss
+            if name_mapping is None:
+                name_mapping = _nm
         self.original_memory = {}
         self.compressed_memory = {}
-        if persist_directory is None:
-            persist_directory = semantic_store
         for i in persist_directory:
             self.original_memory[i] = SemanticMemoryOriginal(persist_directory, i, name_mapping)
             self.compressed_memory[i] = SemanticMemoryCompressed(persist_directory, i, recent_history_manager, name_mapping)
@@ -108,17 +111,22 @@ class SemanticMemory:
 
 class SemanticMemoryOriginal:
     def __init__(self, persist_directory, lanlan_name, name_mapping):
-        config_manager = get_config_manager()
-        api_config = config_manager.get_model_api_config('summary')
-        self.embeddings = OpenAIEmbeddings(base_url=api_config['base_url'], model=SEMANTIC_MODEL, api_key=api_config['api_key'])
-        # self.vectorstore = Chroma(
-        #     collection_name="Origin",
-        #     persist_directory=persist_directory[lanlan_name],
-        #     embedding_function=self.embeddings
-        # )
+        # embeddings 和 vectorstore 当前均未启用（Chroma 已注释），懒初始化以避免启动时无用开销
+        self._persist_directory = persist_directory
+        self.embeddings = None
         self.vectorstore = None
         self.lanlan_name = lanlan_name
         self.name_mapping = name_mapping
+
+    def _ensure_embeddings(self):
+        """Embeddings 懒加载：仅在实际需要时创建"""
+        if self.embeddings is None:
+            config_manager = get_config_manager()
+            api_config = config_manager.get_model_api_config('summary')
+            self.embeddings = OpenAIEmbeddings(
+                base_url=api_config['base_url'], model=SEMANTIC_MODEL, api_key=api_config['api_key'],
+            )
+        return self.embeddings
 
     def store_conversation(self, event_id, messages):
         # 将对话转换为文本
@@ -163,16 +171,21 @@ class SemanticMemoryCompressed:
     def __init__(self, persist_directory, lanlan_name, recent_history_manager: CompressedRecentHistoryManager, name_mapping):
         self.lanlan_name = lanlan_name
         self.name_mapping = name_mapping
-        config_manager = get_config_manager()
-        api_config = config_manager.get_model_api_config('summary')
-        self.embeddings = OpenAIEmbeddings(base_url=api_config['base_url'], model=SEMANTIC_MODEL, api_key=api_config['api_key'])
+        self._persist_directory = persist_directory
+        # embeddings 和 vectorstore 当前均未启用（Chroma 已注释），懒初始化以避免启动时无用开销
+        self.embeddings = None
         self.vectorstore = None
-        # self.vectorstore = Chroma(
-        #     collection_name="Compressed",
-        #     persist_directory=persist_directory[lanlan_name],
-        #     embedding_function=self.embeddings
-        # )
         self.recent_history_manager = recent_history_manager
+
+    def _ensure_embeddings(self):
+        """Embeddings 懒加载：仅在实际需要时创建"""
+        if self.embeddings is None:
+            config_manager = get_config_manager()
+            api_config = config_manager.get_model_api_config('summary')
+            self.embeddings = OpenAIEmbeddings(
+                base_url=api_config['base_url'], model=SEMANTIC_MODEL, api_key=api_config['api_key'],
+            )
+        return self.embeddings
 
     async def store_compressed_summary(self, event_id, messages):
         # 存储压缩摘要的嵌入

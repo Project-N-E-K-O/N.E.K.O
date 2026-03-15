@@ -3,6 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from memory import CompressedRecentHistoryManager, SemanticMemory, ImportantSettingsManager, TimeIndexedMemory
+from memory.semantic import SemanticMemoryOriginal, SemanticMemoryCompressed
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 import json
@@ -51,39 +52,82 @@ def validate_lanlan_name(name: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return name
 
-# 初始化组件
+# 初始化组件 —— 只调用一次 get_character_data()，将结果传入各 Manager
 _config_manager = get_config_manager()
-recent_history_manager = CompressedRecentHistoryManager()
-semantic_manager = SemanticMemory(recent_history_manager)
+_char_data = _config_manager.get_character_data()
+# _char_data: (master_name, her_name, master_basic_config, catgirl_data,
+#              name_mapping, lanlan_prompt_map, semantic_store, time_store,
+#              setting_store, recent_log)
+recent_history_manager = CompressedRecentHistoryManager(
+    recent_log=_char_data[9], name_mapping=_char_data[4],
+)
+semantic_manager = SemanticMemory(
+    recent_history_manager,
+    persist_directory=_char_data[6], name_mapping=_char_data[4],
+)
 settings_manager = ImportantSettingsManager()
-time_manager = TimeIndexedMemory(recent_history_manager)
+time_manager = TimeIndexedMemory(
+    recent_history_manager,
+    time_store=_char_data[7],
+)
 
 # 用于保护重新加载操作的锁
 _reload_lock = asyncio.Lock()
 
 async def reload_memory_components():
-    """重新加载记忆组件配置（用于新角色创建后）
+    """增量重新加载记忆组件配置（用于新角色创建后）
     
-    使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
-    先创建所有新实例，然后原子性地交换引用。
+    使用锁保护重新加载操作，避免竞态条件。
+    只为新增角色添加路径映射，清理已删除角色的资源，避免全量重建。
     """
     global recent_history_manager, semantic_manager, settings_manager, time_manager
     async with _reload_lock:
-        logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
+        logger.info("[MemoryServer] 开始增量重新加载记忆组件配置...")
         try:
-            # 先创建所有新实例
-            new_recent = CompressedRecentHistoryManager()
-            new_semantic = SemanticMemory(new_recent)
-            new_settings = ImportantSettingsManager()
-            new_time = TimeIndexedMemory(new_recent)
-            
-            # 然后原子性地交换引用
-            recent_history_manager = new_recent
-            semantic_manager = new_semantic
-            settings_manager = new_settings
-            time_manager = new_time
-            
-            logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
+            char_data = _config_manager.get_character_data()
+            new_recent_log = char_data[9]
+            new_name_mapping = char_data[4]
+            new_semantic_store = char_data[6]
+            new_time_store = char_data[7]
+
+            # ── 增量更新 recent_history_manager ──
+            old_names = set(recent_history_manager.log_file_path.keys())
+            new_names = set(new_recent_log.keys())
+            for name in new_names - old_names:
+                recent_history_manager.log_file_path[name] = new_recent_log[name]
+                # 懒加载：不立即读文件，首次访问时自动加载
+            for name in old_names - new_names:
+                recent_history_manager.log_file_path.pop(name, None)
+                recent_history_manager.user_histories.pop(name, None)
+            recent_history_manager.name_mapping = new_name_mapping
+
+            # ── 增量更新 semantic_manager ──
+            old_sem = set(semantic_manager.original_memory.keys())
+            new_sem = set(new_semantic_store.keys())
+            for name in new_sem - old_sem:
+                semantic_manager.original_memory[name] = SemanticMemoryOriginal(
+                    new_semantic_store, name, new_name_mapping,
+                )
+                semantic_manager.compressed_memory[name] = SemanticMemoryCompressed(
+                    new_semantic_store, name, recent_history_manager, new_name_mapping,
+                )
+            for name in old_sem - new_sem:
+                semantic_manager.original_memory.pop(name, None)
+                semantic_manager.compressed_memory.pop(name, None)
+
+            # ── 增量更新 time_manager ──
+            old_time = set(time_manager._time_store.keys())
+            new_time = set(new_time_store.keys())
+            for name in new_time - old_time:
+                time_manager._time_store[name] = new_time_store[name]
+                # 懒加载：engine 将在首次访问时创建
+            for name in old_time - new_time:
+                time_manager.dispose_engine(name)
+                time_manager._time_store.pop(name, None)
+
+            # settings_manager 是按需加载的，无需增量更新
+
+            logger.info("[MemoryServer] ✅ 记忆组件配置增量重新加载完成")
             return True
         except Exception as e:
             logger.error(f"[MemoryServer] ❌ 重新加载记忆组件配置失败: {e}", exc_info=True)

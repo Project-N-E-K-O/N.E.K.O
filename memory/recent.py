@@ -17,19 +17,44 @@ from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
 class CompressedRecentHistoryManager:
-    def __init__(self, max_history_length=10):
+    def __init__(self, max_history_length=10, recent_log=None, name_mapping=None):
         self._config_manager = get_config_manager()
-        # 通过get_character_data获取相关变量
-        _, _, _, _, name_mapping, _, _, _, _, recent_log = self._config_manager.get_character_data()
+        if recent_log is None or name_mapping is None:
+            # 向后兼容：若未传入则自己调用
+            _, _, _, _, _nm, _, _, _, _, _rl = self._config_manager.get_character_data()
+            if recent_log is None:
+                recent_log = _rl
+            if name_mapping is None:
+                name_mapping = _nm
         self.max_history_length = max_history_length
-        self.log_file_path = recent_log
+        self.log_file_path = dict(recent_log)
         self.name_mapping = name_mapping
         self.user_histories = {}
-        for ln in self.log_file_path:
-            if os.path.exists(self.log_file_path[ln]):
-                self.user_histories[ln] = self._load_history_from_file(self.log_file_path[ln], ln)
-            else:
-                self.user_histories[ln] = []
+        # 懒加载：不在启动时读取所有历史文件，首次访问时按需加载
+
+    def _ensure_loaded(self, lanlan_name):
+        """确保指定角色的历史记录已加载到内存中（懒加载）"""
+        if lanlan_name in self.user_histories:
+            return
+        if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
+            self.user_histories[lanlan_name] = self._load_history_from_file(
+                self.log_file_path[lanlan_name], lanlan_name,
+            )
+        else:
+            self.user_histories[lanlan_name] = []
+
+    def _ensure_path_for(self, lanlan_name):
+        """确保指定角色有对应的文件路径，对未知角色创建默认路径"""
+        if lanlan_name in self.log_file_path:
+            return
+        try:
+            self._config_manager.ensure_memory_directory()
+            memory_base = str(self._config_manager.memory_dir)
+            default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
+            self.log_file_path[lanlan_name] = default_path
+            logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
+        except Exception as e:
+            logger.error(f"[RecentHistory] 创建默认路径失败: {e}")
 
     def _reset_history_file(self, file_path, lanlan_name, reason):
         """当 recent 文件损坏或为空时，重置为合法的空 JSON 数组。"""
@@ -85,45 +110,9 @@ class CompressedRecentHistoryManager:
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
-        # 检查角色是否存在于配置中，如果不存在则创建默认路径
-        try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
-            # 更新文件路径映射
-            self.log_file_path = recent_log
-            
-            # 如果角色不在配置中，使用默认路径创建
-            if lanlan_name not in recent_log:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                self.log_file_path[lanlan_name] = default_path
-                logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
-        except Exception as e:
-            logger.error(f"检查角色配置失败: {e}")
-            # 即使配置检查失败，也尝试使用默认路径
-            try:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                if lanlan_name not in self.log_file_path:
-                    self.log_file_path[lanlan_name] = default_path
-                    logger.debug(f"[RecentHistory] 使用默认路径: {default_path}")
-            except Exception as e2:
-                logger.error(f"创建默认路径失败: {e2}")
-                return
-        
-        # 确保角色在 user_histories 中
-        if lanlan_name not in self.user_histories:
-            self.user_histories[lanlan_name] = []
-        
-        # 如果文件存在，加载历史记录
-        if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            self.user_histories[lanlan_name] = self._load_history_from_file(
-                self.log_file_path[lanlan_name],
-                lanlan_name
-            )
+        # 确保角色有路径映射和已加载的历史
+        self._ensure_path_for(lanlan_name)
+        self._ensure_loaded(lanlan_name)
 
         try:
             self.user_histories[lanlan_name].extend(new_messages)
@@ -286,42 +275,9 @@ class CompressedRecentHistoryManager:
         return None
 
     def get_recent_history(self, lanlan_name):
-        # 检查角色是否存在于配置中，如果不存在则创建默认路径
-        try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
-            # 更新文件路径映射
-            self.log_file_path = recent_log
-            
-            # 如果角色不在配置中，使用默认路径
-            if lanlan_name not in recent_log:
-                # 确保memory目录存在
-                self._config_manager.ensure_memory_directory()
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
-                self.log_file_path[lanlan_name] = default_path
-                logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
-        except Exception as e:
-            logger.error(f"检查角色配置失败: {e}")
-            # 即使配置检查失败，也尝试使用默认路径
-            try:
-                memory_base = str(self._config_manager.memory_dir)
-                default_path = f'{memory_base}/recent_{lanlan_name}.json'
-                if lanlan_name not in self.log_file_path:
-                    self.log_file_path[lanlan_name] = default_path
-            except Exception as e2:
-                logger.error(f"创建默认路径失败: {e2}")
-                return []
-        
-        # 确保角色在 user_histories 中
-        if lanlan_name not in self.user_histories:
-            self.user_histories[lanlan_name] = []
-        
-        # 如果文件存在，加载历史记录
-        if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            self.user_histories[lanlan_name] = self._load_history_from_file(
-                self.log_file_path[lanlan_name],
-                lanlan_name
-            )
+        # 确保角色有路径映射和已加载的历史
+        self._ensure_path_for(lanlan_name)
+        self._ensure_loaded(lanlan_name)
         
         return self.user_histories.get(lanlan_name, [])
 
