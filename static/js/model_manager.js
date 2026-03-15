@@ -5121,7 +5121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.modelNotSet', `角色 ${catgirl_name} 未设置模型，请手动选择`, { name: catgirl_name }));
                 }
             }
-            InitializationTouchSet(catgirlConfig);
+            // InitializationTouchSet(catgirlConfig);
         } catch (error) {
             console.error('加载当前角色模型失败:', error);
             showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

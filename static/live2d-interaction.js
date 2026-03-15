@@ -1522,7 +1522,8 @@ Live2DManager.prototype.playTutorialMotion = async function() {
         // const motion = await this.currentModel.motion(group, index, window.live2dManager.CLICK_MOTION_PRIORITY);
         const motion = await this.currentModel.motion(group, index, 2);
         if (motion) {
-            console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${window.live2dManager.CLICK_MOTION_PRIORITY}）`);
+            // console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${window.live2dManager.CLICK_MOTION_PRIORITY}）`);
+            console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${2}）`);
             return true;
         }
     } catch (error) {
