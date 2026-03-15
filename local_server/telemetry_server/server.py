@@ -18,6 +18,9 @@ N.E.K.O Telemetry Collection Server
 from __future__ import annotations
 
 import argparse
+import asyncio
+import html
+import json
 import logging
 import os
 import time
@@ -101,8 +104,13 @@ async def submit_telemetry(request: Request):
     if not verify_timestamp(submission.timestamp):
         raise HTTPException(403, "Timestamp out of range")
 
-    # HMAC
-    payload_json = model_to_json(submission.payload)
+    # HMAC — 使用与客户端相同的 canonical JSON（sort_keys=True）验签，
+    # 而非 Pydantic model_to_json（其序列化器可能改变 key 顺序/float 格式）
+    try:
+        body_dict = json.loads(body_bytes)
+        payload_json = json.dumps(body_dict["payload"], ensure_ascii=False, sort_keys=True)
+    except (json.JSONDecodeError, KeyError):
+        raise HTTPException(400, "Malformed payload")
     if not verify_signature(payload_json, submission.timestamp, submission.signature, HMAC_SECRET):
         raise HTTPException(403, "Invalid signature")
 
@@ -110,6 +118,11 @@ async def submit_telemetry(request: Request):
     device_id = submission.payload.device_id
     if not rate_limiter.is_allowed(device_id):
         raise HTTPException(429, "Rate limit exceeded")
+
+    # 幂等去重：相同 batch_id 不重复累加
+    batch_id = submission.batch_id
+    if storage.is_duplicate_batch(batch_id):
+        return SubmitResponse(ok=True, message="duplicate, skipped")
 
     # 存储
     try:
@@ -119,6 +132,7 @@ async def submit_telemetry(request: Request):
             app_version=submission.payload.app_version,
             payload_json=payload_json,
             daily_stats=daily_stats_dict,
+            batch_id=batch_id,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
@@ -250,10 +264,12 @@ async def admin_dashboard(request: Request, days: int = 30):
             <td>{s['error_count']:,}</td>
         </tr>"""
 
+    esc = html.escape
+
     model_rows = ""
     for m, s in sorted(stats.get("by_model", {}).items(), key=lambda x: -x[1]["total_tokens"]):
         model_rows += f"""<tr>
-            <td>{m}</td>
+            <td>{esc(m)}</td>
             <td>{s['call_count']:,}</td>
             <td>{s['prompt_tokens']:,}</td>
             <td>{s['cached_tokens']:,}</td>
@@ -264,7 +280,7 @@ async def admin_dashboard(request: Request, days: int = 30):
     type_rows = ""
     for t, s in sorted(stats.get("by_call_type", {}).items(), key=lambda x: -x[1]["total_tokens"]):
         type_rows += f"""<tr>
-            <td>{t}</td>
+            <td>{esc(t)}</td>
             <td>{s['call_count']:,}</td>
             <td>{s['prompt_tokens']:,}</td>
             <td>{s['cached_tokens']:,}</td>
@@ -274,10 +290,11 @@ async def admin_dashboard(request: Request, days: int = 30):
 
     device_rows = ""
     for d in devices:
+        did = esc(d['device_id'])
         device_rows += f"""<tr>
-            <td title="{d['device_id']}">{d['device_id'][:12]}...</td>
-            <td>{d['app_version']}</td>
-            <td>{d['last_seen'][:19]}</td>
+            <td title="{did}">{did[:12]}...</td>
+            <td>{esc(d['app_version'])}</td>
+            <td>{esc(d['last_seen'][:19])}</td>
             <td>{d['recent_calls']:,}</td>
             <td>{d['recent_tokens']:,}</td>
         </tr>"""
@@ -374,9 +391,20 @@ async def admin_dashboard(request: Request, days: int = 30):
 # 定期维护
 # ---------------------------------------------------------------------------
 
+async def _periodic_rate_limiter_cleanup():
+    """每小时清理不活跃设备的速率限制记录，防止内存缓慢膨胀。"""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            rate_limiter.cleanup_stale()
+        except Exception:
+            pass
+
+
 @app.on_event("startup")
 async def on_startup():
     rate_limiter.cleanup_stale()
+    asyncio.create_task(_periodic_rate_limiter_cleanup())
     logger.info(f"Telemetry server started. DB={DB_PATH}")
     if not ADMIN_TOKEN:
         logger.warning("⚠ TELEMETRY_ADMIN_TOKEN not set — admin API disabled")

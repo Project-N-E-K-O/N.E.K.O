@@ -2,13 +2,17 @@
 # N.E.K.O Telemetry Server 一键部署脚本
 #
 # 用法：
-#   curl -sSL https://your-repo/setup.sh | bash
-#   或
-#   chmod +x setup.sh && ./setup.sh
+#   cd local_server/telemetry_server/deploy && ./setup.sh
+#   或从任意目录运行：
+#   bash /path/to/deploy/setup.sh
 #
 # 前置条件：Python 3.10+, pip
 
 set -e
+
+# 解析脚本自身所在目录，不依赖 CWD
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 INSTALL_DIR="/opt/neko-telemetry"
 SERVICE_NAME="neko-telemetry"
@@ -36,12 +40,22 @@ fi
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "✓ Python $PYTHON_VERSION"
 
+# 检查配套文件是否存在
+for f in server.py models.py security.py storage.py requirements.txt; do
+    if [ ! -f "$SOURCE_DIR/$f" ]; then
+        echo "❌ Missing file: $SOURCE_DIR/$f"
+        echo "   Please run this script from the deploy/ directory inside the telemetry_server package."
+        exit 1
+    fi
+done
+
 # 创建目录
 echo "→ Installing to $INSTALL_DIR ..."
 sudo mkdir -p "$INSTALL_DIR/data"
 
-# 复制文件
-sudo cp server.py models.py security.py storage.py requirements.txt "$INSTALL_DIR/"
+# 复制文件（从脚本所在目录的父目录）
+sudo cp "$SOURCE_DIR/server.py" "$SOURCE_DIR/models.py" "$SOURCE_DIR/security.py" \
+        "$SOURCE_DIR/storage.py" "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
 
 # 创建虚拟环境并安装依赖
 echo "→ Creating virtualenv ..."
@@ -62,6 +76,15 @@ echo "│  $ADMIN_TOKEN  │"
 echo "└─────────────────────────────────────────────────┘"
 echo ""
 
+# 将敏感凭据写入 root-only 环境文件，不在 systemd unit 中明文暴露
+CREDENTIALS_FILE="$INSTALL_DIR/telemetry.env"
+echo "→ Writing credentials to $CREDENTIALS_FILE (mode 0600, owner root) ..."
+sudo tee "$CREDENTIALS_FILE" > /dev/null << EOF
+TELEMETRY_ADMIN_TOKEN=$ADMIN_TOKEN
+EOF
+sudo chown root:root "$CREDENTIALS_FILE"
+sudo chmod 600 "$CREDENTIALS_FILE"
+
 # 安装 systemd service
 echo "→ Installing systemd service ..."
 sudo tee /etc/systemd/system/$SERVICE_NAME.service > /dev/null << EOF
@@ -75,7 +98,7 @@ User=nobody
 Group=$RUN_GROUP
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$PYTHON_BIN server.py --port $PORT
-Environment=TELEMETRY_ADMIN_TOKEN=$ADMIN_TOKEN
+EnvironmentFile=$CREDENTIALS_FILE
 Environment=TELEMETRY_DB_PATH=$INSTALL_DIR/data/telemetry.db
 Restart=always
 RestartSec=5

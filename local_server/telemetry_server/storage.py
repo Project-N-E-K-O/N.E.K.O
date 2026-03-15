@@ -99,15 +99,34 @@ class TelemetryStorage:
                     last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     event_count  INTEGER NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS seen_batches (
+                    batch_id    TEXT PRIMARY KEY,
+                    received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
             """)
             conn.commit()
             self._initialized = True
 
     # ----- 写入 -----
 
-    def store_event(self, device_id: str, app_version: str, payload_json: str, daily_stats: dict):
+    def is_duplicate_batch(self, batch_id: str | None) -> bool:
+        """检查 batch_id 是否已处理过。无 batch_id 时不做去重。"""
+        if not batch_id:
+            return False
+        conn = self._get_conn()
+        row = conn.execute("SELECT 1 FROM seen_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        return row is not None
+
+    def store_event(self, device_id: str, app_version: str, payload_json: str,
+                    daily_stats: dict, batch_id: str | None = None):
         today = date.today().isoformat()
         with self._transaction() as conn:
+            if batch_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO seen_batches (batch_id) VALUES (?)",
+                    (batch_id,),
+                )
             conn.execute(
                 "INSERT INTO events (device_id, app_version, payload, event_date) VALUES (?, ?, ?, ?)",
                 (device_id, app_version, payload_json, today),
@@ -415,6 +434,7 @@ class TelemetryStorage:
         cutoff = (date.today() - timedelta(days=max_days)).isoformat()
         with self._transaction() as conn:
             result = conn.execute("DELETE FROM events WHERE event_date < ?", (cutoff,))
+            conn.execute("DELETE FROM seen_batches WHERE received_at < ?", (cutoff,))
             return result.rowcount
 
     def vacuum(self):

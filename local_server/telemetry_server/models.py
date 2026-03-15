@@ -81,6 +81,7 @@ class TelemetrySubmission(BaseModel):
     timestamp: float
     signature: str = Field(..., min_length=64, max_length=64)
     payload: TelemetryEvent
+    batch_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class SubmitResponse(BaseModel):

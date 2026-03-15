@@ -10,6 +10,10 @@ COPY *.py ./
 # 数据目录（建议挂载 volume）
 RUN mkdir -p /app/data
 
+# 非 root 用户运行
+RUN adduser --system --no-create-home appuser \
+    && chown -R appuser /app/data
+
 EXPOSE 8099
 
 # 环境变量（部署时覆盖）：
@@ -19,5 +23,7 @@ EXPOSE 8099
 #   TELEMETRY_ENABLE_DOCS   - 设为 "1" 启用 /docs 页面
 
 ENV TELEMETRY_DB_PATH=/app/data/telemetry.db
+
+USER appuser
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8099", "--workers", "1"]

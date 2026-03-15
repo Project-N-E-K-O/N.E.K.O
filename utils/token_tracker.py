@@ -30,6 +30,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import uuid
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -148,10 +149,13 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
             os.close(fd)
         except OSError:
             pass
-        try:
-            os.unlink(str(lock_path))
-        except OSError:
-            pass
+        for _retry in range(3):
+            try:
+                os.unlink(str(lock_path))
+                break
+            except OSError:
+                if _retry < 2:
+                    time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +168,12 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
 # ★ 发版前修改：遥测服务器地址。为空则不上报。
 _TELEMETRY_SERVER_URL = "http://project-neko.cn:8099"
 
+if _TELEMETRY_SERVER_URL and not _TELEMETRY_SERVER_URL.startswith(("http://", "https://")):
+    logger.warning("Token tracker: invalid telemetry URL scheme, disabling remote reporting")
+    _TELEMETRY_SERVER_URL = ""
+
 # ★ 发版前修改：HMAC 签名密钥（与 server.py 中的 HMAC_SECRET 保持一致）
-_TELEMETRY_HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"
+_TELEMETRY_HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"  # noqa: S105
 
 # Opt-out 开关（标准 DO_NOT_TRACK 约定，用户可自行设置）
 _DO_NOT_TRACK = any(
@@ -677,15 +685,17 @@ class TokenTracker:
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }
-            payload_json = json.dumps(payload, ensure_ascii=False)
+            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
+            batch_id = uuid.uuid4().hex
             submission = {
                 "timestamp": ts,
                 "signature": sig,
                 "payload": payload,
+                "batch_id": batch_id,
             }
             body = json.dumps(submission, ensure_ascii=False).encode("utf-8")
 

@@ -35,7 +35,7 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 
 ## 收集的数据
 
-```
+```text
 ✅ 收集                             ❌ 不收集
 ────────────────────────            ────────────────────
 · prompt_tokens（含 cached）         · 对话内容
@@ -49,7 +49,7 @@ _TELEMETRY_SERVER_URL = "http://你的服务器IP:8099"
 
 ## 节流设计
 
-```
+```text
 客户端每个 server 进程：
 
 record()             即时写入内存，零 I/O
