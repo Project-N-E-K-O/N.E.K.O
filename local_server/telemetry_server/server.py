@@ -25,6 +25,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -206,8 +207,8 @@ async def admin_dashboard(request: Request, days: int = 30):
     devices = storage.get_active_devices(days=7, limit=20)
     user_metrics = storage.get_user_metrics(days=days)
 
-    # 传递 token 到导出链接
-    tk = _extract_token(request)
+    # 传递 token 到导出链接（URL-encode 防止特殊字符截断查询串）
+    tk = quote(_extract_token(request), safe="")
 
     # 按日期排序
     sorted_days = sorted(stats.get("daily_totals", {}).items(), reverse=True)

@@ -137,7 +137,7 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
                     os.unlink(str(lock_path))
                 except OSError:
                     time.sleep(0.1)
-                continue
+                raise TimeoutError(f"file lock timeout after {timeout}s: {lock_path}")
 
             time.sleep(0.05)
     try:
