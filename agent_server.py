@@ -2463,4 +2463,11 @@ if __name__ == "__main__":
     # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
-    uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)
+    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=TOOL_SERVER_PORT,
+        proxy_headers=_behind_proxy,
+        forwarded_allow_ips="*" if _behind_proxy else None,
+    )

@@ -133,12 +133,11 @@ def _file_lock(lock_path: Path, timeout: float = 10.0):
                 pass
 
             if time.monotonic() >= deadline:
-                # 超时强制清除锁文件
                 logger.warning("Token tracker: file lock timeout, force removing stale lock")
                 try:
                     os.unlink(str(lock_path))
                 except OSError:
-                    pass
+                    time.sleep(0.1)
                 continue
 
             time.sleep(0.05)
@@ -753,7 +752,7 @@ class TokenTracker:
         while True:
             await asyncio.sleep(self._save_interval)
             if self._dirty:
-                self.save()
+                await asyncio.to_thread(self.save)
 
     # ---- helpers ----
 

@@ -113,8 +113,8 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# 设置目录权限
-sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/data"
+# 设置目录权限（venv 需要 nobody 可读，data 需要可写）
+sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/venv" "$INSTALL_DIR/data"
 
 # 启动
 sudo systemctl daemon-reload
