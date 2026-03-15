@@ -1492,21 +1492,6 @@ function uploadItem() {
                         console.error('无法打开Steam overlay:', e);
                     }
 
-                    // 【成就】解锁创意工坊成就
-                    if (window.parent && window.parent.unlockAchievement) {
-                        window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    } else if (window.opener && window.opener.unlockAchievement) {
-                        window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    } else if (window.unlockAchievement) {
-                        window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
-                            console.error('解锁创意工坊成就失败:', err);
-                        });
-                    }
-
                     // 延迟关闭modal并跳转到角色卡页面
                     setTimeout(() => {
                         // 关闭上传modal
@@ -1667,6 +1652,23 @@ function loadSubscriptions() {
 
             // 保存所有订阅物品到全局变量
             allSubscriptions = data.items || [];
+
+            // 【成就】有订阅物品时解锁创意工坊成就
+            if (allSubscriptions.length > 0) {
+                if (window.parent && window.parent.unlockAchievement) {
+                    window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.opener && window.opener.unlockAchievement) {
+                    window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.unlockAchievement) {
+                    window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                }
+            }
 
             // 应用排序（从下拉框获取排序方式）
             const sortSelect = document.getElementById('sort-subscription');

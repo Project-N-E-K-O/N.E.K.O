@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Type
 
 from loguru import logger
 
-from plugin._types.events import EVENT_META_ATTR, EventHandler
+from plugin._types.events import EVENT_META_ATTR
 from plugin.sdk.decorators import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
@@ -24,9 +24,7 @@ from plugin.core.communication import PluginCommunicationResourceManager
 from plugin._types.models import HealthCheckResponse
 from plugin._types.exceptions import (
     PluginLifecycleError,
-    PluginTimerError,
     PluginEntryNotFoundError,
-    PluginExecutionError,
     PluginError,
 )
 from plugin.settings import (
@@ -39,8 +37,7 @@ from plugin.settings import (
 from plugin.sdk.router import PluginRouter
 from plugin.sdk.bus.types import dispatch_bus_change
 from plugin.core.zmq_transport import (
-    HostTransport, ChildTransport, ChannelSender,
-    CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
+    HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
 )
 
 
@@ -234,7 +231,6 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
         配置好的 logger 实例
     """
     from loguru import logger
-    import logging
     from plugin.logging_config import get_plugin_format_console, get_plugin_format_file
     
     # 移除默认 handler，绑定插件 ID

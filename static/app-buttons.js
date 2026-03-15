@@ -801,47 +801,63 @@
                 var dataUrl = null;
                 var width = 0, height = 0;
 
-                if (U.isMobile()) {
-                    captureStream = await window.getMobileCameraStream();
-                } else {
-                    // Desktop: try getDisplayMedia
-                    try {
-                        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-                            captureStream = await navigator.mediaDevices.getDisplayMedia({
-                                video: { cursor: 'always' },
-                                audio: false,
-                            });
-                        } else {
-                            throw new Error('UNSUPPORTED_API');
-                        }
-                    } catch (displayErr) {
-                        if (displayErr.name === 'NotAllowedError') throw displayErr;
-
-                        console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
-                        var result = await window.fetchBackendScreenshot();
-                        if (result && result.dataUrl) {
-                            dataUrl = result.dataUrl;
-                        } else {
-                            throw displayErr;
+                // 1. 优先尝试缓存流（不创建新缓存，即时截取无弹窗）
+                try {
+                    if (S.screenCaptureStream && S.screenCaptureStream.active) {
+                        var tracks = S.screenCaptureStream.getVideoTracks();
+                        if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                            var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                            if (cachedFrame && cachedFrame.dataUrl) {
+                                dataUrl = cachedFrame.dataUrl;
+                                width = cachedFrame.width;
+                                height = cachedFrame.height;
+                                // 刷新缓存流最后使用时间
+                                S.screenCaptureStreamLastUsed = Date.now();
+                                if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
+                            }
                         }
                     }
+                } catch (cachedErr) {
+                    console.warn('[截图] 缓存流截取失败，将尝试一次性流:', cachedErr);
                 }
 
-                // Extract frame from stream (frontend path)
-                if (!dataUrl && captureStream) {
-                    var video = document.createElement('video');
-                    video.srcObject = captureStream;
-                    video.autoplay = true;
-                    video.muted = true;
-                    await video.play();
-                    var frame = window.captureCanvasFrame(video);
-                    if (frame) {
-                        dataUrl = frame.dataUrl;
-                        width = frame.width;
-                        height = frame.height;
+                // 2. 无缓存流或缓存流截取失败 → 一次性流（用后即释放，不存入缓存）
+                if (!dataUrl) {
+                    if (U.isMobile()) {
+                        captureStream = await window.getMobileCameraStream();
+                    } else {
+                        // Desktop: try getDisplayMedia
+                        try {
+                            if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                                captureStream = await navigator.mediaDevices.getDisplayMedia({
+                                    video: { cursor: 'always' },
+                                    audio: false,
+                                });
+                            } else {
+                                throw new Error('UNSUPPORTED_API');
+                            }
+                        } catch (displayErr) {
+                            if (displayErr.name === 'NotAllowedError') throw displayErr;
+
+                            console.warn('[\u622A\u56FE] getDisplayMedia \u5931\u8D25\uFF0C\u5C1D\u8BD5\u540E\u7AEF\u622A\u56FE:', displayErr);
+                            var result = await window.fetchBackendScreenshot();
+                            if (result && result.dataUrl) {
+                                dataUrl = result.dataUrl;
+                            } else {
+                                throw displayErr;
+                            }
+                        }
                     }
-                    video.srcObject = null;
-                    video.remove();
+
+                    // Extract frame from one-time stream
+                    if (!dataUrl && captureStream) {
+                        var frame = await window.captureFrameFromStream(captureStream, 0.8);
+                        if (frame) {
+                            dataUrl = frame.dataUrl;
+                            width = frame.width;
+                            height = frame.height;
+                        }
+                    }
                 }
 
                 if (!dataUrl) {
@@ -873,6 +889,7 @@
 
                 window.showStatusToast(errorMsg, 5000);
             } finally {
+                // 只释放一次性流，不碰缓存流
                 if (captureStream instanceof MediaStream) {
                     captureStream.getTracks().forEach(function (track) { track.stop(); });
                 }

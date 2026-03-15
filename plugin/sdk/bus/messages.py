@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import time
 import threading
 from collections import deque
@@ -8,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Union
 
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
-from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
+from .types import BusOp, BusRecord, GetNode, register_bus_change_listener
 from ._client_base import (
     _is_in_event_loop, _ensure_rpc, _validate_rpc_response, _parse_bus_items, _PluginBusList,
 )

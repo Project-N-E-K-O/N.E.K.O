@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Union
 
 from .types import BusList, BusRecord
 from ._client_base import _is_in_event_loop, _ensure_rpc, _validate_rpc_response, _parse_bus_items

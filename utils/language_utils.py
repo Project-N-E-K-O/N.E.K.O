@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 
 logger = get_module_logger(__name__)
 
@@ -864,9 +865,10 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             HumanMessage(content=text)
         ]
         
+        set_call_type("translation")
         response = await llm.ainvoke(messages)
         translated_text = response.content.strip()
-        
+
         logger.info(f"✅ [翻译服务] LLM翻译成功: {source_lang} -> {target_lang}")
         return translated_text, google_failed
         
@@ -1086,11 +1088,12 @@ class TranslationService:
 5. If the text is already in {target_lang_name}, return it unchanged
 ======以上为规则======"""
 
+            set_call_type("translation")
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=text)
             ])
-            
+
             translated = response.content.strip()
             if not translated:
                 logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")

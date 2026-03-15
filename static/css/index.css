@@ -306,20 +306,16 @@ button * {
 }
 /* 看板娘聊天框-容器 */
 #chat-container {
-    margin-bottom: 50px;
     pointer-events: auto;
     /* 恢复鼠标交互 */
     position: fixed;
     left: 20px;
-    bottom: 20px;
+    bottom: 70px;
     width: 400px;
     max-height: 500px;
     height: 500px;
-    /* Fluent Design Acrylic 材质 */
-    background: rgba(255, 255, 255, 0.65);
-    backdrop-filter: saturate(180%) blur(20px);
-    /* Fluent Design 标准模糊值 */
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    /* 背景设为透明，backdrop-filter 移至 ::before 伪元素以避免合成器泄漏 */
+    background: transparent;
     border-radius: 8px;
     /* Fluent Design 标准圆角 */
     border: 1px solid rgba(255, 255, 255, 0.18);
@@ -347,12 +343,30 @@ button * {
     will-change: transform;
 }
 
+/* Fluent Design Acrylic 材质层：将 backdrop-filter 隔离到伪元素上，
+   避免它与滚动子元素同层合成导致 Chromium 透明区域泄漏 */
+#chat-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-radius: inherit;
+    z-index: -1;
+    pointer-events: none;
+}
+
 /* 内部内容包裹器，负责滚动 - Fluent Design */
 #chat-content-wrapper {
     pointer-events: auto;
     flex-grow: 1;
     padding: 16px;
     padding-top: 48px;
+    overflow-x: hidden;
     overflow-y: auto;
     scroll-behavior: smooth;
     transition: opacity 0.2s ease, visibility 0.2s ease;
@@ -385,6 +399,11 @@ button * {
 
 #chat-content-wrapper::-webkit-scrollbar-thumb:hover {
     background: rgba(0, 0, 0, 0.25);
+}
+
+/* 滚动条角落 - 防止透明窗口中角落区域穿透桌面 */
+#chat-content-wrapper::-webkit-scrollbar-corner {
+    background: rgba(249, 249, 249, 0.95);
 }
 
 /* 切换按钮样式 - 更醒目的设计 */
@@ -625,6 +644,8 @@ button * {
     margin-top: 8px;
     box-shadow: 0 2px 8px rgba(68, 183, 254, 0.1);
     box-sizing: border-box;
+    pointer-events: auto;
+    touch-action: manipulation;
 }
 
 .subtitle-prompt-content {
@@ -1146,6 +1167,12 @@ button * {
 }
 
 /* --- 最小化状态 --- */
+#chat-container.minimized::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: transparent;
+}
+
 #chat-container.minimized {
     background: rgba(68, 183, 254, 0.15);
     opacity: 1;
@@ -1278,11 +1305,10 @@ button * {
     #chat-container {
         width: 90vw;
         left: 5vw;
-        bottom: 5px;
+        bottom: 10px;
         max-height: 60vh;
         height: 60vh;
         padding: 0;
-        margin-bottom: 5px;
         /* 禁用容器尺寸过渡，避免影响输入区 */
         transition: none !important;
         background: transparent;
@@ -1382,6 +1408,9 @@ button * {
 
     /* 移动端：折叠时容器完全透明且不拦截触摸事件 */
     #chat-container.mobile-collapsed {
+        width: 48px !important;
+        min-width: 48px !important;
+        max-width: 48px !important;
         height: 48px;
         min-height: 48px;
         max-height: 48px;
@@ -1392,6 +1421,12 @@ button * {
         -webkit-backdrop-filter: none !important;
         box-shadow: none !important;
         border: none !important;
+    }
+
+    #chat-container.mobile-collapsed::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
     }
 
     /* 移动端：折叠时仅切换按钮可交互 */
@@ -1432,6 +1467,12 @@ button * {
         animation: none;
         /* 移动端不需要呼吸效果 */
         background: transparent;
+    }
+
+    #chat-container.minimized::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
     }
 }
 

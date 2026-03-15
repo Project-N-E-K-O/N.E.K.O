@@ -56,14 +56,13 @@ def _run(coro):
 def test_route_open_calculator(task_executor):
     """'帮我打开系统计算器' should route to computer_use.
 
-    NOTE: browser_use has higher priority in the routing chain, so if the
-    browser_use assessor also claims it can handle this, it will win.
+    NOTE: user_plugin has highest priority, then browser_use, then computer_use.
     We accept either but warn if it's not computer_use.
     """
     messages = _make_messages("帮我打开系统计算器")
 
     print("\n[Routing] Testing: '帮我打开系统计算器'")
-    print("[Routing] Ideal: computer_use (but browser_use has higher priority)")
+    print("[Routing] Ideal: computer_use (priority: user_plugin > browser_use > computer_use)")
 
     result = _run(
         task_executor.analyze_and_execute(
@@ -82,7 +81,7 @@ def test_route_open_calculator(task_executor):
         f"Unexpected method: {result.execution_method}"
     if result.execution_method != "computer_use":
         print(f"[Routing] WARNING: Ideally computer_use, but got {result.execution_method} "
-              f"(browser_use has higher routing priority)")
+              f"(current priority: user_plugin > browser_use > computer_use)")
 
 
 @pytest.mark.manual

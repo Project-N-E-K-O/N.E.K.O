@@ -1845,6 +1845,111 @@ INNER_THOUGHTS_BODY = {
     'ru': '{name} часто думает о себе и {master}. Она помнит: {settings}\n\nТекущее время: {time}. Перед началом разговора {name} мысленно перебирает последние события.\n',
 }
 
+# ---------- Agent 结果解析器 i18n ----------
+
+# 已知错误码映射
+RESULT_PARSER_ERROR_CODES = {
+    'AGENT_QUOTA_EXCEEDED': {
+        'zh': '配额已用完', 'en': 'Quota exceeded',
+        'ja': 'クォータ超過', 'ko': '할당량 초과', 'ru': 'Квота исчерпана',
+    },
+}
+
+# 已知错误子串映射（key=匹配子串，value=i18n dict）
+RESULT_PARSER_ERROR_SUBSTRINGS = {
+    'Task cancelled by user': {
+        'zh': '被用户取消', 'en': 'Cancelled by user',
+        'ja': 'ユーザーによりキャンセル', 'ko': '사용자가 취소함', 'ru': 'Отменено пользователем',
+    },
+    'timed out after': {
+        'zh': '超时', 'en': 'Timed out',
+        'ja': 'タイムアウト', 'ko': '시간 초과', 'ru': 'Превышено время ожидания',
+    },
+    'Browser disconnected': {
+        'zh': '浏览器窗口被关闭', 'en': 'Browser window closed',
+        'ja': 'ブラウザが切断されました', 'ko': '브라우저 연결 끊김', 'ru': 'Браузер отключён',
+    },
+    'CONTENT_FILTER': {
+        'zh': '内容安全过滤', 'en': 'Content filtered',
+        'ja': 'コンテンツフィルター', 'ko': '콘텐츠 필터링', 'ru': 'Фильтр контента',
+    },
+    'browser-use execution failed': {
+        'zh': '浏览器执行失败', 'en': 'Browser execution failed',
+        'ja': 'ブラウザ実行失敗', 'ko': '브라우저 실행 실패', 'ru': 'Ошибка выполнения браузера',
+    },
+    '未找到 Chrome': {
+        'zh': '未找到 Chrome 浏览器', 'en': 'Chrome browser not found',
+        'ja': 'Chrome ブラウザが見つかりません', 'ko': 'Chrome 브라우저를 찾을 수 없음',
+        'ru': 'Браузер Chrome не найден',
+    },
+}
+
+# 通用结果短语
+RESULT_PARSER_PHRASES = {
+    'no_result':          {'zh': '无结果', 'en': 'No result', 'ja': '結果なし', 'ko': '결과 없음', 'ru': 'Нет результата'},
+    'completed':          {'zh': '已完成', 'en': 'Completed', 'ja': '完了', 'ko': '완료', 'ru': 'Выполнено'},
+    'completed_with':     {'zh': '已完成: {detail}', 'en': 'Completed: {detail}', 'ja': '完了: {detail}', 'ko': '완료: {detail}', 'ru': 'Выполнено: {detail}'},
+    'steps_done':         {'zh': '{n}步完成', 'en': '{n} steps done', 'ja': '{n}ステップ完了', 'ko': '{n}단계 완료', 'ru': 'Выполнено за {n} шагов'},
+    'steps_done_with':    {'zh': '{n}步完成: {detail}', 'en': '{n} steps done: {detail}', 'ja': '{n}ステップ完了: {detail}', 'ko': '{n}단계 완료: {detail}', 'ru': 'Выполнено за {n} шагов: {detail}'},
+    'failed':             {'zh': '失败: {detail}', 'en': 'Failed: {detail}', 'ja': '失敗: {detail}', 'ko': '실패: {detail}', 'ru': 'Ошибка: {detail}'},
+    'exec_failed':        {'zh': '执行未成功', 'en': 'Execution unsuccessful', 'ja': '実行失敗', 'ko': '실행 실패', 'ru': 'Выполнение не удалось'},
+    'exec_error':         {'zh': '执行失败', 'en': 'Execution failed', 'ja': '実行エラー', 'ko': '실행 오류', 'ru': 'Ошибка выполнения'},
+    'exec_done':          {'zh': '执行完成', 'en': 'Execution completed', 'ja': '実行完了', 'ko': '실행 완료', 'ru': 'Выполнение завершено'},
+    'list_count':         {'zh': '({n}条)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)'},
+    'plugin_notification': {'zh': '收到插件通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина'},
+    'notification_received': {'zh': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление'},
+    # agent callback 注入 LLM 上下文的标签
+    'task_completed':     {'zh': '[任务完成]', 'en': '[Task completed]', 'ja': '[タスク完了]', 'ko': '[작업 완료]', 'ru': '[Задача выполнена]'},
+    'task_partial':       {'zh': '[任务部分完成]', 'en': '[Task partially completed]', 'ja': '[タスク一部完了]', 'ko': '[작업 부분 완료]', 'ru': '[Задача частично выполнена]'},
+    'task_failed_tag':    {'zh': '[任务失败]', 'en': '[Task failed]', 'ja': '[タスク失敗]', 'ko': '[작업 실패]', 'ru': '[Задача не выполнена]'},
+    'detail_prefix':      {'zh': '  详情：', 'en': '  Details: ', 'ja': '  詳細：', 'ko': '  상세: ', 'ru': '  Подробности: '},
+    'detail_result':      {'zh': '详细结果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: '},
+    # agent_server task summary 模板
+    'plugin_done':        {'zh': '插件任务 "{id}" 已完成', 'en': 'Plugin task "{id}" completed', 'ja': 'プラグインタスク "{id}" 完了', 'ko': '플러그인 작업 "{id}" 완료', 'ru': 'Задача плагина «{id}» выполнена'},
+    'plugin_done_with':   {'zh': '插件任务 "{id}" 已完成：{detail}', 'en': 'Plugin task "{id}" completed: {detail}', 'ja': 'プラグインタスク "{id}" 完了：{detail}', 'ko': '플러그인 작업 "{id}" 완료: {detail}', 'ru': 'Задача плагина «{id}» выполнена: {detail}'},
+    'plugin_failed':      {'zh': '插件任务 "{id}" 执行失败', 'en': 'Plugin task "{id}" failed', 'ja': 'プラグインタスク "{id}" 失敗', 'ko': '플러그인 작업 "{id}" 실패', 'ru': 'Задача плагина «{id}» не выполнена'},
+    'plugin_failed_with': {'zh': '插件任务 "{id}" 执行失败：{detail}', 'en': 'Plugin task "{id}" failed: {detail}', 'ja': 'プラグインタスク "{id}" 失敗：{detail}', 'ko': '플러그인 작업 "{id}" 실패: {detail}', 'ru': 'Задача плагина «{id}» не выполнена: {detail}'},
+    'plugin_cancelled':   {'zh': '插件任务已取消', 'en': 'Plugin task cancelled', 'ja': 'プラグインタスクがキャンセルされました', 'ko': '플러그인 작업 취소됨', 'ru': 'Задача плагина отменена'},
+    'plugin_cancelled_id': {'zh': '插件任务 "{id}" 已取消', 'en': 'Plugin task "{id}" cancelled', 'ja': 'プラグインタスク "{id}" キャンセル', 'ko': '플러그인 작업 "{id}" 취소됨', 'ru': 'Задача плагина «{id}» отменена'},
+    'plugin_exception':   {'zh': '插件任务 "{id}" 执行异常: {err}', 'en': 'Plugin task "{id}" exception: {err}', 'ja': 'プラグインタスク "{id}" 例外: {err}', 'ko': '플러그인 작업 "{id}" 예외: {err}', 'ru': 'Задача плагина «{id}» — исключение: {err}'},
+    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}'},
+    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}'},
+    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}'},
+    'cu_done':            {'zh': '任务已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена'},
+    'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена'},
+    'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена'},
+    'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена'},
+}
+
+# ---------- 距上次聊天间隔提示 ----------
+# 时间间隔格式化模板 — {h}=小时, {m}=分钟
+ELAPSED_TIME_HM = {
+    'zh': '{h}小时{m}分钟', 'en': '{h} hours and {m} minutes',
+    'ja': '{h}時間{m}分', 'ko': '{h}시간 {m}분', 'ru': '{h} ч. {m} мин.',
+}
+ELAPSED_TIME_H = {
+    'zh': '{h}小时', 'en': '{h} hours',
+    'ja': '{h}時間', 'ko': '{h}시간', 'ru': '{h} ч.',
+}
+
+# {elapsed}: 自然语言时间间隔（如"3小时22分钟"）
+CHAT_GAP_NOTICE = {
+    'zh': '距离上次与{master}聊天已经过去了{elapsed}。',
+    'en': 'It has been {elapsed} since the last conversation with {master}.',
+    'ja': '{master}との最後の会話から{elapsed}が経過しました。',
+    'ko': '{master}와의 마지막 대화로부터 {elapsed}이 지났습니다.',
+    'ru': 'С момента последнего разговора с {master} прошло {elapsed}.',
+}
+
+# 超过5小时时追加的额外提示
+CHAT_GAP_LONG_HINT = {
+    'zh': '{name}意识到已经很久没有和{master}说话了，这段时间里发生了什么呢？{name}很想知道{master}最近过得怎么样。',
+    'en': '{name} realizes it has been quite a while since talking to {master}. What happened during this time? {name} is curious about how {master} has been.',
+    'ja': '{name}は{master}と長い間話していなかったことに気づきました。この間に何があったのでしょう？{name}は{master}の最近の様子が気になっています。',
+    'ko': '{name}은 {master}와 꽤 오랫동안 이야기하지 않았다는 것을 깨달았습니다. 그동안 무슨 일이 있었을까요? {name}은 {master}의 근황이 궁금합니다.',
+    'ru': '{name} осознаёт, что давно не разговаривала с {master}. Что произошло за это время? {name} хочет узнать, как дела у {master}.',
+}
+
 # ---------- 屏幕活跃窗口前缀 ----------
 SCREEN_WINDOW_TITLE = {
     'zh': '当前活跃窗口：{window}\n',

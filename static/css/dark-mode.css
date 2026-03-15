@@ -51,6 +51,7 @@ html #chat-container {
 :root {
   --neko-popup-bg: rgba(255, 255, 255, 0.65);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.18);
+  --neko-popup-border-color: rgba(0, 0, 0, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
   --neko-popup-text: #333;
   --neko-popup-text-sub: #666;
@@ -63,7 +64,16 @@ html #chat-container {
   --neko-popup-separator: rgba(0, 0, 0, 0.1);
   --neko-popup-accent: #2a7bc4;
   --neko-popup-accent-bg: rgba(42, 123, 196, 0.05);
+  --neko-popup-accent-border: rgba(42, 123, 196, 0.25);
   --neko-popup-error: #dc3545;
+  /* HUD 状态变量 */
+  --neko-hud-header-bg: rgba(255, 255, 255, 0.85);
+  --neko-popup-success: #16a34a;
+  --neko-popup-success-bg: rgba(22, 163, 74, 0.08);
+  --neko-popup-success-border: rgba(22, 163, 74, 0.2);
+  --neko-popup-error-bg: rgba(220, 38, 38, 0.08);
+  --neko-popup-error-border: rgba(220, 38, 38, 0.2);
+  --neko-hud-subtle-bg: rgba(0, 0, 0, 0.06);
   /* 浮动按钮变量 */
   --neko-btn-bg: rgba(255, 255, 255, 0.65);
   --neko-btn-bg-hover: rgba(255, 255, 255, 0.8);
@@ -76,6 +86,7 @@ html #chat-container {
 [data-theme="dark"] {
   --neko-popup-bg: rgba(30, 30, 30, 0.82);
   --neko-popup-border: 1px solid rgba(255, 255, 255, 0.1);
+  --neko-popup-border-color: rgba(255, 255, 255, 0.06);
   --neko-popup-shadow: 0 2px 4px rgba(0, 0, 0, 0.15), 0 8px 16px rgba(0, 0, 0, 0.25), 0 16px 32px rgba(0, 0, 0, 0.15);
   --neko-popup-text: #f0f0f0;
   --neko-popup-text-sub: #b0b0b0;
@@ -88,7 +99,16 @@ html #chat-container {
   --neko-popup-separator: rgba(255, 255, 255, 0.1);
   --neko-popup-accent: #3a9fd8;
   --neko-popup-accent-bg: rgba(58, 159, 216, 0.1);
+  --neko-popup-accent-border: rgba(58, 159, 216, 0.25);
   --neko-popup-error: #ff6b6b;
+  /* HUD 状态变量 - 暗色 */
+  --neko-hud-header-bg: rgba(40, 40, 40, 0.85);
+  --neko-popup-success: #4ade80;
+  --neko-popup-success-bg: rgba(74, 222, 128, 0.1);
+  --neko-popup-success-border: rgba(74, 222, 128, 0.2);
+  --neko-popup-error-bg: rgba(255, 107, 107, 0.1);
+  --neko-popup-error-border: rgba(255, 107, 107, 0.2);
+  --neko-hud-subtle-bg: rgba(255, 255, 255, 0.08);
   /* 浮动按钮变量 - 暗色 */
   --neko-btn-bg: rgba(35, 35, 35, 0.75);
   --neko-btn-bg-hover: rgba(50, 50, 50, 0.85);
@@ -108,14 +128,17 @@ html #chat-container {
 
 /* ===== 暗色模式：聊天容器 ===== */
 [data-theme="dark"] #chat-container {
-  background: rgba(30, 30, 30, 0.75);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow:
     0 2px 4px rgba(0, 0, 0, 0.12),
     0 8px 16px rgba(0, 0, 0, 0.2),
     0 16px 32px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"] #chat-container::before {
+  background: rgba(30, 30, 30, 0.75);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
 /* ===== 暗色模式：聊天内容区 ===== */
@@ -344,6 +367,10 @@ html #chat-container {
   background: rgba(255, 255, 255, 0.25);
 }
 
+[data-theme="dark"] #chat-content-wrapper::-webkit-scrollbar-corner {
+  background: rgba(25, 25, 25, 0.95);
+}
+
 /* ===== 暗色模式：图标亮度调整 ===== */
 [data-theme="dark"] .icon,
 [data-theme="dark"] [class*="-icon"],
@@ -544,17 +571,16 @@ html #chat-container {
 }
 
 /* ===== 暗色模式：Agent任务面板 ===== */
-[data-theme="dark"] .agent-hud,
+[data-theme="dark"] #agent-task-hud,
 [data-theme="dark"] .agent-task-panel {
-  background: rgba(30, 30, 30, 0.9);
-  border-color: rgba(255, 255, 255, 0.08);
-  color: #e0e0e0;
+  background: var(--neko-popup-bg) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--neko-popup-text) !important;
+  box-shadow: var(--neko-popup-shadow) !important;
 }
 
-[data-theme="dark"] .agent-task-item {
-  background: rgba(45, 45, 45, 0.8);
-  border-color: rgba(255, 255, 255, 0.06);
-  color: #e0e0e0;
+[data-theme="dark"] #agent-task-hud .task-card {
+  color: var(--neko-popup-text);
 }
 
 /* ===== 暗色模式：教程引导（driver.js） ===== */

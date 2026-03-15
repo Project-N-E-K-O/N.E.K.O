@@ -580,10 +580,41 @@ function showSubtitlePrompt() {
         }
     };
     
-    // 绑定点击事件
-    toggleWrapper.addEventListener('click', handleToggle);
-    indicator.addEventListener('click', handleToggle);
-    labelText.addEventListener('click', handleToggle);
+    let touchHandled = false;
+    
+    const handleTouchToggle = (e) => {
+        e.preventDefault();
+        touchHandled = true;
+        handleToggle(e);
+    };
+    
+    // 绑定点击事件（桌面端）
+    toggleWrapper.addEventListener('click', (e) => {
+        if (touchHandled) {
+            touchHandled = false;
+            return;
+        }
+        handleToggle(e);
+    });
+    indicator.addEventListener('click', (e) => {
+        if (touchHandled) {
+            touchHandled = false;
+            return;
+        }
+        handleToggle(e);
+    });
+    labelText.addEventListener('click', (e) => {
+        if (touchHandled) {
+            touchHandled = false;
+            return;
+        }
+        handleToggle(e);
+    });
+    
+    // 绑定触摸事件（移动端）
+    toggleWrapper.addEventListener('touchstart', handleTouchToggle, { passive: false });
+    indicator.addEventListener('touchstart', handleTouchToggle, { passive: false });
+    labelText.addEventListener('touchstart', handleTouchToggle, { passive: false });
 }
 
 // 隐藏字幕提示框

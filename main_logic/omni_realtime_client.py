@@ -486,9 +486,8 @@ class OmniRealtimeClient:
                         "type": "server_vad",
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500
+                        "silence_duration_ms": 650
                     },
-                    "turn_detection_threshold": 0.2,
                     "smooth_output": False,
                     "repetition_penalty": 1.2,
                     "temperature": 0.7
@@ -1101,6 +1100,22 @@ class OmniRealtimeClient:
                         await self.close()
                     continue
                 elif event_type == "response.done":
+                    # 解析实时 API 返回的 token 用量
+                    try:
+                        resp_data = event.get("response", {})
+                        _rt_usage = resp_data.get("usage")
+                        if _rt_usage:
+                            from utils.token_tracker import TokenTracker
+                            TokenTracker.get_instance().record(
+                                model=resp_data.get("model", self.model or "realtime"),
+                                prompt_tokens=_rt_usage.get("input_tokens", 0),
+                                completion_tokens=_rt_usage.get("output_tokens", 0),
+                                total_tokens=_rt_usage.get("total_tokens", 0),
+                                call_type="conversation_realtime",
+                                source="main_logic/omni_realtime_client",
+                            )
+                    except Exception:
+                        pass
                     self._is_responding = False
                     self._current_response_id = None
                     self._current_item_id = None
@@ -1387,6 +1402,17 @@ class OmniRealtimeClient:
                 
                 # 检查是否 turn 完成（用 getattr 防止 SDK 无该字段时抛错）
                 if getattr(server_content, 'turn_complete', False):
+                    # Gemini Live API 不返回 token 数，仅记录调用次数
+                    try:
+                        from utils.token_tracker import TokenTracker
+                        TokenTracker.get_instance().record(
+                            model=self.model or "gemini-live",
+                            prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                            call_type="conversation_realtime_gemini",
+                            source="main_logic/omni_realtime_client",
+                        )
+                    except Exception:
+                        pass
                     self._is_responding = False
                     # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
                     if self.on_response_done:

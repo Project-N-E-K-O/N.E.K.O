@@ -10,7 +10,10 @@ import uvicorn
 from langchain_core.messages import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
-from config.prompts_sys import _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY
+from config.prompts_sys import (
+    _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
+    CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, ELAPSED_TIME_HM, ELAPSED_TIME_H,
+)
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
@@ -110,11 +113,26 @@ async def shutdown_memory_server():
         logger.error(f"处理关闭信号时出错: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.on_event("startup")
+async def startup_event_handler():
+    """应用启动时初始化"""
+    try:
+        from utils.token_tracker import TokenTracker, install_hooks
+        install_hooks()
+        TokenTracker.get_instance().start_periodic_save()
+    except Exception as e:
+        logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown_event_handler():
     """应用关闭时执行清理工作"""
     logger.info("Memory server正在关闭...")
-    # 这里可以添加任何需要的清理工作
+    try:
+        from utils.token_tracker import TokenTracker
+        TokenTracker.get_instance().save()
+    except Exception:
+        pass
     logger.info("Memory server已关闭")
 
 
@@ -376,6 +394,29 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
     )
+
+    # ── 距上次聊天间隔提示 ──
+    try:
+        from datetime import datetime as _dt
+        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        if last_time:
+            gap = _dt.now() - last_time
+            gap_seconds = gap.total_seconds()
+            if gap_seconds >= 3600:  # ≥ 1小时才显示
+                hours = int(gap_seconds // 3600)
+                minutes = int((gap_seconds % 3600) // 60)
+                if minutes:
+                    elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
+                else:
+                    elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+
+                result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
+
+                if gap_seconds >= 18000:  # ≥ 5小时追加长间隔提示
+                    result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
+    except Exception as e:
+        logger.warning(f"计算聊天间隔失败: {e}")
+
     for i in recent_history_manager.get_recent_history(lanlan_name):
         if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()

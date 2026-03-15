@@ -30,11 +30,6 @@ from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.version import SDK_VERSION
 from plugin.core.state import state
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
-from plugin._types.exceptions import (
-    PluginImportError,
-    PluginLoadError,
-    PluginMetadataError,
-)
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     PLUGIN_ENABLE_ID_CONFLICT_CHECK,
@@ -46,12 +41,8 @@ from plugin.utils import parse_bool_config
 from plugin.core.dependency import (
     _parse_specifier,
     _version_matches,
-    _find_plugins_by_entry,
-    _find_plugins_by_custom_event,
     _check_plugin_dependency,
-    _check_single_plugin_version,
     _parse_plugin_dependencies,
-    _get_dependency_plugin_ids,
     _topological_sort_plugins,
 )
 
@@ -537,8 +528,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             seen.add(eid)
 
             input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
-            results.append(
-                {
+            entry_preview: Dict[str, Any] = {
                     "id": eid,
                     "name": str(getattr(event_meta, "name", "") or ""),
                     "description": str(getattr(event_meta, "description", "") or ""),
@@ -546,7 +536,10 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                     "input_schema": input_schema,
                     "return_message": str(getattr(event_meta, "return_message", "") or ""),
                 }
-            )
+            meta_dict = getattr(event_meta, "metadata", None)
+            if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+                entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+            results.append(entry_preview)
     except Exception:
         # Best-effort: preview must never break plugin listing.
         pass

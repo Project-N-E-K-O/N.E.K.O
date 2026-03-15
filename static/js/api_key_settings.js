@@ -753,6 +753,20 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', toggleCustomApi);
     }
+
+    // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
+    document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            var href = link.getAttribute('href');
+            if (!href) return;
+            if (window.electronShell && window.electronShell.openExternal) {
+                window.electronShell.openExternal(href);
+            } else {
+                window.open(href, '_blank', 'noopener,noreferrer');
+            }
+        });
+    });
 });
 
 

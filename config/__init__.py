@@ -2,8 +2,10 @@
 """config 包对外暴露的配置常量。"""
 
 from copy import deepcopy
+import json
 import logging
 import os
+import platform
 import uuid
 from types import MappingProxyType
 
@@ -93,9 +95,38 @@ LEGACY_FLAT_TO_RESERVED = {
     "lighting": ("avatar", "vrm", "lighting"),
 }
 
+# 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
+def _read_port_overrides() -> dict:
+    try:
+        system = platform.system()
+        if system == "Windows":
+            appdata = os.environ.get("APPDATA") or os.path.join(
+                os.path.expanduser("~"), "AppData", "Roaming"
+            )
+            base = os.path.join(appdata, "N.E.K.O")
+        elif system == "Darwin":
+            base = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "N.E.K.O")
+        else:
+            base = os.path.join(
+                os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                "N.E.K.O",
+            )
+        port_file = os.path.join(base, "port_config.json")
+        if os.path.exists(port_file):
+            with open(port_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.debug("Failed to read port_config.json: %s", e, exc_info=True)
+    return {}
+
+
+_PORT_FILE_OVERRIDES = _read_port_overrides()
+
+
 # 运行时端口覆盖支持：
 # - 首选键：NEKO_<PORT_NAME>
 # - 兼容键：<PORT_NAME>
+# - 回退：Electron 前端写入的 port_config.json
 def _read_port_env(port_name: str, default: int) -> int:
     for key in (f"NEKO_{port_name}", port_name):
         raw = os.getenv(key)
@@ -107,6 +138,18 @@ def _read_port_env(port_name: str, default: int) -> int:
                 return value
         except Exception:
             continue
+    # 回退：从 Electron 前端写入的 port_config.json 读取
+    override = _PORT_FILE_OVERRIDES.get(port_name)
+    if override is not None:
+        try:
+            value = int(override)
+            if 1 <= value <= 65535:
+                return value
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Invalid port_config.json override for %s=%r: %s",
+                port_name, override, e,
+            )
     return default
 
 # 服务器端口配置
