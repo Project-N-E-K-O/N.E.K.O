@@ -1168,7 +1168,7 @@ def identify_best_music_resource(target_song: str, search_results: List[Dict[str
         
         # 如果包含（子串匹配），给予权重提升或直接判定为高分
         if target_lower in name or target_lower in full_title:
-             current_max = max(current_max, 0.85)
+            current_max = max(current_max, 0.85)
 
         if current_max > max_score:
             max_score = current_max

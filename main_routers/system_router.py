@@ -2198,11 +2198,11 @@ async def proactive_chat(request: Request):
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:
-             await mgr.handle_new_message()
-             return JSONResponse({
-                 "success": True,
-                 "action": "pass",
-                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
+            await mgr.handle_new_message()
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
              })
 
         if source_tag == 'SCREEN':
