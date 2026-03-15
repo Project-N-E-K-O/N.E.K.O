@@ -2045,7 +2045,7 @@ async def proactive_chat(request: Request):
             raw_data = music_content.get('raw_data', {}) if music_content else {}
             if raw_data.get('best_match', {}).get('status') == 'fuzzy':
                 generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
-        
+
         # 【强制约束】放歌时禁止产生任何换歌念头
         if is_playing_music:
             generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
@@ -2203,7 +2203,7 @@ async def proactive_chat(request: Request):
                 "success": True,
                 "action": "pass",
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
-             })
+            })
 
         if source_tag == 'SCREEN':
             source_links = []
