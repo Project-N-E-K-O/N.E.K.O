@@ -1938,6 +1938,15 @@ CHAT_GAP_LONG_HINT = {
     'ru': '{name} осознаёт, что давно не разговаривала с {master}. Что произошло за это время? {name} хочет узнать, как дела у {master}.',
 }
 
+# 超过5小时时追加的当前时间提示 — {now}: 格式化后的当前时间
+CHAT_GAP_CURRENT_TIME = {
+    'zh': '现在的时间是{now}。',
+    'en': 'The current time is {now}.',
+    'ja': '現在の時刻は{now}です。',
+    'ko': '현재 시각은 {now}입니다.',
+    'ru': 'Сейчас {now}.',
+}
+
 # ---------- 屏幕活跃窗口前缀 ----------
 SCREEN_WINDOW_TITLE = {
     'zh': '当前活跃窗口：{window}\n',
