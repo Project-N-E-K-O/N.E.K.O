@@ -187,6 +187,8 @@ class ChatOpenAI:
         max_completion_tokens: int | None = None,
         max_tokens: int | None = None,
         model_kwargs: dict | None = None,
+        timeout: float | None = None,
+        request_timeout: float | None = None,
         **_kwargs: Any,
     ):
         self.model = model
@@ -199,8 +201,12 @@ class ChatOpenAI:
             self.extra_body = {**self.extra_body, **model_kwargs["extra_body"]}
 
         _api_key = api_key or "sk-placeholder"
-        self._aclient = AsyncOpenAI(base_url=base_url, api_key=_api_key, max_retries=max_retries)
-        self._client = OpenAI(base_url=base_url, api_key=_api_key, max_retries=max_retries)
+        _timeout = timeout or request_timeout
+        client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
+        if _timeout is not None:
+            client_kw["timeout"] = _timeout
+        self._aclient = AsyncOpenAI(**client_kw)
+        self._client = OpenAI(**client_kw)
 
     def _params(self, messages: Any, *, stream: bool = False) -> dict:
         p: dict[str, Any] = {

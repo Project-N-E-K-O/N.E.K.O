@@ -153,9 +153,9 @@ def _lazy_browser_use_setup() -> None:
     global _browser_use_setup_done
     if _browser_use_setup_done:
         return
-    _browser_use_setup_done = True
     _ensure_browser_use_prompts()
     _seed_extension_cache()
+    _browser_use_setup_done = True
 
 
 def _seed_extension_cache() -> None:

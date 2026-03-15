@@ -1510,6 +1510,10 @@ async def startup():
             Modules.browser_use = bu
             Modules.task_executor.browser_use = bu
             logger.info("[Agent] BrowserUseAdapter ready (background init)")
+            try:
+                await _fire_agent_llm_connectivity_check()
+            except Exception:
+                logger.debug("[Agent] Post-browser-init capability refresh failed", exc_info=True)
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
 

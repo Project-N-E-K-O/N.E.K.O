@@ -3,6 +3,8 @@
 N.E.K.O. 统一启动器
 启动所有服务器，等待它们准备就绪后启动主程序，并监控主程序状态
 """
+from __future__ import annotations
+
 import sys
 import os
 import io
