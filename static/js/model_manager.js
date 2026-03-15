@@ -4318,9 +4318,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.success && result.models && result.models.length > 0) {
                 userModelList.innerHTML = '';
                 result.models.forEach(model => {
-                    const sourceLabel = model.source === 'user_documents'
-                        ? t('live2d.userDocuments', '用户文档')
-                        : t('live2d.localUpload', '本地上传');
+                    const sourceLabel = model.type === 'vrm'
+                        ? 'VRM'
+                        : (model.source === 'user_documents'
+                            ? t('live2d.userDocuments', '用户文档')
+                            : t('live2d.localUpload', '本地上传'));
                     const displayName = model.name.replace(/\.model3$/i, '');
                     const safeId = 'model-' + encodeURIComponent(model.name);
                     const item = document.createElement('div');
@@ -4357,6 +4359,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         boundBadge.textContent = t('live2d.modelInUse', '使用中');
                         item.appendChild(boundBadge);
                         item.style.opacity = '0.6';
+                    }
+
+                    if (model.type === 'vrm') {
+                        checkbox.setAttribute('data-type', 'vrm');
                     }
 
                     checkbox.addEventListener('change', (e) => {
@@ -4419,9 +4425,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         for (const modelName of selectedDeleteModels) {
             try {
+                // 根据模型类型选择正确的删除接口
+                const checkbox = document.querySelector(`input[type="checkbox"][value="${CSS.escape(modelName)}"]`);
+                const isVrm = checkbox && checkbox.getAttribute('data-type') === 'vrm';
+                const deleteUrl = isVrm
+                    ? `/api/model/vrm/model/${encodeURIComponent(modelName)}`
+                    : `/api/live2d/model/${encodeURIComponent(modelName)}`;
                 // 使用 RequestHelper 确保统一的错误处理和超时
                 const result = await RequestHelper.fetchJson(
-                    `/api/live2d/model/${encodeURIComponent(modelName)}`,
+                    deleteUrl,
                     {
                         method: 'DELETE'
                     }
