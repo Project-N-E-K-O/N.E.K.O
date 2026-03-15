@@ -35,6 +35,8 @@ from config.prompts_sys import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
     get_proactive_music_unknown_track_name,
+    get_proactive_music_failsafe_hint,
+    get_proactive_music_strict_constraint,
     get_proactive_format_sections,
     _loc,
     RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
@@ -1980,9 +1982,13 @@ async def proactive_chat(request: Request):
             external_section = f"{el}\n{web_topic}\n{ef}"
         
         music_section = ""
-        if music_topic:
+        # 如果正在放歌，强行屏蔽音乐素材推荐，避免 AI 误触
+        if music_topic and not is_playing_music:
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             music_section = f"======音乐推荐素材======\n{music_topic}\n======音乐素材结束======"
+        elif is_playing_music:
+            print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
+            music_section = ""
         
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
@@ -2031,6 +2037,14 @@ async def proactive_chat(request: Request):
                     proactive_lang,
                     PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
                 )
+
+            # 【核心补齐】如果搜索结果是模糊匹配或无对应资源（兜底推荐），注入 failsafe hint
+            if music_content and music_content.get('best_match', {}).get('status') in ['fuzzy', 'no_resource']:
+                generate_prompt += get_proactive_music_failsafe_hint(proactive_lang)
+        
+        # 【强制约束】放歌时禁止产生任何换歌念头
+        if is_playing_music:
+            generate_prompt += get_proactive_music_strict_constraint(proactive_lang)
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---

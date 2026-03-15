@@ -2307,11 +2307,11 @@ MEMORY_RESULTS_HEADER = {
 
 # ---------- 主动搭话：当前正在放歌时的提示（引导 AI 聊当前的歌，而不是推荐新歌） ----------
 PROACTIVE_MUSIC_PLAYING_HINT = {
-    'zh': '\n[注意] 主人正在听歌："{track_name}"。你可以评价或聊聊这首歌、歌手或风格，但请不要推荐新歌或尝试播放其他音乐，保持当前的氛围。',
-    'en': '\n[Note] Master is listening to: "{track_name}". You can comment on or talk about this song, artist, or style, but please do NOT recommend new songs or try to play other music. Keep the current vibe.',
-    'ja': '\n[注意] ご主人は今、「{track_name}」を聴いています。この曲やアーティスト、雰囲気について話しかけてもいいですが、新しい曲をすすめたり他の音楽を再生しようとせず、今の空気を大切にしてください。',
-    'ko': '\n[주의] 주인이 지금 "{track_name}"을(를) 듣고 있습니다. 이 곡이나 아티스트, 스타일에 대해 이야기할 수 있지만, 새로운 곡을 추천하거나 다른 음악을 재생하려고 하지 말고 현재의 분위기를 유지하세요.',
-    'ru': '\n[Примечание] Хозяин сейчас слушает: "{track_name}". Ты можешь прокомментировать или обсудить эту песню, исполнителя или стиль, но, пожалуйста, НЕ рекомендуй новые песни и не пытайся включить другую музыку. Поддерживай текущую атмосферу.'
+    'zh': '\n[绝对指令] 当前正在播放音乐："{track_name}"。请仅限评价或探讨这首歌、歌手或音乐风格。**严禁**推荐新歌、**严禁**尝试更换曲目，请全力维持当前的听歌氛围，不要打扰主人的雅致。',
+    'en': '\n[ABSOLUTE COMMAND] Current music playing: "{track_name}". Please limit your discussion strictly to this song, artist, or genre. **DO NOT** recommend new songs or try to change the music. Focus entirely on maintaining the current vibe.',
+    'ja': '\n[絶対命令] 現在音楽「{track_name}」を再生中です。この曲、アーティスト、または音楽ジャンルについてのみお話しください。新しい曲を勧めたり、曲を変更したりすることは**厳禁**です。現在の雰囲気を維持することに全力を注いでください。',
+    'ko': '\n[절대 명령] 현재 음악 "{track_name}"이(가) 재생 중입니다. 오직 이 곡, 아티스트 또는 음악 장르에 대해서만 이야기하십시오. 새로운 곡을 추천하거나 곡을 바꾸는 것은 **엄격히 금지**됩니다. 현재의 분위기를 유지하는 데 집중하십시오.',
+    'ru': '\n[АБСОЛЮТНАЯ КОМАНДА] Сейчас играет музыка: "{track_name}". Пожалуйста, ограничься обсуждением только этой песни, исполнителя или жанра. **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО** рекомендовать новые песни или пытаться сменить трек. Сосредоточься на поддержании текущей атмосферы.',
 }
 
 PROACTIVE_MUSIC_UNKNOWN_TRACK = {
@@ -2320,6 +2320,22 @@ PROACTIVE_MUSIC_UNKNOWN_TRACK = {
     'ja': '未知の曲',
     'ko': '알 수 없는 곡',
     'ru': 'Неизвестный трек',
+}
+
+PROACTIVE_MUSIC_FAILSAFE_HINTS = {
+    'zh': '\n[环境提示] 当前未找到与关键词精准匹配的资源。为你提供了一些风格相似的兜底曲目，请在对话中向主人说明，并确认是否符合他的心意。',
+    'en': '\n[Environment Hint] No exact match found for the keyword. Provided some fallback tracks with a similar style. Please explain this to the master and confirm if they like it.',
+    'ja': '\n[環境提示] キーワードに正確に一致するリソースが見つかりませんでした。似たようなスタイルの代替曲を提供しました。主人にその旨を説明し、気に入ってもらえるか確認してください。',
+    'ko': '\n[환경 힌트] 키워드와 정확히 일치하는 리소스를 찾을 수 없습니다. 유사한 스타일의 대체 곡을 제공했습니다. 주인에게 이 내용을 설명하고 마음에 드는지 확인하세요.',
+    'ru': '\n[Экологическая подсказка] Точного соответствия ключевому слову не найдено. Предоставлены запасные треки в похожем стиле. Пожалуйста, объясни это хозяину и уточни, нравятся ли они ему.',
+}
+
+PROACTIVE_MUSIC_STRICT_CONSTRAINT = {
+    'zh': '\n[环境限制] 当前音乐播放中，严禁尝试改变播放状态或推荐新歌。如果决定说话，请仅限对当前歌曲发表看法。',
+    'en': '\n[Environment Constraint] Music is currently playing. Strictly forbidden to change playback state or recommend new songs. If you speak, limit yourself to the current track.',
+    'ja': '\n[環境制約] 現在音楽再生中です。再生状態を変更したり、新しい曲を勧めたりすることは厳禁です。話す場合は、現在の曲についてのみお話しください。',
+    'ko': '\n[환경 제약] 현재 음악 재생 중입니다. 재생 상태를 변경하거나 새로운 곡을 추천하는 것은 엄격히 금지됩니다. 말을 할 경우 현재 곡에 대해서만 이야기하십시오.',
+    'ru': '\n[Экологическое ограничение] Сейчас играет музыка. Строго запрещено менять состояние воспроизведения или рекомендовать новые песни. Если решите что-то сказать, ограничьтесь обсуждением текущего трека.',
 }
 
 
@@ -2340,4 +2356,20 @@ def get_proactive_music_playing_hint(track_name: str, lang: str = 'zh') -> str:
     # 对歌名中的花括号进行转义，防止后续整体 prompt.format() 时触发 KeyError
     safe_track_name = track_name.replace('{', '{{').replace('}', '}}')
     return template.format(track_name=safe_track_name)
+
+
+def get_proactive_music_failsafe_hint(lang: str = 'zh') -> str:
+    """
+    获取“模糊匹配/无资源”的兜底提示语
+    """
+    lang_key = _normalize_prompt_language(lang)
+    return PROACTIVE_MUSIC_FAILSAFE_HINTS.get(lang_key, PROACTIVE_MUSIC_FAILSAFE_HINTS.get('en', PROACTIVE_MUSIC_FAILSAFE_HINTS['zh']))
+
+
+def get_proactive_music_strict_constraint(lang: str = 'zh') -> str:
+    """
+    获取“正在放歌”时的严格行为约束
+    """
+    lang_key = _normalize_prompt_language(lang)
+    return PROACTIVE_MUSIC_STRICT_CONSTRAINT.get(lang_key, PROACTIVE_MUSIC_STRICT_CONSTRAINT.get('en', PROACTIVE_MUSIC_STRICT_CONSTRAINT['zh']))
 

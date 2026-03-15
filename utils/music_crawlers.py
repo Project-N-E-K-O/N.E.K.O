@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import difflib
 import httpx
 import random
 import re
@@ -1061,40 +1062,16 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         logger.warning("去重后无可用音乐")
         return {'success': False, 'error': '去重后无可用音乐', 'data': []}
     
-    # 当用户指定了关键词时，进行匹配度排序
-    if keyword and keyword.strip():
-        def calculate_match_score(track):
-            track_name = (track.get('name', '') or '').lower()
-            track_artist = (track.get('artist', '') or '').lower()
-            kw_lower = keyword.lower()
-            
-            score = 0
-            
-            if kw_lower in track_name:
-                score += 100
-            if kw_lower in track_artist:
-                score += 50
-            
-            kw_words = kw_lower.split()
-            for word in kw_words:
-                if len(word) >= 2:
-                    if word in track_name:
-                        score += 30
-                    if word in track_artist:
-                        score += 15
-            
-            return score
-        
-        scored_results = [(calculate_match_score(t), t) for t in unique_results]
-        scored_results.sort(key=lambda x: x[0], reverse=True)
-        
-        best_score = scored_results[0][0] if scored_results else 0
-        
-        if best_score >= 30:
-            unique_results = [t for score, t in scored_results if score >= best_score * 0.5]
-            logger.info(f"[匹配度排序] 最高匹配分: {best_score}, 筛选后剩余 {len(unique_results)} 首")
-        else:
-            logger.info(f"[匹配度排序] 最高匹配分仅 {best_score}，可能搜索结果不相关")
+    # 【核心优化】获取搜索结果后立即鉴别最佳匹配，并重排列表顺序
+    best_match = identify_best_music_resource(target_song=keyword, search_results=unique_results)
+    
+    if best_match['status'] == 'exact' and best_match['resource']:
+        # 将最佳匹配项移到首位，确保 AI 提示词和链接卡片都优先展示它
+        matched_item = best_match['resource']
+        if matched_item in unique_results:
+            unique_results.remove(matched_item)
+            unique_results.insert(0, matched_item)
+            logger.info(f"[智能调度] 精确匹配项 '{best_match['real_name']}' 已重排至首位")
     
     # 提前截取实际需要下发的数据切片
     final_results = unique_results[:limit]
@@ -1111,7 +1088,76 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 标记实际返回的歌曲为已播放（写入缓存）
     music_cache.mark_as_played(final_results)
     
-    return {'success': True, 'data': final_results, 'diversity': diversity_info}
+    return {
+        'success': True, 
+        'data': final_results, 
+        'diversity': diversity_info,
+        'best_match': best_match  # 将匹配状态透传给业务层，用于后续生成动态提示词
+    }
+
+def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]] | str) -> Dict[str, Any]:
+    """
+    鉴别音乐资源提取逻辑（重构后的核心提取逻辑）。
+    
+    Args:
+        target_song: AI 识别的目标歌曲名/关键词
+        search_results: 搜索结果列表或错误字符串
+        
+    Returns:
+        Dict: {"status": "exact" | "fuzzy" | "no_resource", "resource": item | None, "real_name": name | None}
+    """
+    # 1. 判空拦截
+    if not search_results or search_results == "NO resource" or isinstance(search_results, str):
+        return {"status": "no_resource", "resource": None, "real_name": None}
+    
+    target_lower = (target_song or "").lower().strip()
+    if not target_lower:
+        # 如果没有关键词，直接算兜底
+        return {
+            "status": "fuzzy",
+            "resource": search_results[0] if search_results else None,
+            "real_name": search_results[0].get('name') if search_results else None
+        }
+
+    # 2. 匹配逻辑优化：使用 difflib 计算相似度
+    best_item = None
+    max_score = 0.0
+    
+    for item in search_results:
+        name = (item.get('name') or "").lower()
+        artist = (item.get('artist') or "").lower()
+        
+        # 计算歌曲名的相似度
+        score_name = difflib.SequenceMatcher(None, target_lower, name).ratio()
+        # 兼容 "关键词" 匹配 "歌曲 - 歌手" 或 "歌手 - 歌曲" 的情况
+        full_title = f"{name} {artist}".lower()
+        score_full = difflib.SequenceMatcher(None, target_lower, full_title).ratio()
+        
+        current_max = max(score_name, score_full)
+        
+        # 如果包含（子串匹配），给予权重提升或直接判定为高分
+        if target_lower in name or target_lower in full_title:
+             current_max = max(current_max, 0.85)
+
+        if current_max > max_score:
+            max_score = current_max
+            best_item = item
+
+    # 3. 根据得分判定状态
+    if max_score > 0.6:  # 设定阈值，超过 0.6 视为精确匹配
+        return {
+            "status": "exact",
+            "resource": best_item,
+            "real_name": best_item.get('name')
+        }
+    
+    # 低于阈值则判定为模糊兜底，取第 1 项
+    first_item = search_results[0]
+    return {
+        "status": "fuzzy",
+        "resource": first_item,
+        "real_name": first_item.get('name')
+    }
 
 # =======================================================
 # 5. 用于独立测试的入口
