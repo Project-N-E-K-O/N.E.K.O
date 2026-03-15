@@ -4488,6 +4488,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     currentModelInfo = null;
                 }
             }
+
+            // 如果删除了 VRM 模型，刷新 VRM 模型下拉列表
+            if (successCount > 0) {
+                let hasVrmDeleted = false;
+                for (const [, info] of modelsToDelete) {
+                    if (info.type === 'vrm') { hasVrmDeleted = true; break; }
+                }
+                if (hasVrmDeleted) {
+                    await loadVRMModels();
+                }
+            }
         } catch (e) {
             console.error('重新加载模型列表失败:', e);
         }
