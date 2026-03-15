@@ -1,5 +1,4 @@
-from langchain_community.chat_message_histories import SQLChatMessageHistory
-from langchain_core.messages import SystemMessage
+from utils.llm_client import SQLChatMessageHistory, SystemMessage
 from sqlalchemy import create_engine, text
 from config import TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME
 from utils.config_manager import get_config_manager
@@ -14,7 +13,7 @@ class TimeIndexedMemory:
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self.recent_history_manager = recent_history_manager
-        _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+        _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for name in time_store:
             self._ensure_engine_exists(name, time_store[name])
 
@@ -25,7 +24,7 @@ class TimeIndexedMemory:
 
         try:
             if not db_path:
-                _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+                _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
                 if lanlan_name in time_store:
                     db_path = time_store[lanlan_name]
                 else:
@@ -156,6 +155,30 @@ class TimeIndexedMemory:
         if table_name not in allowed_tables:
             raise ValueError(f"不合法的表名: {table_name}")
         return table_name
+
+    def get_last_conversation_time(self, lanlan_name: str) -> datetime | None:
+        """查询指定角色最后一次对话的时间戳。无记录时返回 None。"""
+        if not self._ensure_engine_exists(lanlan_name):
+            return None
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                result = conn.execute(
+                    text(f"SELECT MAX(timestamp) FROM {table_name}")
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    ts = row[0]
+                    if isinstance(ts, str):
+                        try:
+                            return datetime.fromisoformat(ts)
+                        except ValueError:
+                            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+                    if isinstance(ts, datetime):
+                        return ts
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 查询最后对话时间失败: {e}")
+        return None
 
     def retrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         if lanlan_name not in self.engines:

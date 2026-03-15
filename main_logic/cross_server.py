@@ -108,10 +108,11 @@ def merge_unsynced_tail_assistants(chat_history, last_synced_index):
     if not parts:
         return 0
 
-    merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': '\n'.join(parts)}]}
+    # 只保留最后一条主动搭话，丢弃之前的冗余内容，避免持久记忆膨胀
+    merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': parts[-1]}]}
     removed = consecutive - 1
     chat_history[first_idx:] = [merged]
-    logger.info(f"[cleanup] 合并了 {consecutive} 条未同步的连续主动搭话消息")
+    logger.info(f"[cleanup] 精简了 {consecutive} 条未同步的连续主动搭话消息，仅保留最后一条")
     return removed
 
 

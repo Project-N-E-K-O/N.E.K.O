@@ -136,11 +136,26 @@ def _patch_prompt_loader(fallback_dir: Path) -> None:
     )
 
 
-_ensure_browser_use_prompts()
 _configure_browser_logging()
 
 _DEFAULT_TIMEOUT_S = 300
 _DEFAULT_KEEP_ALIVE = True
+
+_browser_use_setup_done = False
+
+
+def _lazy_browser_use_setup() -> None:
+    """Run heavy browser_use one-time setup (deferred from module level).
+
+    This avoids importing the ``browser_use`` package at module import time,
+    letting agent_server become ready before the heavy dependency is loaded.
+    """
+    global _browser_use_setup_done
+    if _browser_use_setup_done:
+        return
+    _ensure_browser_use_prompts()
+    _seed_extension_cache()
+    _browser_use_setup_done = True
 
 
 def _seed_extension_cache() -> None:
@@ -192,9 +207,6 @@ def _seed_extension_cache() -> None:
             f"[BrowserUse] Seeded {copied} bundled extension(s) into cache",
             flush=True,
         )
-
-
-_seed_extension_cache()
 
 
 def _find_bundled_chromium() -> Optional[str]:
@@ -340,6 +352,7 @@ class BrowserUseAdapter:
     _ip_country_cache: Optional[str] = None
 
     def __init__(self, headless: bool = False) -> None:
+        _lazy_browser_use_setup()
         self._config_manager = get_config_manager()
         self.last_error: Optional[str] = None
         self._headless = headless

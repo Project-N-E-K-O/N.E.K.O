@@ -2,15 +2,20 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from memory import CompressedRecentHistoryManager, SemanticMemory, ImportantSettingsManager, TimeIndexedMemory
+from memory import CompressedRecentHistoryManager, ImportantSettingsManager, TimeIndexedMemory
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 import json
 import uvicorn
-from langchain_core.messages import convert_to_messages
+from utils.llm_client import convert_to_messages
 from uuid import uuid4
 from config import MEMORY_SERVER_PORT
-from config.prompts_sys import _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY
+from config.prompts_sys import (
+    _loc, INNER_THOUGHTS_HEADER, INNER_THOUGHTS_BODY,
+    CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
+    ELAPSED_TIME_HM, ELAPSED_TIME_H,
+    MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
+)
 from utils.language_utils import get_global_language
 from utils.config_manager import get_config_manager
 from pydantic import BaseModel
@@ -51,7 +56,6 @@ def validate_lanlan_name(name: str) -> str:
 # 初始化组件
 _config_manager = get_config_manager()
 recent_history_manager = CompressedRecentHistoryManager()
-semantic_manager = SemanticMemory(recent_history_manager)
 settings_manager = ImportantSettingsManager()
 time_manager = TimeIndexedMemory(recent_history_manager)
 
@@ -64,19 +68,17 @@ async def reload_memory_components():
     使用锁保护重新加载操作，确保原子性交换，避免竞态条件。
     先创建所有新实例，然后原子性地交换引用。
     """
-    global recent_history_manager, semantic_manager, settings_manager, time_manager
+    global recent_history_manager, settings_manager, time_manager
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         try:
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
-            new_semantic = SemanticMemory(new_recent)
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(new_recent)
             
             # 然后原子性地交换引用
             recent_history_manager = new_recent
-            semantic_manager = new_semantic
             settings_manager = new_settings
             time_manager = new_time
             
@@ -273,7 +275,7 @@ def get_recent_history(lanlan_name: str):
         return "开始聊天前，没有历史记录。\n"
     
     history = recent_history_manager.get_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
+    _, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in history:
@@ -286,9 +288,17 @@ def get_recent_history(lanlan_name: str):
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
-async def get_memory(query: str, lanlan_name:str):
+async def get_memory(query: str, lanlan_name: str):
+    """语义记忆已退环境，返回空结果占位。"""
     lanlan_name = validate_lanlan_name(lanlan_name)
-    return await semantic_manager.query(query, lanlan_name)
+    _lang = get_global_language()
+    return (
+        _loc(MEMORY_RECALL_HEADER, _lang).format(name=lanlan_name)
+        + query
+        + "\n\n"
+        + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
+        + "\n（语义记忆已下线，暂无相关记忆片段。）"
+    )
 
 @app.get("/get_settings/{lanlan_name}")
 def get_settings(lanlan_name: str):
@@ -379,7 +389,7 @@ async def new_dialog(lanlan_name: str):
     
     # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
     brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-    master_name, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
+    master_name, _, _, _, name_mapping, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     _lang = get_global_language()
     result = (
@@ -391,6 +401,32 @@ async def new_dialog(lanlan_name: str):
             time=get_timestamp(),
         )
     )
+
+    # ── 距上次聊天间隔提示 ──
+    try:
+        from datetime import datetime as _dt
+        last_time = time_manager.get_last_conversation_time(lanlan_name)
+        if last_time:
+            gap = _dt.now() - last_time
+            gap_seconds = gap.total_seconds()
+            if gap_seconds >= 3600:  # ≥ 1小时才显示
+                hours = int(gap_seconds // 3600)
+                minutes = int((gap_seconds % 3600) // 60)
+                if minutes:
+                    elapsed = _loc(ELAPSED_TIME_HM, _lang).format(h=hours, m=minutes)
+                else:
+                    elapsed = _loc(ELAPSED_TIME_H, _lang).format(h=hours)
+
+                if gap_seconds >= 18000:  # ≥ 5小时：当前时间 + 间隔 + 长间隔提示，不额外换行
+                    now_str = _dt.now().strftime("%Y-%m-%d %H:%M")
+                    result += _loc(CHAT_GAP_CURRENT_TIME, _lang).format(now=now_str)
+                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed)
+                    result += _loc(CHAT_GAP_LONG_HINT, _lang).format(name=lanlan_name, master=master_name) + "\n"
+                else:
+                    result += _loc(CHAT_GAP_NOTICE, _lang).format(master=master_name, elapsed=elapsed) + "\n"
+    except Exception as e:
+        logger.warning(f"计算聊天间隔失败: {e}")
+
     for i in recent_history_manager.get_recent_history(lanlan_name):
         if isinstance(i.content, str):
             cleaned_content = brackets_pattern.sub('', i.content).strip()

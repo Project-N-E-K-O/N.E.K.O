@@ -306,20 +306,16 @@ button * {
 }
 /* 看板娘聊天框-容器 */
 #chat-container {
-    margin-bottom: 50px;
     pointer-events: auto;
     /* 恢复鼠标交互 */
     position: fixed;
     left: 20px;
-    bottom: 20px;
+    bottom: 70px;
     width: 400px;
     max-height: 500px;
     height: 500px;
-    /* Fluent Design Acrylic 材质 */
-    background: rgba(255, 255, 255, 0.65);
-    backdrop-filter: saturate(180%) blur(20px);
-    /* Fluent Design 标准模糊值 */
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    /* 背景设为透明，backdrop-filter 移至 ::before 伪元素以避免合成器泄漏 */
+    background: transparent;
     border-radius: 8px;
     /* Fluent Design 标准圆角 */
     border: 1px solid rgba(255, 255, 255, 0.18);
@@ -347,12 +343,30 @@ button * {
     will-change: transform;
 }
 
+/* Fluent Design Acrylic 材质层：将 backdrop-filter 隔离到伪元素上，
+   避免它与滚动子元素同层合成导致 Chromium 透明区域泄漏 */
+#chat-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-radius: inherit;
+    z-index: -1;
+    pointer-events: none;
+}
+
 /* 内部内容包裹器，负责滚动 - Fluent Design */
 #chat-content-wrapper {
     pointer-events: auto;
     flex-grow: 1;
     padding: 16px;
     padding-top: 48px;
+    overflow-x: hidden;
     overflow-y: auto;
     scroll-behavior: smooth;
     transition: opacity 0.2s ease, visibility 0.2s ease;
@@ -385,6 +399,11 @@ button * {
 
 #chat-content-wrapper::-webkit-scrollbar-thumb:hover {
     background: rgba(0, 0, 0, 0.25);
+}
+
+/* 滚动条角落 - 防止透明窗口中角落区域穿透桌面 */
+#chat-content-wrapper::-webkit-scrollbar-corner {
+    background: rgba(249, 249, 249, 0.95);
 }
 
 /* 切换按钮样式 - 更醒目的设计 */
@@ -709,29 +728,33 @@ button * {
     left: 50%;
     transform: translateX(-50%);
     z-index: 99998;
-    max-width: 85%;
-    min-width: 320px;
-    padding: 20px 72px 20px 28px;
+    max-width: min(500px, 85%);
+    min-width: 200px;
+    padding: 10px 18px;
     background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
     color: #fff;
-    border-radius: 20px;
-    font-size: 19px;
+    border-radius: 12px;
+    font-size: 17px;
     font-weight: 500;
-    line-height: 1.7;
+    line-height: 1.5;
     text-align: center;
     overflow-wrap: break-word;
-    white-space: pre-wrap;
+    white-space: normal;
     opacity: 0;
     visibility: hidden;
     transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-    /* 文字区域点击穿透，只有拖拽句柄通过 pointer-events: auto 响应交互 */
     pointer-events: none;
-    /* 简化为2层shadow以提升性能 */
-    box-shadow: 0 8px 32px rgba(68, 183, 254, 0.4),
+    box-shadow: 0 6px 24px rgba(68, 183, 254, 0.35),
         0 0 0 1px rgba(255, 255, 255, 0.3) inset;
-    border: 2px solid rgba(255, 255, 255, 0.4);
-    /* 简化为单层text-shadow */
-    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+#subtitle-text {
+    display: block;
+    margin-right: 24px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
 }
 
 #subtitle-display.hidden {
@@ -741,15 +764,16 @@ button * {
 /* 拖拽句柄（四散箭头） */
 #subtitle-drag-handle {
     position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 36px;
-    height: 36px;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    width: 26px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: grab;
-    border-radius: 10px;
+    border-radius: 6px;
     transition: all 0.2s ease;
     pointer-events: auto;
     background: rgba(255, 255, 255, 0.18);
@@ -777,8 +801,8 @@ button * {
 }
 
 #subtitle-drag-arrows svg {
-    width: 22px;
-    height: 22px;
+    width: 14px;
+    height: 14px;
 }
 
 /* 拖拽时的高亮效果 */
@@ -814,11 +838,10 @@ button * {
 @media only screen and (max-width: 768px) {
     #subtitle-display {
         bottom: 80px;
-        /* 避免与输入框重叠 */
-        min-width: 280px;
-        max-width: 90%;
-        font-size: 17px;
-        padding: 16px 52px 16px 20px;
+        min-width: 180px;
+        max-width: 92%;
+        font-size: 15px;
+        padding: 6px 14px;
     }
 }
 
@@ -1148,6 +1171,12 @@ button * {
 }
 
 /* --- 最小化状态 --- */
+#chat-container.minimized::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: transparent;
+}
+
 #chat-container.minimized {
     background: rgba(68, 183, 254, 0.15);
     opacity: 1;
@@ -1280,11 +1309,10 @@ button * {
     #chat-container {
         width: 90vw;
         left: 5vw;
-        bottom: 5px;
+        bottom: 10px;
         max-height: 60vh;
         height: 60vh;
         padding: 0;
-        margin-bottom: 5px;
         /* 禁用容器尺寸过渡，避免影响输入区 */
         transition: none !important;
         background: transparent;
@@ -1399,6 +1427,12 @@ button * {
         border: none !important;
     }
 
+    #chat-container.mobile-collapsed::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
+    }
+
     /* 移动端：折叠时仅切换按钮可交互 */
     #chat-container.mobile-collapsed #toggle-chat-btn {
         pointer-events: auto !important;
@@ -1437,6 +1471,12 @@ button * {
         animation: none;
         /* 移动端不需要呼吸效果 */
         background: transparent;
+    }
+
+    #chat-container.minimized::before {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        background: transparent !important;
     }
 }
 

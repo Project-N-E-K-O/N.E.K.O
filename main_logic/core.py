@@ -28,6 +28,7 @@ from config.prompts_sys import (
     SYSTEM_NOTIFICATION_TASKS_DONE,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
     AGENT_CALLBACK_NOTIFICATION,
+    RESULT_PARSER_PHRASES,
 )
 # Historical imports kept here (commented) for easy rollback:
 # from config import USER_PLUGIN_SERVER_PORT
@@ -149,7 +150,6 @@ class LLMSessionManager:
             self.lanlan_basic_config,
             self.name_mapping,
             self.lanlan_prompt_map,
-            self.semantic_store,
             self.time_store,
             self.setting_store,
             self.recent_log
@@ -982,7 +982,7 @@ class LLMSessionManager:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-        _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
+        _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         raw_voice_id = self._get_voice_id()
         block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1611,7 +1611,7 @@ class LLMSessionManager:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-            _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
+            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
             block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1798,7 +1798,7 @@ class LLMSessionManager:
                 return False
 
         # Record in conversation history so the LLM remembers it said this
-        from langchain_core.messages import AIMessage as _AIMsg
+        from utils.llm_client import AIMessage as _AIMsg
         self.session._conversation_history.append(_AIMsg(content=text))
 
         # Fresh speech_id for TTS / lipsync
@@ -1939,7 +1939,7 @@ class LLMSessionManager:
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
         await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-        from langchain_core.messages import AIMessage as _AIMsg
+        from utils.llm_client import AIMessage as _AIMsg
         if self.session and hasattr(self.session, '_conversation_history'):
             self.session._conversation_history.append(_AIMsg(content=full_text))
 
@@ -1992,7 +1992,9 @@ class LLMSessionManager:
             tag = "✅" if status == "completed" else ("⚠️" if status == "partial" else "❌")
             detail = (cb.get("detail") or "").strip()
             if detail and detail != summary and len(detail) > len(summary):
-                items.append(f"{tag} {summary}\n详细结果：{detail}")
+                _cb_lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+                detail_label = _loc(RESULT_PARSER_PHRASES['detail_result'], _cb_lang)
+                items.append(f"{tag} {summary}\n{detail_label}{detail}")
             else:
                 items.append(f"{tag} {summary}")
 
@@ -2088,20 +2090,22 @@ class LLMSessionManager:
         """
         if not self.pending_agent_callbacks:
             return ""
+        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
         lines: list[str] = []
         for cb in self.pending_agent_callbacks:
             status = cb.get("status", "completed")
             summary = (cb.get("summary") or "").strip()
             detail = (cb.get("detail") or "").strip()
             if status == "completed":
-                tag = "[任务完成]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_completed'], _lang)
             elif status == "partial":
-                tag = "[任务部分完成]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_partial'], _lang)
             else:
-                tag = "[任务失败]"
+                tag = _loc(RESULT_PARSER_PHRASES['task_failed_tag'], _lang)
             lines.append(f"{tag} {summary}")
             if detail and detail != summary:
-                lines.append(f"  详情：{detail[:300]}")
+                prefix = _loc(RESULT_PARSER_PHRASES['detail_prefix'], _lang)
+                lines.append(f"{prefix}{detail[:300]}")
         self.pending_agent_callbacks.clear()
         return "\n".join(lines)
 

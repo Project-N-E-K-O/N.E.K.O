@@ -1,6 +1,6 @@
 import json
 import asyncio
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
@@ -29,7 +29,7 @@ class ImportantSettingsManager:
 
     def load_settings(self):
         # It is important to update the settings with the latest character on-disk files
-        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, setting_store, _ = self._config_manager.get_character_data()
+        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, setting_store, _ = self._config_manager.get_character_data()
         self.settings_file = setting_store
         self.master_basic_config = master_basic_config
         self.lanlan_basic_config = lanlan_basic_config

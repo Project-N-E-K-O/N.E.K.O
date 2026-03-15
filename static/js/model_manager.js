@@ -1429,6 +1429,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            modelData.touch_set = window.touchSet;
+            
             // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
             const modelResult = await RequestHelper.fetchJson(
                 `/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`,
@@ -1778,7 +1780,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 live2dReturnBtn.remove();
             }
             // 隐藏 Live2D 特有的控件
-            const live2dOnlyControls = ['motion-select', 'expression-select', 'play-motion-btn', 'play-expression-btn'];
+            const live2dOnlyControls = ['motion-select', 'expression-select', 'play-motion-btn', 'play-expression-btn','touch_set'];
             live2dOnlyControls.forEach(id => {
                 const elem = document.getElementById(id);
                 if (elem) {
@@ -3671,6 +3673,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            if (typeof copyTouchSet === 'function') {
+                copyTouchSet()
+            }
+
             // 添加调试信息
 
             // 保存位置和缩放
@@ -5115,6 +5121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.modelNotSet', `角色 ${catgirl_name} 未设置模型，请手动选择`, { name: catgirl_name }));
                 }
             }
+            // InitializationTouchSet(catgirlConfig);
         } catch (error) {
             console.error('加载当前角色模型失败:', error);
             showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

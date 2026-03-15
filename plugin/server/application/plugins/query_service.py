@@ -116,16 +116,21 @@ def _build_entries_from_handlers(
         description_obj = getattr(meta, "description", "")
         return_message_obj = getattr(meta, "return_message", "")
 
-        entries.append(
-            {
-                "id": entry_id,
-                "name": name_obj if isinstance(name_obj, str) else "",
-                "description": description_obj if isinstance(description_obj, str) else "",
-                "event_key": event_key_obj,
-                "input_schema": input_schema,
-                "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
-            }
-        )
+        entry_dict: dict[str, object] = {
+            "id": entry_id,
+            "name": name_obj if isinstance(name_obj, str) else "",
+            "description": description_obj if isinstance(description_obj, str) else "",
+            "event_key": event_key_obj,
+            "input_schema": input_schema,
+            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+        }
+
+        # 透传 llm_result_fields 到运行时 entry，供 agent_server._lookup_llm_result_fields 读取
+        meta_dict = getattr(meta, "metadata", None)
+        if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
+            entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
+
+        entries.append(entry_dict)
 
     return entries, seen
 
@@ -173,16 +178,21 @@ def _append_entries_from_preview(
         name_obj = normalized_preview.get("name")
         description_obj = normalized_preview.get("description")
 
-        entries.append(
-            {
-                "id": entry_id_obj,
-                "name": name_obj if isinstance(name_obj, str) else "",
-                "description": description_obj if isinstance(description_obj, str) else "",
-                "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
-                "input_schema": input_schema,
-                "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
-            }
-        )
+        entry_dict: dict[str, object] = {
+            "id": entry_id_obj,
+            "name": name_obj if isinstance(name_obj, str) else "",
+            "description": description_obj if isinstance(description_obj, str) else "",
+            "event_key": event_key_obj if isinstance(event_key_obj, str) and event_key_obj else f"{plugin_id}.{entry_id_obj}",
+            "input_schema": input_schema,
+            "return_message": return_message_obj if isinstance(return_message_obj, str) else "",
+        }
+
+        # 透传 llm_result_fields（来源：registry._extract_entries_preview）
+        llm_fields_obj = normalized_preview.get("llm_result_fields")
+        if isinstance(llm_fields_obj, list):
+            entry_dict["llm_result_fields"] = llm_fields_obj
+
+        entries.append(entry_dict)
 
 
 def _append_plugin_fallback(

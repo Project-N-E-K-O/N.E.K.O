@@ -1,8 +1,7 @@
 from config import get_extra_body
 from utils.config_manager import get_config_manager
 from utils.token_tracker import set_call_type
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict
 import json
 import os
 import asyncio
@@ -20,7 +19,7 @@ class CompressedRecentHistoryManager:
     def __init__(self, max_history_length=10):
         self._config_manager = get_config_manager()
         # 通过get_character_data获取相关变量
-        _, _, _, _, name_mapping, _, _, _, _, recent_log = self._config_manager.get_character_data()
+        _, _, _, _, name_mapping, _, _, _, recent_log = self._config_manager.get_character_data()
         self.max_history_length = max_history_length
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
@@ -87,7 +86,7 @@ class CompressedRecentHistoryManager:
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
         # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
+            _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
             # 更新文件路径映射
             self.log_file_path = recent_log
             
@@ -288,7 +287,7 @@ class CompressedRecentHistoryManager:
     def get_recent_history(self, lanlan_name):
         # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
+            _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
             # 更新文件路径映射
             self.log_file_path = recent_log
             

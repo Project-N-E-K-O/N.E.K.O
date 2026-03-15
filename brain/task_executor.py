@@ -72,7 +72,7 @@ class DirectTaskExecutor:
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
-        self.browser_use = browser_use or BrowserUseAdapter()
+        self.browser_use = browser_use
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -790,31 +790,7 @@ Return only the JSON object, nothing else.
                 logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
         
         # 决策逻辑
-        # 1. BrowserUse
-        if bu_decision and bu_decision.has_task and bu_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=bu_decision.task_description,
-                execution_method='browser_use',
-                success=False,
-                reason=bu_decision.reason
-            )
-
-        # 2. ComputerUse
-        if cu_decision and cu_decision.has_task and cu_decision.can_execute:
-            logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
-            return TaskResult(
-                task_id=task_id,
-                has_task=True,
-                task_description=cu_decision.task_description,
-                execution_method='computer_use',
-                success=False,  # 标记为待执行
-                reason=cu_decision.reason
-            )
-        
-        # 3. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
+        # 1. UserPlugin — 只返回 Decision，不执行（与 CU/BU 一致，由 agent_server dispatch）
         #    can_execute is a hard requirement; if false, refuse and return has_task=False.
         if isinstance(up_decision, UserPluginDecision) and up_decision.has_task and up_decision.plugin_id and up_decision.entry_id:
             if not up_decision.can_execute:
@@ -839,6 +815,30 @@ Return only the JSON object, nothing else.
                 tool_args=up_decision.plugin_args,
                 entry_id=up_decision.entry_id,
                 reason=up_decision.reason
+            )
+
+        # 2. BrowserUse
+        if bu_decision and bu_decision.has_task and bu_decision.can_execute:
+            logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=bu_decision.task_description,
+                execution_method='browser_use',
+                success=False,
+                reason=bu_decision.reason
+            )
+
+        # 3. ComputerUse
+        if cu_decision and cu_decision.has_task and cu_decision.can_execute:
+            logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=cu_decision.task_description,
+                execution_method='computer_use',
+                success=False,  # 标记为待执行
+                reason=cu_decision.reason
             )
                 
         # 4. 没有可执行的分支，汇总原因

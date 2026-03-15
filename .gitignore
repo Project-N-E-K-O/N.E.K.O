@@ -97,6 +97,7 @@ desktop.ini
 static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
+static/yui/*
 打包说明.txt
 runtime_hook_inflect.py
 backup/

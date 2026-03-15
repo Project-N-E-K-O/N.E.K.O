@@ -16,8 +16,7 @@ import os
 import hashlib
 from collections import OrderedDict
 from typing import Optional, Tuple, List, Any, Dict
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type

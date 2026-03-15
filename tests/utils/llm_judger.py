@@ -4,8 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from utils.llm_client import ChatOpenAI, HumanMessage
 
 from utils.file_utils import atomic_write_json
 

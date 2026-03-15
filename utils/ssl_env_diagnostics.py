@@ -9,7 +9,6 @@ SSL 环境预检与诊断文件输出工具。
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import ssl

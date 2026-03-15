@@ -354,13 +354,18 @@ body .container-header {
 .field-row-wrapper label {
     min-width: 110px;
     /* 增加最小宽度以适应英文 */
+    max-width: 160px;
+    /* 最大显示8个中文字符宽度 */
     font-weight: 700;
     color: #40C5F1;
     font-size: 1.2rem;
     flex-shrink: 0;
-    display: flex;
-    align-items: center;
+    display: block;
     line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: default;
 }
 
 .field-row-wrapper label span[style*="color:red"] {
@@ -992,7 +997,11 @@ body .container-header {
 
     .field-row-wrapper label {
         min-width: auto;
+        max-width: none;
         width: 100%;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
     }
 
     .field-row {

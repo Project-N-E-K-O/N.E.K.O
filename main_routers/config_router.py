@@ -59,7 +59,7 @@ async def get_page_config(lanlan_name: str = ""):
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
+        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = _config_manager.get_character_data()
         
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
@@ -282,7 +282,7 @@ async def get_steam_language():
             
             if not getattr(get_steam_language, '_logged', False) or not get_steam_language._logged:
                 get_steam_language._logged = True
-                logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+                logger.info(f"[GeoIP] 用户 IP 地区: {ip_country}, 是否大陆: {is_mainland_china}")
             # Write Steam result to ConfigManager's steam-specific cache
             try:
                 from utils.config_manager import ConfigManager
@@ -292,7 +292,7 @@ async def get_steam_language():
                 pass
         except Exception as geo_error:
             get_steam_language._logged = False
-            logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
+            logger.warning(f"[GeoIP] 获取用户 IP 地区失败: {geo_error}，默认为非大陆用户")
             ip_country = None
             is_mainland_china = False
         
@@ -375,6 +375,7 @@ async def get_core_config_api():
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
             "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
+            "assistApiKeyKimi": core_cfg.get('assistApiKeyKimi', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),  
             "enableCustomApi": core_cfg.get('enableCustomApi', False),  
             # 自定义API相关字段
@@ -484,6 +485,8 @@ async def update_core_config(request: Request):
             core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
         if 'assistApiKeyGemini' in data:
             core_cfg['assistApiKeyGemini'] = data['assistApiKeyGemini']
+        if 'assistApiKeyKimi' in data:
+            core_cfg['assistApiKeyKimi'] = data['assistApiKeyKimi']
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'enableCustomApi' in data:
