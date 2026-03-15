@@ -57,7 +57,7 @@ check_dependencies() {
     # 检查openssl可用性（用于证书验证和生成）
     if ! command -v openssl &> /dev/null; then
         echo "⚠️ OpenSSL not found. Installing openssl..."
-        apt-get update && apt-get install -y --no-install-recommends openssl bc
+        apt-get update && apt-get install -y --no-install-recommends openssl
     fi
     
     echo "✅ Dependencies checked:"
@@ -300,7 +300,7 @@ validate_ssl_certificate() {
     elif [ "$key_type" = "ec" ] || [ "$key_type" = "pkey" ]; then
         # EC或通用密钥验证
         cert_pubkey=$(openssl x509 -in "$cert_file" -pubkey -noout 2>/dev/null)
-        key_pubkey=$(openssl pkey -in "$key_file" -pubout 2>/dev/null)
+        key_pubkey=$(openssl pkey -in "$key_file" -pubout 2>/dev/null 2>/dev/null)
         
         if [ -z "$cert_pubkey" ] || [ -z "$key_pubkey" ]; then
             echo "❌ Failed to extract public key from certificate or key"
@@ -552,7 +552,7 @@ server {
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -571,7 +571,7 @@ server {
     # 代理到记忆服务
     location /memory/ {
         proxy_pass http://127.0.0.1:48912;
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -580,7 +580,7 @@ server {
     # 代理到Agent服务
     location /agent/ {
         proxy_pass http://127.0.0.1:48915;
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -637,7 +637,7 @@ server {
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -656,7 +656,7 @@ server {
     # 代理到记忆服务
     location /memory/ {
         proxy_pass http://127.0.0.1:48912;
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -665,7 +665,7 @@ server {
     # 代理到Agent服务
     location /agent/ {
         proxy_pass http://127.0.0.1:48915;
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -1013,6 +1013,7 @@ main() {
     fi
     
     echo "🎉🎉 All systems operational!"
+    echo " Project Address: https://github.com/Project-N-E-K-O/N.E.K.O"
     echo "🌐 Web UI accessible via:"
     echo "   HTTP: http://localhost:${NGINX_PORT}"
     if [ "${DISABLE_SSL:-0}" != "1" ]; then
