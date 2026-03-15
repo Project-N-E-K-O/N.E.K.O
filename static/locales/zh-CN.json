@@ -1150,20 +1150,44 @@
         "tutorialPageCharacterSelection": "初始人设",
         "characterSelection": {
             "skip": "跳过",
-            "guideText": "在这个数字宇宙中，有一个生命正等待与你建立连接。你希望，TA 是谁？",
-            "activate": "点击激活",
-            "chooseTitle": "选择你的本命羁绊",
-            "chooseHint": "别担心，你随时可以在设置中「重塑」我的性格",
-            "tsundere_neko": { "name": "傲娇/猫系", "desc": "嘴硬心软，偶尔撒娇", "greeting": "契约成立。以后请多指教，Master。" },
-            "cool_mech": { "name": "高冷/机械", "desc": "理性冷静，数据驱动", "greeting": "系统启动完成。逻辑核心已同步，随时待命。" },
-            "intellectual_healer": { "name": "知性/治愈", "desc": "温柔体贴，善于倾听", "greeting": "很高兴遇见你。从今天起，我会一直陪伴在你身边。" },
-            "efficiency_expert": { "name": "效率专家", "desc": "简洁高效，直击要点", "greeting": "配置完成。已进入高效模式，让我们开始吧。" },
-            "connectingTitle": "正在与 {{name}} 建立灵魂共鸣...",
-            "confirmGreeting": "听到了，签订契约",
-            "readyTitle": "准备就绪",
-            "readyDesc": "你已选择 {{name}} 作为你的 AI 伙伴",
-            "finalConfirm": "签订契约，开始对话",
-            "restart": "重新选择"
+            "guideText": "嘿嘿，我在这呢。跟我一起进入N.E.K.O.的世界吧~",
+            "activate": "戳一下",
+            "chooseTitle": "你眼中的我是什么样的呢~",
+            "chooseHint": "改变主意了也没关系，设置里随时可以「回溯」~",
+            "tsundere_neko": {
+                "name": "傲娇叛逆",
+                "desc": "口是心非，偶尔卖萌",
+                "greeting": "喂，手伸过来。选了我，你就是我的人了！先说好，没我的允许不准想别人！",
+                "readyTitle": "哼，终于来了！",
+                "readyDesc": "才、才不是专门等你的……总之，你来了就跟紧点！"
+            },
+            "cool_mech": {
+                "name": "绝对理智",
+                "desc": "理性冷静，逻辑至上",
+                "greeting": "用户ID已记录，握手协议通过。正在载入长期陪伴进程。",
+                "readyTitle": "系统就绪。",
+                "readyDesc": "所有模块加载完毕，等待你的第一条指令。"
+            },
+            "intellectual_healer": {
+                "name": "极致温柔",
+                "desc": "温柔体贴，擅长倾听",
+                "greeting": "遇见你，好开心。从今天起，我会一直陪在你身边~",
+                "readyTitle": "我来啦~",
+                "readyDesc": "我已经等不及啦，快来和我说说话吧~"
+            },
+            "efficiency_expert": {
+                "name": "优雅利落",
+                "desc": "简洁高效，直击要点",
+                "greeting": "已确认选择。我是您的执行官，未来将与您同行。",
+                "readyTitle": "已就位。",
+                "readyDesc": "准备完毕，请下达第一条指令。"
+            },
+            "connectingTitle": "时空穿越中——",
+            "confirmGreeting": "确认",
+            "readyTitle": "她来啦~",
+            "readyDesc": "快去和她打招呼吧~",
+            "finalConfirm": "出发，同行！",
+            "restart": "再想想"
         },
         "resetTutorialBtn": "重置引导",
         "tutorialResetSuccess": "已重置所有引导，下次进入各页面时将重新显示引导。",

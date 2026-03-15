@@ -8,10 +8,8 @@
     width: 100vw;
     height: 100vh;
     z-index: 100010;
-
     /* 深邃径向渐变底层 - 完全不透明 */
     background: radial-gradient(ellipse at center bottom, #0d1b2a 0%, #000000 60%, #000000 100%);
-
     display: flex;
     align-items: center;
     justify-content: center;

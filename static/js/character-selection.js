@@ -37,18 +37,26 @@ const CHARACTER_VOICE_MAPPING = {
     }
 };
 
+// 默认猫娘档案名及 localStorage 追踪键
+const DEFAULT_CATGIRL_NAME = 'test';
+const CATGIRL_SELECTION_STORAGE_KEY = 'neko_default_catgirl_name';
+
 class CharacterSelection {
     constructor() {
         this.overlay = document.getElementById('character-selection-overlay');
         this.currentStage = 1;
         this.selectedCharacter = null;
+        this.isOpen = true;
+        this._selectTimer = null;
+        this._closeTimer = null;
+        this._onLocaleChange = () => this._applyStaticI18n();
         this.init();
     }
 
     init() {
         this._applyStaticI18n();
         // i18n 就绪或语言切换后重新翻译（overlay 是动态注入的，不会被 updatePageTexts 扫到）
-        window.addEventListener('localechange', () => this._applyStaticI18n());
+        window.addEventListener('localechange', this._onLocaleChange);
         this.bindEvents();
     }
 
@@ -128,7 +136,10 @@ class CharacterSelection {
         };
         console.log('[CharacterSelection] 选中角色:', this.selectedCharacter);
         // 延迟进入阶段三
-        setTimeout(() => this.goToStage(3), 600);
+        this._selectTimer = setTimeout(() => {
+            this._selectTimer = null;
+            this.goToStage(3);
+        }, 600);
     }
     async playGreeting() {
         const data = CHARACTER_DATA[this.selectedCharacter.id];
@@ -142,7 +153,7 @@ class CharacterSelection {
         // 更新标题
         greetingTitle.textContent = t(
             'memory.characterSelection.connectingTitle',
-            `正在与 ${this.selectedCharacter.name} 建立灵魂共鸣...`
+            '时空穿越中——'
         ).replace('{{name}}', this.selectedCharacter.name);
         // 打字机效果
         const greeting = t(
@@ -172,19 +183,23 @@ class CharacterSelection {
     updateFinalInfo() {
         const t = window.t || ((_key, fallback) => fallback);
         const descEl = document.getElementById('confirm-desc');
-        if (!descEl || !this.selectedCharacter) return;
-        const text = t(
-            'memory.characterSelection.readyDesc',
-            '你已选择 {{name}} 作为你的 AI 伙伴'
-        );
-        // 将 {{name}} 替换为加粗的角色名，避免翻译键含 HTML 导致乱码
-        const [before, after] = text.split('{{name}}');
-        descEl.textContent = '';
-        descEl.append(
-            document.createTextNode(before ?? ''),
-            Object.assign(document.createElement('strong'), { textContent: this.selectedCharacter.name }),
-            document.createTextNode(after ?? '')
-        );
+        const titleEl = document.querySelector('.confirm-title');
+        if (!this.selectedCharacter) return;
+        const charId = this.selectedCharacter.id;
+        // 按角色取 readyTitle，回退到通用键
+        if (titleEl) {
+            titleEl.textContent = t(
+                `memory.characterSelection.${charId}.readyTitle`,
+                t('memory.characterSelection.readyTitle', '她来啦~')
+            );
+        }
+        // 按角色取 readyDesc，回退到通用键
+        if (descEl) {
+            descEl.textContent = t(
+                `memory.characterSelection.${charId}.readyDesc`,
+                t('memory.characterSelection.readyDesc', '快去和她打招呼吧~')
+            );
+        }
     }
     async finalizeSelection() {
         console.log('[CharacterSelection] 用户确认选择:', this.selectedCharacter);
@@ -211,20 +226,52 @@ class CharacterSelection {
                 throw new Error('获取角色列表失败');
             }
             const characters = await getResponse.json();
-            const defaultCatgirl = characters['猫娘']?.test; // 默认猫娘档案名为 'test'
-            if (!defaultCatgirl) {
-                console.warn('[CharacterSelection] 找不到默认猫娘 (test)');
-                return;
+            const catgirlCategory = characters['猫娘'] || {};
+            // 2. 确定目标角色：优先使用 localStorage 记录的名称
+            let targetName = localStorage.getItem(CATGIRL_SELECTION_STORAGE_KEY);
+            let targetData = targetName ? catgirlCategory[targetName] : null;
+            if (!targetData) {
+                // 记录的角色不存在（已被删除）或尚无记录，回落到默认名称
+                if (catgirlCategory[DEFAULT_CATGIRL_NAME]) {
+                    targetName = DEFAULT_CATGIRL_NAME;
+                    targetData = catgirlCategory[DEFAULT_CATGIRL_NAME];
+                } else {
+                    // 默认角色也不存在，新建一个
+                    console.log('[CharacterSelection] 默认猫娘不存在，正在新建...');
+                    const createRes = await fetch('/api/characters/catgirl', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ '档案名': DEFAULT_CATGIRL_NAME })
+                    });
+                    if (!createRes.ok) {
+                        throw new Error('创建默认猫娘失败');
+                    }
+                    targetName = DEFAULT_CATGIRL_NAME;
+                    targetData = {};
+                    console.log('[CharacterSelection] 默认猫娘创建成功');
+                }
+                // 记录目标角色名，供后续重命名时同步
+                localStorage.setItem(CATGIRL_SELECTION_STORAGE_KEY, targetName);
             }
-            // 2. 追加性格描述（避免重复）
-            let personality = defaultCatgirl['性格'] || '';
-            if (!personality.includes(voiceMapping.personality)) {
-                personality = personality ? `${personality}，${voiceMapping.personality}` : voiceMapping.personality;
+            // 3. 计算新性格（区分人设选择写入 vs 用户自定义）
+            const knownPersonalities = Object.values(CHARACTER_VOICE_MAPPING).map(m => m.personality);
+            const parts = targetData['性格'] ? targetData['性格'].split(/[，,、]/) : [];
+            const existingIdx = parts.findIndex(p => knownPersonalities.includes(p.trim()));
+            let personality;
+            if (existingIdx !== -1) {
+                // 人设选择曾写入过性格，直接覆盖
+                parts[existingIdx] = voiceMapping.personality;
+                personality = parts.join('，');
+            } else if (!parts.includes(voiceMapping.personality)) {
+                // 纯用户自定义性格，追加到末尾
+                personality = parts.length > 0 ? `${targetData['性格']}，${voiceMapping.personality}` : voiceMapping.personality;
+            } else {
+                personality = targetData['性格'];
             }
-            // 3. 更新角色设定
+            // 4. 更新角色设定
             console.log('[CharacterSelection] 更新角色设定...');
-            const updateData = { ...defaultCatgirl, '性格': personality };
-            const updateResponse = await fetch('/api/characters/catgirl/test', {
+            const updateData = { ...targetData, '性格': personality };
+            const updateResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(targetName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(updateData)
@@ -233,9 +280,9 @@ class CharacterSelection {
                 throw new Error('更新角色设定失败');
             }
             console.log('[CharacterSelection] 性格更新成功:', personality);
-            // 4. 更新音色ID
+            // 5. 更新音色ID
             console.log('[CharacterSelection] 更新音色...');
-            const voiceResponse = await fetch('/api/characters/catgirl/voice_id/test', {
+            const voiceResponse = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(targetName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ voice_id: voiceMapping.voiceId })
@@ -251,13 +298,29 @@ class CharacterSelection {
         }
     }
     close() {
+        if (!this.isOpen) return;
+        this.isOpen = false;
+        // 清理挂起的定时器
+        if (this._selectTimer !== null) {
+            clearTimeout(this._selectTimer);
+            this._selectTimer = null;
+        }
+        if (this._closeTimer !== null) {
+            clearTimeout(this._closeTimer);
+            this._closeTimer = null;
+        }
+        // 移除 localechange 监听
+        window.removeEventListener('localechange', this._onLocaleChange);
         if (this.overlay) {
             // 添加淡出效果
             this.overlay.classList.add('fade-out');
             // 等待动画完成后完全移除
-            setTimeout(() => {
-                this.overlay.remove();
-                this.overlay = null;
+            this._closeTimer = setTimeout(() => {
+                this._closeTimer = null;
+                if (this.overlay) {
+                    this.overlay.remove();
+                    this.overlay = null;
+                }
                 // 写入 localStorage
                 localStorage.setItem('neko_character_selection_completed', 'true');
                 console.log('[CharacterSelection] Overlay 已移除，进入主页');

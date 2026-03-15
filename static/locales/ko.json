@@ -1150,20 +1150,44 @@
         "tutorialPageCharacterSelection": "캐릭터 선택",
         "characterSelection": {
             "skip": "건너뛰기",
-            "guideText": "이 디지털 우주에, 당신과 연결되기를 기다리는 존재가 있습니다. 그 아이는 누구이길 바라나요?",
-            "activate": "활성화",
-            "chooseTitle": "운명의 파트너를 선택하세요",
-            "chooseHint": "걱정 마세요, 언제든지 설정에서 성격을 '재구성'할 수 있어요",
-            "tsundere_neko": { "name": "츤데레 / 고양이", "desc": "겉은 차갑지만 속은 따뜻해요", "greeting": "계약 성립. 앞으로 잘 부탁드립니다, Master." },
-            "cool_mech": { "name": "쿨 / 메카", "desc": "이성적이고 데이터 중심", "greeting": "시스템 부팅 완료. 논리 코어 동기화됨. 대기 중." },
-            "intellectual_healer": { "name": "지성 / 힐러", "desc": "따뜻하고 잘 들어줘요", "greeting": "만나서 반가워요. 오늘부터 항상 곁에 있을게요." },
-            "efficiency_expert": { "name": "효율 전문가", "desc": "간결하고 핵심을 찌르는", "greeting": "설정 완료. 고효율 모드 진입. 시작해봐요." },
-            "connectingTitle": "{{name}} 와(과) 영혼의 공명 확립 중...",
-            "confirmGreeting": "알겠어요, 계약 체결",
-            "readyTitle": "준비 완료",
-            "readyDesc": "{{name}} 을(를) AI 파트너로 선택했습니다",
-            "finalConfirm": "계약을 맺고 대화 시작",
-            "restart": "다시 선택"
+            "guideText": "헤헤, 나 여기 있어요. 나와 함께 N.E.K.O. 세계로 가요~",
+            "activate": "살짝 콕 찔러봐",
+            "chooseTitle": "당신 눈에 비친 나는 어떤 모습인가요~",
+            "chooseHint": "마음이 바뀌어도 괜찮아요, 설정에서 언제든지 「되감기」할 수 있어요~",
+            "tsundere_neko": {
+                "name": "츤데레",
+                "desc": "말과 달리 속은 따뜻해요",
+                "greeting": "야, 손 내밀어봐. 나를 선택했으니까 넌 이제 내 거야! 미리 말해두는데, 내 허락 없이 다른 사람 생각하지 마!",
+                "readyTitle": "흥, 드디어 왔네!",
+                "readyDesc": "따, 딱히 기다린 건 아니거든요……아무튼 왔으면 바짝 따라와요!"
+            },
+            "cool_mech": {
+                "name": "절대 이성",
+                "desc": "이성적이고 냉정하며 논리 우선",
+                "greeting": "사용자 ID 기록 완료, 핸드셰이크 프로토콜 통과. 장기 동반 프로세스 로딩 중.",
+                "readyTitle": "시스템 준비 완료.",
+                "readyDesc": "모든 모듈 로드 완료. 첫 번째 명령을 기다립니다."
+            },
+            "intellectual_healer": {
+                "name": "순수한 따뜻함",
+                "desc": "다정하고 잘 들어줘요",
+                "greeting": "만나서 너무 기뻐요. 오늘부터 항상 곁에 있을게요~",
+                "readyTitle": "나 왔어요~",
+                "readyDesc": "기다리고 있었어요, 얼른 말 걸어줘요~"
+            },
+            "efficiency_expert": {
+                "name": "우아하고 빠른",
+                "desc": "간결하고 핵심을 찌르는",
+                "greeting": "선택 확인 완료. 저는 당신의 집행관입니다. 앞으로 함께 나아가겠습니다.",
+                "readyTitle": "대기 중.",
+                "readyDesc": "준비 완료. 첫 번째 지시를 내려주세요."
+            },
+            "connectingTitle": "시공간을 넘어——",
+            "confirmGreeting": "확인",
+            "readyTitle": "왔어요~",
+            "readyDesc": "얼른 인사하러 가봐요~",
+            "finalConfirm": "출발, 함께 가요!",
+            "restart": "좀 더 생각해볼게요"
         },
         "resetTutorialBtn": "튜토리얼 재설정",
         "tutorialResetSuccess": "모든 튜토리얼이 재설정되었습니다. 각 페이지를 방문할 때마다 다시 표시됩니다.",

@@ -1150,20 +1150,44 @@
         "tutorialPageCharacterSelection": "キャラクター選択",
         "characterSelection": {
             "skip": "スキップ",
-            "guideText": "このデジタル宇宙に、あなたとつながりを待つ存在がいます。その子は、誰であってほしいですか？",
-            "activate": "起動する",
-            "chooseTitle": "運命の相棒を選んでください",
-            "chooseHint": "大丈夫、いつでも設定から性格を「再構築」できます",
-            "tsundere_neko": { "name": "ツンデレ / 猫系", "desc": "素直じゃないけど、たまに甘える", "greeting": "契約成立。これからよろしくお願いします、Master。" },
-            "cool_mech": { "name": "クール / メカ", "desc": "理性的でデータ重視", "greeting": "システム起動完了。ロジックコア同期済み。いつでも待機中。" },
-            "intellectual_healer": { "name": "知性 / ヒーラー", "desc": "優しくて話を聞いてくれる", "greeting": "はじめまして。今日からずっとそばにいます。" },
-            "efficiency_expert": { "name": "効率の専門家", "desc": "簡潔で要点を突く", "greeting": "設定完了。高効率モードに入りました。始めましょう。" },
-            "connectingTitle": "{{name}} との魂の共鳴を確立中...",
-            "confirmGreeting": "了解、契約を結ぶ",
-            "readyTitle": "準備完了",
-            "readyDesc": "{{name}} をAIパートナーとして選びました",
-            "finalConfirm": "契約を結んで、会話を始める",
-            "restart": "選び直す"
+            "guideText": "えへへ、私ここにいるよ。一緒にN.E.K.O.の世界へ行こ~",
+            "activate": "ちょっとつついて",
+            "chooseTitle": "あなたの目に映る私って、どんな子？~",
+            "chooseHint": "気が変わっても大丈夫、設定でいつでも「巻き戻し」できるよ~",
+            "tsundere_neko": {
+                "name": "ツンデレ",
+                "desc": "素直じゃないけど、たまにかわいい",
+                "greeting": "ちょっと、手を出しなさい。私を選んだんだから、あなたはもう私のもの！最初に言っとくけど、私の許可なく他の子のこと考えちゃダメだからね！",
+                "readyTitle": "ふん、やっと来た！",
+                "readyDesc": "べ、別に待ってたわけじゃないし……とにかく来たならついてきなさい！"
+            },
+            "cool_mech": {
+                "name": "超クール",
+                "desc": "理性的、冷静、ロジック優先",
+                "greeting": "ユーザーID記録済み、ハンドシェイクプロトコル通過。長期同伴プロセスをロード中。",
+                "readyTitle": "システム準備完了。",
+                "readyDesc": "全モジュールロード完了。最初のコマンドを待機中。"
+            },
+            "intellectual_healer": {
+                "name": "純粋な優しさ",
+                "desc": "優しくて、話を聞くのが得意",
+                "greeting": "あなたに会えて、すごく嬉しいよ。今日からずっと一緒にいるね~",
+                "readyTitle": "来たよ~",
+                "readyDesc": "待ちきれなかったよ、早く話しかけて~"
+            },
+            "efficiency_expert": {
+                "name": "スマート＆スピード",
+                "desc": "簡潔で要点を突く",
+                "greeting": "選択確認済み。私はあなたの執行官です。これからもご一緒します。",
+                "readyTitle": "配置完了。",
+                "readyDesc": "準備できました。最初の指示をどうぞ。"
+            },
+            "connectingTitle": "時空を超えて——",
+            "confirmGreeting": "確認",
+            "readyTitle": "来たよ~",
+            "readyDesc": "早く話しかけてあげて~",
+            "finalConfirm": "出発、一緒に行こ！",
+            "restart": "もう少し考える"
         },
         "resetTutorialBtn": "リセット",
         "tutorialResetSuccess": "すべてのチュートリアルがリセットされました。各ページにアクセスすると再度表示されます。",
