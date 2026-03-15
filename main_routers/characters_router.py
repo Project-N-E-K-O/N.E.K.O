@@ -1645,73 +1645,162 @@ def _normalize_voice_clone_api_audio(
 ) -> tuple[io.BytesIO, str, dict]:
     """将上传的语音克隆参考音频重新生成成规范化 WAV。
 
-    这里不是只做“校验”，而是无论原文件是否已经满足要求，都会：
+    这里不是只做"校验"，而是无论原文件是否已经满足要求，都会：
     1. 解析原始音频；
     2. 将采样率按允许列表向下匹配；
     3. 转为单声道；
     4. 转为 16-bit；
     5. 导出为新的 WAV 文件后再上传。
 
+    使用 pyav 进行音频处理。
+
     返回值：
     - 规范化后的 WAV 二进制缓冲区
     - 规范化后的文件名（统一为 .wav）
     - 原始/规范化后的音频元信息，供日志记录使用
     """
-    file_buffer.seek(0)
-    file_extension = pathlib.Path(filename or '').suffix.lower()
-
+    import numpy as np
     try:
-        from pydub import AudioSegment
+        import av
     except ImportError as err:
         raise ValueError(
-            '缺少 pydub 依赖，无法自动转换语音克隆音频。请安装 pydub 和 ffmpeg。'
+            '缺少 av 依赖，无法自动转换语音克隆音频。请安装 pyav。'
         ) from err
 
+    file_buffer.seek(0)
+
     try:
-        if file_extension == '.wav':
-            audio_seg = AudioSegment.from_wav(file_buffer)
+        # 使用 pyav 打开音频文件
+        container = av.open(file_buffer, mode='r')
+        
+        # 获取音频流
+        audio_streams = [s for s in container.streams if s.type == 'audio']
+        if not audio_streams:
+            raise ValueError('文件中没有音频流')
+        
+        stream = audio_streams[0]
+        original_sample_rate = stream.sample_rate
+        original_channels = stream.channels
+        
+        # 解码音频帧
+        frames = []
+        for packet in container.demux(stream):
+            for frame in packet.decode():
+                frames.append(frame)
+        
+        if not frames:
+            raise ValueError('无法解码音频帧')
+        
+        # 合并所有帧的数据
+        # 将帧转换为 numpy 数组
+        audio_data = []
+        for frame in frames:
+            # 将帧转换为 float32 numpy 数组
+            frame_array = frame.to_ndarray()
+            audio_data.append(frame_array)
+        
+        # 合并所有帧
+        if audio_data:
+            import numpy as np
+            audio_array = np.concatenate(audio_data, axis=0)
         else:
-            input_format = file_extension[1:] if file_extension.startswith('.') else None
-            audio_seg = AudioSegment.from_file(file_buffer, format=input_format)
-    except Exception as err:
-        raise ValueError(f'无法解析上传音频文件: {err}') from err
-
-    # 采样率按允许值集合向下匹配，保证生成出来的文件落在约定范围内。
-    target_sample_rate = _select_voice_clone_sample_rate(audio_seg.frame_rate)
-    original_info = {
-        'sample_rate': audio_seg.frame_rate,
-        'channels': audio_seg.channels,
-        'sample_width': audio_seg.sample_width,
-        'duration_ms': len(audio_seg),
-    }
-
-    # 统一重新生成：单声道 + 目标采样率 + 16-bit PCM WAV。
-    normalized_seg = (
-        audio_seg
-        .set_channels(1)
-        .set_frame_rate(target_sample_rate)
-        .set_sample_width(2)
-    )
-
-    normalized_buffer = io.BytesIO()
-    normalized_seg.export(normalized_buffer, format='wav')
-    normalized_buffer.seek(0)
-
-    # 再次读取导出后的 WAV 头，记录最终实际写入的参数，避免仅依赖 pydub 内存对象属性。
-    with wave.open(normalized_buffer, 'rb') as wav_file:
-        normalized_info = {
-            'sample_rate': wav_file.getframerate(),
-            'channels': wav_file.getnchannels(),
-            'sample_width': wav_file.getsampwidth(),
-            'n_frames': wav_file.getnframes(),
+            raise ValueError('音频数据为空')
+        
+        # 如果是立体声，转换为单声道（取平均值）
+        if original_channels > 1:
+            audio_array = audio_array.mean(axis=1, keepdims=True)
+        
+        # 采样率按允许值集合向下匹配
+        target_sample_rate = _select_voice_clone_sample_rate(original_sample_rate)
+        
+        original_info = {
+            'sample_rate': original_sample_rate,
+            'channels': original_channels,
+            'sample_width': 2,  # pyav 默认使用 16-bit
+            'duration_ms': int(len(audio_array) / original_sample_rate * 1000),
         }
-
-    normalized_buffer.seek(0)
-    normalized_filename = f"{pathlib.Path(filename or 'prompt_audio').stem}.wav"
-    return normalized_buffer, normalized_filename, {
-        'original': original_info,
-        'normalized': normalized_info,
-    }
+        
+        # 如果需要重采样
+        if target_sample_rate != original_sample_rate:
+            # 使用 soxr 或 scipy 进行重采样
+            try:
+                import soxr
+                # 将数组展平以便重采样
+                audio_array_flat = audio_array.flatten()
+                resampled = soxr.resample(
+                    audio_array_flat,
+                    original_sample_rate,
+                    target_sample_rate
+                )
+                # 重新 reshape
+                audio_array = resampled.reshape(-1, 1)
+            except ImportError:
+                # 如果没有 soxr，使用简单的线性插值
+                import numpy as np
+                orig_len = len(audio_array)
+                target_len = int(orig_len * target_sample_rate / original_sample_rate)
+                audio_array_flat = audio_array.flatten()
+                # 线性插值
+                indices = np.linspace(0, len(audio_array_flat) - 1, target_len)
+                resampled = np.interp(indices, np.arange(len(audio_array_flat)), audio_array_flat)
+                audio_array = resampled.reshape(-1, 1)
+        
+        # 确保是 16-bit 整数格式
+        if audio_array.dtype != np.int16:
+            # 将 float 转换为 int16
+            if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
+                audio_array = (audio_array * 32767).clip(-32768, 32767).astype(np.int16)
+            else:
+                audio_array = audio_array.astype(np.int16)
+        
+        # 使用 pyav 导出为 WAV
+        output_buffer = io.BytesIO()
+        output_container = av.open(output_buffer, mode='w', format='wav')
+        
+        # 创建输出流
+        output_stream = output_container.add_stream(
+            'pcm_s16le',  # 16-bit PCM
+            rate=target_sample_rate,
+            channels=1
+        )
+        
+        # 创建音频帧并写入
+        frame = av.AudioFrame.from_ndarray(
+            audio_array.T.astype(np.int16),
+            format='s16',
+            layout='mono',
+            sample_rate=target_sample_rate
+        )
+        frame.sample_rate = target_sample_rate
+        
+        for packet in output_stream.encode(frame):
+            output_container.mux(packet)
+        
+        # 刷新流
+        for packet in output_stream.encode(None):
+            output_container.mux(packet)
+        
+        output_container.close()
+        output_buffer.seek(0)
+        
+        # 再次读取导出后的 WAV 头，记录最终实际写入的参数
+        with wave.open(output_buffer, 'rb') as wav_file:
+            normalized_info = {
+                'sample_rate': wav_file.getframerate(),
+                'channels': wav_file.getnchannels(),
+                'sample_width': wav_file.getsampwidth(),
+                'n_frames': wav_file.getnframes(),
+            }
+        
+        output_buffer.seek(0)
+        normalized_filename = f"{pathlib.Path(filename or 'prompt_audio').stem}.wav"
+        return output_buffer, normalized_filename, {
+            'original': original_info,
+            'normalized': normalized_info,
+        }
+        
+    except Exception as err:
+        raise ValueError(f'无法解析或处理上传音频文件: {err}') from err
 
 
 @router.post('/audio/analyze_silence')
