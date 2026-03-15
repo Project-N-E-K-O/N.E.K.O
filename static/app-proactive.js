@@ -136,7 +136,12 @@
 
         // 计算延迟时间（指数退避，倍率2.5）
         var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
-        console.log('主动搭话：' + (delay / 1000) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '）');
+        
+        // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
+        var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
+        delay += startupDelay;
+        
+        console.log('主动搭话：' + (delay / 1000) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
             // 双重检查锁：定时器触发时再次检查是否正在执行

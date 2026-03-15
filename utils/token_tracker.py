@@ -815,6 +815,91 @@ def _get_base_url(self_obj) -> str:
         return ""
 
 
+def _usage_to_dict(usage) -> dict:
+    """将 usage 对象统一转为 dict，确保所有字段（含 provider 自定义字段）都能被检索到。
+
+    OpenAI SDK 用 Pydantic model 解析 usage，非标准字段（如阶跃的 cached_tokens）
+    在 v2 中藏在 model_extra 里，在 v1 中可能被丢弃但留在 __dict__ 中。
+    """
+    if isinstance(usage, dict):
+        return usage
+
+    d = {}
+
+    # Pydantic v2: model_dump() 不含 extra fields，需要合并 model_extra
+    if hasattr(usage, 'model_dump'):
+        try:
+            d = usage.model_dump()
+        except Exception:
+            d = {}
+        # model_extra 包含 Pydantic model 不认识的额外字段（如 Step 的 cached_tokens）
+        extra = getattr(usage, 'model_extra', None)
+        if extra and isinstance(extra, dict):
+            d.update(extra)
+    # Pydantic v1: .dict()
+    elif hasattr(usage, 'dict'):
+        try:
+            d = usage.dict()
+        except Exception:
+            d = {}
+
+    # 兜底：__dict__ 可能包含更多字段
+    if hasattr(usage, '__dict__'):
+        for k, v in usage.__dict__.items():
+            if not k.startswith('_') and k not in d:
+                d[k] = v
+
+    return d
+
+
+# 所有已知的 cached_tokens 字段名（各 provider）
+_CACHED_TOKEN_FIELDS = (
+    'cached_tokens',                # Step（阶跃星辰）: usage.cached_tokens
+    'cache_read_input_tokens',      # Anthropic Claude
+    'prompt_cache_hit_tokens',      # 部分国产 provider
+    'cached_content_token_count',   # Google PaLM/旧版 Gemini
+    'cache_tokens',                 # 其他变体
+)
+
+# 可能包含 cached_tokens 的嵌套字段
+_NESTED_DETAIL_FIELDS = (
+    'prompt_tokens_details',        # OpenAI 官方
+    'details',                      # 通用
+    'token_details',                # 通用
+    'prompt_details',               # 通用
+)
+
+
+def _extract_cached_tokens(usage_dict: dict) -> int:
+    """从 usage dict 中提取 cached_tokens，兼容多种 provider 格式。
+
+    已知格式：
+    1. OpenAI 官方: usage.prompt_tokens_details.cached_tokens
+    2. 阶跃星辰 (Step): usage.cached_tokens（顶层）
+    3. Gemini/其他: 可能在嵌套结构中
+    """
+    # 1) 检查嵌套结构（如 OpenAI 的 prompt_tokens_details.cached_tokens）
+    for nested_key in _NESTED_DETAIL_FIELDS:
+        nested = usage_dict.get(nested_key)
+        if not nested:
+            continue
+        # 可能是 Pydantic 对象或 dict
+        if not isinstance(nested, dict):
+            nested = _usage_to_dict(nested)
+        for field in _CACHED_TOKEN_FIELDS:
+            val = nested.get(field)
+            if val:
+                return int(val)
+
+    # 2) 顶层直接有 cached_tokens（如阶跃星辰）
+    for field in _CACHED_TOKEN_FIELDS:
+        val = usage_dict.get(field)
+        if val:
+            return int(val)
+
+    return 0
+
+
 def _record_usage_from_response(response, call_type: str):
     """从 OpenAI SDK response 提取 usage 并记录。
 
@@ -830,17 +915,20 @@ def _record_usage_from_response(response, call_type: str):
         usage = response.usage
         model = getattr(response, 'model', None) or "unknown"
 
-        # 提取 cached_tokens（OpenAI 新版 API 才有 prompt_tokens_details）
-        cached_tokens = 0
-        details = getattr(usage, 'prompt_tokens_details', None)
-        if details is not None:
-            cached_tokens = getattr(details, 'cached_tokens', 0) or 0
+        # 把 usage 转成 dict，统一后续查找（兼容 Pydantic v1/v2 和原生 dict）
+        usage_dict = _usage_to_dict(usage)
+
+        # 调试：记录完整 usage 结构
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Token tracker: usage for model={model}: {usage_dict}")
+
+        cached_tokens = _extract_cached_tokens(usage_dict)
 
         TokenTracker.get_instance().record(
             model=model,
-            prompt_tokens=getattr(usage, 'prompt_tokens', 0) or 0,
-            completion_tokens=getattr(usage, 'completion_tokens', 0) or 0,
-            total_tokens=getattr(usage, 'total_tokens', 0) or 0,
+            prompt_tokens=usage_dict.get('prompt_tokens', 0) or 0,
+            completion_tokens=usage_dict.get('completion_tokens', 0) or 0,
+            total_tokens=usage_dict.get('total_tokens', 0) or 0,
             cached_tokens=cached_tokens,
             call_type=call_type,
         )
@@ -998,18 +1086,26 @@ async def _handle_async_stream(self_obj, original_fn, args, kwargs, call_type):
 
 
 class _SyncStreamWrapper:
-    """Wrap 同步 Stream，在迭代结束后提取 usage。"""
+    """Wrap 同步 Stream，在迭代结束后提取 usage。
+
+    关键：只在流结束后记录一次（取最后一个带 usage 的 chunk）。
+    部分 OpenAI 兼容 API（阶跃、通义等）在每个 chunk 都返回累计 usage，
+    如果每个 chunk 都记录就会导致严重的重复计数。
+    """
 
     def __init__(self, stream, call_type: str):
         self._stream = stream
         self._call_type = call_type
 
     def __iter__(self):
+        last_usage_chunk = None
         for chunk in self._stream:
-            # 最后一个 chunk（带 usage）
             if hasattr(chunk, 'usage') and chunk.usage is not None:
-                _record_usage_from_response(chunk, self._call_type)
+                last_usage_chunk = chunk
             yield chunk
+        # 流结束后，只记录最后一个带 usage 的 chunk
+        if last_usage_chunk is not None:
+            _record_usage_from_response(last_usage_chunk, self._call_type)
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -1025,7 +1121,10 @@ class _SyncStreamWrapper:
 
 
 class _AsyncStreamWrapper:
-    """Wrap 异步 AsyncStream，在迭代结束后提取 usage。"""
+    """Wrap 异步 AsyncStream，在迭代结束后提取 usage。
+
+    同 _SyncStreamWrapper：只在流结束后记录一次。
+    """
 
     def __init__(self, stream, call_type: str):
         self._stream = stream
@@ -1035,10 +1134,14 @@ class _AsyncStreamWrapper:
         return self._aiter_and_track()
 
     async def _aiter_and_track(self):
+        last_usage_chunk = None
         async for chunk in self._stream:
             if hasattr(chunk, 'usage') and chunk.usage is not None:
-                _record_usage_from_response(chunk, self._call_type)
+                last_usage_chunk = chunk
             yield chunk
+        # 流结束后，只记录最后一个带 usage 的 chunk
+        if last_usage_chunk is not None:
+            _record_usage_from_response(last_usage_chunk, self._call_type)
 
     def __getattr__(self, name):
         return getattr(self._stream, name)

@@ -65,7 +65,7 @@ class TelemetryStorage:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS events (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    received_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    received_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     device_id   TEXT    NOT NULL,
                     app_version TEXT    NOT NULL DEFAULT 'unknown',
                     payload     TEXT    NOT NULL,
@@ -86,7 +86,7 @@ class TelemetryStorage:
                     cached_tokens     INTEGER NOT NULL DEFAULT 0,
                     call_count        INTEGER NOT NULL DEFAULT 0,
                     error_count       INTEGER NOT NULL DEFAULT 0,
-                    updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     UNIQUE(device_id, stat_date, model, call_type)
                 );
                 CREATE INDEX IF NOT EXISTS idx_agg_device ON daily_aggregates(device_id);
@@ -95,14 +95,14 @@ class TelemetryStorage:
                 CREATE TABLE IF NOT EXISTS devices (
                     device_id    TEXT PRIMARY KEY,
                     app_version  TEXT    NOT NULL DEFAULT 'unknown',
-                    first_seen   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                    last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    first_seen   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     event_count  INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS seen_batches (
                     batch_id    TEXT PRIMARY KEY,
-                    received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                    received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
             """)
             conn.commit()
@@ -157,10 +157,10 @@ class TelemetryStorage:
                     )
             conn.execute("""
                 INSERT INTO devices (device_id, app_version, first_seen, last_seen, event_count)
-                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 1)
+                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
                     app_version = excluded.app_version,
-                    last_seen = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
             """, (device_id, app_version))
 
@@ -181,7 +181,7 @@ class TelemetryStorage:
                 cached_tokens     = cached_tokens     + excluded.cached_tokens,
                 call_count        = call_count        + excluded.call_count,
                 error_count       = error_count       + excluded.error_count,
-                updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                updated_at        = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')
         """, (device_id, stat_date, model, call_type,
               prompt_tokens, completion_tokens, total_tokens, cached_tokens,
               call_count, error_count))

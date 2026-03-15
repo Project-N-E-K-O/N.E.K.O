@@ -401,18 +401,21 @@
                     }, MUSIC_CONFIG.timeouts.ended);
                 });
                 boundPlayer.on('error', (err) => {
-                    // 如果正在销毁中，静默错误
                     if (boundPlayer._destroying) return;
                     console.error('[Music UI] APlayer error:', err);
                     
                     const tokenAtEvent = boundPlayer._latestToken;
+                    boundPlayer._loadError = true;
+                    
                     setTimeout(() => {
-                        // 确保这个错误属于“当前”正在播放的请求
                         if (tokenAtEvent !== latestMusicRequestToken) return;
                         if (autoplayBlocked) return;
                         if (boundPlayer._destroying) return;
                         
-                        showErrorToast('music.playError', '播放失败，音频源可能已失效');
+                        let errorDetail = '播放失败，音频源可能已失效';
+                        if (err && err.message) errorDetail = err.message;
+                        
+                        showErrorToast('music.playError', errorDetail);
                         updatePlayBtnState(false);
                         
                         if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
@@ -420,7 +423,7 @@
                             if (tokenAtEvent === latestMusicRequestToken) {
                                 destroyMusicPlayer(true, true, true);
                             }
-                        }, MUSIC_CONFIG.timeouts.idle);
+                        }, 3000);
                     }, 200);
                 });
 
@@ -433,6 +436,12 @@
                     e.preventDefault();
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     if (typeof window.setMusicUserDriven === 'function') window.setMusicUserDriven();
+                    
+                    if (boundPlayer._loadError) {
+                        destroyMusicPlayer(true, true, true);
+                        return;
+                    }
+                    
                     if (boundPlayer.audio.ended) boundPlayer.seek(0);
                     boundPlayer.toggle();
                 };
