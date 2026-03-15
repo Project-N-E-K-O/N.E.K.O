@@ -1189,7 +1189,6 @@ class ConfigManager:
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        semantic_store = {name: f'{memory_base}/semantic_memory_{name}' for name in catgirl_names}
         time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
         setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
         recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
@@ -1201,7 +1200,6 @@ class ConfigManager:
             catgirl_data,
             name_mapping,
             lanlan_prompt_map,
-            semantic_store,
             time_store,
             setting_store,
             recent_log,
@@ -1218,6 +1216,7 @@ class ConfigManager:
     # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
     # re-attempt it (and never pay the timeout again) within the same process.
     _GEO_INDETERMINATE = object()
+    _geo_indeterminate_logged = False
 
     @staticmethod
     def _check_ip_non_mainland_http():
@@ -1282,11 +1281,13 @@ class ConfigManager:
 
         if ip_result is True and steam_result is True:
             ConfigManager._region_cache = True
+            ConfigManager._geo_indeterminate_logged = False
             print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return True
 
         if ip_result is False or steam_result is False:
             ConfigManager._region_cache = False
+            ConfigManager._geo_indeterminate_logged = False
             print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return False
 
@@ -1295,7 +1296,9 @@ class ConfigManager:
         # after this call, and caching False here would permanently suppress re-evaluation.
         # Callers that iterate get_core_config() will simply retry the geo check on the
         # next invocation until at least one source becomes definitive.
-        print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
+        if not ConfigManager._geo_indeterminate_logged:
+            ConfigManager._geo_indeterminate_logged = True
+            print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
         return False
 
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:

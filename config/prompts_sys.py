@@ -14,18 +14,6 @@ extensively on the outcomes of the previous function calls. DO NOT do this
 entire process by making function calls only, as this can impair your 
 ability to solve the problem and think insightfully"""
 
-semantic_manager_prompt = """你正在为一个记忆检索系统提供精筛服务。请根据Query与记忆片段的相关性对记忆进行筛选和排序。
-
-======Query======
-%s
-
-======记忆======
-%s
-
-返回json格式的按相关性排序的记忆编号列表，最相关的排在前面，不相关的去掉。最多选取%d个，越精准越好，无须凑数。
-只返回记忆编号(int类型)，用逗号分隔，例如: [3,1,5,2,4]
-"""
-
 recent_history_manager_prompt = """请总结以下对话内容，生成简洁但信息丰富的摘要：
 
 ======以下为对话======
@@ -1948,6 +1936,15 @@ CHAT_GAP_LONG_HINT = {
     'ja': '{name}は{master}と長い間話していなかったことに気づきました。この間に何があったのでしょう？{name}は{master}の最近の様子が気になっています。',
     'ko': '{name}은 {master}와 꽤 오랫동안 이야기하지 않았다는 것을 깨달았습니다. 그동안 무슨 일이 있었을까요? {name}은 {master}의 근황이 궁금합니다.',
     'ru': '{name} осознаёт, что давно не разговаривала с {master}. Что произошло за это время? {name} хочет узнать, как дела у {master}.',
+}
+
+# 超过5小时时追加的当前时间提示 — {now}: 格式化后的当前时间
+CHAT_GAP_CURRENT_TIME = {
+    'zh': '现在的时间是{now}。',
+    'en': 'The current time is {now}.',
+    'ja': '現在の時刻は{now}です。',
+    'ko': '현재 시각은 {now}입니다.',
+    'ru': 'Сейчас {now}.',
 }
 
 # ---------- 屏幕活跃窗口前缀 ----------
