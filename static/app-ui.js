@@ -655,6 +655,10 @@
             console.log('[showCurrentModel] 当前处于"请她离开"状态（VRM），跳过显示逻辑');
             return;
         }
+        if (window.mmdManager && window.mmdManager._goodbyeClicked) {
+            console.log('[showCurrentModel] 当前处于"请她离开"状态（MMD），跳过显示逻辑');
+            return;
+        }
 
         // 重置 goodbye 标志
         if (window.live2dManager) {
@@ -662,6 +666,9 @@
         }
         if (window.vrmManager) {
             window.vrmManager._goodbyeClicked = false;
+        }
+        if (window.mmdManager) {
+            window.mmdManager._goodbyeClicked = false;
         }
 
         try {
@@ -683,9 +690,25 @@
             }
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
-            console.log('[showCurrentModel] 当前角色模型类型:', modelType);
 
-            if (modelType === 'vrm') {
+            // 解析 live3d 子类型（与 app-character.js 保持一致）
+            let effectiveModelType = modelType;
+            if (modelType === 'live3d') {
+                const mmdPath = catgirlConfig.mmd
+                    || catgirlConfig._reserved?.avatar?.mmd?.model_path
+                    || '';
+                const vrmPath = catgirlConfig.vrm
+                    || catgirlConfig._reserved?.avatar?.vrm?.model_path
+                    || '';
+                if (mmdPath) {
+                    effectiveModelType = 'mmd';
+                } else if (vrmPath) {
+                    effectiveModelType = 'vrm';
+                }
+            }
+            console.log('[showCurrentModel] 当前角色模型类型:', modelType, '有效类型:', effectiveModelType);
+
+            if (effectiveModelType === 'vrm') {
                 console.log('[showCurrentModel] 开始显示VRM模型');
 
                 const vrmContainer = document.getElementById('vrm-container');
@@ -844,6 +867,89 @@
                     statusElement.style.setProperty('visibility', 'hidden', 'important');
                     statusElement.style.setProperty('opacity', '0', 'important');
                 }
+
+                // 隐藏 MMD 容器和按钮
+                const mmdContainerVrm = document.getElementById('mmd-container');
+                if (mmdContainerVrm) { mmdContainerVrm.style.display = 'none'; mmdContainerVrm.classList.add('hidden'); }
+                const mmdCanvasVrm = document.getElementById('mmd-canvas');
+                if (mmdCanvasVrm) { mmdCanvasVrm.style.visibility = 'hidden'; mmdCanvasVrm.style.pointerEvents = 'none'; }
+                const mmdFloatingButtonsVrm = document.getElementById('mmd-floating-buttons');
+                if (mmdFloatingButtonsVrm) { mmdFloatingButtonsVrm.style.display = 'none'; }
+
+            } else if (effectiveModelType === 'mmd') {
+                // ═══════════════ 显示 MMD 模型 ═══════════════
+                console.log('[showCurrentModel] 开始显示MMD模型');
+
+                // 显示 MMD 容器
+                const mmdContainer = document.getElementById('mmd-container');
+                if (mmdContainer) {
+                    mmdContainer.classList.remove('hidden');
+                    mmdContainer.style.display = 'block';
+                    mmdContainer.style.visibility = 'visible';
+                }
+                const mmdCanvas = document.getElementById('mmd-canvas');
+                if (mmdCanvas) {
+                    mmdCanvas.style.setProperty('visibility', 'visible', 'important');
+                    mmdCanvas.style.setProperty('pointer-events', 'auto', 'important');
+                }
+
+                // 隐藏 VRM
+                const vrmContainerMmd = document.getElementById('vrm-container');
+                if (vrmContainerMmd) { vrmContainerMmd.style.display = 'none'; vrmContainerMmd.classList.add('hidden'); }
+                const vrmCanvasMmd = document.getElementById('vrm-canvas');
+                if (vrmCanvasMmd) { vrmCanvasMmd.style.visibility = 'hidden'; vrmCanvasMmd.style.pointerEvents = 'none'; }
+
+                // 隐藏 Live2D
+                const live2dContainerMmd = document.getElementById('live2d-container');
+                if (live2dContainerMmd) { live2dContainerMmd.style.display = 'none'; live2dContainerMmd.classList.add('hidden'); }
+
+                // 显示 MMD 浮动按钮
+                let mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
+                if (!mmdFloatingButtons && window.mmdManager && typeof window.mmdManager.setupFloatingButtons === 'function') {
+                    window.mmdManager.setupFloatingButtons();
+                    mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
+                }
+                if (mmdFloatingButtons) {
+                    mmdFloatingButtons.style.removeProperty('display');
+                    mmdFloatingButtons.style.removeProperty('visibility');
+                    mmdFloatingButtons.style.removeProperty('opacity');
+                }
+
+                // 隐藏 VRM / Live2D 浮动按钮
+                const vrmFloatingButtonsMmd = document.getElementById('vrm-floating-buttons');
+                if (vrmFloatingButtonsMmd) { vrmFloatingButtonsMmd.style.display = 'none'; }
+                const live2dFloatingButtonsMmd = document.getElementById('live2d-floating-buttons');
+                if (live2dFloatingButtonsMmd) { live2dFloatingButtonsMmd.style.display = 'none'; }
+                const vrmLockIconMmd = document.getElementById('vrm-lock-icon');
+                if (vrmLockIconMmd) { vrmLockIconMmd.style.display = 'none'; }
+                const live2dLockIconMmd = document.getElementById('live2d-lock-icon');
+                if (live2dLockIconMmd) { live2dLockIconMmd.style.display = 'none'; }
+
+                // 隐藏原生按钮和status栏
+                const sidebarMmd = document.getElementById('sidebar');
+                const sidebarboxMmd = document.getElementById('sidebarbox');
+                if (sidebarMmd) {
+                    sidebarMmd.style.setProperty('display', 'none', 'important');
+                    sidebarMmd.style.setProperty('visibility', 'hidden', 'important');
+                    sidebarMmd.style.setProperty('opacity', '0', 'important');
+                }
+                if (sidebarboxMmd) {
+                    sidebarboxMmd.style.setProperty('display', 'none', 'important');
+                    sidebarboxMmd.style.setProperty('visibility', 'hidden', 'important');
+                    sidebarboxMmd.style.setProperty('opacity', '0', 'important');
+                }
+                document.querySelectorAll('.side-btn').forEach(btn => {
+                    btn.style.setProperty('display', 'none', 'important');
+                    btn.style.setProperty('visibility', 'hidden', 'important');
+                    btn.style.setProperty('opacity', '0', 'important');
+                });
+                const statusElementMmd = document.getElementById('status');
+                if (statusElementMmd) {
+                    statusElementMmd.style.setProperty('display', 'none', 'important');
+                    statusElementMmd.style.setProperty('visibility', 'hidden', 'important');
+                    statusElementMmd.style.setProperty('opacity', '0', 'important');
+                }
+
             } else {
                 // 显示 Live2D 模型
                 showLive2d();
@@ -869,6 +975,14 @@
                 if (vrmLockIcon) {
                     vrmLockIcon.style.display = 'none';
                 }
+
+                // 隐藏MMD容器和按钮
+                const mmdContainerL2d = document.getElementById('mmd-container');
+                if (mmdContainerL2d) { mmdContainerL2d.style.display = 'none'; mmdContainerL2d.classList.add('hidden'); }
+                const mmdCanvasL2d = document.getElementById('mmd-canvas');
+                if (mmdCanvasL2d) { mmdCanvasL2d.style.visibility = 'hidden'; mmdCanvasL2d.style.pointerEvents = 'none'; }
+                const mmdFloatingButtonsL2d = document.getElementById('mmd-floating-buttons');
+                if (mmdFloatingButtonsL2d) { mmdFloatingButtonsL2d.style.display = 'none'; }
             }
         } catch (error) {
             console.error('[showCurrentModel] 失败:', error);
@@ -956,6 +1070,9 @@
             if (window.vrmManager) {
                 window.vrmManager._goodbyeClicked = true;
             }
+            if (window.mmdManager) {
+                window.mmdManager._goodbyeClicked = true;
+            }
             console.log('[App] 设置 goodbyeClicked 为 true，当前状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined', 'VRM:', window.vrmManager ? window.vrmManager._goodbyeClicked : 'undefined');
 
             // 立即关闭所有弹窗
@@ -972,6 +1089,10 @@
                 popup.style.setProperty('visibility', 'hidden', 'important');
                 popup.style.setProperty('opacity', '0', 'important');
                 popup.style.setProperty('pointer-events', 'none', 'important');
+            });
+            // 关闭 MMD 弹窗
+            document.querySelectorAll('[id^="mmd-popup-"]').forEach(popup => {
+                popup.style.setProperty('display', 'none', 'important');
             });
             if (window.live2dManager && window.live2dManager._popupTimers) {
                 Object.values(window.live2dManager._popupTimers).forEach(timer => {
@@ -996,6 +1117,9 @@
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
                 window.vrmManager.core.setLocked(true);
             }
+            if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
+                window.mmdManager.core.setLocked(true);
+            }
 
             // 不立即隐藏 canvas，先仅禁用交互
             const live2dCanvas = document.getElementById('live2d-canvas');
@@ -1007,10 +1131,14 @@
             // 判断当前激活的模型类型
             const vrmContainer = document.getElementById('vrm-container');
             const live2dContainer = document.getElementById('live2d-container');
+            const mmdContainer = document.getElementById('mmd-container');
             const isVrmActive = vrmContainer &&
                 vrmContainer.style.display !== 'none' &&
                 !vrmContainer.classList.contains('hidden');
-            console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive);
+            const isMmdActive = mmdContainer &&
+                mmdContainer.style.display !== 'none' &&
+                !mmdContainer.classList.contains('hidden');
+            console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive, 'isMmdActive:', isMmdActive);
 
             // VRM 也先仅禁用交互
             const vrmCanvas = document.getElementById('vrm-canvas');
@@ -1021,6 +1149,15 @@
             if (vrmCanvas) {
                 vrmCanvas.style.setProperty('pointer-events', 'none', 'important');
                 console.log('[App] 已禁用 vrm-canvas 交互');
+            }
+
+            // MMD 也先仅禁用交互
+            const mmdCanvas = document.getElementById('mmd-canvas');
+            if (mmdContainer) {
+                mmdContainer.style.setProperty('pointer-events', 'none', 'important');
+            }
+            if (mmdCanvas) {
+                mmdCanvas.style.setProperty('pointer-events', 'none', 'important');
             }
 
             // 为 VRM 容器添加 minimized 类
@@ -1057,6 +1194,13 @@
                 if (vrmCanvas) {
                     vrmCanvas.style.setProperty('visibility', 'hidden', 'important');
                     console.log('[App] 过渡完成，已隐藏 vrm-canvas');
+                }
+                if (mmdContainer) {
+                    mmdContainer.style.setProperty('visibility', 'hidden', 'important');
+                    mmdContainer.style.setProperty('display', 'none', 'important');
+                }
+                if (mmdCanvas) {
+                    mmdCanvas.style.setProperty('visibility', 'hidden', 'important');
                 }
             }, 1100);
 
@@ -1106,6 +1250,18 @@
                 vrmLockIcon.style.setProperty('display', 'none', 'important');
                 vrmLockIcon.style.setProperty('visibility', 'hidden', 'important');
                 vrmLockIcon.style.setProperty('opacity', '0', 'important');
+            }
+            const mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
+            if (mmdFloatingButtons) {
+                mmdFloatingButtons.style.setProperty('display', 'none', 'important');
+                mmdFloatingButtons.style.setProperty('visibility', 'hidden', 'important');
+                mmdFloatingButtons.style.setProperty('opacity', '0', 'important');
+            }
+            const mmdLockIcon = document.getElementById('mmd-lock-icon');
+            if (mmdLockIcon) {
+                mmdLockIcon.style.setProperty('display', 'none', 'important');
+                mmdLockIcon.style.setProperty('visibility', 'hidden', 'important');
+                mmdLockIcon.style.setProperty('opacity', '0', 'important');
             }
 
             // 显示独立的"请她回来"按钮
@@ -1279,6 +1435,9 @@
             if (window.vrmManager) {
                 console.log('[App] 清除 vrmManager._goodbyeClicked，之前值:', window.vrmManager._goodbyeClicked);
                 window.vrmManager._goodbyeClicked = false;
+            }
+            if (window.mmdManager) {
+                window.mmdManager._goodbyeClicked = false;
             }
 
             console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);

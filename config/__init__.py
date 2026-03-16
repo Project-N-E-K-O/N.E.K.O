@@ -34,6 +34,9 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "mmd",
+    "mmd_animation",
+    "mmd_idle_animation",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -348,9 +351,14 @@ MMD_RENDERING_RANGES = {
 
 _DEFAULT_MMD_PHYSICS_MUTABLE = {
     "enabled": True,
+    "strength": 1.0,
 }
 
 DEFAULT_MMD_PHYSICS = MappingProxyType(_DEFAULT_MMD_PHYSICS_MUTABLE)
+
+MMD_PHYSICS_RANGES = {
+    "strength": (0.1, 2.0),
+}
 
 _DEFAULT_MMD_CURSOR_FOLLOW_MUTABLE = {
     "enabled": True,
@@ -713,6 +721,7 @@ __all__ = [
     'DEFAULT_MMD_RENDERING',
     'MMD_RENDERING_RANGES',
     'DEFAULT_MMD_PHYSICS',
+    'MMD_PHYSICS_RANGES',
     'DEFAULT_MMD_CURSOR_FOLLOW',
     'MMD_CURSOR_FOLLOW_RANGES',
     'get_default_mmd_settings',

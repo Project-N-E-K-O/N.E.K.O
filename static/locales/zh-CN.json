@@ -1520,7 +1520,8 @@
         },
         "physics": {
             "title": "MMD物理设置",
-            "enabled": "物理模拟"
+            "enabled": "物理模拟",
+            "strength": "拟真强度"
         },
         "cursorFollow": {
             "title": "鼠标跟踪",

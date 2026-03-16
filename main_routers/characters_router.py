@@ -892,6 +892,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             get_default_mmd_settings,
             MMD_LIGHTING_RANGES,
             MMD_RENDERING_RANGES,
+            MMD_PHYSICS_RANGES,
             MMD_CURSOR_FOLLOW_RANGES,
         )
 
@@ -924,11 +925,18 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             physics = {**defaults['physics'], **data['physics']}
             if 'enabled' in physics:
                 physics['enabled'] = bool(physics['enabled'])
+            for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
+                if key in physics:
+                    val = physics[key]
+                    if isinstance(val, (int, float)):
+                        physics[key] = max(min_val, min(max_val, float(val)))
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
 
         # --- 鼠标跟踪 ---
-        if 'cursor_follow' in data and isinstance(data['cursor_follow'], dict):
-            cursor_follow = {**defaults['cursor_follow'], **data['cursor_follow']}
+        # 前端发送 camelCase（cursorFollow），兼容 snake_case（cursor_follow）
+        cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
+        if cursor_follow_data and isinstance(cursor_follow_data, dict):
+            cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
             for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
                 if key in cursor_follow:
                     val = cursor_follow[key]
@@ -981,7 +989,8 @@ async def get_catgirl_mmd_settings(name: str):
                 'lighting': lighting if isinstance(lighting, dict) else defaults['lighting'],
                 'rendering': rendering if isinstance(rendering, dict) else defaults['rendering'],
                 'physics': physics if isinstance(physics, dict) else defaults['physics'],
-                'cursor_follow': cursor_follow if isinstance(cursor_follow, dict) else defaults['cursor_follow'],
+                # 使用 camelCase 与前端保持一致
+                'cursorFollow': cursor_follow if isinstance(cursor_follow, dict) else defaults['cursor_follow'],
             }
         })
 

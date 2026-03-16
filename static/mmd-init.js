@@ -92,6 +92,49 @@
     }
 })();
 
+// 模块加载完成后，若当前是 MMD 模式则自动初始化并加载模型
+window.addEventListener('mmd-modules-ready', async () => {
+    // 模型管理页面不自动加载
+    if (window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null) return;
+
+    // 等待页面配置加载完成
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        await window.pageConfigReady;
+    }
+
+    const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+    if (subType !== 'mmd') return;
+
+    const mmdPath = window.mmdModel;
+    if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {
+        console.warn('[MMD Init] MMD 模型路径为空，跳过自动加载');
+        return;
+    }
+
+    console.log('[MMD Init] 检测到 MMD 模式，自动初始化并加载:', mmdPath);
+
+    // 隐藏 VRM 容器，显示 MMD 容器
+    const vrmContainer = document.getElementById('vrm-container');
+    if (vrmContainer) { vrmContainer.style.display = 'none'; vrmContainer.classList.add('hidden'); }
+    const live2dContainer = document.getElementById('live2d-container');
+    if (live2dContainer) { live2dContainer.style.display = 'none'; live2dContainer.classList.add('hidden'); }
+    const mmdContainer = document.getElementById('mmd-container');
+    if (mmdContainer) { mmdContainer.classList.remove('hidden'); mmdContainer.style.display = 'block'; mmdContainer.style.visibility = 'visible'; }
+    const mmdCanvas = document.getElementById('mmd-canvas');
+    if (mmdCanvas) { mmdCanvas.style.visibility = 'visible'; mmdCanvas.style.pointerEvents = 'auto'; }
+
+    try {
+        await initMMDModel();
+        if (window.mmdManager) {
+            const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
+            await window.mmdManager.loadModel(resolvedPath);
+            console.log('[MMD Init] MMD 模型自动加载完成');
+        }
+    } catch (e) {
+        console.error('[MMD Init] MMD 自动加载失败:', e);
+    }
+});
+
 // 全局路径配置
 window.MMD_PATHS = {
     user_mmd: '/user_mmd',

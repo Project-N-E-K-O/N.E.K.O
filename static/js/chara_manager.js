@@ -1462,8 +1462,9 @@ function showCatgirlForm(key, container) {
         const vrmPath = cat['vrm'];
         const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '') : '';
         modelDisplayText = vrmName;
-    } else if (modelType === 'live3d' && cat['mmd'] && cat['mmd']['model_path']) {
-        const mmdPath = cat['mmd']['model_path'];
+    } else if (modelType === 'live3d' && cat['mmd']) {
+        // cat['mmd'] 经过 flatten_reserved 后是字符串（model_path 的值）
+        const mmdPath = cat['mmd'];
         const mmdName = mmdPath ? (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '') : '';
         modelDisplayText = mmdName;
     } else if (cat['live2d']) {

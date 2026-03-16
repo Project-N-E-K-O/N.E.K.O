@@ -27,7 +27,7 @@ window.LanLan1 = window.LanLan1 || {};
 // 1. 表情控制 (setEmotion / playExpression)
 window.LanLan1.setEmotion = function(emotion) {
     // 优先检查 MMD 模式
-    if (window.mmdManager && window.mmdManager.mesh) {
+    if (window.mmdManager && window.mmdManager.currentModel) {
         if (window.mmdManager.expression) {
             window.mmdManager.expression.setEmotion(emotion);
         }
@@ -53,7 +53,7 @@ window.LanLan1.playExpression = window.LanLan1.setEmotion;
 // 2. 动作控制 (playMotion)
 window.LanLan1.playMotion = function(group, no, priority) {
     // MMD/VRM 模式下忽略 Live2D 的动作指令
-    if (window.mmdManager && window.mmdManager.mesh) return;
+    if (window.mmdManager && window.mmdManager.currentModel) return;
     if (window.vrmManager && window.vrmManager.currentModel) return;
 
     // Live2D 模式
@@ -64,7 +64,7 @@ window.LanLan1.playMotion = function(group, no, priority) {
 
 // 3. 清除表情/特效
 window.LanLan1.clearEmotionEffects = function() {
-    if (window.mmdManager && window.mmdManager.mesh) {
+    if (window.mmdManager && window.mmdManager.currentModel) {
         if (window.mmdManager.expression) window.mmdManager.expression.resetAll();
         return;
     }
@@ -76,7 +76,7 @@ window.LanLan1.clearEmotionEffects = function() {
 };
 
 window.LanLan1.clearExpression = function() {
-    if (window.mmdManager && window.mmdManager.mesh) return;
+    if (window.mmdManager && window.mmdManager.currentModel) return;
     if (window.vrmManager && window.vrmManager.currentModel) return;
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
@@ -84,7 +84,7 @@ window.LanLan1.clearExpression = function() {
 // 4. 嘴型控制
 window.LanLan1.setMouth = function(value) {
     // MMD 嘴型：通过 morph target 控制
-    if (window.mmdManager && window.mmdManager.mesh) {
+    if (window.mmdManager && window.mmdManager.currentModel) {
         if (window.mmdManager.expression) {
             window.mmdManager.expression.setMorphWeight('あ', value);
         }
@@ -212,7 +212,7 @@ async function cleanupVRMResources() {
 async function initLive2DModel() {
     // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
     const isVRMMode = window.vrmManager && window.vrmManager.currentModel;
-    const isMMDMode = window.mmdManager && window.mmdManager.mesh;
+    const isMMDMode = window.mmdManager && window.mmdManager.currentModel;
     if (isVRMMode || isMMDMode) {
         console.log('[Live2D Init] 当前为 VRM/MMD 模式，跳过 Live2D 初始化');
         return;
@@ -247,6 +247,12 @@ async function initLive2DModel() {
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
 
+    // 如果当前为 MMD 子类型，跳过 Live2D 初始化
+    if ((window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd') {
+        console.log('[Live2D Init] MMD 子类型，跳过 Live2D 初始化');
+        return;
+    }
+
     if (!targetModelPath && !isModelManagerPage) {
         console.log('未设置模型路径，且不在模型管理页面，跳过Live2D初始化');
         return;
@@ -280,7 +286,7 @@ async function initLive2DModel() {
         if (live2dContainer) live2dContainer.style.display = 'block';
 
         // 初始化 PIXI 应用；再次检查是否在 VRM/MMD 模式下（防止在异步操作期间切换）
-        if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.mesh)) {
+        if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.currentModel)) {
             console.log('[Live2D Init] 检测到 VRM/MMD 模式，取消 Live2D 初始化');
             return;
         }

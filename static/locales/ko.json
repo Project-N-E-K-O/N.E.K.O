@@ -1520,7 +1520,8 @@
         },
         "physics": {
             "title": "MMD 물리",
-            "enabled": "물리 시뮬레이션"
+            "enabled": "물리 시뮬레이션",
+            "strength": "시뮬레이션 강도"
         },
         "cursorFollow": {
             "title": "마우스 추적",

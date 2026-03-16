@@ -433,6 +433,12 @@ async function initVRMModel() {
             return;
         }
 
+        // 如果是 MMD 子类型，跳过 VRM 加载（由 mmd-init.js 处理）
+        if ((window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd') {
+            console.log('[VRM Init] MMD 子类型，跳过 VRM 加载');
+            return;
+        }
+
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {

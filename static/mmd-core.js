@@ -375,6 +375,14 @@ class MMDCore {
             // 初始化物理引擎
             if (this.manager.enablePhysics) {
                 await this._initPhysics(mmd);
+                // 如果有存储的物理强度设置，应用到刚初始化的物理引擎
+                const strength = this.manager.physicsStrength;
+                if (strength !== 1.0 && mmd.physics && typeof mmd.physics.setGravity === 'function') {
+                    const THREE = window.THREE;
+                    if (THREE) {
+                        mmd.physics.setGravity(new THREE.Vector3(0, this.manager._baseGravityY * strength, 0));
+                    }
+                }
             }
 
             // macOS WebGL 崩溃修复：首次加载延迟渲染

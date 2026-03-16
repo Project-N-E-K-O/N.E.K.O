@@ -30,6 +30,16 @@
     // const S = window.appState;
     // const C = window.appConst;
 
+    /**
+     * Helper: find agent checkbox across Live2D / VRM / MMD prefixes.
+     * Only one model type is active at a time, so the first found wins.
+     */
+    function getAgentEl(suffix) {
+        return document.getElementById('live2d-agent-' + suffix)
+            || document.getElementById('vrm-agent-' + suffix)
+            || document.getElementById('mmd-agent-' + suffix);
+    }
+
     // ====================================================================
     // Agent Popup State enum
     // ====================================================================
@@ -81,7 +91,7 @@
 
         closePopup() {
             this._popupOpen = false;
-            const masterCheckbox = document.getElementById('live2d-agent-master');
+            const masterCheckbox = getAgentEl('master');
             if (this._state !== AgentPopupState.PROCESSING && (!masterCheckbox || !masterCheckbox.checked)) {
                 this.transition(AgentPopupState.IDLE, 'popup closed');
                 window.stopAgentAvailabilityCheck();
@@ -131,11 +141,11 @@
         },
 
         _updateUI() {
-            const master = document.getElementById('live2d-agent-master');
-            const keyboard = document.getElementById('live2d-agent-keyboard');
-            const browser = document.getElementById('live2d-agent-browser');
-            const userPlugin = document.getElementById('live2d-agent-user-plugin');
-            const status = document.getElementById('live2d-agent-status');
+            const master = getAgentEl('master');
+            const keyboard = getAgentEl('keyboard');
+            const browser = getAgentEl('browser');
+            const userPlugin = getAgentEl('user-plugin');
+            const status = getAgentEl('status');
 
             const syncUI = (cb) => {
                 if (cb && typeof cb._updateStyle === 'function') cb._updateStyle();
@@ -221,7 +231,7 @@
     // Floating agent status helper
     // ====================================================================
     function setFloatingAgentStatus(msg, taskStatus) {
-        ['live2d-agent-status', 'vrm-agent-status'].forEach(id => {
+        ['live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status'].forEach(id => {
             const statusEl = document.getElementById(id);
             if (statusEl) {
                 statusEl.textContent = msg || '';
@@ -380,10 +390,10 @@
     // checkAgentCapabilities — polling loop body
     // ====================================================================
     const checkAgentCapabilities = async () => {
-        const agentMasterCheckbox = document.getElementById('live2d-agent-master');
-        const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
-        const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
+        const agentMasterCheckbox = getAgentEl('master');
+        const agentKeyboardCheckbox = getAgentEl('keyboard');
+        const agentBrowserCheckbox = getAgentEl('browser');
+        const agentUserPluginCheckbox = getAgentEl('user-plugin');
 
         if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
             console.log('[App] \u72b6\u6001\u673a\u5904\u4e8ePROCESSING\u72b6\u6001\uff0c\u8df3\u8fc7\u8f6e\u8be2');
@@ -443,12 +453,12 @@
         let capabilityCheckFailed = false;
 
         const checks = [
-            { id: 'live2d-agent-keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
-            { id: 'live2d-agent-browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
-            { id: 'live2d-agent-user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' }
+            { suffix: 'keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', nameKey: 'keyboardControl' },
+            { suffix: 'browser', capability: 'browser_use', flagKey: 'browser_use_enabled', nameKey: 'browserUse' },
+            { suffix: 'user-plugin', capability: 'user_plugin', flagKey: 'user_plugin_enabled', nameKey: 'userPlugin' }
         ];
-        for (const { id, capability, flagKey, nameKey } of checks) {
-            const cb = document.getElementById(id);
+        for (const { suffix, capability, flagKey, nameKey } of checks) {
+            const cb = getAgentEl(suffix);
             if (!cb) continue;
 
             const name = window.t ? window.t(`settings.toggles.${nameKey}`) : nameKey;
@@ -715,10 +725,10 @@
             }
         }
 
-        const agentMasterCheckbox = document.getElementById('live2d-agent-master');
-        const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
-        const agentBrowserCheckbox = document.getElementById('live2d-agent-browser');
-        const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
+        const agentMasterCheckbox = getAgentEl('master');
+        const agentKeyboardCheckbox = getAgentEl('keyboard');
+        const agentBrowserCheckbox = getAgentEl('browser');
+        const agentUserPluginCheckbox = getAgentEl('user-plugin');
 
         if (!agentMasterCheckbox) {
             console.warn('[App] Agent\u5f00\u5173\u5143\u7d20\u672a\u627e\u5230\uff0c\u8df3\u8fc7\u7ed1\u5b9a');
@@ -1178,13 +1188,16 @@
         // ----------------------------------------------------------------
         function openAgentStatusPopupWhenEnabled() {
             if (agentStateMachine._popupOpen) return;
-            const master = document.getElementById('live2d-agent-master');
+            const master = getAgentEl('master');
             if (!master || !master.checked) return;
-            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"]');
+            const popup = master.closest('[id="live2d-popup-agent"], [id="vrm-popup-agent"], [id="mmd-popup-agent"]');
             if (!popup) return;
             const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
             if (isVisible) return;
-            const manager = popup.id === 'live2d-popup-agent' ? window.live2dManager : window.vrmManager;
+            let manager;
+            if (popup.id === 'mmd-popup-agent') manager = window.mmdManager;
+            else if (popup.id === 'vrm-popup-agent') manager = window.vrmManager;
+            else manager = window.live2dManager;
             if (!manager || typeof manager.showPopup !== 'function') return;
             manager.showPopup('agent', popup);
         }

@@ -1520,7 +1520,8 @@
         },
         "physics": {
             "title": "MMD 物理設定",
-            "enabled": "物理シミュレーション"
+            "enabled": "物理シミュレーション",
+            "strength": "シミュレーション強度"
         },
         "cursorFollow": {
             "title": "マウス追従",

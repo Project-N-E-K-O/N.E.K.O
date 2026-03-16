@@ -826,6 +826,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mmdPixelRatioSelect = document.getElementById('mmd-pixel-ratio-select');
     // MMD 物理/跟踪
     const mmdPhysicsToggle = document.getElementById('mmd-physics-toggle');
+    const mmdPhysicsStrengthSlider = document.getElementById('mmd-physics-strength-slider');
     const mmdCursorFollowToggle = document.getElementById('mmd-cursor-follow-toggle');
     const mmdHeadYawSlider = document.getElementById('mmd-head-yaw-slider');
     const mmdHeadPitchSlider = document.getElementById('mmd-head-pitch-slider');
@@ -1490,7 +1491,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         modelName.toLowerCase().includes('undefined') ||
                         modelName.toLowerCase().includes('null')
                     ))) {
-                    console.error('[模型管理] 检测到无效的 VRM 模型路径，尝试自动修复:', modelName);
+                    console.error('[模型管理] 检测到无效的模型路径，尝试自动修复:', modelName);
 
                     if (currentModelInfo && currentModelInfo.path &&
                         currentModelInfo.path !== 'undefined' &&
@@ -1501,14 +1502,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                         currentModelInfo.name !== 'undefined' &&
                         currentModelInfo.name !== 'null' &&
                         !currentModelInfo.name.toLowerCase().includes('undefined')) {
-                        const filename = currentModelInfo.name.endsWith('.vrm')
-                            ? currentModelInfo.name
-                            : `${currentModelInfo.name}.vrm`;
-                        modelName = ModelPathHelper.normalizeModelPath(filename, 'model');
+                        const isMmdFallback = currentLive3dSubType === 'mmd' ||
+                            (currentModelInfo.type === 'mmd') ||
+                            currentModelInfo.name.toLowerCase().endsWith('.pmx') ||
+                            currentModelInfo.name.toLowerCase().endsWith('.pmd');
+                        if (isMmdFallback) {
+                            modelName = currentModelInfo.name;
+                        } else {
+                            const filename = currentModelInfo.name.endsWith('.vrm')
+                                ? currentModelInfo.name
+                                : `${currentModelInfo.name}.vrm`;
+                            modelName = ModelPathHelper.normalizeModelPath(filename, 'model');
+                        }
                     } else {
-                        const errorMsg = t('live2d.vrmModelPathInvalid', 'VRM 模型路径无效，无法保存。请重新选择模型。');
+                        const errorMsg = t('live2d.vrmModelPathInvalid', '模型路径无效，无法保存。请重新选择模型。');
                         showStatus(errorMsg, 5000);
-                        throw new Error('VRM 模型路径无效: ' + modelName);
+                        throw new Error('模型路径无效: ' + modelName);
                     }
                 }
             }
@@ -1521,58 +1530,33 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
 
             if (currentModelType === 'live3d') {
-                // 转换 VRM 路径：从完整 HTTP 路径转换为后端要求的相对路径
-                let vrmPath = modelName;
-                if (vrmPath && typeof vrmPath === 'string') {
-                    const urlMatch = vrmPath.match(/^(?:http|https):\/\/[^/]+(\/user_vrm\/.*|\/static\/vrm\/.*)/);
-                    if (urlMatch) {
-                        vrmPath = urlMatch[1];
-                    }
-                    if (!vrmPath.startsWith('/user_vrm/') && !vrmPath.startsWith('/static/vrm/')) {
-                        if (currentModelInfo && currentModelInfo.path) {
-                            const infoPathMatch = currentModelInfo.path.match(/^(?:http|https):\/\/[^/]+(\/user_vrm\/.*|\/static\/vrm\/.*)/);
-                            if (infoPathMatch) {
-                                vrmPath = infoPathMatch[1];
-                            } else if (currentModelInfo.path.startsWith('/user_vrm/') || currentModelInfo.path.startsWith('/static/vrm/')) {
-                                vrmPath = currentModelInfo.path;
-                            }
-                        }
-                    }
-                }
-                modelData.vrm = vrmPath;
-                const idleAnimSel = document.getElementById('idle-animation-select');
-                if (vrmAnimation) {
-                    modelData.vrm_animation = vrmAnimation;
-                } else if (idleAnimSel && idleAnimSel.value) {
-                    modelData.vrm_animation = idleAnimSel.value;
-                }
-
-                if (idleAnimSel && idleAnimSel.value) {
-                    modelData.idle_animation = idleAnimSel.value;
-                }
-            } else if (currentModelType === 'live3d') {
-                // Live3D 模式：从合并列表的 data-sub-type 或文件扩展名判断子类型
+                // Live3D 模式：根据子类型（VRM 或 MMD）分别构建数据
                 const selectedOpt = vrmModelSelect && vrmModelSelect.options[vrmModelSelect.selectedIndex];
                 const subType = selectedOpt ? selectedOpt.getAttribute('data-sub-type') : null;
                 const modelExt = modelName ? modelName.toLowerCase() : '';
-                const isMmdModel = subType === 'mmd' || modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
+                const isMmdModel = currentLive3dSubType === 'mmd' ||
+                    subType === 'mmd' ||
+                    modelExt.endsWith('.pmx') || modelExt.endsWith('.pmd') ||
                     (currentModelInfo && currentModelInfo.type === 'mmd');
 
                 if (isMmdModel) {
-                    // MMD 子类型：从合并列表或 currentModelInfo 获取路径
-                    let mmdPath = (selectedOpt && selectedOpt.getAttribute('data-path')) || modelName;
-                    // 提取相对路径
+                    // MMD 子类型：构建 MMD 路径（后端读取 data.get('mmd')）
+                    // 优先级: selectedOpt.data-path > currentModelInfo.path > modelName(仅文件名，兜底)
+                    let mmdPath = (selectedOpt && selectedOpt.getAttribute('data-sub-type') === 'mmd' && selectedOpt.getAttribute('data-path'))
+                        || (currentModelInfo && currentModelInfo.path)
+                        || modelName;
                     if (mmdPath && typeof mmdPath === 'string') {
                         const urlMatch = mmdPath.match(/^(?:http|https):\/\/[^/]+(\/user_mmd\/.*|\/static\/mmd\/.*)/);
                         if (urlMatch) mmdPath = urlMatch[1];
                     }
-                    modelData.mmd_model = mmdPath;
+                    modelData.mmd = mmdPath;
                     if (mmdAnimationSelect && mmdAnimationSelect.value) {
                         modelData.mmd_animation = mmdAnimationSelect.value;
                     }
                 } else {
-                    // VRM 子类型：从合并列表或 currentModelInfo 获取路径
-                    let vrmPath = (selectedOpt && selectedOpt.getAttribute('data-path')) || modelName;
+                    // VRM 子类型：转换 VRM 路径（从完整 HTTP 路径转换为相对路径）
+                    let vrmPath = (selectedOpt && selectedOpt.getAttribute('data-sub-type') !== 'mmd' && selectedOpt.getAttribute('data-path'))
+                        || modelName;
                     if (vrmPath && typeof vrmPath === 'string') {
                         const urlMatch = vrmPath.match(/^(?:http|https):\/\/[^/]+(\/user_vrm\/.*|\/static\/vrm\/.*)/);
                         if (urlMatch) vrmPath = urlMatch[1];
@@ -2465,10 +2449,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (subType === 'mmd' && currentModelType === 'live3d') {
                 // MMD 子类型：路由到 MMD 加载流程
+                // 保存选中模型信息（switchModelDisplay 会重建 select，导致原 option 脱离 DOM）
+                const mmdPath = selectedOpt.getAttribute('data-path') || modelPath;
+                const mmdFilename = selectedOpt.getAttribute('data-filename') || modelPath.split(/[/\\]/).pop();
+
                 // 更新 sub_type 并刷新控件可见性
                 currentLive3dSubType = 'mmd';
                 localStorage.setItem('live3dSubType', 'mmd');
                 await switchModelDisplay('live3d', 'mmd');
+
+                // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
+                if (vrmModelSelect) {
+                    const reselect = Array.from(vrmModelSelect.options).find(opt =>
+                        opt.value === modelPath || opt.getAttribute('data-path') === mmdPath
+                    );
+                    if (reselect) vrmModelSelect.value = reselect.value;
+                    updateVRMModelSelectButtonText();
+                }
 
                 // 切换到 MMD 前，隐藏 VRM 容器（VRM/MMD 使用独立画布，仅需 CSS 切换）
                 if (vrmContainer) {
@@ -2478,7 +2475,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 同步 mmdModelSelect 的值
                 if (mmdModelSelect) {
-                    const mmdPath = selectedOpt.getAttribute('data-path') || modelPath;
                     const matchedMmdOpt = Array.from(mmdModelSelect.options).find(opt => opt.value === mmdPath);
                     if (matchedMmdOpt) {
                         mmdModelSelect.value = matchedMmdOpt.value;
@@ -2491,10 +2487,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 保存 currentModelInfo 用于保存配置
-                const mmdFilename = selectedOpt.getAttribute('data-filename') || modelPath.split(/[/\\]/).pop();
                 currentModelInfo = {
                     name: mmdFilename,
-                    path: selectedOpt.getAttribute('data-path') || modelPath,
+                    path: mmdPath,
                     url: modelPath,
                     type: 'mmd'
                 };
@@ -2511,6 +2506,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             localStorage.setItem('live3dSubType', 'vrm');
             if (needsSwitch) {
                 await switchModelDisplay('live3d', 'vrm');
+                // switchModelDisplay 重建了 vrmModelSelect，需要重新选中当前模型
+                if (vrmModelSelect) {
+                    const reselect = Array.from(vrmModelSelect.options).find(opt => opt.value === modelPath);
+                    if (reselect) vrmModelSelect.value = reselect.value;
+                    updateVRMModelSelectButtonText();
+                }
             }
 
             // 确保vrm-container可见
@@ -3950,6 +3951,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
+        // 物理强度滑块
+        if (mmdPhysicsStrengthSlider) {
+            mmdPhysicsStrengthSlider.addEventListener('input', (e) => {
+                const v = parseFloat(e.target.value);
+                const valEl = document.getElementById('mmd-physics-strength-value');
+                if (valEl) valEl.textContent = v.toFixed(1);
+            });
+            mmdPhysicsStrengthSlider.addEventListener('change', () => applyMmdSettings());
+        }
+
         // 鼠标跟踪开关
         if (mmdCursorFollowToggle) {
             mmdCursorFollowToggle.addEventListener('change', (e) => {
@@ -3993,7 +4004,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 pixelRatio: mmdPixelRatioSelect ? parseFloat(mmdPixelRatioSelect.value) : 0
             },
             physics: {
-                enabled: mmdPhysicsToggle ? mmdPhysicsToggle.checked : true
+                enabled: mmdPhysicsToggle ? mmdPhysicsToggle.checked : true,
+                strength: mmdPhysicsStrengthSlider ? parseFloat(mmdPhysicsStrengthSlider.value) : 1.0
             },
             cursorFollow: {
                 enabled: mmdCursorFollowToggle ? mmdCursorFollowToggle.checked : true,
@@ -4063,6 +4075,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     mmdPhysicsToggle.checked = s.physics.enabled;
                     const el = document.getElementById('mmd-physics-status');
                     if (el) el.textContent = s.physics.enabled ? 'ON' : 'OFF';
+                }
+                if (mmdPhysicsStrengthSlider && s.physics.strength != null) {
+                    mmdPhysicsStrengthSlider.value = s.physics.strength;
+                    const el = document.getElementById('mmd-physics-strength-value');
+                    if (el) el.textContent = s.physics.strength.toFixed(1);
                 }
             }
             if (s.cursorFollow) {
@@ -4770,7 +4787,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 根据模型类型保存不同的设置
         if (currentModelType === 'live3d') {
             // Live3D 模式：保存模型设置
-            modelSuccess = await saveModelToCharacter(currentModelInfo.name, null, null);
+            // 优先使用 path（含完整相对路径），name 仅为文件名
+            modelSuccess = await saveModelToCharacter(currentModelInfo.path || currentModelInfo.name, null, null);
         } else {
             // Live2D 模式：保存位置、缩放和模型设置
             if (!live2dModel) {

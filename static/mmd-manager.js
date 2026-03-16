@@ -15,6 +15,8 @@ class MMDManager {
         this.effect = null; // OutlineEffect
         this.useOutlineEffect = true;
         this.enablePhysics = true;
+        this.physicsStrength = 1.0;
+        this._baseGravityY = -98;  // Ammo.js 默认重力 Y 分量
         this.isLocked = false;
 
         // 光照
@@ -286,6 +288,20 @@ class MMDManager {
         if (settings.physics) {
             if (settings.physics.enabled != null) {
                 this.enablePhysics = settings.physics.enabled;
+            }
+            if (settings.physics.strength != null) {
+                const newStrength = Math.max(0.1, Math.min(2.0, settings.physics.strength));
+                if (newStrength !== this.physicsStrength) {
+                    this.physicsStrength = newStrength;
+                    // 通过缩放重力控制物理强度
+                    const physics = this.currentModel?.physics;
+                    if (physics && typeof physics.setGravity === 'function') {
+                        const THREE = window.THREE;
+                        if (THREE) {
+                            physics.setGravity(new THREE.Vector3(0, this._baseGravityY * newStrength, 0));
+                        }
+                    }
+                }
             }
         }
         // 鼠标跟踪

@@ -1520,7 +1520,8 @@
         },
         "physics": {
             "title": "MMD Physics",
-            "enabled": "Physics Simulation"
+            "enabled": "Physics Simulation",
+            "strength": "Simulation Strength"
         },
         "cursorFollow": {
             "title": "Cursor Follow",

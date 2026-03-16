@@ -575,7 +575,7 @@
                 }
             } else if (currentModelType === 'live3d') {
                 // Live3D: determine sub-type from active manager
-                var hasMMD = window.mmdManager && window.mmdManager.mesh;
+                var hasMMD = window.mmdManager && window.mmdManager.currentModel;
                 var hasVRM = window.vrmManager && window.vrmManager.currentVrm;
                 
                 if (hasMMD) {
