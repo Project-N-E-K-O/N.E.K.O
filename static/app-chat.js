@@ -548,9 +548,19 @@
             // 场景 B: 气泡已存在，执行平滑追加
             else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
                 var fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
-                window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
 
+
+                // var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
+                // window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
+                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+                if (!timePrefix) {
+                    timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
+                } else {
+                    timePrefix = timePrefix[0];
+                }
+                window.currentGeminiMessage.textContent = timePrefix + fullText;
+
+                
                 // 触发字幕检测逻辑（防抖）
                 if (S.subtitleCheckDebounceTimer) {
                     clearTimeout(S.subtitleCheckDebounceTimer);
