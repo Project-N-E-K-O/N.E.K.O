@@ -1684,134 +1684,83 @@ def _normalize_voice_clone_api_audio(
         # 使用 pyav 打开音频文件
         with av.open(file_buffer,mode = "r") as container:
         
-        # 获取音频流
-        audio_streams = [s for s in container.streams if s.type == 'audio']
-        if not audio_streams:
-            raise ValueError('文件中没有音频流')
-        
-        stream = audio_streams[0]
-        original_sample_rate = stream.sample_rate
-        original_channels = stream.channels
-        
-        # 解码音频帧
-        frames = []
-        for packet in container.demux(stream):
-            for frame in packet.decode():
-                frames.append(frame)
-        
-        if not frames:
-            raise ValueError('无法解码音频帧')
-        
-        # 合并所有帧的数据
-        # 将帧转换为 numpy 数组
-        audio_data = []
-        for frame in frames:
-            # 将帧转换为 float32 numpy 数组
-            frame_array = frame.to_ndarray()
-            audio_data.append(frame_array)
-        
-        # 合并所有帧
-        if audio_data:
-            import numpy as np
-            audio_array = np.concatenate(audio_data, axis=0)
-        else:
-            raise ValueError('音频数据为空')
-        
-        # 如果是立体声，转换为单声道（取平均值）
-        if original_channels > 1:
-            audio_array = audio_array.mean(axis=1, keepdims=True)
-        
-        # 采样率按允许值集合向下匹配
-        target_sample_rate = _select_voice_clone_sample_rate(original_sample_rate)
-        
-        original_info = {
-            'sample_rate': original_sample_rate,
-            'channels': original_channels,
-            'sample_width': 2,  # pyav 默认使用 16-bit
-            'duration_ms': int(len(audio_array) / original_sample_rate * 1000),
-        }
-        
-        # 如果需要重采样
-        if target_sample_rate != original_sample_rate:
-            # 使用 soxr 或 scipy 进行重采样
-            try:
-                import soxr
-                # 将数组展平以便重采样
-                audio_array_flat = audio_array.flatten()
-                resampled = soxr.resample(
-                    audio_array_flat,
-                    original_sample_rate,
-                    target_sample_rate
-                )
-                # 重新 reshape
-                audio_array = resampled.reshape(-1, 1)
-            except ImportError:
-                # 如果没有 soxr，使用简单的线性插值
-                import numpy as np
-                orig_len = len(audio_array)
-                target_len = int(orig_len * target_sample_rate / original_sample_rate)
-                audio_array_flat = audio_array.flatten()
-                # 线性插值
-                indices = np.linspace(0, len(audio_array_flat) - 1, target_len)
-                resampled = np.interp(indices, np.arange(len(audio_array_flat)), audio_array_flat)
-                audio_array = resampled.reshape(-1, 1)
-        
-        # 确保是 16-bit 整数格式
-        if audio_array.dtype != np.int16:
-            if np.issubdtype(audio_array.dtype, np.floating):
-                max_abs = float(np.max(np.abs(audio_array))) if audio_array.size else 0.0
-                # 仅对归一化浮点 [-1, 1] 做放大；否则按 PCM 幅值直接裁剪
-                if max_abs <= 1.0:
-                    audio_array = audio_array * 32767.0
-                audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
-            else:
-                audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
-        
-        # 使用 pyav 导出为 WAV
-        output_buffer = io.BytesIO()
-        output_container = av.open(output_buffer, mode='w', format='wav')
-        
-        # 创建输出流
-        output_stream = output_container.add_stream(
-            'pcm_s16le',  # 16-bit PCM
-            rate=target_sample_rate,
-            channels=1
-        )
-        
-        # 创建音频帧并写入
-        frame = av.AudioFrame.from_ndarray(
-            audio_array.T.astype(np.int16),
-            format='s16',
-            layout='mono',
-            sample_rate=target_sample_rate
-        )
-        frame.sample_rate = target_sample_rate
-        
-        for packet in output_stream.encode(frame):
-            output_container.mux(packet)
-        
-        # 刷新流
-        for packet in output_stream.encode(None):
-            output_container.mux(packet)
-        
-        output_container.close()
-        output_buffer.seek(0)
-        
-        # 再次读取导出后的 WAV 头，记录最终实际写入的参数
-        with wave.open(output_buffer, 'rb') as wav_file:
-            normalized_info = {
-                'sample_rate': wav_file.getframerate(),
-                'channels': wav_file.getnchannels(),
-                'sample_width': wav_file.getsampwidth(),
-                'n_frames': wav_file.getnframes(),
+            # 获取音频流
+            audio_streams = [s for s in container.streams if s.type == 'audio']
+            if not audio_streams:
+                raise ValueError('文件中没有音频流')
+            
+            stream = audio_streams[0]
+            original_sample_rate = stream.sample_rate
+            original_channels = stream.channels
+
+            # 采样率按允许值集合向下匹配
+            target_sample_rate = _select_voice_clone_sample_rate(original_sample_rate)
+
+            original_info = {
+                'sample_rate': original_sample_rate,
+                'channels': original_channels,
+                'sample_width': 2,  # pyav 默认使用 16-bit
+                'duration_ms': 0,
             }
+
+            resampler = av.AudioResampler(
+                format='s16',
+                layout='mono',
+                rate=target_sample_rate,
+            )
+            audio_chunks = []
+            total_input_samples = 0
+
+            for packet in container.demux(stream):
+                for frame in packet.decode():
+                    total_input_samples += frame.samples
+                    resampled_frames = resampler.resample(frame)
+                    if not isinstance(resampled_frames, list):
+                        resampled_frames = [resampled_frames] if resampled_frames is not None else []
+                    for resampled_frame in resampled_frames:
+                        chunk = resampled_frame.to_ndarray()
+                        if chunk is None:
+                            continue
+                        audio_chunks.append(np.asarray(chunk).reshape(-1))
+
+            flushed_frames = resampler.resample(None)
+            if not isinstance(flushed_frames, list):
+                flushed_frames = [flushed_frames] if flushed_frames is not None else []
+            for flushed_frame in flushed_frames:
+                chunk = flushed_frame.to_ndarray()
+                if chunk is None:
+                    continue
+                audio_chunks.append(np.asarray(chunk).reshape(-1))
+
+            if not audio_chunks:
+                raise ValueError('音频数据为空')
+
+            audio_array = np.concatenate(audio_chunks).astype(np.int16, copy=False)
+            original_info['duration_ms'] = int(total_input_samples / original_sample_rate * 1000)
         
-        output_buffer.seek(0)
-        normalized_filename = f"{pathlib.Path(filename or 'prompt_audio').stem}.wav"
-        return output_buffer, normalized_filename, {
-            'original': original_info,
-            'normalized': normalized_info,
-        }
+            # 直接写出标准 PCM WAV，避免 PyAV 在 WAV 编码参数上的兼容性问题
+            output_buffer = io.BytesIO()
+            mono_audio = np.ascontiguousarray(audio_array.reshape(-1))
+            with wave.open(output_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(target_sample_rate)
+                wav_file.writeframes(mono_audio.tobytes())
+             
+            output_buffer.seek(0)
+            normalized_info = {
+                'sample_rate': target_sample_rate,
+                'channels': 1,
+                'sample_width': 2,
+                'n_frames': int(mono_audio.shape[0]),
+            }
+             
+            output_buffer.seek(0)
+            normalized_filename = f"{pathlib.Path(filename or 'prompt_audio').stem}.wav"
+            return output_buffer, normalized_filename, {
+                'original': original_info,
+                'normalized': normalized_info,
+            }
         
     except Exception as err:
         raise ValueError(f'无法解析或处理上传音频文件: {err}') from err
@@ -2181,6 +2130,11 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         验证音频文件类型和格式
         返回: (mime_type, error_message)
         """
+        try:
+            import av
+        except ImportError:
+            return "", "缺少 av 依赖，无法校验音频文件。请安装 pyav。"
+
         file_path_obj = pathlib.Path(filename)
         file_extension = file_path_obj.suffix.lower()
         
@@ -2193,10 +2147,15 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
             mime_type = "audio/wav"
             try:
                 file_buffer.seek(0)
-                with wave.open(file_buffer, 'rb') as wav_file:
-                    wav_file.getsampwidth()
-                    wav_file.getnchannels()
-                    wav_file.getframerate()
+                # 使用 PyAV 验证 WAV 文件
+                with av.open(file_buffer, mode='r') as container:
+                    audio_streams = [s for s in container.streams if s.type == 'audio']
+                    if not audio_streams:
+                        return "", "WAV文件中没有音频流。"
+                    stream = audio_streams[0]
+                    # 验证基本参数可访问
+                    _ = stream.sample_rate
+                    _ = stream.channels
                 file_buffer.seek(0)
             except Exception as e:
                 return "", f"WAV文件格式错误: {str(e)}。请确认您的文件是合法的WAV文件。"
