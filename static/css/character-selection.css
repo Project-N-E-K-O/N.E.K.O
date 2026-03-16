@@ -385,6 +385,24 @@
     .cards-title {
         font-size: 24px;
     }
+
+    /* 允许移动端垂直滚动 */
+    .character-overlay {
+        overflow-y: auto;
+        height: auto;
+        min-height: 100vh;
+        min-height: 100dvh;
+    }
+
+    .character-stage {
+        height: auto;
+        min-height: 100%;
+        padding: 20px 0;
+    }
+
+    .cards-container {
+        padding: 20px;
+    }
 }
 
 /* ========================================

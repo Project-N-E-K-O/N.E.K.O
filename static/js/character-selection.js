@@ -252,24 +252,34 @@ class CharacterSelection {
     async finalizeSelection() {
         console.log('[CharacterSelection] 用户确认选择:', this.selectedCharacter);
         if (this.selectedCharacter) {
-            await this.updateDefaultCatgirl();
+            const success = await this.updateDefaultCatgirl();
+            if (success) {
+                // 仅在更新成功时写入完成标记
+                localStorage.setItem('neko_character_selection_completed', 'true');
+                console.log('[CharacterSelection] 角色甄选已完成并保存');
+            } else {
+                // 更新失败，允许重试，不关闭 overlay
+                return;
+            }
         }
         this.close();
     }
     skip() {
         console.log('[CharacterSelection] 用户跳过角色甄选');
+        // 跳过时立即写入完成标记
+        localStorage.setItem('neko_character_selection_completed', 'true');
         this.close();
     }
     async updateDefaultCatgirl() {
         const voiceMapping = CHARACTER_VOICE_MAPPING[this.selectedCharacter.id];
         if (!voiceMapping) {
             console.warn('[CharacterSelection] 找不到角色音色映射:', this.selectedCharacter.id);
-            return;
+            return false;
         }
         try {
-            // 1. 获取当前角色列表
+            // 1. 获取当前角色列表（请求规范数据而非本地化数据）
             console.log('[CharacterSelection] 获取角色列表...');
-            const getResponse = await fetch('/api/characters');
+            const getResponse = await fetch('/api/characters?language=zh-CN');
             if (!getResponse.ok) {
                 throw new Error('获取角色列表失败');
             }
@@ -333,9 +343,10 @@ class CharacterSelection {
                 throw new Error('更新角色设定失败');
             }
             console.log('[CharacterSelection] 默认猫娘配置完成');
+            return true;
         } catch (error) {
             console.error('[CharacterSelection] 更新默认猫娘失败:', error);
-            // 即使更新失败，也继续关闭流程
+            return false;
         }
     }
     close() {
@@ -364,8 +375,6 @@ class CharacterSelection {
                     this.overlay.remove();
                     this.overlay = null;
                 }
-                // 写入 localStorage
-                localStorage.setItem('neko_character_selection_completed', 'true');
                 console.log('[CharacterSelection] Overlay 已移除，进入主页');
             }, 300);
         }
