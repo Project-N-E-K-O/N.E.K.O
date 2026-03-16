@@ -1682,7 +1682,7 @@ def _normalize_voice_clone_api_audio(
 
     try:
         # 使用 pyav 打开音频文件
-        with av.open(file_buffer,mode = "r") as container：
+        with av.open(file_buffer,mode = "r") as container:
         
         # 获取音频流
         audio_streams = [s for s in container.streams if s.type == 'audio']
