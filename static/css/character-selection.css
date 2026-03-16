@@ -327,6 +327,13 @@
     box-shadow: 0 12px 30px rgba(68, 183, 254, 0.2);
 }
 
+.character-card:focus-visible {
+    outline: 2px solid #44b7fe;
+    outline-offset: 3px;
+    transform: translateY(-4px);
+    border-color: rgba(68, 183, 254, 0.5);
+}
+
 .character-card:hover::before {
     opacity: 1;
 }

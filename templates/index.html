@@ -202,25 +202,25 @@
                 <h2 class="cards-title" data-i18n="memory.characterSelection.chooseTitle">你眼中的我是什么样的呢~</h2>
 
                 <div class="cards-grid">
-                    <div class="character-card" data-id="tsundere_neko">
+                    <div class="character-card" data-id="tsundere_neko" role="button" tabindex="0" aria-pressed="false">
                         <div class="card-icon">😺</div>
                         <h3 class="card-name" data-i18n="memory.characterSelection.tsundere_neko.name">傲娇叛逆</h3>
                         <p class="card-desc" data-i18n="memory.characterSelection.tsundere_neko.desc">口是心非，偶尔卖萌</p>
                     </div>
 
-                    <div class="character-card" data-id="cool_mech">
+                    <div class="character-card" data-id="cool_mech" role="button" tabindex="0" aria-pressed="false">
                         <div class="card-icon">🤖</div>
                         <h3 class="card-name" data-i18n="memory.characterSelection.cool_mech.name">绝对理智</h3>
                         <p class="card-desc" data-i18n="memory.characterSelection.cool_mech.desc">理性冷静，逻辑至上</p>
                     </div>
 
-                    <div class="character-card" data-id="intellectual_healer">
+                    <div class="character-card" data-id="intellectual_healer" role="button" tabindex="0" aria-pressed="false">
                         <div class="card-icon">🌸</div>
                         <h3 class="card-name" data-i18n="memory.characterSelection.intellectual_healer.name">极致温柔</h3>
                         <p class="card-desc" data-i18n="memory.characterSelection.intellectual_healer.desc">温柔体贴，擅长倾听</p>
                     </div>
 
-                    <div class="character-card" data-id="efficiency_expert">
+                    <div class="character-card" data-id="efficiency_expert" role="button" tabindex="0" aria-pressed="false">
                         <div class="card-icon">⚡</div>
                         <h3 class="card-name" data-i18n="memory.characterSelection.efficiency_expert.name">优雅利落</h3>
                         <p class="card-desc" data-i18n="memory.characterSelection.efficiency_expert.desc">简洁高效，直击要点</p>
@@ -236,7 +236,7 @@
             <div class="greeting-modal">
                 <div class="modal-content">
                     <div class="character-avatar" id="greeting-avatar">😺</div>
-                    <h2 class="greeting-title" id="greeting-title">正在建立灵魂共鸣...</h2>
+                    <h2 class="greeting-title" id="greeting-title" data-i18n="memory.characterSelection.connectingTitle">时空穿越中——</h2>
                     <p class="greeting-text" id="greeting-text"></p>
                     <button id="confirm-greeting-btn" class="confirm-btn" style="display: none;" data-i18n="memory.characterSelection.confirmGreeting">
                         确认
@@ -289,26 +289,37 @@
                 // 加载脚本
                 const script = document.createElement('script');
                 script.src = '/static/js/character-selection.js';
-                script.onload = function() {
-                    // 确保 DOM 完全加载后再初始化
-                    if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', function() {
-                            const characterSelection = new window.CharacterSelection();
-                            characterSelection.start();
-                        });
-                    } else {
-                        const characterSelection = new window.CharacterSelection();
-                        characterSelection.start();
-                    }
-                };
-                script.onerror = function() {
-                    console.error('[CharacterSelection] Failed to load script');
+                function handleCharacterSelectionError(err) {
+                    console.error('[CharacterSelection] Initialization error:', err);
                     const failedOverlay = document.getElementById('character-selection-overlay');
                     if (failedOverlay) {
                         failedOverlay.style.display = 'none';
                         failedOverlay.remove();
                     }
                     document.dispatchEvent(new Event('characterSelectionLoadFailed'));
+                }
+                script.onload = function() {
+                    // 确保 DOM 完全加载后再初始化
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', function() {
+                            try {
+                                const characterSelection = new window.CharacterSelection();
+                                characterSelection.start();
+                            } catch (err) {
+                                handleCharacterSelectionError(err);
+                            }
+                        });
+                    } else {
+                        try {
+                            const characterSelection = new window.CharacterSelection();
+                            characterSelection.start();
+                        } catch (err) {
+                            handleCharacterSelectionError(err);
+                        }
+                    }
+                };
+                script.onerror = function() {
+                    handleCharacterSelectionError(new Error('Failed to load script'));
                 };
                 document.body.appendChild(script);
             } else if (overlay) {

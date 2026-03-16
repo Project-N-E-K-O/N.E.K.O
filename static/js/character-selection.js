@@ -87,6 +87,12 @@ class CharacterSelection {
         // 阶段二：卡片选择
         document.querySelectorAll('.character-card').forEach(card => {
             card.addEventListener('click', (e) => this.selectCharacter(e));
+            card.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.selectCharacter(e);
+                }
+            });
         });
         // 阶段三：问候确认
         const confirmGreetingBtn = document.getElementById('confirm-greeting-btn');
@@ -125,9 +131,14 @@ class CharacterSelection {
     selectCharacter(e) {
         const card = e.currentTarget;
         // 移除之前的选中状态
-        document.querySelector('.character-card.selected')?.classList.remove('selected');
+        const prev = document.querySelector('.character-card.selected');
+        if (prev) {
+            prev.classList.remove('selected');
+            prev.setAttribute('aria-pressed', 'false');
+        }
         // 添加新的选中状态
         card.classList.add('selected');
+        card.setAttribute('aria-pressed', 'true');
         // 保存选中的人设
         this.selectedCharacter = {
             id: card.dataset.id,
@@ -135,7 +146,11 @@ class CharacterSelection {
             desc: card.querySelector('.card-desc').textContent
         };
         console.log('[CharacterSelection] 选中角色:', this.selectedCharacter);
-        // 延迟进入阶段三
+        // 延迟进入阶段三（清除已有定时器防止重复触发）
+        if (this._selectTimer != null) {
+            clearTimeout(this._selectTimer);
+            this._selectTimer = null;
+        }
         this._selectTimer = setTimeout(() => {
             this._selectTimer = null;
             this.goToStage(3);
