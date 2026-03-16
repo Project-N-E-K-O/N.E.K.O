@@ -660,6 +660,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         document.removeEventListener('click', this._outsideClickHandler);
     }
     this._outsideClickHandler = (e) => {
+        if (!(e.target instanceof Element)) return;
         if (e.target.closest('#vrm-floating-buttons')) return;
         if (e.target.closest('[id^="vrm-popup-"]')) return;
         // 快速路径：没有任何弹出框处于打开状态则跳过
