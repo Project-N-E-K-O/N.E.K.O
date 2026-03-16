@@ -1,28 +1,3 @@
-/**
- * Three.js BufferGeometryUtils Addon
- * 
- * 【本地修改说明】
- * 本文件基于 Three.js 官方 BufferGeometryUtils 进行了以下修改：
- * 
- * 1. mergeVertices 函数：
- *    - 修复了 morphAttributes 的处理逻辑
- *    - morphAttributes[name] 是一个数组，每个元素是一个 BufferAttribute（对应一个 morph target）
- *    - 原代码错误地将 morphAttributes[name] 当作单个 BufferAttribute 处理
- *    - 修改原因：修复 VRM 模型加载时的 morph target 处理错误
- * 
- * 2. computeMorphedAttributes 函数：
- *    - 修复了 morphNormal 的赋值错误
- *    - 原代码错误地使用了 geometry.morphAttributes.position
- *    - 修改为 geometry.morphAttributes.normal
- *    - 修改原因：修复法线 morph target 计算错误
- * 
- * 3. 拼写错误修复：
- *    - 修复了 "reusable vertors" 的拼写错误为 "reusable vectors"
- *    - 这是上游 Three.js 源码中的拼写错误
- * 
- * 注意：升级 Three.js 时，请检查这些修改是否仍然需要，并相应更新。
- */
-
 import {
 	BufferAttribute,
 	BufferGeometry,
@@ -36,12 +11,30 @@ import {
 	Vector3,
 } from 'three';
 
-function computeTangents() { // @deprecated, r140
+/**
+ * @module BufferGeometryUtils
+ * @three_import import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+ */
 
-	throw new Error( 'BufferGeometryUtils: computeTangents renamed to computeMikkTSpaceTangents.' );
-
-}
-
+/**
+ * Computes vertex tangents using the MikkTSpace algorithm. MikkTSpace generates the same tangents consistently,
+ * and is used in most modelling tools and normal map bakers. Use MikkTSpace for materials with normal maps,
+ * because inconsistent tangents may lead to subtle visual issues in the normal map, particularly around mirrored
+ * UV seams.
+ *
+ * In comparison to this method, {@link BufferGeometry#computeTangents} (a custom algorithm) generates tangents that
+ * probably will not match the tangents in other software. The custom algorithm is sufficient for general use with a
+ * custom material, and may be faster than MikkTSpace.
+ *
+ * Returns the original BufferGeometry. Indexed geometries will be de-indexed. Requires position, normal, and uv attributes.
+ *
+ * @param {BufferGeometry} geometry - The geometry to compute tangents for.
+ * @param {Object} MikkTSpace - Instance of `examples/jsm/libs/mikktspace.module.js`, or `mikktspace` npm package.
+ * Await `MikkTSpace.ready` before use.
+ * @param {boolean} [negateSign=true] - Whether to negate the sign component (.w) of each tangent.
+ * Required for normal map conventions in some formats, including glTF.
+ * @return {BufferGeometry} The updated geometry.
+ */
 function computeMikkTSpaceTangents( geometry, MikkTSpace, negateSign = true ) {
 
 	if ( ! MikkTSpace || ! MikkTSpace.isReady ) {
@@ -60,9 +53,9 @@ function computeMikkTSpaceTangents( geometry, MikkTSpace, negateSign = true ) {
 
 		if ( attribute.normalized || attribute.isInterleavedBufferAttribute ) {
 
-			const dstArray = new Float32Array( attribute.getCount() * attribute.itemSize );
+			const dstArray = new Float32Array( attribute.count * attribute.itemSize );
 
-			for ( let i = 0, j = 0; i < attribute.getCount(); i ++ ) {
+			for ( let i = 0, j = 0; i < attribute.count; i ++ ) {
 
 				dstArray[ j ++ ] = attribute.getX( i );
 				dstArray[ j ++ ] = attribute.getY( i );
@@ -131,15 +124,14 @@ function computeMikkTSpaceTangents( geometry, MikkTSpace, negateSign = true ) {
 }
 
 /**
- * @param  {Array<BufferGeometry>} geometries
- * @param  {Boolean} useGroups
- * @return {BufferGeometry}
+ * Merges a set of geometries into a single instance. All geometries must have compatible attributes.
+ *
+ * @param {Array<BufferGeometry>} geometries - The geometries to merge.
+ * @param {boolean} [useGroups=false] - Whether to use groups or not.
+ * @return {?BufferGeometry} The merged geometry. Returns `null` if the merge does not succeed.
  */
-function mergeBufferGeometries( geometries, useGroups = false ) {
-	if ( ! geometries || geometries.length === 0 ) {
-		console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed. No geometries provided.' );
-		return null;
-	}
+function mergeGeometries( geometries, useGroups = false ) {
+
 	const isIndexed = geometries[ 0 ].index !== null;
 
 	const attributesUsed = new Set( Object.keys( geometries[ 0 ].attributes ) );
@@ -163,7 +155,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 		if ( isIndexed !== ( geometry.index !== null ) ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '. All geometries must have compatible attributes; make sure index attribute exists among all geometries, or in none of them.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '. All geometries must have compatible attributes; make sure index attribute exists among all geometries, or in none of them.' );
 			return null;
 
 		}
@@ -174,7 +166,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 			if ( ! attributesUsed.has( name ) ) {
 
-				console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '. All geometries must have compatible attributes; make sure "' + name + '" attribute exists among all geometries, or in none of them.' );
+				console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '. All geometries must have compatible attributes; make sure "' + name + '" attribute exists among all geometries, or in none of them.' );
 				return null;
 
 			}
@@ -191,7 +183,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 		if ( attributesCount !== attributesUsed.size ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '. Make sure all geometries have the same number of attributes.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '. Make sure all geometries have the same number of attributes.' );
 			return null;
 
 		}
@@ -200,7 +192,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 		if ( morphTargetsRelative !== geometry.morphTargetsRelative ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '. .morphTargetsRelative must be consistent throughout all geometries.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '. .morphTargetsRelative must be consistent throughout all geometries.' );
 			return null;
 
 		}
@@ -209,7 +201,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 			if ( ! morphAttributesUsed.has( name ) ) {
 
-				console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '.  .morphAttributes must be consistent throughout all geometries.' );
+				console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '.  .morphAttributes must be consistent throughout all geometries.' );
 				return null;
 
 			}
@@ -234,7 +226,7 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 			} else {
 
-				console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed with geometry at index ' + i + '. The geometry must have either an index or a position attribute' );
+				console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed with geometry at index ' + i + '. The geometry must have either an index or a position attribute' );
 				return null;
 
 			}
@@ -276,11 +268,11 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 	for ( const name in attributes ) {
 
-		const mergedAttribute = mergeBufferAttributes( attributes[ name ] );
+		const mergedAttribute = mergeAttributes( attributes[ name ] );
 
 		if ( ! mergedAttribute ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed while trying to merge the ' + name + ' attribute.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed while trying to merge the ' + name + ' attribute.' );
 			return null;
 
 		}
@@ -310,11 +302,11 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 
 			}
 
-			const mergedMorphAttribute = mergeBufferAttributes( morphAttributesToMerge );
+			const mergedMorphAttribute = mergeAttributes( morphAttributesToMerge );
 
 			if ( ! mergedMorphAttribute ) {
 
-				console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed while trying to merge the ' + name + ' morphAttribute.' );
+				console.error( 'THREE.BufferGeometryUtils: .mergeGeometries() failed while trying to merge the ' + name + ' morphAttribute.' );
 				return null;
 
 			}
@@ -330,31 +322,28 @@ function mergeBufferGeometries( geometries, useGroups = false ) {
 }
 
 /**
- * @param {Array<BufferAttribute>} attributes
- * @return {BufferAttribute}
+ * Merges a set of attributes into a single instance. All attributes must have compatible properties and types.
+ * Instances of {@link InterleavedBufferAttribute} are not supported.
+ *
+ * @param {Array<BufferAttribute>} attributes - The attributes to merge.
+ * @return {?BufferAttribute} The merged attribute. Returns `null` if the merge does not succeed.
  */
-function mergeBufferAttributes( attributes ) {
+function mergeAttributes( attributes ) {
 
 	let TypedArray;
 	let itemSize;
 	let normalized;
+	let gpuType = - 1;
 	let arrayLength = 0;
 
 	for ( let i = 0; i < attributes.length; ++ i ) {
 
 		const attribute = attributes[ i ];
 
-		if ( attribute.isInterleavedBufferAttribute ) {
-
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferAttributes() failed. InterleavedBufferAttributes are not supported.' );
-			return null;
-
-		}
-
 		if ( TypedArray === undefined ) TypedArray = attribute.array.constructor;
 		if ( TypedArray !== attribute.array.constructor ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferAttributes() failed. BufferAttribute.array must be of consistent array types across matching attributes.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeAttributes() failed. BufferAttribute.array must be of consistent array types across matching attributes.' );
 			return null;
 
 		}
@@ -362,7 +351,7 @@ function mergeBufferAttributes( attributes ) {
 		if ( itemSize === undefined ) itemSize = attribute.itemSize;
 		if ( itemSize !== attribute.itemSize ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferAttributes() failed. BufferAttribute.itemSize must be consistent across matching attributes.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeAttributes() failed. BufferAttribute.itemSize must be consistent across matching attributes.' );
 			return null;
 
 		}
@@ -370,35 +359,71 @@ function mergeBufferAttributes( attributes ) {
 		if ( normalized === undefined ) normalized = attribute.normalized;
 		if ( normalized !== attribute.normalized ) {
 
-			console.error( 'THREE.BufferGeometryUtils: .mergeBufferAttributes() failed. BufferAttribute.normalized must be consistent across matching attributes.' );
+			console.error( 'THREE.BufferGeometryUtils: .mergeAttributes() failed. BufferAttribute.normalized must be consistent across matching attributes.' );
 			return null;
 
 		}
 
-		arrayLength += attribute.array.length;
+		if ( gpuType === - 1 ) gpuType = attribute.gpuType;
+		if ( gpuType !== attribute.gpuType ) {
+
+			console.error( 'THREE.BufferGeometryUtils: .mergeAttributes() failed. BufferAttribute.gpuType must be consistent across matching attributes.' );
+			return null;
+
+		}
+
+		arrayLength += attribute.count * itemSize;
 
 	}
 
 	const array = new TypedArray( arrayLength );
+	const result = new BufferAttribute( array, itemSize, normalized );
 	let offset = 0;
 
 	for ( let i = 0; i < attributes.length; ++ i ) {
 
-		array.set( attributes[ i ].array, offset );
+		const attribute = attributes[ i ];
+		if ( attribute.isInterleavedBufferAttribute ) {
 
-		offset += attributes[ i ].array.length;
+			const tupleOffset = offset / itemSize;
+			for ( let j = 0, l = attribute.count; j < l; j ++ ) {
+
+				for ( let c = 0; c < itemSize; c ++ ) {
+
+					const value = attribute.getComponent( j, c );
+					result.setComponent( j + tupleOffset, c, value );
+
+				}
+
+			}
+
+		} else {
+
+			array.set( attribute.array, offset );
+
+		}
+
+		offset += attribute.count * itemSize;
 
 	}
 
-	return new BufferAttribute( array, itemSize, normalized );
+	if ( gpuType !== undefined ) {
+
+		result.gpuType = gpuType;
+
+	}
+
+	return result;
 
 }
 
 /**
- * @param {BufferAttribute}
- * @return {BufferAttribute}
+ * Performs a deep clone of the given buffer attribute.
+ *
+ * @param {BufferAttribute} attribute - The attribute to clone.
+ * @return {BufferAttribute} The cloned attribute.
  */
-export function deepCloneAttribute( attribute ) {
+function deepCloneAttribute( attribute ) {
 
 	if ( attribute.isInstancedInterleavedBufferAttribute || attribute.isInterleavedBufferAttribute ) {
 
@@ -417,8 +442,11 @@ export function deepCloneAttribute( attribute ) {
 }
 
 /**
- * @param {Array<BufferAttribute>} attributes
- * @return {Array<InterleavedBufferAttribute>}
+ * Interleaves a set of attributes and returns a new array of corresponding attributes that share a
+ * single {@link InterleavedBuffer} instance. All attributes must have compatible types.
+ *
+ * @param {Array<BufferAttribute>} attributes - The attributes to interleave.
+ * @return {?Array<InterleavedBufferAttribute>} An array of interleaved attributes. If interleave does not succeed, the method returns `null`.
  */
 function interleaveAttributes( attributes ) {
 
@@ -481,8 +509,13 @@ function interleaveAttributes( attributes ) {
 
 }
 
-// returns a new, non-interleaved version of the provided attribute
-export function deinterleaveAttribute( attribute ) {
+/**
+ * Returns a new, non-interleaved version of the given attribute.
+ *
+ * @param {InterleavedBufferAttribute} attribute - The interleaved attribute.
+ * @return {BufferAttribute} The non-interleaved attribute.
+ */
+function deinterleaveAttribute( attribute ) {
 
 	const cons = attribute.data.array.constructor;
 	const count = attribute.count;
@@ -529,11 +562,15 @@ export function deinterleaveAttribute( attribute ) {
 
 }
 
-// deinterleaves all attributes on the geometry
-export function deinterleaveGeometry( geometry ) {
+/**
+ * Deinterleaves all attributes on the given geometry.
+ *
+ * @param {BufferGeometry} geometry - The geometry to deinterleave.
+ */
+function deinterleaveGeometry( geometry ) {
 
 	const attributes = geometry.attributes;
-	const morphAttributes = geometry.morphAttributes;
+	const morphTargets = geometry.morphTargets;
 	const attrMap = new Map();
 
 	for ( const key in attributes ) {
@@ -553,40 +590,30 @@ export function deinterleaveGeometry( geometry ) {
 
 	}
 
-	// Process morphAttributes: iterate over each attribute name (e.g., 'position', 'normal')
-	for ( const key in morphAttributes ) {
+	for ( const key in morphTargets ) {
 
-		const morphAttrArray = morphAttributes[ key ];
-		if ( ! Array.isArray( morphAttrArray ) ) continue;
+		const attr = morphTargets[ key ];
+		if ( attr.isInterleavedBufferAttribute ) {
 
-		// Process each BufferAttribute in the array
-		for ( let i = 0; i < morphAttrArray.length; i ++ ) {
+			if ( ! attrMap.has( attr ) ) {
 
-			const attr = morphAttrArray[ i ];
-			if ( attr.isInterleavedBufferAttribute ) {
-
-				if ( ! attrMap.has( attr ) ) {
-
-					attrMap.set( attr, deinterleaveAttribute( attr ) );
-
-				}
-
-				morphAttrArray[ i ] = attrMap.get( attr );
+				attrMap.set( attr, deinterleaveAttribute( attr ) );
 
 			}
 
-		}
+			morphTargets[ key ] = attrMap.get( attr );
 
-		// Assign the updated array back to morphAttributes[key]
-		morphAttributes[ key ] = morphAttrArray;
+		}
 
 	}
 
 }
 
 /**
- * `@param` {BufferGeometry} geometry
- * @return {number}
+ * Returns the amount of bytes used by all attributes to represent the geometry.
+ *
+ * @param {BufferGeometry} geometry - The geometry.
+ * @return {number} The estimate bytes used.
  */
 function estimateBytesUsed( geometry ) {
 
@@ -608,9 +635,11 @@ function estimateBytesUsed( geometry ) {
 }
 
 /**
- * @param {BufferGeometry} geometry
- * @param {number} tolerance
- * @return {BufferGeometry}
+ * Returns a new geometry with vertices for which all similar vertex attributes (within tolerance) are merged.
+ *
+ * @param {BufferGeometry} geometry - The geometry to merge vertices for.
+ * @param {number} [tolerance=1e-4] - The tolerance value.
+ * @return {BufferGeometry} - The new geometry with merged vertices.
  */
 function mergeVertices( geometry, tolerance = 1e-4 ) {
 
@@ -641,31 +670,32 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 		const name = attributeNames[ i ];
 		const attr = geometry.attributes[ name ];
 
-		tmpAttributes[ name ] = new BufferAttribute(
+		tmpAttributes[ name ] = new attr.constructor(
 			new attr.array.constructor( attr.count * attr.itemSize ),
 			attr.itemSize,
 			attr.normalized
 		);
 
-		const morphAttrArray = geometry.morphAttributes[ name ];
-		if ( morphAttrArray && Array.isArray( morphAttrArray ) && morphAttrArray.length > 0 ) {
-			// morphAttributes[name] 是一个数组，每个元素是一个 BufferAttribute（对应一个 morph target）
-			tmpMorphAttributes[ name ] = [];
-			for ( let m = 0; m < morphAttrArray.length; m ++ ) {
-				const morphAttr = morphAttrArray[ m ];
-				tmpMorphAttributes[ name ].push( new BufferAttribute(
-					new morphAttr.array.constructor( morphAttr.count * morphAttr.itemSize ),
-					morphAttr.itemSize,
-					morphAttr.normalized
-				) );
-			}
+		const morphAttributes = geometry.morphAttributes[ name ];
+		if ( morphAttributes ) {
+
+			if ( ! tmpMorphAttributes[ name ] ) tmpMorphAttributes[ name ] = [];
+			morphAttributes.forEach( ( morphAttr, i ) => {
+
+				const array = new morphAttr.array.constructor( morphAttr.count * morphAttr.itemSize );
+				tmpMorphAttributes[ name ][ i ] = new morphAttr.constructor( array, morphAttr.itemSize, morphAttr.normalized );
+
+			} );
+
 		}
 
 	}
 
 	// convert the error tolerance to an amount of decimal places to truncate to
-	const decimalShift = Math.log10( 1 / tolerance );
-	const shiftMultiplier = Math.pow( 10, decimalShift );
+	const halfTolerance = tolerance * 0.5;
+	const exponent = Math.log10( 1 / tolerance );
+	const hashMultiplier = Math.pow( 10, exponent );
+	const hashAdditive = halfTolerance * hashMultiplier;
 	for ( let i = 0; i < vertexCount; i ++ ) {
 
 		const index = indices ? indices.getX( i ) : i;
@@ -681,7 +711,7 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 			for ( let k = 0; k < itemSize; k ++ ) {
 
 				// double tilde truncates the decimal value
-				hash += `${ ~ ~ ( attribute[ getters[ k ] ]( index ) * shiftMultiplier ) },`;
+				hash += `${ ~ ~ ( attribute[ getters[ k ] ]( index ) * hashMultiplier + hashAdditive ) },`;
 
 			}
 
@@ -700,25 +730,22 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 
 				const name = attributeNames[ j ];
 				const attribute = geometry.getAttribute( name );
-				const morphAttrArray = geometry.morphAttributes[ name ];
+				const morphAttributes = geometry.morphAttributes[ name ];
 				const itemSize = attribute.itemSize;
-				const newarray = tmpAttributes[ name ];
+				const newArray = tmpAttributes[ name ];
 				const newMorphArrays = tmpMorphAttributes[ name ];
 
 				for ( let k = 0; k < itemSize; k ++ ) {
 
 					const getterFunc = getters[ k ];
 					const setterFunc = setters[ k ];
-					newarray[ setterFunc ]( nextIndex, attribute[ getterFunc ]( index ) );
+					newArray[ setterFunc ]( nextIndex, attribute[ getterFunc ]( index ) );
 
-					if ( morphAttrArray && Array.isArray( morphAttrArray ) && newMorphArrays && Array.isArray( newMorphArrays ) ) {
+					if ( morphAttributes ) {
 
-						for ( let m = 0, ml = morphAttrArray.length; m < ml; m ++ ) {
+						for ( let m = 0, ml = morphAttributes.length; m < ml; m ++ ) {
 
-							const morphAttr = morphAttrArray[ m ];
-							if ( newMorphArrays[ m ] && morphAttr ) {
-								newMorphArrays[ m ][ setterFunc ]( nextIndex, morphAttr[ getterFunc ]( index ) );
-							}
+							newMorphArrays[ m ][ setterFunc ]( nextIndex, morphAttributes[ m ][ getterFunc ]( index ) );
 
 						}
 
@@ -742,7 +769,7 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 
 		const tmpAttribute = tmpAttributes[ name ];
 
-		result.setAttribute( name, new BufferAttribute(
+		result.setAttribute( name, new tmpAttribute.constructor(
 			tmpAttribute.array.slice( 0, nextIndex * tmpAttribute.itemSize ),
 			tmpAttribute.itemSize,
 			tmpAttribute.normalized,
@@ -750,27 +777,16 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 
 		if ( ! ( name in tmpMorphAttributes ) ) continue;
 
-		// 确保 result.morphAttributes[name] 是一个数组
-		if ( ! result.morphAttributes ) {
-			result.morphAttributes = {};
-		}
-		if ( ! result.morphAttributes[ name ] ) {
-			result.morphAttributes[ name ] = [];
-		}
+		for ( let j = 0; j < tmpMorphAttributes[ name ].length; j ++ ) {
 
-		const tmpMorphArray = tmpMorphAttributes[ name ];
-		if ( Array.isArray( tmpMorphArray ) ) {
-			for ( let j = 0; j < tmpMorphArray.length; j ++ ) {
+			const tmpMorphAttribute = tmpMorphAttributes[ name ][ j ];
 
-				const tmpMorphAttribute = tmpMorphArray[ j ];
+			result.morphAttributes[ name ][ j ] = new tmpMorphAttribute.constructor(
+				tmpMorphAttribute.array.slice( 0, nextIndex * tmpMorphAttribute.itemSize ),
+				tmpMorphAttribute.itemSize,
+				tmpMorphAttribute.normalized,
+			);
 
-				result.morphAttributes[ name ][ j ] = new BufferAttribute(
-					tmpMorphAttribute.array.slice( 0, nextIndex * tmpMorphAttribute.itemSize ),
-					tmpMorphAttribute.itemSize,
-					tmpMorphAttribute.normalized,
-				);
-
-			}
 		}
 
 	}
@@ -784,9 +800,12 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 }
 
 /**
- * @param {BufferGeometry} geometry
- * @param {number} drawMode
- * @return {BufferGeometry}
+ * Returns a new indexed geometry based on `TrianglesDrawMode` draw mode.
+ * This mode corresponds to the `gl.TRIANGLES` primitive in WebGL.
+ *
+ * @param {BufferGeometry} geometry - The geometry to convert.
+ * @param {number} drawMode - The current draw mode.
+ * @return {BufferGeometry} The new geometry using `TrianglesDrawMode`.
  */
 function toTrianglesDrawMode( geometry, drawMode ) {
 
@@ -895,9 +914,13 @@ function toTrianglesDrawMode( geometry, drawMode ) {
 
 /**
  * Calculates the morphed attributes of a morphed/skinned BufferGeometry.
- * Helpful for Raytracing or Decals.
- * @param {Mesh | Line | Points} object An instance of Mesh, Line or Points.
- * @return {Object} An Object with original position/normal attributes and morphed ones.
+ *
+ * Helpful for Raytracing or Decals (i.e. a `DecalGeometry` applied to a morphed Object with a `BufferGeometry`
+ * will use the original `BufferGeometry`, not the morphed/skinned one, generating an incorrect result.
+ * Using this function to create a shadow `Object3`D the `DecalGeometry` can be correctly generated).
+ *
+ * @param {Mesh|Line|Points} object - The 3D object to compute morph attributes for.
+ * @return {Object} An object with original position/normal attributes and morphed ones.
  */
 function computeMorphedAttributes( object ) {
 
@@ -971,9 +994,9 @@ function computeMorphedAttributes( object ) {
 
 		if ( object.isSkinnedMesh ) {
 
-			object.boneTransform( a, _vA );
-			object.boneTransform( b, _vB );
-			object.boneTransform( c, _vC );
+			object.applyBoneTransform( a, _vA );
+			object.applyBoneTransform( b, _vB );
+			object.applyBoneTransform( c, _vC );
 
 		}
 
@@ -998,11 +1021,8 @@ function computeMorphedAttributes( object ) {
 	const morphPosition = geometry.morphAttributes.position;
 	const morphTargetsRelative = geometry.morphTargetsRelative;
 	const normalAttribute = geometry.attributes.normal;
-	const morphNormal = geometry.morphAttributes.normal;
-	if ( ! normalAttribute ) {
-		console.warn( 'THREE.BufferGeometryUtils: computeMorphedAttributes() requires "normal" attribute.' );
-		return null;
-	}
+	const morphNormal = geometry.morphAttributes.position;
+
 	const groups = geometry.groups;
 	const drawRange = geometry.drawRange;
 	let i, j, il, jl;
@@ -1176,6 +1196,12 @@ function computeMorphedAttributes( object ) {
 
 }
 
+/**
+ * Merges the {@link BufferGeometry#groups} for the given geometry.
+ *
+ * @param {BufferGeometry} geometry - The geometry to modify.
+ * @return {BufferGeometry} - The updated geometry
+ */
 function mergeGroups( geometry ) {
 
 	if ( geometry.groups.length === 0 ) {
@@ -1278,9 +1304,15 @@ function mergeGroups( geometry ) {
 
 }
 
-
-// Creates a new, non-indexed geometry with smooth normals everywhere except faces that meet at
-// an angle greater than the crease angle.
+/**
+ * Modifies the supplied geometry if it is non-indexed, otherwise creates a new,
+ * non-indexed geometry. Returns the geometry with smooth normals everywhere except
+ * faces that meet at an angle greater than the crease angle.
+ *
+ * @param {BufferGeometry} geometry - The geometry to modify.
+ * @param {number} [creaseAngle=Math.PI/3] - The crease angle in radians.
+ * @return {BufferGeometry} - The updated geometry
+ */
 function toCreasedNormals( geometry, creaseAngle = Math.PI / 3 /* 60 degrees */ ) {
 
 	const creaseDot = Math.cos( creaseAngle );
@@ -1303,7 +1335,9 @@ function toCreasedNormals( geometry, creaseAngle = Math.PI / 3 /* 60 degrees */ 
 
 	}
 
-	const resultGeometry = geometry.toNonIndexed();
+	// BufferGeometry.toNonIndexed() warns if the geometry is non-indexed
+	// and returns the original geometry
+	const resultGeometry = geometry.index ? geometry.toNonIndexed() : geometry;
 	const posAttr = resultGeometry.attributes.position;
 	const vertexMap = {};
 
@@ -1385,10 +1419,12 @@ function toCreasedNormals( geometry, creaseAngle = Math.PI / 3 /* 60 degrees */ 
 }
 
 export {
-	computeTangents,
 	computeMikkTSpaceTangents,
-	mergeBufferGeometries,
-	mergeBufferAttributes,
+	mergeGeometries,
+	mergeAttributes,
+	deepCloneAttribute,
+	deinterleaveAttribute,
+	deinterleaveGeometry,
 	interleaveAttributes,
 	estimateBytesUsed,
 	mergeVertices,

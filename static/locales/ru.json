@@ -1488,6 +1488,46 @@
             "title": "Анимация покоя",
             "changed": "Анимация покоя изменена: {{name}}",
             "changeFailed": "Не удалось изменить анимацию покоя"
+        },
+        "settingsTitle": "Настройки VRM модели",
+        "cursorFollow": {
+            "title": "Отслеживание мыши",
+            "preset": "Интенсивность",
+            "none": "Выкл",
+            "low": "Низкая",
+            "medium": "Средняя",
+            "high": "Высокая",
+            "eyeSensitivity": "Чувствительность глаз",
+            "headSensitivity": "Чувствительность головы",
+            "headSpeed": "Скорость отслеживания"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "Настройки MMD модели",
+        "lighting": {
+            "title": "Освещение MMD",
+            "ambientIntensity": "Интенсивность окруж. света",
+            "ambientColor": "Цвет окружающего света",
+            "directionalIntensity": "Интенсивность осн. света",
+            "directionalColor": "Цвет основного света"
+        },
+        "rendering": {
+            "title": "Рендеринг MMD",
+            "toneMapping": "Тональная компрессия",
+            "exposure": "Экспозиция",
+            "outline": "Контур",
+            "pixelRatio": "Соотн. пикселей"
+        },
+        "physics": {
+            "title": "Физика MMD",
+            "enabled": "Физическая симуляция"
+        },
+        "cursorFollow": {
+            "title": "Отслеживание мыши",
+            "enabled": "Отслеживание головы",
+            "headYaw": "Диапазон поворота",
+            "headPitch": "Диапазон наклона",
+            "smoothSpeed": "Плавность отслеживания"
         }
     },
     "modelManager": {
@@ -2147,6 +2187,45 @@
             "sad": "Грусть",
             "angry": "Злость",
             "surprised": "Удивление"
+        }
+    },
+    "mmdEmotionManager": {
+        "title": "Менеджер маппинга эмоций MMD — Project N.E.K.O.",
+        "pageTitle": "Менеджер маппинга эмоций MMD",
+        "subtitle": "Настройте маппинг морфов для разных эмоций",
+        "selectModel": "Выбрать модель MMD",
+        "morphPreview": "Предпросмотр морфа",
+        "morphCandidates": "Кандидаты морфов",
+        "selectMorph": "Выбрать морф",
+        "saveConfig": "Сохранить конфигурацию",
+        "resetToDefault": "Сброс по умолчанию",
+        "loading": "Загрузка...",
+        "loadingMorphs": "Загрузка списка морфов",
+        "pleaseSelectModel": "Выберите модель",
+        "noModelsFound": "Доступные модели MMD не найдены",
+        "noMorphsFound": "Нет доступных морфов",
+        "loadModelListFailed": "Не удалось загрузить список моделей",
+        "loadMorphsFailed": "Не удалось загрузить список морфов",
+        "morphsLoadedFromModel": "Список морфов загружен из текущей модели",
+        "useDefaultMorphs": "Используется список морфов по умолчанию (сначала загрузите модель на главной странице для точного списка)",
+        "configLoadSuccess": "Конфигурация загружена успешно",
+        "configLoadFailed": "Не удалось загрузить конфигурацию",
+        "configUseDefault": "Используется конфигурация по умолчанию",
+        "configSaveSuccess": "Конфигурация сохранена!",
+        "saveFailed": "Ошибка сохранения",
+        "configReset": "Конфигурация сброшена по умолчанию",
+        "pleaseSelectModelFirst": "Сначала выберите модель",
+        "tip": "Совет: ",
+        "tipContent": "Выражения MMD используют морф-таргеты. Выберите несколько кандидатов морфов для каждой эмоции, система подберёт поддерживаемые моделью.",
+        "close": "Закрыть",
+        "emotions": {
+            "neutral": "Нейтральный",
+            "happy": "Радость",
+            "relaxed": "Расслабленный",
+            "sad": "Грусть",
+            "angry": "Злость",
+            "surprised": "Удивление",
+            "fear": "Страх"
         }
     },
     "theme": {

@@ -129,6 +129,26 @@
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
+            // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
+            let effectiveModelType = modelType;
+            if (modelType === 'live3d') {
+                const mmdPath = catgirlConfig.mmd
+                    || catgirlConfig._reserved?.avatar?.mmd?.model_path
+                    || '';
+                const vrmPath = catgirlConfig.vrm
+                    || catgirlConfig._reserved?.avatar?.vrm?.model_path
+                    || '';
+                if (mmdPath) {
+                    effectiveModelType = 'mmd';
+                } else if (vrmPath) {
+                    effectiveModelType = 'vrm';
+                } else {
+                    effectiveModelType = 'live2d'; // fallback
+                }
+                console.log('[猫娘切换] live3d 子类型检测:', effectiveModelType, '(mmd:', !!mmdPath, 'vrm:', !!vrmPath, ')');
+            }
+            console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
+
             // 2. 清理旧模型资源（温和清理，保留基础设施）
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
@@ -235,7 +255,7 @@
 
                 // 【关键修复】手动清理 Live2D UI 资源（Live2D没有cleanupUI方法）
                 // 只有在切换到非Live2D模型时才清理UI
-                if (modelType !== 'live2d') {
+                if (effectiveModelType !== 'live2d') {
                     // 移除浮动按钮
                     const live2dButtons = document.getElementById('live2d-floating-buttons');
                     if (live2dButtons) live2dButtons.remove();
@@ -261,7 +281,7 @@
                     if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
                         // 只有在切换到非 Live2D 模型时才停止 ticker
                         // 如果切换到 Live2D，ticker 会在加载新模型后重启
-                        if (modelType !== 'live2d') {
+                        if (effectiveModelType !== 'live2d') {
                             window.live2dManager.pixi_app.ticker.stop();
                         }
                     }
@@ -274,6 +294,46 @@
 
             } catch (e) {
                 console.warn('[猫娘切换] Live2D 清理出错:', e);
+            }
+
+            // 清理 MMD 资源
+            try {
+                // 隐藏容器
+                const mmdContainer = document.getElementById('mmd-container');
+                if (mmdContainer) {
+                    mmdContainer.style.display = 'none';
+                    mmdContainer.classList.add('hidden');
+                }
+                const mmdCanvas = document.getElementById('mmd-canvas');
+                if (mmdCanvas) {
+                    mmdCanvas.style.visibility = 'hidden';
+                    mmdCanvas.style.pointerEvents = 'none';
+                }
+
+                // 清理 MMD UI 资源（浮动按钮、锁图标等）
+                if (effectiveModelType !== 'mmd') {
+                    if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
+                        window.mmdManager.cleanupUI();
+                    } else {
+                        document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
+                            .forEach(el => el.remove());
+                    }
+                }
+
+                if (window.mmdManager) {
+                    // 停止 MMD 动画循环
+                    if (window.mmdManager._animationFrameId) {
+                        cancelAnimationFrame(window.mmdManager._animationFrameId);
+                        window.mmdManager._animationFrameId = null;
+                    }
+
+                    // 隐藏渲染器
+                    if (window.mmdManager.renderer && window.mmdManager.renderer.domElement) {
+                        window.mmdManager.renderer.domElement.style.display = 'none';
+                    }
+                }
+            } catch (e) {
+                console.warn('[猫娘切换] MMD 清理出错:', e);
             }
 
             // 3. 准备新环境
@@ -318,8 +378,8 @@
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
             // 4. 根据模型类型加载相应的模型
-            console.log('[猫娘切换] 检测到模型类型:', modelType);
-            if (modelType === 'vrm') {
+            console.log('[猫娘切换] 检测到模型类型:', modelType, '有效类型:', effectiveModelType);
+            if (effectiveModelType === 'vrm') {
                 // 加载 VRM 模型
                 console.log('[猫娘切换] 进入VRM加载分支');
 
@@ -660,6 +720,18 @@
                     live2dContainer.classList.add('hidden');
                 }
 
+                // 隐藏 MMD 容器
+                const mmdContainerVrm = document.getElementById('mmd-container');
+                if (mmdContainerVrm) {
+                    mmdContainerVrm.style.display = 'none';
+                    mmdContainerVrm.classList.add('hidden');
+                }
+                const mmdCanvasVrm = document.getElementById('mmd-canvas');
+                if (mmdCanvasVrm) {
+                    mmdCanvasVrm.style.visibility = 'hidden';
+                    mmdCanvasVrm.style.pointerEvents = 'none';
+                }
+
                 // 确保 VRM 渲染器可见
                 if (window.vrmManager && window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
                     window.vrmManager.renderer.domElement.style.display = 'block';
@@ -706,6 +778,115 @@
                         vrmLockIcon.style.removeProperty('display');
                         vrmLockIcon.style.removeProperty('visibility');
                         vrmLockIcon.style.removeProperty('opacity');
+                    }
+                }, 300);
+
+            } else if (effectiveModelType === 'mmd') {
+                // 加载 MMD 模型
+                console.log('[猫娘切换] 进入MMD加载分支');
+
+                // 获取 MMD 模型路径
+                let mmdModelPath = catgirlConfig.mmd
+                    || catgirlConfig._reserved?.avatar?.mmd?.model_path
+                    || '';
+
+                if (!mmdModelPath) {
+                    throw new Error('MMD 模型路径未配置');
+                }
+                console.log('[猫娘切换] MMD 模型路径:', mmdModelPath);
+
+                // 处理路径格式
+                let mmdModelUrl = mmdModelPath;
+                if (mmdModelUrl.includes('\\') || mmdModelUrl.includes(':')) {
+                    const filename = mmdModelUrl.split(/[\\/]/).pop();
+                    if (filename) {
+                        mmdModelUrl = `/user_mmd/${filename}`;
+                    }
+                } else if (!mmdModelUrl.startsWith('http') && !mmdModelUrl.startsWith('/')) {
+                    mmdModelUrl = `/user_mmd/${mmdModelUrl}`;
+                } else {
+                    mmdModelUrl = mmdModelUrl.replace(/\\/g, '/');
+                }
+
+                // 隐藏 Live2D 容器
+                const live2dContainerMmd = document.getElementById('live2d-container');
+                if (live2dContainerMmd) {
+                    live2dContainerMmd.style.display = 'none';
+                    live2dContainerMmd.classList.add('hidden');
+                }
+
+                // 隐藏 VRM 容器
+                const vrmContainerMmd = document.getElementById('vrm-container');
+                if (vrmContainerMmd) {
+                    vrmContainerMmd.style.display = 'none';
+                    vrmContainerMmd.classList.add('hidden');
+                }
+                const vrmCanvasMmd = document.getElementById('vrm-canvas');
+                if (vrmCanvasMmd) {
+                    vrmCanvasMmd.style.visibility = 'hidden';
+                    vrmCanvasMmd.style.pointerEvents = 'none';
+                }
+
+                // 显示 MMD 容器
+                const mmdContainerShow = document.getElementById('mmd-container');
+                if (mmdContainerShow) {
+                    mmdContainerShow.classList.remove('hidden');
+                    mmdContainerShow.style.display = 'block';
+                    mmdContainerShow.style.visibility = 'visible';
+                    mmdContainerShow.style.removeProperty('pointer-events');
+                }
+                const mmdCanvasShow = document.getElementById('mmd-canvas');
+                if (mmdCanvasShow) {
+                    mmdCanvasShow.style.visibility = 'visible';
+                    mmdCanvasShow.style.pointerEvents = 'auto';
+                }
+
+                // 初始化 MMD 管理器（如果未初始化）
+                if (!window.mmdManager) {
+                    console.log('[猫娘切换] MMD 管理器未初始化，等待初始化');
+                    if (typeof window.initMMDModel === 'function') {
+                        await window.initMMDModel();
+                    } else if (typeof initMMDModel === 'function') {
+                        await initMMDModel();
+                    }
+                }
+
+                // 加载 MMD 模型
+                if (window.mmdManager) {
+                    // 重置 goodbyeClicked 标志
+                    window.mmdManager._goodbyeClicked = false;
+                    await window.mmdManager.loadModel(mmdModelUrl);
+                    console.log('[猫娘切换] MMD 模型加载完成');
+                } else {
+                    console.error('[猫娘切换] MMD 管理器初始化失败');
+                }
+
+                if (window.LanLan1) {
+                    window.LanLan1.live2dModel = null;
+                    window.LanLan1.currentModel = null;
+                }
+
+                const chatContainerMmd = document.getElementById('chat-container');
+                const textInputAreaMmd = document.getElementById('text-input-area');
+                if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
+                if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
+
+                // 延时显示 MMD 浮动按钮和锁图标
+                setTimeout(() => {
+                    const mmdButtons = document.getElementById('mmd-floating-buttons');
+                    if (mmdButtons) {
+                        mmdButtons.style.removeProperty('display');
+                        mmdButtons.style.removeProperty('visibility');
+                        mmdButtons.style.removeProperty('opacity');
+                    } else if (window.mmdManager && typeof window.mmdManager.setupFloatingButtons === 'function') {
+                        window.mmdManager.setupFloatingButtons();
+                    }
+
+                    const mmdLockIcon = document.getElementById('mmd-lock-icon');
+                    if (mmdLockIcon) {
+                        mmdLockIcon.style.removeProperty('display');
+                        mmdLockIcon.style.removeProperty('visibility');
+                        mmdLockIcon.style.removeProperty('opacity');
                     }
                 }, 300);
 
@@ -796,6 +977,18 @@
                 if (vrmContainer) {
                     vrmContainer.style.display = 'none';
                     vrmContainer.classList.add('hidden');
+                }
+
+                // 隐藏 MMD 容器
+                const mmdContainerL2d = document.getElementById('mmd-container');
+                if (mmdContainerL2d) {
+                    mmdContainerL2d.style.display = 'none';
+                    mmdContainerL2d.classList.add('hidden');
+                }
+                const mmdCanvasL2d = document.getElementById('mmd-canvas');
+                if (mmdCanvasL2d) {
+                    mmdCanvasL2d.style.visibility = 'hidden';
+                    mmdCanvasL2d.style.pointerEvents = 'none';
                 }
 
                 const chatContainerL2d = document.getElementById('chat-container');

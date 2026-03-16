@@ -1,0 +1,191 @@
+/**
+ * MMD Init - 模块加载器和自动初始化
+ * 参考 vrm-init.js 结构
+ */
+
+// --- MMD 模块加载逻辑 ---
+(async function initMMDModules() {
+    if (window.mmdModuleLoaded || window._mmdModulesLoading) return;
+
+    const MMD_VERSION = '1.0.0';
+
+    const loadModules = async () => {
+        console.log('[MMD] 开始加载依赖模块');
+
+        // 核心模块（无相互依赖，可并行）
+        const parallelModules = [
+            '/static/mmd-core.js',
+            '/static/mmd-expression.js',
+            '/static/mmd-animation.js',
+            '/static/mmd-interaction.js',
+            '/static/mmd-cursor-follow.js',
+            '/static/mmd-manager.js'
+        ];
+
+        // UI 模块（popup 必须在 buttons 之前，debug 在 buttons 之后）
+        const sequentialModules = [
+            '/static/mmd-ui-popup.js',
+            '/static/mmd-ui-buttons.js',
+            '/static/mmd-ui-debug.js'
+        ];
+
+        const failedModules = [];
+        const appendScriptSafely = (script) => {
+            const attachScript = () => {
+                const parent = document.head || document.body || document.documentElement;
+                parent.appendChild(script);
+            };
+            if (!document.head && !document.body) {
+                document.addEventListener('DOMContentLoaded', attachScript, { once: true });
+            } else {
+                attachScript();
+            }
+        };
+
+        const loadScript = (moduleSrc) => {
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
+                return Promise.resolve();
+            }
+
+            return new Promise((resolve) => {
+                const script = document.createElement('script');
+                script.src = `${moduleSrc}?v=${MMD_VERSION}`;
+                script.onload = () => {
+                    console.log(`[MMD] 模块加载成功: ${moduleSrc}`);
+                    resolve();
+                };
+                script.onerror = () => {
+                    console.error(`[MMD] 模块加载失败: ${moduleSrc}`);
+                    failedModules.push(moduleSrc);
+                    resolve();
+                };
+                appendScriptSafely(script);
+            });
+        };
+
+        // 1. 并行加载核心模块
+        await Promise.all(parallelModules.map(loadScript));
+
+        // 2. 顺序加载 UI 模块
+        for (const moduleSrc of sequentialModules) {
+            await loadScript(moduleSrc);
+        }
+
+        if (failedModules.length === 0) {
+            window.mmdModuleLoaded = true;
+            window.dispatchEvent(new CustomEvent('mmd-modules-ready'));
+            console.log('[MMD] 所有模块加载完成');
+        } else {
+            window.mmdModuleLoaded = false;
+            window.dispatchEvent(new CustomEvent('mmd-modules-failed', {
+                detail: { failedModules }
+            }));
+            console.error('[MMD] 部分模块加载失败:', failedModules);
+        }
+    };
+
+    // Three.js 就绪后加载
+    if (typeof window.THREE === 'undefined') {
+        window.addEventListener('three-ready', loadModules, { once: true });
+    } else {
+        loadModules();
+    }
+})();
+
+// 全局路径配置
+window.MMD_PATHS = {
+    user_mmd: '/user_mmd',
+    static_mmd: '/static/mmd'
+};
+
+window.mmdManager = null;
+
+/**
+ * 从后端同步 MMD 路径配置
+ */
+async function fetchMMDConfig() {
+    try {
+        const response = await fetch('/api/model/mmd/config');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.paths) {
+                window.MMD_PATHS = {
+                    ...window.MMD_PATHS,
+                    ...data.paths,
+                    isLoaded: true
+                };
+                window.dispatchEvent(new CustomEvent('mmd-paths-loaded', {
+                    detail: { paths: window.MMD_PATHS }
+                }));
+                return true;
+            }
+        }
+        return false;
+    } catch (error) {
+        console.warn('[MMD Init] 无法获取路径配置，使用默认值:', error);
+        return false;
+    }
+}
+
+/**
+ * 路径转换：将模型路径转换为可访问的 URL
+ */
+window._mmdConvertPath = function (modelPath, options = {}) {
+    const defaultPath = options.defaultPath || null;
+
+    if (!modelPath || typeof modelPath !== 'string' || modelPath.trim() === '') {
+        return defaultPath;
+    }
+
+    // 如果已经是有效的站内路径，直接返回
+    const userPrefix = (window.MMD_PATHS?.user_mmd || '/user_mmd');
+    const staticPrefix = (window.MMD_PATHS?.static_mmd || '/static/mmd');
+    if (modelPath.startsWith(userPrefix) || modelPath.startsWith(staticPrefix)) {
+        return modelPath;
+    }
+
+    // 如果是完整 URL，直接返回
+    if (modelPath.startsWith('http://') || modelPath.startsWith('https://') || modelPath.startsWith('/')) {
+        return modelPath;
+    }
+
+    // 否则视为相对路径，加上用户目录前缀
+    return `${userPrefix}/${modelPath}`;
+};
+
+/**
+ * 全局初始化函数：初始化 MMD 模型
+ */
+async function initMMDModel() {
+    // 如果模块还没加载完，等待
+    if (!window.mmdModuleLoaded) {
+        await new Promise((resolve) => {
+            window.addEventListener('mmd-modules-ready', resolve, { once: true });
+            // 超时保护
+            setTimeout(resolve, 10000);
+        });
+    }
+
+    if (typeof MMDManager === 'undefined') {
+        console.error('[MMD Init] MMDManager 类未定义');
+        return null;
+    }
+
+    // 如果已经有实例，先销毁
+    if (window.mmdManager) {
+        window.mmdManager.dispose();
+    }
+
+    window.mmdManager = new MMDManager();
+    await window.mmdManager.init('mmd-canvas', 'mmd-container');
+
+    // 获取后端路径配置
+    await fetchMMDConfig();
+
+    console.log('[MMD Init] MMD 管理器已初始化');
+    return window.mmdManager;
+}
+
+// 导出到全局
+window.initMMDModel = initMMDModel;
+window.fetchMMDConfig = fetchMMDConfig;

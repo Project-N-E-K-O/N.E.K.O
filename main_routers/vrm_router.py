@@ -402,6 +402,42 @@ def get_vrm_animations():
         )
 
 
+@router.delete('/model')
+async def delete_vrm_model(request: Request):
+    """删除用户导入的 VRM 模型文件"""
+    try:
+        body = await request.json()
+        url = body.get('url', '')
+        if not url or not isinstance(url, str):
+            return JSONResponse(status_code=400, content={"success": False, "error": "缺少 url 参数"})
+
+        # 只允许删除 /user_vrm/ 下的文件
+        if not url.startswith(VRM_USER_PATH + '/'):
+            return JSONResponse(status_code=400, content={"success": False, "error": "只能删除用户导入的 VRM 模型"})
+
+        rel = url[len(VRM_USER_PATH) + 1:]  # 去掉 '/user_vrm/'
+        if not rel or '..' in rel or rel.startswith('/'):
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
+
+        config_mgr = get_config_manager()
+        vrm_dir = config_mgr.vrm_dir
+        target = (vrm_dir / rel).resolve()
+
+        if not target.is_relative_to(vrm_dir.resolve()):
+            return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
+
+        if not target.exists():
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
+
+        target.unlink()
+        logger.info(f"已删除 VRM 模型: {target.name}")
+
+        return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
+    except Exception as e:
+        logger.error(f"删除 VRM 模型失败: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
 # 新增配置获取接口
 @router.get('/config')
 async def get_vrm_config():

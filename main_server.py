@@ -542,6 +542,7 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
+    _config_manager.ensure_mmd_directory()
     _config_manager.ensure_chara_directory()
     user_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(user_live2d_path):
@@ -565,6 +566,22 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
         logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
     
+    # 挂载MMD动画目录（必须在MMD模型目录之前挂载）
+    mmd_animation_path = str(_config_manager.mmd_animation_dir)
+    if os.path.exists(mmd_animation_path):
+        app.mount("/user_mmd/animation", CustomStaticFiles(directory=mmd_animation_path), name="user_mmd_animation")
+        logger.info(f"已挂载MMD动画目录: {mmd_animation_path}")
+
+    # 挂载MMD模型目录（用户文档目录）
+    user_mmd_path = str(_config_manager.mmd_dir)
+    if os.path.exists(user_mmd_path):
+        app.mount("/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd")
+        logger.info(f"已挂载MMD目录: {user_mmd_path}")
+    
+    # 挂载项目目录下的static/mmd（作为备用）
+    project_mmd_path = os.path.join(static_dir, 'mmd')
+    if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
+        logger.info(f"项目MMD目录存在: {project_mmd_path} (可通过 /static/mmd/ 访问)")
 
     # 挂载用户mod路径
     user_mod_path = _config_manager.get_workshop_path()
@@ -579,6 +596,7 @@ from main_routers import ( # noqa
     characters_router,
     live2d_router,
     vrm_router,
+    mmd_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -639,6 +657,7 @@ app.include_router(config_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
+app.include_router(mmd_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # 注意：pages_router 含 /{lanlan_name} 兜底路由，应最后挂载

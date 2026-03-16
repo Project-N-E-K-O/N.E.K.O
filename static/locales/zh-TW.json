@@ -1488,6 +1488,46 @@
             "title": "待機動作",
             "changed": "待機動作已切換: {{name}}",
             "changeFailed": "切換待機動作失敗"
+        },
+        "settingsTitle": "VRM 模型設置",
+        "cursorFollow": {
+            "title": "滑鼠追蹤",
+            "preset": "追蹤強度",
+            "none": "關閉",
+            "low": "低",
+            "medium": "中",
+            "high": "高",
+            "eyeSensitivity": "眼睛靈敏度",
+            "headSensitivity": "頭部靈敏度",
+            "headSpeed": "頭部追蹤速度"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD 模型設置",
+        "lighting": {
+            "title": "MMD光照設置",
+            "ambientIntensity": "環境光強度",
+            "ambientColor": "環境光顏色",
+            "directionalIntensity": "主光源強度",
+            "directionalColor": "主光源顏色"
+        },
+        "rendering": {
+            "title": "MMD渲染設置",
+            "toneMapping": "色調映射",
+            "exposure": "曝光度",
+            "outline": "描邊效果",
+            "pixelRatio": "像素比例"
+        },
+        "physics": {
+            "title": "MMD物理設置",
+            "enabled": "物理模擬"
+        },
+        "cursorFollow": {
+            "title": "滑鼠追蹤",
+            "enabled": "頭部追蹤",
+            "headYaw": "左右轉角範圍",
+            "headPitch": "上下轉角範圍",
+            "smoothSpeed": "追蹤平滑度"
         }
     },
     "modelManager": {
@@ -2147,6 +2187,45 @@
             "sad": "悲傷 (Sad)",
             "angry": "生氣 (Angry)",
             "surprised": "驚訝 (Surprised)"
+        }
+    },
+    "mmdEmotionManager": {
+        "title": "MMD 情感映射管理器 - Project N.E.K.O.",
+        "pageTitle": "MMD 情感映射管理器",
+        "subtitle": "配置不同情緒對應的 MorphTarget 映射",
+        "selectModel": "選擇 MMD 模型",
+        "morphPreview": "Morph 預覽",
+        "morphCandidates": "Morph 候選",
+        "selectMorph": "選擇 Morph",
+        "saveConfig": "保存配置",
+        "resetToDefault": "重置為預設",
+        "loading": "載入中...",
+        "loadingMorphs": "載入 Morph 列表",
+        "pleaseSelectModel": "請選擇模型",
+        "noModelsFound": "沒有找到可用的MMD模型",
+        "noMorphsFound": "沒有可用的 Morph",
+        "loadModelListFailed": "載入模型列表失敗",
+        "loadMorphsFailed": "載入 Morph 列表失敗",
+        "morphsLoadedFromModel": "已從當前模型載入 Morph 列表",
+        "useDefaultMorphs": "使用預設 Morph 列表（請先在主頁面載入模型以取得精確列表）",
+        "configLoadSuccess": "配置載入成功",
+        "configLoadFailed": "配置載入失敗",
+        "configUseDefault": "使用預設配置",
+        "configSaveSuccess": "配置保存成功！",
+        "saveFailed": "保存失敗",
+        "configReset": "已重置為預設配置",
+        "pleaseSelectModelFirst": "請先選擇模型",
+        "tip": "提示：",
+        "tipContent": "MMD模型的表情使用 MorphTarget（モーフ）實現。請為每種情緒選擇多個候選 Morph，系統會自動匹配模型支援的 Morph。",
+        "close": "關閉",
+        "emotions": {
+            "neutral": "平靜 (Neutral)",
+            "happy": "開心 (Happy)",
+            "relaxed": "放鬆 (Relaxed)",
+            "sad": "悲傷 (Sad)",
+            "angry": "生氣 (Angry)",
+            "surprised": "驚訝 (Surprised)",
+            "fear": "恐懼 (Fear)"
         }
     },
     "theme": {

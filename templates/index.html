@@ -113,6 +113,10 @@
     <div id="vrm-container" style="display: none;">
         <canvas id="vrm-canvas"></canvas>
     </div>
+    <!-- MMD模型容器 -->
+    <div id="mmd-container" style="display: none;">
+        <canvas id="mmd-canvas"></canvas>
+    </div>
 
     <!-- Live2D SDK 核心库 -->
     <script src="/static/libs/live2dcubismcore.min.js"></script>
@@ -139,7 +143,10 @@
             "three": "/static/libs/three.module.js",
             "three/addons/": "/static/libs/three/addons/",
             "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
-            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js",
+            "@moeru/three-mmd": "/static/libs/three-mmd.module.js",
+            "@moeru/three-mmd-physics-ammo": "/static/libs/three-mmd-physics-ammo.module.js",
+            "ammojs-typed": "/static/libs/ammojs-typed.module.js"
         }
     }
     </script>
@@ -157,6 +164,7 @@
     <script src="/static/js/index.js"></script>
     <script src="/static/common_ui.js"></script>
     <script src="/static/vrm-init.js"></script>
+    <script src="/static/mmd-init.js"></script>
     <script src="/static/achievement_manager.js"></script>
     <script src="/static/js/agent_ui_v2.js"></script>
     <script src="/static/ogg-opus-decoder-wrapper.js"></script>

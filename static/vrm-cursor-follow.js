@@ -153,6 +153,15 @@ class CursorFollowController {
     constructor() {
         this.manager = null;
 
+        // ── 用户可配置参数（从默认值初始化，applyConfig 可覆盖） ──
+        this.eyeMaxYawDeg = CURSOR_FOLLOW_DEFAULTS.eyeMaxYawDeg;
+        this.eyeMaxPitchUpDeg = CURSOR_FOLLOW_DEFAULTS.eyeMaxPitchUpDeg;
+        this.eyeMaxPitchDownDeg = CURSOR_FOLLOW_DEFAULTS.eyeMaxPitchDownDeg;
+        this.headMaxYawDeg = CURSOR_FOLLOW_DEFAULTS.headMaxYawDeg;
+        this.headMaxPitchUpDeg = CURSOR_FOLLOW_DEFAULTS.headMaxPitchUpDeg;
+        this.headMaxPitchDownDeg = CURSOR_FOLLOW_DEFAULTS.headMaxPitchDownDeg;
+        this.headSmoothSpeed = CURSOR_FOLLOW_DEFAULTS.headSmoothSpeed;
+
         // ── 眼睛目标 Object3D ──
         this.eyesTarget = null;
 
@@ -358,6 +367,35 @@ class CursorFollowController {
         return this._performanceLevel;
     }
 
+    /**
+     * 从UI设置面板应用配置
+     * @param {Object} config - { eyeMaxAngle, headMaxAngle, smoothSpeed, enabled }
+     */
+    applyConfig(config) {
+        if (!config) return;
+        if (config.enabled === false) {
+            this._userDisabled = true;
+            this._enabled = false;
+            this._completeDisable();
+            return;
+        }
+        this._userDisabled = false;
+        this._enabled = true;
+        if (config.eyeMaxAngle != null) {
+            this.eyeMaxYawDeg = config.eyeMaxAngle;
+            this.eyeMaxPitchUpDeg = config.eyeMaxAngle;
+            this.eyeMaxPitchDownDeg = Math.round(config.eyeMaxAngle * 0.87);
+        }
+        if (config.headMaxAngle != null) {
+            this.headMaxYawDeg = config.headMaxAngle;
+            this.headMaxPitchUpDeg = Math.round(config.headMaxAngle * 0.67);
+            this.headMaxPitchDownDeg = Math.round(config.headMaxAngle * 0.56);
+        }
+        if (config.smoothSpeed != null) {
+            this.headSmoothSpeed = config.smoothSpeed;
+        }
+    }
+
     _getCanvasRect(canvas) {
         const now = performance.now();
         if (!this._lastCanvasRect || (now - this._lastCanvasRectReadAt) > 120) {
@@ -550,9 +588,9 @@ class CursorFollowController {
                 // 屏幕坐标与当前基准存在上下方向差异，这里取反以匹配鼠标直觉
                 const rawPitch = Math.atan2(-dy, Math.max(horizLen, 1e-8));
 
-                const maxYaw = D.eyeMaxYawDeg * (Math.PI / 180);
-                const maxPitchUp = D.eyeMaxPitchUpDeg * (Math.PI / 180);
-                const maxPitchDown = D.eyeMaxPitchDownDeg * (Math.PI / 180);
+                const maxYaw = this.eyeMaxYawDeg * (Math.PI / 180);
+                const maxPitchUp = this.eyeMaxPitchUpDeg * (Math.PI / 180);
+                const maxPitchDown = this.eyeMaxPitchDownDeg * (Math.PI / 180);
                 const clampedYaw = THREE.MathUtils.clamp(rawYaw, -maxYaw, maxYaw);
                 const clampedPitch = THREE.MathUtils.clamp(rawPitch, -maxPitchDown, maxPitchUp);
                 const eyeCenterDeadzoneRad = D.eyeCenterDeadzoneDeg * (Math.PI / 180);
@@ -664,9 +702,9 @@ class CursorFollowController {
                 const filteredPitch = this._headFilterPitch.filter(rawPitch, this._elapsedTime);
 
                 // ── Clamp ──
-                const maxYaw = D.headMaxYawDeg * (Math.PI / 180);
-                const maxPitchUp = D.headMaxPitchUpDeg * (Math.PI / 180);
-                const maxPitchDown = D.headMaxPitchDownDeg * (Math.PI / 180);
+                const maxYaw = this.headMaxYawDeg * (Math.PI / 180);
+                const maxPitchUp = this.headMaxPitchUpDeg * (Math.PI / 180);
+                const maxPitchDown = this.headMaxPitchDownDeg * (Math.PI / 180);
 
                 const clampedYaw = THREE.MathUtils.clamp(filteredYaw, -maxYaw, maxYaw);
                 const clampedPitch = THREE.MathUtils.clamp(filteredPitch, -maxPitchDown, maxPitchUp);
@@ -684,7 +722,7 @@ class CursorFollowController {
         }
 
         // ── 指数阻尼平滑（每帧） ──
-        const headAlpha = 1 - Math.exp(-delta * D.headSmoothSpeed);
+        const headAlpha = 1 - Math.exp(-delta * this.headSmoothSpeed);
         this._headYaw += (this._targetHeadYaw - this._headYaw) * headAlpha;
         this._headPitch += (this._targetHeadPitch - this._headPitch) * headAlpha;
 

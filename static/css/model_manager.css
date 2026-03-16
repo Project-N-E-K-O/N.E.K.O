@@ -681,6 +681,38 @@ body {
     flex-shrink: 0;
 }
 
+.vrm-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #a78bfa;
+    background-color: rgba(167, 139, 250, 0.15);
+    border: 1px solid #a78bfa;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.mmd-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #34d399;
+    background-color: rgba(52, 211, 153, 0.15);
+    border: 1px solid #34d399;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 /* 动作选择器按钮样式（参考模型类型选择器模式） */
 #motion-select-wrapper {
     position: relative;
@@ -1304,6 +1336,121 @@ body {
     border-bottom-right-radius: 12px;
 }
 
+/* MMD动画选择器按钮样式（参考VRM动作选择器模式） */
+#mmd-animation-select-wrapper {
+    position: relative;
+}
+
+#mmd-animation-select-btn {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px 10px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 150px;
+    max-width: 100% !important;
+    flex-shrink: 0 !important;
+    position: relative;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+#mmd-animation-select-btn .mmd-animation-select-icon {
+    display: block !important;
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    height: 40px;
+    max-width: 80px;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+}
+
+#mmd-animation-select-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+#mmd-animation-select-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+#mmd-animation-select-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* MMD动画下拉菜单样式 */
+.mmd-animation-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: auto;
+    min-width: 270px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid #b3e0ff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    margin-top: 4px;
+    padding-right: 0;
+}
+
+.mmd-animation-dropdown .dropdown-item {
+    padding: 6px 15px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-image 0.2s;
+    position: relative;
+    background-color: transparent;
+    background-image: none;
+    background-size: 100% auto;
+    background-position: center center;
+    background-repeat: no-repeat;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.mmd-animation-dropdown .dropdown-item:hover {
+    background-image: url('/static/icons/dropdown_item_hover_bg.png?v=1');
+}
+
+.mmd-animation-dropdown .dropdown-item:first-child {
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+.mmd-animation-dropdown .dropdown-item:last-child {
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
 /* VRM表情选择器按钮样式（参考表情选择器模式） */
 #vrm-expression-select-wrapper {
     position: relative;
@@ -1709,8 +1856,8 @@ body {
     opacity: 0.95 !important;
 }
 
-/* VRM 情感配置按钮样式 - 与 Live2D 情感配置按钮保持一致 */
-#vrm-emotion-config-btn {
+/* Live3D 情感配置按钮样式 - 与 Live2D 情感配置按钮保持一致 */
+#live3d-emotion-config-btn {
     background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     border: none !important;
@@ -1730,11 +1877,11 @@ body {
     box-sizing: border-box;
 }
 
-#vrm-emotion-config-btn span {
+#live3d-emotion-config-btn span {
     font-size: var(--button-text-size) !important;
 }
 
-#vrm-emotion-config-btn:hover:not(:disabled) {
+#live3d-emotion-config-btn:hover:not(:disabled) {
     background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     opacity: 0.9;
@@ -1742,7 +1889,7 @@ body {
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
 }
 
-#vrm-emotion-config-btn:active:not(:disabled) {
+#live3d-emotion-config-btn:active:not(:disabled) {
     background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     transform: translateY(1px) scale(0.98) !important;
@@ -2125,7 +2272,8 @@ body {
     opacity: 0.9 !important;
 }
 
-#delete-model-modal {
+#delete-model-modal,
+#delete-mmd-model-modal {
     display: none;
     position: fixed;
     top: 0;
@@ -2138,7 +2286,8 @@ body {
     align-items: center;
 }
 
-#delete-model-modal.show {
+#delete-model-modal.show,
+#delete-mmd-model-modal.show {
     display: flex;
 }
 
@@ -2690,6 +2839,117 @@ body {
     scrollbar-color: #96e8ff #f0f8ff;
 }
 
+/* ==================== VRM/MMD 专属设置区域样式 ==================== */
+.model-settings-section {
+    width: 100%;
+    margin: 8px 0;
+}
+
+.settings-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin-bottom: 4px;
+    border-radius: 10px;
+    width: 270px;
+}
+
+.vrm-section-header {
+    background: linear-gradient(90deg, rgba(79, 140, 255, 0.10) 0%, transparent 100%);
+    border-left: 3px solid #4f8cff;
+}
+
+.mmd-section-header {
+    background: linear-gradient(90deg, rgba(46, 204, 113, 0.10) 0%, transparent 100%);
+    border-left: 3px solid #2ecc71;
+}
+
+.settings-section-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #fff;
+}
+
+.vrm-badge-label {
+    background: linear-gradient(135deg, #4f8cff, #6bb3ff);
+    box-shadow: 0 1px 4px rgba(79, 140, 255, 0.3);
+}
+
+.mmd-badge-label {
+    background: linear-gradient(135deg, #2ecc71, #58d68d);
+    box-shadow: 0 1px 4px rgba(46, 204, 113, 0.3);
+}
+
+.settings-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #666;
+}
+
+/* MMD 打光面板复用VRM面板样式但使用绿色主题 */
+.mmd-lighting-wrapper {
+    width: 270px !important;
+    min-width: 270px !important;
+    max-width: 270px !important;
+}
+
+.mmd-lighting-wrapper > .vrm-lighting-content {
+    background: linear-gradient(180deg, rgba(214, 255, 230, 0.65), rgba(196, 255, 220, 0.55));
+    border: 1px solid rgba(46, 204, 113, 0.40);
+    box-shadow: 0 4px 10px rgba(46, 204, 113, 0.12);
+}
+
+/* 开关切换样式 （toggle switch） */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .3s;
+    border-radius: 22px;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+
+input:checked + .toggle-slider {
+    background: linear-gradient(135deg, #2ecc71, #58d68d);
+}
+
+input:checked + .toggle-slider:before {
+    transform: translateX(18px);
+}
+
 /* ==================== 中文模式下按钮固定宽度 ==================== */
 /* 中文文字较短，固定宽度更整齐美观 */
 html[lang|="zh"] #backToMainBtn,
@@ -2704,7 +2964,7 @@ html[lang|="zh"] #vrm-animation-select-btn,
 html[lang|="zh"] #vrm-expression-select-btn,
 html[lang|="zh"] #save-position-btn,
 html[lang|="zh"] #emotion-config-btn,
-html[lang|="zh"] #vrm-emotion-config-btn,
+html[lang|="zh"] #live3d-emotion-config-btn,
 html[lang|="zh"] #parameter-editor-btn {
     width: 270px !important;
     min-width: 270px !important;
@@ -2746,7 +3006,7 @@ html[lang|="en"] #vrm-animation-select-btn,
 html[lang|="en"] #vrm-expression-select-btn,
 html[lang|="en"] #save-position-btn,
 html[lang|="en"] #emotion-config-btn,
-html[lang|="en"] #vrm-emotion-config-btn,
+html[lang|="en"] #live3d-emotion-config-btn,
 html[lang|="en"] #parameter-editor-btn {
     width: 270px !important;
     min-width: 270px !important;

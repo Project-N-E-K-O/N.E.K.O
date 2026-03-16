@@ -90,8 +90,8 @@ async function loadPageConfig() {
             // 将 model_type 写回 lanlan_config，减少各处"猜模式"的分支
             lanlan_config.model_type = modelType;
             window.lanlan_config = lanlan_config;
-            // 根据model_type判断是Live2D还是VRM
-            if (modelType === 'vrm') {
+            // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
+            if (modelType === 'live3d' || modelType === 'vrm') {
                 if (modelPath &&
                     modelPath !== 'undefined' &&
                     modelPath !== 'null' &&
