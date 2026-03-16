@@ -1002,13 +1002,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     if (this._outsideClickHandler) {
         document.removeEventListener('click', this._outsideClickHandler);
     }
-    const self = this;
-    this._outsideClickHandler = function () {
+    this._outsideClickHandler = (e) => {
+        const path = e.composedPath ? e.composedPath() : (e.path || []);
+        if (path.includes(buttonsContainer)) return;
+        if (path.some(n => n && n.id && n.id.startsWith('live2d-popup-'))) return;
         // 快速路径：没有任何弹出框处于打开状态则跳过
-        const anyOpen = document.querySelector('[id^="live2d-popup-"][style*="display: flex"]');
-        if (!anyOpen) return;
-        // 能到达 document 说明点击不在 buttonsContainer 或 popup 内（已 stopPropagation）
-        self.closeAllPopups();
+        const openPopup = Array.from(document.querySelectorAll('[id^="live2d-popup-"]')).find(el =>
+            getComputedStyle(el).display === 'flex');
+        if (!openPopup) return;
+        this.closeAllPopups();
     };
     document.addEventListener('click', this._outsideClickHandler);
 

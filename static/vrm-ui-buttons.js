@@ -659,13 +659,14 @@ VRMManager.prototype.setupFloatingButtons = function () {
     if (this._outsideClickHandler) {
         document.removeEventListener('click', this._outsideClickHandler);
     }
-    const self = this;
-    this._outsideClickHandler = function () {
+    this._outsideClickHandler = (e) => {
+        if (e.target.closest('#vrm-floating-buttons')) return;
+        if (e.target.closest('[id^="vrm-popup-"]')) return;
         // 快速路径：没有任何弹出框处于打开状态则跳过
-        const anyOpen = document.querySelector('[id^="vrm-popup-"][style*="display: flex"]');
+        const anyOpen = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+            .find(el => getComputedStyle(el).display === 'flex');
         if (!anyOpen) return;
-        // 能到达 document 说明点击不在 buttonsContainer 或 popup 内（已 stopPropagation）
-        self.closeAllPopups();
+        this.closeAllPopups();
     };
     document.addEventListener('click', this._outsideClickHandler);
 
