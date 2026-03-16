@@ -2267,11 +2267,14 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         if not mime_type:
             return JSONResponse({'error': error_msg}, status_code=400)
 
-        normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
-            _normalize_voice_clone_api_audio,
-            file_buffer,
-            file.filename or 'prompt_audio.wav',
-        )
+        try:
+            normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
+                _normalize_voice_clone_api_audio,
+                file_buffer,
+                file.filename or 'prompt_audio.wav',
+            )
+        except ValueError as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
         mime_type = 'audio/wav'
         logger.info(
             "语音克隆API参考音频已重采样并重新生成: %sHz/%s声道/%sbyte -> %sHz/%s声道/%sbyte",
