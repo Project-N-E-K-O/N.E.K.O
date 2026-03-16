@@ -6,7 +6,8 @@
     top: 0;
     left: 0;
     width: 100vw;
-    height: 100vh;
+    height: 100dvh;
+    height: 100vh; /* Fallback for older browsers */
     z-index: 100010;
     /* 深邃径向渐变底层 - 完全不透明 */
     background: radial-gradient(ellipse at center bottom, #0d1b2a 0%, #000000 60%, #000000 100%);
@@ -531,3 +532,18 @@
 }
 
 
+/* ========================================
+   无障碍：减少动画
+   ======================================== */
+
+@media (prefers-reduced-motion: reduce) {
+    /* 禁用持续动画：星星闪烁 */
+    .character-overlay::before {
+        animation: none;
+    }
+
+    /* 禁用持续动画：光标闪烁 */
+    .greeting-text.typing::after {
+        animation: none;
+    }
+}

@@ -283,9 +283,14 @@ class CharacterSelection {
             } else {
                 personality = targetData['性格'];
             }
-            // 4. 更新角色设定
+            // 4. 更新角色设定（包含性格和音色）
             console.log('[CharacterSelection] 更新角色设定...');
-            const updateData = { ...targetData, '性格': personality };
+            const updateData = {
+                ...targetData,
+                '性格': personality,
+                voice_id: voiceMapping.voiceId
+            };
+            console.log('[CharacterSelection] 更新数据:', { 性格: personality, voice_id: voiceMapping.voiceId });
             const updateResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(targetName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -294,18 +299,6 @@ class CharacterSelection {
             if (!updateResponse.ok) {
                 throw new Error('更新角色设定失败');
             }
-            console.log('[CharacterSelection] 性格更新成功:', personality);
-            // 5. 更新音色ID
-            console.log('[CharacterSelection] 更新音色...');
-            const voiceResponse = await fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(targetName)}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ voice_id: voiceMapping.voiceId })
-            });
-            if (!voiceResponse.ok) {
-                throw new Error('更新音色失败');
-            }
-            console.log('[CharacterSelection] 音色更新成功:', voiceMapping.voiceId);
             console.log('[CharacterSelection] 默认猫娘配置完成');
         } catch (error) {
             console.error('[CharacterSelection] 更新默认猫娘失败:', error);

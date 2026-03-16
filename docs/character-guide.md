@@ -63,7 +63,7 @@
 
 ### 文件结构
 
-```
+```text
 N.E.K.O/
 ├── templates/
 │   ├── index.html                      # [已修改] 添加角色甄选 HTML 和入口脚本
@@ -188,7 +188,7 @@ flowchart TD
 
 目标角色通过 `localStorage['neko_default_catgirl_name']` 持久记录，完整决策流程如下：
 
-```
+```text
 updateDefaultCatgirl() 被调用
 │
 ├─ 读取 localStorage['neko_default_catgirl_name']
@@ -246,7 +246,7 @@ goToStage(stageNumber) {
 
 #### 注意事项
 
-翻译文件为 JSON 格式，字符串值内**不能使用 ASCII 双引号 `"`**，否则会破坏 JSON 结构。需要引号时使用中文书名号 `「」` 或单引号 `'`。
+翻译文件为 JSON 格式，字符串值内**未转义的双引号不能直接出现**。双引号必须使用反斜杠转义（例如写成 `\"`）或使用中文书名号 `「」`、单引号 `'` 作为替代。
 
 ---
 
