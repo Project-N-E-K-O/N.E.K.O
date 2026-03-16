@@ -34,6 +34,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "touch_set",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (

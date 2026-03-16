@@ -834,7 +834,8 @@
             "modelNotFound": "当前没有加载模型",
             "modelDataNotReady": "模型内部数据未准备好",
             "managerNotFound": "Live2DManager 未找到",
-            "select": "选择"
+            "select": "选择",
+            "defaultClickAnim": "默认点击动画"
         },
         "emotionConfig": "情感配置",
         "saveSettings": "保存设置",
