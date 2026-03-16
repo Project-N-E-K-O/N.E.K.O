@@ -187,7 +187,6 @@ master_basic_config = None
 lanlan_basic_config = None
 name_mapping = None
 lanlan_prompt = None
-semantic_store = None
 time_store = None
 setting_store = None
 recent_log = None
@@ -315,7 +314,7 @@ async def _handle_agent_event(event: dict):
 async def initialize_character_data():
     """初始化或重新加载角色配置数据"""
     global master_name, her_name, master_basic_config, lanlan_basic_config
-    global name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log
+    global name_mapping, lanlan_prompt, time_store, setting_store, recent_log
     global catgirl_names, sync_message_queue, sync_shutdown_event, session_manager, session_id, sync_process, websocket_locks
     
     logger.info("正在加载角色配置...")
@@ -331,7 +330,7 @@ async def initialize_character_data():
         })
     
     # 加载最新的角色数据
-    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = _config_manager.get_character_data()
+    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, time_store, setting_store, recent_log = _config_manager.get_character_data()
     catgirl_names = list(lanlan_prompt.keys())
     
     # 为新增的角色初始化资源
@@ -380,7 +379,6 @@ async def initialize_character_data():
                         _,
                         _,
                         lanlan_basic_config_updated,
-                        _,
                         _,
                         _,
                         _,
@@ -1181,6 +1179,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     # 1) 配置 UVicorn
+    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
@@ -1188,6 +1187,8 @@ if __name__ == "__main__":
         log_level="info",
         loop="asyncio",
         reload=False,
+        proxy_headers=_behind_proxy,
+        forwarded_allow_ips="*" if _behind_proxy else None,
     )
     server = uvicorn.Server(config)
     

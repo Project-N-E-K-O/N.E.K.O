@@ -72,7 +72,7 @@ class DirectTaskExecutor:
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
         self.computer_use = computer_use or ComputerUseAdapter()
-        self.browser_use = browser_use or BrowserUseAdapter()
+        self.browser_use = browser_use
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False

@@ -150,7 +150,6 @@ class LLMSessionManager:
             self.lanlan_basic_config,
             self.name_mapping,
             self.lanlan_prompt_map,
-            self.semantic_store,
             self.time_store,
             self.setting_store,
             self.recent_log
@@ -983,7 +982,7 @@ class LLMSessionManager:
             logger.warning(f"⚠️ start_session 清理无效 voice_id 失败，继续启动会话: {e}")
 
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-        _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
+        _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         raw_voice_id = self._get_voice_id()
         block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1612,7 +1611,7 @@ class LLMSessionManager:
                 logger.warning(f"⚠️ 热切换准备: 清理无效 voice_id 失败，继续准备会话: {e}")
 
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-            _, _, _, self.lanlan_basic_config, _, _, _, _, _, _ = self._config_manager.get_character_data()
+            _, _, _, self.lanlan_basic_config, _, _, _, _, _ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             raw_voice_id = self._get_voice_id()
             block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
@@ -1799,7 +1798,7 @@ class LLMSessionManager:
                 return False
 
         # Record in conversation history so the LLM remembers it said this
-        from langchain_core.messages import AIMessage as _AIMsg
+        from utils.llm_client import AIMessage as _AIMsg
         self.session._conversation_history.append(_AIMsg(content=text))
 
         # Fresh speech_id for TTS / lipsync
@@ -1940,7 +1939,7 @@ class LLMSessionManager:
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
         await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-        from langchain_core.messages import AIMessage as _AIMsg
+        from utils.llm_client import AIMessage as _AIMsg
         if self.session and hasattr(self.session, '_conversation_history'):
             self.session._conversation_history.append(_AIMsg(content=full_text))
 

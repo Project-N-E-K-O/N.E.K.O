@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Tuple
 import asyncio
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager

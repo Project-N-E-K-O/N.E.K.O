@@ -1208,6 +1208,7 @@
         "profileNameMaxHint": "Max 20 characters",
         "profileNameTooLong": "Profile name is too long",
         "profileNameContainsSlash": "Profile name cannot contain path separators (/ or \\)",
+        "profileNameContainsDot": "Profile name cannot contain dots (.)",
         "newProfileNameRequired": "New profile name cannot be empty",
         "newProfileNameTooLong": "Profile name is too long",
         "required": "*",

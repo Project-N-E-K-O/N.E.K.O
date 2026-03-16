@@ -38,6 +38,11 @@ _FORMATS_WITH_DATE = (
     ("%H:%M", False),
 )
 
+_IMMEDIATE_KEYWORDS = frozenset({
+    "now", "immediately", "right now", "asap",
+    "立即", "马上", "现在", "即刻", "立刻",
+})
+
 
 def _now(tz: timezone | ZoneInfo) -> datetime:
     return datetime.now(tz)
@@ -49,6 +54,9 @@ def _parse_time(raw: str, tz: timezone | ZoneInfo) -> Optional[Tuple[datetime, b
     时间字符串先按用户时区解释，再转为 UTC 存储。
     """
     raw = raw.strip()
+
+    if raw.lower() in _IMMEDIATE_KEYWORDS:
+        return _now(_TZ_UTC) + timedelta(seconds=2), True
 
     for fmt, has_date in _FORMATS_WITH_DATE:
         try:
@@ -433,7 +441,7 @@ class MemoReminderPlugin(NekoPluginBase):
         description=(
             "排期一个备忘提醒（异步，不会立即触发）。"
             "调用成功仅表示排期完成，到时间后系统会自动推送提醒消息，请勿在排期完成时就提醒用户。\n"
-            "time 格式: 绝对时间 '2026-03-07 09:00' / 仅时间 '07:00' / 相对偏移 '15s' '30m' '2h' '1d'（纯数字+单位，不要加 'every' 'in' 等词）。\n"
+            "time 格式: 'now'(立即) / 绝对时间 '2026-03-07 09:00' / 仅时间 '07:00' / 相对偏移 '15s' '30m' '2h' '1d'（纯数字+单位，不要加 'every' 'in' 等词）。\n"
             "repeat 格式: 'once' | 'daily' | 'weekly' | 'hourly' | 自定义间隔如 '10s' '90m' '2h'（纯数字+单位）。"
             "错误示例: 'every 10s'、'10 seconds'。正确示例: '10s'。"
         ),
@@ -443,7 +451,7 @@ class MemoReminderPlugin(NekoPluginBase):
                 "time": {
                     "type": "string",
                     "description": (
-                        "触发时间。格式: 绝对时间 'YYYY-MM-DD HH:MM' | 仅时间 'HH:MM' | "
+                        "触发时间。格式: 'now'(立即) | 绝对时间 'YYYY-MM-DD HH:MM' | 仅时间 'HH:MM' | "
                         "相对偏移 '<数字><单位>' 如 '30m' '2h' '1d'。"
                         "单位: s=秒 m=分 h=时 d=天。不要加 'in' 'after' 等前缀。"
                     ),

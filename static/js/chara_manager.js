@@ -137,6 +137,18 @@ function getFieldLabel(fieldName) {
     return fieldName;
 }
 
+const FIELD_LABEL_MAX_UNITS = 16;
+
+function setFieldLabelText(labelEl, text) {
+    labelEl.textContent = text;
+    const units = profileNameCountUnits(text);
+    if (units > FIELD_LABEL_MAX_UNITS) {
+        labelEl.title = text;
+    } else {
+        labelEl.removeAttribute('title');
+    }
+}
+
 function tOrFallback(key, fallback, params) {
     if (window.t && typeof window.t === 'function') {
         try {
@@ -149,11 +161,15 @@ function tOrFallback(key, fallback, params) {
 }
 
 const PROFILE_NAME_CONTAINS_SLASH_KEY = 'character.profileNameContainsSlash';
+const PROFILE_NAME_CONTAINS_DOT_KEY = 'character.profileNameContainsDot';
 
 function translateBackendError(errorMessage) {
     if (!errorMessage || typeof errorMessage !== 'string') return errorMessage;
     if (errorMessage.includes('路径分隔符') || errorMessage.includes('不能包含"/"')) {
         return tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, errorMessage);
+    }
+    if (errorMessage.includes('点号') || errorMessage.includes('不能包含"."')) {
+        return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, errorMessage);
     }
     if (errorMessage.includes('档案名为必填项')) {
         return tOrFallback('character.profileNameRequired', errorMessage);
@@ -204,6 +220,14 @@ function flashProfileNameContainsSlash(inputEl) {
     if (!inputEl) return;
 
     const msg = tOrFallback(PROFILE_NAME_CONTAINS_SLASH_KEY, '档案名不能包含路径分隔符');
+
+    flashProfileNameError(inputEl, msg);
+}
+
+function flashProfileNameContainsDot(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
 
     flashProfileNameError(inputEl, msg);
 }
@@ -286,6 +310,21 @@ function attachProfileNameLimiter(inputEl) {
                 try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
             }
             flashProfileNameContainsSlash(inputEl);
+            before = inputEl.value;
+        }
+        
+        // 检查是否包含点号，移除并显示警告
+        if (before.includes('.')) {
+            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+            inputEl.value = before.replace(/\./g, '');
+            if (caret !== null) {
+                // 计算光标之前被移除的点号数量
+                const beforeCaret = before.substring(0, caret);
+                const removedCount = (beforeCaret.match(/\./g) || []).length;
+                const newPos = Math.max(0, caret - removedCount);
+                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            }
+            flashProfileNameContainsDot(inputEl);
             before = inputEl.value;
         }
         
@@ -686,7 +725,7 @@ function renderMaster() {
 
         // 创建label元素（在wrapper中）
         const label = document.createElement('label');
-        label.textContent = getFieldLabel(k);
+        setFieldLabelText(label, getFieldLabel(k));
         wrapper.appendChild(label);
 
         // 创建field-row（胶囊框）
@@ -790,7 +829,7 @@ function setupMasterFormListeners() {
             wrapper.className = 'field-row-wrapper custom-row';
 
             const labelEl = document.createElement('label');
-            labelEl.textContent = key;
+            setFieldLabelText(labelEl, key);
             wrapper.appendChild(labelEl);
 
             const row = document.createElement('div');
@@ -1387,7 +1426,7 @@ function showCatgirlForm(key, container) {
             const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
             const labelEl = document.createElement('label');
-            labelEl.textContent = getFieldLabel(k);
+            setFieldLabelText(labelEl, getFieldLabel(k));
             wrapper.appendChild(labelEl);
 
             const fieldRow = document.createElement('div');
@@ -1730,7 +1769,7 @@ function showCatgirlForm(key, container) {
         const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
         const labelEl = document.createElement('label');
-        labelEl.textContent = key;
+        setFieldLabelText(labelEl, key);
         wrapper.appendChild(labelEl);
 
         const fieldRow = document.createElement('div');
@@ -2145,6 +2184,7 @@ function showCatgirlForm(key, container) {
 window.renameMaster = async function (oldName) {
     let _renameMasterDidOverLimit = false;
     let _renameMasterContainsSlash = false;
+    let _renameMasterContainsDot = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
@@ -2158,13 +2198,17 @@ window.renameMaster = async function (oldName) {
                 const trimmed = String(v ?? '').trim();
                 _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
                 _renameMasterContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\]/g, ''), PROFILE_NAME_MAX_UNITS);
+                _renameMasterContainsDot = trimmed.includes('.');
+                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
                 if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+                }
+                if (trimmed.includes('.')) {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
                 }
                 return '';
             },
@@ -2176,6 +2220,10 @@ window.renameMaster = async function (oldName) {
                 if (_renameMasterContainsSlash) {
                     _renameMasterContainsSlash = false;
                     flashProfileNameContainsSlash(inputEl);
+                }
+                if (_renameMasterContainsDot) {
+                    _renameMasterContainsDot = false;
+                    flashProfileNameContainsDot(inputEl);
                 }
             }
         }
@@ -2219,6 +2267,7 @@ window.renameCatgirl = async function (oldName) {
 
     let _renameCatgirlDidOverLimit = false;
     let _renameCatgirlContainsSlash = false;
+    let _renameCatgirlContainsDot = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
@@ -2232,13 +2281,17 @@ window.renameCatgirl = async function (oldName) {
                 const trimmed = String(v ?? '').trim();
                 _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
                 _renameCatgirlContainsSlash = trimmed.includes('/') || trimmed.includes('\\');
-                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\]/g, ''), PROFILE_NAME_MAX_UNITS);
+                _renameCatgirlContainsDot = trimmed.includes('.');
+                return profileNameTrimToMaxUnits(trimmed.replace(/[/\\.]/g, ''), PROFILE_NAME_MAX_UNITS);
             },
             validator: (v) => {
                 const trimmed = String(v ?? '').trim();
                 if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
                 if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
                     return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+                }
+                if (trimmed.includes('.')) {
+                    return tOrFallback(PROFILE_NAME_CONTAINS_DOT_KEY, '档案名不能包含点号(.)');
                 }
                 return '';
             },
@@ -2250,6 +2303,10 @@ window.renameCatgirl = async function (oldName) {
                 if (_renameCatgirlContainsSlash) {
                     _renameCatgirlContainsSlash = false;
                     flashProfileNameContainsSlash(inputEl);
+                }
+                if (_renameCatgirlContainsDot) {
+                    _renameCatgirlContainsDot = false;
+                    flashProfileNameContainsDot(inputEl);
                 }
             }
         }

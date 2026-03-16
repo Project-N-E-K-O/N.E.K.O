@@ -3,8 +3,7 @@
 import asyncio
 import json
 from typing import Optional, Callable, Dict, Any, Awaitable
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
@@ -19,7 +18,7 @@ class OmniOfflineClient:
     A client for text-based chat that mimics the interface of OmniRealtimeClient.
     
     This class provides a compatible interface with OmniRealtimeClient but uses
-    langchain's ChatOpenAI with OpenAI-compatible API instead of realtime WebSocket,
+    ChatOpenAI with OpenAI-compatible API instead of realtime WebSocket,
     suitable for text-only conversations.
     
     Attributes:
@@ -36,7 +35,7 @@ class OmniOfflineClient:
         vision_api_key (str):
             Optional separate API key for vision model.
         llm (ChatOpenAI):
-            Langchain ChatOpenAI client for streaming text generation.
+            ChatOpenAI client for streaming text generation.
         on_text_delta (Callable[[str, bool], Awaitable[None]]):
             Callback for text delta events.
         on_input_transcript (Callable[[str], Awaitable[None]]):
@@ -89,7 +88,7 @@ class OmniOfflineClient:
         self.on_repetition_detected = on_repetition_detected
         self.on_response_discarded = on_response_discarded
         
-        # Initialize langchain ChatOpenAI client
+        # Initialize ChatOpenAI client
         self.llm = ChatOpenAI(
             model=self.model,
             base_url=self.base_url,
