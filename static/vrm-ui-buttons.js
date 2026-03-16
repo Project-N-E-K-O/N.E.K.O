@@ -665,7 +665,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         if (e.target.closest('[id^="vrm-popup-"]')) return;
         // 快速路径：没有任何弹出框处于打开状态则跳过
         const anyOpen = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
-            .find(el => getComputedStyle(el).display === 'flex');
+            .some(el => getComputedStyle(el).display === 'flex');
         if (!anyOpen) return;
         this.closeAllPopups();
     };
