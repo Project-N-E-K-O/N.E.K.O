@@ -271,6 +271,8 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     buttonsContainer.addEventListener('touchstart', stopContainerEvent);
     buttonsContainer.addEventListener('touchmove', stopContainerEvent);
     buttonsContainer.addEventListener('touchend', stopContainerEvent);
+    // 阻止容器内 click 冒泡至 document，防止点击按钮空隙时误触全局关闭
+    buttonsContainer.addEventListener('click', stopContainerEvent);
 
     document.body.appendChild(buttonsContainer);
     this._floatingButtonsContainer = buttonsContainer;
@@ -994,6 +996,21 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     // 语音状态：window.isRecording 由语音控制模块设置
     // 屏幕分享状态：通过 screenCaptureStream 变量判断（在 app.js 中）
     this._syncButtonStatesWithGlobalState();
+
+    // 点击浮动按钮区域外部时关闭所有弹出菜单
+    // 防止重复注册（模型重载时 setupFloatingButtons 可能再次调用）
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+    }
+    const self = this;
+    this._outsideClickHandler = function () {
+        // 快速路径：没有任何弹出框处于打开状态则跳过
+        const anyOpen = document.querySelector('[id^="live2d-popup-"][style*="display: flex"]');
+        if (!anyOpen) return;
+        // 能到达 document 说明点击不在 buttonsContainer 或 popup 内（已 stopPropagation）
+        self.closeAllPopups();
+    };
+    document.addEventListener('click', this._outsideClickHandler);
 
     // 通知其他代码浮动按钮已经创建完成（用于app.js中绑定Agent开关事件）
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
