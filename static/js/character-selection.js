@@ -49,6 +49,7 @@ class CharacterSelection {
         this.isOpen = true;
         this._selectTimer = null;
         this._closeTimer = null;
+        this._typeTimer = null;
         this._onLocaleChange = () => this._applyStaticI18n();
         this.init();
     }
@@ -163,37 +164,69 @@ class CharacterSelection {
         const greetingTitle = document.getElementById('greeting-title');
         const confirmBtn = document.getElementById('confirm-greeting-btn');
         const avatar = document.getElementById('greeting-avatar');
+
         // 显示角色头像
-        avatar.textContent = data.avatar;
+        if (avatar) {
+            avatar.textContent = data.avatar;
+        } else {
+            console.warn('[CharacterSelection] playGreeting: 元素 #greeting-avatar 不存在');
+        }
+
         // 更新标题
-        greetingTitle.textContent = t(
-            'memory.characterSelection.connectingTitle',
-            '时空穿越中——'
-        ).replace('{{name}}', this.selectedCharacter.name);
+        if (greetingTitle) {
+            greetingTitle.textContent = t(
+                'memory.characterSelection.connectingTitle',
+                '时空穿越中——'
+            ).replace('{{name}}', this.selectedCharacter.name);
+        } else {
+            console.warn('[CharacterSelection] playGreeting: 元素 #greeting-title 不存在');
+        }
+
         // 打字机效果
-        const greeting = t(
-            `memory.characterSelection.${this.selectedCharacter.id}.greeting`,
-            ''
-        );
-        greetingText.classList.add('typing');
-        await this.typeText(greetingText, greeting);
-        greetingText.classList.remove('typing');
+        if (greetingText) {
+            const greeting = t(
+                `memory.characterSelection.${this.selectedCharacter.id}.greeting`,
+                ''
+            );
+            greetingText.classList.add('typing');
+            await this.typeText(greetingText, greeting);
+            greetingText.classList.remove('typing');
+        } else {
+            console.warn('[CharacterSelection] playGreeting: 元素 #greeting-text 不存在');
+        }
+
         // 显示确认按钮
-        confirmBtn.style.display = 'inline-block';
+        if (confirmBtn) {
+            confirmBtn.style.display = 'inline-block';
+        } else {
+            console.warn('[CharacterSelection] playGreeting: 元素 #confirm-greeting-btn 不存在');
+        }
     }
     typeText(element, text) {
         return new Promise(resolve => {
+            // 清除之前的打字定时器
+            if (this._typeTimer !== null) {
+                clearInterval(this._typeTimer);
+                this._typeTimer = null;
+            }
             element.textContent = '';
             let i = 0;
-            const timer = setInterval(() => {
+            this._typeTimer = setInterval(() => {
                 if (i < text.length) {
                     element.textContent += text[i++];
                 } else {
-                    clearInterval(timer);
+                    clearInterval(this._typeTimer);
+                    this._typeTimer = null;
                     resolve();
                 }
             }, 80);
         });
+    }
+    clearTypeTimer() {
+        if (this._typeTimer !== null) {
+            clearInterval(this._typeTimer);
+            this._typeTimer = null;
+        }
     }
     updateFinalInfo() {
         const t = window.t || ((_key, fallback) => fallback);
@@ -317,6 +350,8 @@ class CharacterSelection {
             clearTimeout(this._closeTimer);
             this._closeTimer = null;
         }
+        // 清除打字定时器
+        this.clearTypeTimer();
         // 移除 localechange 监听
         window.removeEventListener('localechange', this._onLocaleChange);
         if (this.overlay) {
