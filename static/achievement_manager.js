@@ -216,7 +216,7 @@
                 return;
             }
             // 如果计数器不存在，自动创建
-            if (!this.counters.hasOwnProperty(counterName)) {
+            if (!Object.prototype.hasOwnProperty.call(this.counters, counterName)) {
                 this.counters[counterName] = 0;
             }
 
