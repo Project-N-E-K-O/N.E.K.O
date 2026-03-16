@@ -1051,6 +1051,8 @@
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
         "reusedExisting": "已复用现有音色，跳过上传。voice_id: {{voiceId}}",
         "registerFailed": "注册失败：{{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
+        "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",

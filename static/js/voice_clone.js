@@ -326,15 +326,33 @@ function registerVoice() {
                 }
             } else {
                 const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: errorMsg }) : '注册失败：' + errorMsg;
+                let displayError = errorMsg;
+                if (errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) {
+                    displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+                } else if (errorMsg.toLowerCase().includes('invalid api-key provided')) {
+                    displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
+                }
+                resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: displayError }) : '注册失败：' + displayError;
                 resultDiv.className = 'result error';
+                if ((errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) || errorMsg.toLowerCase().includes('invalid api-key provided')) {
+                    resultDiv.classList.add('error-flash');
+                }
             }
             setFormDisabled(false);
         })
         .catch(err => {
             const errorMsg = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
-            resultDiv.textContent = window.t ? window.t('voice.requestError', { error: errorMsg }) : '请求出错：' + errorMsg;
+            let displayError = errorMsg;
+            if (errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) {
+                displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+            } else if (errorMsg.toLowerCase().includes('invalid api-key provided')) {
+                displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
+            }
+            resultDiv.textContent = window.t ? window.t('voice.requestError', { error: displayError }) : '请求出错：' + displayError;
             resultDiv.className = 'result error';
+            if ((errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) || errorMsg.toLowerCase().includes('invalid api-key provided')) {
+                resultDiv.classList.add('error-flash');
+            }
             setFormDisabled(false);
         });
 }
