@@ -4290,7 +4290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 删除模型功能
-    let selectedDeleteModels = new Set();
+    let selectedDeleteModels = new Map();
 
     function showDeleteModelModal() {
         if (deleteModelModal) {
@@ -4318,9 +4318,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.success && result.models && result.models.length > 0) {
                 userModelList.innerHTML = '';
                 result.models.forEach(model => {
-                    const sourceLabel = model.source === 'user_documents'
-                        ? t('live2d.userDocuments', '用户文档')
-                        : t('live2d.localUpload', '本地上传');
+                    const sourceLabel = model.type === 'vrm'
+                        ? 'VRM'
+                        : (model.source === 'user_documents'
+                            ? t('live2d.userDocuments', '用户文档')
+                            : t('live2d.localUpload', '本地上传'));
                     const displayName = model.name.replace(/\.model3$/i, '');
                     const safeId = 'model-' + encodeURIComponent(model.name);
                     const item = document.createElement('div');
@@ -4361,7 +4363,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     checkbox.addEventListener('change', (e) => {
                         if (e.target.checked) {
-                            selectedDeleteModels.add(e.target.value);
+                            selectedDeleteModels.set(e.target.value, { name: model.name, type: model.type || 'live2d' });
                         } else {
                             selectedDeleteModels.delete(e.target.value);
                         }
@@ -4412,16 +4414,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         confirmDeleteBtn.textContent = t('live2d.deleting', '删除中...');
 
         const currentModelName = currentModelInfo ? currentModelInfo.name : null;
-        const modelsToDelete = new Set(selectedDeleteModels);
+        const modelsToDelete = new Map(selectedDeleteModels);
         let successCount = 0;
         let failCount = 0;
         let lastErrorMessage = '';
 
-        for (const modelName of selectedDeleteModels) {
+        for (const [modelName, modelInfo] of modelsToDelete) {
             try {
+                // 根据模型类型选择正确的删除接口
+                const deleteUrl = modelInfo.type === 'vrm'
+                    ? `/api/model/vrm/model/${encodeURIComponent(modelName)}`
+                    : `/api/live2d/model/${encodeURIComponent(modelName)}`;
                 // 使用 RequestHelper 确保统一的错误处理和超时
                 const result = await RequestHelper.fetchJson(
-                    `/api/live2d/model/${encodeURIComponent(modelName)}`,
+                    deleteUrl,
                     {
                         method: 'DELETE'
                     }
@@ -4465,7 +4471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 modelSelect.appendChild(option);
             });
 
-            if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName)) {
+            if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName) && modelsToDelete.get(currentModelName).type !== 'vrm') {
                 const maoProModel = availableModels.find(m => m.name === 'mao_pro');
                 let fallbackModel = maoProModel;
                 if (!fallbackModel && Array.isArray(availableModels) && availableModels.length > 0) {
@@ -4480,6 +4486,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     showStatus(t('live2d.noModelsFound', '未找到可用模型'));
                     currentModelInfo = null;
+                }
+            }
+
+            // 如果删除了 VRM 模型，刷新 VRM 模型下拉列表
+            if (successCount > 0) {
+                let hasVrmDeleted = false;
+                for (const [, info] of modelsToDelete) {
+                    if (info.type === 'vrm') { hasVrmDeleted = true; break; }
+                }
+                if (hasVrmDeleted) {
+                    await loadVRMModels();
                 }
             }
         } catch (e) {
