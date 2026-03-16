@@ -1873,24 +1873,23 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
         // 播放表情
         if (expressions.length > 0) {
             const randomExpressionName = expressions[Math.floor(Math.random() * expressions.length)];
-            const faceInfo = this.fileReferences?.Expressions?.find(e => e.Name === randomExpressionName);
-            if (!faceInfo || !faceInfo.File) {
-                console.warn(`[TouchSet] 表情文件不存在: ${randomExpressionName}`);
+            const faceInfo = this.fileReferences.Expressions.find(e => e.Name === randomExpressionName);
+            
+            
+            console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
+            try {
+                await this.playExpression(randomExpressionName, faceInfo.File);
+                console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
                 
-            }else {
-                console.log(`[TouchSet] 尝试播放表情: ${faceInfo.File}`);
-                try {
-                    await this.playExpression(randomExpressionName, faceInfo.File);
-                    console.log(`[TouchSet] 播放表情成功: ${randomExpressionName}, 持续时间: ${faceHoldingTime}ms`);
-                    
-                    clearTimeout(this.expressionTimer);
-                    this.expressionTimer = setTimeout(() => {
-                        this.clearExpression?.();
-                    }, faceHoldingTime);
-                } catch (e) {
-                    console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
-                }
+                clearTimeout(this.expressionTimer);
+                this.expressionTimer = setTimeout(() => {
+                    this.clearExpression?.();
+                }, faceHoldingTime);
+            } catch (e) {
+                console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
             }
+
+
         }
     } catch (error) {
         console.warn(`[TouchSet] 播放动画失败:`, error);
