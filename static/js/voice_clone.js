@@ -1,6 +1,32 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 
+function parseVoiceRegisterError(errorObj) {
+    const errorCode = errorObj?.code;
+    const errorMsg = errorObj?.message || errorObj?.error || errorObj || '';
+    let displayError = errorMsg;
+    let shouldFlash = false;
+
+    if (errorCode === 'PREFIX_INVALID') {
+        displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+        shouldFlash = true;
+    } else if (errorCode === 'INVALID_API_KEY') {
+        displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
+        shouldFlash = true;
+    } else {
+        const lowerMsg = errorMsg.toLowerCase();
+        if (lowerMsg.includes('prefix should be') && lowerMsg.includes('english letter and number')) {
+            displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
+            shouldFlash = true;
+        } else if (lowerMsg.includes('invalid api-key provided')) {
+            displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
+            shouldFlash = true;
+        }
+    }
+
+    return { displayError, shouldFlash };
+}
+
 // 关闭页面函数
 function closeVoiceClonePage() {
     if (window.opener) {
@@ -325,32 +351,22 @@ function registerVoice() {
                     });
                 }
             } else {
-                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                let displayError = errorMsg;
-                if (errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) {
-                    displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
-                } else if (errorMsg.toLowerCase().includes('invalid api-key provided')) {
-                    displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
-                }
+                const errorObj = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
                 resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: displayError }) : '注册失败：' + displayError;
                 resultDiv.className = 'result error';
-                if ((errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) || errorMsg.toLowerCase().includes('invalid api-key provided')) {
+                if (shouldFlash) {
                     resultDiv.classList.add('error-flash');
                 }
             }
             setFormDisabled(false);
         })
         .catch(err => {
-            const errorMsg = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
-            let displayError = errorMsg;
-            if (errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) {
-                displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
-            } else if (errorMsg.toLowerCase().includes('invalid api-key provided')) {
-                displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
-            }
+            const errorObj = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+            const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
             resultDiv.textContent = window.t ? window.t('voice.requestError', { error: displayError }) : '请求出错：' + displayError;
             resultDiv.className = 'result error';
-            if ((errorMsg.toLowerCase().includes('prefix should be') && errorMsg.toLowerCase().includes('english letter and number')) || errorMsg.toLowerCase().includes('invalid api-key provided')) {
+            if (shouldFlash) {
                 resultDiv.classList.add('error-flash');
             }
             setFormDisabled(false);
