@@ -1010,7 +1010,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
                 await this.playExpression(emotion, choiceFile);
             }
-        }else{
+        } else {
             console.log("[ClickEffect] 没找到可用表情")
         }
 
@@ -1894,7 +1894,6 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
                 }
             }
-
 
         }
     } catch (error) {

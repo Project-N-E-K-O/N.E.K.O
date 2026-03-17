@@ -376,6 +376,11 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         document.removeEventListener('click', closeAllMultiselects);
     };
     closeButton.onclick = function(){
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+        }
+        saveTouchSetToServer()
         cleanupMultiselect()
         console.log("[TouchSet] 配置窗口已关闭")
         floatingWindow.close()

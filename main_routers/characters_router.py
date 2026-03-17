@@ -647,12 +647,13 @@ async def update_catgirl_touch_set(name: str, request: Request):
         
         model_name = data.get('model_name')
         touch_set_data = data.get('touch_set')
-        
-        if not model_name:
+
+        if not isinstance(model_name, str) or not model_name.strip():
             return JSONResponse(
-                content={'success': False, 'error': '缺少 model_name 参数'},
+                content={'success': False, 'error': 'model_name 必须是非空字符串'},
                 status_code=400
             )
+        model_name = model_name.strip()
         
         if touch_set_data is None:
             return JSONResponse(
