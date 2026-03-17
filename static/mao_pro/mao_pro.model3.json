@@ -149,6 +149,8 @@
         "motions/mtn_01.motion3.json"
       ]
     },
-    "expressions": {}
+    "expressions": {
+      "常驻": []
+    }
   }
 }

@@ -1000,6 +1000,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
         if (expressionFiles.length > 0) {
             // 跳过已确认失效的 expression，避免每次点击都重复 404
+
             if (typeof this.isExpressionFileMissing === 'function') {
                 expressionFiles = expressionFiles.filter(file => !this.isExpressionFileMissing(file));
             }
@@ -1009,6 +1010,8 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
                 await this.playExpression(emotion, choiceFile);
             }
+        } else {
+            console.log("[ClickEffect] 没找到可用表情")
         }
 
         // 2. 播放低优先级动作
@@ -1786,7 +1789,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
 
     // ↓只是debug用
     // const live2d的touch = window.live2dManager.touchSet
-    // const window的touch = window.touchSet
+
 
     if ( hitAreaId ==null || !this.currentModel) {
         return;
@@ -1891,6 +1894,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     console.warn(`[TouchSet] 播放表情失败: ${randomExpressionName}`, e);
                 }
             }
+
         }
     } catch (error) {
         console.warn(`[TouchSet] 播放动画失败:`, error);
