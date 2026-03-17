@@ -351,9 +351,63 @@
 }
 
 .card-icon {
-    font-size: 48px;
+    font-size: 28px;
     margin-bottom: 16px;
     filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
+    font-family: "Monaco", "Courier New", monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    line-height: 1;
+}
+
+/* tsundere_neko 颜文字颜色动画 - 浅蓝到深蓝循环 */
+.character-card[data-id="cool_mech"] .card-icon {
+    animation: colorPulseBlue 3s ease-in-out infinite;
+}
+
+/* tsundere_neko 颜文字颜色动画 - 浅练到金色循环 */
+.character-card[data-id="tsundere_neko"] .card-icon {
+    animation: colorPulsePink 3s ease-in-out infinite;
+}
+
+/* intellectual_healer 颜文字颜色动画 - 浅紫到深紫循环 */
+.character-card[data-id="intellectual_healer"] .card-icon {
+    animation: colorPulsePurple 3s ease-in-out infinite;
+}
+
+/* efficiency_expert 颜文字颜色动画 - 浅青绿到深青绿循环 */
+.character-card[data-id="efficiency_expert"] .card-icon {
+    animation: colorPulseCyan 3s ease-in-out infinite;
+}
+
+@keyframes colorPulseBlue {
+    0% {
+        color: #44b7fe;
+        text-shadow: 0 2px 12px rgba(68, 183, 254, 0.6);
+    }
+    50% {
+        color: #0066cc;
+        text-shadow: 0 2px 12px rgba(0, 102, 204, 0.8);
+    }
+    100% {
+        color: #44b7fe;
+        text-shadow: 0 2px 12px rgba(68, 183, 254, 0.6);
+    }
+}
+
+@keyframes colorPulsePink {
+    0% {
+        color: #FFE680;
+        text-shadow: 0 2px 12px rgba(255, 230, 128, 0.6);
+    }
+    50% {
+        color: #FFB800;
+        text-shadow: 0 2px 12px rgba(255, 184, 0, 0.8);
+    }
+    100% {
+        color: #FFE680;
+        text-shadow: 0 2px 12px rgba(255, 230, 128, 0.6);
+    }
 }
 
 .card-name {
@@ -361,6 +415,51 @@
     color: #44b7fe;
     margin-bottom: 12px;
     font-weight: 500;
+}
+
+@keyframes colorPulsePurple {
+    0% {
+        color: #FFB3E6;
+        text-shadow: 0 2px 12px rgba(255, 179, 230, 0.6);
+    }
+    50% {
+        color: #C71585;
+        text-shadow: 0 2px 12px rgba(199, 21, 133, 0.8);
+    }
+    100% {
+        color: #FFB3E6;
+        text-shadow: 0 2px 12px rgba(255, 179, 230, 0.6);
+    }
+}
+
+@keyframes colorPulseCyan {
+    0% {
+        color: #40E0D0;
+        text-shadow: 0 2px 12px rgba(64, 224, 208, 0.6);
+    }
+    50% {
+        color: #008B8B;
+        text-shadow: 0 2px 12px rgba(0, 139, 139, 0.8);
+    }
+    100% {
+        color: #40E0D0;
+        text-shadow: 0 2px 12px rgba(64, 224, 208, 0.6);
+    }
+}
+
+/* tsundere_neko 标题颜色 - 金色 */
+.character-card[data-id="tsundere_neko"] .card-name {
+    color: #FFB800;
+}
+
+/* intellectual_healer 标题颜色 - 深紫色 */
+.character-card[data-id="intellectual_healer"] .card-name {
+    color: #C71585;
+}
+
+/* efficiency_expert 标题颜色 - 深青绿 */
+.character-card[data-id="efficiency_expert"] .card-name {
+    color: #008B8B;
 }
 
 .card-desc {
@@ -429,6 +528,7 @@
     font-size: 80px;
     margin-bottom: 30px;
     filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.5));
+    transition: color 0.6s ease-in-out;
 }
 
 .greeting-title {
@@ -456,6 +556,30 @@
 @keyframes blink {
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0; }
+}
+
+/* 点击星星特效动画 */
+@keyframes starScatter {
+    0% {
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translate(var(--tx), var(--ty)) scale(0);
+    }
+}
+
+/* 点击星星元素 */
+.click-star {
+    position: fixed;
+    pointer-events: none;
+    font-size: 18px;
+    color: #6db3f2;
+    font-weight: bold;
+    animation: starScatter 1.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+    z-index: 100011;
+    text-shadow: 0 0 6px rgba(109, 179, 242, 0.5);
 }
 
 .confirm-btn {

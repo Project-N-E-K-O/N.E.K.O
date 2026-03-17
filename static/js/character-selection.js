@@ -11,10 +11,10 @@
 
 // 角色数据配置（头像保持静态，文字通过 i18n 获取）
 const CHARACTER_DATA = {
-    tsundere_neko: { avatar: '😺' },
-    cool_mech:     { avatar: '🤖' },
-    intellectual_healer: { avatar: '🌸' },
-    efficiency_expert:   { avatar: '⚡' }
+    tsundere_neko: { avatar: 'ε٩(๑> ₃ <)۶з' },
+    cool_mech:     { avatar: '┗|*｀0′*|┛' },
+    intellectual_healer: { avatar: '(๑╙◡╙๑)' },
+    efficiency_expert:   { avatar: '(☆- v -)' }
 };
 
 // 角色类型到音色和设定的映射配置
@@ -51,7 +51,39 @@ class CharacterSelection {
         this._closeTimer = null;
         this._typeTimer = null;
         this._onLocaleChange = () => this._applyStaticI18n();
+        // 初始化背景音乐
+        this.bgmAudio = null;
+        this._initBgm();
+        // 初始化星星特效状态
+        this._starIntervalId = null;
+        this._currentClickX = 0;
+        this._currentClickY = 0;
+        this._isMousePressed = false;
+        this._activeStarCount = 0;  // 防爆炸：跟踪活跃星星数量
+        this._maxActiveStar = 50;   // 防爆炸：限制最多 50 个星星
+        // 保存 mouseup 处理器引用，便于清理
+        this._handleMouseUp = () => this._onMouseUp();
+        // 保存 stage 监听器引用，便于清理（防止内存泄漏）
+        this._stageMouseDownHandlers = new Map();
+        this._stageMouseMoveHandlers = new Map();
+        // 用于取消打字 Promise（防止内存泄漏）
+        this._typeAbort = null;
         this.init();
+    }
+
+    _initBgm() {
+        // 初始化背景音乐
+        this.bgmAudio = new Audio('/static/default/Y-1.mp3');
+        this.bgmAudio.loop = true;
+        this.bgmAudio.volume = 0.5;
+        // 添加错误处理（网络错误、404等）
+        this.bgmAudio.addEventListener('error', () => {
+            console.warn('[CharacterSelection] 背景音乐加载失败:', {
+                errorCode: this.bgmAudio.error?.code,
+                errorMsg: this.bgmAudio.error?.message,
+                src: this.bgmAudio.src
+            });
+        });
     }
 
     init() {
@@ -84,7 +116,10 @@ class CharacterSelection {
     bindEvents() {
         // 阶段一：开始按钮
         const startBtn = document.getElementById('start-btn');
-        startBtn?.addEventListener('click', () => this.goToStage(2));
+        startBtn?.addEventListener('click', () => {
+            this.playBgm();  // 点击时启动背景音乐
+            this.goToStage(2);
+        });
         // 阶段二：卡片选择
         document.querySelectorAll('.character-card').forEach(card => {
             card.addEventListener('click', (e) => this.selectCharacter(e));
@@ -106,6 +141,133 @@ class CharacterSelection {
         // 跳过按钮
         const skipBtn = document.getElementById('skip-btn');
         skipBtn?.addEventListener('click', () => this.skip());
+        
+        // 为character-overlay添加点击特效（在阶段区域内）
+        const stageAreas = this.overlay?.querySelectorAll('.character-stage');
+        stageAreas?.forEach(stage => {
+            // 鼠标按下事件 - 保存引用便于清理
+            const mouseDownHandler = (e) => {
+                if (!e.target.closest('button') && !e.target.closest('.character-card')) {
+                    this._isMousePressed = true;
+                    this._currentClickX = e.clientX;
+                    this._currentClickY = e.clientY;
+                    
+                    // 立即生成一次
+                    this.createClickStars(e);
+                    
+                    // 然后开始持续生成（间隔80ms）
+                    this._starIntervalId = setInterval(() => {
+                        if (this._isMousePressed) {
+                            this.createClickStarsAtPosition(this._currentClickX, this._currentClickY);
+                        }
+                    }, 80);
+                }
+            };
+            
+            // 鼠标移动事件（更新位置形成拖尾）
+            const mouseMoveHandler = (e) => {
+                if (this._isMousePressed) {
+                    this._currentClickX = e.clientX;
+                    this._currentClickY = e.clientY;
+                }
+            };
+            
+            stage.addEventListener('mousedown', mouseDownHandler);
+            stage.addEventListener('mousemove', mouseMoveHandler);
+            
+            // 保存引用便于后续清理（防止内存泄漏）
+            this._stageMouseDownHandlers.set(stage, mouseDownHandler);
+            this._stageMouseMoveHandlers.set(stage, mouseMoveHandler);
+        });
+        
+        // 鼠标松开事件（全局监听） - 注意：_handleMouseUp 已在构造函数中创建
+        document.addEventListener('mouseup', this._handleMouseUp);
+    }
+    
+    _onMouseUp() {
+        this._isMousePressed = false;
+        if (this._starIntervalId !== null) {
+            clearInterval(this._starIntervalId);
+            this._starIntervalId = null;
+        }
+    }
+    
+    createClickStarsAtPosition(clickX, clickY) {
+        // 防爆炸：限制同时存在的星星数量（避免卡顿）
+        if (this._activeStarCount >= this._maxActiveStar) {
+            return;
+        }
+        
+        // 生成2-3个星星（较少）
+        const starCount = Math.floor(Math.random() * 2) + 2;
+        for (let i = 0; i < starCount; i++) {
+            // 再次检查是否超过限制（防止在循环中超过）
+            if (this._activeStarCount >= this._maxActiveStar) {
+                break;
+            }
+            
+            const star = document.createElement('div');
+            star.className = 'click-star';
+            star.textContent = '✦';
+            star.style.left = clickX + 'px';
+            star.style.top = clickY + 'px';
+            
+            // 随机分散方向
+            const angle = (Math.PI * 2 / starCount) * i + (Math.random() - 0.5) * 0.8;
+            const distance = 60 + Math.random() * 80;
+            const tx = Math.cos(angle) * distance;
+            const ty = Math.sin(angle) * distance;
+            
+            star.style.setProperty('--tx', tx + 'px');
+            star.style.setProperty('--ty', ty + 'px');
+            
+            document.body.appendChild(star);
+            this._activeStarCount++;  // 递增计数
+            
+            // 动画完成后移除
+            setTimeout(() => {
+                star.remove();
+                this._activeStarCount--;  // 递减计数
+            }, 1600);
+        }
+    }
+    
+    createClickStars(event) {
+        const clickX = event.clientX;
+        const clickY = event.clientY;
+        
+        // 生成2-3个星星（较少）
+        const starCount = Math.floor(Math.random() * 2) + 2;
+        for (let i = 0; i < starCount; i++) {
+            // 检查是否超过限制
+            if (this._activeStarCount >= this._maxActiveStar) {
+                break;
+            }
+            
+            const star = document.createElement('div');
+            star.className = 'click-star';
+            star.textContent = '✦';
+            star.style.left = clickX + 'px';
+            star.style.top = clickY + 'px';
+            
+            // 随机分散方向
+            const angle = (Math.PI * 2 / starCount) * i + (Math.random() - 0.5) * 0.8;
+            const distance = 60 + Math.random() * 80;
+            const tx = Math.cos(angle) * distance;
+            const ty = Math.sin(angle) * distance;
+            
+            star.style.setProperty('--tx', tx + 'px');
+            star.style.setProperty('--ty', ty + 'px');
+            
+            document.body.appendChild(star);
+            this._activeStarCount++;  // 递增计数
+            
+            // 动画完成后移除
+            setTimeout(() => {
+                star.remove();
+                this._activeStarCount--;  // 递减计数
+            }, 1600);
+        }
     }
     goToStage(stageNumber) {
         console.log(`[CharacterSelection] 切换到阶段 ${stageNumber}`);
@@ -120,13 +282,39 @@ class CharacterSelection {
             targetStage.classList.add('active');
         }
         this.currentStage = stageNumber;
-        // 阶段三：触发问候动画
-        if (stageNumber === 3) {
+        
+        // 各阶段播放背景音乐
+        if (stageNumber === 1) {
+            // 阶段一：氛围唤醒 - 尝试播放音乐
+            this.playBgm();
+        } else if (stageNumber === 2) {
+            // 阶段二：性格挑选 - 继续播放
+            this.playBgm();
+        } else if (stageNumber === 3) {
+            // 阶段三：真情互动 - 继续播放
+            this.playBgm();
+            // 触发问候动画
             this.playGreeting();
-        }
-        // 阶段四：更新最终信息
-        if (stageNumber === 4) {
+        } else if (stageNumber === 4) {
+            // 阶段四：用户确认 - 继续播放
+            this.playBgm();
+            // 更新最终信息
             this.updateFinalInfo();
+        }
+    }
+
+    playBgm() {
+        if (this.bgmAudio && this.bgmAudio.paused) {
+            this.bgmAudio.play().catch(err => {
+                console.warn('[CharacterSelection] 背景音乐播放失败:', err);
+            });
+        }
+    }
+
+    stopBgm() {
+        if (this.bgmAudio) {
+            this.bgmAudio.pause();
+            this.bgmAudio.currentTime = 0;
         }
     }
     selectCharacter(e) {
@@ -168,6 +356,14 @@ class CharacterSelection {
         // 显示角色头像
         if (avatar) {
             avatar.textContent = data.avatar;
+            // 根据角色设置颜色
+            const colorMap = {
+                tsundere_neko: '#FFB800',      // 金色
+                cool_mech: '#0066cc',          // 蓝色
+                intellectual_healer: '#C71585', // 紫色
+                efficiency_expert: '#008B8B'   // 青绿色
+            };
+            avatar.style.color = colorMap[this.selectedCharacter.id] || '#44b7fe';
         } else {
             console.warn('[CharacterSelection] playGreeting: 元素 #greeting-avatar 不存在');
         }
@@ -203,7 +399,14 @@ class CharacterSelection {
         }
     }
     typeText(element, text) {
-        return new Promise(resolve => {
+        // 取消之前未完成的打字任务（防止内存泄漏）
+        if (this._typeAbort) {
+            this._typeAbort.abort();
+        }
+        
+        this._typeAbort = new AbortController();
+        
+        return new Promise((resolve, reject) => {
             // 清除之前的打字定时器
             if (this._typeTimer !== null) {
                 clearInterval(this._typeTimer);
@@ -212,6 +415,14 @@ class CharacterSelection {
             element.textContent = '';
             let i = 0;
             this._typeTimer = setInterval(() => {
+                // 如果任务被取消，立即停止
+                if (this._typeAbort.signal.aborted) {
+                    clearInterval(this._typeTimer);
+                    this._typeTimer = null;
+                    reject(new Error('Typing cancelled'));
+                    return;
+                }
+                
                 if (i < text.length) {
                     element.textContent += text[i++];
                 } else {
@@ -226,6 +437,11 @@ class CharacterSelection {
         if (this._typeTimer !== null) {
             clearInterval(this._typeTimer);
             this._typeTimer = null;
+        }
+        // 取消打字任务（防止引用泄漏）
+        if (this._typeAbort) {
+            this._typeAbort.abort();
+            this._typeAbort = null;
         }
     }
     updateFinalInfo() {
@@ -352,6 +568,8 @@ class CharacterSelection {
     close() {
         if (!this.isOpen) return;
         this.isOpen = false;
+        // 停止背景音乐
+        this.stopBgm();
         // 清理挂起的定时器
         if (this._selectTimer !== null) {
             clearTimeout(this._selectTimer);
@@ -361,6 +579,22 @@ class CharacterSelection {
             clearTimeout(this._closeTimer);
             this._closeTimer = null;
         }
+        // 清理星星生成定时器
+        if (this._starIntervalId !== null) {
+            clearInterval(this._starIntervalId);
+            this._starIntervalId = null;
+        }
+        // 清除 mouseup 监听器（防止监听器堆积）
+        document.removeEventListener('mouseup', this._handleMouseUp);
+        // 清理 stage 上的 mousedown/mousemove 监听器（防止内存泄漏）
+        this._stageMouseDownHandlers.forEach((handler, stage) => {
+            stage.removeEventListener('mousedown', handler);
+        });
+        this._stageMouseMoveHandlers.forEach((handler, stage) => {
+            stage.removeEventListener('mousemove', handler);
+        });
+        this._stageMouseDownHandlers.clear();
+        this._stageMouseMoveHandlers.clear();
         // 清除打字定时器
         this.clearTypeTimer();
         // 移除 localechange 监听
