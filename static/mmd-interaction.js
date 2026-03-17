@@ -42,6 +42,12 @@ class MMDInteraction {
         };
         this._snapAnimationFrameId = null;
         this._isSnappingModel = false;
+
+        // 防抖保存
+        this._savePositionDebounceTimer = null;
+
+        // 旋转轴心（右键按下时缓存）
+        this._orbitPivot = null;
     }
 
     // ═══════════════════ 射线检测 ═══════════════════
@@ -185,13 +191,21 @@ class MMDInteraction {
                 e.preventDefault();
                 e.stopPropagation();
                 this._disableButtonPointerEvents();
-            } else if (e.button === 2) { // 右键 - 相机旋转
+            } else if (e.button === 2) { // 右键 - 旋转模型
                 this.isDragging = true;
                 this.dragMode = 'orbit';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
                 e.preventDefault();
                 e.stopPropagation();
+
+                // 缓存模型包围盒中心作为旋转轴心
+                const mesh = this.manager.currentModel?.mesh;
+                if (mesh) {
+                    const box = new THREE.Box3().setFromObject(mesh);
+                    this._orbitPivot = box.getCenter(new THREE.Vector3());
+                }
+
                 this._disableButtonPointerEvents();
             }
         };
@@ -205,34 +219,49 @@ class MMDInteraction {
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
 
             if (this.dragMode === 'pan') {
-                // 平移模型
+                // 像素精确平移模型（参考 VRM 风格，基于相机 FOV/距离）
                 const mesh = this.manager.currentModel?.mesh;
                 if (!mesh) return;
 
-                const moveFactor = 0.05;
-                mesh.position.x += dx * moveFactor;
-                mesh.position.y -= dy * moveFactor;
-            } else if (this.dragMode === 'orbit') {
-                // 旋转相机
-                const orbitSpeed = 0.005;
                 const camera = this.manager.camera;
+                const renderer = this.manager.renderer;
+
+                const cameraDistance = camera.position.distanceTo(mesh.position);
+                const fov = camera.fov * (Math.PI / 180);
+                const screenHeight = renderer.domElement.clientHeight;
+                const screenWidth = renderer.domElement.clientWidth;
+
+                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+                const worldWidth = worldHeight * (screenWidth / screenHeight);
+
+                const pixelToWorldX = worldWidth / screenWidth;
+                const pixelToWorldY = worldHeight / screenHeight;
+
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                mesh.position.add(right.multiplyScalar(dx * pixelToWorldX));
+                mesh.position.add(up.multiplyScalar(-dy * pixelToWorldY));
+            } else if (this.dragMode === 'orbit') {
+                // 绕模型中心旋转模型本身（不移动相机）
                 const mesh = this.manager.currentModel?.mesh;
-                if (!camera || !mesh) return;
+                if (!mesh) return;
 
-                // 绕模型中心旋转
-                const target = new THREE.Vector3();
-                const box = new THREE.Box3().setFromObject(mesh);
-                box.getCenter(target);
+                const pivot = this._orbitPivot || mesh.position;
+                const rotateSpeed = 0.005;
 
-                const offset = camera.position.clone().sub(target);
-                const spherical = new THREE.Spherical().setFromVector3(offset);
-                spherical.theta -= dx * orbitSpeed;
-                spherical.phi -= dy * orbitSpeed;
-                spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+                // 构建增量旋转四元数（世界空间：dx→绕Y轴，dy→绕X轴）
+                const dQuat = new THREE.Quaternion();
+                const dEuler = new THREE.Euler(dy * rotateSpeed, dx * rotateSpeed, 0, 'YXZ');
+                dQuat.setFromEuler(dEuler);
 
-                offset.setFromSpherical(spherical);
-                camera.position.copy(target).add(offset);
-                camera.lookAt(target);
+                // 将 mesh 位置绕轴心旋转，保持模型中心不动
+                const offset = mesh.position.clone().sub(pivot);
+                offset.applyQuaternion(dQuat);
+                mesh.position.copy(pivot).add(offset);
+
+                // 应用旋转（premultiply = 世界空间叠加）
+                mesh.quaternion.premultiply(dQuat);
             }
         };
 
@@ -243,6 +272,9 @@ class MMDInteraction {
                 this.dragMode = null;
                 canvas.style.cursor = 'default';
                 this._restoreButtonPointerEvents();
+
+                // 拖拽结束后保存位置/旋转/缩放
+                this._savePositionAfterInteraction();
             }
         };
 
@@ -270,6 +302,9 @@ class MMDInteraction {
             e.preventDefault();
             const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;
             mesh.scale.multiplyScalar(scaleFactor);
+
+            // 缩放结束后防抖保存
+            this._debouncedSavePosition();
         };
 
         // 鼠标悬停光标
@@ -283,10 +318,12 @@ class MMDInteraction {
         };
 
         // 绑定事件
+        // mousedown/hover/wheel 绑定到 canvas，mousemove/mouseup 绑定到 document
+        // 防止拖拽经过悬浮按钮时被中断
         canvas.addEventListener('mousedown', this.mouseDownHandler);
-        canvas.addEventListener('mousemove', this.dragHandler);
+        document.addEventListener('mousemove', this.dragHandler);
         canvas.addEventListener('mousemove', this.mouseHoverHandler);
-        canvas.addEventListener('mouseup', this.mouseUpHandler);
+        document.addEventListener('mouseup', this.mouseUpHandler);
         canvas.addEventListener('mouseleave', this.mouseLeaveHandler);
         canvas.addEventListener('wheel', this.wheelHandler, { passive: false });
 
@@ -301,9 +338,9 @@ class MMDInteraction {
         if (!canvas) return;
 
         if (this.mouseDownHandler) canvas.removeEventListener('mousedown', this.mouseDownHandler);
-        if (this.dragHandler) canvas.removeEventListener('mousemove', this.dragHandler);
+        if (this.dragHandler) document.removeEventListener('mousemove', this.dragHandler);
         if (this.mouseHoverHandler) canvas.removeEventListener('mousemove', this.mouseHoverHandler);
-        if (this.mouseUpHandler) canvas.removeEventListener('mouseup', this.mouseUpHandler);
+        if (this.mouseUpHandler) document.removeEventListener('mouseup', this.mouseUpHandler);
         if (this.mouseLeaveHandler) canvas.removeEventListener('mouseleave', this.mouseLeaveHandler);
         if (this.wheelHandler) canvas.removeEventListener('wheel', this.wheelHandler);
 
@@ -315,12 +352,90 @@ class MMDInteraction {
         this.wheelHandler = null;
     }
 
+    // ═══════════════════ 偏好保存 ═══════════════════
+
+    async _savePositionAfterInteraction() {
+        if (!this.manager.currentModel || !this.manager.currentModel.url) return;
+
+        const mesh = this.manager.currentModel.mesh;
+        if (!mesh) return;
+
+        const position = { x: mesh.position.x, y: mesh.position.y, z: mesh.position.z };
+        const scale = { x: mesh.scale.x, y: mesh.scale.y, z: mesh.scale.z };
+        const rotation = { x: mesh.rotation.x, y: mesh.rotation.y, z: mesh.rotation.z };
+
+        if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z) ||
+            !Number.isFinite(scale.x) || !Number.isFinite(scale.y) || !Number.isFinite(scale.z)) {
+            console.warn('[MMD] 位置或缩放数据无效，跳过保存');
+            return;
+        }
+
+        // 显示器信息（多屏幕位置恢复）
+        let displayInfo = null;
+        if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
+            try {
+                const currentDisplay = await window.electronScreen.getCurrentDisplay();
+                if (currentDisplay) {
+                    let screenX = currentDisplay.screenX;
+                    let screenY = currentDisplay.screenY;
+                    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+                        if (currentDisplay.bounds && Number.isFinite(currentDisplay.bounds.x) && Number.isFinite(currentDisplay.bounds.y)) {
+                            screenX = currentDisplay.bounds.x;
+                            screenY = currentDisplay.bounds.y;
+                        }
+                    }
+                    if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                        displayInfo = { screenX, screenY };
+                    }
+                }
+            } catch (error) {
+                console.warn('[MMD] 获取显示器信息失败:', error);
+            }
+        }
+
+        // 视口信息（跨分辨率缩放归一化）
+        let viewportInfo = null;
+        const screenW = window.screen.width;
+        const screenH = window.screen.height;
+        if (Number.isFinite(screenW) && Number.isFinite(screenH) && screenW > 0 && screenH > 0) {
+            viewportInfo = { width: screenW, height: screenH };
+        }
+
+        if (this.manager.core && typeof this.manager.core.saveUserPreferences === 'function') {
+            this.manager.core.saveUserPreferences(
+                this.manager.currentModel.url,
+                position, scale, rotation,
+                displayInfo, viewportInfo
+            ).then(success => {
+                if (!success) console.warn('[MMD] 自动保存位置失败');
+            }).catch(error => {
+                console.error('[MMD] 自动保存位置时出错:', error);
+            });
+        }
+    }
+
+    _debouncedSavePosition() {
+        if (this._savePositionDebounceTimer) {
+            clearTimeout(this._savePositionDebounceTimer);
+        }
+        this._savePositionDebounceTimer = setTimeout(() => {
+            this._savePositionAfterInteraction().catch(error => {
+                console.error('[MMD] 防抖保存位置时出错:', error);
+            });
+        }, 500);
+    }
+
     dispose() {
         this.cleanupDragAndZoom();
 
         if (this._snapAnimationFrameId) {
             cancelAnimationFrame(this._snapAnimationFrameId);
             this._snapAnimationFrameId = null;
+        }
+
+        if (this._savePositionDebounceTimer) {
+            clearTimeout(this._savePositionDebounceTimer);
+            this._savePositionDebounceTimer = null;
         }
 
         this._cachedScreenBounds = null;

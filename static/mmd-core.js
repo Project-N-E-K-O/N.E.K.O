@@ -367,6 +367,7 @@ class MMDCore {
 
             // 存储模型引用
             this.manager.currentModel = mmd;
+            this.manager.currentModel.url = modelUrl;
             this.manager.scene.add(mmd.mesh);
 
             // 材质后处理：修正纹理颜色空间 + 强制材质更新
@@ -403,6 +404,9 @@ class MMDCore {
 
             // 材质诊断日志
             this._logMaterialDiagnostics(mmd);
+
+            // 恢复保存的偏好设置（位置/旋转/缩放）
+            await this._restoreUserPreferences(mmd, modelUrl);
 
             return modelInfo;
         } catch (error) {
@@ -798,6 +802,30 @@ class MMDCore {
         });
     }
 
+    resetModelPosition() {
+        const mmd = this.manager.currentModel;
+        if (!mmd || !mmd.mesh) return;
+
+        const mesh = mmd.mesh;
+        mesh.position.set(0, 0, 0);
+        mesh.quaternion.identity();
+        mesh.scale.set(1, 1, 1);
+
+        if (mmd.physics) {
+            mmd.physics.reset();
+        }
+
+        const modelPath = mmd.url;
+        if (modelPath) {
+            this.saveUserPreferences(
+                modelPath,
+                { x: 0, y: 0, z: 0 },
+                { x: 1, y: 1, z: 1 },
+                { x: 0, y: 0, z: 0 }
+            );
+        }
+    }
+
     // ═══════════════════ 锁定 ═══════════════════
 
     setLocked(locked) {
@@ -837,6 +865,170 @@ class MMDCore {
             } else {
                 buttonsContainer.style.display = locked ? 'none' : 'flex';
             }
+        }
+    }
+
+    // ═══════════════════ 用户偏好持久化 ═══════════════════
+
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+        try {
+            if (!position || typeof position !== 'object' ||
+                !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
+                console.error('[MMD] 位置值无效:', position);
+                return false;
+            }
+            if (!scale || typeof scale !== 'object' ||
+                !Number.isFinite(scale.x) || !Number.isFinite(scale.y) || !Number.isFinite(scale.z) ||
+                scale.x <= 0 || scale.y <= 0 || scale.z <= 0) {
+                console.error('[MMD] 缩放值无效:', scale);
+                return false;
+            }
+
+            const preferences = { model_path: modelPath, position, scale };
+
+            if (rotation && typeof rotation === 'object' &&
+                Number.isFinite(rotation.x) && Number.isFinite(rotation.y) && Number.isFinite(rotation.z)) {
+                preferences.rotation = rotation;
+            }
+            if (display && typeof display === 'object' &&
+                Number.isFinite(display.screenX) && Number.isFinite(display.screenY)) {
+                preferences.display = { screenX: display.screenX, screenY: display.screenY };
+            }
+            if (viewport && typeof viewport === 'object' &&
+                Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0) {
+                preferences.viewport = { width: viewport.width, height: viewport.height };
+            }
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+            let response;
+            try {
+                response = await fetch('/api/config/preferences', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(preferences),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+            } catch (error) {
+                clearTimeout(timeoutId);
+                if (error.name === 'AbortError') {
+                    console.warn('[MMD Core] 保存偏好设置请求超时（5秒）');
+                    return false;
+                }
+                throw error;
+            }
+
+            if (!response.ok) {
+                console.error('[MMD Core] 保存偏好设置失败:', response.status);
+                return false;
+            }
+
+            const result = await response.json();
+            return result.success || false;
+        } catch (error) {
+            console.error('[MMD Core] 保存偏好设置时出错:', error);
+            return false;
+        }
+    }
+
+    async _restoreUserPreferences(mmd, modelUrl) {
+        const THREE = window.THREE;
+        if (!THREE || !mmd?.mesh) return;
+
+        try {
+            const preferencesResponse = await fetch('/api/config/preferences');
+            if (!preferencesResponse.ok) {
+                console.warn('[MMD Core] 获取偏好设置失败:', preferencesResponse.status);
+                return;
+            }
+
+            const allPreferences = await preferencesResponse.json();
+            let modelsArray = Array.isArray(allPreferences)
+                ? allPreferences
+                : (allPreferences?.models && Array.isArray(allPreferences.models) ? allPreferences.models : null);
+
+            if (!modelsArray || modelsArray.length === 0) return;
+
+            // 路径匹配（支持精确匹配、归一化路径、文件名匹配）
+            const normalizePath = (path) => {
+                if (!path || typeof path !== 'string') return '';
+                return path.replace(/^https?:\/\/[^\/]+/, '').replace(/\\/g, '/').toLowerCase();
+            };
+            const getFilename = (path) => {
+                if (!path || typeof path !== 'string') return '';
+                const parts = path.split('/').filter(Boolean);
+                return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
+            };
+
+            const normalizedModelUrl = normalizePath(modelUrl);
+            const modelFilename = getFilename(modelUrl);
+
+            const preferences = modelsArray.find(pref => {
+                if (!pref || !pref.model_path) return false;
+                const prefPath = pref.model_path;
+                if (prefPath === modelUrl) return true;
+                if (normalizePath(prefPath) === normalizedModelUrl && normalizedModelUrl) return true;
+                const prefFilename = getFilename(prefPath);
+                if (modelFilename && prefFilename && prefFilename === modelFilename) return true;
+                return false;
+            });
+
+            if (!preferences) return;
+
+            const mesh = mmd.mesh;
+
+            // 恢复位置
+            if (preferences.position) {
+                const pos = preferences.position;
+                if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)) {
+                    mesh.position.set(pos.x, pos.y, pos.z);
+                }
+            }
+
+            // 恢复缩放（含跨分辨率归一化）
+            if (preferences.scale) {
+                const scl = preferences.scale;
+                if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
+                    scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                    const savedViewport = preferences.viewport;
+                    const currentScreenH = window.screen.height;
+                    const hRatio = (savedViewport &&
+                        Number.isFinite(savedViewport.height) && savedViewport.height > 0)
+                        ? currentScreenH / savedViewport.height : 1;
+                    const isExtremeChange = hRatio > 1.8 || hRatio < 0.56;
+                    if (isExtremeChange) {
+                        mesh.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                        console.log('[MMD Core] 屏幕分辨率大幅变化，缩放已归一化');
+                    } else {
+                        mesh.scale.set(scl.x, scl.y, scl.z);
+                    }
+                }
+            }
+
+            // 恢复旋转
+            if (preferences.rotation) {
+                const rot = preferences.rotation;
+                if (Number.isFinite(rot.x) && Number.isFinite(rot.y) && Number.isFinite(rot.z)) {
+                    mesh.rotation.order = 'YXZ';
+                    mesh.rotation.set(rot.x, rot.y, rot.z);
+                }
+            }
+
+            // 物理重置（確保物理状态与新位置/旋转同步）
+            if (mmd.physics && typeof mmd.physics.reset === 'function') {
+                mmd.physics.reset();
+            }
+
+            console.log('[MMD Core] 偏好设置已恢复:', {
+                position: preferences.position,
+                scale: preferences.scale,
+                rotation: preferences.rotation
+            });
+        } catch (error) {
+            console.error('[MMD Core] 恢复偏好设置失败:', error);
         }
     }
 
