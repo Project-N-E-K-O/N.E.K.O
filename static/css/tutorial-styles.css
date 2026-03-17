@@ -289,8 +289,6 @@
     -webkit-appearance: none;
     -moz-appearance: none;
     appearance: none;
-    will-change: auto;
-    vertical-align: middle;
 }
 
 #neko-tutorial-skip-btn:hover {
@@ -306,14 +304,6 @@
 #neko-tutorial-skip-btn:focus-visible {
     outline: 2px solid rgba(68, 183, 254, 0.6) !important;
     outline-offset: 2px;
-}
-
-/* ============================================
-   高亮框通用修正
-   ============================================ */
-
-.driver-highlight {
-    box-sizing: border-box !important;
 }
 
 /* ============================================
