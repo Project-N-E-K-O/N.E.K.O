@@ -1298,7 +1298,23 @@ def get_user_models():
                             dirs[:] = []
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
-        
+
+        # 扫描用户导入的 VRM 模型
+        try:
+            config_mgr = get_config_manager()
+            config_mgr.ensure_vrm_directory()
+            vrm_dir = config_mgr.vrm_dir
+            if vrm_dir.exists():
+                for vrm_file in vrm_dir.glob('*.vrm'):
+                    user_models.append({
+                        'name': vrm_file.stem,
+                        'path': f'/user_vrm/{vrm_file.name}',
+                        'source': 'user_documents',
+                        'type': 'vrm'
+                    })
+        except Exception as e:
+            logger.warning(f"扫描用户VRM模型目录时出错: {e}")
+
         return {"success": True, "models": user_models}
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")
