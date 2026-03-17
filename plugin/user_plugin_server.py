@@ -271,6 +271,24 @@ def _enable_fault_handler_fallback() -> None:
         logger.warning("failed to enable fallback faulthandler: %s", exc)
 
 
+def _get_child_pids(parent_pid: int) -> list[int]:
+    """Best-effort list of direct child PIDs (POSIX only, no psutil)."""
+    pids: list[int] = []
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["pgrep", "-P", str(parent_pid)],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        for line in result.stdout.splitlines():
+            s = line.strip()
+            if s.isdigit():
+                pids.append(int(s))
+    except Exception:
+        pass
+    return pids
+
+
 def _find_available_port(host: str, start_port: int, max_tries: int = 50) -> int:
     for port in range(start_port, start_port + max_tries):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -285,7 +303,9 @@ def _find_available_port(host: str, start_port: int, max_tries: int = 50) -> int
                 sock.close()
             except OSError:
                 pass
-    return start_port
+    raise RuntimeError(
+        f"no available port in range {start_port}–{start_port + max_tries - 1} on {host}"
+    )
 
 
 if __name__ == "__main__":
@@ -298,7 +318,11 @@ if __name__ == "__main__":
     if dump_file is None:
         _enable_fault_handler_fallback()
 
-    selected_port = _find_available_port(host, base_port)
+    try:
+        selected_port = _find_available_port(host, base_port)
+    except RuntimeError as exc:
+        logger.error("Cannot start plugin server: %s", exc)
+        sys.exit(1)
     os.environ["NEKO_USER_PLUGIN_SERVER_PORT"] = str(selected_port)
     if selected_port != base_port:
         logger.warning("User plugin server port %s is unavailable, switched to %s", base_port, selected_port)
@@ -398,11 +422,15 @@ if __name__ == "__main__":
                 pass
             except (psutil.Error, OSError, RuntimeError, ValueError) as exc:
                 logger.warning("failed to cleanup child processes: %s", exc)
-        elif hasattr(os, "killpg"):
+        else:
             try:
-                os.killpg(os.getpgrp(), signal.SIGKILL)
-            except OSError:
-                pass
+                for child_pid in _get_child_pids(os.getpid()):
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except OSError as exc:
+                        logger.warning("failed to kill child pid %s: %s", child_pid, exc)
+            except Exception as exc:
+                logger.warning("child process cleanup failed: %s", exc)
 
         if force_exit_timer is not None:
             force_exit_timer.cancel()
