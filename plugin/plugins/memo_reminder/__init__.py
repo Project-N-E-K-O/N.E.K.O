@@ -482,7 +482,7 @@ class MemoReminderPlugin(NekoPluginBase):
                     "type": "integer",
                     "description": (
                         "重复触发的最大次数（仅对 repeat 非 'once' 有效）。"
-                        "达到次数后自动删除。不设置则无限重复。"
+                        "达到次数后自动删除。"
                     ),
                 },
             },
@@ -490,14 +490,13 @@ class MemoReminderPlugin(NekoPluginBase):
         },
         llm_result_fields=["message", "trigger_at_local"],
     )
-    async def add_reminder(self, time: str, message: str, repeat: str = "once", max_count: int | None = None, **kwargs):
-        if max_count is not None:
-            try:
-                max_count = int(max_count)
-            except (TypeError, ValueError):
-                return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
-            if max_count <= 0:
-                return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+    async def add_reminder(self, time: str, message: str, repeat: str = "once", max_count: int = 20, **kwargs):
+        try:
+            max_count = int(max_count)
+        except (TypeError, ValueError):
+            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+        if max_count <= 0:
+            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
 
         tz = getattr(self, "_tz", ZoneInfo(_DEFAULT_TZ))
         parsed = _parse_time(time, tz)
