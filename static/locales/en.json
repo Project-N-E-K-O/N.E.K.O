@@ -834,7 +834,8 @@
             "modelNotFound": "No model loaded",
             "modelDataNotReady": "Model internal data not ready",
             "managerNotFound": "Live2DManager not found",
-            "select": "Select"
+            "select": "Select",
+            "defaultClickAnim": "Default Click Animation"
         },
         "emotionConfig": "Emotion Config",
         "saveSettings": "Save Settings",

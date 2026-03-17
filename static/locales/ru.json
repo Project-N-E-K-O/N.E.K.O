@@ -834,7 +834,8 @@
             "modelNotFound": "Модель не загружена",
             "modelDataNotReady": "Внутренние данные модели не готовы",
             "managerNotFound": "Live2DManager не найден",
-            "select": "Выбрать"
+            "select": "Выбрать",
+            "defaultClickAnim": "Анимация клика по умолчанию"
         },
         "emotionConfig": "Настройка эмоций",
         "saveSettings": "Сохранить настройки",

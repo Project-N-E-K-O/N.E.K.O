@@ -607,7 +607,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         
         #一个角色切换模型后得重新配置触摸动画好像蛮麻烦 先留着吧出问题再说
-        existing_touch_set = get_reserved(characters['猫娘'][name], 'avatar', 'touch_set', default={})
+        # existing_touch_set = get_reserved(characters['猫娘'][name], 'avatar', 'touch_set', default={})
+        existing_touch_set = get_reserved(characters['猫娘'][name],'touch_set', default={})
         existing_touch_set.update(touch_set)
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
         logger.debug(f"已保存角色 {name} 的 触摸/点击 配置")
