@@ -229,6 +229,7 @@ class LLMSessionManager:
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
+        self._last_tts_respawn_time: float = 0.0  # 上次 respawn 时间戳，用于 12 秒冷却
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -334,8 +335,8 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
-                    # Worker 已死亡则尝试重新拉起（非阻塞，就绪后自动刷缓存）
-                    if self.tts_thread and not self.tts_thread.is_alive():
+                    # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
+                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
     async def handle_proactive_complete(self):
@@ -535,8 +536,8 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
-                    # Worker 已死亡则尝试重新拉起（非阻塞，就绪后自动刷缓存）
-                    if self.tts_thread and not self.tts_thread.is_alive():
+                    # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
+                    if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False):
@@ -789,9 +790,17 @@ class LLMSessionManager:
 
         新 Worker 就绪后会通过 response_queue 发送 __ready__ 信号，
         由 tts_response_handler 接收并调用 _flush_tts_pending_chunks 刷出缓存。
+
+        限流：12 秒内最多拉起一次，避免服务彻底不可用时风暴式重连。
         """
         if self.tts_thread and self.tts_thread.is_alive():
             return  # 线程还活着，无需重启
+
+        import time
+        now = time.monotonic()
+        if now - self._last_tts_respawn_time < 12.0:
+            return  # 冷却中，跳过
+        self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
 
@@ -1997,7 +2006,7 @@ class LLMSessionManager:
                     logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
             else:
                 self.tts_pending_chunks.append((self.current_speech_id, text))
-                # Worker 已死亡则尝试重新拉起（非阻塞，就绪后自动刷缓存）
+                # Worker 已死亡则尝试拉起（受 12 秒冷却限制，不会风暴重连）
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()
 
