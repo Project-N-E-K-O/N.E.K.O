@@ -790,11 +790,9 @@ class CursorFollowController {
     //  重置（模型切换时调用）
     // ════════════════════════════════════════════════════════════════
     reset() {
-        // 如果正在回正过渡中被重置（如模型切换），立即完成禁用
-        if (this._disabling) {
-            this._disabling = false;
-            this._enabled = false;
-        }
+        // 取消回正过渡状态，根据用户偏好恢复启用状态
+        this._disabling = false;
+        this._enabled = this._perfRuntime.enabled !== false && !this._userDisabled;
         this._headYaw = 0;
         this._headPitch = 0;
         this._eyeYaw = 0;
