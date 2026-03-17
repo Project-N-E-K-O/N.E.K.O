@@ -1157,12 +1157,14 @@ def main():
         # agent_server 崩溃不应牵连 main/memory，仅记录日志。
         # 只有 main_server 或 memory_server 死亡才触发全局关闭。
         _CRITICAL_MODULES = {"memory_server", "main_server"}
+        _reported_exits: set[str] = set()
         while True:
             time.sleep(5)
             started = [s for s in SERVERS if s.get('process') is not None]
             any_critical_dead = False
             for s in started:
-                if not s['process'].is_alive():
+                if not s['process'].is_alive() and s['name'] not in _reported_exits:
+                    _reported_exits.add(s['name'])
                     module = s.get('module', '')
                     if module in _CRITICAL_MODULES:
                         print(f"\n检测到关键服务异常退出: {s['name']}！", flush=True)

@@ -52,7 +52,7 @@ class Modules:
     task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
-    user_plugin_http_task: Optional[threading.Thread] = None
+    user_plugin_http_task: Any = None  # threading.Thread (imported after class def)
     _plugin_server_loop: Any = None
     plugin_lifecycle_started: bool = False
     _plugin_lifecycle_lock: Optional[asyncio.Lock] = None
@@ -326,6 +326,7 @@ async def _start_embedded_user_plugin_server() -> None:
     Modules.user_plugin_http_server = server
 
     ready = threading.Event()
+    startup_error: list[BaseException] = []
 
     def _run_in_thread() -> None:
         loop = asyncio.new_event_loop()
@@ -336,26 +337,30 @@ async def _start_embedded_user_plugin_server() -> None:
             task = asyncio.ensure_future(server.serve())
             while not getattr(server, "started", False) and not task.done():
                 await asyncio.sleep(0.05)
-            ready.set()
+            if getattr(server, "started", False):
+                ready.set()
             await task
 
         try:
             loop.run_until_complete(_serve_and_signal())
         except Exception as exc:
+            startup_error.append(exc)
             logger.warning("[Agent] Embedded plugin server thread exited: %s", exc)
         finally:
-            ready.set()
+            ready.set()  # unblock waiter even on failure
             loop.close()
 
     t = threading.Thread(target=_run_in_thread, name="plugin-server", daemon=True)
     t.start()
     Modules.user_plugin_http_task = t
 
-    if not ready.wait(timeout=10.0):
+    started = await asyncio.to_thread(ready.wait, 10.0)
+    if not started or startup_error or not getattr(server, "started", False):
         server.should_exit = True
         Modules.user_plugin_http_server = None
         Modules.user_plugin_http_task = None
-        raise RuntimeError("timed out waiting for embedded user plugin server startup")
+        detail = str(startup_error[0]) if startup_error else "timeout or server not started"
+        raise RuntimeError(f"embedded user plugin server failed: {detail}")
 
     logger.info("[Agent] Embedded user plugin server started on 127.0.0.1:%s (isolated thread)", USER_PLUGIN_SERVER_PORT)
 
@@ -373,7 +378,7 @@ async def _stop_embedded_user_plugin_server() -> None:
     if thread is None:
         return
 
-    thread.join(timeout=10.0)
+    await asyncio.to_thread(thread.join, 10.0)
     if thread.is_alive():
         logger.warning("[Agent] Embedded user plugin server thread did not exit in time")
         if server is not None:

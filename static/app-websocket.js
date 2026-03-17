@@ -768,11 +768,11 @@
                             ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
                             : '';
                         rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        window._realisticGeminiBuffer = '';
                         var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                             window._realisticGeminiQueue.push(trimmed);
-                            window._realisticGeminiBuffer = '';
                             if (typeof window.processRealisticQueue === 'function') {
                                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
                             }

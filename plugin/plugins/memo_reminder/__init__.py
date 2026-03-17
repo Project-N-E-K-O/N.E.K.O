@@ -491,6 +491,14 @@ class MemoReminderPlugin(NekoPluginBase):
         llm_result_fields=["message", "trigger_at_local"],
     )
     async def add_reminder(self, time: str, message: str, repeat: str = "once", max_count: int | None = None, **kwargs):
+        if max_count is not None:
+            try:
+                max_count = int(max_count)
+            except (TypeError, ValueError):
+                return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+            if max_count <= 0:
+                return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+
         tz = getattr(self, "_tz", ZoneInfo(_DEFAULT_TZ))
         parsed = _parse_time(time, tz)
         if parsed is None:

@@ -165,11 +165,6 @@ configure_default_logger()
 try:
     from loguru import logger as _loguru_logger
 
-    class _LoguruToStdlib(logging.Handler):
-        """Forward loguru records into the stdlib PluginServer file handler."""
-        def emit(self, record: logging.LogRecord) -> None:
-            pass  # unused; we add loguru sink below
-
     def _loguru_sink(message) -> None:
         record = message.record
         lvl_name = record["level"].name
@@ -178,8 +173,10 @@ try:
         logger._logger.log(stdlib_lvl, "[%s] %s", component, record["message"])
 
     _loguru_logger.add(_loguru_sink, level="INFO", format="{message}")
-except Exception:
-    pass
+except ModuleNotFoundError:
+    logger.info("loguru not installed; plugin SDK logs will only go to console")
+except Exception as _bridge_exc:
+    logger.warning("failed to set up loguru->stdlib bridge: %s", _bridge_exc)
 
 # -- uvicorn logging bridge --
 def _configure_uvicorn_logging_bridge() -> None:
