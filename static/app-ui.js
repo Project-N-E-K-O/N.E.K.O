@@ -25,15 +25,15 @@
      * Show / hide the floating status toast bubble.
      * @param {string} message  Text to display (empty string hides)
      * @param {number} [duration=3000]  Auto-hide delay in ms
+     * @param {object} [options]  Additional options
+     * @param {number} [options.priority=0]  Priority level (higher = more important, won't be overwritten by lower priority)
+     * @param {boolean} [options.important=false]  Whether this is an important message (same as priority=100)
      */
-    function showStatusToast(message, duration = 3000) {
-        console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
-
-        const statusToast = S.dom.statusToast;
-        const statusElement = S.dom.statusElement;
-
+    function showStatusToast(message, duration = 3000, options = {}) {
+        const priority = options.important ? 100 : (options.priority || 0);
+        
         if (!message || message.trim() === '') {
-            // 如果消息为空，隐藏气泡框
+            const statusToast = S.dom.statusToast;
             if (statusToast) {
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
@@ -41,8 +41,19 @@
                     statusToast.textContent = '';
                 }, 300);
             }
+            S._statusToastPriority = 0;
             return;
         }
+
+        if (priority < S._statusToastPriority) {
+            console.log('[StatusToast] Ignored lower priority message:', priority, '<', S._statusToastPriority);
+            return;
+        }
+
+        console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
+
+        const statusToast = S.dom.statusToast;
+        const statusElement = S.dom.statusElement;
 
         if (!statusToast) {
             console.error(window.t('console.statusToastNotFound'));
@@ -57,6 +68,7 @@
 
         // 更新内容
         statusToast.textContent = message;
+        S._statusToastPriority = priority;
 
         // 确保元素可见
         statusToast.style.display = 'block';

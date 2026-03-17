@@ -879,7 +879,7 @@
         // Support structured error objects: {"code": "XXX", "details": {...}}
         if (message && typeof message === 'object') {
             if (message.code && typeof message.code === 'string') {
-                const translationKey = `errors.${message.code}`;
+                const translationKey = message.code;
                 const details = message.details || {};
                 const translated = i18next.t(translationKey, details);
                 
