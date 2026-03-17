@@ -159,10 +159,10 @@ logger, _log_config = setup_logging(service_name="PluginServer", log_level=loggi
 # plugin.logging_config.get_logger().  configure_default_logger() gives them
 # a console sink so their output isn't silently lost.  We additionally bridge
 # loguru -> stdlib so those logs also land in the PluginServer log file.
-from plugin.logging_config import configure_default_logger  # noqa: E402
-configure_default_logger()
-
 try:
+    from plugin.logging_config import configure_default_logger  # noqa: E402
+    configure_default_logger()
+
     from loguru import logger as _loguru_logger
 
     def _loguru_sink(message) -> None:
@@ -284,8 +284,8 @@ def _get_child_pids(parent_pid: int) -> list[int]:
             s = line.strip()
             if s.isdigit():
                 pids.append(int(s))
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger(__name__).warning("_get_child_pids failed for pid %s: %s", parent_pid, exc)
     return pids
 
 
