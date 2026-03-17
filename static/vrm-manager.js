@@ -248,7 +248,7 @@ class VRMManager {
                 this._cursorFollow.init(this);
             }
             // 同步鼠标跟踪启用状态
-            const isEnabled = Boolean(window.mouseTrackingEnabled);
+            const isEnabled = window.mouseTrackingEnabled !== false;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
