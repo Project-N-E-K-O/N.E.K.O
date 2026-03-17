@@ -35,10 +35,15 @@
         if (!message || message.trim() === '') {
             const statusToast = S.dom.statusToast;
             if (statusToast) {
+                if (S._statusToastCleanupTimer) {
+                    clearTimeout(S._statusToastCleanupTimer);
+                    S._statusToastCleanupTimer = null;
+                }
                 statusToast.classList.remove('show');
                 statusToast.classList.add('hide');
-                setTimeout(() => {
+                S._statusToastCleanupTimer = setTimeout(() => {
                     statusToast.textContent = '';
+                    S._statusToastCleanupTimer = null;
                 }, 300);
             }
             S._statusToastPriority = 0;
@@ -65,6 +70,10 @@
             clearTimeout(S.statusToastTimeout);
             S.statusToastTimeout = null;
         }
+        if (S._statusToastCleanupTimer) {
+            clearTimeout(S._statusToastCleanupTimer);
+            S._statusToastCleanupTimer = null;
+        }
 
         // 更新内容
         statusToast.textContent = message;
@@ -86,9 +95,10 @@
         S.statusToastTimeout = setTimeout(() => {
             statusToast.classList.remove('show');
             statusToast.classList.add('hide');
-            setTimeout(() => {
+            S._statusToastCleanupTimer = setTimeout(() => {
                 statusToast.textContent = '';
                 S._statusToastPriority = 0;
+                S._statusToastCleanupTimer = null;
             }, 300);
         }, duration);
 
