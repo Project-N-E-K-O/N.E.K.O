@@ -88,6 +88,7 @@
             statusToast.classList.add('hide');
             setTimeout(() => {
                 statusToast.textContent = '';
+                S._statusToastPriority = 0;
             }, 300);
         }, duration);
 
