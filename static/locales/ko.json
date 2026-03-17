@@ -834,7 +834,8 @@
             "modelNotFound": "로드된 모델 없음",
             "modelDataNotReady": "모델 내부 데이터 준비되지 않음",
             "managerNotFound": "Live2DManager를 찾을 수 없음",
-            "select": "선택"
+            "select": "선택",
+            "defaultClickAnim": "기본 클릭 애니메이션"
         },
         "emotionConfig": "감정 구성",
         "saveSettings": "설정 저장",

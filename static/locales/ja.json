@@ -834,7 +834,8 @@
             "modelNotFound": "モデルが読み込まれていません",
             "modelDataNotReady": "モデル内部データの準備ができていません",
             "managerNotFound": "Live2DManagerが見つかりません",
-            "select": "選択"
+            "select": "選択",
+            "defaultClickAnim": "デフォルトクリックアニメーション"
         },
         "emotionConfig": "表情設定",
         "saveSettings": "設定を保存",
