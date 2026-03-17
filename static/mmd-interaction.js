@@ -129,6 +129,13 @@ class MMDInteraction {
         }
     }
 
+    /**
+     * 别名：与 VRM interaction API 保持一致
+     */
+    updateModelBoundsCache() {
+        this.updateScreenBounds();
+    }
+
     // ═══════════════════ 按钮辅助 ═══════════════════
 
     _disableButtonPointerEvents() {

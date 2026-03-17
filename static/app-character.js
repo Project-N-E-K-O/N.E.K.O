@@ -149,6 +149,12 @@
             }
             console.log('[猫娘切换] effectiveModelType:', effectiveModelType);
 
+            // ⭐ 立即更新 model_type，让 preload 穿透逻辑使用正确的分支
+            if (window.lanlan_config) {
+                window.lanlan_config.model_type = modelType; // 'live3d' / 'vrm' / 'live2d'
+                console.log('[猫娘切换] 已更新 lanlan_config.model_type =', modelType);
+            }
+
             // 2. 清理旧模型资源（温和清理，保留基础设施）
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
@@ -331,6 +337,9 @@
                     if (window.mmdManager.renderer && window.mmdManager.renderer.domElement) {
                         window.mmdManager.renderer.domElement.style.display = 'none';
                     }
+
+                    // 清空当前模型引用，让 preload 穿透逻辑不再将 MMD 视为活跃
+                    window.mmdManager.currentModel = null;
                 }
             } catch (e) {
                 console.warn('[猫娘切换] MMD 清理出错:', e);
