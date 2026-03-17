@@ -43,20 +43,10 @@
      */
     async function checkAndUnlockFirstDialogueAchievement() {
         if (!isFirstUserInput && !isFirstAIResponse) {
+            if (!window.unlockAchievement) return;
+            console.log(window.t('console.firstConversationUnlockAchievement'));
             try {
-                console.log(window.t('console.firstConversationUnlockAchievement'));
-                const response = await fetch('/api/steam/set-achievement-status/ACH_FIRST_DIALOGUE', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                if (response.ok) {
-                    console.log(window.t('console.achievementUnlockSuccess'));
-                } else {
-                    console.error(window.t('console.achievementUnlockFailed'));
-                }
+                await window.unlockAchievement('ACH_FIRST_DIALOGUE');
             } catch (error) {
                 console.error(window.t('console.achievementUnlockError'), error);
             }
