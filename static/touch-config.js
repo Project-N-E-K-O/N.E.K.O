@@ -95,71 +95,74 @@ async function InitializationTouchSet(characterJson) {
         touchSet[window.live2dManager.modelName] = {"default":{"motions": [], "expressions": []}}
     }
     window.live2dManager.touchSet = touchSet;
-    // 根据当前模型 ID 获取对应配置
-    // const live2dManager = window.live2dManager;
-    // const modelId = live2dManager?.modelName || '';
-    window.touchSet = structuredClone( touchSet || {}) ;
-
-    window.live2dManager.setupHitAreaInteraction(model)
     window.live2dManager.touchSetFilter = {}
     window.live2dManager.touchSetHitEventLock = false
+
+    window.live2dManager.setupHitAreaInteraction(model)
 }
 
-function copyTouchSet(){
-    window.live2dManager.touchSet = structuredClone(window.touchSet || {})
-}
-function saveTempTouchSet(){
-    // const 用于检查的变量A = window.touchSet //仅调试时检查不做实际用处
-    // const 用于检查的变量B = window.live2dManager?.touchSet //仅调试时检查不做实际用处
-    const nowmodle = window.live2dManager?.modelName || '';
-    function getTagblock(T,tagname){
-        for(let i = 0; i < T.children.length;i++){
-            if (Array.from(T.children[i].classList).includes(tagname)){
-                return T.children[i]
-            }
-        }
-        return null
+async function saveTouchSetToServer() {
+    const modelName = window.live2dManager?.modelName;
+    const lanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || window.lanlan_config?.lanlan_name;
+    
+    if (!modelName || !lanlanName) {
+        console.error('[TouchSet] 无法保存：缺少模型名称或角色名称');
+        return false;
     }
-    const nowmodle_touchSet = {};
+    
+    const touchSetData = collectAllTouchSetData();
+    
+    try {
+        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(lanlanName)}/touch_set`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model_name: modelName,
+                touch_set: touchSetData
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            window.live2dManager.touchSet[modelName] = touchSetData;
+            console.log(`[TouchSet] 已保存模型 ${modelName} 的触摸配置到服务器`);
+            return true;
+        } else {
+            console.error('[TouchSet] 保存失败:', result.error);
+            return false;
+        }
+    } catch (error) {
+        console.error('[TouchSet] 保存请求失败:', error);
+        return false;
+    }
+}
+
+function collectAllTouchSetData() {
+    const touchSetData = {};
     
     const hitAreaItems = document.querySelectorAll('.hitarea-item');
     hitAreaItems.forEach(item => {
         const titleElement = item.querySelector('.hitarea-title');
         const hitAreaId = titleElement.dataset.hitAreaId || titleElement.textContent.replace('HitAreaID: ', '');
-
-
-
-        let motionMSdomlist = getTagblock(item,'touch_set_motion')
-        let expressionMSdomlist = getTagblock(item,'touch_set_expression')
-        const motionMS = []
-        const expressionMS = []
         
-        if (motionMSdomlist !== null){
-            const ddddd = Array.from(motionMSdomlist.children[1].children[0].children[0].children)
-            ddddd.forEach((i) => {
-                if (i.textContent){
-                    motionMS.push(i.textContent)
-                }
-            })
-        }
-
-        if (expressionMSdomlist !== null){
-            const ddddd = Array.from(expressionMSdomlist.children[1].children[0].children[0].children)
-            ddddd.forEach((i) => {
-                if (i.textContent){
-                    expressionMS.push(i.textContent)
-                }
-            })
-        }
-
-
-
-        nowmodle_touchSet[hitAreaId] = {motions:motionMS,expressions:expressionMS}
-
+        const motionMultiselect = item.querySelector('.custom-multiselect[data-type="motion"]');
+        const expressionMultiselect = item.querySelector('.custom-multiselect[data-type="expression"]');
+        
+        const motions = motionMultiselect ? 
+            Array.from(motionMultiselect.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
+        const expressions = expressionMultiselect ? 
+            Array.from(expressionMultiselect.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
+        
+        touchSetData[hitAreaId] = {
+            motions: motions,
+            expressions: expressions
+        };
     });
     
-    window.touchSet[nowmodle] = nowmodle_touchSet;
-    console.log("触摸反应 配置已存储到 window.touchSet:", window.touchSet[nowmodle]);
+    return touchSetData;
 }
 
 function showTouchSetConfigWindow(hitAreas, motions, expressions){
@@ -359,7 +362,7 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     container.appendChild(style)
     
     const nowmodle = window.live2dManager?.modelName || '';
-    const TouchSet = window.touchSet[nowmodle] || {};
+    const TouchSet = window.live2dManager?.touchSet?.[nowmodle] || {};
     
     const closeButton = document.createElement("button")
     closeButton.className = "hitarea-btn hitarea-btn-secondary"
@@ -373,9 +376,8 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         document.removeEventListener('click', closeAllMultiselects);
     };
     closeButton.onclick = function(){
-        saveTempTouchSet()
         cleanupMultiselect()
-        console.log("[TouchSet] 暂存完成")
+        console.log("[TouchSet] 配置窗口已关闭")
         floatingWindow.close()
     }
     
@@ -427,7 +429,7 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
             }
         })
         const motionOptions = Array.from(motionOptionsSet).sort((a, b) => a.localeCompare(b))
-        const motionMultiselect = createMultiSelect("motion", motionOptions, selectedMotions)
+        const motionMultiselect = createMultiSelect("motion", motionOptions, selectedMotions, hitAreaId)
         motionSection.appendChild(motionMultiselect)
         itemDiv.appendChild(motionSection)
         
@@ -440,7 +442,7 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         expressionSection.appendChild(expressionLabel)
         
         const selectedExpressions = TouchSet[hitAreaId]?.expressions || [];
-        const expressionMultiselect = createMultiSelect("expression", expressions.map(e => e.Name), selectedExpressions)
+        const expressionMultiselect = createMultiSelect("expression", expressions.map(e => e.Name), selectedExpressions, hitAreaId)
         expressionSection.appendChild(expressionMultiselect)
         itemDiv.appendChild(expressionSection)
         
@@ -464,10 +466,12 @@ function closeAllMultiselects(e){
     }
 }
 
-function createMultiSelect(type, options, selectedValues = []){
+function createMultiSelect(type, options, selectedValues = [], hitAreaId){
     
     const multiselect = document.createElement("div")
     multiselect.className = "custom-multiselect"
+    multiselect.dataset.type = type
+    multiselect.dataset.hitAreaId = hitAreaId
     
     const header = document.createElement("div")
     header.className = "multiselect-header"
@@ -509,6 +513,12 @@ function createMultiSelect(type, options, selectedValues = []){
                 checkbox.checked = !checkbox.checked
             }
             updateMultiSelectHeader(multiselect)
+            triggerAutoSave()
+        }
+        
+        checkbox.onchange = function(){
+            updateMultiSelectHeader(multiselect)
+            triggerAutoSave()
         }
     })
     
@@ -523,6 +533,62 @@ function createMultiSelect(type, options, selectedValues = []){
     updateMultiSelectHeader(multiselect)
     
     return multiselect
+}
+
+let autoSaveTimeout = null
+let isSaving = false
+
+function triggerAutoSave() {
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout)
+    }
+    
+    autoSaveTimeout = setTimeout(async () => {
+        if (isSaving) {
+            triggerAutoSave()
+            return
+        }
+        
+        isSaving = true
+        try {
+            const success = await saveTouchSetToServer()
+            
+            if (success) {
+                showSaveIndicator()
+            }
+        } finally {
+            isSaving = false
+        }
+    }, 500)
+}
+
+function showSaveIndicator() {
+    let indicator = document.getElementById('touch-set-save-indicator')
+    if (!indicator) {
+        indicator = document.createElement('div')
+        indicator.id = 'touch-set-save-indicator'
+        indicator.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            z-index: 10001;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        `
+        document.body.appendChild(indicator)
+    }
+    
+    indicator.textContent = window.t('live2d.touchAnim.saved', '已保存')
+    indicator.style.opacity = '1'
+    
+    setTimeout(() => {
+        indicator.style.opacity = '0'
+    }, 1500)
 }
 
 function updateMultiSelectHeader(multiselect){

@@ -397,7 +397,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         item_id = data.get('item_id')  # 获取可选的item_id
         vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
-        touch_set = data.get('touch_set', {})  # 获取可选的live2d(与VRM?)触摸动作
 
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
@@ -605,15 +604,6 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
-        
-        #一个角色切换模型后得重新配置触摸动画好像蛮麻烦 先留着吧出问题再说
-        # existing_touch_set = get_reserved(characters['猫娘'][name], 'avatar', 'touch_set', default={})
-        existing_touch_set = get_reserved(characters['猫娘'][name],'touch_set', default={})
-        existing_touch_set.update(touch_set)
-        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        logger.debug(f"已保存角色 {name} 的 触摸/点击 配置")
-
-
         # 保存配置
         _config_manager.save_characters(characters)
         # 自动重新加载配置
@@ -637,6 +627,82 @@ async def update_catgirl_l2d(name: str, request: Request):
             'success': False,
             'error': str(e)
         })
+
+
+@router.patch('/catgirl/{name}/touch_set')
+async def update_catgirl_touch_set(name: str, request: Request):
+    """全量更新指定猫娘当前模型的触摸动画配置
+    
+    请求体格式:
+    {
+        "model_name": "模型名称",
+        "touch_set": {
+            "default": {"motions": [], "expressions": []},
+            "HitArea1": {"motions": ["motion1"], "expressions": ["exp1"]}
+        }
+    }
+    """
+    try:
+        data = await request.json()
+        
+        model_name = data.get('model_name')
+        touch_set_data = data.get('touch_set')
+        
+        if not model_name:
+            return JSONResponse(
+                content={'success': False, 'error': '缺少 model_name 参数'},
+                status_code=400
+            )
+        
+        if touch_set_data is None:
+            return JSONResponse(
+                content={'success': False, 'error': '缺少 touch_set 参数'},
+                status_code=400
+            )
+        
+        if not isinstance(touch_set_data, dict):
+            return JSONResponse(
+                content={'success': False, 'error': 'touch_set 必须是对象'},
+                status_code=400
+            )
+        
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        
+        if '猫娘' not in characters or name not in characters['猫娘']:
+            return JSONResponse(
+                content={'success': False, 'error': '角色不存在'},
+                status_code=404
+            )
+        
+        existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
+        
+        if not existing_touch_set:
+            existing_touch_set = {}
+        
+        existing_touch_set[model_name] = touch_set_data
+        
+        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
+        _config_manager.save_characters(characters)
+        
+        initialize_character_data = get_initialize_character_data()
+        if initialize_character_data:
+            await initialize_character_data()
+        
+        logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
+        
+        return JSONResponse(content={
+            'success': True,
+            'message': f'已更新角色 {name} 的触摸配置',
+            'touch_set': existing_touch_set
+        })
+        
+    except Exception as e:
+        logger.exception("更新触摸配置失败")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
 
 
 @router.put('/catgirl/{name}/lighting')
