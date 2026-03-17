@@ -3366,6 +3366,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 expressionSelect.value
             );
 
+            // 初始化触摸配置
+            if (typeof InitializationTouchSet === 'function') {
+                try {
+                    await InitializationTouchSet();
+                } catch (error) {
+                    console.warn('[ModelManager] 初始化触摸配置失败:', error);
+                }
+            }
+
             // 启用其他控件
             setControlsDisabled(false);
             showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }));
@@ -5138,7 +5147,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.modelNotSet', `角色 ${catgirl_name} 未设置模型，请手动选择`, { name: catgirl_name }));
                 }
             }
-            // InitializationTouchSet(catgirlConfig);
+            InitializationTouchSet(catgirlConfig);
         } catch (error) {
             console.error('加载当前角色模型失败:', error);
             showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

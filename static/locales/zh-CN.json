@@ -834,7 +834,8 @@
             "modelNotFound": "当前没有加载模型",
             "modelDataNotReady": "模型内部数据未准备好",
             "managerNotFound": "Live2DManager 未找到",
-            "select": "选择"
+            "select": "选择",
+            "defaultClickAnim": "默认点击动画"
         },
         "emotionConfig": "情感配置",
         "saveSettings": "保存设置",
@@ -1051,6 +1052,8 @@
         "registerSuccess": "注册成功！voice_id: {{voiceId}}",
         "reusedExisting": "已复用现有音色，跳过上传。voice_id: {{voiceId}}",
         "registerFailed": "注册失败：{{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "前缀应为英文字母和数字",
+        "invalidApiKeyProvided": "提供的API密钥无效",
         "requestError": "请求出错：{{error}}",
         "voiceIdSaveFailed": "voice_id自动保存失败: {{error}}",
         "voiceIdSaved": "voice_id已自动保存到角色",

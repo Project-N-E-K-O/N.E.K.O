@@ -1154,12 +1154,24 @@ def main():
         print("", flush=True)
 
         # 持续运行，监控服务器状态
+        # agent_server 崩溃不应牵连 main/memory，仅记录日志。
+        # 只有 main_server 或 memory_server 死亡才触发全局关闭。
+        _CRITICAL_MODULES = {"memory_server", "main_server"}
+        _reported_exits: set[str] = set()
         while True:
             time.sleep(5)
-            # 检查已实际启动的进程
             started = [s for s in SERVERS if s.get('process') is not None]
-            if started and not all(s['process'].is_alive() for s in started):
-                print("\n检测到服务器异常退出！", flush=True)
+            any_critical_dead = False
+            for s in started:
+                if not s['process'].is_alive() and s['name'] not in _reported_exits:
+                    _reported_exits.add(s['name'])
+                    module = s.get('module', '')
+                    if module in _CRITICAL_MODULES:
+                        print(f"\n检测到关键服务异常退出: {s['name']}！", flush=True)
+                        any_critical_dead = True
+                    else:
+                        print(f"\n[Launcher] {s['name']} 已退出 (exitcode={s['process'].exitcode})，不影响核心服务", flush=True)
+            if any_critical_dead:
                 break
             # 对复用已有实例的服务进行健康探测
             reused = [s for s in SERVERS if s.get('process') is None and s.get('port')]
@@ -1169,7 +1181,7 @@ def main():
                     break
             else:
                 continue
-            break  # 内层 for 触发 break 时跳出外层 while
+            break
 
     except KeyboardInterrupt:
         print("\n\n收到中断信号，等待子进程退出...", flush=True)

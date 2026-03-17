@@ -834,7 +834,8 @@
             "modelNotFound": "Модель не загружена",
             "modelDataNotReady": "Внутренние данные модели не готовы",
             "managerNotFound": "Live2DManager не найден",
-            "select": "Выбрать"
+            "select": "Выбрать",
+            "defaultClickAnim": "Анимация клика по умолчанию"
         },
         "emotionConfig": "Настройка эмоций",
         "saveSettings": "Сохранить настройки",
@@ -1051,6 +1052,8 @@
         "registerSuccess": "Регистрация успешна! voice_id: {{voiceId}}",
         "reusedExisting": "Использован существующий голос, загрузка пропущена. voice_id: {{voiceId}}",
         "registerFailed": "Ошибка регистрации: {{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "Префикс должен состоять из английских букв и цифр",
+        "invalidApiKeyProvided": "Указан неверный API-ключ",
         "requestError": "Ошибка запроса: {{error}}",
         "voiceIdSaveFailed": "Не удалось автоматически сохранить voice_id: {{error}}",
         "voiceIdSaved": "voice_id автоматически сохранён для персонажа",

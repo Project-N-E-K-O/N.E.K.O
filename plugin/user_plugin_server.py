@@ -15,7 +15,7 @@ import sys
 import threading
 from pathlib import Path
 from types import FrameType
-from typing import IO
+from typing import Callable, IO
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _PLUGIN_PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -106,9 +106,8 @@ def _ensure_plugin_zmq_endpoint_available() -> None:
 _ensure_plugin_zmq_endpoint_available()
 
 from config import USER_PLUGIN_SERVER_PORT
-from plugin.logging_config import configure_default_logger, get_logger
 
-
+# -- brace-format compat for third-party libs that mix {} and % --
 def _install_logging_brace_compat() -> None:
     if getattr(logging, "_neko_brace_compat_installed", False):
         return
@@ -138,15 +137,58 @@ def _install_logging_brace_compat() -> None:
 
 _install_logging_brace_compat()
 
+# -- Unified stdlib logger, same as agent_server / memory_server --
+try:
+    from utils.logger_config import setup_logging
+except ModuleNotFoundError:
+    import importlib.util
 
-configure_default_logger()
-logger = get_logger("server.user_plugin_server")
+    _logger_config_path = _PROJECT_ROOT / "utils" / "logger_config.py"
+    _spec = importlib.util.spec_from_file_location("utils.logger_config", _logger_config_path)
+    if _spec is None or _spec.loader is None:
+        raise ModuleNotFoundError(f"failed to load logger config from {_logger_config_path}")
+
+    _module = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_module)
+    setup_logging = getattr(_module, "setup_logging")
+
+logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
+
+# -- Keep loguru console handler alive for plugin SDK internals --
+# Plugin SDK components (plugin/server/*, plugin/core/*) use loguru via
+# plugin.logging_config.get_logger().  configure_default_logger() gives them
+# a console sink so their output isn't silently lost.  We additionally bridge
+# loguru -> stdlib so those logs also land in the PluginServer log file.
+try:
+    from plugin.logging_config import configure_default_logger  # noqa: E402
+    configure_default_logger()
+
+    from loguru import logger as _loguru_logger
+
+    def _loguru_sink(message) -> None:
+        record = message.record
+        lvl_name = record["level"].name
+        stdlib_lvl = getattr(logging, lvl_name, logging.INFO)
+        component = record["extra"].get("component", "plugin")
+        logger._logger.log(stdlib_lvl, "[%s] %s", component, record["message"])
+
+    _loguru_logger.add(_loguru_sink, level="INFO", format="{message}")
+except ModuleNotFoundError:
+    logger.info("loguru not installed; plugin SDK logs will only go to console")
+except Exception as _bridge_exc:
+    logger.warning("failed to set up loguru->stdlib bridge: %s", _bridge_exc)
+
+# -- uvicorn logging bridge --
+def _configure_uvicorn_logging_bridge() -> None:
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uv_logger = logging.getLogger(logger_name)
+        uv_logger.handlers.clear()
+        uv_logger.propagate = True
 
 
-def _can_register_faulthandler_signal() -> bool:
-    return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
+_configure_uvicorn_logging_bridge()
 
-
+# Must run before any event loop gets created on Windows.
 def _configure_windows_event_loop_policy() -> None:
     if sys.platform != "win32":
         return
@@ -180,84 +222,6 @@ def _disable_windows_plugin_zmq_when_tornado_missing() -> None:
         pass
 
 
-try:
-    from utils.logger_config import setup_logging
-except ModuleNotFoundError:
-    import importlib.util
-
-    _logger_config_path = _PROJECT_ROOT / "utils" / "logger_config.py"
-    _spec = importlib.util.spec_from_file_location("utils.logger_config", _logger_config_path)
-    if _spec is None or _spec.loader is None:
-        raise ModuleNotFoundError(f"failed to load logger config from {_logger_config_path}")
-
-    _module = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_module)
-    setup_logging = getattr(_module, "setup_logging")
-
-server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO", silent=True)
-_ = server_logger
-
-
-class _LoguruInterceptHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            level: str | int = logger.level(record.levelname).name
-        except (ValueError, AttributeError, TypeError):
-            level = record.levelno
-
-        logger.opt(exception=record.exc_info).log(level, record.getMessage())
-
-
-def _configure_uvicorn_logging_bridge() -> None:
-    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        uv_logger = logging.getLogger(logger_name)
-        uv_logger.handlers.clear()
-        uv_logger.propagate = True
-
-
-def _configure_server_log_sink() -> None:
-    if sys.platform == "win32":
-        # Windows multi-process rotation can keep file handles open and
-        # trigger repeated rename failures; keep the robust logger sink only.
-        return
-
-    log_path_obj = server_log_config.get_log_file_path()
-    if not isinstance(log_path_obj, str):
-        return
-
-    log_path = log_path_obj.strip()
-    if not log_path:
-        return
-
-    try:
-        logger.add(
-            log_path,
-            rotation="10 MB",
-            retention="30 days",
-            enqueue=True,
-            encoding="utf-8",
-        )
-    except (TypeError, ValueError, OSError) as exc:
-        logger.warning(
-            "failed to configure server file sink: path={}, err_type={}, err={}",
-            log_path,
-            type(exc).__name__,
-            str(exc),
-        )
-
-
-def _configure_python_logging_root() -> None:
-    logging.root.handlers.clear()
-    logging.root.addHandler(_LoguruInterceptHandler())
-    logging.root.setLevel(logging.INFO)
-    _configure_uvicorn_logging_bridge()
-
-
-_configure_uvicorn_logging_bridge()
-_configure_server_log_sink()
-_configure_python_logging_root()
-
-# Must run before any event loop gets created on Windows.
 _configure_windows_event_loop_policy()
 _disable_windows_plugin_zmq_when_tornado_missing()
 
@@ -267,27 +231,21 @@ from plugin.server.http_app import build_plugin_server_app  # noqa: E402
 app = build_plugin_server_app()
 
 
+def _can_register_faulthandler_signal() -> bool:
+    return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
+
+
 def _enable_fault_handler_dump_file() -> IO[str] | None:
     dump_path = Path(__file__).resolve().parent / "log" / "server" / "faulthandler_dump.log"
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        logger.warning(
-            "failed to create faulthandler dump directory: path={}, err_type={}, err={}",
-            str(dump_path.parent),
-            type(exc).__name__,
-            str(exc),
-        )
+        logger.warning("failed to create faulthandler dump directory: %s (%s)", dump_path.parent, exc)
 
     try:
         dump_file = dump_path.open("a", encoding="utf-8")
     except OSError as exc:
-        logger.warning(
-            "failed to open faulthandler dump file: path={}, err_type={}, err={}",
-            str(dump_path),
-            type(exc).__name__,
-            str(exc),
-        )
+        logger.warning("failed to open faulthandler dump file: %s (%s)", dump_path, exc)
         return None
 
     try:
@@ -296,16 +254,11 @@ def _enable_fault_handler_dump_file() -> IO[str] | None:
             faulthandler.register(signal.SIGUSR1, all_threads=True, file=dump_file)
         return dump_file
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
-        logger.warning(
-            "failed to enable faulthandler dump file: path={}, err_type={}, err={}",
-            str(dump_path),
-            type(exc).__name__,
-            str(exc),
-        )
+        logger.warning("failed to enable faulthandler dump file: %s (%s)", dump_path, exc)
         try:
             dump_file.close()
         except OSError:
-            logger.debug("failed to close faulthandler dump file")
+            pass
         return None
 
 
@@ -315,11 +268,25 @@ def _enable_fault_handler_fallback() -> None:
         if _can_register_faulthandler_signal():
             faulthandler.register(signal.SIGUSR1, all_threads=True)
     except (RuntimeError, OSError, AttributeError, ValueError) as exc:
-        logger.warning(
-            "failed to enable fallback faulthandler: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
+        logger.warning("failed to enable fallback faulthandler: %s", exc)
+
+
+def _get_child_pids(parent_pid: int) -> list[int]:
+    """Best-effort list of direct child PIDs (POSIX only, no psutil)."""
+    pids: list[int] = []
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["pgrep", "-P", str(parent_pid)],
+            capture_output=True, text=True, timeout=3, check=False,
         )
+        for line in result.stdout.splitlines():
+            s = line.strip()
+            if s.isdigit():
+                pids.append(int(s))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("_get_child_pids failed for pid %s: %s", parent_pid, exc)
+    return pids
 
 
 def _find_available_port(host: str, start_port: int, max_tries: int = 50) -> int:
@@ -335,8 +302,10 @@ def _find_available_port(host: str, start_port: int, max_tries: int = 50) -> int
             try:
                 sock.close()
             except OSError:
-                logger.debug("failed to close probing socket")
-    return start_port
+                pass
+    raise RuntimeError(
+        f"no available port in range {start_port}-{start_port + max_tries - 1} on {host}"
+    )
 
 
 if __name__ == "__main__":
@@ -349,16 +318,16 @@ if __name__ == "__main__":
     if dump_file is None:
         _enable_fault_handler_fallback()
 
-    selected_port = _find_available_port(host, base_port)
+    try:
+        selected_port = _find_available_port(host, base_port)
+    except RuntimeError as exc:
+        logger.error("Cannot start plugin server: %s", exc)
+        sys.exit(1)
     os.environ["NEKO_USER_PLUGIN_SERVER_PORT"] = str(selected_port)
     if selected_port != base_port:
-        logger.warning(
-            "User plugin server port {} is unavailable, switched to {}",
-            base_port,
-            selected_port,
-        )
+        logger.warning("User plugin server port %s is unavailable, switched to %s", base_port, selected_port)
     else:
-        logger.info("User plugin server starting on {}:{}", host, selected_port)
+        logger.info("User plugin server starting on %s:%s", host, selected_port)
 
     sigint_count = 0
     sigint_lock = threading.Lock()
@@ -410,11 +379,7 @@ if __name__ == "__main__":
             signal.signal(signal.SIGQUIT, _sigint_handler)
     except (ValueError, OSError, RuntimeError) as exc:
         old_sigint = None
-        logger.warning(
-            "failed to register shutdown signals: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
+        logger.warning("failed to register shutdown signals: %s", exc)
 
     server.install_signal_handlers = lambda: None
 
@@ -429,13 +394,8 @@ if __name__ == "__main__":
                 os._exit(130)
 
             signal.signal(signal.SIGINT, _force_quit)
-        except (ValueError, OSError, RuntimeError) as exc:
+        except (ValueError, OSError, RuntimeError):
             cleanup_old_sigint = None
-            logger.debug(
-                "failed to override SIGINT during cleanup: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
 
         try:
             import psutil
@@ -450,31 +410,27 @@ if __name__ == "__main__":
                     try:
                         child.terminate()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        logger.debug("failed to terminate child process: pid={}", child.pid)
+                        pass
 
                 _, alive = psutil.wait_procs(children, timeout=0.5)
                 for process in alive:
                     try:
                         process.kill()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        logger.debug("failed to kill child process: pid={}", process.pid)
+                        pass
             except KeyboardInterrupt:
-                logger.debug("cleanup interrupted by keyboard interrupt")
+                pass
             except (psutil.Error, OSError, RuntimeError, ValueError) as exc:
-                logger.warning(
-                    "failed to cleanup child processes: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
-        elif hasattr(os, "killpg"):
+                logger.warning("failed to cleanup child processes: %s", exc)
+        else:
             try:
-                os.killpg(os.getpgrp(), signal.SIGKILL)
-            except OSError as exc:
-                logger.debug(
-                    "failed to kill process group: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+                for child_pid in _get_child_pids(os.getpid()):
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except OSError as exc:
+                        logger.warning("failed to kill child pid %s: %s", child_pid, exc)
+            except Exception as exc:
+                logger.warning("child process cleanup failed: %s", exc)
 
         if force_exit_timer is not None:
             force_exit_timer.cancel()
@@ -482,25 +438,17 @@ if __name__ == "__main__":
         if cleanup_old_sigint is not None:
             try:
                 signal.signal(signal.SIGINT, cleanup_old_sigint)
-            except (ValueError, OSError, RuntimeError) as exc:
-                logger.debug(
-                    "failed to restore cleanup SIGINT handler: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+            except (ValueError, OSError, RuntimeError):
+                pass
 
         if old_sigint is not None:
             try:
                 signal.signal(signal.SIGINT, old_sigint)
-            except (ValueError, OSError, RuntimeError) as exc:
-                logger.debug(
-                    "failed to restore original SIGINT handler: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+            except (ValueError, OSError, RuntimeError):
+                pass
 
         if dump_file is not None:
             try:
                 dump_file.close()
             except OSError:
-                logger.debug("failed to close faulthandler dump file during cleanup")
+                pass
