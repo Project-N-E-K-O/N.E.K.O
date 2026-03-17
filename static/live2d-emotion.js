@@ -417,7 +417,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     
     if (!choiceFile) {
         // EmotionMapping.expressions 规范：{ emotion: ["expressions/xxx.exp3.json", ...] }
-        let expressionFiles = (this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) || [];
+        let expressionFiles = (this.emotionMapping && this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) || [];
 
         // 兼容旧结构：从 FileReferences.Expressions 里按前缀分组
         if ((!expressionFiles || expressionFiles.length === 0) && this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
