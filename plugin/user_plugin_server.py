@@ -304,7 +304,7 @@ def _find_available_port(host: str, start_port: int, max_tries: int = 50) -> int
             except OSError:
                 pass
     raise RuntimeError(
-        f"no available port in range {start_port}–{start_port + max_tries - 1} on {host}"
+        f"no available port in range {start_port}-{start_port + max_tries - 1} on {host}"
     )
 
 
