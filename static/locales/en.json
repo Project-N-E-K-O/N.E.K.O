@@ -1051,6 +1051,8 @@
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
         "reusedExisting": "Reused existing voice, upload skipped. voice_id: {{voiceId}}",
         "registerFailed": "Registration failed: {{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
+        "invalidApiKeyProvided": "Invalid API-key provided",
         "requestError": "Request error: {{error}}",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
         "voiceIdSaved": "voice_id has been automatically saved to character",

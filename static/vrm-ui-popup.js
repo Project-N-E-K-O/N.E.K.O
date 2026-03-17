@@ -155,6 +155,8 @@ VRMManager.prototype.createPopup = function (buttonId) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         popup.addEventListener(evt, stopEventPropagation, true);
     });
+    // 阻止 click 冒泡至 document，防止菜单内操作误触全局关闭（冒泡阶段）
+    popup.addEventListener('click', stopEventPropagation);
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
@@ -1657,6 +1659,11 @@ VRMManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
         const popupId = popup.id.replace('vrm-popup-', '');
         if (popupId !== currentButtonId && popup.style.display === 'flex') this.closePopupById(popupId);
     });
+};
+
+// 关闭所有弹出框（不排除任何按钮）
+VRMManager.prototype.closeAllPopups = function () {
+    this.closeAllPopupsExcept(null);
 };
 
 // 辅助方法：关闭设置窗口

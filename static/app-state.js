@@ -109,6 +109,7 @@
         targetFrameRate: 60,
         screenshotCounter: 0,
         statusToastTimeout: null,
+        _statusToastPriority: 0,
         subtitleCheckDebounceTimer: null,
         lastVoiceUserMessage: null,
         lastVoiceUserMessageTime: 0,

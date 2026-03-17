@@ -391,6 +391,14 @@ class MemoReminderPlugin(NekoPluginBase):
         if repeat == "once":
             return None
 
+        max_count = r.get("max_count")
+        if max_count is not None:
+            fire_count = r.get("fire_count", 0) + 1
+            if fire_count >= max_count:
+                return None
+            r = dict(r)
+            r["fire_count"] = fire_count
+
         trigger_dt = datetime.fromisoformat(r["trigger_at"])
 
         if repeat == "daily":
@@ -443,7 +451,8 @@ class MemoReminderPlugin(NekoPluginBase):
             "调用成功仅表示排期完成，到时间后系统会自动推送提醒消息，请勿在排期完成时就提醒用户。\n"
             "time 格式: 'now'(立即) / 绝对时间 '2026-03-07 09:00' / 仅时间 '07:00' / 相对偏移 '15s' '30m' '2h' '1d'（纯数字+单位，不要加 'every' 'in' 等词）。\n"
             "repeat 格式: 'once' | 'daily' | 'weekly' | 'hourly' | 自定义间隔如 '10s' '90m' '2h'（纯数字+单位）。"
-            "错误示例: 'every 10s'、'10 seconds'。正确示例: '10s'。"
+            "错误示例: 'every 10s'、'10 seconds'。正确示例: '10s'。\n"
+            "max_count: 重复触发的最大次数。例如 repeat='15s' + max_count=5 表示每15秒触发一次，共触发5次后自动删除。"
         ),
         input_schema={
             "type": "object",
@@ -469,12 +478,26 @@ class MemoReminderPlugin(NekoPluginBase):
                     ),
                     "default": "once",
                 },
+                "max_count": {
+                    "type": "integer",
+                    "description": (
+                        "重复触发的最大次数（仅对 repeat 非 'once' 有效）。"
+                        "达到次数后自动删除。"
+                    ),
+                },
             },
             "required": ["time", "message"],
         },
         llm_result_fields=["message", "trigger_at_local"],
     )
-    async def add_reminder(self, time: str, message: str, repeat: str = "once", **kwargs):
+    async def add_reminder(self, time: str, message: str, repeat: str = "once", max_count: int = 20, **kwargs):
+        try:
+            max_count = int(max_count)
+        except (TypeError, ValueError):
+            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+        if max_count <= 0:
+            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+
         tz = getattr(self, "_tz", ZoneInfo(_DEFAULT_TZ))
         parsed = _parse_time(time, tz)
         if parsed is None:
@@ -529,9 +552,12 @@ class MemoReminderPlugin(NekoPluginBase):
             "created_at": now.isoformat(),
             "repeat": repeat,
             "lanlan_name": lanlan_name,
-            "agent_task_id": None,  # agent_server 会回写，用于 deferred 完成通知（仅当 needs_deferred=True）
-            "deferred_bind_pending": needs_deferred,  # 只有短延迟提醒才需要等待 bind_task
+            "agent_task_id": None,
+            "deferred_bind_pending": needs_deferred,
         }
+        if max_count is not None and repeat != "once":
+            reminder["max_count"] = int(max_count)
+            reminder["fire_count"] = 0
 
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
@@ -552,6 +578,8 @@ class MemoReminderPlugin(NekoPluginBase):
             "weekly": "repeats every week",
             "hourly": "repeats every hour",
         }.get(repeat, f"repeats every {repeat}")
+        if max_count is not None and repeat != "once":
+            repeat_desc += f" (max {max_count} times)"
 
         return ok(data={
             "status": "scheduled",

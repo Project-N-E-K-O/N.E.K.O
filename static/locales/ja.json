@@ -1051,6 +1051,8 @@
         "registerSuccess": "登録成功！voice_id: {{voiceId}}",
         "reusedExisting": "既存のボイスを再利用しました。アップロードをスキップしました。voice_id: {{voiceId}}",
         "registerFailed": "登録失敗：{{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "接頭辞は英文字と数字である必要があります",
+        "invalidApiKeyProvided": "無効なAPIキーが提供されました",
         "requestError": "リクエストエラー：{{error}}",
         "voiceIdSaveFailed": "voice_idの自動保存に失敗しました: {{error}}",
         "voiceIdSaved": "voice_idをキャラクターに自動保存しました",

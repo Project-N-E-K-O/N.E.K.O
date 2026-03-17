@@ -85,8 +85,6 @@
      * @param {string} oldCatgirl - Name of the previous character
      */
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
-        // 【新增】切换猫娘必须清空上一任的搜歌任务
-        window.invalidatePendingMusicSearch();
         console.log('[猫娘切换] ========== 开始切换 ==========');
         console.log('[猫娘切换] 从', oldCatgirl, '切换到', newCatgirl);
         console.log('[猫娘切换] isSwitchingCatgirl:', S.isSwitchingCatgirl);
@@ -99,6 +97,12 @@
             console.log('[猫娘切换] newCatgirl为空，返回');
             return;
         }
+        if (newCatgirl === oldCatgirl) {
+            console.log('[猫娘切换] 新旧角色相同，跳过切换');
+            return;
+        }
+        // 确认切换到不同角色后，清空上一任的搜歌任务
+        window.invalidatePendingMusicSearch();
         S.isSwitchingCatgirl = true;
         console.log('[猫娘切换] 设置 isSwitchingCatgirl = true');
 
