@@ -39,6 +39,12 @@ async function InitializationTouchSet(characterJson) {
         await new Promise(resolve => setTimeout(resolve, 500));
     }
 
+    const modelType = localStorage.getItem('modelType') || 'live2d';
+    if (modelType !== 'live2d') {
+        console.log('[TouchSet] 当前模型类型不是 Live2D，跳过触摸配置初始化');
+        return;
+    }
+
             
     if (!characterJson){
         // // 获取角色名称

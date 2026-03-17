@@ -3366,6 +3366,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 expressionSelect.value
             );
 
+            // 初始化触摸配置
+            if (typeof InitializationTouchSet === 'function') {
+                try {
+                    await InitializationTouchSet();
+                } catch (error) {
+                    console.warn('[ModelManager] 初始化触摸配置失败:', error);
+                }
+            }
+
             // 启用其他控件
             setControlsDisabled(false);
             showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }));
