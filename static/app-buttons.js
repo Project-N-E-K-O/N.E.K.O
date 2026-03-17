@@ -760,8 +760,8 @@
                     }
 
                     // First user input check
-                    if (window.isFirstUserInput) {
-                        window.isFirstUserInput = false;
+                    if (window.appChat && window.appChat.isFirstUserInput()) {
+                        window.appChat.markFirstUserInput();
                         console.log(window.t('console.userFirstInputDetected'));
                         window.checkAndUnlockFirstDialogueAchievement();
                     }

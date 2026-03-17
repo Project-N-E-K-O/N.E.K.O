@@ -447,13 +447,14 @@
                     }
 
                     var criticalErrorCodes = ['SESSION_START_CRITICAL', 'MEMORY_SERVER_CRASHED', 'API_KEY_REJECTED', 'API_RATE_LIMIT_SESSION', 'ERROR_1007_ARREARS', 'AGENT_QUOTA_EXCEEDED', 'RESPONSE_TIMEOUT', 'CONNECTION_TIMEOUT'];
-                    if (statusCode && criticalErrorCodes.indexOf(statusCode) !== -1) {
+                    var isCriticalError = statusCode && criticalErrorCodes.indexOf(statusCode) !== -1;
+                    if (isCriticalError) {
                         console.log(window.t('console.seriousErrorHidePreparing'));
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     }
 
                     var translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000);
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000, { important: isCriticalError });
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {

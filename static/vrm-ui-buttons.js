@@ -51,7 +51,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._floatingButtonsContainer = buttonsContainer;
 
     const stopContainerEvent = (e) => { e.stopPropagation(); };
-    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend', 'click'].forEach(evt => {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
@@ -654,6 +654,23 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 根据全局状态同步按钮状态（修复画质变更后按钮状态丢失问题）
     this._syncButtonStatesWithGlobalState();
 
+    // 点击浮动按钮区域外部时关闭所有弹出菜单
+    // 防止重复注册（模型重载时可能再次调用）
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+    }
+    this._outsideClickHandler = (e) => {
+        if (!(e.target instanceof Element)) return;
+        if (e.target.closest('#vrm-floating-buttons')) return;
+        if (e.target.closest('[id^="vrm-popup-"]')) return;
+        // 快速路径：没有任何弹出框处于打开状态则跳过
+        const anyOpen = Array.from(document.querySelectorAll('[id^="vrm-popup-"]'))
+            .some(el => getComputedStyle(el).display === 'flex');
+        if (!anyOpen) return;
+        this.closeAllPopups();
+    };
+    document.addEventListener('click', this._outsideClickHandler);
+
     // 通知外部浮动按钮已就绪
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };
@@ -1085,6 +1102,12 @@ VRMManager.prototype.cleanupUI = function () {
         document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
         document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
         this._returnButtonDragHandlers = null;
+    }
+
+    // 移除点击外部关闭弹出菜单的 document 监听
+    if (this._outsideClickHandler) {
+        document.removeEventListener('click', this._outsideClickHandler);
+        this._outsideClickHandler = null;
     }
 
     // 清理窗口检查定时器（防止内存泄漏）
