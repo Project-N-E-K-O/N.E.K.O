@@ -360,6 +360,17 @@
                     // Load MMD model
                     if (window.mmdManager) {
                         await window.mmdManager.loadModel(newModelPath);
+
+                        // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                        try {
+                            var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
+                            var settingsData = await settingsRes.json();
+                            if (settingsData.success && settingsData.settings) {
+                                window.mmdManager.applySettings(settingsData.settings);
+                            }
+                        } catch (settingsErr) {
+                            console.warn('[Model] 获取MMD设置失败:', settingsErr);
+                        }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
                     }

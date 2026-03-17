@@ -188,6 +188,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
     statusDiv.id = 'vrm-agent-status';
     statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
+    statusDiv.setAttribute('data-i18n', 'settings.toggles.checking');
     popup.appendChild(statusDiv);
 
     const agentToggles = [
@@ -454,11 +455,13 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
     const qualityValue = document.createElement('span');
     const curQIdx = parseInt(qualitySlider.value, 10);
     qualityValue.textContent = window.t ? window.t(qualityLabelKeys[curQIdx]) : qualityDefaults[curQIdx];
+    qualityValue.setAttribute('data-i18n', qualityLabelKeys[curQIdx]);
     Object.assign(qualityValue.style, VALUE_STYLE);
 
     qualitySlider.addEventListener('input', () => {
         const idx = parseInt(qualitySlider.value, 10);
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
+        qualityValue.setAttribute('data-i18n', qualityLabelKeys[idx]);
     });
     const mapRenderQualityToFollowPerf = (quality) => (quality === 'high' ? 'medium' : 'low');
     qualitySlider.addEventListener('change', () => {
@@ -506,11 +509,13 @@ VRMManager.prototype._createAnimationSettingsSidePanel = function () {
     const fpsValue = document.createElement('span');
     const curFIdx = parseInt(fpsSlider.value, 10);
     fpsValue.textContent = window.t ? window.t(fpsLabelKeys[curFIdx]) : fpsDefaults[curFIdx];
+    fpsValue.setAttribute('data-i18n', fpsLabelKeys[curFIdx]);
     Object.assign(fpsValue.style, VALUE_STYLE);
 
     fpsSlider.addEventListener('input', () => {
         const idx = parseInt(fpsSlider.value, 10);
         fpsValue.textContent = window.t ? window.t(fpsLabelKeys[idx]) : fpsDefaults[idx];
+        fpsValue.setAttribute('data-i18n', fpsLabelKeys[idx]);
     });
     fpsSlider.addEventListener('change', () => {
         const idx = parseInt(fpsSlider.value, 10);
@@ -974,6 +979,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     if (toggle.initialDisabled) {
         checkbox.disabled = true;
         checkbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+        checkbox.setAttribute('data-i18n-title', 'settings.toggles.checking');
     }
 
     const indicator = document.createElement('div');

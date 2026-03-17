@@ -281,11 +281,13 @@ Live2DManager.prototype._createAnimationSettingsSidePanel = function () {
     const qualityValue = document.createElement('span');
     const curQIdx = parseInt(qualitySlider.value, 10);
     qualityValue.textContent = window.t ? window.t(qualityLabelKeys[curQIdx]) : qualityDefaults[curQIdx];
+    qualityValue.setAttribute('data-i18n', qualityLabelKeys[curQIdx]);
     Object.assign(qualityValue.style, VALUE_STYLE);
 
     qualitySlider.addEventListener('input', () => {
         const idx = parseInt(qualitySlider.value, 10);
         qualityValue.textContent = window.t ? window.t(qualityLabelKeys[idx]) : qualityDefaults[idx];
+        qualityValue.setAttribute('data-i18n', qualityLabelKeys[idx]);
     });
     qualitySlider.addEventListener('change', () => {
         const idx = parseInt(qualitySlider.value, 10);
@@ -325,11 +327,13 @@ Live2DManager.prototype._createAnimationSettingsSidePanel = function () {
     const fpsValue = document.createElement('span');
     const curFIdx = parseInt(fpsSlider.value, 10);
     fpsValue.textContent = window.t ? window.t(fpsLabelKeys[curFIdx]) : fpsDefaults[curFIdx];
+    fpsValue.setAttribute('data-i18n', fpsLabelKeys[curFIdx]);
     Object.assign(fpsValue.style, VALUE_STYLE);
 
     fpsSlider.addEventListener('input', () => {
         const idx = parseInt(fpsSlider.value, 10);
         fpsValue.textContent = window.t ? window.t(fpsLabelKeys[idx]) : fpsDefaults[idx];
+        fpsValue.setAttribute('data-i18n', fpsLabelKeys[idx]);
     });
     fpsSlider.addEventListener('change', () => {
         const idx = parseInt(fpsSlider.value, 10);
@@ -961,6 +965,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     if (toggle.initialDisabled) {
         checkbox.disabled = true;
         checkbox.title = toggle.initialTitle || (window.t ? window.t('settings.toggles.checking') : '查询中...');
+        checkbox.setAttribute('data-i18n-title', 'settings.toggles.checking');
         toggleItem.style.cursor = 'default';  // 禁用时显示默认光标
     }
 
