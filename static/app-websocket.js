@@ -759,6 +759,28 @@
                         }
                     })();
 
+                // -------- system turn end (agent_callback — no proactive chat) --------
+                } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
+                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    try {
+                        window._pendingMusicCommand = '';
+                        var rest = typeof window._realisticGeminiBuffer === 'string'
+                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+                            : '';
+                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                        if (trimmed) {
+                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                            window._realisticGeminiQueue.push(trimmed);
+                            window._realisticGeminiBuffer = '';
+                            if (typeof window.processRealisticQueue === 'function') {
+                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                            }
+                        }
+                    } catch (e3) {
+                        console.warn('[WS] turn end agent_callback flush failed:', e3);
+                    }
+
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));

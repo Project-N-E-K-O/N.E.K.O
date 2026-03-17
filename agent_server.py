@@ -52,7 +52,8 @@ class Modules:
     task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
-    user_plugin_http_task: Optional[asyncio.Task] = None
+    user_plugin_http_task: Optional[threading.Thread] = None
+    _plugin_server_loop: Any = None
     plugin_lifecycle_started: bool = False
     _plugin_lifecycle_lock: Optional[asyncio.Lock] = None
     # Task tracking
@@ -290,14 +291,15 @@ def _get_throttled_logger() -> ThrottledLogger:
 
 
 async def _start_embedded_user_plugin_server() -> None:
-    """Start the plugin HTTP server inside the agent process."""
-    existing_task = Modules.user_plugin_http_task
-    if existing_task is not None and not existing_task.done():
+    """Start the plugin HTTP server in a dedicated thread with its own event loop.
+
+    This isolates plugin HTTP handling from the agent's main event loop so that
+    heavy agent work (LLM calls, task execution, ZMQ) cannot starve plugin
+    requests and vice-versa.
+    """
+    if Modules.user_plugin_http_server is not None:
         return
 
-    # Replicate the sys.path setup from user_plugin_server.py so that
-    # plugin entry points like "plugins.testPlugin:HelloPlugin" resolve
-    # correctly (the "plugins" package lives under <project>/plugin/).
     _plugin_package_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin")
     if _plugin_package_root not in sys.path:
         sys.path.insert(1, _plugin_package_root)
@@ -321,66 +323,61 @@ async def _start_embedded_user_plugin_server() -> None:
     )
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None
-    task = asyncio.create_task(server.serve(), name="embedded-user-plugin-server")
     Modules.user_plugin_http_server = server
-    Modules.user_plugin_http_task = task
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 10.0
-    while True:
-        if getattr(server, "started", False):
-            logger.debug("[Agent] Embedded user plugin server started on 127.0.0.1:%s", USER_PLUGIN_SERVER_PORT)
-            return
+    ready = threading.Event()
 
-        if task.done():
-            Modules.user_plugin_http_server = None
-            Modules.user_plugin_http_task = None
-            try:
-                exc = task.exception()
-            except asyncio.CancelledError as cancelled_exc:
-                raise RuntimeError("embedded user plugin server was cancelled during startup") from cancelled_exc
-            if exc is not None:
-                raise RuntimeError(f"embedded user plugin server exited early: {exc}") from exc
-            raise RuntimeError("embedded user plugin server exited before signaling readiness")
+    def _run_in_thread() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        Modules._plugin_server_loop = loop
 
-        if loop.time() >= deadline:
-            server.should_exit = True
-            Modules.user_plugin_http_server = None
-            Modules.user_plugin_http_task = None
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            raise RuntimeError("timed out waiting for embedded user plugin server startup")
+        async def _serve_and_signal():
+            task = asyncio.ensure_future(server.serve())
+            while not getattr(server, "started", False) and not task.done():
+                await asyncio.sleep(0.05)
+            ready.set()
+            await task
 
-        await asyncio.sleep(0.1)
+        try:
+            loop.run_until_complete(_serve_and_signal())
+        except Exception as exc:
+            logger.warning("[Agent] Embedded plugin server thread exited: %s", exc)
+        finally:
+            ready.set()
+            loop.close()
+
+    t = threading.Thread(target=_run_in_thread, name="plugin-server", daemon=True)
+    t.start()
+    Modules.user_plugin_http_task = t
+
+    if not ready.wait(timeout=10.0):
+        server.should_exit = True
+        Modules.user_plugin_http_server = None
+        Modules.user_plugin_http_task = None
+        raise RuntimeError("timed out waiting for embedded user plugin server startup")
+
+    logger.info("[Agent] Embedded user plugin server started on 127.0.0.1:%s (isolated thread)", USER_PLUGIN_SERVER_PORT)
 
 
 async def _stop_embedded_user_plugin_server() -> None:
-    """Stop the plugin HTTP server hosted inside the agent process."""
+    """Stop the plugin HTTP server running in its dedicated thread."""
     server = Modules.user_plugin_http_server
-    task = Modules.user_plugin_http_task
+    thread = Modules.user_plugin_http_task
     Modules.user_plugin_http_server = None
     Modules.user_plugin_http_task = None
 
     if server is not None:
         server.should_exit = True
 
-    if task is None:
+    if thread is None:
         return
 
-    try:
-        await asyncio.wait_for(task, timeout=10.0)
-    except asyncio.TimeoutError:
-        logger.warning("[Agent] Embedded user plugin server shutdown timed out")
+    thread.join(timeout=10.0)
+    if thread.is_alive():
+        logger.warning("[Agent] Embedded user plugin server thread did not exit in time")
         if server is not None:
             server.force_exit = True
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
 
 async def _ensure_plugin_lifecycle_started() -> bool:

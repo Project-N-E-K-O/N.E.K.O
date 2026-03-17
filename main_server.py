@@ -269,6 +269,9 @@ async def _handle_agent_event(event: dict):
                 }
                 mgr.enqueue_agent_callback(callback)
                 logger.info("[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks", event_type)
+                prev = getattr(mgr, '_pending_agent_callback_task', None)
+                if prev and not prev.done():
+                    prev.cancel()
                 mgr._pending_agent_callback_task = asyncio.create_task(mgr.trigger_agent_callbacks())
                 if mgr.websocket and hasattr(mgr.websocket, "send_json"):
                     try:

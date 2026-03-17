@@ -195,6 +195,8 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 重入
         self._agent_delivery_in_progress: bool = False
+        # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
+        self._proactive_write_lock = asyncio.Lock()
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -347,13 +349,11 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         if self.sync_message_queue:
-            # Dedicated channel for agent-callback proactive completion.
-            # cross_server uses this tag to avoid re-triggering analyze_request.
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end agent_callback'})
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-                logger.debug("[%s] handle_proactive_complete: turn_end sent to frontend", self.lanlan_name)
+                await self.websocket.send_json({'type': 'system', 'data': 'turn end agent_callback'})
+                logger.debug("[%s] handle_proactive_complete: turn_end (agent_callback) sent to frontend", self.lanlan_name)
             else:
                 logger.warning("[%s] handle_proactive_complete: websocket not connected, turn_end NOT sent", self.lanlan_name)
         except Exception as e:
@@ -1937,26 +1937,27 @@ class LLMSessionManager:
 
     async def finish_proactive_delivery(self, full_text: str):
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
-        await self.send_lanlan_response(full_text, is_first_chunk=True)
+        async with self._proactive_write_lock:
+            await self.send_lanlan_response(full_text, is_first_chunk=True)
 
-        from utils.llm_client import AIMessage as _AIMsg
-        if self.session and hasattr(self.session, '_conversation_history'):
-            self.session._conversation_history.append(_AIMsg(content=full_text))
+            from utils.llm_client import AIMessage as _AIMsg
+            if self.session and hasattr(self.session, '_conversation_history'):
+                self.session._conversation_history.append(_AIMsg(content=full_text))
 
-        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+                try:
+                    self.tts_request_queue.put((None, None))
+                except Exception:
+                    pass
+
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
             try:
-                self.tts_request_queue.put((None, None))
+                if (self.websocket
+                        and hasattr(self.websocket, 'client_state')
+                        and self.websocket.client_state == self.websocket.client_state.CONNECTED):
+                    await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
             except Exception:
                 pass
-
-        self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
-        try:
-            if (self.websocket
-                    and hasattr(self.websocket, 'client_state')
-                    and self.websocket.client_state == self.websocket.client_state.CONNECTED):
-                await self.websocket.send_json({'type': 'system', 'data': 'turn end'})
-        except Exception:
-            pass
         logger.info("[%s] Proactive stream delivered: %.40s…", self.lanlan_name, full_text)
 
     async def trigger_agent_callbacks(self) -> None:
@@ -2014,11 +2015,6 @@ class LLMSessionManager:
         self._agent_delivery_in_progress = True
         try:
             if isinstance(self.session, OmniRealtimeClient):
-                # 语音模式：pending_extra_replies 已由 enqueue_agent_callback 填充，
-                # 热切换（handle_response_complete → _perform_final_swap_sequence）
-                # 会在下一轮结束后自动注入并汇报。
-                # 只需清空 pending_agent_callbacks，避免后续重复触发。
-                # !! 不能清 pending_extra_replies —— 热切换靠它驱动 !!
                 self.pending_agent_callbacks.clear()
                 logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
 
@@ -2026,21 +2022,19 @@ class LLMSessionManager:
                 if getattr(self.session, "_is_responding", False):
                     logger.debug("[%s] trigger_agent_callbacks: text session busy (_is_responding=True), re-queuing", self.lanlan_name)
                     return
-                # 主动推送是新的语音轮次，必须换 speech_id，否则 CosyVoice
-                # worker 会在已 finish-task 的 synthesizer 上 continue-task 导致报错
-                async with self.lock:
-                    self.current_speech_id = str(uuid4())
-                logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
-                self.pending_agent_callbacks.clear()
-                delivered = await self.session.stream_proactive(instruction)
-                logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
-                if delivered:
-                    self.pending_extra_replies.clear()
-                else:
-                    self.pending_agent_callbacks.extend(callbacks_snapshot)
+                async with self._proactive_write_lock:
+                    async with self.lock:
+                        self.current_speech_id = str(uuid4())
+                    logger.debug("[%s] trigger_agent_callbacks: text session ready, calling stream_proactive", self.lanlan_name)
+                    self.pending_agent_callbacks.clear()
+                    delivered = await self.session.stream_proactive(instruction)
+                    logger.debug("[%s] trigger_agent_callbacks: text session stream_proactive delivered=%s", self.lanlan_name, delivered)
+                    if delivered:
+                        self.pending_extra_replies.clear()
+                    else:
+                        self.pending_agent_callbacks.extend(callbacks_snapshot)
 
             else:
-                # 没有 session；尝试启动文本 session 后立即投递
                 ws = self.websocket
                 if ws and hasattr(ws, 'client_state') and ws.client_state == ws.client_state.CONNECTED:
                     try:
@@ -2048,15 +2042,16 @@ class LLMSessionManager:
                     except Exception as e:
                         logger.warning("[%s] trigger_agent_callbacks: auto start_session failed: %s", self.lanlan_name, e)
                 if isinstance(self.session, OmniOfflineClient):
-                    async with self.lock:
-                        self.current_speech_id = str(uuid4())
-                    self.pending_agent_callbacks.clear()
-                    delivered = await self.session.stream_proactive(instruction)
-                    if delivered:
-                        self.pending_extra_replies.clear()
-                    else:
-                        self.pending_agent_callbacks.extend(callbacks_snapshot)
-                    logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
+                    async with self._proactive_write_lock:
+                        async with self.lock:
+                            self.current_speech_id = str(uuid4())
+                        self.pending_agent_callbacks.clear()
+                        delivered = await self.session.stream_proactive(instruction)
+                        if delivered:
+                            self.pending_extra_replies.clear()
+                        else:
+                            self.pending_agent_callbacks.extend(callbacks_snapshot)
+                        logger.debug("[%s] trigger_agent_callbacks: auto text session, delivered=%s", self.lanlan_name, delivered)
                 else:
                     logger.debug("[%s] trigger_agent_callbacks: no websocket/session, keeping for later", self.lanlan_name)
 
