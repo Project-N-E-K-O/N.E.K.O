@@ -5320,12 +5320,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // VRM/MMD模型上传（单个文件）
+    // VRM/ZIP模型上传（单个文件）
     vrmFileUpload.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
 
-        // 检查是否为 MMD 模型文件（.pmx / .pmd）
         // 检查是否为 ZIP 包（MMD 模型 + 纹理）
         const zipFile = files.find(f => f.name.toLowerCase().endsWith('.zip'));
         if (zipFile) {
@@ -5355,41 +5354,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        const mmdFile = files.find(f => {
-            const name = f.name.toLowerCase();
-            return name.endsWith('.pmx') || name.endsWith('.pmd');
-        });
-        if (mmdFile) {
-            showStatus('正在上传MMD模型...', 0);
-            setControlsDisabled(true);
-            try {
-                const formData = new FormData();
-                formData.append('file', mmdFile);
-                const response = await fetch('/api/model/mmd/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                const result = await response.json();
-                if (result.success) {
-                    showStatus(`MMD模型 ${result.filename || mmdFile.name} 上传成功`, 2000);
-                    await loadLive3DModels();
-                } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
-                }
-            } catch (error) {
-                console.error('上传MMD模型失败:', error);
-                showStatus(`上传失败: ${error.message}`, 3000);
-            } finally {
-                setControlsDisabled(false);
-                vrmFileUpload.value = '';
-            }
-            return;
-        }
-
         // 检查文件类型（VRM）
         const vrmFile = files.find(f => f.name.toLowerCase().endsWith('.vrm'));
         if (!vrmFile) {
-            uploadStatus.textContent = t('live2d.uploadVRMFailed', '✗ 请选择 .vrm / .pmx / .pmd / .zip 文件', { error: '请选择 .vrm / .pmx / .pmd / .zip 文件' });
+            uploadStatus.textContent = t('live2d.uploadVRMFailed', '✗ 请选择 .vrm 或 .zip 文件', { error: '请选择 .vrm 或 .zip 文件' });
             uploadStatus.style.color = '#dc3545';
             setTimeout(() => {
                 uploadStatus.textContent = '';

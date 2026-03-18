@@ -454,7 +454,6 @@ class MMDCore {
                 if (tex && tex.isTexture && srgb && tex.colorSpace !== srgb) {
                     // gradientMap 不需要 sRGB（它是 data 纹理）
                     if (prop === 'gradientMap') return;
-                    console.warn(`[MMD Core] 纹理 colorSpace 异常: mat[${materialCount - 1}].${prop} = ${tex.colorSpace}`);
                     tex.colorSpace = srgb;
                     if (tex.image) {
                         tex.needsUpdate = true;
