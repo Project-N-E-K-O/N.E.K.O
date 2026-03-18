@@ -35,6 +35,7 @@ class OutlineEffect {
 	constructor( renderer, parameters = {} ) {
 
 		this.enabled = true;
+		this.autoClear = true;
 
 		const defaultThickness = parameters.defaultThickness !== undefined ? parameters.defaultThickness : 0.003;
 		const defaultColor = new Color().fromArray( parameters.defaultColor !== undefined ? parameters.defaultColor : [ 0, 0, 0 ] );

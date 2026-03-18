@@ -1679,9 +1679,10 @@
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
         };
 
-        // 同时监听 Live2D 和 VRM 的回来事件
+        // 同时监听 Live2D、VRM 和 MMD 的回来事件
         window.addEventListener('live2d-return-click', handleReturnClick);
         window.addEventListener('vrm-return-click', handleReturnClick);
+        window.addEventListener('mmd-return-click', handleReturnClick);
     }
 
     mod.initFloatingButtonListeners = initFloatingButtonListeners;

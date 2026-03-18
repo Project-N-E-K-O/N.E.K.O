@@ -258,6 +258,40 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if isinstance(lighting, dict):
         changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
 
+    # MMD 模型路径迁移
+    mmd_model_path = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "model_path",
+        default="",
+        legacy_keys=("mmd",),
+    )
+    if mmd_model_path:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "model_path", str(mmd_model_path).strip())
+
+    mmd_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "animation",
+        default=None,
+        legacy_keys=("mmd_animation",),
+    )
+    if mmd_animation is not None:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
+
+    mmd_idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "idle_animation",
+        default="",
+        legacy_keys=("mmd_idle_animation",),
+    )
+    if mmd_idle_animation:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
         "voice_id",
@@ -271,6 +305,9 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "idleAnimation",
         "lighting",
         "vrm_rotation",
+        "mmd",
+        "mmd_animation",
+        "mmd_idle_animation",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)

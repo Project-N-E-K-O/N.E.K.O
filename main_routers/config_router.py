@@ -95,18 +95,22 @@ def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
             logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
             return ""
     else:
-        filename = os.path.basename(vrm_path)
-        project_vrm_path = _config_manager.project_root / 'static' / 'vrm' / filename
+        from pathlib import PurePosixPath
+        safe_rel = PurePosixPath(vrm_path)
+        if safe_rel.is_absolute() or '..' in safe_rel.parts:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM路径不合法: {vrm_path}")
+            return ""
+        project_vrm_path = _config_manager.project_root / 'static' / 'vrm' / str(safe_rel)
         if project_vrm_path.exists():
-            result = f'{VRM_STATIC_PATH}/{filename}'
+            result = f'{VRM_STATIC_PATH}/{safe_rel}'
             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {result}")
             return result
-        user_vrm_path = _config_manager.vrm_dir / filename
+        user_vrm_path = _config_manager.vrm_dir / str(safe_rel)
         if user_vrm_path.exists():
-            result = f'{VRM_USER_PATH}/{filename}'
+            result = f'{VRM_USER_PATH}/{safe_rel}'
             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {result}")
             return result
-        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {filename}")
+        logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {vrm_path}")
         return ""
 
 
@@ -132,18 +136,22 @@ def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
             logger.warning(f"获取页面配置 - 角色: {target_name}, MMD模型文件未找到: {mmd_path}")
             return ""
     else:
-        filename = os.path.basename(mmd_path)
-        project_mmd_path = _config_manager.project_root / 'static' / 'mmd' / filename
+        from pathlib import PurePosixPath
+        safe_rel = PurePosixPath(mmd_path)
+        if safe_rel.is_absolute() or '..' in safe_rel.parts:
+            logger.warning(f"获取页面配置 - 角色: {target_name}, MMD路径不合法: {mmd_path}")
+            return ""
+        project_mmd_path = _config_manager.project_root / 'static' / 'mmd' / str(safe_rel)
         if project_mmd_path.exists():
-            result = f'{MMD_STATIC_PATH}/{filename}'
+            result = f'{MMD_STATIC_PATH}/{safe_rel}'
             logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型在项目目录: {mmd_path} -> {result}")
             return result
-        user_mmd_path = _config_manager.mmd_dir / filename
+        user_mmd_path = _config_manager.mmd_dir / str(safe_rel)
         if user_mmd_path.exists():
-            result = f'{MMD_USER_PATH}/{filename}'
+            result = f'{MMD_USER_PATH}/{safe_rel}'
             logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型在用户目录: {mmd_path} -> {result}")
             return result
-        logger.warning(f"获取页面配置 - 角色: {target_name}, MMD模型文件未找到: {filename}")
+        logger.warning(f"获取页面配置 - 角色: {target_name}, MMD模型文件未找到: {mmd_path}")
         return ""
 
 
