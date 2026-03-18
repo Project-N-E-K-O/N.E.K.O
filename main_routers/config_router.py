@@ -113,7 +113,9 @@ async def get_page_config(lanlan_name: str = ""):
                             model_path = ""
                             logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {filename}")
             else:
-                logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+                # vrm_path 为空，使用默认模型
+                model_path = f'{VRM_STATIC_PATH}/sister1.0.vrm'
+                logger.info(f"角色 {target_name} 的VRM模型路径为空，使用默认模型: {model_path}")
         else:
             # Live2D模型：使用原有逻辑
             live2d = get_reserved(catgirl_config, 'avatar', 'live2d', 'model_path', default='mao_pro', legacy_keys=('live2d',))

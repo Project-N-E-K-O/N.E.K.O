@@ -211,14 +211,19 @@
                     newPath: newModelPath
                 });
 
-                // Empty model path -> keep current model
+                // Empty model path -> fall back to default for VRM, keep current for Live2D
                 if (!newModelPath) {
-                    console.warn('[Model] 模型路径为空，保持当前模型不变');
-                    window.showStatusToast(
-                        window.t ? window.t('app.modelPathEmpty') : '模型路径为空',
-                        2000
-                    );
-                    return;
+                    if (newModelType === 'vrm') {
+                        newModelPath = '/static/vrm/sister1.0.vrm';
+                        console.info('[Model] VRM模型路径为空，使用默认模型:', newModelPath);
+                    } else {
+                        console.warn('[Model] 模型路径为空，保持当前模型不变');
+                        window.showStatusToast(
+                            window.t ? window.t('app.modelPathEmpty') : '模型路径为空',
+                            2000
+                        );
+                        return;
+                    }
                 }
 
                 // Cross-type switch: clean up the old overlay
