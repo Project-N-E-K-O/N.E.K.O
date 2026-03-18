@@ -373,14 +373,11 @@ class CursorFollowController {
      */
     applyConfig(config) {
         if (!config) return;
-        if (config.enabled === false) {
-            this._userDisabled = true;
-            this._enabled = false;
-            this._completeDisable();
-            return;
+        if (config.enabled === true) {
+            this.setEnabled(true);
+        } else if (config.enabled === false) {
+            this.setEnabled(false);
         }
-        this._userDisabled = false;
-        this._enabled = true;
         if (config.eyeMaxAngle != null) {
             this.eyeMaxYawDeg = config.eyeMaxAngle;
             this.eyeMaxPitchUpDeg = config.eyeMaxAngle;
