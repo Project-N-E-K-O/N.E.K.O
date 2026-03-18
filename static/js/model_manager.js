@@ -1429,7 +1429,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            modelData.touch_set = window.touchSet;
             
             // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
             const modelResult = await RequestHelper.fetchJson(
@@ -3681,12 +3680,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
                 return;
             }
-
-            if (typeof copyTouchSet === 'function') {
-                copyTouchSet()
-            }
-
-            // 添加调试信息
 
             // 保存位置和缩放
             positionSuccess = await window.live2dManager.saveUserPreferences(

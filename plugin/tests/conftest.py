@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio.events as _events
 from collections.abc import AsyncIterator
 
 import pytest
@@ -30,6 +31,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "plugin_e2e" in item.keywords:
             item.add_marker(skip_marker)
+
+
+@pytest.fixture(autouse=True)
+def _clear_leaked_running_loop(request: pytest.FixtureRequest):
+    """Temporarily clear any running event loop leaked by Playwright's greenlet
+    so that sync tests see a clean ``asyncio.get_running_loop() → RuntimeError``
+    environment.  Async tests are left untouched."""
+    if request.node.get_closest_marker("asyncio") or getattr(
+        request.node.obj, "is_coroutine", False
+    ) or __import__("asyncio").iscoroutinefunction(getattr(request.node, "obj", None)):
+        yield
+        return
+    saved = _events._get_running_loop()
+    _events._set_running_loop(None)
+    try:
+        yield
+    finally:
+        _events._set_running_loop(saved)
 
 
 @pytest.fixture
