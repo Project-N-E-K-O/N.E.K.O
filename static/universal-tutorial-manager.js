@@ -1321,6 +1321,22 @@ class UniversalTutorialManager {
         console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
     }
 
+    lockBodyScroll() {
+        if (this._isBodyLocked) return;
+        this._originalBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        this._isBodyLocked = true;
+        console.log('[Tutorial] 禁用页面滚动');
+    }
+
+    unlockBodyScroll() {
+        if (!this._isBodyLocked) return;
+        document.body.style.overflow = this._originalBodyOverflow ?? '';
+        this._originalBodyOverflow = undefined;
+        this._isBodyLocked = false;
+        console.log('[Tutorial] 恢复页面滚动');
+    }
+
     restoreTutorialInteractionState() {
         this.tutorialControlledElements.forEach(element => {
             const state = this.tutorialInteractionStates.get(element);
@@ -1452,9 +1468,7 @@ class UniversalTutorialManager {
             this.isTutorialRunning = true;
 
             // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
-            this._originalBodyOverflow = document.body.style.overflow;
-            document.body.style.overflow = 'hidden';
-            console.log('[Tutorial] 禁用页面滚动');
+            this.lockBodyScroll();
 
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
@@ -1472,8 +1486,7 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 启动引导失败:', error);
             this.isTutorialRunning = false;
             window.isInTutorial = false;
-            document.body.style.overflow = this._originalBodyOverflow ?? '';
-            this._originalBodyOverflow = undefined;
+            this.unlockBodyScroll();
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
         }
@@ -1646,8 +1659,7 @@ class UniversalTutorialManager {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
             this.isTutorialRunning = false;
             window.isInTutorial = false;
-            document.body.style.overflow = this._originalBodyOverflow ?? '';
-            this._originalBodyOverflow = undefined;
+            this.unlockBodyScroll();
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
             return;
@@ -1759,11 +1771,19 @@ class UniversalTutorialManager {
         // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
         if (this._resizeHandler) {
             window.removeEventListener('resize', this._resizeHandler);
+            if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
+            if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
         }
         this._resizeHandler = () => {
-            if (this.driver && window.isInTutorial) {
-                this.driver.refresh();
-            }
+            if (this._resizeRafId) cancelAnimationFrame(this._resizeRafId);
+            if (this._resizeTimeoutId) clearTimeout(this._resizeTimeoutId);
+            this._resizeRafId = requestAnimationFrame(() => {
+                this._resizeTimeoutId = setTimeout(() => {
+                    this._resizeRafId = null;
+                    this._resizeTimeoutId = null;
+                    if (this.driver && window.isInTutorial) this.driver.refresh();
+                }, 50);
+            });
         };
         window.addEventListener('resize', this._resizeHandler);
         setTimeout(() => {
@@ -2481,6 +2501,8 @@ class UniversalTutorialManager {
             window.removeEventListener('resize', this._resizeHandler);
             this._resizeHandler = null;
         }
+        if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
+        if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
@@ -2515,9 +2537,7 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 清除全局引导标记');
 
         // 恢复页面滚动
-        document.body.style.overflow = this._originalBodyOverflow ?? '';
-        this._originalBodyOverflow = undefined;
-        console.log('[Tutorial] 恢复页面滚动');
+        this.unlockBodyScroll();
 
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer && this.originalLive2dStyle) {
