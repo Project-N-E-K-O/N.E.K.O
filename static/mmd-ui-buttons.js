@@ -717,7 +717,15 @@ MMDManager.prototype._setupReturnButtonDrag = function (container) {
         container.style.top = `${Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - h))}px`;
     };
     const handleEnd = () => {
-        if (isDragging) { setTimeout(() => container.setAttribute('data-dragging', 'false'), 10); isDragging = false; container.style.cursor = 'grab'; }
+        if (isDragging) {
+            const wasDragging = container.getAttribute('data-dragging') === 'true';
+            setTimeout(() => container.setAttribute('data-dragging', 'false'), 10);
+            isDragging = false;
+            container.style.cursor = 'grab';
+            if (!wasDragging) {
+                window.dispatchEvent(new CustomEvent('mmd-return-click'));
+            }
+        }
     };
 
     container.addEventListener('mousedown', (e) => { if (container.contains(e.target)) { e.preventDefault(); handleStart(e.clientX, e.clientY); } });
@@ -730,7 +738,7 @@ MMDManager.prototype._setupReturnButtonDrag = function (container) {
     };
     document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
     document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
-    container.addEventListener('touchstart', (e) => { if (container.contains(e.target)) { e.preventDefault(); handleStart(e.touches[0].clientX, e.touches[0].clientY); } });
+    container.addEventListener('touchstart', (e) => { if (container.contains(e.target)) { handleStart(e.touches[0].clientX, e.touches[0].clientY); } }, { passive: true });
     document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
     document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
     container.style.cursor = 'grab';

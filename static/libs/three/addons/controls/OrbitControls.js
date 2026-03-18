@@ -996,7 +996,7 @@ class OrbitControls extends Controls {
 
 	_handleMouseDownDolly( event ) {
 
-		this._updateZoomParameters( event.clientX, event.clientX );
+		this._updateZoomParameters( event.clientX, event.clientY );
 		this._dollyStart.set( event.clientX, event.clientY );
 
 	}

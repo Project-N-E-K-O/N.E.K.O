@@ -445,11 +445,13 @@ class TGALoader extends DataTextureLoader {
 			TGA_ORIGIN_UL = 0x02,
 			TGA_ORIGIN_UR = 0x03;
 
-		if ( buffer.length < 19 ) throw new Error( 'THREE.TGALoader: Not enough data to contain header.' );
-
 		let offset = 0;
 
-		const content = new Uint8Array( buffer ),
+		const content = new Uint8Array( buffer );
+
+		if ( content.byteLength < 18 ) throw new Error( 'THREE.TGALoader: Not enough data to contain header.' );
+
+		const
 			header = {
 				id_length: content[ offset ++ ],
 				colormap_type: content[ offset ++ ],
@@ -471,7 +473,7 @@ class TGALoader extends DataTextureLoader {
 
 		tgaCheckHeader( header );
 
-		if ( header.id_length + offset > buffer.length ) {
+		if ( header.id_length + offset > content.byteLength ) {
 
 			throw new Error( 'THREE.TGALoader: No data.' );
 
