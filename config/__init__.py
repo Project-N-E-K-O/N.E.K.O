@@ -37,6 +37,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "mmd",
     "mmd_animation",
     "mmd_idle_animation",
+    "touch_set",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (

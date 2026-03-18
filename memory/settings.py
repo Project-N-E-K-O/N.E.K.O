@@ -1,10 +1,11 @@
 import json
 import asyncio
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from config import CHARACTER_RESERVED_FIELDS
 from utils.config_manager import get_config_manager
+from utils.token_tracker import set_call_type
 from utils.file_utils import atomic_write_json
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
 
@@ -28,7 +29,7 @@ class ImportantSettingsManager:
 
     def load_settings(self):
         # It is important to update the settings with the latest character on-disk files
-        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, setting_store, _ = self._config_manager.get_character_data()
+        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, setting_store, _ = self._config_manager.get_character_data()
         self.settings_file = setting_store
         self.master_basic_config = master_basic_config
         self.lanlan_basic_config = lanlan_basic_config
@@ -61,6 +62,7 @@ class ImportantSettingsManager:
         max_retries = 3
         while retries < max_retries:
             try:
+                set_call_type("memory_settings")
                 verifier = self._get_verifier()
                 response = await verifier.ainvoke(prompt)
                 result = response.content
@@ -114,6 +116,7 @@ class ImportantSettingsManager:
         new_settings = ""
         while retries < max_retries:
             try:
+                set_call_type("memory_settings")
                 proposer = self._get_proposer()
                 response = await proposer.ainvoke(prompt)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:

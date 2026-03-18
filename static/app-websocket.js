@@ -294,9 +294,10 @@
                     }
 
                     if (!response.will_retry && response.message) {
+                        var translatedDiscardMsg = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                         var messageDiv = document.createElement('div');
                         messageDiv.classList.add('message', 'gemini');
-                        messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + response.message;
+                        messageDiv.textContent = '[' + (typeof window.getCurrentTimeString === 'function' ? window.getCurrentTimeString() : '') + '] \u{1F380} ' + translatedDiscardMsg;
                         var cc2 = chatContainer();
                         if (cc2) {
                             cc2.appendChild(messageDiv);
@@ -446,13 +447,14 @@
                     }
 
                     var criticalErrorCodes = ['SESSION_START_CRITICAL', 'MEMORY_SERVER_CRASHED', 'API_KEY_REJECTED', 'API_RATE_LIMIT_SESSION', 'ERROR_1007_ARREARS', 'AGENT_QUOTA_EXCEEDED', 'RESPONSE_TIMEOUT', 'CONNECTION_TIMEOUT'];
-                    if (statusCode && criticalErrorCodes.indexOf(statusCode) !== -1) {
+                    var isCriticalError = statusCode && criticalErrorCodes.indexOf(statusCode) !== -1;
+                    if (isCriticalError) {
                         console.log(window.t('console.seriousErrorHidePreparing'));
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                     }
 
                     var translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000);
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, 4000, { important: isCriticalError });
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
@@ -757,6 +759,28 @@
                             console.warn('[App] request_screenshot capture failed:', e2);
                         }
                     })();
+
+                // -------- system turn end (agent_callback — no proactive chat) --------
+                } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
+                    console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
+                    try {
+                        window._pendingMusicCommand = '';
+                        var rest = typeof window._realisticGeminiBuffer === 'string'
+                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+                            : '';
+                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                        window._realisticGeminiBuffer = '';
+                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                        if (trimmed) {
+                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                            window._realisticGeminiQueue.push(trimmed);
+                            if (typeof window.processRealisticQueue === 'function') {
+                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                            }
+                        }
+                    } catch (e3) {
+                        console.warn('[WS] turn end agent_callback flush failed:', e3);
+                    }
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {

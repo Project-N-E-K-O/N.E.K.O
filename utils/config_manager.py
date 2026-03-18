@@ -370,6 +370,9 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     if mmd_idle_animation:
         result["mmd_idle_animation"] = mmd_idle_animation
 
+    touch_set = get_reserved(result, 'touch_set', default=None)
+    if touch_set:
+        result['touch_set'] = touch_set
     return result
 
 
@@ -389,6 +392,20 @@ class ConfigManager:
         # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
+
+        # CFA (Windows 受控文件夹访问/反勒索防护) 检测：
+        # 如果原始 Documents 路径可读但不可写，记住它以便从中读取用户数据（模型等）
+        first_readable = getattr(self, '_first_readable_candidate', None)
+        if (first_readable is not None
+                and first_readable != self.docs_dir):
+            self._readable_docs_dir = first_readable
+            print("⚠ WARNING [ConfigManager] 文档目录不可写（可能受Windows安全策略/反勒索防护保护）!", file=sys.stderr)
+            print(f"⚠ WARNING [ConfigManager] 原始文档路径(只读): {first_readable}", file=sys.stderr)
+            print(f"⚠ WARNING [ConfigManager] 回退写入路径: {self.docs_dir}", file=sys.stderr)
+            print("⚠ WARNING [ConfigManager] 用户数据将从原始路径读取，写入操作将使用回退路径", file=sys.stderr)
+        else:
+            self._readable_docs_dir = None
+
         self.app_docs_dir = self.docs_dir / self.app_name
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
@@ -484,7 +501,13 @@ class ConfigManager:
             # 添加默认路径候选
             candidates.append(Path.home() / "Documents")
             candidates.append(Path.home() / "文档")
-            
+
+            # AppData/Local 不受 Windows 受控文件夹访问(CFA/反勒索防护)保护，
+            # 作为 Documents 不可写时的优先回退位置
+            localappdata = os.environ.get('LOCALAPPDATA', '')
+            if localappdata:
+                candidates.append(Path(localappdata))
+
             # 如果都不行，使用exe所在目录（打包后）或当前目录（开发时）
             if getattr(sys, 'frozen', False):
                 candidates.append(Path(sys.executable).parent)
@@ -504,8 +527,14 @@ class ConfigManager:
             candidates.append(Path.cwd())
         
         # 遍历候选路径，找到第一个真正可访问且可写的路径
+        # 同时记录第一个可读的路径（即使不可写），用于 CFA 场景下的只读回退
+        first_readable = None
         for docs_dir in candidates:
             try:
+                # 记录第一个存在且可读的路径（CFA 只阻止写入，不阻止读取）
+                if first_readable is None and docs_dir.exists() and os.access(str(docs_dir), os.R_OK):
+                    first_readable = docs_dir
+
                 # 检查路径是否存在且可访问
                 if docs_dir.exists() and os.access(str(docs_dir), os.R_OK | os.W_OK):
                     # 尝试在该目录创建测试文件，确保真的可写
@@ -514,11 +543,12 @@ class ConfigManager:
                         test_path.touch()
                         test_path.unlink()
                         self._log(f"[ConfigManager] ✓ Using documents directory: {docs_dir}")
+                        self._first_readable_candidate = first_readable
                         return docs_dir
                     except Exception as e:
                         self._log(f"[ConfigManager] Path exists but not writable: {docs_dir} - {e}")
                         continue
-                
+
                 # 如果路径不存在，尝试创建（测试是否可写）
                 if not docs_dir.exists():
                     # 分步创建父目录
@@ -529,23 +559,25 @@ class ConfigManager:
                         current = current.parent
                         if current == current.parent:  # 到达根目录
                             break
-                    
+
                     # 从最顶层开始创建
                     for dir_path in reversed(dirs_to_create):
                         if not dir_path.exists():
                             dir_path.mkdir(exist_ok=True)
-                    
+
                     # 测试可写性
                     test_path = docs_dir / ".test_neko_write"
                     test_path.touch()
                     test_path.unlink()
                     self._log(f"[ConfigManager] ✓ Using documents directory (created): {docs_dir}")
+                    self._first_readable_candidate = first_readable
                     return docs_dir
             except Exception as e:
                 self._log(f"[ConfigManager] Failed to use path {docs_dir}: {e}")
                 continue
-        
+
         # 如果所有候选都失败，返回当前目录
+        self._first_readable_candidate = first_readable
         fallback = Path.cwd()
         self._log(f"[ConfigManager] ⚠ All document directories failed, using fallback: {fallback}")
         return fallback
@@ -671,13 +703,29 @@ class ConfigManager:
             # 先确保app_docs_dir存在
             if not self._ensure_app_docs_directory():
                 return False
-            
+
             self.live2d_dir.mkdir(exist_ok=True)
             return True
         except Exception as e:
             print(f"Warning: Failed to create live2d directory: {e}", file=sys.stderr)
             return False
-        
+
+    @property
+    def readable_live2d_dir(self):
+        """原始 Documents 下的 live2d 目录（只读，用于 CFA 场景）。
+
+        当 Windows 受控文件夹访问(CFA/反勒索防护) 阻止写入 Documents 时，
+        写入操作回退到 AppData，但用户的模型文件仍在原始 Documents 中。
+        此属性返回原始 Documents 中的 live2d 路径以供读取。
+
+        非 CFA 场景下返回 None（此时 live2d_dir 本身就指向 Documents）。
+        """
+        if self._readable_docs_dir is not None:
+            p = self._readable_docs_dir / self.app_name / "live2d"
+            if p.exists():
+                return p
+        return None
+
     def ensure_vrm_directory(self):
         """确保用户文档目录下的vrm目录和animation子目录存在"""
         try:
@@ -1208,7 +1256,6 @@ class ConfigManager:
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        semantic_store = {name: f'{memory_base}/semantic_memory_{name}' for name in catgirl_names}
         time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
         setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
         recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
@@ -1220,7 +1267,6 @@ class ConfigManager:
             catgirl_data,
             name_mapping,
             lanlan_prompt_map,
-            semantic_store,
             time_store,
             setting_store,
             recent_log,
@@ -1237,6 +1283,7 @@ class ConfigManager:
     # Sentinel stored in _ip_check_cache when the HTTP probe fails, so we never
     # re-attempt it (and never pay the timeout again) within the same process.
     _GEO_INDETERMINATE = object()
+    _geo_indeterminate_logged = False
 
     @staticmethod
     def _check_ip_non_mainland_http():
@@ -1301,11 +1348,13 @@ class ConfigManager:
 
         if ip_result is True and steam_result is True:
             ConfigManager._region_cache = True
+            ConfigManager._geo_indeterminate_logged = False
             print(f"[GeoIP] Dual check PASS: non-mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return True
 
         if ip_result is False or steam_result is False:
             ConfigManager._region_cache = False
+            ConfigManager._geo_indeterminate_logged = False
             print(f"[GeoIP] Dual check FAIL: mainland (IP={ip_result}, Steam={steam_result})", file=sys.stderr)
             return False
 
@@ -1314,7 +1363,9 @@ class ConfigManager:
         # after this call, and caching False here would permanently suppress re-evaluation.
         # Callers that iterate get_core_config() will simply retry the geo check on the
         # next invocation until at least one source becomes definitive.
-        print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
+        if not ConfigManager._geo_indeterminate_logged:
+            ConfigManager._geo_indeterminate_logged = True
+            print(f"[GeoIP] Dual check indeterminate (IP={ip_result}, Steam={steam_result}), transient mainland default", file=sys.stderr)
         return False
 
     def _adjust_free_api_url(self, url: str, is_free: bool) -> str:

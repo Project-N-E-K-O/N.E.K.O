@@ -706,20 +706,19 @@ function initSubtitleDrag() {
         });
     }
 
-    // 提交手动定位（首次真实拖动时调用一次）
     function commitDragPosition() {
         isDragging = true;
         pendingDrag = false;
         isManualPosition = true;
+        // animation forwards 填充层优先级高于 inline style，
+        // 必须先 kill animation 再设置 transform，否则 transform 被动画覆盖导致跳变
+        subtitleDisplay.style.animation = 'none';
+        subtitleDisplay.style.transition = 'none';
         subtitleDisplay.classList.add('dragging');
-        // 清除 transform 居中效果，改为绝对定位，保持当前位置
         subtitleDisplay.style.transform = 'none';
         subtitleDisplay.style.left = initialX + 'px';
         subtitleDisplay.style.top = initialY + 'px';
         subtitleDisplay.style.bottom = 'auto';
-        // 阻止 .show 类的 animation 效果覆盖拖拽后的位置
-        // CSS animation 优先级高于内联 transform，但 animation 属性本身遵循普通 cascade（内联 > class）
-        subtitleDisplay.style.animation = 'none';
     }
 
     // 鼠标移动事件

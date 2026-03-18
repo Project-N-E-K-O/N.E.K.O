@@ -1,3 +1,29 @@
+import asyncio
+import asyncio.runners
+import asyncio.coroutines
+import nest_asyncio
+
+nest_asyncio.apply()
+
+_orig_runner_run = asyncio.runners.Runner.run
+
+def _nested_runner_run(self, coro, *, context=None):
+    """Allow Runner.run() when an event loop is already running (Playwright greenlet)."""
+    if not asyncio.coroutines.iscoroutine(coro):
+        raise ValueError(f"a coroutine was expected, got {coro!r}")
+    self._lazy_init()
+    nest_asyncio._patch_loop(self._loop)
+    task = self._loop.create_task(coro, context=context)
+    try:
+        return self._loop.run_until_complete(task)
+    finally:
+        if not task.done():
+            task.cancel()
+            with __import__("contextlib").suppress(asyncio.CancelledError):
+                self._loop.run_until_complete(task)
+
+asyncio.runners.Runner.run = _nested_runner_run
+
 import pytest
 import os
 import threading

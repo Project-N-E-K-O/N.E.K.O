@@ -43,20 +43,10 @@
      */
     async function checkAndUnlockFirstDialogueAchievement() {
         if (!isFirstUserInput && !isFirstAIResponse) {
+            if (!window.unlockAchievement) return;
+            console.log(window.t('console.firstConversationUnlockAchievement'));
             try {
-                console.log(window.t('console.firstConversationUnlockAchievement'));
-                const response = await fetch('/api/steam/set-achievement-status/ACH_FIRST_DIALOGUE', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                if (response.ok) {
-                    console.log(window.t('console.achievementUnlockSuccess'));
-                } else {
-                    console.error(window.t('console.achievementUnlockFailed'));
-                }
+                await window.unlockAchievement('ACH_FIRST_DIALOGUE');
             } catch (error) {
                 console.error(window.t('console.achievementUnlockError'), error);
             }
@@ -208,12 +198,90 @@
         var musicRegex = /\[play_music:\s*({[\s\S]*?})\]/g;
         var match;
 
+        function levenshteinDistance(a, b) {
+            if (!a || !b) return 999;
+            a = a.toLowerCase();
+            b = b.toLowerCase();
+            if (a === b) return 0;
+            var matrix = [];
+            for (var i = 0; i <= b.length; i++) {
+                matrix[i] = [i];
+            }
+            for (var j = 0; j <= a.length; j++) {
+                matrix[0][j] = j;
+            }
+            for (var i = 1; i <= b.length; i++) {
+                for (var j = 1; j <= a.length; j++) {
+                    if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                        matrix[i][j] = matrix[i - 1][j - 1];
+                    } else {
+                        matrix[i][j] = Math.min(
+                            matrix[i - 1][j - 1] + 1,
+                            matrix[i][j - 1] + 1,
+                            matrix[i - 1][j] + 1
+                        );
+                    }
+                }
+            }
+            return matrix[b.length][a.length];
+        }
+
+        function calculateSimilarity(a, b) {
+            if (!a || !b) return 0;
+            a = a.toLowerCase().trim();
+            b = b.toLowerCase().trim();
+            if (a === b) return 100;
+            var distance = levenshteinDistance(a, b);
+            var maxLen = Math.max(a.length, b.length);
+            return Math.max(0, Math.round((1 - distance / maxLen) * 100));
+        }
+
+        function findBestMatch(tracks, targetName, targetArtist) {
+            if (!tracks || tracks.length === 0) return null;
+            
+            var scoredTracks = tracks.map(function(track) {
+                var nameScore = calculateSimilarity(track.name, targetName);
+                var artistScore = targetArtist ? calculateSimilarity(track.artist, targetArtist) : 50;
+                var totalScore = nameScore * 0.6 + artistScore * 0.4;
+                
+                if (targetArtist && track.artist) {
+                    var artistLower = track.artist.toLowerCase();
+                    var targetArtistLower = targetArtist.toLowerCase();
+                    if (artistLower.includes(targetArtistLower) || targetArtistLower.includes(artistLower)) {
+                        totalScore += 20;
+                    }
+                }
+                
+                if (track.name && targetName) {
+                    var nameLower = track.name.toLowerCase();
+                    var targetNameLower = targetName.toLowerCase();
+                    if (nameLower.includes(targetNameLower) || targetNameLower.includes(nameLower)) {
+                        totalScore += 15;
+                    }
+                }
+                
+                return {
+                    track: track,
+                    score: Math.min(totalScore, 100),
+                    nameScore: nameScore,
+                    artistScore: artistScore
+                };
+            });
+            
+            scoredTracks.sort(function(a, b) { return b.score - a.score; });
+            
+            console.log('[Music] 匹配结果排序:');
+            scoredTracks.slice(0, 3).forEach(function(item, idx) {
+                console.log('  #' + (idx + 1) + ' ' + item.track.name + ' - ' + item.track.artist + ' (总分:' + item.score + ', 歌名:' + item.nameScore + ', 歌手:' + item.artistScore + ')');
+            });
+            
+            return scoredTracks[0].track;
+        }
+
         while ((match = musicRegex.exec(text)) !== null) {
             try {
-                // 1. 解析 AI 传来的意图信息（通常只有 name 和 artist）
                 var aiTrackInfo = JSON.parse(match[1]);
 
-                // 校验 name 字段是否存在
                 if (!aiTrackInfo.name) {
                     console.warn('[Music Parser] 缺少 name 字段，跳过:', match[1]);
                     continue;
@@ -222,20 +290,16 @@
                 var query = (aiTrackInfo.name + ' ' + (aiTrackInfo.artist || '')).trim();
 
                 if (query) {
-                    // 【核心修复1】在发出请求前增加并锁定当前纪元
-                    // currentMusicSearchEpoch is a global defined at top of app.js (outside IIFE)
                     var myEpoch = ++window._musicSearchEpoch;
 
                     var response = await fetch('/api/music/search?query=' + encodeURIComponent(query));
                     var result = await response.json();
 
-                    // 【核心修复2】门闩校验：如果纪元对不上（说明期间切猫或打断了），直接丢弃该结果
                     if (myEpoch !== window._musicSearchEpoch) {
                         console.log('[Music] 指令搜索结果过时，已丢弃: "' + query + '"');
                         continue;
                     }
 
-                    // 【核心修复3】细化错误区分：服务报错 vs 没搜到
                     if (!result.success) {
                         console.error('[Music] Search API failed:', result.error);
                         if (window.showStatusToast) {
@@ -245,12 +309,14 @@
                         continue;
                     }
 
-                    // 正常命中结果
                     if (result.data && result.data.length > 0) {
-                        var realTrack = result.data[0];
-                        console.log('[Music] 指令搜歌命中:', realTrack.name);
+                        var realTrack = findBestMatch(result.data, aiTrackInfo.name, aiTrackInfo.artist);
+                        if (!realTrack) {
+                            console.warn('[Music] 智能匹配失败，使用第一条结果');
+                            realTrack = result.data[0];
+                        }
+                        console.log('[Music] 指令搜歌最终选择:', realTrack.name, '-', realTrack.artist);
 
-                        // 调用主分支统一的播放调度逻辑
                         if (typeof window.dispatchMusicPlay === 'function') {
                             window.dispatchMusicPlay(realTrack);
                         } else {
@@ -472,9 +538,19 @@
             // 场景 B: 气泡已存在，执行平滑追加
             else if (window.currentGeminiMessage && window.currentGeminiMessage.isConnected) {
                 var fullText = window._geminiTurnFullText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
-                window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
 
+
+                // var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /) || [""];
+                // window.currentGeminiMessage.textContent = timePrefix[0] + fullText;
+                var timePrefix = window.currentGeminiMessage.textContent.match(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /);
+                if (!timePrefix) {
+                    timePrefix = "[" + getCurrentTimeString() + "] \u{1F380} ";
+                } else {
+                    timePrefix = timePrefix[0];
+                }
+                window.currentGeminiMessage.textContent = timePrefix + fullText;
+
+                
                 // 触发字幕检测逻辑（防抖）
                 if (S.subtitleCheckDebounceTimer) {
                     clearTimeout(S.subtitleCheckDebounceTimer);

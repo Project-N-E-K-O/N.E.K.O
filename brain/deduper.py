@@ -1,10 +1,11 @@
 from typing import List, Dict, Any, Tuple
 import asyncio
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 import json
 
 logger = get_module_logger(__name__, "Agent")
@@ -64,6 +65,7 @@ class TaskDeduper:
                         info.get("limit"),
                     )
                     return {"duplicate": False, "matched_id": None}
+                set_call_type("dedup")
                 resp = await self.llm.ainvoke([
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},

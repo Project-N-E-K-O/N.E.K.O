@@ -177,6 +177,11 @@ Live2DManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
     });
 };
 
+// 关闭所有弹出框（不排除任何按钮）
+Live2DManager.prototype.closeAllPopups = function () {
+    this.closeAllPopupsExcept(null);
+};
+
 // 关闭所有通过 window.open 打开的设置窗口，可选保留特定 URL
 Live2DManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
     if (!this._openSettingsWindows) return;

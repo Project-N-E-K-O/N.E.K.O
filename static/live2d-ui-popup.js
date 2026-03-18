@@ -49,6 +49,8 @@ Live2DManager.prototype.createPopup = function (buttonId) {
     popup.addEventListener('touchstart', stopEventPropagation, true);
     popup.addEventListener('touchmove', stopEventPropagation, true);
     popup.addEventListener('touchend', stopEventPropagation, true);
+    // 阻止 click 冒泡至 document，防止菜单内操作误触全局关闭（冒泡阶段）
+    popup.addEventListener('click', stopEventPropagation);
 
     // 根据不同按钮创建不同的弹出内容
     if (buttonId === 'mic') {

@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import difflib
 import httpx
 import random
 import re
@@ -33,10 +34,37 @@ logger = get_module_logger(__name__)
 
 # User-Agent 池
 USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Chrome - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Chrome - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Chrome - Linux
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    # Firefox - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Firefox - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Firefox - Linux
+    'Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
+    # Safari - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    # Safari - iOS
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+    # Edge - Windows
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+    # Edge - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+    # Opera - macOS
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
 
 # ==================================================
@@ -916,8 +944,10 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in indie_keywords):
             logger.info(f"[智能调度] 识别到独立/电子风格意图，优先调度 Bandcamp/SoundCloud: {keyword}")
-            primary_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))
-            primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
+            expanded_keywords = expand_style_keyword(keyword)
+            for exp_kw in expanded_keywords[:2]:
+                primary_tasks.append(all_crawlers['bandcamp'].search(exp_kw, limit))
+                primary_tasks.append(all_crawlers['soundcloud'].search(exp_kw, limit))
             
         # 4. 默认兜底：按地域偏好
         else:
@@ -1034,7 +1064,18 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
         logger.warning("去重后无可用音乐")
         return {'success': False, 'error': '去重后无可用音乐', 'data': []}
     
-    # 【核心修复】提前截取实际需要下发的数据切片
+    # 【核心优化】获取搜索结果后立即鉴别最佳匹配，并重排列表顺序
+    best_match = identify_best_music_resource(target_song=keyword, search_results=unique_results)
+    
+    if best_match['status'] == 'exact' and best_match['resource']:
+        # 将最佳匹配项移到首位，确保 AI 提示词和链接卡片都优先展示它
+        matched_item = best_match['resource']
+        if matched_item in unique_results:
+            unique_results.remove(matched_item)
+            unique_results.insert(0, matched_item)
+            logger.info(f"[智能调度] 精确匹配项 '{best_match['real_name']}' 已重排至首位")
+    
+    # 提前截取实际需要下发的数据切片
     final_results = unique_results[:limit]
 
     # 基于“实际返回的歌曲”来评估多样性
@@ -1049,7 +1090,95 @@ async def fetch_music_content(keyword: str, limit: int = 1) -> Dict[str, Any]:
     # 标记实际返回的歌曲为已播放（写入缓存）
     music_cache.mark_as_played(final_results)
     
-    return {'success': True, 'data': final_results, 'diversity': diversity_info}
+    return {
+        'success': True, 
+        'data': final_results, 
+        'diversity': diversity_info,
+        'best_match': best_match  # 将匹配状态透传给业务层，用于后续生成动态提示词
+    }
+
+def expand_style_keyword(keyword: str) -> List[str]:
+    """
+    将风格关键词扩展为多样化的搜索词列表，避免搜索结果过于单一。
+    
+    例如: "lofi" -> ["lofi hip hop", "chill beats", "study music", "lofi"]
+    """
+    kw_lower = keyword.lower().strip()
+    
+    style_expansions = {
+        'lofi': ['lofi hip hop', 'chill beats', 'study music', 'relaxing piano', 'ambient lofi'],
+        'chill': ['chill music', 'chill vibes', 'relaxing', 'downtempo', 'ambient chill'],
+        'relax': ['relaxing music', 'calm', 'peaceful', 'meditation', 'ambient'],
+        'electronic': ['electronic music', 'synth', 'ambient electronic', 'downtempo'],
+        'ambient': ['ambient music', 'atmospheric', 'soundscape', 'drone'],
+        'hiphop': ['hip hop beats', 'rap instrumental', 'trap beats', 'boom bap'],
+        'indie': ['indie folk', 'indie rock', 'indie pop', 'alternative'],
+        '电音': ['electronic', 'EDM', 'house music', 'trance'],
+        '独立': ['indie', 'alternative', 'underground'],
+        '环境音': ['ambient', 'nature sounds', 'white noise', 'meditation'],
+    }
+    
+    for style_key, expansions in style_expansions.items():
+        if style_key in kw_lower:
+            expansion_list = [kw for kw in expansions if kw.lower() != kw_lower]
+            random.shuffle(expansion_list)
+            result = [keyword] + expansion_list
+            return result
+    
+    return [keyword]
+
+def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    鉴别音乐资源提取逻辑（重构后的核心提取逻辑）。
+    
+    Args:
+        target_song: AI 识别的目标歌曲名/关键词
+        search_results: 搜索结果列表（非空，由上层保证）
+        
+    Returns:
+        Dict: {"status": "exact" | "fuzzy" | "random", "resource": item, "real_name": name}
+    """
+    target_lower = (target_song or "").lower().strip()
+    if not target_lower:
+        return {
+            "status": "random",
+            "resource": search_results[0],
+            "real_name": search_results[0].get('name')
+        }
+
+    best_item = None
+    max_score = 0.0
+    
+    for item in search_results:
+        name = (item.get('name') or "").lower()
+        artist = (item.get('artist') or "").lower()
+        
+        score_name = difflib.SequenceMatcher(None, target_lower, name).ratio()
+        full_title = f"{name} {artist}".lower()
+        score_full = difflib.SequenceMatcher(None, target_lower, full_title).ratio()
+        
+        current_max = max(score_name, score_full)
+        
+        if target_lower in name or target_lower in full_title:
+            current_max = max(current_max, 0.85)
+
+        if current_max > max_score:
+            max_score = current_max
+            best_item = item
+
+    if max_score > 0.6:
+        return {
+            "status": "exact",
+            "resource": best_item,
+            "real_name": best_item.get('name')
+        }
+    
+    first_item = search_results[0]
+    return {
+        "status": "fuzzy",
+        "resource": first_item,
+        "real_name": first_item.get('name')
+    }
 
 # =======================================================
 # 5. 用于独立测试的入口

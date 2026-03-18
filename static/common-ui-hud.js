@@ -318,14 +318,14 @@ window.AgentHUD.createAgentTaskHUD = function () {
         position: 'fixed',
         width: '320px',
         maxHeight: '60vh',
-        background: 'rgba(255, 255, 255, 0.65)',
+        background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.65))',
         backdropFilter: 'saturate(180%) blur(20px)',
         WebkitBackdropFilter: 'saturate(180%) blur(20px)',
         borderRadius: '8px',
         padding: '0',
-        border: '1px solid rgba(255, 255, 255, 0.18)',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)',
-        color: '#333',
+        border: 'var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18))',
+        boxShadow: 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))',
+        color: 'var(--neko-popup-text, #333)',
         fontFamily: "'Segoe UI', 'SF Pro Display', -apple-system, sans-serif",
         fontSize: '13px',
         zIndex: '9999',
@@ -338,7 +338,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
         cursor: 'move',
         userSelect: 'none',
         willChange: 'transform, width',
-        touchAction: 'none'
+        contain: 'layout style paint'
     });
 
     // 应用保存的位置
@@ -355,10 +355,11 @@ window.AgentHUD.createAgentTaskHUD = function () {
         justifyContent: 'space-between',
         padding: '12px 16px',
         margin: '0',
-        backgroundColor: 'rgba(255, 255, 255, 0.85)',
+        backgroundColor: 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))',
         borderTopLeftRadius: '8px',
         borderTopRightRadius: '8px',
-        borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
+        borderBottom: '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.08))',
+        touchAction: 'none',
         transition: 'padding 0.4s ease, margin 0.4s ease, border-color 0.4s ease, border-radius 0.4s ease, background-color 0.4s ease'
     });
 
@@ -368,7 +369,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
     Object.assign(title.style, {
         fontWeight: '600',
         fontSize: '15px',
-        color: '#333',
+        color: 'var(--neko-popup-text, #333)',
         transition: 'width 0.3s ease, opacity 0.3s ease',
         overflow: 'hidden',
         whiteSpace: 'nowrap'
@@ -425,13 +426,13 @@ window.AgentHUD.createAgentTaskHUD = function () {
         width: '22px',
         height: '22px',
         borderRadius: '6px',
-        background: 'rgba(220, 53, 69, 0.12)',
+        background: 'var(--neko-popup-error-bg, rgba(220, 53, 69, 0.12))',
         display: 'none',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '11px',
         fontWeight: 'bold',
-        color: '#dc3545',
+        color: 'var(--neko-popup-error, #dc3545)',
         cursor: 'pointer',
         transition: 'all 0.2s ease',
         flexShrink: '0'
@@ -476,7 +477,8 @@ window.AgentHUD.createAgentTaskHUD = function () {
         padding: '0 16px 16px 16px',
         maxHeight: 'calc(60vh - 80px)',
         overflowY: 'auto',
-        transition: 'max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease'
+        transition: 'max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease',
+        contain: 'layout style'
     });
 
     // 整体折叠逻辑 (key v2: reset stale collapsed state)
@@ -506,7 +508,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
             hud.style.gap = '0'; 
             
             header.style.padding = '12px 16px';
-            header.style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
+            header.style.backgroundColor = 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))';
             header.style.borderBottom = 'none';
             header.style.justifyContent = 'center';
             header.style.borderRadius = '8px'; // round all corners
@@ -521,8 +523,8 @@ window.AgentHUD.createAgentTaskHUD = function () {
             hud.style.gap = '12px'; 
             
             header.style.padding = '12px 16px';
-            header.style.backgroundColor = 'rgba(255, 255, 255, 0.85)';
-            header.style.borderBottom = '1px solid rgba(0, 0, 0, 0.08)';
+            header.style.backgroundColor = 'var(--neko-hud-header-bg, rgba(255, 255, 255, 0.85))';
+            header.style.borderBottom = '1px solid var(--neko-popup-separator, rgba(0, 0, 0, 0.08))';
             header.style.justifyContent = 'space-between';
             header.style.borderRadius = '8px 8px 0 0'; // round only top corners
             
@@ -557,7 +559,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
     emptyContent.textContent = window.t ? window.t('agent.taskHud.noTasks') : '暂无活动任务';
     Object.assign(emptyContent.style, {
         textAlign: 'center',
-        color: '#64748b',
+        color: 'var(--neko-popup-text-sub, #64748b)',
         padding: '20px',
         fontSize: '12px',
         transition: 'all 0.3s ease'
@@ -654,6 +656,20 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+
+    // RAF throttle: coalesce rapid-fire WebSocket updates into a single frame
+    if (this._updateRafId) return;
+    this._updateRafId = requestAnimationFrame(() => {
+        this._updateRafId = null;
+        this._doUpdateAgentTaskHUD();
+    });
+};
+
+// Internal: actual HUD update logic (called via RAF throttle)
+window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    const tasksData = this._latestTasksData;
+    if (!tasksData) return;
+
     const taskList = document.getElementById('agent-task-list');
     const emptyState = document.getElementById('agent-task-empty');
     const runningCount = document.getElementById('hud-running-count');
@@ -668,7 +684,7 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         const retryList = document.getElementById('agent-task-list');
         if (!retryList) return;
         // Re-call with the now-created HUD
-        return window.AgentHUD.updateAgentTaskHUD(tasksData);
+        return this._doUpdateAgentTaskHUD();
     }
 
     // 更新统计数据
@@ -747,7 +763,8 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     }
 
     if (cancelBtn) {
-        cancelBtn.style.display = activeTasks.length > 0 ? 'flex' : 'none';
+        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued');
+        cancelBtn.style.display = hasCancelable ? 'flex' : 'none';
     }
 
     // 显示/隐藏空状态（保留折叠状态）
@@ -763,10 +780,6 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
         }
     }
 
-    // 清除旧的任务卡片（保留空状态）
-    const existingCards = taskList.querySelectorAll('.task-card');
-    existingCards.forEach(card => card.remove());
-
     // 排序：前台任务（computer_use / mcp）优先，插件任务沉底
     const _taskSortPriority = (t) => {
         if (t.type === 'computer_use' || t.type === 'browser_use') return 0;
@@ -776,11 +789,183 @@ window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     };
     activeTasks.sort((a, b) => _taskSortPriority(a) - _taskSortPriority(b));
 
-    // 添加任务卡片
-    activeTasks.forEach(task => {
-        const card = this._createTaskCard(task);
-        taskList.appendChild(card);
+    // --- Differential DOM update: avoid full rebuild to prevent backdrop-filter recomposite flicker ---
+    const activeIds = new Set(activeTasks.map(t => t.id));
+    const existingCards = taskList.querySelectorAll('.task-card');
+    const existingById = new Map();
+    existingCards.forEach(card => {
+        const tid = card.dataset.taskId;
+        if (tid && activeIds.has(tid)) {
+            existingById.set(tid, card);
+        } else {
+            card.remove(); // remove cards no longer active
+        }
     });
+
+    // Build the desired card order, reusing/updating existing cards
+    const fragment = document.createDocumentFragment();
+    activeTasks.forEach(task => {
+        const existing = existingById.get(task.id);
+        if (existing) {
+            const node = this._updateTaskCard(existing, task);
+            fragment.appendChild(node || existing);
+        } else {
+            const card = this._createTaskCard(task);
+            fragment.appendChild(card);
+        }
+    });
+
+    // Re-append empty state first (it should stay at top), then task cards
+    if (emptyState && emptyState.parentNode === taskList) {
+        taskList.insertBefore(fragment, emptyState.nextSibling);
+    } else {
+        taskList.appendChild(fragment);
+    }
+};
+
+// 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
+window.AgentHUD._updateTaskCard = function (card, task) {
+    const isRunning = task.status === 'running';
+    const isCompleted = task.status === 'completed';
+    const isFailed = task.status === 'failed';
+    const isCancelled = task.status === 'cancelled';
+    const isTerminal = isCompleted || isFailed || isCancelled;
+
+    // Update start_time data attribute
+    if (task.start_time) card.dataset.startTime = task.start_time;
+
+    // Compute status visuals
+    let statusColor, statusText, cardBg, cardBorder;
+    if (isCompleted) {
+        statusColor = 'var(--neko-popup-success, #16a34a)';
+        statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
+        cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
+        cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
+    } else if (isFailed) {
+        statusColor = 'var(--neko-popup-error, #dc2626)';
+        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
+        cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
+    } else if (isCancelled) {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
+    } else if (isRunning) {
+        statusColor = 'var(--neko-popup-accent, #2a7bc4)';
+        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
+        cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
+    } else {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
+    }
+
+    // Use semantic state key to avoid comparing CSS var() strings against resolved style values
+    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isFailed ? 'failed' : isRunning ? 'running' : 'queued';
+    if (card.dataset.cardState !== stateKey) {
+        card.dataset.cardState = stateKey;
+        card.style.background = cardBg;
+        card.style.border = `1px solid ${cardBorder}`;
+        card.style.opacity = isTerminal ? '0.6' : '1';
+    }
+
+    // Update status badge text & color (keyed by same state)
+    const badge = card.querySelector('.task-status-badge');
+    if (badge && badge.dataset.statusState !== stateKey) {
+        badge.dataset.statusState = stateKey;
+        badge.textContent = statusText;
+        badge.style.color = statusColor;
+        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
+        badge.style.background = badgeBg;
+    }
+
+    // Update header marginBottom (running tasks have extra space for progress row)
+    const headerDiv = card.firstElementChild;
+    if (headerDiv) {
+        const expectedMB = isRunning ? '6px' : '0';
+        if (headerDiv.style.marginBottom !== expectedMB) headerDiv.style.marginBottom = expectedMB;
+    }
+
+    // Hide per-card cancel button for terminal tasks
+    const cardCancelBtn = card.querySelector('.task-card-cancel');
+    if (cardCancelBtn) {
+        const cancelDisplay = isTerminal ? 'none' : 'flex';
+        if (cardCancelBtn.style.display !== cancelDisplay) cardCancelBtn.style.display = cancelDisplay;
+    }
+
+    // Handle progress row: add if now running but missing, remove if no longer running
+    const progressRow = card.querySelector('.task-progress-row');
+    if (isRunning && !progressRow) {
+        // Status just changed to running — rebuild the card cleanly
+        const newCard = this._createTaskCard(task);
+        const parent = card.parentNode;
+        if (parent) parent.replaceChild(newCard, card);
+        return newCard;
+    } else if (!isRunning && progressRow) {
+        // No longer running — remove progress row
+        progressRow.remove();
+    }
+
+    // Update running timer inline so it stays current between setInterval ticks
+    if (isRunning && task.start_time) {
+        const timeEl = card.querySelector('[id^="task-time-"]');
+        if (timeEl) {
+            const startTime = new Date(task.start_time);
+            const elapsed = Math.floor((Date.now() - startTime.getTime()) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            timeEl.textContent = `\u23f1\ufe0f ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+    }
+
+    // Update progress bar and step counter for running tasks
+    if (isRunning && progressRow) {
+        const fill = progressRow.querySelector('.task-progress-fill');
+        if (fill) {
+            const hasDeterminateProgress = typeof task.progress === 'number' && task.progress >= 0;
+            if (hasDeterminateProgress) {
+                const pct = Math.min(100, Math.max(0, Math.round(task.progress * 100)));
+                const newWidth = pct + '%';
+                if (fill.style.width !== newWidth) fill.style.width = newWidth;
+                // Switch from indeterminate animation to determinate if needed
+                if (fill.style.animation) {
+                    fill.style.animation = '';
+                    fill.style.transition = 'width 0.3s ease';
+                }
+            } else {
+                // Revert to indeterminate state
+                if (!fill.style.animation || fill.style.width !== '30%') {
+                    fill.style.width = '30%';
+                    fill.style.transition = '';
+                    fill.style.animation = 'taskProgress 1.5s ease-in-out infinite';
+                }
+            }
+        }
+        const stepEl = progressRow.querySelector('.task-progress-step');
+        if (typeof task.step === 'number' && typeof task.step_total === 'number' && task.step_total > 0) {
+            const stepText = `${task.step}/${task.step_total}`;
+            if (stepEl) {
+                if (stepEl.textContent !== stepText) stepEl.textContent = stepText;
+            } else {
+                // Step counter appeared after card was created — append it
+                const newStep = document.createElement('span');
+                newStep.className = 'task-progress-step';
+                newStep.textContent = stepText;
+                Object.assign(newStep.style, {
+                    color: 'var(--neko-popup-text-sub, #999)',
+                    fontSize: '10px',
+                    flexShrink: '0'
+                });
+                progressRow.appendChild(newStep);
+            }
+        } else if (stepEl) {
+            // Step info no longer available — remove stale element
+            stepEl.remove();
+        }
+    }
 };
 
 // 创建单个任务卡片
@@ -795,19 +980,25 @@ window.AgentHUD._createTaskCard = function (task) {
     const isRunning = task.status === 'running';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
-    const isTerminal = isCompleted || isFailed;
+    const isCancelled = task.status === 'cancelled';
+    const isTerminal = isCompleted || isFailed || isCancelled;
 
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
-        statusColor = '#16a34a';
+        statusColor = 'var(--neko-popup-success, #16a34a)';
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
-        cardBg = 'rgba(22, 163, 74, 0.06)';
-        cardBorder = 'rgba(22, 163, 74, 0.2)';
+        cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
+        cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
     } else if (isFailed) {
-        statusColor = '#dc2626';
+        statusColor = 'var(--neko-popup-error, #dc2626)';
         statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
-        cardBg = 'rgba(220, 38, 38, 0.06)';
-        cardBorder = 'rgba(220, 38, 38, 0.2)';
+        cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
+        cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
+    } else if (isCancelled) {
+        statusColor = 'var(--neko-popup-text-sub, #666)';
+        statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
+        cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     } else if (isRunning) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
         statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
@@ -817,7 +1008,7 @@ window.AgentHUD._createTaskCard = function (task) {
         statusColor = 'var(--neko-popup-text-sub, #666)';
         statusText = window.t ? window.t('agent.taskHud.statusQueued') : '队列中';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
-        cardBorder = 'var(--neko-popup-border, rgba(0, 0, 0, 0.06))';
+        cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
     }
 
     Object.assign(card.style, {
@@ -889,13 +1080,14 @@ window.AgentHUD._createTaskCard = function (task) {
     typeLabel.appendChild(nameSpan);
 
     const statusBadge = document.createElement('span');
+    statusBadge.className = 'task-status-badge';
     statusBadge.textContent = statusText;
     Object.assign(statusBadge.style, {
         color: statusColor,
         fontSize: '11px',
         fontWeight: '500',
         padding: '1px 8px',
-        background: isCompleted ? 'rgba(22, 163, 74, 0.1)' : isFailed ? 'rgba(220, 38, 38, 0.1)' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
+        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px',
         flexShrink: '0'
     });
@@ -912,8 +1104,8 @@ window.AgentHUD._createTaskCard = function (task) {
         width: '18px',
         height: '18px',
         borderRadius: '4px',
-        background: 'rgba(0, 0, 0, 0.06)',
-        display: 'flex',
+        background: 'var(--neko-hud-subtle-bg, rgba(0, 0, 0, 0.06))',
+        display: isTerminal ? 'none' : 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         fontSize: '10px',
@@ -965,6 +1157,7 @@ window.AgentHUD._createTaskCard = function (task) {
     // === 第二行：倒计时 + 进度条（仅运行中任务） ===
     if (isRunning) {
         const secondRow = document.createElement('div');
+        secondRow.className = 'task-progress-row';
         Object.assign(secondRow.style, {
             display: 'flex',
             alignItems: 'center',
@@ -1002,6 +1195,7 @@ window.AgentHUD._createTaskCard = function (task) {
         });
 
         const progressFill = document.createElement('div');
+        progressFill.className = 'task-progress-fill';
         if (hasDeterminateProgress) {
             const pct = Math.min(100, Math.max(0, Math.round(task.progress * 100)));
             Object.assign(progressFill.style, {
@@ -1026,6 +1220,7 @@ window.AgentHUD._createTaskCard = function (task) {
         // Step counter (e.g. "2/3") — 紧凑显示在进度条右侧
         if (typeof task.step === 'number' && typeof task.step_total === 'number' && task.step_total > 0) {
             const stepSpan = document.createElement('span');
+            stepSpan.className = 'task-progress-step';
             stepSpan.textContent = `${task.step}/${task.step_total}`;
             Object.assign(stepSpan.style, {
                 color: 'var(--neko-popup-text-sub, #999)',
@@ -1118,7 +1313,7 @@ window.AgentHUD._setupDragging = function (hud) {
 
         // 恢复视觉状态
         hud.style.cursor = 'move';
-        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
+        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 
@@ -1175,8 +1370,6 @@ window.AgentHUD._setupDragging = function (hud) {
 
     // 触摸事件支持（移动设备）- 全局拖拽
     let touchDragging = false;
-    let touchOffsetX = 0;
-    let touchOffsetY = 0;
 
     // 触摸开始
     const handleTouchStart = (e) => {
@@ -1221,7 +1414,7 @@ window.AgentHUD._setupDragging = function (hud) {
         isDragging = false;  // 确保performDrag函数停止工作
 
         // 恢复视觉状态
-        hud.style.boxShadow = '0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04)';
+        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
 

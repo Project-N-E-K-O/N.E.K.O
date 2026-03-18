@@ -21,6 +21,7 @@ from PIL import Image
 from config import get_agent_extra_body
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from utils.token_tracker import set_call_type
 from utils.screenshot_utils import compress_screenshot
 
 logger = get_module_logger(__name__, "Agent")
@@ -460,6 +461,7 @@ class ComputerUseAdapter:
                     max_retries=0,
                 )
             extra = get_agent_extra_body(model) or {}
+            set_call_type("agent_cua")
             resp = self._llm_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "ok"}],
@@ -877,6 +879,7 @@ class ComputerUseAdapter:
                         "code": 'computer.terminate(status="failure", answer="AGENT_QUOTA_EXCEEDED")',
                         "raw": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get("used", 0), "limit": info.get("limit", 300)}}),
                     }
+                set_call_type("agent_cua")
                 resp = self._llm_client.chat.completions.create(
                     model=model,
                     messages=messages,

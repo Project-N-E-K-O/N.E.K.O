@@ -11,7 +11,6 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from typing import cast
 from datetime import datetime
 from contextlib import contextmanager
 

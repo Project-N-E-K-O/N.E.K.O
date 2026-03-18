@@ -1589,6 +1589,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            
             // 3. 使用【专用模型接口】保存模型设置（包含光照和待机动作）
             const modelResult = await RequestHelper.fetchJson(
                 `/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`,
@@ -1981,7 +1982,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 live2dReturnBtn.remove();
             }
             // 隐藏 Live2D 特有的控件
-            const live2dOnlyControls = ['motion-select', 'expression-select', 'play-motion-btn', 'play-expression-btn'];
+            const live2dOnlyControls = ['motion-select', 'expression-select', 'play-motion-btn', 'play-expression-btn','touch_set'];
             live2dOnlyControls.forEach(id => {
                 const elem = document.getElementById(id);
                 if (elem) {
@@ -4486,6 +4487,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 expressionSelect.value
             );
 
+            // 初始化触摸配置
+            if (typeof InitializationTouchSet === 'function') {
+                try {
+                    await InitializationTouchSet();
+                } catch (error) {
+                    console.warn('[ModelManager] 初始化触摸配置失败:', error);
+                }
+            }
+
             // 启用其他控件
             setControlsDisabled(false);
             showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }));
@@ -4795,8 +4805,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
                 return;
             }
-
-            // 添加调试信息
 
             // 保存位置和缩放
             positionSuccess = await window.live2dManager.saveUserPreferences(
@@ -5530,7 +5538,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 删除模型功能
-    let selectedDeleteModels = new Set();
+    let selectedDeleteModels = new Map();
 
     function showDeleteModelModal() {
         if (deleteModelModal) {
@@ -5818,6 +5826,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (typeof loadMMDModels === 'function') await loadMMDModels();
             } catch (e) {
                 console.error('重新加载Live3D模型列表失败:', e);
+            }
             }
         }
 
@@ -6468,6 +6477,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.modelNotSet', `角色 ${catgirl_name} 未设置模型，请手动选择`, { name: catgirl_name }));
                 }
             }
+            InitializationTouchSet(catgirlConfig);
         } catch (error) {
             console.error('加载当前角色模型失败:', error);
             showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));

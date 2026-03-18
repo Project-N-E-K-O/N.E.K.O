@@ -193,11 +193,14 @@ def get_model_config(model_name: str):
             config_data['FileReferences']['Expressions'] = []
             config_updated = True
         
-        # 如果配置有更新，保存到文件
+        # 如果配置有更新，保存到文件（写入失败时不影响读取结果）
         if config_updated:
-            atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
-            logger.info(f"已为模型 {model_name} 自动添加缺失的配置项")
-            
+            try:
+                atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
+                logger.info(f"已为模型 {model_name} 自动添加缺失的配置项")
+            except Exception as write_err:
+                logger.warning(f"无法写回模型配置（可能受Windows安全策略/反勒索防护保护）: {write_err}")
+
         return {"success": True, "config": config_data}
     except Exception as e:
         logger.error(f"获取模型配置失败: {e}")
@@ -1184,35 +1187,57 @@ def delete_model(model_name: str):
         
         # 检查是否是用户导入的模型（只能删除用户导入的模型，不能删除内置模型）
         is_user_model = False
-        
-        # 检查是否在用户文档目录下
+        _model_in_readonly_dir = False  # CFA 场景：模型在受保护的只读目录中
+
+        # 检查是否在用户文档目录下（包括 CFA 回退路径和原始 Documents 路径）
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
-            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             model_dir_real = os.path.realpath(model_dir)
+
+            # 检查可写路径（live2d_dir，可能是 AppData 回退）
+            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             try:
                 common = os.path.commonpath([user_live2d_dir, model_dir_real])
                 if common == user_live2d_dir:
                     is_user_model = True
             except ValueError:
-                # 不同驱动器/根目录的情况
                 pass
+
+            # CFA 场景：也检查原始 Documents 下的 live2d 目录
+            if not is_user_model:
+                readable_live2d = config_mgr.readable_live2d_dir
+                if readable_live2d:
+                    readable_live2d_real = os.path.realpath(str(readable_live2d))
+                    try:
+                        common = os.path.commonpath([readable_live2d_real, model_dir_real])
+                        if common == readable_live2d_real:
+                            is_user_model = True
+                            _model_in_readonly_dir = True  # 在 CFA 保护的只读目录中
+                    except ValueError:
+                        pass
         except Exception as e:
             logger.warning(f"检查用户模型目录时出错: {e}")
-        
+
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})
-        
+
+        # CFA 场景：模型在受保护目录中，无法删除
+        if _model_in_readonly_dir:
+            return JSONResponse(status_code=403, content={
+                "success": False,
+                "error": f"模型 {model_name} 位于受Windows安全策略保护的目录中，无法自动删除。请在文件资源管理器中手动删除: {model_dir}"
+            })
+
         # 再次检查路径是否存在
         if not os.path.exists(model_dir):
             logger.info(f"模型目录不存在，视为已删除: {model_name}")
             return {"success": True, "message": f"模型 {model_name} 已成功删除"}
-        
+
         # 递归删除模型目录
         import shutil
         shutil.rmtree(model_dir, ignore_errors=True)
-        
+
         # 验证删除是否成功
         if os.path.exists(model_dir):
             logger.warning(f"删除后文件夹仍存在: {model_dir}，可能被占用或权限不足")
@@ -1234,17 +1259,41 @@ def get_user_models():
         user_models = []
         
         # 获取用户文档目录下的live2d模型
+        # CFA (反勒索防护) 感知：扫描可写路径和原始 Documents 路径
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
-            docs_live2d_dir = str(config_mgr.live2d_dir)
-            found_dirs = set()  # 记录已识别为有效模型的目录
-            if os.path.exists(docs_live2d_dir):
-                for root, dirs, files in os.walk(docs_live2d_dir):
+            readable_live2d = config_mgr.readable_live2d_dir
+
+            # 构建需要扫描的目录列表: (目录路径, URL前缀)
+            _scan_dirs = []
+            if readable_live2d:
+                # CFA 场景：原始 Documents 用 /user_live2d，可写回退用 /user_live2d_local
+                _scan_dirs.append((str(readable_live2d), '/user_live2d'))
+                docs_live2d_dir = str(config_mgr.live2d_dir)
+                if docs_live2d_dir != str(readable_live2d):
+                    _scan_dirs.append((docs_live2d_dir, '/user_live2d_local'))
+            else:
+                # 正常场景
+                _scan_dirs.append((str(config_mgr.live2d_dir), '/user_live2d'))
+
+            existing_keys = set()
+            for scan_dir, url_prefix in _scan_dirs:
+                if not os.path.exists(scan_dir):
+                    continue
+                found_dirs = set()  # 记录已识别为有效模型的目录
+                for root, dirs, files in os.walk(scan_dir):
                     for file in files:
                         if file.endswith('.model3.json'):
                             model_name = os.path.basename(root)
-                            rel_path = os.path.relpath(root, docs_live2d_dir)
+                            # 使用 (model_name, url_prefix) 作为去重键，
+                            # 避免 CFA 场景下同名模型在不同目录中互相覆盖
+                            dedup_key = (model_name, url_prefix)
+                            if dedup_key in existing_keys:
+                                dirs[:] = []
+                                break
+                            existing_keys.add(dedup_key)
+                            rel_path = os.path.relpath(root, scan_dir)
                             # Normalize '.' to empty string to avoid '/user_live2d/./' paths
                             if rel_path == '.':
                                 rel_path_posix = ''
@@ -1252,9 +1301,9 @@ def get_user_models():
                                 rel_path_posix = pathlib.Path(rel_path).as_posix()
                             # Build path without duplicate slash
                             if rel_path_posix:
-                                path = f'/user_live2d/{rel_path_posix}/{file}'
+                                path = f'{url_prefix}/{rel_path_posix}/{file}'
                             else:
-                                path = f'/user_live2d/{file}'
+                                path = f'{url_prefix}/{file}'
                             # 记录顶层目录名
                             top_dir = rel_path.split(os.sep)[0] if rel_path != '.' else model_name
                             found_dirs.add(top_dir)
@@ -1268,8 +1317,8 @@ def get_user_models():
                 
                 # 查找残缺模型目录（有目录但无 .model3.json 的顶层子目录）
                 # 这些通常是导入失败后留下的残留，需要显示在列表中以便用户删除
-                for item in os.listdir(docs_live2d_dir):
-                    item_path = os.path.join(docs_live2d_dir, item)
+                for item in os.listdir(scan_dir):
+                    item_path = os.path.join(scan_dir, item)
                     if os.path.isdir(item_path) and item not in found_dirs:
                         user_models.append({
                             'name': item,
@@ -1279,7 +1328,23 @@ def get_user_models():
                         })
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
-        
+
+        # 扫描用户导入的 VRM 模型
+        try:
+            config_mgr = get_config_manager()
+            config_mgr.ensure_vrm_directory()
+            vrm_dir = config_mgr.vrm_dir
+            if vrm_dir.exists():
+                for vrm_file in vrm_dir.glob('*.vrm'):
+                    user_models.append({
+                        'name': vrm_file.stem,
+                        'path': f'/user_vrm/{vrm_file.name}',
+                        'source': 'user_documents',
+                        'type': 'vrm'
+                    })
+        except Exception as e:
+            logger.warning(f"扫描用户VRM模型目录时出错: {e}")
+
         return {"success": True, "models": user_models}
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")

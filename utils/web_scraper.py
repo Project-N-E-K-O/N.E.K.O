@@ -13,8 +13,8 @@ import platform
 from typing import Dict, List, Any, Optional, Union
 from urllib.parse import quote
 from utils.logger_config import get_module_logger
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from utils.token_tracker import set_call_type
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
 from bs4 import BeautifulSoup
 import os
 from pathlib import Path
@@ -134,7 +134,7 @@ def _fix_bilibili_api_env():
                 logger.info("打包环境资源完整，无需修复。")
 
     except ImportError:
-        logger.warning("未检测到 bilibili_api 库，跳过环境修复逻辑。")
+        logger.info("未检测到 bilibili_api 库，跳过环境修复逻辑。")
     except Exception as e:
         # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
@@ -1285,6 +1285,7 @@ Please output 3 search keywords."""
 
         # Gemini 的 OpenAI 兼容接口需要实际的 user content；
         # 仅发送 system message 可能被底层适配为空 contents。
+        set_call_type("web_scraper")
         response = await llm.ainvoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),

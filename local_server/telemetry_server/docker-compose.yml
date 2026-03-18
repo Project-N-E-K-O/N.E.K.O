@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  telemetry:
+    build: .
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./data:/app/data
+    environment:
+      # ★ 必须修改：管理端鉴权 token（用于 dashboard / 导出 / 查询）
+      - TELEMETRY_ADMIN_TOKEN=changeme
+      # 可选：启用 /docs Swagger 页面
+      # - TELEMETRY_ENABLE_DOCS=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8099/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

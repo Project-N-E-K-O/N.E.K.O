@@ -467,6 +467,39 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         this.setupDragAndDrop(model);
     }
 
+    // 修复 HitAreas 配置：如果 Name 为空，自动设置为 Id
+    if (model.internalModel && model.internalModel.settings && model.internalModel.settings.hitAreas) {
+        
+        const hitAreas_do = model.internalModel.hitAreas;
+        const hitAreas_disk = model.internalModel.settings.hitAreas;
+        let fixedCount = 0;
+        
+        hitAreas_disk.forEach(hitArea => {
+            if (!hitArea.Name || hitArea.Name === '') {
+                hitArea.Name = hitArea.Id;
+                fixedCount++;
+            }
+        });
+        
+        if (fixedCount > 0) {
+            delete hitAreas_do[''];
+            
+            hitAreas_disk.forEach(hitArea => {
+                const drawableIndex = model.internalModel.coreModel.getDrawableIndex(hitArea.Id);
+                hitAreas_do[hitArea.Id] = {
+                    id: hitArea.Id,
+                    name: hitArea.Id,
+                    index: drawableIndex
+                };
+            });
+            
+            console.log(`[HitArea] 已修复 ${fixedCount} 个 HitArea 的 Name 字段（原为空字符串）`);
+        }
+    }
+
+    // // 设置 HitArea 交互（点击 HitArea 播放对应动画）
+    // this.setupHitAreaInteraction(model);
+
     // 设置滚轮缩放
     if (options.wheelEnabled !== false) {
         this.setupWheelZoom(model);

@@ -1,7 +1,7 @@
 from config import get_extra_body
 from utils.config_manager import get_config_manager
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
+from utils.token_tracker import set_call_type
+from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage, AIMessage, messages_to_dict, messages_from_dict
 import json
 import os
 import asyncio
@@ -19,7 +19,7 @@ class CompressedRecentHistoryManager:
     def __init__(self, max_history_length=10):
         self._config_manager = get_config_manager()
         # 通过get_character_data获取相关变量
-        _, _, _, _, name_mapping, _, _, _, _, recent_log = self._config_manager.get_character_data()
+        _, _, _, _, name_mapping, _, _, _, recent_log = self._config_manager.get_character_data()
         self.max_history_length = max_history_length
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
@@ -86,7 +86,7 @@ class CompressedRecentHistoryManager:
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True):
         # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
+            _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
             # 更新文件路径映射
             self.log_file_path = recent_log
             
@@ -208,6 +208,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(prompt)).content
                 # 修复类型问题：确保response_content是字符串
@@ -252,6 +253,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 尝试将响应内容解析为JSON
+                set_call_type("memory_compression")
                 llm = self._get_llm()
                 response_content = (await llm.ainvoke(further_summarize_prompt % initial_summary)).content
                 # 修复类型问题：确保response_content是字符串
@@ -285,7 +287,7 @@ class CompressedRecentHistoryManager:
     def get_recent_history(self, lanlan_name):
         # 检查角色是否存在于配置中，如果不存在则创建默认路径
         try:
-            _, _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
+            _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
             # 更新文件路径映射
             self.log_file_path = recent_log
             
@@ -393,6 +395,7 @@ class CompressedRecentHistoryManager:
         while retries < max_retries:
             try:
                 # 使用LLM审阅历史记录
+                set_call_type("memory_review")
                 prompt = history_review_prompt % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                 review_llm = self._get_review_llm()
                 response_content = (await review_llm.ainvoke(prompt)).content

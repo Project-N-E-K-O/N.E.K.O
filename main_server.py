@@ -187,7 +187,6 @@ master_basic_config = None
 lanlan_basic_config = None
 name_mapping = None
 lanlan_prompt = None
-semantic_store = None
 time_store = None
 setting_store = None
 recent_log = None
@@ -315,7 +314,7 @@ async def _handle_agent_event(event: dict):
 async def initialize_character_data():
     """初始化或重新加载角色配置数据"""
     global master_name, her_name, master_basic_config, lanlan_basic_config
-    global name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log
+    global name_mapping, lanlan_prompt, time_store, setting_store, recent_log
     global catgirl_names, sync_message_queue, sync_shutdown_event, session_manager, session_id, sync_process, websocket_locks
     
     logger.info("正在加载角色配置...")
@@ -331,7 +330,7 @@ async def initialize_character_data():
         })
     
     # 加载最新的角色数据
-    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = _config_manager.get_character_data()
+    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, time_store, setting_store, recent_log = _config_manager.get_character_data()
     catgirl_names = list(lanlan_prompt.keys())
     
     # 为新增的角色初始化资源
@@ -380,7 +379,6 @@ async def initialize_character_data():
                         _,
                         _,
                         lanlan_basic_config_updated,
-                        _,
                         _,
                         _,
                         _,
@@ -544,10 +542,23 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
     _config_manager.ensure_chara_directory()
-    user_live2d_path = str(_config_manager.live2d_dir)
-    if os.path.exists(user_live2d_path):
-        app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
-        logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
+
+    # CFA (反勒索防护) 感知挂载：
+    # 优先从原始 Documents 目录（可读）提供模型文件，
+    # 可写回退目录（AppData）作为辅助挂载供新导入的模型使用
+    _readable_live2d = _config_manager.readable_live2d_dir
+    _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
+
+    if os.path.exists(_serve_live2d_path):
+        app.mount("/user_live2d", CustomStaticFiles(directory=_serve_live2d_path), name="user_live2d")
+        logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
+
+    # CFA 场景：可写回退目录额外挂载，供新导入的模型使用
+    if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
+        _writable_live2d_path = str(_config_manager.live2d_dir)
+        if os.path.exists(_writable_live2d_path):
+            app.mount("/user_live2d_local", CustomStaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
+            logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
     # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
     vrm_animation_path = str(_config_manager.vrm_animation_dir)
@@ -867,6 +878,15 @@ async def on_startup():
             _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
             _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
         
+        # 初始化全局 LLM Token 用量追踪器
+        try:
+            from utils.token_tracker import TokenTracker, install_hooks
+            install_hooks()
+            TokenTracker.get_instance().start_periodic_save()
+            logger.info("Token usage tracker initialized")
+        except Exception as e:
+            logger.warning(f"Token tracker initialization failed (non-critical): {e}")
+
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
         # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
@@ -907,6 +927,21 @@ async def on_shutdown():
             except Exception as e:
                 logger.debug(f"Agent event bridge cleanup failed: {e}", exc_info=True)
         
+        # 释放 soxr ResampleStream（nanobind C 扩展），避免解释器退出时泄漏警告
+        try:
+            for mgr in session_manager.values():
+                if hasattr(mgr, 'audio_resampler'):
+                    mgr.audio_resampler = None
+        except Exception as e:
+            logger.debug(f"soxr resampler cleanup failed: {e}")
+
+        # 保存 Token 用量数据
+        try:
+            from utils.token_tracker import TokenTracker
+            TokenTracker.get_instance().save()
+        except Exception as e:
+            logger.debug(f"Token usage save on shutdown failed: {e}")
+
         # 关闭音乐爬虫连接池
         try:
             from utils.music_crawlers import close_all_crawlers
@@ -1163,6 +1198,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     # 1) 配置 UVicorn
+    _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
@@ -1170,6 +1206,8 @@ if __name__ == "__main__":
         log_level="info",
         loop="asyncio",
         reload=False,
+        proxy_headers=_behind_proxy,
+        forwarded_allow_ips="*" if _behind_proxy else None,
     )
     server = uvicorn.Server(config)
     

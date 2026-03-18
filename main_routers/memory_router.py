@@ -26,15 +26,21 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 # - Allows CJK characters (Chinese, Japanese, Korean)
 # - Must be 1-100 characters long
 VALID_NAME_PATTERN = re.compile(r'^[\w\-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
+VALID_NAME_PATTERN_RELAXED = re.compile(r'^[\w\-.\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
 
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 
 
-def validate_catgirl_name(name: str) -> tuple[bool, str]:
+def validate_catgirl_name(name: str, allow_dots: bool = False) -> tuple[bool, str]:
     """
     Validate a catgirl name for safe use in filenames.
+    
+    Args:
+        name: The catgirl name to validate
+        allow_dots: If True, permit dots in the name (for historical names during migration).
+                    Path traversal via '..' is still rejected.
     
     Returns:
         tuple: (is_valid, error_message)
@@ -45,13 +51,15 @@ def validate_catgirl_name(name: str) -> tuple[bool, str]:
     if not isinstance(name, str):
         return False, "名称必须是字符串"
     
-    # Check against whitelist pattern
-    if not VALID_NAME_PATTERN.match(name):
+    pattern = VALID_NAME_PATTERN_RELAXED if allow_dots else VALID_NAME_PATTERN
+    if not pattern.match(name):
         return False, "名称只能包含字母、数字、下划线、连字符和中日韩文字符"
     
-    # Explicitly reject path separators and parent directory references
     if os.path.sep in name or '/' in name or '\\' in name or '..' in name:
         return False, "名称不能包含路径分隔符或目录遍历字符"
+    
+    if not allow_dots and '.' in name:
+        return False, "名称不能包含点号(.)"
     
     return True, ""
 
@@ -195,7 +203,6 @@ async def get_recent_file(filename: str):
 
 @router.post('/recent_file/save')
 async def save_recent_file(request: Request):
-    import json
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
@@ -281,13 +288,13 @@ async def update_catgirl_name(request: Request):
     if not old_name or not new_name:
         return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
     
-    # Validate old_name
-    is_valid, error_msg = validate_catgirl_name(old_name)
+    # Validate old_name (allow dots for historical names during migration)
+    is_valid, error_msg = validate_catgirl_name(old_name, allow_dots=True)
     if not is_valid:
         logger.warning(f"Invalid old_name rejected: {old_name!r} - {error_msg}")
         return JSONResponse({"success": False, "error": f"旧名称无效: {error_msg}"}, status_code=400)
-    
-    # Validate new_name
+
+    # Validate new_name (strict — no dots allowed)
     is_valid, error_msg = validate_catgirl_name(new_name)
     if not is_valid:
         logger.warning(f"Invalid new_name rejected: {new_name!r} - {error_msg}")
@@ -362,6 +369,7 @@ async def update_catgirl_name(request: Request):
                             f"{old_name}:",     # 纯冒号
                             f"{old_name}->",    # 箭头
                             f"[{old_name}]",    # 方括号
+                            f"{old_name} | ",   # 摘要中的角色标识格式
                         ]
                         
                         for pattern in patterns:

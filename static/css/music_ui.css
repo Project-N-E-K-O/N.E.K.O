@@ -85,6 +85,36 @@
     width: 100%;
 }
 
+/* --- 进度条系统 --- */
+.music-bar-progress-container {
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    margin: 4px 0;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+}
+
+.music-bar-progress-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--dynamic-primary-color), var(--dynamic-secondary-color));
+    border-radius: 2px;
+    transition: width 0.1s linear;
+}
+
+.music-bar-time {
+    color: var(--music-text-sub);
+    font-size: 10px;
+    font-family: monospace;
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    margin-top: 1px;
+}
+
 .music-bar-artist {
     color: var(--music-text-sub);
     font-size: 11px;

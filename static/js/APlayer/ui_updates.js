@@ -92,7 +92,7 @@ export function updateUI(aplayer) {
         }
 
         const isPlaying = aplayer.playing;
-        statusEl.textContent = isPlaying ? t('music.playing', 'Playing') : t('music.paused', 'Paused');
+        statusEl.textContent = isPlaying ? t('music.playing', '播放中') : t('music.paused', '已暂停');
     } catch (e) {
         console.error('[APlayer] updateUI error:', e);
     }

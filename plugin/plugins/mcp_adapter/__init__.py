@@ -1003,6 +1003,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="list_servers",
         name="List MCP Servers",
         description="列出所有配置的 MCP servers 及其状态",
+        llm_result_fields=["total"],
     )
     async def list_servers(self, **_):
         """列出所有 MCP servers"""
@@ -1066,6 +1067,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="connect_server",
         name="Connect MCP Server",
         description="连接到指定的 MCP server",
+        llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1105,6 +1107,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="disconnect_server",
         name="Disconnect MCP Server",
         description="断开与指定 MCP server 的连接",
+        llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1140,6 +1143,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="add_server",
         name="Add MCP Server",
         description="添加新的 MCP server 配置",
+        llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1253,6 +1257,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="remove_servers",
         name="Remove MCP Servers",
         description="批量移除 MCP server 配置",
+        llm_result_fields=["message"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1311,6 +1316,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="call_tool",
         name="Call MCP Tool",
         description="调用指定 MCP server 的 tool",
+        llm_result_fields=["result"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1360,6 +1366,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="list_tools",
         name="List MCP Tools",
         description="列出所有可用的 MCP tools",
+        llm_result_fields=["total"],
     )
     async def list_tools(self, server_name: Optional[str] = None, **_):
         """列出所有 MCP tools"""
@@ -1384,6 +1391,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="gateway_invoke",
         name="Gateway Invoke",
         description="通过 Gateway Core 调用 MCP tool（新架构）",
+        llm_result_fields=["result"],
         input_schema={
             "type": "object",
             "properties": {

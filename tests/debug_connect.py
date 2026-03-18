@@ -2,7 +2,7 @@
 import os
 import json
 import logging
-from langchain_openai import ChatOpenAI
+from utils.llm_client import ChatOpenAI
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +30,7 @@ def test_connect():
     base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model = "qwen3.5-plus" # Or whatever is in config
 
-    from langchain_core.messages import SystemMessage, HumanMessage
+    from utils.llm_client import SystemMessage, HumanMessage
 
     async def run_test():
         llm = ChatOpenAI(

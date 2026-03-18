@@ -25,24 +25,40 @@
      * Show / hide the floating status toast bubble.
      * @param {string} message  Text to display (empty string hides)
      * @param {number} [duration=3000]  Auto-hide delay in ms
+     * @param {object} [options]  Additional options
+     * @param {number} [options.priority=0]  Priority level (higher = more important, won't be overwritten by lower priority)
+     * @param {boolean} [options.important=false]  Whether this is an important message (same as priority=100)
      */
-    function showStatusToast(message, duration = 3000) {
+    function showStatusToast(message, duration = 3000, options = {}) {
+        const priority = options.important ? 100 : (options.priority || 0);
+        
+        if (!message || message.trim() === '') {
+            const statusToast = S.dom.statusToast;
+            if (statusToast) {
+                if (S._statusToastCleanupTimer) {
+                    clearTimeout(S._statusToastCleanupTimer);
+                    S._statusToastCleanupTimer = null;
+                }
+                statusToast.classList.remove('show');
+                statusToast.classList.add('hide');
+                S._statusToastCleanupTimer = setTimeout(() => {
+                    statusToast.textContent = '';
+                    S._statusToastCleanupTimer = null;
+                }, 300);
+            }
+            S._statusToastPriority = 0;
+            return;
+        }
+
+        if (priority < S._statusToastPriority) {
+            console.log('[StatusToast] Ignored lower priority message:', priority, '<', S._statusToastPriority);
+            return;
+        }
+
         console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
 
         const statusToast = S.dom.statusToast;
         const statusElement = S.dom.statusElement;
-
-        if (!message || message.trim() === '') {
-            // 如果消息为空，隐藏气泡框
-            if (statusToast) {
-                statusToast.classList.remove('show');
-                statusToast.classList.add('hide');
-                setTimeout(() => {
-                    statusToast.textContent = '';
-                }, 300);
-            }
-            return;
-        }
 
         if (!statusToast) {
             console.error(window.t('console.statusToastNotFound'));
@@ -54,9 +70,14 @@
             clearTimeout(S.statusToastTimeout);
             S.statusToastTimeout = null;
         }
+        if (S._statusToastCleanupTimer) {
+            clearTimeout(S._statusToastCleanupTimer);
+            S._statusToastCleanupTimer = null;
+        }
 
         // 更新内容
         statusToast.textContent = message;
+        S._statusToastPriority = priority;
 
         // 确保元素可见
         statusToast.style.display = 'block';
@@ -74,8 +95,10 @@
         S.statusToastTimeout = setTimeout(() => {
             statusToast.classList.remove('show');
             statusToast.classList.add('hide');
-            setTimeout(() => {
+            S._statusToastCleanupTimer = setTimeout(() => {
                 statusToast.textContent = '';
+                S._statusToastPriority = 0;
+                S._statusToastCleanupTimer = null;
             }, 300);
         }, duration);
 

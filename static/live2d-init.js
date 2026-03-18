@@ -461,6 +461,7 @@ async function initLive2DModel() {
         } else if (isModelManagerPage) {
             console.log('✓ Live2D 管理器在模型管理界面初始化完成（等待手动加载模型）');
         }
+        
     } catch (error) {
         console.error('Live2D 管理器自动初始化失败:', error);
         console.error('错误堆栈:', error.stack);
