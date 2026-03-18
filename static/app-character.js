@@ -1112,6 +1112,9 @@
             if (window.vrmManager) {
                 window.vrmManager._goodbyeClicked = false;
             }
+            if (window.mmdManager) {
+                window.mmdManager._goodbyeClicked = false;
+            }
         }
     }
 
