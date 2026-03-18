@@ -235,7 +235,10 @@
                 }
 
                 // Cross-type switch: clean up the old overlay
-                if (oldModelType !== newModelType) {
+                var oldLive3dSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+                var typeChanged = oldModelType !== newModelType ||
+                    (newModelType === 'live3d' && oldLive3dSubType !== live3dSubType);
+                if (typeChanged) {
                     if (oldModelType === 'live2d') cleanupLive2DOverlayUI();
                     if (oldModelType === 'vrm') cleanupVRMOverlayUI();
                     if (oldModelType === 'live3d') {
@@ -247,6 +250,7 @@
                 // 2. Update global config
                 if (window.lanlan_config) {
                     window.lanlan_config.model_type = newModelType;
+                    window.lanlan_config.live3d_sub_type = live3dSubType;
                 }
 
                 // 3. Switch based on model type
@@ -587,7 +591,7 @@
             } else if (currentModelType === 'live3d') {
                 // Live3D: determine sub-type from active manager
                 var hasMMD = window.mmdManager && window.mmdManager.currentModel;
-                var hasVRM = window.vrmManager && window.vrmManager.currentVrm;
+                var hasVRM = window.vrmManager && window.vrmManager.currentModel;
                 
                 if (hasMMD) {
                     var mmdContainerR = document.getElementById('mmd-container');

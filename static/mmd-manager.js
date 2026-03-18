@@ -145,17 +145,15 @@ class MMDManager {
 
     async loadAnimation(vmdPath) {
         if (!this.animationModule) throw new Error('MMDAnimation 未初始化');
-
-        // 加载动画时暂停鼠标跟踪
-        if (this.cursorFollow) {
-            this.cursorFollow.setDisabledByAnimation(true);
-        }
-
         const clip = await this.animationModule.loadAnimation(vmdPath);
         return clip;
     }
 
     playAnimation() {
+        // 播放动画时禁用鼠标跟踪
+        if (this.cursorFollow) {
+            this.cursorFollow.setDisabledByAnimation(true);
+        }
         if (this.animationModule) {
             this.animationModule.play();
         }
@@ -291,15 +289,13 @@ class MMDManager {
             }
             if (settings.physics.strength != null) {
                 const newStrength = Math.max(0.1, Math.min(2.0, settings.physics.strength));
-                if (newStrength !== this.physicsStrength) {
-                    this.physicsStrength = newStrength;
-                    // 通过缩放重力控制物理强度
-                    const physics = this.currentModel?.physics;
-                    if (physics && typeof physics.setGravity === 'function') {
-                        const THREE = window.THREE;
-                        if (THREE) {
-                            physics.setGravity(new THREE.Vector3(0, this._baseGravityY * newStrength, 0));
-                        }
+                this.physicsStrength = newStrength;
+                // 通过缩放重力控制物理强度
+                const physics = this.currentModel?.physics;
+                if (physics && typeof physics.setGravity === 'function') {
+                    const THREE = window.THREE;
+                    if (THREE) {
+                        physics.setGravity(new THREE.Vector3(0, this._baseGravityY * newStrength, 0));
                     }
                 }
             }
