@@ -1374,6 +1374,19 @@ async def update_catgirl(name: str, request: Request):
     if voice_id_in_payload:
         requested_voice_id = str(raw_data.get('voice_id') or '').strip()
 
+    # 兼容前端自动修复：允许通过通用接口修改 model_type 保留字段。
+    model_type_in_payload = 'model_type' in raw_data
+    requested_model_type = ''
+    if model_type_in_payload:
+        requested_model_type = str(raw_data.get('model_type') or '').strip().lower()
+        if requested_model_type == 'vrm':
+            requested_model_type = 'live3d'
+        if requested_model_type and requested_model_type not in ('live2d', 'live3d'):
+            return JSONResponse(
+                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d 或 live3d'},
+                status_code=400,
+            )
+
     data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
@@ -1410,6 +1423,10 @@ async def update_catgirl(name: str, request: Request):
     if voice_id_in_payload:
         set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
 
+    # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
+    if model_type_in_payload and requested_model_type:
+        set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+
     _config_manager.save_characters(characters)
 
     new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
@@ -1417,7 +1434,7 @@ async def update_catgirl(name: str, request: Request):
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(
-        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id'}
+        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id', 'model_type'}
     )
     if ignored_reserved_fields:
         logger.info(
