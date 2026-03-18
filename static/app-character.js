@@ -752,6 +752,12 @@
                     window.vrmManager.renderer.domElement.style.opacity = '1';
                     console.log('[猫娘切换] VRM渲染器已设置为可见');
 
+                    // 恢复 VRM canvas 的指针事件
+                    const vrmCanvasEl = document.getElementById('vrm-canvas');
+                    if (vrmCanvasEl) {
+                        vrmCanvasEl.style.pointerEvents = 'auto';
+                    }
+
                     // 检查canvas的实际状态
                     const canvas = window.vrmManager.renderer.domElement;
                     const computedStyle = window.getComputedStyle(canvas);
@@ -810,12 +816,15 @@
 
                 // 处理路径格式
                 let mmdModelUrl = mmdModelPath;
-                if (mmdModelUrl.includes('\\') || mmdModelUrl.includes(':')) {
+                if (mmdModelUrl.startsWith('http://') || mmdModelUrl.startsWith('https://')) {
+                    // 保留 HTTP(S) URL 不做修改
+                } else if (/^[A-Za-z]:[\\/]/.test(mmdModelUrl) || mmdModelUrl.includes('\\')) {
+                    // Windows 绝对路径——取文件名映射到 /user_mmd/
                     const filename = mmdModelUrl.split(/[\\/]/).pop();
                     if (filename) {
                         mmdModelUrl = `/user_mmd/${filename}`;
                     }
-                } else if (!mmdModelUrl.startsWith('http') && !mmdModelUrl.startsWith('/')) {
+                } else if (!mmdModelUrl.startsWith('/')) {
                     mmdModelUrl = `/user_mmd/${mmdModelUrl}`;
                 } else {
                     mmdModelUrl = mmdModelUrl.replace(/\\/g, '/');

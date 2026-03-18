@@ -99,19 +99,19 @@
         <div class="control-group" id="mmd-model-group" style="display:none;">
             <div style="display: flex; gap: 0; align-items: center;">
             <div id="mmd-model-select-wrapper" style="position: relative;">
-                <button id="mmd-model-select-btn" class="btn btn-primary" type="button" title="选择MMD模型">
-                    <img src="/static/icons/live2d_model_select_icon.png?v=1" alt="选择MMD模型" class="mmd-model-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                    <span class="round-stroke-text" id="mmd-model-select-text" data-text="选择MMD模型">选择MMD模型</span>
+                <button id="mmd-model-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.mmdModel.selectModel">
+                    <img src="/static/icons/live2d_model_select_icon.png?v=1" data-i18n-alt="live2d.mmdModel.selectModel" class="mmd-model-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="mmd-model-select-text" data-i18n="live2d.mmdModel.selectModel" data-text="选择MMD模型">选择MMD模型</span>
                 </button>
                 <select id="mmd-model-select" class="control-select" style="display: none;">
-                    <option>加载中...</option>
+                    <option data-i18n="common.loading">加载中...</option>
                 </select>
                 <div id="mmd-model-dropdown" class="mmd-model-dropdown" style="display: none;">
                     <!-- 下拉菜单项将动态生成 -->
                 </div>
             </div>
-            <button id="delete-mmd-model-btn" class="btn btn-danger" title="删除已导入的MMD模型" aria-label="Delete imported MMD models">
-                <img src="/static/icons/delete_model_button.png?v=1" alt="删除MMD模型">
+            <button id="delete-mmd-model-btn" class="btn btn-danger" data-i18n-title="live2d.mmdModel.deleteModel" aria-label="Delete imported MMD models">
+                <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.mmdModel.deleteModel">
             </button>
             </div>
         </div>
@@ -120,12 +120,12 @@
         <div class="control-group" id="mmd-animation-group" style="display:none;">
             <div class="action-group">
                 <div id="mmd-animation-select-wrapper" style="position: relative; display: flex; flex: 1;">
-                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" disabled title="选择VMD动画">
-                        <img src="/static/icons/motion_select_icon.png?v=1" alt="选择VMD动画" class="mmd-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                        <span class="round-stroke-text" id="mmd-animation-select-text" data-text="选择VMD动画">选择VMD动画</span>
+                    <button id="mmd-animation-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.mmdAnimation.selectAnimation">
+                        <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.mmdAnimation.selectAnimation" class="mmd-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="mmd-animation-select-text" data-i18n="live2d.mmdAnimation.selectAnimation" data-text="选择VMD动画">选择VMD动画</span>
                     </button>
                     <select id="mmd-animation-select" class="control-select" style="display: none;">
-                        <option value="">无动画</option>
+                        <option value="" data-i18n="live2d.mmdAnimation.noAnimation">无动画</option>
                     </select>
                     <div id="mmd-animation-dropdown" class="mmd-animation-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->

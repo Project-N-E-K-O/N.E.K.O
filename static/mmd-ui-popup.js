@@ -773,6 +773,11 @@ MMDManager.prototype._createSidePanelContainer = function () {
         window.AvatarPopupUI.registerSidePanel(container);
     }
 
+    // 跟踪侧边面板以便 dispose 时清理
+    if (this._sidePanels) {
+        this._sidePanels.add(container);
+    }
+
     return container;
 };
 
@@ -973,6 +978,11 @@ MMDManager.prototype._createIntervalControl = function (toggle) {
 
     if (window.AvatarPopupUI && window.AvatarPopupUI.registerSidePanel) {
         window.AvatarPopupUI.registerSidePanel(container);
+    }
+
+    // 跟踪侧边面板以便 dispose 时清理
+    if (this._sidePanels) {
+        this._sidePanels.add(container);
     }
 
     document.body.appendChild(container);

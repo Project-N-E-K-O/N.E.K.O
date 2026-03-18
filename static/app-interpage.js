@@ -86,8 +86,8 @@
      * Remove MMD overlay UI elements.
      */
     function cleanupMMDOverlayUI() {
-        if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
-            window.mmdManager.cleanupUI();
+        if (window.mmdManager && typeof window.mmdManager.cleanupFloatingButtons === 'function') {
+            window.mmdManager.cleanupFloatingButtons();
             return;
         }
         document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')

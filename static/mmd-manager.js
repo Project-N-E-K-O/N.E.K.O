@@ -40,6 +40,9 @@ class MMDManager {
 
         // 事件处理器
         this._coreWindowHandlers = [];
+
+        // 侧边面板跟踪
+        this._sidePanels = new Set();
         this._uiWindowHandlers = [];
 
         this._initModules();
@@ -250,12 +253,18 @@ class MMDManager {
         if (settings.rendering && this.renderer) {
             const r = settings.rendering;
             if (r.toneMapping != null) {
-                this.renderer.toneMapping = r.toneMapping;
+                this.renderer.toneMapping = Number(r.toneMapping);
                 // 更新所有材质（MMD 对象的 mesh 才是 THREE.Object3D）
                 const mesh = this.currentModel?.mesh;
                 if (mesh) {
                     mesh.traverse((obj) => {
-                        if (obj.material) obj.material.needsUpdate = true;
+                        if (obj.material) {
+                            if (Array.isArray(obj.material)) {
+                                obj.material.forEach(m => { m.needsUpdate = true; });
+                            } else {
+                                obj.material.needsUpdate = true;
+                            }
+                        }
                     });
                 }
             }
@@ -317,6 +326,17 @@ class MMDManager {
         // 清理浮动按钮
         if (typeof this.cleanupFloatingButtons === 'function') {
             this.cleanupFloatingButtons();
+        }
+
+        // 清理侧边面板
+        if (this._sidePanels) {
+            for (const panel of this._sidePanels) {
+                if (window.AvatarPopupUI && window.AvatarPopupUI.unregisterSidePanel) {
+                    window.AvatarPopupUI.unregisterSidePanel(panel);
+                }
+                panel.remove();
+            }
+            this._sidePanels.clear();
         }
 
         // 清理调试面板

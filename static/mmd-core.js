@@ -189,7 +189,7 @@ class MMDCore {
         if (!webglAvailable) {
             console.error('[MMD Core] WebGL 不可用');
             this.manager.renderer = null;
-            return;
+            throw new Error('[MMD Core] WebGL 不可用，无法初始化渲染器');
         }
 
         // 显式启用颜色管理（确保线性工作流）
@@ -210,7 +210,7 @@ class MMDCore {
         } catch (e) {
             console.error('[MMD Core] 创建 WebGLRenderer 失败:', e);
             this.manager.renderer = null;
-            return;
+            throw new Error('[MMD Core] 创建 WebGLRenderer 失败: ' + (e.message || e));
         }
 
         this.manager.renderer.setSize(width, height);
@@ -790,8 +790,8 @@ class MMDCore {
     // ═══════════════════ 模型变换 ═══════════════════
 
     setModelScale(scale) {
-        if (!this.manager.currentModel) return;
-        this.manager.currentModel.setScalar(scale);
+        if (!this.manager.currentModel || !this.manager.currentModel.mesh) return;
+        this.manager.currentModel.mesh.scale.setScalar(scale);
     }
 
     resetModelPose() {

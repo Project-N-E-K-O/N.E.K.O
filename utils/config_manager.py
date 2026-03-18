@@ -176,7 +176,8 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     ).strip().lower()
     if model_type not in {"live2d", "vrm", "live3d"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
-        model_type = "live3d" if has_vrm else "live2d"
+        has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
+        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
     # 归一化：旧配置中的 'vrm' 统一为 'live3d'
     if model_type == "vrm":
         model_type = "live3d"

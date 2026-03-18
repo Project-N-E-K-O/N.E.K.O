@@ -405,7 +405,7 @@
 
     // --- syncFloatingMicButtonState ---
     function syncFloatingMicButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
@@ -425,7 +425,7 @@
 
     // --- syncFloatingScreenButtonState ---
     function syncFloatingScreenButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
@@ -1518,11 +1518,20 @@
                 vrmLockIcon.style.removeProperty('visibility');
                 vrmLockIcon.style.removeProperty('opacity');
             }
+            const mmdLockIcon = document.getElementById('mmd-lock-icon');
+            if (mmdLockIcon) {
+                mmdLockIcon.style.removeProperty('display');
+                mmdLockIcon.style.removeProperty('visibility');
+                mmdLockIcon.style.removeProperty('opacity');
+            }
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
                 window.live2dManager.setLocked(false, { updateFloatingButtons: false });
             }
             if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
                 window.vrmManager.core.setLocked(false);
+            }
+            if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
+                window.mmdManager.core.setLocked(false);
             }
 
             // 恢复浮动按钮系统
@@ -1577,6 +1586,31 @@
                     popup.style.pointerEvents = 'auto';
                 });
                 console.log('[App] 已恢复所有VRM弹窗的交互能力，数量:', allVrmPopups.length);
+            }
+
+            // 恢复MMD浮动按钮系统
+            const mmdFloatingButtons = document.getElementById('mmd-floating-buttons');
+            if (mmdFloatingButtons) {
+                mmdFloatingButtons.style.removeProperty('display');
+                mmdFloatingButtons.style.removeProperty('visibility');
+                mmdFloatingButtons.style.removeProperty('opacity');
+
+                if (window.mmdManager && window.mmdManager._floatingButtons) {
+                    Object.keys(window.mmdManager._floatingButtons).forEach(btnId => {
+                        const buttonData = window.mmdManager._floatingButtons[btnId];
+                        if (buttonData && buttonData.button) {
+                            buttonData.button.style.removeProperty('display');
+                        }
+                    });
+                }
+
+                const allMmdPopups = document.querySelectorAll('[id^="mmd-popup-"]');
+                allMmdPopups.forEach(popup => {
+                    popup.style.removeProperty('pointer-events');
+                    popup.style.removeProperty('visibility');
+                    popup.style.pointerEvents = 'auto';
+                });
+                console.log('[App] 已恢复所有MMD弹窗的交互能力，数量:', allMmdPopups.length);
             }
 
             // 恢复对话区

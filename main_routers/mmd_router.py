@@ -624,8 +624,10 @@ def get_emotion_mapping(model: str = ""):
         config_path.mkdir(parents=True, exist_ok=True)
 
         if model:
-            # 路径安全检查
-            safe_name = Path(model).stem  # 只取文件名主体
+            # 路径安全检查：拒绝含路径分隔符的输入以防止目录穿越
+            if '/' in model or '\\' in model:
+                return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
+            safe_name = model.replace('..', '_')
             config_file = config_path / f"{safe_name}.json"
 
             # 验证路径不会穿越
@@ -664,7 +666,10 @@ async def update_emotion_mapping(request: Request):
         config_path = mmd_dir / "emotion_config"
         config_path.mkdir(parents=True, exist_ok=True)
 
-        safe_name = Path(model_name).stem
+        # 路径安全检查：拒绝含路径分隔符的输入以防止目录穿越
+        if '/' in model_name or '\\' in model_name:
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
+        safe_name = model_name.replace('..', '_')
         config_file = config_path / f"{safe_name}.json"
 
         if not config_file.resolve().is_relative_to(config_path.resolve()):
