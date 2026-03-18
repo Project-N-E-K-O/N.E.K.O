@@ -1753,6 +1753,17 @@ class UniversalTutorialManager {
 
         // 启动引导
         this.driver.start();
+
+        // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
+        if (this._resizeHandler) {
+            window.removeEventListener('resize', this._resizeHandler);
+        }
+        this._resizeHandler = () => {
+            if (this.driver && window.isInTutorial) {
+                this.driver.refresh();
+            }
+        };
+        window.addEventListener('resize', this._resizeHandler);
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
@@ -1778,7 +1789,15 @@ class UniversalTutorialManager {
         const btn = document.createElement('button');
         btn.id = 'neko-tutorial-skip-btn';
         btn.textContent = this.t('tutorial.buttons.skip', '跳过');
-        btn.addEventListener('click', () => {
+
+        // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
+        btn.style.pointerEvents = 'auto';
+        btn.style.position = 'fixed';
+        btn.style.zIndex = '100005';
+        btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
             if (this.driver) {
                 this.driver.destroy();
             }
@@ -2453,6 +2472,12 @@ class UniversalTutorialManager {
         if (this._refreshTimers) {
             this._refreshTimers.forEach(t => clearTimeout(t));
             this._refreshTimers = [];
+        }
+
+        // 清理 resize 监听
+        if (this._resizeHandler) {
+            window.removeEventListener('resize', this._resizeHandler);
+            this._resizeHandler = null;
         }
 
         // 只有进入了全屏的页面才需要退出全屏

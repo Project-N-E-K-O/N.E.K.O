@@ -8,9 +8,10 @@
    driver.js 全局样式覆盖
    ============================================ */
 
-/* 高亮遮罩层 */
+/* 高亮遮罩层（SVG 元素，颜色由 path fill 控制） */
 .driver-overlay {
-    background: rgba(0, 0, 0, 0.6) !important;
+    background: none !important;
+    overflow: visible !important;
     pointer-events: none;
 }
 
@@ -22,10 +23,9 @@
     backdrop-filter: none !important;
 }
 
-/* 高亮框 */
+/* 高亮框（遮罩由 SVG 负责，只保留发光效果） */
 .driver-highlight {
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6),
-                0 0 20px rgba(68, 183, 254, 0.4) !important;
+    box-shadow: 0 0 20px rgba(68, 183, 254, 0.4) !important;
     border-radius: 8px;
 }
 
@@ -262,7 +262,7 @@
     position: fixed;
     top: 16px;
     right: 20px;
-    z-index: 100001; /* 高于 driver.js 遮罩层 */
+    z-index: 100005;
     width: auto;
     height: auto;
     min-width: 48px;
