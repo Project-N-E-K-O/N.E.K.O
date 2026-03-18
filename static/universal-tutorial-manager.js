@@ -1321,6 +1321,22 @@ class UniversalTutorialManager {
         console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
     }
 
+    lockBodyScroll() {
+        if (this._isBodyLocked) return;
+        this._originalBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        this._isBodyLocked = true;
+        console.log('[Tutorial] 禁用页面滚动');
+    }
+
+    unlockBodyScroll() {
+        if (!this._isBodyLocked) return;
+        document.body.style.overflow = this._originalBodyOverflow ?? '';
+        this._originalBodyOverflow = undefined;
+        this._isBodyLocked = false;
+        console.log('[Tutorial] 恢复页面滚动');
+    }
+
     restoreTutorialInteractionState() {
         this.tutorialControlledElements.forEach(element => {
             const state = this.tutorialInteractionStates.get(element);
@@ -1451,6 +1467,9 @@ class UniversalTutorialManager {
             // 标记引导正在运行
             this.isTutorialRunning = true;
 
+            // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
+            this.lockBodyScroll();
+
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
                 // 已禁用全屏提示
@@ -1467,6 +1486,7 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 启动引导失败:', error);
             this.isTutorialRunning = false;
             window.isInTutorial = false;
+            this.unlockBodyScroll();
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
         }
@@ -1639,6 +1659,7 @@ class UniversalTutorialManager {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
             this.isTutorialRunning = false;
             window.isInTutorial = false;
+            this.unlockBodyScroll();
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
             return;
@@ -1735,13 +1756,6 @@ class UniversalTutorialManager {
             }
         }, 500);
 
-        // 对于设置页面和记忆浏览页面，禁用页面滚动以防止用户在引导中滚动页面导致问题
-        if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
-            this._originalBodyOverflow = document.body.style.overflow;
-            document.body.style.overflow = 'hidden';
-            console.log('[Tutorial] 禁用页面滚动');
-        }
-
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
         this.driver.on('next', () => this.onStepChange().catch(err => {
@@ -1753,6 +1767,25 @@ class UniversalTutorialManager {
 
         // 启动引导
         this.driver.start();
+
+        // 监听窗口大小变化，刷新 SVG 遮罩和高亮框位置（注册前先清理旧的，防止重复注册）
+        if (this._resizeHandler) {
+            window.removeEventListener('resize', this._resizeHandler);
+            if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
+            if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
+        }
+        this._resizeHandler = () => {
+            if (this._resizeRafId) cancelAnimationFrame(this._resizeRafId);
+            if (this._resizeTimeoutId) clearTimeout(this._resizeTimeoutId);
+            this._resizeRafId = requestAnimationFrame(() => {
+                this._resizeTimeoutId = setTimeout(() => {
+                    this._resizeRafId = null;
+                    this._resizeTimeoutId = null;
+                    if (this.driver && window.isInTutorial) this.driver.refresh();
+                }, 50);
+            });
+        };
+        window.addEventListener('resize', this._resizeHandler);
         setTimeout(() => {
             const steps = this.cachedValidSteps || [];
             if (steps.length > 0) {
@@ -1778,7 +1811,15 @@ class UniversalTutorialManager {
         const btn = document.createElement('button');
         btn.id = 'neko-tutorial-skip-btn';
         btn.textContent = this.t('tutorial.buttons.skip', '跳过');
-        btn.addEventListener('click', () => {
+
+        // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
+        btn.style.pointerEvents = 'auto';
+        btn.style.position = 'fixed';
+        btn.style.zIndex = '100005';
+        btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
             if (this.driver) {
                 this.driver.destroy();
             }
@@ -2455,6 +2496,14 @@ class UniversalTutorialManager {
             this._refreshTimers = [];
         }
 
+        // 清理 resize 监听
+        if (this._resizeHandler) {
+            window.removeEventListener('resize', this._resizeHandler);
+            this._resizeHandler = null;
+        }
+        if (this._resizeRafId) { cancelAnimationFrame(this._resizeRafId); this._resizeRafId = null; }
+        if (this._resizeTimeoutId) { clearTimeout(this._resizeTimeoutId); this._resizeTimeoutId = null; }
+
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
         if (pagesNeedingFullscreen.includes(this.currentPage)) {
@@ -2487,12 +2536,8 @@ class UniversalTutorialManager {
         window.isInTutorial = false;
         console.log('[Tutorial] 清除全局引导标记');
 
-        // 对于设置页面和记忆浏览页面，恢复页面滚动
-        if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
-            document.body.style.overflow = this._originalBodyOverflow ?? '';
-            this._originalBodyOverflow = undefined;
-            console.log('[Tutorial] 恢复页面滚动');
-        }
+        // 恢复页面滚动
+        this.unlockBodyScroll();
 
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer && this.originalLive2dStyle) {
