@@ -1167,6 +1167,9 @@ class OmniRealtimeClient:
                     self._print_input_transcript = True
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
+                    if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
+                        await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
                 if not self._skip_until_next_response and not self._interrupted:

@@ -350,6 +350,7 @@ class BrowserUseAdapter:
     """
 
     _ip_country_cache: Optional[str] = None
+    _ip_address_cache: Optional[str] = None
 
     def __init__(self, headless: bool = False) -> None:
         _lazy_browser_use_setup()
@@ -371,16 +372,33 @@ class BrowserUseAdapter:
             self.last_error = str(e)
 
     @staticmethod
-    async def _get_ip_country() -> Optional[str]:
-        """Return the user's IP country code (e.g. 'US', 'JP', 'CN').
+    async def _get_ip_info() -> tuple:
+        """Return (ip_address, country_code) for the user.
 
-        Priority: Steam GeoIP -> ipinfo.io fallback.
-        Cached after first successful lookup.
+        Priority: ipinfo.io (gives both IP + country) -> Steam GeoIP fallback (country only).
+        Cached after first successful lookup. Returns (None, None) on failure.
         """
-        if BrowserUseAdapter._ip_country_cache is not None:
-            return BrowserUseAdapter._ip_country_cache
+        if BrowserUseAdapter._ip_address_cache or BrowserUseAdapter._ip_country_cache:
+            return BrowserUseAdapter._ip_address_cache, BrowserUseAdapter._ip_country_cache
 
-        # Try Steam GeoIP first
+        # Primary: ipinfo.io (returns both IP and country)
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=1) as client:
+                resp = await client.get("https://ipinfo.io/json")
+                data = resp.json()
+            ip = (data.get("ip") or "").strip()
+            code = (data.get("country") or "").upper()
+            if ip:
+                BrowserUseAdapter._ip_address_cache = ip
+            if code:
+                BrowserUseAdapter._ip_country_cache = code
+            if ip or code:
+                return ip or None, code or None
+        except Exception as e:
+            logger.debug("[BrowserUse] ipinfo.io failed: %s", e)
+
+        # Fallback: Steam GeoIP (country only, no IP)
         try:
             from main_routers.shared_state import get_steamworks
             sw = get_steamworks()
@@ -391,24 +409,11 @@ class BrowserUseAdapter:
                 if raw:
                     code = raw.upper()
                     BrowserUseAdapter._ip_country_cache = code
-                    return code
+                    return None, code
         except Exception as e:
-            logger.debug("[BrowserUse] Steam GeoIP failed: %s", e)
+            logger.debug("[BrowserUse] Steam GeoIP fallback failed: %s", e)
 
-        # Fallback: public GeoIP API
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get("https://ipinfo.io/json")
-                data = resp.json()
-            code = (data.get("country") or "").upper()
-            if code:
-                BrowserUseAdapter._ip_country_cache = code
-                return code
-        except Exception as e:
-            logger.debug("[BrowserUse] ipinfo.io fallback failed: %s", e)
-
-        return None
+        return None, None
 
     def cancel_running(self) -> None:
         """Signal the currently running task to stop at the next step boundary."""
@@ -658,18 +663,9 @@ class BrowserUseAdapter:
         """
         self._cancelled = False
 
-        # [优化] 旧逻辑：同步获取 IP 国家，阻塞 Chrome 启动
-        # country = self._get_ip_country()
-        # if country:
-        #     instruction = (
-        #         f"[User IP country: {country}] "
-        #         f"Keep this in mind when choosing search engine or regional settings.\n\n"
-        #         f"{instruction}"
-        #     )
-        #
-        # [新逻辑] 后台异步获取 IP 国家（与 Chrome 启动并行），不阻塞
-        # 注意：推迟到所有 pre-checks 通过后再创建，避免 pre-check 失败时浪费网络请求
-        country_future: Optional[asyncio.Task] = None
+        # 后台异步获取 IP 信息（与 Chrome 启动并行），不阻塞
+        # 推迟到所有 pre-checks 通过后再创建，避免 pre-check 失败时浪费网络请求
+        ip_info_future: Optional[asyncio.Task] = None
 
         status = self.is_available()
         if not status.get("ready"):
@@ -708,10 +704,10 @@ class BrowserUseAdapter:
                 "error": json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}}),
             }
 
-        # 所有 pre-checks 通过后才启动 IP 国家查询任务
-        if not BrowserUseAdapter._ip_country_cache:
-            country_future = asyncio.create_task(
-                self._get_ip_country()
+        # 所有 pre-checks 通过后才启动 IP 信息查询任务
+        if not BrowserUseAdapter._ip_address_cache and not BrowserUseAdapter._ip_country_cache:
+            ip_info_future = asyncio.create_task(
+                self._get_ip_info()
             )
 
         for launch_attempt in range(2):
@@ -731,23 +727,31 @@ class BrowserUseAdapter:
                         if session_id and session_id in self._agents:
                             del self._agents[session_id]
 
-                        # [优化] 等待 IP 国家查询结果（如正在进行）并注入到指令中
-                        if country_future is not None:
+                        # [优化] 等待 IP 信息查询结果（如正在进行）并注入到指令中
+                        if ip_info_future is not None:
                             try:
-                                country = await asyncio.wait_for(
-                                    country_future, timeout=2.0
+                                ip_addr, country = await asyncio.wait_for(
+                                    ip_info_future, timeout=1.0
                                 )
-                                if country:
-                                    enhanced_instruction = (
-                                        f"[User IP country: {country}] "
-                                        f"Keep this in mind when choosing search engine or regional settings.\n\n"
-                                        f"{instruction}"
-                                    )
-                                else:
-                                    enhanced_instruction = instruction
                             except asyncio.TimeoutError:
-                                enhanced_instruction = instruction
-                            country_future = None
+                                ip_addr, country = None, None
+                            ip_info_future = None
+                        else:
+                            ip_addr = BrowserUseAdapter._ip_address_cache
+                            country = BrowserUseAdapter._ip_country_cache
+
+                        if ip_addr:
+                            enhanced_instruction = (
+                                f"[User IP: {ip_addr}, country: {country or 'unknown'}] "
+                                f"Keep this in mind when choosing search engine or regional settings.\n\n"
+                                f"{instruction}"
+                            )
+                        elif country:
+                            enhanced_instruction = (
+                                f"[User IP country: {country}] "
+                                f"Keep this in mind when choosing search engine or regional settings.\n\n"
+                                f"{instruction}"
+                            )
                         else:
                             enhanced_instruction = instruction
 
@@ -954,16 +958,15 @@ class BrowserUseAdapter:
                 logger.error("[BrowserUse] Task failed: %s", e)
                 return {"success": False, "error": str(e)}
             finally:
-                # [收口] 取消并等待未完成的 IP 国家查询任务，避免残留后台请求
-                if country_future is not None:
-                    if not country_future.done():
-                        country_future.cancel()
+                # [收口] 取消并等待未完成的 IP 信息查询任务，避免残留后台请求
+                if ip_info_future is not None:
+                    if not ip_info_future.done():
+                        ip_info_future.cancel()
                         try:
-                            # 避免被底层阻塞网络卡死，短等待后直接放弃
-                            await asyncio.wait_for(country_future, timeout=0.05)
+                            await asyncio.wait_for(ip_info_future, timeout=0.05)
                         except (asyncio.CancelledError, asyncio.TimeoutError):
                             pass
-                    country_future = None
+                    ip_info_future = None
         return {"success": False, "error": "browser-use execution failed"}
 
     async def close_session(self, session_id: str) -> None:

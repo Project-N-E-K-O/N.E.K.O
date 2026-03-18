@@ -407,8 +407,8 @@ Live2DManager.prototype._removeManualExpressionOverride = function() {
 
 // 播放表情（优先使用 EmotionMapping.expressions）
 Live2DManager.prototype.playExpression = async function(emotion, specifiedExpressionFile = null) {
-    if (!this.currentModel || !this.emotionMapping) {
-        console.warn('无法播放表情：模型或映射配置未加载');
+    if (!this.currentModel) {
+        console.warn('无法播放表情：模型未加载');
         return;
     }
 
@@ -417,7 +417,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     
     if (!choiceFile) {
         // EmotionMapping.expressions 规范：{ emotion: ["expressions/xxx.exp3.json", ...] }
-        let expressionFiles = (this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) || [];
+        let expressionFiles = (this.emotionMapping && this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) || [];
 
         // 兼容旧结构：从 FileReferences.Expressions 里按前缀分组
         if ((!expressionFiles || expressionFiles.length === 0) && this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
