@@ -207,10 +207,6 @@
    ============================================ */
 
 @media (prefers-color-scheme: dark) {
-    .driver-overlay {
-        background: rgba(0, 0, 0, 0.7) !important;
-    }
-
     .driver-popover {
         background: rgba(20, 20, 30, 0.98) !important;
         border-color: rgba(68, 183, 254, 0.4) !important;
