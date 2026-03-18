@@ -515,7 +515,9 @@
                 event.key === '=' || 
                 event.key === '-' || 
                 event.key === '_' || 
-                event.key === '0') {
+                event.key === '0' ||
+                event.key === 'w' ||
+                event.key === 'W') {
                 event.preventDefault();
                 return false;
             }
