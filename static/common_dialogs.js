@@ -500,8 +500,8 @@
 })();
 
 /**
- * 禁用浏览器缩放快捷键
- * 阻止 Ctrl+/Ctrl- 和 Ctrl+滚轮 缩放页面
+ * 禁用浏览器快捷键
+ * 阻止 Ctrl+/Ctrl-、Ctrl+滚轮 和其他浏览器功能快捷键
  */
 (function() {
     'use strict';
@@ -519,6 +519,52 @@
                 event.preventDefault();
                 return false;
             }
+            // 禁用 Ctrl+P (打印)
+            if (event.key === 'p' || event.key === 'P') {
+                event.preventDefault();
+                return false;
+            }
+            // 禁用 Ctrl+N (新建窗口)
+            if (event.key === 'n' || event.key === 'N') {
+                event.preventDefault();
+                return false;
+            }
+            // 禁用 Ctrl+T (新建标签页)
+            if (event.key === 't' || event.key === 'T') {
+                event.preventDefault();
+                return false;
+            }
+            // 禁用 Ctrl+W (关闭标签页)
+            if (event.key === 'w' || event.key === 'W') {
+                event.preventDefault();
+                return false;
+            }
+            // 禁用 Ctrl+Tab (切换标签页)
+            if (event.key === 'Tab') {
+                event.preventDefault();
+                return false;
+            }
+            // 禁用 Ctrl+L (选中地址栏)
+            if (event.key === 'l' || event.key === 'L') {
+                event.preventDefault();
+                return false;
+            }
+        }
+        
+        // 禁用 Alt+← (后退)
+        if (event.altKey && event.key === 'ArrowLeft') {
+            event.preventDefault();
+            return false;
+        }
+        // 禁用 Alt+→ (前进)
+        if (event.altKey && event.key === 'ArrowRight') {
+            event.preventDefault();
+            return false;
+        }
+        // 禁用 Alt+F (打开菜单)
+        if (event.altKey && (event.key === 'f' || event.key === 'F')) {
+            event.preventDefault();
+            return false;
         }
     }, { passive: false });
     
@@ -546,7 +592,7 @@
         return false;
     }, { passive: false });
     
-    console.log('页面缩放快捷键已禁用');
+    console.log('浏览器快捷键已禁用');
 })();
 
 /**
