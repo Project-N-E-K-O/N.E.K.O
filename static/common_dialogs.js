@@ -550,22 +550,6 @@
                 return false;
             }
         }
-        
-        // 禁用 Alt+← (后退)
-        if (event.altKey && event.key === 'ArrowLeft') {
-            event.preventDefault();
-            return false;
-        }
-        // 禁用 Alt+→ (前进)
-        if (event.altKey && event.key === 'ArrowRight') {
-            event.preventDefault();
-            return false;
-        }
-        // 禁用 Alt+F (打开菜单)
-        if (event.altKey && (event.key === 'f' || event.key === 'F')) {
-            event.preventDefault();
-            return false;
-        }
     }, { passive: false });
     
     // 禁用 Ctrl + 滚轮缩放
