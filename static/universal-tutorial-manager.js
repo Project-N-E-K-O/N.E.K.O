@@ -1451,6 +1451,11 @@ class UniversalTutorialManager {
             // 标记引导正在运行
             this.isTutorialRunning = true;
 
+            // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
+            this._originalBodyOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+            console.log('[Tutorial] 禁用页面滚动');
+
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
                 // 已禁用全屏提示
@@ -1467,6 +1472,8 @@ class UniversalTutorialManager {
             console.error('[Tutorial] 启动引导失败:', error);
             this.isTutorialRunning = false;
             window.isInTutorial = false;
+            document.body.style.overflow = this._originalBodyOverflow ?? '';
+            this._originalBodyOverflow = undefined;
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
         }
@@ -1639,6 +1646,8 @@ class UniversalTutorialManager {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
             this.isTutorialRunning = false;
             window.isInTutorial = false;
+            document.body.style.overflow = this._originalBodyOverflow ?? '';
+            this._originalBodyOverflow = undefined;
             this.restoreTutorialInteractionState();
             this.setTutorialMarkersVisible(true);
             return;
@@ -1734,13 +1743,6 @@ class UniversalTutorialManager {
                 }
             }
         }, 500);
-
-        // 对于设置页面和记忆浏览页面，禁用页面滚动以防止用户在引导中滚动页面导致问题
-        if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
-            this._originalBodyOverflow = document.body.style.overflow;
-            document.body.style.overflow = 'hidden';
-            console.log('[Tutorial] 禁用页面滚动');
-        }
 
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
@@ -2512,12 +2514,10 @@ class UniversalTutorialManager {
         window.isInTutorial = false;
         console.log('[Tutorial] 清除全局引导标记');
 
-        // 对于设置页面和记忆浏览页面，恢复页面滚动
-        if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
-            document.body.style.overflow = this._originalBodyOverflow ?? '';
-            this._originalBodyOverflow = undefined;
-            console.log('[Tutorial] 恢复页面滚动');
-        }
+        // 恢复页面滚动
+        document.body.style.overflow = this._originalBodyOverflow ?? '';
+        this._originalBodyOverflow = undefined;
+        console.log('[Tutorial] 恢复页面滚动');
 
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer && this.originalLive2dStyle) {
