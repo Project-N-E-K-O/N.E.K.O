@@ -1250,23 +1250,42 @@ async def unregister_voice(name: str):
     """解除猫娘的声音注册"""
     try:
         _config_manager = get_config_manager()
+        session_manager = get_session_manager()
         characters = _config_manager.load_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
         # 检查是否已有voice_id
-        if not get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+        old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+        if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
         _config_manager.save_characters(characters)
+
+        # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        session_ended = False
+
+        if is_current_catgirl and name in session_manager:
+            if session_manager[name].is_active:
+                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备刷新...")
+                await send_reload_page_notice(session_manager[name], "音色已清除，页面即将刷新")
+                try:
+                    await session_manager[name].end_session(by_server=True)
+                    session_ended = True
+                    logger.info(f"{name} 的session已结束")
+                except Exception as e:
+                    logger.error(f"结束session时出错: {e}")
+
         # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        if is_current_catgirl:
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
         
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
-        return {"success": True, "message": "声音注册已解除"}
+        return {"success": True, "message": "声音注册已解除", "session_restarted": session_ended, "voice_id_changed": True}
         
     except Exception as e:
         logger.error(f"解除声音注册时出错: {e}")
