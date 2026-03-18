@@ -103,6 +103,8 @@ MMDManager.prototype.setupFloatingButtons = function () {
     const mouseListenerOptions = { passive: true, capture: true };
     window.addEventListener('mousemove', updateMousePosition, mouseListenerOptions);
     this._uiWindowHandlers.push({ event: 'mousemove', handler: updateMousePosition, target: window, options: mouseListenerOptions });
+    window.addEventListener('pointermove', updateMousePosition, mouseListenerOptions);
+    this._uiWindowHandlers.push({ event: 'pointermove', handler: updateMousePosition, target: window, options: mouseListenerOptions });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
     this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout, target: window });
 

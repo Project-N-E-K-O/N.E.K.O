@@ -5094,8 +5094,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!file) return;
 
             const ext = file.name.toLowerCase();
-            if (!ext.endsWith('.pmx') && !ext.endsWith('.pmd')) {
-                showStatus('请选择 .pmx 或 .pmd 文件', 3000);
+            const isZip = ext.endsWith('.zip');
+            if (!ext.endsWith('.pmx') && !ext.endsWith('.pmd') && !isZip) {
+                showStatus('请选择 .pmx、.pmd 或 .zip 文件', 3000);
                 mmdFileUpload.value = '';
                 return;
             }
@@ -5105,7 +5106,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const formData = new FormData();
                 formData.append('file', file);
-                const response = await fetch('/api/model/mmd/upload', {
+                const uploadUrl = isZip ? '/api/model/mmd/upload_zip' : '/api/model/mmd/upload';
+                const response = await fetch(uploadUrl, {
                     method: 'POST',
                     body: formData
                 });

@@ -136,6 +136,8 @@ class MMDCore {
         this._ensureThreeReady();
         const THREE = window.THREE;
 
+        this.manager._isDisposed = false;
+
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
 

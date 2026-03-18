@@ -1299,13 +1299,21 @@ MMDManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
                 features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
 
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName, features);
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(finalUrl, windowName, features);
+                } else {
+                    window.open(finalUrl, windowName, features);
+                }
                 setTimeout(() => { isOpening = false; }, 500);
             } else {
                 if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) windowName = 'neko_chara_manager';
 
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName, features);
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(finalUrl, windowName, features);
+                } else {
+                    window.open(finalUrl, windowName, features);
+                }
                 setTimeout(() => { isOpening = false; }, 500);
             }
         }

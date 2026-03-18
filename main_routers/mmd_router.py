@@ -399,7 +399,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             if target_dir.exists():
                 # 检查是否包含有效模型文件，若无则为残留空目录，自动清理
                 has_valid_model = any(
-                    target_dir.rglob(f'*{ext}')
+                    any(target_dir.rglob(f'*{ext}'))
                     for ext in ALLOWED_MODEL_EXTENSIONS
                 )
                 if has_valid_model:

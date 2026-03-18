@@ -230,11 +230,27 @@ class MMDAnimation {
                 this._audioContext = new (window.AudioContext || window.webkitAudioContext)();
             }
 
+            // 防止对同一 audio element 重复创建 MediaElementSource
+            if (this._audioSource) {
+                if (this._lipSyncAudioElement === audioElement) {
+                    // 同一 element 已经连接，直接返回
+                    return;
+                }
+                // 不同 element，断开旧连接
+                try { this._audioSource.disconnect(); } catch (_) {}
+                this._audioSource = null;
+            }
+            if (this._analyser) {
+                try { this._analyser.disconnect(); } catch (_) {}
+                this._analyser = null;
+            }
+
             this._analyser = this._audioContext.createAnalyser();
             this._analyser.fftSize = 256;
             this._analyser.smoothingTimeConstant = 0.8;
 
             this._audioSource = this._audioContext.createMediaElementSource(audioElement);
+            this._lipSyncAudioElement = audioElement;
             this._audioSource.connect(this._analyser);
             this._analyser.connect(this._audioContext.destination);
 
