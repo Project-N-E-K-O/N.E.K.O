@@ -531,16 +531,15 @@ def get_mmd_models():
                         "location": "project"
                     })
 
-        # 2. 用户目录下的 mmd/（递归搜索，跳过 animation 和 emotion_config）
+        # 2. 用户目录下的 mmd/（递归搜索，跳过保留目录）
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir and mmd_dir.exists():
-            skip_dirs = {'animation', 'emotion_config'}
             found_top_dirs = set()  # 记录包含有效模型的顶层子目录
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in mmd_dir.rglob(f'*{ext}'):
                     try:
                         rel_path = model_file.relative_to(mmd_dir)
-                        if rel_path.parts and rel_path.parts[0] in skip_dirs:
+                        if rel_path.parts and rel_path.parts[0] in RESERVED_DIRS:
                             continue
                     except (ValueError, IndexError):
                         continue
@@ -564,7 +563,7 @@ def get_mmd_models():
             # 查找残缺模型目录（有目录但无 PMX/PMD 的顶层子目录）
             # 这些通常是导入失败后留下的残留，需要显示在列表中以便用户删除
             for item in mmd_dir.iterdir():
-                if item.is_dir() and item.name not in skip_dirs and item.name not in found_top_dirs:
+                if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
                     models.append({
                         "name": item.name,
                         "filename": "",
