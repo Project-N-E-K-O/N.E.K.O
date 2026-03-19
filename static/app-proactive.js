@@ -127,12 +127,8 @@
             return;
         }
 
-        // 只在非语音模式下执行（语音模式下不触发主动搭话）
-        // 文本模式或待机模式都可以触发主动搭话
-        if (S.isRecording) {
-            console.log('语音模式中，不安排主动搭话');
-            return;
-        }
+        // 语音模式和文本模式均可触发主动搭话
+        // 语音模式下通过后端 create_response() 投递，文本模式走原有 WebSocket 路径
 
         // 计算延迟时间（指数退避，倍率2.5）
         var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
@@ -256,7 +252,8 @@
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
-                current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null
+                current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null,
+                is_voice_mode: S.isRecording
             };
 
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
@@ -353,9 +350,10 @@
                 return;
             }
 
-            // 检测用户是否在20秒内有过输入，有过输入则作废本次主动搭话
+            // 检测用户是否在阈值时间内有过输入（语音模式下放宽，VAD 已处理打断）
+            var idleThreshold = S.isRecording ? 5000 : 20000;
             var timeSinceLastInput = Date.now() - (window.lastUserInputTime || 0);
-            if (timeSinceLastInput < 20000) {
+            if (timeSinceLastInput < idleThreshold) {
                 console.log('主动搭话作废：用户在' + Math.round(timeSinceLastInput / 1000) + '秒前有过输入');
                 return;
             }

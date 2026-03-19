@@ -2052,7 +2052,9 @@ async def proactive_chat(request: Request):
         print(f"[{lanlan_name}] Phase 2 完整 prompt 长度: {len(generate_prompt)} 字符")
         
         # --- 前置检查：用户是否空闲、WebSocket 是否在线、session 是否可用 ---
-        if not await mgr.prepare_proactive_delivery(min_idle_secs=30.0):
+        is_voice_mode = data.get('is_voice_mode', False)
+        idle_secs = 5.0 if is_voice_mode else 30.0
+        if not await mgr.prepare_proactive_delivery(min_idle_secs=idle_secs):
             return JSONResponse({
                 "success": True,
                 "action": "pass",
@@ -2119,7 +2121,8 @@ async def proactive_chat(request: Request):
                         # 缓冲中剩余的文本作为首批内容
                         if cleaned.strip():
                             full_text += cleaned
-                            await mgr.feed_tts_chunk(cleaned)
+                            if not is_voice_mode:
+                                await mgr.feed_tts_chunk(cleaned)
                         continue
                     
                     # --- 在线拦截: fence ---
@@ -2142,7 +2145,8 @@ async def proactive_chat(request: Request):
                         break
                     
                     full_text += content
-                    await mgr.feed_tts_chunk(content)
+                    if not is_voice_mode:
+                        await mgr.feed_tts_chunk(content)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
@@ -2162,7 +2166,8 @@ async def proactive_chat(request: Request):
                 aborted = True
             elif cleaned.strip():
                 full_text += cleaned
-                await mgr.feed_tts_chunk(cleaned)
+                if not is_voice_mode:
+                    await mgr.feed_tts_chunk(cleaned)
         
         # --- 结果处理 ---
         print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {(buffer + full_text)[:300]}\n")

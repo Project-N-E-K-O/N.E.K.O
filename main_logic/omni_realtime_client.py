@@ -980,22 +980,20 @@ class OmniRealtimeClient:
             logger.error(f"Error sending client content to Gemini: {e}")
 
     async def stream_proactive(self, instruction: str) -> bool:
-        """Proactive delivery stub for voice mode.
-
-        Voice mode proactive delivery is handled by the hot-swap mechanism
-        (pending_extra_replies → _trigger_immediate_preparation_for_extra →
-        _perform_final_swap_sequence).  This method is a placeholder that
-        satisfies the unified OmniClient interface; it always returns False so
-        that LLMSessionManager knows delivery was not performed here and the
-        hot-swap path should be used instead.
-
-        When voice-mode instant proactive delivery is implemented in the future,
-        replace this stub with the actual logic (e.g. create_response with a
-        properly framed system turn).
-        """
-        _ = instruction
-        logger.debug("OmniRealtimeClient.stream_proactive: delegating to hot-swap mechanism")
-        return False
+        """语音模式主动搭话：通过 create_response() 注入文本让语音 API 朗读。"""
+        if not instruction or not instruction.strip():
+            return False
+        if self._is_responding:
+            logger.debug("stream_proactive: AI is responding, skip")
+            return False
+        if self._audio_in_buffer:
+            logger.debug("stream_proactive: user speaking, skip")
+            return False
+        if not self.ws:
+            logger.warning("stream_proactive: no active WebSocket connection")
+            return False
+        await self.create_response(instruction)
+        return True
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
