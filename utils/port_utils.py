@@ -26,6 +26,26 @@ logger = get_module_logger(__name__)
 HEALTH_APP_SIGNATURE = "N.E.K.O"
 
 
+def set_port_probe_reuse(sock: socket.socket) -> None:
+    """Align bind probes with runtime server behavior as closely as practical.
+
+    On POSIX, asyncio/uvicorn listeners enable ``SO_REUSEADDR`` by default, which
+    allows rebinding while prior connections are still in ``TIME_WAIT``.
+    The launcher's plain bind probes should mirror that; otherwise they can report
+    a false port conflict even though the actual server can bind immediately.
+
+    On Windows we intentionally leave the socket untouched here. The default
+    ``asyncio.create_server()`` path does not enable ``SO_REUSEADDR`` there, and
+    Windows' ``SO_REUSEADDR`` semantics are broad enough to allow address sharing
+    in ways we do not want for local control-plane ports.
+    """
+    if os.name == "posix" and sys.platform != "cygwin":
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except OSError:
+            pass
+
+
 def build_health_response(
     service: str,
     *,

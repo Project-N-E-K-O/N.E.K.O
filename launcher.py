@@ -55,6 +55,7 @@ from utils.port_utils import (
     release_startup_lock,
     get_hyperv_excluded_ranges,
     is_port_in_excluded_range,
+    set_port_probe_reuse,
 )
 
 # 本次 launcher 启动的唯一标识
@@ -358,7 +359,11 @@ SERVERS = [
 
 # 不再启动主程序，用户自己启动 lanlan_frd.exe
 
-def run_memory_server(ready_event: Event, import_event: Event | None = None):
+def run_memory_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Memory Server"""
     try:
         _reload_runtime_config_from_env()
@@ -399,6 +404,14 @@ def run_memory_server(ready_event: Event, import_event: Event | None = None):
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Memory Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="memory-shutdown-watch", daemon=True).start()
         
         # 在后台线程中运行服务器
         import asyncio
@@ -431,7 +444,11 @@ def run_memory_server(ready_event: Event, import_event: Event | None = None):
         import traceback
         traceback.print_exc()
 
-def run_agent_server(ready_event: Event, import_event: Event | None = None):
+def run_agent_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Agent Server (不需要等待初始化)"""
     try:
         _reload_runtime_config_from_env()
@@ -465,20 +482,35 @@ def run_agent_server(ready_event: Event, import_event: Event | None = None):
         ready_event.set()
         
         _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
-        uvicorn.run(
-            agent_server.app,
+        config = uvicorn.Config(
+            app=agent_server.app,
             host="127.0.0.1",
             port=TOOL_SERVER_PORT,
             log_level="error",
             proxy_headers=_behind_proxy,
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
+        server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Agent Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="agent-shutdown-watch", daemon=True).start()
+
+        server.run()
     except Exception as e:
         print(f"Agent Server error: {e}")
         import traceback
         traceback.print_exc()
 
-def run_main_server(ready_event: Event, import_event: Event | None = None):
+def run_main_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Main Server"""
     try:
         _reload_runtime_config_from_env()
@@ -512,6 +544,14 @@ def run_main_server(ready_event: Event, import_event: Event | None = None):
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Main Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="main-shutdown-watch", daemon=True).start()
         
         # 添加启动完成的回调
         async def startup():
@@ -594,6 +634,7 @@ def get_port_owners(port: int) -> list[int]:
 def _is_port_bindable(port: int) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", port))
         return True
     except OSError:
@@ -612,6 +653,7 @@ def _pick_fallback_port(preferred_port: int, reserved: set[int]) -> int | None:
     # 2) Fallback to any OS-assigned free port
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
         sock.close()
@@ -863,12 +905,13 @@ def start_server(server: Dict) -> bool:
         # 创建进程间同步事件
         server['ready_event'] = Event()
         server['import_event'] = Event()
+        server['shutdown_event'] = Event()
         
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
             target=target_func,
-            args=(server['ready_event'], server['import_event']),
+            args=(server['ready_event'], server['import_event'], server['shutdown_event']),
             daemon=False,
         )
         server['process'].start()
@@ -971,17 +1014,25 @@ def cleanup_servers():
             continue
 
         try:
-            # 先尝试温和终止
+            shutdown_evt = server.get('shutdown_event')
+
+            # 先请求子进程优雅退出
+            if proc.is_alive():
+                if shutdown_evt is not None:
+                    shutdown_evt.set()
+                proc.join(timeout=8)
+
+            # 第二步：仍存活则发送终止信号
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=3)
+                proc.join(timeout=5)
 
-            # 第二步：仍存活则 kill
+            # 第三步：仍存活则 kill
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=2)
 
-            # 第三步：兜底强杀整个进程树，防止孙进程残留
+            # 第四步：兜底强杀整个进程树，防止孙进程残留
             pid = proc.pid
             if pid:
                 if sys.platform == 'win32':
