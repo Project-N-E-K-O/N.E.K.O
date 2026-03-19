@@ -38,6 +38,7 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 # 允许的文件扩展名
 ALLOWED_MODEL_EXTENSIONS = {'.pmx', '.pmd'}
 ALLOWED_ANIMATION_EXTENSIONS = {'.vmd'}
+RESERVED_DIRS = {'animation', 'emotion_config'}
 
 
 def safe_mmd_path(mmd_dir: Path, filename: str, subdir: str | None = None) -> tuple[Path | None, str]:
@@ -422,6 +423,11 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     "success": False, "error": "路径越界"
                 })
 
+            if extract_dir_name.lower() in RESERVED_DIRS:
+                return JSONResponse(status_code=400, content={
+                    "success": False, "error": f"目录名 '{extract_dir_name}' 是保留名称，不能用作模型目录"
+                })
+
             if target_dir.exists():
                 # 检查是否包含有效模型文件，若无则为残留空目录，自动清理
                 has_valid_model = any(
@@ -739,7 +745,7 @@ async def delete_mmd_model(request: Request):
             # safe_mmd_path 拒绝目录路径，但对于残缺模型目录需要允许删除
             # 检查是否是 mmd_dir 的直接子目录且包含模型文件
             candidate = (mmd_dir / rel_path).resolve()
-            if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()):
+            if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
                 has_model = any(
                     any(candidate.rglob(f'*{ext}'))
                     for ext in ALLOWED_MODEL_EXTENSIONS
@@ -772,13 +778,17 @@ async def delete_mmd_model(request: Request):
             top_subdir = mmd_dir / rel_to_mmd.parts[0]
             if not top_subdir.resolve().is_relative_to(mmd_dir.resolve()):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
+            if top_subdir.name.lower() in RESERVED_DIRS:
+                return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
             for f in top_subdir.rglob('*'):
                 if f.is_file():
                     deleted_files += 1
             shutil.rmtree(top_subdir)
             logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
         else:
-            # 模型在顶层：只删除 PMX 文件本身
+            # 模型在顶层：只删除模型文件本身
+            if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+                return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
             safe_path.unlink()
             deleted_files = 1
             logger.info(f"删除 MMD 模型文件: {safe_path}")

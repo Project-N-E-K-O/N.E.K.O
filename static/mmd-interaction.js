@@ -364,6 +364,7 @@ class MMDInteraction {
     async _savePositionAfterInteraction() {
         if (!this.manager.currentModel || !this.manager.currentModel.url) return;
 
+        const modelUrl = this.manager.currentModel.url;
         const mesh = this.manager.currentModel.mesh;
         if (!mesh) return;
 
@@ -410,7 +411,7 @@ class MMDInteraction {
 
         if (this.manager.core && typeof this.manager.core.saveUserPreferences === 'function') {
             this.manager.core.saveUserPreferences(
-                this.manager.currentModel.url,
+                modelUrl,
                 position, scale, rotation,
                 displayInfo, viewportInfo
             ).then(success => {
