@@ -221,6 +221,41 @@ class MemeFetcher:
         """搜索 GIF 表情包"""
         return await self.search(keyword, limit, search_type="gif")
 
+async def fetch_meme_content(keyword: str, limit: int = 5) -> dict:
+    """
+    高层封装：搜索表情包并返回结构化数据及格式化内容。
+    用于主动搭话流程。
+    """
+    if not keyword:
+        return {"success": False, "error": "关键词为空", "data": [], "formatted_content": ""}
+    
+    try:
+        async with MemeFetcher() as fetcher:
+            results = await fetcher.search(keyword, limit=limit)
+            
+            if not results:
+                return {
+                    "success": True, 
+                    "data": [], 
+                    "formatted_content": "",
+                    "raw_data": {"data": []}
+                }
+            
+            # 格式化文本输出，用于 LLM 参考
+            lines = [f"--- 搜到的表情包 ({keyword}) ---"]
+            for i, r in enumerate(results, 1):
+                lines.append(f"{i}. {r['title']} | URL: {r['url']}")
+            
+            return {
+                "success": True,
+                "data": results,
+                "formatted_content": "\n".join(lines),
+                "raw_data": {"data": results}
+            }
+    except Exception as e:
+        logger.error(f"fetch_meme_content 失败: {e}")
+        return {"success": False, "error": str(e), "data": [], "formatted_content": ""}
+
 # ==========================================
 # 测试模块
 # ==========================================
