@@ -199,6 +199,7 @@ class MMDInteraction {
                 e.stopPropagation();
                 this._disableButtonPointerEvents();
             } else if (e.button === 2) { // 右键 - 旋转模型
+                if (!this._hitTestModel(e.clientX, e.clientY)) return;
                 this.isDragging = true;
                 this.dragMode = 'orbit';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };

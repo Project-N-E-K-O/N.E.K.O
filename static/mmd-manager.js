@@ -317,6 +317,24 @@ class MMDManager {
         }
     }
 
+    // ═══════════════════ 渲染控制 ═══════════════════
+
+    pauseRendering() {
+        this._shouldRender = false;
+        if (this._animationFrameId) {
+            cancelAnimationFrame(this._animationFrameId);
+            this._animationFrameId = null;
+        }
+    }
+
+    resumeRendering() {
+        if (this._isDisposed) return;
+        this._shouldRender = true;
+        if (!this._animationFrameId && this.core) {
+            this.core._startRenderLoop();
+        }
+    }
+
     // ═══════════════════ 清理 ═══════════════════
 
     dispose() {

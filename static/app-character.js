@@ -136,11 +136,12 @@
             // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                const mmdPath = catgirlConfig.mmd
-                    || catgirlConfig._reserved?.avatar?.mmd?.model_path
+                const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+                const mmdPath = _sanitize(catgirlConfig.mmd)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
                     || '';
-                const vrmPath = catgirlConfig.vrm
-                    || catgirlConfig._reserved?.avatar?.vrm?.model_path
+                const vrmPath = _sanitize(catgirlConfig.vrm)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
                     || '';
                 if (mmdPath) {
                     effectiveModelType = 'mmd';

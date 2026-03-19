@@ -717,11 +717,12 @@
             // 解析 live3d 子类型（与 app-character.js 保持一致）
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                const mmdPath = catgirlConfig.mmd
-                    || catgirlConfig._reserved?.avatar?.mmd?.model_path
+                const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+                const mmdPath = _sanitize(catgirlConfig.mmd)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
                     || '';
-                const vrmPath = catgirlConfig.vrm
-                    || catgirlConfig._reserved?.avatar?.vrm?.model_path
+                const vrmPath = _sanitize(catgirlConfig.vrm)
+                    || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
                     || '';
                 if (mmdPath) {
                     effectiveModelType = 'mmd';
@@ -898,6 +899,8 @@
                 if (mmdCanvasVrm) { mmdCanvasVrm.style.visibility = 'hidden'; mmdCanvasVrm.style.pointerEvents = 'none'; }
                 const mmdFloatingButtonsVrm = document.getElementById('mmd-floating-buttons');
                 if (mmdFloatingButtonsVrm) { mmdFloatingButtonsVrm.style.display = 'none'; }
+                const mmdLockIconVrm = document.getElementById('mmd-lock-icon');
+                if (mmdLockIconVrm) { mmdLockIconVrm.style.display = 'none'; }
 
             } else if (effectiveModelType === 'mmd') {
                 // ═══════════════ 显示 MMD 模型 ═══════════════
@@ -1006,6 +1009,8 @@
                 if (mmdCanvasL2d) { mmdCanvasL2d.style.visibility = 'hidden'; mmdCanvasL2d.style.pointerEvents = 'none'; }
                 const mmdFloatingButtonsL2d = document.getElementById('mmd-floating-buttons');
                 if (mmdFloatingButtonsL2d) { mmdFloatingButtonsL2d.style.display = 'none'; }
+                const mmdLockIconL2d = document.getElementById('mmd-lock-icon');
+                if (mmdLockIconL2d) { mmdLockIconL2d.style.display = 'none'; }
             }
         } catch (error) {
             console.error('[showCurrentModel] 失败:', error);

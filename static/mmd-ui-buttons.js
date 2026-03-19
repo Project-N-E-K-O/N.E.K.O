@@ -610,7 +610,7 @@ MMDManager.prototype._startUIUpdateLoop = function () {
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
                     buttonsContainer.style.transformOrigin = 'right bottom';
-                    buttonsContainer.style.display = 'flex';
+                    buttonsContainer.style.display = this.isLocked ? 'none' : 'flex';
                 } else {
                     buttonsContainer.style.transformOrigin = 'left top';
                     const isLocked = this.isLocked;
