@@ -773,6 +773,9 @@ async def delete_mmd_model(request: Request):
 
         if model_parent.resolve() != mmd_dir.resolve():
             # 模型在子目录中：删除整个子目录（包含纹理等关联资源）
+            # 先验证请求的路径确实指向模型文件
+            if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+                return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
             # 找到 mmd_dir 的直接子目录
             rel_to_mmd = model_parent.resolve().relative_to(mmd_dir.resolve())
             top_subdir = mmd_dir / rel_to_mmd.parts[0]

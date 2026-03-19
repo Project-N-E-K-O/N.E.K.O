@@ -337,10 +337,7 @@ class MMDManager {
 
     // ═══════════════════ 清理 ═══════════════════
 
-    dispose() {
-        this._isDisposed = true;
-        this._shouldRender = false;
-
+    cleanupUI() {
         // 清理浮动按钮
         if (typeof this.cleanupFloatingButtons === 'function') {
             this.cleanupFloatingButtons();
@@ -361,6 +358,16 @@ class MMDManager {
         if (typeof window.cleanupMMDDebugPanel === 'function') {
             window.cleanupMMDDebugPanel();
         }
+
+        console.log('[MMD Manager] UI 已清理');
+    }
+
+    dispose() {
+        this._isDisposed = true;
+        this._shouldRender = false;
+
+        // 先清理 UI
+        this.cleanupUI();
 
         // 清理各模块
         if (this.animationModule) {

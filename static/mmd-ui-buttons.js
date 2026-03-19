@@ -820,4 +820,7 @@ MMDManager.prototype.cleanupFloatingButtons = function () {
     this._mmdLockIcon = null;
     this._floatingButtons = null;
     this._returnButtonContainer = null;
+    this._floatingButtonsContainer = null;
+    this._isInReturnState = false;
+    this._mmdButtonsHovered = false;
 };

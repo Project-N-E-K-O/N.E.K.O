@@ -102,6 +102,24 @@
     }
 })();
 
+// ===== 全局错误捕获：在页面状态栏显示错误信息 =====
+window.addEventListener('error', (event) => {
+    // 忽略浏览器扩展/Electron IPC 的已知无害错误
+    const msg = event.message || '';
+    if (msg.includes('message channel closed') || msg.includes('Extension context invalidated')) return;
+    console.error('[model_manager] 全局错误:', event.error || msg);
+    const statusSpan = document.getElementById('status-text');
+    if (statusSpan) statusSpan.textContent = `初始化错误: ${msg}`;
+});
+window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason?.message || String(event.reason || '');
+    // 忽略浏览器扩展/Electron IPC 的已知无害错误
+    if (reason.includes('message channel closed') || reason.includes('Extension context invalidated')) return;
+    console.error('[model_manager] 未处理的 Promise 拒绝:', event.reason);
+    const statusSpan = document.getElementById('status-text');
+    if (statusSpan) statusSpan.textContent = `异步错误: ${reason}`;
+});
+
 // ===== 选项条统一管理器 =====
 /**
  * 选项条统一管理器
@@ -683,6 +701,21 @@ const isFullscreen = () => {
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
+    console.log('[模型管理] DOMContentLoaded 开始初始化');
+
+    // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
+    const _earlyBackBtn = document.getElementById('backToMainBtn');
+    if (_earlyBackBtn) {
+        _earlyBackBtn.addEventListener('click', () => {
+            if (window.opener && !window.opener.closed) {
+                window.close();
+            } else {
+                window.location.href = '/';
+            }
+        }, { once: true });
+    }
+
+  try {
     // 更新i18n翻译
     if (window.updatePageTexts && typeof window.updatePageTexts === 'function') {
         window.updatePageTexts();
@@ -1353,8 +1386,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     };
 
-    await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
-    showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
+    try {
+        if (!window.live2dManager) {
+            throw new Error('Live2DManager 未初始化');
+        }
+        await window.live2dManager.ensurePIXIReady('live2d-canvas', 'live2d-container');
+        showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
+    } catch (pixiError) {
+        console.error('[模型管理] PIXI 初始化失败:', pixiError);
+        showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${pixiError.message}`));
+    }
 
     // 先加载模型列表
     try {
@@ -1397,7 +1438,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 兼容旧值：'vrm' 已合并到 'live3d'
     if (savedModelType === 'vrm') savedModelType = 'live3d';
     let savedSubType = localStorage.getItem('live3dSubType') || '';
-    await switchModelDisplay(savedModelType, savedSubType);
+    console.log('[模型管理] 切换显示模式:', savedModelType, savedSubType);
+    try {
+        await switchModelDisplay(savedModelType, savedSubType);
+    } catch (switchError) {
+        console.error('[模型管理] 切换模型显示模式失败:', switchError);
+        showStatus(t('live2d.switchDisplayFailed', `切换显示模式失败: ${switchError.message}`), 3000);
+    }
 
     // 注意：loadCurrentCharacterModel() 的调用已移到所有事件监听器注册之后
     // 这样才能正确触发 change 事件来加载模型
@@ -2258,8 +2305,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (vrmModelSelect) {
                             let matched = false;
                             // 检查是否有 MMD 模型配置
-                            if (catgirlConfig && catgirlConfig.mmd && catgirlConfig.mmd.model_path) {
-                                const mmdPath = catgirlConfig.mmd.model_path;
+                            const _mmdPathSwitch = catgirlConfig && catgirlConfig.mmd
+                                ? (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path)
+                                : '';
+                            if (_mmdPathSwitch) {
+                                const mmdPath = _mmdPathSwitch;
                                 const mmdFilename = mmdPath.split(/[/\\]/).pop();
                                 const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                                     if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
@@ -5827,7 +5877,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (e) {
                 console.error('重新加载Live3D模型列表失败:', e);
             }
-            }
         }
 
         if (successCount > 0) {
@@ -6241,7 +6290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (modelType === 'vrm') modelType = 'live3d';
 
             // 如果模型类型是 Live3D 但没有任何有效模型路径（VRM/MMD），自动修复配置
-            const hasValidMMDPath = !!(catgirlConfig.mmd && catgirlConfig.mmd.model_path);
+            const hasValidMMDPath = !!(catgirlConfig.mmd && (typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path));
 
             // 确定 Live3D 子类型（VRM 或 MMD）
             let live3dSubType = '';
@@ -6298,7 +6347,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 if (hasValidMMDPath && vrmModelSelect) {
                     // MMD 模型：在合并列表中查找 [MMD] 选项
-                    const mmdPath = catgirlConfig.mmd.model_path;
+                    const mmdPath = typeof catgirlConfig.mmd === 'string' ? catgirlConfig.mmd : catgirlConfig.mmd.model_path;
                     const mmdFilename = mmdPath.split(/[/\\]/).pop();
                     const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
                         if (!opt.value || opt.getAttribute('data-sub-type') !== 'mmd') return false;
@@ -6486,7 +6535,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 所有事件监听器已注册，现在可以安全地加载当前角色模型
     // 这样 VRM 的 change 事件处理程序才能正确执行
-    await loadCurrentCharacterModel();
+    try {
+        await loadCurrentCharacterModel();
+    } catch (loadError) {
+        console.error('[模型管理] 加载当前角色模型失败:', loadError);
+        showStatus(t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));
+    }
 
     // 如果已自动加载了一个模型，确保在下拉框中选中它
     // 这是双重保险：防止 loadCurrentCharacterModel() 内部设置失败
@@ -6496,6 +6550,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             modelSelect.value = currentModelInfo.name;
         }
     }
+  } catch (_fatalError) {
+    console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
+    const _s = document.getElementById('status-text');
+    if (_s) _s.textContent = `初始化失败: ${_fatalError.message}`;
+  }
 });
 
 // 监听页面卸载事件，确保返回时主界面可见

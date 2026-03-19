@@ -357,6 +357,12 @@ class MMDInteraction {
         this.mouseUpHandler = null;
         this.mouseLeaveHandler = null;
         this.wheelHandler = null;
+
+        // 重置拖拽状态，防止 cleanup 在拖拽途中被调用时卡死
+        this.isDragging = false;
+        this.dragMode = null;
+        this._orbitPivot = null;
+        this._restoreButtonPointerEvents();
     }
 
     // ═══════════════════ 偏好保存 ═══════════════════
