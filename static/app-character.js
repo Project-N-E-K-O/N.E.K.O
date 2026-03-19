@@ -328,13 +328,12 @@
                 }
 
                 // 清理 MMD UI 资源（浮动按钮、锁图标等）
-                if (effectiveModelType !== 'mmd') {
-                    if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
-                        window.mmdManager.cleanupUI();
-                    } else {
-                        document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
-                            .forEach(el => el.remove());
-                    }
+                // MMD→MMD 切换时也需要清理旧 UI（return-state 等），后续会重建
+                if (window.mmdManager && typeof window.mmdManager.cleanupUI === 'function') {
+                    window.mmdManager.cleanupUI();
+                } else if (effectiveModelType !== 'mmd') {
+                    document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
+                        .forEach(el => el.remove());
                 }
 
                 if (window.mmdManager) {
@@ -811,8 +810,9 @@
                 // 加载 MMD 模型
                 console.log('[猫娘切换] 进入MMD加载分支');
 
-                // 获取 MMD 模型路径
-                let mmdModelPath = catgirlConfig.mmd
+                // 获取 MMD 模型路径（复用前面检测阶段已净化的 mmdPath）
+                let mmdModelPath = mmdPath
+                    || catgirlConfig.mmd
                     || catgirlConfig._reserved?.avatar?.mmd?.model_path
                     || '';
 

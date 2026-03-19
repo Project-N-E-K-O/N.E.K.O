@@ -750,10 +750,12 @@ async def delete_mmd_model(request: Request):
                     any(candidate.rglob(f'*{ext}'))
                     for ext in ALLOWED_MODEL_EXTENSIONS
                 )
-                if not has_model:
+                if has_model:
+                    # 目录含有效模型文件，应通过模型 URL 而非目录路径删除
                     return JSONResponse(status_code=400, content={
-                        "success": False, "error": "该目录不是模型目录，拒绝删除"
+                        "success": False, "error": "该目录包含模型文件，请通过模型 URL 删除"
                     })
+                # 残缺目录（无模型文件）：允许删除
                 deleted_files = sum(1 for f in candidate.rglob('*') if f.is_file())
                 shutil.rmtree(candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")

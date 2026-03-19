@@ -114,9 +114,9 @@ class MMDManager {
         try {
             const modelInfo = await this.core.loadModel(modelPath);
 
-            // 检查是否已被新的加载请求取代
-            if (this._activeLoadToken !== loadToken) {
-                console.log('[MMD Manager] 模型加载已被取代');
+            // 检查是否已被新的加载请求取代或已 dispose
+            if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                console.log('[MMD Manager] 模型加载已被取代或已销毁');
                 return null;
             }
 
@@ -128,6 +128,12 @@ class MMDManager {
             // 加载表情映射
             if (this.expression && modelInfo.name) {
                 await this.expression.loadMoodMap(modelInfo.name);
+            }
+
+            // 再次检查（loadMoodMap 是异步的）
+            if (this._isDisposed || this._activeLoadToken !== loadToken) {
+                console.log('[MMD Manager] 模型加载已被取代或已销毁（表情加载后）');
+                return null;
             }
 
             this._isModelReadyForInteraction = true;
@@ -365,6 +371,8 @@ class MMDManager {
     dispose() {
         this._isDisposed = true;
         this._shouldRender = false;
+        this._isModelReadyForInteraction = false;
+        this._activeLoadToken++;  // 使进行中的 loadModel 失效
 
         // 先清理 UI
         this.cleanupUI();
