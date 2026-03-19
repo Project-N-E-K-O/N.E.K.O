@@ -134,13 +134,15 @@
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
 
             // 检测 live3d 子类型（优先检查 MMD，与后端 _get_live3d_sub_type 保持一致）
+            const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
+            let mmdPath = '';
+            let vrmPath = '';
             let effectiveModelType = modelType;
             if (modelType === 'live3d') {
-                const _sanitize = v => (typeof v === 'string' && v.trim() && v !== 'undefined' && v !== 'null') ? v : '';
-                const mmdPath = _sanitize(catgirlConfig.mmd)
+                mmdPath = _sanitize(catgirlConfig.mmd)
                     || _sanitize(catgirlConfig._reserved?.avatar?.mmd?.model_path)
                     || '';
-                const vrmPath = _sanitize(catgirlConfig.vrm)
+                vrmPath = _sanitize(catgirlConfig.vrm)
                     || _sanitize(catgirlConfig._reserved?.avatar?.vrm?.model_path)
                     || '';
                 if (mmdPath) {

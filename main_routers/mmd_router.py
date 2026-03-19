@@ -798,8 +798,9 @@ async def delete_mmd_model(request: Request):
             deleted_files = 1
             logger.info(f"删除 MMD 模型文件: {safe_path}")
 
-        # 同时删除对应的情感映射配置
-        emotion_config = mmd_dir / "emotion_config" / f"{model_name}.json"
+        # 同时删除对应的情感映射配置（与 GET/POST 保持一致的规范化）
+        safe_model_name = model_name.replace('..', '_')
+        emotion_config = mmd_dir / "emotion_config" / f"{safe_model_name}.json"
         if emotion_config.exists() and emotion_config.resolve().is_relative_to((mmd_dir / "emotion_config").resolve()):
             emotion_config.unlink()
             logger.info(f"删除 MMD 情感映射配置: {emotion_config}")
