@@ -113,6 +113,7 @@ class PluginContext:
     _response_queue: Optional[Any] = None
     _response_pending: Optional[Dict[str, Any]] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
+    _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
     _bus_hub: Optional[Any] = None
     _push_seq: int = 0
@@ -282,6 +283,44 @@ class PluginContext:
             yield
         finally:
             _CURRENT_RUN_ID.reset(token)
+
+    @property
+    def handler_ctx(self) -> Optional[str]:
+        return _IN_HANDLER.get()
+
+    @property
+    def current_entry_id(self) -> Optional[str]:
+        handler_ctx = self.handler_ctx
+        if not isinstance(handler_ctx, str):
+            return None
+        prefix = "plugin_entry."
+        if not handler_ctx.startswith(prefix):
+            return None
+        entry_id = handler_ctx[len(prefix):].strip()
+        return entry_id or None
+
+    def get_current_entry_meta(self) -> Optional[Any]:
+        entry_id = self.current_entry_id
+        if not isinstance(entry_id, str) or not entry_id:
+            return None
+
+        entry_meta_map = getattr(self, "_entry_meta_map", None)
+        if isinstance(entry_meta_map, dict):
+            entry_meta = entry_meta_map.get(entry_id)
+            if entry_meta is not None:
+                return entry_meta
+
+        instance = getattr(self, "_instance", None)
+        collect_entries = getattr(instance, "collect_entries", None)
+        if callable(collect_entries):
+            try:
+                collected = collect_entries(wrap_with_hooks=True)
+            except Exception:
+                return None
+            if isinstance(collected, dict):
+                handler_obj = collected.get(entry_id)
+                return getattr(handler_obj, "meta", None)
+        return None
 
     @property
     def run_id(self) -> Optional[str]:
