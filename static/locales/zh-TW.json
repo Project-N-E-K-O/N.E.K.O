@@ -1248,7 +1248,8 @@
         "renameError": "重新命名失敗: {{error}}",
         "renameMasterTitle": "重新命名主人",
         "renameSuccess": "重新命名成功",
-        "saveMasterError": "儲存主人設定失敗"
+        "saveMasterError": "儲存主人設定失敗",
+        "autoSaved": "已自動儲存設定"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",

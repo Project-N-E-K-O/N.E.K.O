@@ -1248,7 +1248,8 @@
         "renameError": "Rename failed: {{error}}",
         "renameMasterTitle": "Rename Master",
         "renameSuccess": "Rename successful",
-        "saveMasterError": "Failed to save master settings"
+        "saveMasterError": "Failed to save master settings",
+        "autoSaved": "Settings auto-saved"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",
