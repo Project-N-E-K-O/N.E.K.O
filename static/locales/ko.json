@@ -1248,6 +1248,7 @@
         "renameError": "이름 변경 실패: {{error}}",
         "renameMasterTitle": "주인 이름 변경",
         "renameSuccess": "이름 변경 성공",
+        "saveError": "설정 저장 실패",
         "saveMasterError": "주인 설정 저장 실패",
         "autoSaved": "설정 자동 저장됨"
     },

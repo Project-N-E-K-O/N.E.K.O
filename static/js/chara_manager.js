@@ -63,17 +63,20 @@ async function autoSaveMasterField(input) {
         return;
     }
     
-    // 收集所有字段数据
+    // 收集所有字段数据（保存发送时的快照 key 集合）
     const allData = {};
     for (const [k, v] of new FormData(form).entries()) {
         if (k && v) allData[k] = v;
     }
-    
+
     // 确保档案名存在
     if (!allData['档案名']) {
         return;
     }
-    
+
+    // 记录本次发送涉及的字段名
+    const sentFields = new Set(Object.keys(allData));
+
     try {
         const response = await fetch('/api/characters/master', {
             method: 'POST',
@@ -82,9 +85,13 @@ async function autoSaveMasterField(input) {
         });
 
         if (response.ok) {
-            // 更新所有输入框的原始值
+            // 只更新本次发送快照涉及的输入框原始值
             const allInputs = form.querySelectorAll('input, textarea');
-            allInputs.forEach(inp => storeOriginalValue(inp));
+            allInputs.forEach(inp => {
+                if (inp.name && sentFields.has(inp.name)) {
+                    storeOriginalValue(inp);
+                }
+            });
             // 更新 characterData
             if (characterData && characterData['主人']) {
                 characterData['主人'][fieldName] = input.value;
@@ -118,7 +125,7 @@ async function autoSaveCatgirlField(input, catgirlName) {
     // 收集当前表单的所有数据
     const data = { '档案名': catgirlName };
     
-    // 收集所有非保留字段
+    // 收集所有非保留字段（记录本次发送涉及的字段名）
     const ALL_RESERVED_FIELDS = ['档案名', ...getAllReservedFields()];
     const inputs = form.querySelectorAll('input, textarea');
     inputs.forEach(inp => {
@@ -126,7 +133,9 @@ async function autoSaveCatgirlField(input, catgirlName) {
             data[inp.name] = inp.value;
         }
     });
-    
+
+    const sentFields = new Set(Object.keys(data));
+
     try {
         const response = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',
@@ -135,9 +144,13 @@ async function autoSaveCatgirlField(input, catgirlName) {
         });
 
         if (response.ok) {
-            // 更新所有输入框的原始值
+            // 只更新本次发送快照涉及的输入框原始值
             const allInputs = form.querySelectorAll('input, textarea');
-            allInputs.forEach(inp => storeOriginalValue(inp));
+            allInputs.forEach(inp => {
+                if (inp.name && sentFields.has(inp.name)) {
+                    storeOriginalValue(inp);
+                }
+            });
             // 更新 characterData
             if (characterData && characterData['猫娘'] && characterData['猫娘'][catgirlName]) {
                 characterData['猫娘'][catgirlName][fieldName] = input.value;
@@ -150,24 +163,24 @@ async function autoSaveCatgirlField(input, catgirlName) {
             showAutoSaveToast();
         } else {
             console.error('自动保存猫娘字段失败: HTTP', response.status);
-            alert(window.t ? window.t('character.saveMasterError') : '保存设定失败');
+            alert(window.t ? window.t('character.saveError') : '保存设定失败');
         }
     } catch (error) {
         console.error('自动保存猫娘字段失败:', error);
-        alert(window.t ? window.t('character.saveMasterError') : '保存设定失败');
+        alert(window.t ? window.t('character.saveError') : '保存设定失败');
     }
 }
 
 // 为输入框添加自动保存监听器
 function attachAutoSaveListener(input, type, catgirlName) {
-    if (input.dataset.autoSaveAttached === 'true') return;
-    input.dataset.autoSaveAttached = 'true';
-    
     // 音色设定不需要自动保存
     if (input.name === 'voice_id') return;
-    
-    // 存储原始值
+
+    // 每次都刷新原始值基线（即使监听器已挂载，re-render 后值可能变化）
     storeOriginalValue(input);
+
+    if (input.dataset.autoSaveAttached === 'true') return;
+    input.dataset.autoSaveAttached = 'true';
     
     // 监听焦点离开事件
     input.addEventListener('blur', function() {
