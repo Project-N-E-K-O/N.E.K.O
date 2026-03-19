@@ -96,12 +96,15 @@ async function autoSaveMasterField(input) {
             if (characterData && characterData['主人']) {
                 characterData['主人'][fieldName] = input.value;
             }
-            // 隐藏保存和取消按钮
-            const saveBtn = form.querySelector('#save-master-btn');
-            const cancelBtn = form.querySelector('#cancel-master-btn');
-            if (saveBtn) saveBtn.style.display = 'none';
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            showAutoSaveToast();
+            // 仅当表单没有剩余脏字段时才隐藏按钮和显示 toast
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-master-btn');
+                const cancelBtn = form.querySelector('#cancel-master-btn');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+                showAutoSaveToast();
+            }
         } else {
             console.error('自动保存主人字段失败: HTTP', response.status);
             alert(window.t ? window.t('character.saveMasterError') : '保存主人设定失败');
@@ -155,15 +158,18 @@ async function autoSaveCatgirlField(input, catgirlName) {
             if (characterData && characterData['猫娘'] && characterData['猫娘'][catgirlName]) {
                 characterData['猫娘'][catgirlName][fieldName] = input.value;
             }
-            // 隐藏保存和取消按钮
-            const saveBtn = form.querySelector('#save-button');
-            const cancelBtn = form.querySelector('#cancel-button');
-            if (saveBtn) saveBtn.style.display = 'none';
-            if (cancelBtn) cancelBtn.style.display = 'none';
-            showAutoSaveToast();
+            // 仅当表单没有剩余脏字段时才隐藏按钮和显示 toast
+            const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
+            if (!stillDirty) {
+                const saveBtn = form.querySelector('#save-button');
+                const cancelBtn = form.querySelector('#cancel-button');
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+                showAutoSaveToast();
+            }
         } else {
             console.error('自动保存猫娘字段失败: HTTP', response.status);
-            alert(window.t ? window.t('character.saveError') : '保存设定失败');
+            alert(window.t ? window.t('character.autoSaveError') : '保存设定失败');
         }
     } catch (error) {
         console.error('自动保存猫娘字段失败:', error);

@@ -1248,7 +1248,7 @@
         "renameError": "重命名失败: {{error}}",
         "renameMasterTitle": "重命名主人",
         "renameSuccess": "重命名成功",
-        "saveError": "保存设定失败",
+        "autoSaveError": "保存设定失败",
         "saveMasterError": "保存主人设定失败",
         "autoSaved": "已自动保存设定"
     },
