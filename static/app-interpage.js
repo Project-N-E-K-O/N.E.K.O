@@ -594,11 +594,10 @@
                     window.vrmManager.resumeRendering();
                 }
             } else if (currentModelType === 'live3d') {
-                // Live3D: determine sub-type from active manager
-                var hasMMD = window.mmdManager && window.mmdManager.currentModel;
-                var hasVRM = window.vrmManager && window.vrmManager.currentModel;
+                // Live3D: determine sub-type from config
+                var live3dSubType = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
                 
-                if (hasMMD) {
+                if (live3dSubType === 'mmd') {
                     var mmdContainerR = document.getElementById('mmd-container');
                     if (mmdContainerR) {
                         mmdContainerR.style.display = 'block';
@@ -609,10 +608,10 @@
                         mmdCanvasR.style.visibility = 'visible';
                         mmdCanvasR.style.pointerEvents = 'auto';
                     }
-                    if (typeof window.mmdManager.resumeRendering === 'function') {
+                    if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
                         window.mmdManager.resumeRendering();
                     }
-                } else if (hasVRM) {
+                } else {
                     var vrmContainerR = document.getElementById('vrm-container');
                     if (vrmContainerR) {
                         vrmContainerR.style.display = 'block';
@@ -623,7 +622,7 @@
                         vrmCanvasR.style.visibility = 'visible';
                         vrmCanvasR.style.pointerEvents = 'auto';
                     }
-                    if (typeof window.vrmManager.resumeRendering === 'function') {
+                    if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                         window.vrmManager.resumeRendering();
                     }
                 }

@@ -681,7 +681,13 @@ function collectCurrentSettings() {
 
 // ═══════════════════ 显示 / 隐藏 ═══════════════════
 
+let _mmdDebugHideTimer = null;
+
 function showMMDDebugPanel() {
+    if (_mmdDebugHideTimer) {
+        clearTimeout(_mmdDebugHideTimer);
+        _mmdDebugHideTimer = null;
+    }
     let panel = document.getElementById('mmd-debug-panel');
     if (!panel) panel = buildMMDDebugPanel();
     panel.style.display = 'flex';
@@ -694,8 +700,9 @@ function hideMMDDebugPanel() {
     const panel = document.getElementById('mmd-debug-panel');
     if (!panel) return;
     panel.classList.remove('visible');
-    setTimeout(() => {
+    _mmdDebugHideTimer = setTimeout(() => {
         panel.style.display = 'none';
+        _mmdDebugHideTimer = null;
     }, 250);
 }
 

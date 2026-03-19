@@ -251,8 +251,8 @@
         <div class="control-group" id="touch_set"></div>
         <!-- Live3D 情感配置按钮 (VRM/MMD 统一) -->
         <div class="control-group" id="live3d-emotion-config-group" style="display:none;">
-            <button id="live3d-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="vrm.emotionConfig">
-                <span class="round-stroke-text round-stroke-text-center" data-i18n="vrm.emotionConfig" data-text="Emotion Config">情感配置</span>
+            <button id="live3d-emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%;" data-i18n-title="live2d.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
             </button>
         </div>
 
@@ -628,18 +628,18 @@
     <div id="delete-mmd-model-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>删除已导入MMD模型</h3>
+                <h3 data-i18n="live2d.mmdModel.deleteModelTitle">删除已导入MMD模型</h3>
                 <button class="modal-close" id="close-delete-mmd-modal">&times;</button>
             </div>
-            <div class="delete-warning">
+            <div class="delete-warning" data-i18n="live2d.mmdModel.deleteWarning">
                 以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。
             </div>
             <div class="model-list-container" id="mmd-user-model-list">
-                <div class="empty-message">暂无可删除的用户MMD模型</div>
+                <div class="empty-message" data-i18n="live2d.mmdModel.noUserModels">暂无可删除的用户MMD模型</div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="cancel-delete-mmd-btn">取消</button>
-                <button class="btn btn-danger" id="confirm-delete-mmd-btn" disabled>删除选中</button>
+                <button class="btn btn-secondary" id="cancel-delete-mmd-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-mmd-btn" data-i18n="live2d.mmdModel.deleteSelected" disabled>删除选中</button>
             </div>
         </div>
     </div>

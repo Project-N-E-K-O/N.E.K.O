@@ -933,6 +933,18 @@
             "loop": "循環播放",
             "speed": "速度:"
         },
+        "mmdModel": {
+            "selectModel": "選擇MMD模型",
+            "deleteModel": "刪除已匯入MMD模型",
+            "deleteModelTitle": "刪除已匯入MMD模型",
+            "deleteWarning": "以下列出了所有已匯入的使用者MMD模型。選擇要刪除的模型（模型資料夾及貢圖將一併刪除）。",
+            "noUserModels": "暫無可刪除的使用者MMD模型",
+            "deleteSelected": "刪除選中"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "選擇VMD動畫",
+            "noAnimation": "無動畫"
+        },
         "modelFilesFetchFailed": "無法獲取模型文件列錶",
         "modelConfigFetchFailed": "無法獲取模型配置: {{status}}",
         "updatedPersistentExpression": "已更新常駐錶情",

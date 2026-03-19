@@ -1290,11 +1290,42 @@
             // 显示独立的"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
             let vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
+            let mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
 
-            const useVrmReturn = isVrmActive;
+            const useMmdReturn = isMmdActive;
+            const useVrmReturn = isVrmActive && !isMmdActive;
 
-            // 显示Live2D的返回按钮（仅在非VRM模式时显示）
-            if (!useVrmReturn && live2dReturnButtonContainer) {
+            // MMD 返回按钮
+            if (useMmdReturn && !mmdReturnButtonContainer && window.mmdManager) {
+                if (typeof window.mmdManager.setupFloatingButtons === 'function') {
+                    window.mmdManager.setupFloatingButtons();
+                    mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
+                }
+            }
+            if (useMmdReturn && mmdReturnButtonContainer) {
+                if (savedGoodbyeRect) {
+                    const containerWidth = mmdReturnButtonContainer.offsetWidth || 64;
+                    const containerHeight = mmdReturnButtonContainer.offsetHeight || 64;
+                    const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
+                    const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+                    mmdReturnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
+                    mmdReturnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
+                    mmdReturnButtonContainer.style.transform = 'none';
+                } else {
+                    mmdReturnButtonContainer.style.right = '16px';
+                    mmdReturnButtonContainer.style.bottom = '116px';
+                    mmdReturnButtonContainer.style.left = '';
+                    mmdReturnButtonContainer.style.top = '';
+                    mmdReturnButtonContainer.style.transform = 'none';
+                }
+                mmdReturnButtonContainer.style.display = 'flex';
+                mmdReturnButtonContainer.style.pointerEvents = 'auto';
+            } else if (mmdReturnButtonContainer) {
+                mmdReturnButtonContainer.style.display = 'none';
+            }
+
+            // 显示Live2D的返回按钮（仅在非VRM/非MMD模式时显示）
+            if (!useVrmReturn && !useMmdReturn && live2dReturnButtonContainer) {
                 if (savedGoodbyeRect) {
                     const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
                     const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;

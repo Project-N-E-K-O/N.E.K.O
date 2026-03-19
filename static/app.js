@@ -286,10 +286,14 @@ window.addEventListener('message', function (event) {
         if (typeof event.data.morph === 'undefined') return;
         console.log('[MMD] 收到 Morph 预览请求:', event.data.morph);
         if (window.mmdManager && window.mmdManager.expression) {
+            clearTimeout(window._mmdMorphPreviewTimer);
             window.mmdManager.expression._clearEmotionMorphs();
             window.mmdManager.expression.setMorphWeight(event.data.morph, 1.0);
-            setTimeout(() => {
-                window.mmdManager.expression.setMorphWeight(event.data.morph, 0);
+            var morphToReset = event.data.morph;
+            window._mmdMorphPreviewTimer = setTimeout(() => {
+                if (window.mmdManager && window.mmdManager.expression) {
+                    window.mmdManager.expression.setMorphWeight(morphToReset, 0);
+                }
             }, 3000);
         }
     }

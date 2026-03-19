@@ -271,7 +271,7 @@ class MMDManager {
             if (r.exposure != null) this.renderer.toneMappingExposure = r.exposure;
             if (r.pixelRatio != null) {
                 const ratio = r.pixelRatio === 0 ? (window.devicePixelRatio || 1) : r.pixelRatio;
-                this.renderer.setPixelRatio(Math.max(1.0, ratio));
+                this.renderer.setPixelRatio(Math.max(0.1, ratio));
                 // setPixelRatio 后需主动触发 setSize 才能生效
                 const container = this.container;
                 if (container) {

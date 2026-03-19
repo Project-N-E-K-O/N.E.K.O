@@ -933,6 +933,18 @@
             "loop": "ループ",
             "speed": "速度:"
         },
+        "mmdModel": {
+            "selectModel": "MMDモデルを選択",
+            "deleteModel": "インポート済みMMDモデルを削除",
+            "deleteModelTitle": "インポート済みMMDモデルを削除",
+            "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
+            "noUserModels": "削除可能なユーザーMMDモデルはありません",
+            "deleteSelected": "選択を削除"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "VMDアニメーションを選択",
+            "noAnimation": "アニメーションなし"
+        },
         "modelFilesFetchFailed": "モデルファイルリスト取得失敗",
         "modelConfigFetchFailed": "モデル設定取得失敗: {{status}}",
         "updatedPersistentExpression": "常時表情を更新しました",

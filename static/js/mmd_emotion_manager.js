@@ -23,6 +23,7 @@
     let currentModelInfo = null;
     let availableMorphs = [];
     let currentSelectionId = 0;
+    let _statusHideTimer = null;
 
     // 下拉菜单位置计算辅助函数
     function computeDropdownPlacement(header, options, maxHeight = 250) {
@@ -97,8 +98,10 @@
         statusMessage.className = `status-message status-${type}`;
         statusMessage.style.display = 'block';
 
-        setTimeout(() => {
+        clearTimeout(_statusHideTimer);
+        _statusHideTimer = setTimeout(() => {
             statusMessage.style.display = 'none';
+            _statusHideTimer = null;
         }, 3000);
     }
 

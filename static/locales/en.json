@@ -933,6 +933,18 @@
             "loop": "Loop",
             "speed": "Speed:"
         },
+        "mmdModel": {
+            "selectModel": "Select MMD Model",
+            "deleteModel": "Delete Imported MMD Models",
+            "deleteModelTitle": "Delete Imported MMD Models",
+            "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
+            "noUserModels": "No user MMD models to delete",
+            "deleteSelected": "Delete Selected"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "Select VMD Animation",
+            "noAnimation": "No Animation"
+        },
         "modelFilesFetchFailed": "Failed to fetch model files list",
         "modelConfigFetchFailed": "Failed to fetch model config: {{status}}",
         "updatedPersistentExpression": "Updated persistent expression",

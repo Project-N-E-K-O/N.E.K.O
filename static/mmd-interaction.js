@@ -287,12 +287,9 @@ class MMDInteraction {
 
         // 鼠标离开
         this.mouseLeaveHandler = () => {
-            if (this.isDragging) {
-                this.isDragging = false;
-                this.dragMode = null;
-                canvas.style.cursor = 'default';
-                this._restoreButtonPointerEvents();
-            }
+            // 拖拽进行中不取消——document.mouseup 会处理最终释放
+            if (this.isDragging) return;
+            canvas.style.cursor = 'default';
         };
 
         // 滚轮缩放
@@ -341,15 +338,17 @@ class MMDInteraction {
     // ═══════════════════ 清理 ═══════════════════
 
     cleanupDragAndZoom() {
-        const canvas = this.manager.renderer?.domElement;
-        if (!canvas) return;
-
-        if (this.mouseDownHandler) canvas.removeEventListener('mousedown', this.mouseDownHandler);
+        // document 级监听器必须无条件移除，防止 renderer 已销毁时泄漏
         if (this.dragHandler) document.removeEventListener('mousemove', this.dragHandler);
-        if (this.mouseHoverHandler) canvas.removeEventListener('mousemove', this.mouseHoverHandler);
         if (this.mouseUpHandler) document.removeEventListener('mouseup', this.mouseUpHandler);
-        if (this.mouseLeaveHandler) canvas.removeEventListener('mouseleave', this.mouseLeaveHandler);
-        if (this.wheelHandler) canvas.removeEventListener('wheel', this.wheelHandler);
+
+        const canvas = this.manager.renderer?.domElement;
+        if (canvas) {
+            if (this.mouseDownHandler) canvas.removeEventListener('mousedown', this.mouseDownHandler);
+            if (this.mouseHoverHandler) canvas.removeEventListener('mousemove', this.mouseHoverHandler);
+            if (this.mouseLeaveHandler) canvas.removeEventListener('mouseleave', this.mouseLeaveHandler);
+            if (this.wheelHandler) canvas.removeEventListener('wheel', this.wheelHandler);
+        }
 
         this.mouseDownHandler = null;
         this.dragHandler = null;

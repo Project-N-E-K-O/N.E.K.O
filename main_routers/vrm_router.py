@@ -419,6 +419,10 @@ async def delete_vrm_model(request: Request):
         if not rel or '..' in rel or rel.startswith('/'):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
 
+        # 只允许删除顶层 .vrm 文件
+        if Path(rel).name != rel or not rel.lower().endswith('.vrm'):
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
+
         config_mgr = get_config_manager()
         vrm_dir = config_mgr.vrm_dir
         target = (vrm_dir / rel).resolve()
@@ -426,7 +430,7 @@ async def delete_vrm_model(request: Request):
         if not target.is_relative_to(vrm_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
 
-        if not target.exists():
+        if not target.is_file():
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()

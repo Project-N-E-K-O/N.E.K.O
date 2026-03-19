@@ -128,6 +128,21 @@ window.addEventListener('mmd-modules-ready', async () => {
         if (window.mmdManager) {
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
             await window.mmdManager.loadModel(resolvedPath);
+
+            // 从后端获取并应用保存的 MMD 设置（光照、渲染、物理、鼠标跟踪）
+            const catgirlName = window.lanlan_config?.lanlan_name;
+            if (catgirlName) {
+                try {
+                    const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName) + '/mmd_settings');
+                    const settingsData = await settingsRes.json();
+                    if (settingsData.success && settingsData.settings) {
+                        window.mmdManager.applySettings(settingsData.settings);
+                    }
+                } catch (settingsErr) {
+                    console.warn('[MMD Init] 获取MMD设置失败:', settingsErr);
+                }
+            }
+
             console.log('[MMD Init] MMD 模型自动加载完成');
         }
     } catch (e) {

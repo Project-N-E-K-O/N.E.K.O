@@ -97,6 +97,9 @@ class MMDAnimation {
             this.grantSolver = new GrantSolver(mmd.mesh, mmd.grants);
         }
 
+        // 重置骨骼到绑定姿态，防止上一动画残留姿态污染备份
+        if (mmd.mesh.skeleton) mmd.mesh.skeleton.pose();
+
         // 初始化骨骼缓存
         this._initBoneBackup(mmd.mesh);
 

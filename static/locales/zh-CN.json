@@ -933,6 +933,18 @@
             "loop": "循环播放",
             "speed": "速度:"
         },
+        "mmdModel": {
+            "selectModel": "选择MMD模型",
+            "deleteModel": "删除已导入MMD模型",
+            "deleteModelTitle": "删除已导入MMD模型",
+            "deleteWarning": "以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。",
+            "noUserModels": "暂无可删除的用户MMD模型",
+            "deleteSelected": "删除选中"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "选择VMD动画",
+            "noAnimation": "无动画"
+        },
         "modelFilesFetchFailed": "无法获取模型文件列表",
         "modelConfigFetchFailed": "无法获取模型配置: {{status}}",
         "updatedPersistentExpression": "已更新常驻表情",

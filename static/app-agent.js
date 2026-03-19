@@ -235,6 +235,8 @@
             const statusEl = document.getElementById(id);
             if (statusEl) {
                 statusEl.textContent = msg || '';
+                // 移除 data-i18n 防止语言刷新覆盖动态状态文本
+                statusEl.removeAttribute('data-i18n');
                 const colorMap = {
                     completed: '#52c41a',
                     partial: '#faad14',

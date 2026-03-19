@@ -720,13 +720,11 @@ MMDManager.prototype._setupReturnButtonDrag = function (container) {
     };
     const handleEnd = () => {
         if (isDragging) {
-            const wasDragging = container.getAttribute('data-dragging') === 'true';
-            setTimeout(() => container.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             container.style.cursor = 'grab';
-            if (!wasDragging) {
-                window.dispatchEvent(new CustomEvent('mmd-return-click'));
-            }
+            // 拖拽结束后延迟清除标记，让 click handler 能检测到拖拽
+            // 非拖拽点击由 returnBtn 的 click handler 统一 dispatch
+            setTimeout(() => container.setAttribute('data-dragging', 'false'), 10);
         }
     };
 

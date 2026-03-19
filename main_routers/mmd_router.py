@@ -31,6 +31,8 @@ MMD_STATIC_PATH = "/static/mmd"
 
 # 文件上传常量
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB (MMD 模型含纹理可能较大)
+MAX_ZIP_UNCOMPRESSED = 2 * 1024 * 1024 * 1024  # 2GB 解压上限，防止 zip bomb
+MAX_ZIP_ENTRIES = 10000  # ZIP 内最大文件数
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 
 # 允许的文件扩展名
@@ -358,6 +360,20 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             name_map = _build_zip_name_map(zf)
             decoded_names = list(name_map.values())
 
+            # 安全检查：zip bomb 防护
+            info_list = zf.infolist()
+            if len(info_list) > MAX_ZIP_ENTRIES:
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"ZIP 内文件数 {len(info_list)} 超过上限 {MAX_ZIP_ENTRIES}"
+                })
+            total_uncompressed = sum(i.file_size for i in info_list)
+            if total_uncompressed > MAX_ZIP_UNCOMPRESSED:
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"ZIP 解压后大小 {total_uncompressed // (1024 * 1024)}MB 超过上限 {MAX_ZIP_UNCOMPRESSED // (1024 * 1024)}MB"
+                })
+
             # 安全检查：不能有绝对路径或 ..
             for name in decoded_names:
                 if name.startswith('/') or '..' in name:
@@ -383,9 +399,19 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             all_decoded_files = [n for n in decoded_names if not n.endswith('/')]
             top_level_items = {n.split('/')[0] for n in all_decoded_files}
             if len(top_level_items) == 1:
-                # ZIP 本身已经是 "model_name/..." 结构
                 zip_root_dir = top_level_items.pop()
-                extract_dir_name = zip_root_dir
+                # 确认它确实是目录而非单个文件：
+                # 存在目录条目（以 '/' 结尾）或存在以它为前缀的子路径
+                is_dir = any(
+                    n == f"{zip_root_dir}/" or n.startswith(f"{zip_root_dir}/")
+                    for n in decoded_names
+                )
+                if is_dir:
+                    # ZIP 本身已经是 "model_name/..." 结构
+                    extract_dir_name = zip_root_dir
+                else:
+                    # 单文件 ZIP，用模型名创建子目录
+                    extract_dir_name = model_stem
             else:
                 # ZIP 是扁平结构，用模型名创建子目录
                 extract_dir_name = model_stem
@@ -711,15 +737,24 @@ async def delete_mmd_model(request: Request):
         safe_path, error = safe_mmd_path(mmd_dir, rel_path)
         if not safe_path:
             # safe_mmd_path 拒绝目录路径，但对于残缺模型目录需要允许删除
-            # 检查是否是 mmd_dir 的直接子目录
+            # 检查是否是 mmd_dir 的直接子目录且包含模型文件
             candidate = (mmd_dir / rel_path).resolve()
             if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()):
+                has_model = any(
+                    any(candidate.rglob(f'*{ext}'))
+                    for ext in ALLOWED_MODEL_EXTENSIONS
+                )
+                if not has_model:
+                    return JSONResponse(status_code=400, content={
+                        "success": False, "error": "该目录不是模型目录，拒绝删除"
+                    })
+                deleted_files = sum(1 for f in candidate.rglob('*') if f.is_file())
                 shutil.rmtree(candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")
                 return JSONResponse(content={
                     "success": True,
                     "message": f"已删除残缺模型目录 {rel_path}",
-                    "deleted_files": 0
+                    "deleted_files": deleted_files
                 })
             return JSONResponse(status_code=400, content={"success": False, "error": error})
 

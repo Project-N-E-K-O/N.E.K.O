@@ -156,6 +156,10 @@
             // ⭐ 立即更新 model_type，让 preload 穿透逻辑使用正确的分支
             if (window.lanlan_config) {
                 window.lanlan_config.model_type = modelType; // 'live3d' / 'vrm' / 'live2d'
+                // 同步 live3d_sub_type，防止 visibilitychange 等处理器读到过时值
+                if (modelType === 'live3d') {
+                    window.lanlan_config.live3d_sub_type = effectiveModelType === 'mmd' ? 'mmd' : 'vrm';
+                }
                 console.log('[猫娘切换] 已更新 lanlan_config.model_type =', modelType);
             }
 
@@ -859,6 +863,7 @@
                 }
                 const mmdCanvasShow = document.getElementById('mmd-canvas');
                 if (mmdCanvasShow) {
+                    mmdCanvasShow.style.display = 'block';
                     mmdCanvasShow.style.visibility = 'visible';
                     mmdCanvasShow.style.pointerEvents = 'auto';
                 }

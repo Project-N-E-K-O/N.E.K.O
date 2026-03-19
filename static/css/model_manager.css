@@ -37,7 +37,8 @@
 #expression-select-btn span:not(.dropdown-arrow),
 #vrm-model-select-btn span:not(.dropdown-arrow),
 #vrm-animation-select-btn span:not(.dropdown-arrow),
-#vrm-expression-select-btn span:not(.dropdown-arrow) {
+#vrm-expression-select-btn span:not(.dropdown-arrow),
+#mmd-animation-select-btn span:not(.dropdown-arrow) {
     position: relative;
     z-index: 20;
     margin-left: 0;
@@ -3035,6 +3036,7 @@ html[lang|="zh"] #persistent-expression-select-btn span:not(.dropdown-arrow),
 html[lang|="zh"] #vrm-model-select-btn span:not(.dropdown-arrow),
 html[lang|="zh"] #vrm-animation-select-btn span:not(.dropdown-arrow),
 html[lang|="zh"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+html[lang|="zh"] #mmd-animation-select-btn span:not(.dropdown-arrow),
 html[lang|="zh"] #parameter-editor-btn span:not(.dropdown-arrow),
 html[lang|="zh"] #touch-anim-btn span:not(.dropdown-arrow) {
     margin-left: 0 !important;

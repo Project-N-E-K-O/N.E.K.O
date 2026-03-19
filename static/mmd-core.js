@@ -361,8 +361,17 @@ class MMDCore {
                     if (mmd.mesh.geometry) mmd.mesh.geometry.dispose();
                     if (mmd.mesh.material) {
                         const mats = Array.isArray(mmd.mesh.material) ? mmd.mesh.material : [mmd.mesh.material];
-                        mats.forEach(m => m.dispose());
+                        mats.forEach(m => {
+                            if (m.map) m.map.dispose();
+                            if (m.gradientMap) m.gradientMap.dispose();
+                            if (m.matcap) m.matcap.dispose();
+                            if (m.normalMap) m.normalMap.dispose();
+                            if (m.emissiveMap) m.emissiveMap.dispose();
+                            if (m.specularMap) m.specularMap.dispose();
+                            m.dispose();
+                        });
                     }
+                    if (mmd.mesh.skeleton) mmd.mesh.skeleton.dispose();
                 }
                 return null;
             }
@@ -700,6 +709,8 @@ class MMDCore {
                     if (mat.gradientMap) mat.gradientMap.dispose();
                     if (mat.matcap) mat.matcap.dispose();
                     if (mat.normalMap) mat.normalMap.dispose();
+                    if (mat.emissiveMap) mat.emissiveMap.dispose();
+                    if (mat.specularMap) mat.specularMap.dispose();
                     mat.dispose();
                 });
             }
