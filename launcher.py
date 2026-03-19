@@ -43,9 +43,11 @@ import signal
 import json
 import logging
 import uuid
+import importlib
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
+import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.port_utils import (
     probe_neko_health,
@@ -97,6 +99,59 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+
+
+def _sync_runtime_config_globals(
+    selected_public: dict[str, int] | None = None,
+    selected_internal: dict[str, int] | None = None,
+) -> None:
+    """Keep the already-imported ``config`` module aligned with launcher choices.
+
+    On Linux/macOS, ``multiprocessing`` defaults to ``fork``. Child processes then
+    inherit the parent's already-imported ``config`` module object, so only writing
+    ``os.environ`` is insufficient: any later ``from config import TOOL_SERVER_PORT``
+    inside forked children would still see the stale pre-launcher values.
+
+    Syncing the module globals here ensures forked children and modules imported
+    after forking observe the negotiated runtime ports and shared instance id.
+    """
+    updates: dict[str, int | str] = {"INSTANCE_ID": INSTANCE_ID}
+    if selected_public:
+        updates.update(selected_public)
+    if selected_internal:
+        updates.update(selected_internal)
+
+    for key, value in updates.items():
+        setattr(config_module, key, value)
+
+
+def _reload_runtime_config_from_env() -> None:
+    """Reload ``config`` inside a child process and sync launcher globals.
+
+    Even after the parent has updated ``config`` globals, a forked child can still
+    inherit stale module state from any earlier imports. Reloading ``config`` from
+    the negotiated ``NEKO_*`` environment variables gives each server process a
+    fresh source of truth before importing its heavy application modules.
+    """
+    global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+
+    reloaded = importlib.reload(config_module)
+    INSTANCE_ID = str(reloaded.INSTANCE_ID)
+    MAIN_SERVER_PORT = int(reloaded.MAIN_SERVER_PORT)
+    MEMORY_SERVER_PORT = int(reloaded.MEMORY_SERVER_PORT)
+    TOOL_SERVER_PORT = int(reloaded.TOOL_SERVER_PORT)
+    _sync_runtime_config_globals(
+        {
+            "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+            "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+            "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+        },
+        {
+            "USER_PLUGIN_SERVER_PORT": int(reloaded.USER_PLUGIN_SERVER_PORT),
+            "AGENT_MQ_PORT": int(reloaded.AGENT_MQ_PORT),
+            "MAIN_AGENT_EVENT_PORT": int(reloaded.MAIN_AGENT_EVENT_PORT),
+        },
+    )
 
 
 def _install_logging_brace_compat() -> None:
@@ -306,6 +361,7 @@ SERVERS = [
 def run_memory_server(ready_event: Event, import_event: Event | None = None):
     """运行 Memory Server"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -378,6 +434,7 @@ def run_memory_server(ready_event: Event, import_event: Event | None = None):
 def run_agent_server(ready_event: Event, import_event: Event | None = None):
     """运行 Agent Server (不需要等待初始化)"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -424,6 +481,7 @@ def run_agent_server(ready_event: Event, import_event: Event | None = None):
 def run_main_server(ready_event: Event, import_event: Event | None = None):
     """运行 Main Server"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -694,6 +752,8 @@ def apply_port_strategy() -> bool | str:
         os.environ[f"NEKO_{key}"] = str(value)
     for key, value in chosen_internal.items():
         os.environ[f"NEKO_{key}"] = str(value)
+
+    _sync_runtime_config_globals(chosen, chosen_internal)
 
     for server in SERVERS:
         if server["module"] == "memory_server":
