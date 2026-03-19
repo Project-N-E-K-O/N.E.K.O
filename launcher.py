@@ -1032,38 +1032,39 @@ def cleanup_servers():
                 proc.kill()
                 proc.join(timeout=2)
 
-            # 第四步：兜底强杀整个进程树，防止孙进程残留
-            pid = proc.pid
-            if pid:
-                if sys.platform == 'win32':
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False
-                    )
-                else:
-                    # macOS / Linux 下兜底强杀整个进程树
-                    try:
-                        import psutil
+            # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
+            if proc.is_alive():
+                pid = proc.pid
+                if pid:
+                    if sys.platform == 'win32':
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False
+                        )
+                    else:
+                        # macOS / Linux 下兜底强杀整个进程树
                         try:
-                            parent = psutil.Process(pid)
-                            for child in parent.children(recursive=True):
-                                child.kill()
-                            parent.kill()
-                        except psutil.NoSuchProcess:
-                            pass
-                    except ImportError:
-                        try:
-                            # 尽力而为的 pkill 兜底
-                            subprocess.run(
-                                ["pkill", "-9", "-P", str(pid)],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                check=False
-                            )
-                        except Exception:
-                            pass
+                            import psutil
+                            try:
+                                parent = psutil.Process(pid)
+                                for child in parent.children(recursive=True):
+                                    child.kill()
+                                parent.kill()
+                            except psutil.NoSuchProcess:
+                                pass
+                        except ImportError:
+                            try:
+                                # 尽力而为的 pkill 兜底
+                                subprocess.run(
+                                    ["pkill", "-9", "-P", str(pid)],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    check=False
+                                )
+                            except Exception:
+                                pass
 
             print(f"✓ {server['name']} 已关闭", flush=True)
         except Exception as e:
