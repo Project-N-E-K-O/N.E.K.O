@@ -95,9 +95,13 @@ async function autoSaveMasterField(input) {
             if (saveBtn) saveBtn.style.display = 'none';
             if (cancelBtn) cancelBtn.style.display = 'none';
             showAutoSaveToast();
+        } else {
+            console.error('自动保存主人字段失败: HTTP', response.status);
+            alert(window.t ? window.t('character.saveMasterError') : '保存主人设定失败');
         }
     } catch (error) {
         console.error('自动保存主人字段失败:', error);
+        alert(window.t ? window.t('character.saveMasterError') : '保存主人设定失败');
     }
 }
 
@@ -144,9 +148,13 @@ async function autoSaveCatgirlField(input, catgirlName) {
             if (saveBtn) saveBtn.style.display = 'none';
             if (cancelBtn) cancelBtn.style.display = 'none';
             showAutoSaveToast();
+        } else {
+            console.error('自动保存猫娘字段失败: HTTP', response.status);
+            alert(window.t ? window.t('character.saveMasterError') : '保存设定失败');
         }
     } catch (error) {
         console.error('自动保存猫娘字段失败:', error);
+        alert(window.t ? window.t('character.saveMasterError') : '保存设定失败');
     }
 }
 

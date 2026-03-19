@@ -1047,3 +1047,14 @@ body .container-header {
     opacity: 1;
     transform: translateY(0);
 }
+
+@media (prefers-reduced-motion: reduce) {
+    .auto-save-toast {
+        transition: none;
+        transform: none;
+    }
+    .auto-save-toast.visible {
+        opacity: 1;
+        transform: none;
+    }
+}
