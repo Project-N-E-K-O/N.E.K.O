@@ -1022,3 +1022,39 @@ body .container-header {
         align-self: flex-end;
     }
 }
+
+/* 自动保存提示样式 */
+.auto-save-toast {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background: #e8f5e9;
+    border: 2px solid #4caf50;
+    border-radius: 999px;
+    padding: 8px 20px;
+    color: #2e7d32;
+    font-size: 0.9rem;
+    font-weight: 500;
+    z-index: 1000;
+    opacity: 0;
+    transform: translateY(-10px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
+}
+
+.auto-save-toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .auto-save-toast {
+        transition: none;
+        transform: none;
+    }
+    .auto-save-toast.visible {
+        opacity: 1;
+        transform: none;
+    }
+}

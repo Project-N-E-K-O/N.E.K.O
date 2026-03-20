@@ -509,6 +509,21 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             pass
         return {}
 
+    def _to_string_list(v: Any) -> List[str]:
+        if not isinstance(v, list):
+            return []
+        out: List[str] = []
+        seen: set[str] = set()
+        for item in v:
+            if not isinstance(item, str):
+                continue
+            field_name = item.strip()
+            if not field_name or field_name in seen:
+                continue
+            seen.add(field_name)
+            out.append(field_name)
+        return out
+
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
     try:
         for name, member in inspect.getmembers(cls):
@@ -535,6 +550,14 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                     "event_key": f"{pid}.{eid}",
                     "input_schema": input_schema,
                     "return_message": str(getattr(event_meta, "return_message", "") or ""),
+                    "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
+                    "kind": str(getattr(event_meta, "kind", "action") or "action"),
+                    "auto_start": bool(getattr(event_meta, "auto_start", False)),
+                    "timeout": getattr(event_meta, "timeout", None),
+                    "model_validate": bool(getattr(event_meta, "model_validate", True)),
+                    "llm_result_fields": _to_string_list(getattr(event_meta, "llm_result_fields", None)),
+                    "llm_result_schema": _to_dict(getattr(event_meta, "llm_result_schema", {}) or {}),
+                    "metadata": _to_dict(getattr(event_meta, "metadata", {}) or {}),
                 }
             meta_dict = getattr(event_meta, "metadata", None)
             if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
@@ -561,6 +584,14 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                         "event_key": f"{pid}.{eid}",
                         "input_schema": _to_dict(ent.get("input_schema") or {}),
                         "return_message": "",
+                        "event_type": "plugin_entry",
+                        "kind": str(ent.get("kind") or "action"),
+                        "auto_start": bool(ent.get("auto_start", False)),
+                        "timeout": ent.get("timeout"),
+                        "model_validate": bool(ent.get("model_validate", True)),
+                        "llm_result_fields": _to_string_list(ent.get("llm_result_fields")),
+                        "llm_result_schema": _to_dict(ent.get("llm_result_schema") or {}),
+                        "metadata": _to_dict(ent.get("metadata") or {}),
                     }
                 )
             else:
@@ -576,6 +607,14 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                         "event_key": f"{pid}.{eid}",
                         "input_schema": {},
                         "return_message": "",
+                        "event_type": "plugin_entry",
+                        "kind": "action",
+                        "auto_start": False,
+                        "timeout": None,
+                        "model_validate": True,
+                        "llm_result_fields": [],
+                        "llm_result_schema": {},
+                        "metadata": {},
                     }
                 )
         except Exception:
