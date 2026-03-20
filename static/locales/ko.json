@@ -1250,7 +1250,8 @@
         "renameSuccess": "이름 변경 성공",
         "autoSaveError": "설정 저장 실패",
         "saveMasterError": "주인 설정 저장 실패",
-        "autoSaved": "설정 자동 저장됨"
+        "autoSaved": "설정 자동 저장됨",
+        "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

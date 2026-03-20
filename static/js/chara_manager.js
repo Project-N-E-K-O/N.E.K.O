@@ -85,18 +85,20 @@ async function autoSaveMasterField(input) {
         });
 
         if (response.ok) {
-            // 只更新本次发送快照涉及的输入框原始值
+            storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             allInputs.forEach(inp => {
-                if (inp.name && sentFields.has(inp.name)) {
+                if (inp.name && inp !== input && sentFields.has(inp.name)) {
                     storeOriginalValue(inp);
                 }
             });
-            // 更新 characterData
             if (characterData && characterData['主人']) {
-                characterData['主人'][fieldName] = input.value;
+                if (input.value) {
+                    characterData['主人'][fieldName] = input.value;
+                } else {
+                    delete characterData['主人'][fieldName];
+                }
             }
-            // 仅当表单没有剩余脏字段时才隐藏按钮和显示 toast
             const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
             if (!stillDirty) {
                 const saveBtn = form.querySelector('#save-master-btn');
@@ -147,18 +149,20 @@ async function autoSaveCatgirlField(input, catgirlName) {
         });
 
         if (response.ok) {
-            // 只更新本次发送快照涉及的输入框原始值
+            storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             allInputs.forEach(inp => {
-                if (inp.name && sentFields.has(inp.name)) {
+                if (inp.name && inp !== input && sentFields.has(inp.name)) {
                     storeOriginalValue(inp);
                 }
             });
-            // 更新 characterData
             if (characterData && characterData['猫娘'] && characterData['猫娘'][catgirlName]) {
-                characterData['猫娘'][catgirlName][fieldName] = input.value;
+                if (input.value) {
+                    characterData['猫娘'][catgirlName][fieldName] = input.value;
+                } else {
+                    delete characterData['猫娘'][catgirlName][fieldName];
+                }
             }
-            // 仅当表单没有剩余脏字段时才隐藏按钮和显示 toast
             const stillDirty = Array.from(allInputs).some(inp => hasInputChanged(inp));
             if (!stillDirty) {
                 const saveBtn = form.querySelector('#save-button');
@@ -3056,7 +3060,7 @@ if (masterSaveBtn) masterSaveBtn.classList.add('sm');
 function hasUnsavedChanges() {
     const masterForm = document.getElementById('master-form');
     if (masterForm) {
-        const masterInputs = masterForm.querySelectorAll('input, textarea');
+        const masterInputs = masterForm.querySelectorAll('input, textarea, select');
         for (const input of masterInputs) {
             if (hasInputChanged(input)) {
                 return true;
@@ -3068,7 +3072,7 @@ function hasUnsavedChanges() {
     for (const block of catgirlBlocks) {
         const form = block.querySelector('form');
         if (form) {
-            const inputs = form.querySelectorAll('input, textarea');
+            const inputs = form.querySelectorAll('input, textarea, select');
             for (const input of inputs) {
                 if (hasInputChanged(input)) {
                     return true;
@@ -3086,7 +3090,7 @@ async function saveAllUnsavedChanges() {
 
     const masterForm = document.getElementById('master-form');
     if (masterForm) {
-        const masterInputs = masterForm.querySelectorAll('input, textarea');
+        const masterInputs = masterForm.querySelectorAll('input, textarea, select');
         const changedInputs = [];
         masterInputs.forEach(input => {
             if (hasInputChanged(input) && input.name) {
@@ -3106,7 +3110,7 @@ async function saveAllUnsavedChanges() {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(data)
-                    }).then(response => {
+                    }).then(async response => {
                         if (response.ok) {
                             masterInputs.forEach(inp => {
                                 if (inp.name) storeOriginalValue(inp);
@@ -3116,8 +3120,14 @@ async function saveAllUnsavedChanges() {
                             if (saveBtn) saveBtn.style.display = 'none';
                             if (cancelBtn) cancelBtn.style.display = 'none';
                             showAutoSaveToast();
+                        } else {
+                            const errorText = await response.text().catch(() => `HTTP ${response.status}`);
+                            throw new Error(`保存主人设定失败: ${errorText}`);
                         }
-                    }).catch(err => console.error('自动保存主人设定失败:', err))
+                    }).catch(err => {
+                        console.error('自动保存主人设定失败:', err);
+                        throw err;
+                    })
                 );
             }
         }
@@ -3129,7 +3139,7 @@ async function saveAllUnsavedChanges() {
         const catgirlName = block.dataset.key;
         if (!form || !catgirlName) return;
 
-        const inputs = form.querySelectorAll('input, textarea');
+        const inputs = form.querySelectorAll('input, textarea, select');
         const changedInputs = [];
         inputs.forEach(input => {
             if (hasInputChanged(input) && input.name && input.name !== '档案名') {
@@ -3151,7 +3161,7 @@ async function saveAllUnsavedChanges() {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
-                }).then(response => {
+                }).then(async response => {
                     if (response.ok) {
                         inputs.forEach(inp => {
                             if (inp.name) storeOriginalValue(inp);
@@ -3161,8 +3171,14 @@ async function saveAllUnsavedChanges() {
                         if (saveBtn) saveBtn.style.display = 'none';
                         if (cancelBtn) cancelBtn.style.display = 'none';
                         showAutoSaveToast();
+                    } else {
+                        const errorText = await response.text().catch(() => `HTTP ${response.status}`);
+                        throw new Error(`保存猫娘 ${catgirlName} 设定失败: ${errorText}`);
                     }
-                }).catch(err => console.error(`自动保存猫娘 ${catgirlName} 设定失败:`, err))
+                }).catch(err => {
+                    console.error(`自动保存猫娘 ${catgirlName} 设定失败:`, err);
+                    throw err;
+                })
             );
         }
     });
@@ -3175,7 +3191,12 @@ async function saveAllUnsavedChanges() {
 // 关闭角色管理页面
 async function closeCharaManagerPage() {
     if (hasUnsavedChanges()) {
-        await saveAllUnsavedChanges();
+        try {
+            await saveAllUnsavedChanges();
+        } catch (error) {
+            await showAlert(window.t ? window.t('character.autoSaveFailed') : '自动保存失败，请手动保存后再关闭页面');
+            return;
+        }
     }
 
     if (window.opener) {

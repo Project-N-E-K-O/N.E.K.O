@@ -1250,7 +1250,8 @@
         "renameSuccess": "重命名成功",
         "autoSaveError": "保存设定失败",
         "saveMasterError": "保存主人设定失败",
-        "autoSaved": "已自动保存设定"
+        "autoSaved": "已自动保存设定",
+        "autoSaveFailed": "自动保存失败，请手动保存后再关闭页面"
     },
     "app": {
         "welcomeBack": "{{name}}回来了！",

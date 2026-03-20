@@ -1250,7 +1250,8 @@
         "renameSuccess": "重新命名成功",
         "autoSaveError": "儲存設定失敗",
         "saveMasterError": "儲存主人設定失敗",
-        "autoSaved": "已自動儲存設定"
+        "autoSaved": "已自動儲存設定",
+        "autoSaveFailed": "自動儲存失敗，請手動儲存後再關閉頁面"
     },
     "app": {
         "welcomeBack": "{{name}}迴來瞭！",
