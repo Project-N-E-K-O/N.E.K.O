@@ -102,8 +102,9 @@ window.addEventListener('mmd-modules-ready', async () => {
         await window.pageConfigReady;
     }
 
+    const modelType = (window.lanlan_config?.model_type || '').toLowerCase();
     const subType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
-    if (subType !== 'mmd') return;
+    if (modelType !== 'live3d' || subType !== 'mmd') return;
 
     const mmdPath = window.mmdModel;
     if (!mmdPath || mmdPath === 'undefined' || mmdPath === 'null' || mmdPath.trim() === '') {

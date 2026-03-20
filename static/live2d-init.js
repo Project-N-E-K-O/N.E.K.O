@@ -77,7 +77,7 @@ window.LanLan1.playMotion = function(group, no, priority) {
 window.LanLan1.clearEmotionEffects = function() {
     const activeType = _getActiveModelType();
     if (activeType === 'mmd') {
-        if (window.mmdManager && window.mmdManager.expression) window.mmdManager.expression.resetAll();
+        if (window.mmdManager && window.mmdManager.expression) window.mmdManager.expression.resetAllMorphs();
         return;
     }
     if (activeType === 'vrm') {
