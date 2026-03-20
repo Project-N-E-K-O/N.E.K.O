@@ -2346,5 +2346,11 @@
         "voiceMigration": {
             "legacyRemoved": "CosyVoice가 3.5로 업그레이드되었습니다. 기존 음성이 만료되었으니 다시 클론하세요."
         }
+    },
+    "proactive": {
+        "meme": {
+            "title": "밈",
+            "loadError": "밈을 불러오지 못했습니다"
+        }
     }
 }

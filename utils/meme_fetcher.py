@@ -125,7 +125,8 @@ class MemeFetcher:
                         response = await client.get(url, params=params, headers=headers)
                     
                 if response.status_code == 429:
-                    logger.warning(f"触发频率限制 (429)，对于关键词: {params.get('q') if params else 'N/A'}")
+                    q_val = params.get('q') or params.get('keywords') if params else 'N/A'
+                    logger.warning(f"触发频率限制 (429)，对于关键词: {q_val}")
                     continue
                 elif response.status_code == 403:
                     logger.warning(f"由于反爬拦截被拒绝 (403)，尝试更换请求头重试...")
@@ -207,7 +208,8 @@ class MemeFetcher:
                         "id": item_id,
                         "url": f"https://i.imgflip.com/{item_id}.jpg",
                         "page_url": f"{self.base_url}/i/{item_id}",
-                        "title": title
+                        "title": title,
+                        "source": "Imgflip"
                     })
                 elif item_type == "gif" and search_type in ["all", "gif"]:
                     results.append({
@@ -215,7 +217,8 @@ class MemeFetcher:
                         "id": item_id,
                         "url": f"https://i.imgflip.com/{item_id}.gif",
                         "page_url": f"{self.base_url}/gif/{item_id}",
-                        "title": title
+                        "title": title,
+                        "source": "Imgflip"
                     })
             
             logger.info(f"Imgflip 搜索 '{keyword}' (type={search_type}) 完成，获得 {len(results)} 条结果")

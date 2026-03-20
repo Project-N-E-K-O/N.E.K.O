@@ -2346,5 +2346,11 @@
         "voiceMigration": {
             "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
         }
+    },
+    "proactive": {
+        "meme": {
+            "title": "ミーム",
+            "loadError": "ミームの読み込みに失敗しました"
+        }
     }
 }

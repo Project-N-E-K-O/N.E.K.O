@@ -2346,5 +2346,11 @@
         "voiceMigration": {
             "legacyRemoved": "CosyVoice 现已升级至 3.5，您的旧语音已失效，请重新克隆语音。"
         }
+    },
+    "proactive": {
+        "meme": {
+            "title": "表情包",
+            "loadError": "表情包加载失败"
+        }
     }
 }

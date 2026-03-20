@@ -464,8 +464,8 @@
                 var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
                 if (isMusicLink) continue;
 
-                var isMemeLink = link.source === '表情包' || link.source === '斗图吧' || link.source === '发表情' || link.source === 'Imgflip';
-                console.log('[Meme Debug] Link:', link.title, '| source:', link.source, '| isMeme:', isMemeLink, '| url:', link.url);
+                var isMemeLink = link.type === 'meme' || link.source === '表情包' || link.source === '斗图吧' || link.source === '发表情' || link.source === 'Imgflip';
+                console.log('[Meme Debug] Link:', link.title, '| source:', link.source, '| type:', link.type, '| isMeme:', isMemeLink, '| url:', link.url);
 
                 var safeUrl = null;
                 try {
@@ -595,47 +595,60 @@
         }
     }
 
-    function _showMemeBubbles(memeLinks, chatContent) {
-        if (!chatContent) {
-            console.warn('[Meme] chatContent is null, cannot show meme bubbles');
+    function _showMemeBubbles(memeLinks, _chatContent) {
+        if (window.appChat && window.appChat.addToHistory) {
+            if (_chatContent) {
+                window.appChat.addToHistory('GEMINI_MESSAGE', _chatContent);
+            }
+            if (memeLinks && Array.isArray(memeLinks)) {
+                memeLinks.forEach(function(meme) {
+                    window.appChat.addToHistory('SYSTEM_MESSAGE', '[MEME] ' + (meme.url || ''));
+                });
+            }
+        }
+        var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
+        if (!chatContainer) {
+            console.warn('[Meme] chatContainer not found, cannot show meme bubbles');
             return;
         }
         if (!memeLinks || !Array.isArray(memeLinks) || memeLinks.length === 0) {
-            console.warn('[Meme] memeLinks is empty or invalid');
             return;
-        }
-        
-        function getCurrentTimeString() {
-            var now = new Date();
-            var h = now.getHours().toString().padStart(2, '0');
-            var m = now.getMinutes().toString().padStart(2, '0');
-            var s = now.getSeconds().toString().padStart(2, '0');
-            return h + ':' + m + ':' + s;
         }
 
         for (var i = 0; i < memeLinks.length; i++) {
             (function (meme) {
-                if (!meme || !meme.safeUrl) {
-                    console.warn('[Meme] Invalid meme object:', meme);
-                    return;
-                }
+                if (!meme || !meme.safeUrl) return;
+
+                // 创建包含时间戳、表情和图片的统一气泡
+                var imgBubble = document.createElement('div');
+                imgBubble.classList.add('message', 'gemini');
+                imgBubble.style.padding = '12px';
+                imgBubble.style.textAlign = 'left'; 
+
+                // 添加时间戳和 🎀 (复刻 createGeminiBubble 的头部)
+                var now = new Date();
+                var timestamp = now.getHours().toString().padStart(2, '0') + ':' + 
+                              now.getMinutes().toString().padStart(2, '0') + ':' + 
+                              now.getSeconds().toString().padStart(2, '0');
                 
-                var messageDiv = document.createElement('div');
-                messageDiv.classList.add('message', 'gemini');
+                var headerSpan = document.createElement('span');
+                headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
+                imgBubble.appendChild(headerSpan);
+
+                // 添加图片容器（为了间距）
+                var imgOuter = document.createElement('div');
+                imgOuter.style.marginTop = '8px';
+                imgOuter.style.textAlign = 'center';
 
                 var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
-
                 var img = document.createElement('img');
                 img.src = proxyUrl;
-                img.alt = meme.title || '表情包';
-                img.style.cssText =
-                    'max-width: 200px;' +
-                    'max-height: 200px;' +
-                    'border-radius: 8px;' +
-                    'cursor: pointer;' +
-                    'display: block;' +
-                    'margin-top: 4px;';
-
+                img.alt = meme.title || 'Meme';
+                img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
+                
+                img.addEventListener('load', function () {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                });
                 img.addEventListener('click', function (e) {
                     e.preventDefault();
                     if (window.electronShell && window.electronShell.openExternal) {
@@ -644,24 +657,24 @@
                         window.open(meme.safeUrl, '_blank', 'noopener,noreferrer');
                     }
                 });
-
                 img.addEventListener('error', function () {
                     img.style.display = 'none';
                     var errSpan = document.createElement('span');
-                    errSpan.textContent = '[表情包加载失败]';
+                    errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
                     errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6));';
-                    messageDiv.appendChild(errSpan);
+                    imgOuter.appendChild(errSpan);
                 });
 
-                var timeSpan = document.createElement('span');
-                timeSpan.textContent = '[' + getCurrentTimeString() + '] \uD83C\uDF80 ';
-                messageDiv.appendChild(timeSpan);
-                messageDiv.appendChild(img);
+                imgOuter.appendChild(img);
+                imgBubble.appendChild(imgOuter);
+                chatContainer.appendChild(imgBubble);
 
-                chatContent.appendChild(messageDiv);
-                chatContent.scrollTop = chatContent.scrollHeight;
-
-                console.log('[Meme] 显示表情包气泡:', meme.title, '->', meme.safeUrl);
+                if (window.currentTurnGeminiBubbles) {
+                    window.currentTurnGeminiBubbles.push(imgBubble);
+                }
+                
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                console.log('[Meme] 已移除标题，仅显示图片气泡:', meme.title);
             })(memeLinks[i]);
         }
     }
