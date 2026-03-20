@@ -1167,7 +1167,8 @@ async def proxy_meme_image(url: str):
                 async with client.stream("GET", current_url, headers=headers) as resp:
                     if resp.status_code in (301, 302, 303, 307, 308):
                         location = resp.headers.get("Location")
-                        if not location: break
+                        if not location:
+                            break
                         
                         new_url = urljoin(current_url, location)
                         new_parsed = urlparse(new_url)
@@ -1905,9 +1906,12 @@ async def proactive_chat(request: Request):
         # Phase 1 结果收集
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
-        selected_web_topic_key = ''
-        selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
-        selected_meme_topic_key = ''   # 暂存表情包话题 key，等 Phase 2 成功后再记录
+        selected_web_link = None
+        selected_web_topic_key = None
+        selected_music_link = None
+        selected_music_topic_key = None
+        selected_meme_link = None
+        selected_meme_topic_key = None
         
         # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
         # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
@@ -1995,14 +1999,14 @@ async def proactive_chat(request: Request):
                             print(f"[{lanlan_name}] Phase 1 话题去重命中，跳过: {parsed.get('title','')[:60]}")
                             web_result_text = "[PASS] duplicate topic"
                         else:
-                            selected_web_topic_key = topic_key
                             if matched:
-                                source_links.append({
+                                # 暂存 Web 链接，待 Phase 2 AI 确定选择后再加入 source_links
+                                selected_web_link = {
                                     'title': parsed.get('title', matched.get('title', '')),
                                     'url': matched['url'],
                                     'source': parsed.get('source', matched.get('source', '')),
-                                })
-                                print(f"[{lanlan_name}] Phase 1 链接匹配成功: {matched.get('title','')[:60]}")
+                                }
+                                print(f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title','')[:60]}")
                             else:
                                 print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
                     if "[PASS]" not in web_result_text.upper():
@@ -2037,9 +2041,15 @@ async def proactive_chat(request: Request):
                         print(f"[{lanlan_name}]- Phase 1 音乐话题去重命中，跳过: {track_name}")
                     else:
                         logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
-                        phase1_topics.append(('music', music_topic))
-                        # 暂存音乐话题 key，等 Phase 2 成功后再记录
+                        # 暂存音乐候选信息，待 Phase 2 确定选择后再记录
+                        selected_music_link = {
+                            'title': f"{track_name} - {track_artist}",
+                            'url': track_url,
+                            'source': '音乐推荐',
+                            'type': 'music'
+                        }
                         selected_music_topic_key = music_topic_key
+                        phase1_topics.append(('music', music_topic))
                 else:
                     logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
@@ -2064,12 +2074,19 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
                         print(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
                     else:
-                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加: {meme_topic[:100]}...")
-                        phase1_topics.append(('meme', meme_topic))
-                        # 暂存表情包话题 key
+                        # 【加固】如果有多张表情包，Phase 1 仅给 AI 展示第一张的信息，
+                        # 确保 AI 的文字内容与最终输出的唯一一张图片完全对齐（避免串台）
+                        single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
+                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
+                        phase1_topics.append(('meme', single_meme_topic))
+                        # 暂存表情包候选信息
+                        selected_meme_link = {
+                            'title': meme_title,
+                            'url': meme_url,
+                            'source': meme_source,
+                            'type': 'meme'
+                        }
                         selected_meme_topic_key = meme_topic_key
-                        # 注意：此处暂不加入 source_links，待 Phase 2 AI 确定选择 MEME 标签后再加入
-                        # 避免 Phase 1 预选的链接污染最终展示（例如 AI 最终选了 WEB 但展示了 pre-selected 的 meme）
                         print(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                 else:
                     logger.info(f"[{lanlan_name}] Phase 1 表情包话题已添加: {meme_topic[:100]}...")
@@ -2380,33 +2397,38 @@ async def proactive_chat(request: Request):
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             })
 
+        source_links = [] # Phase 2 重新聚合链接，确保与 source_tag 匹配
         if source_tag == 'SCREEN':
-            source_links = []
             primary_channel = 'vision'
         elif source_tag == 'WEB':
             primary_channel = 'web'
+            if selected_web_link:
+                source_links.append(selected_web_link)
+                print(f"[{lanlan_name}] Phase 2 确定选择 WEB，已添加链接")
         elif source_tag == 'MUSIC':
-            source_links = [] # 纯音乐模式不需要 Web 链接
             primary_channel = 'music'
+            if selected_music_link:
+                source_links.append(selected_music_link)
+                print(f"[{lanlan_name}] Phase 2 确定选择 MUSIC，已添加链接")
         elif source_tag == 'MEME':
             primary_channel = 'meme'
-            # 只有在正式选择 MEME 通道时，才将预选的链接加入待展示列表
-            if meme_content and meme_content.get('data'):
-                first_meme = meme_content['data'][0]
-                source_links.append({
-                    'title': first_meme.get('title', ''),
-                    'url': first_meme.get('url', ''),
-                    'source': first_meme.get('source', '表情包'),
-                    'type': 'meme'
-                })
-                print(f"[{lanlan_name}] Phase 2 确定选择表情包，已添加链接")
+            if selected_meme_link:
+                source_links.append(selected_meme_link)
+                # 如果是 web_meme 模式，同时带回关联的 Web 链接
+                if selected_web_link:
+                    source_links.append(selected_web_link)
+                print(f"[{lanlan_name}] Phase 2 确定选择 MEME，已添加相关链接")
         elif source_tag == 'BOTH':
             # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
-            # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容
-            if is_music_used:
-                primary_channel = 'music'
-            else:
-                primary_channel = 'web'
+            primary_channel = 'music' if is_music_used else 'web'
+            # 聚合所有通过 Phase 1 筛选的链接
+            if selected_web_link:
+                source_links.append(selected_web_link)
+            if selected_music_link:
+                source_links.append(selected_music_link)
+            if selected_meme_link:
+                source_links.append(selected_meme_link)
+            print(f"[{lanlan_name}] Phase 2 确定选择 BOTH，已聚合所有候选链接")
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
         # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
@@ -2421,7 +2443,13 @@ async def proactive_chat(request: Request):
                 is_music_used = True
 
         if is_music_used:
-            _append_music_recommendations(source_links, music_content)
+            # 此处不再二次调用，因为 should_try_music_fallback 已经处理了 append
+            # 或者如果 is_music_used 为 True 但 haven't appended yet, do it.
+            # 实际上 supports_music_fallback 已经 append 了。
+            # 为了稳妥，我们只在尚未 append 时调用。
+            music_already_appended = any(link.get('source') == '音乐推荐' for link in source_links)
+            if not music_already_appended:
+                _append_music_recommendations(source_links, music_content)
         
         # 一次性投递完整文本 + 记录历史 + TTS end + turn end
         await mgr.finish_proactive_delivery(response_text)
@@ -2429,18 +2457,22 @@ async def proactive_chat(request: Request):
         # 记录主动搭话
         _record_proactive_chat(lanlan_name, response_text, primary_channel)
         
-        # 【逻辑优化】精准的话题去重记录
-        if selected_web_topic_key and (source_tag in ('WEB', 'BOTH')):
+        # 【逻辑优化】精准的话题去重记录：仅当链接真正被加入 source_links 时才记录已使用
+        def _is_link_selected(selected_link):
+            if not selected_link: return False
+            return any(l.get('url') == selected_link.get('url') for l in source_links if l)
+
+        if selected_web_topic_key and _is_link_selected(selected_web_link):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
+            print(f"[{lanlan_name}] 已记录 Web 话题去重: {selected_web_topic_key[:60]}")
             
-        # 【增强去重】即使 source_tag 解析为空，只要逻辑上判定使用了音乐（如 BOTH 模式降级处理），也必须记录
-        if selected_music_topic_key and is_music_used:
+        if selected_music_topic_key and (is_music_used or _is_link_selected(selected_music_link)):
             _record_topic_usage(lanlan_name, selected_music_topic_key)
+            print(f"[{lanlan_name}] 已记录音乐话题去重: {selected_music_topic_key}")
             
-        # 【表情包去重记录】由于表情包在 Phase 1 之后直接进入 source_links，只要主通道是 meme 就要记录
-        if selected_meme_topic_key and primary_channel == 'meme':
+        if selected_meme_topic_key and _is_link_selected(selected_meme_link):
             _record_topic_usage(lanlan_name, selected_meme_topic_key)
-            logger.info(f"[{lanlan_name}] 已记录表情包去重: {selected_meme_topic_key}")
+            print(f"[{lanlan_name}] 已记录表情包话题去重: {selected_meme_topic_key[:60]}")
 
         return JSONResponse({
             "success": True,

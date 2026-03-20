@@ -58,8 +58,8 @@
      */
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
-               S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-               S.proactiveMusicEnabled || S.proactiveMemeEnabled;
+            S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
+            S.proactiveMusicEnabled || S.proactiveMemeEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -136,11 +136,11 @@
 
         // 计算延迟时间（指数退避，倍率2.5）
         var delay = (S.proactiveChatInterval * 1000) * Math.pow(2.5, S.proactiveChatBackoffLevel);
-        
+
         // 首次启动时额外等待5秒，避免程序刚启动就触发音乐推荐
         var startupDelay = S.proactiveChatBackoffLevel === 0 ? 6000 : 0;
         delay += startupDelay;
-        
+
         console.log('主动搭话：' + (delay / 1000) + '秒后触发（基础间隔：' + S.proactiveChatInterval + '秒，退避级别：' + S.proactiveChatBackoffLevel + '，启动延迟：' + (startupDelay / 1000) + '秒）');
 
         S.proactiveChatTimer = setTimeout(async function () {
@@ -456,7 +456,7 @@
 
             var memeLinks = [];
             var otherLinks = [];
-            
+
             for (var i = 0; i < links.length; i++) {
                 var link = links[i];
                 if (!link) continue;
@@ -476,7 +476,7 @@
                 } catch (e) {
                     console.warn('[Meme Debug] 解析链接失败:', e);
                 }
-                
+
                 if (safeUrl) {
                     if (isMemeLink) {
                         memeLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
@@ -615,14 +615,14 @@
                 var imgBubble = document.createElement('div');
                 imgBubble.classList.add('message', 'gemini');
                 imgBubble.style.padding = '12px';
-                imgBubble.style.textAlign = 'left'; 
+                imgBubble.style.textAlign = 'left';
 
                 // 添加时间戳和 🎀 (复刻 createGeminiBubble 的头部)
                 var now = new Date();
-                var timestamp = now.getHours().toString().padStart(2, '0') + ':' + 
-                              now.getMinutes().toString().padStart(2, '0') + ':' + 
-                              now.getSeconds().toString().padStart(2, '0');
-                
+                var timestamp = now.getHours().toString().padStart(2, '0') + ':' +
+                    now.getMinutes().toString().padStart(2, '0') + ':' +
+                    now.getSeconds().toString().padStart(2, '0');
+
                 var headerSpan = document.createElement('span');
                 headerSpan.textContent = "[" + (window.appChat ? window.appChat.getCurrentTimeString() : timestamp) + "] \uD83C\uDF80 ";
                 imgBubble.appendChild(headerSpan);
@@ -637,7 +637,7 @@
                 img.src = proxyUrl;
                 img.alt = meme.title || 'Meme';
                 img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
-                
+
                 img.addEventListener('load', function () {
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 });
@@ -664,7 +664,7 @@
                 if (window.currentTurnGeminiBubbles) {
                     window.currentTurnGeminiBubbles.push(imgBubble);
                 }
-                
+
                 chatContainer.scrollTop = chatContainer.scrollHeight;
                 console.log('[Meme] 已展示图片气泡:', meme.title);
             })(memeLinks[i]);

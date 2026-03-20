@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Union
 from bs4 import BeautifulSoup
 import sys
 import os
+from urllib.parse import quote, urljoin, urlparse
 
 try:
     from utils.logger_config import get_module_logger
@@ -353,7 +354,7 @@ class DoutubFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{keyword}"
+        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
         try:
             html = await self._fetch_html(search_url)
             if not html:
@@ -626,7 +627,7 @@ class FabiaoqingFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{keyword}"
+        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
         try:
             html = await self._fetch_html(search_url)
             if not html:

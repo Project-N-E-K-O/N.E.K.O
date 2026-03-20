@@ -1615,6 +1615,9 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     else:
         key = 'none'
 
+    if has_meme and key != 'meme' and not key.endswith('_meme'):
+        key = f"{key}_meme"
+
     # 定义各个 key 的指令描述
     _si_zh = {
         'both_meme':   '- 你可以结合屏幕内容、外部话题和表情包来搭话。优先围绕主人正在看的内容，并用文字配合[表情包]的内容/情绪来吐槽、卖萌或调侃主人',
@@ -1645,15 +1648,10 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     _si = {
         'zh': _si_zh,
         'en': _si_en,
-        'ja': {k: _si_en.get(k, _si_en['none']) for k in _si_zh.keys()}, # 临时回退到 en 或自行翻译
-        'ko': {k: _si_en.get(k, _si_en['none']) for k in _si_zh.keys()},
-        'ru': {k: _si_en.get(k, _si_en['none']) for k in _si_zh.keys()},
+        'ja': _si_en,  # 待翻译
+        'ko': _si_en,
+        'ru': _si_en,
     }
-
-    # 简单处理 ja/ko/ru 的 key 映射，确保不会 crash
-    for lang_code in ['ja', 'ko', 'ru']:
-        # 重采样 en 的内容，仅作为兜底
-        pass
 
     source_instruction = _si.get(lang, _si['en']).get(key, _si['en']['none'])
     
@@ -1696,8 +1694,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 '输出格式（严格遵守）：\n'
                 '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则直接输出你要说的话（不需要来源标签），你的文字会和表情包图片一起发送给主人\n\n'
-                '示例：\n哈哈哈这个表情包太真实了！'
+                '- 否则第一行写 [MEME]，第二行起写你要说的话。你的文字会配合表情包图片一起发送\n\n'
+                '示例：\n[MEME]\n哈哈哈这个表情包太真实了！'
+            ),
+            'both_meme': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
+                '示例：\n[MEME]\n你在看这个啊？哈哈哈太真实了...'
+            ),
+            'screen_meme': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
+                '示例：\n[MEME]\n在看这个吗？这个表情包很配现在的氛围哦~'
+            ),
+            'web_meme': (
+                '输出格式（严格遵守）：\n'
+                '- 放弃搭话 → 只输出 [PASS]\n'
+                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
+                '示例：\n[MEME]\n说到这个话题，这张图是不是很有既视感？'
             ),
             'none': (
                 '如果没有什么好聊的，回复 [PASS]。\n'
@@ -1735,8 +1751,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
-                '- Otherwise, just output your message directly (no source tag needed). Your text will be sent together with the meme image to the master\n\n'
-                'Example:\nHahaha this meme is so relatable!'
+                '- Otherwise, first line = [MEME], then your message on next line(s). Your text will be sent with the meme image\n\n'
+                'Example:\n[MEME]\nHahaha this meme is so relatable!'
+            ),
+            'both_meme': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
+                'Example:\n[MEME]\nAre you looking at this? Hahaha so relatable...'
+            ),
+            'screen_meme': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
+                'Example:\n[MEME]\nWatching this? This meme fits the mood perfectly!'
+            ),
+            'web_meme': (
+                'Output format (strict):\n'
+                '- To skip: reply only [PASS]\n'
+                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
+                'Example:\n[MEME]\nSpeaking of this topic, doesn\'t this image feel familiar?'
             ),
             'none': (
                 'If nothing feels right to bring up, reply [PASS].\n'
@@ -1774,8 +1808,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 '出力形式（厳守）：\n'
                 '- パス → [PASS] のみ\n'
-                '- それ以外 → 直接メッセージを出力（ソースタグ不要）。あなたのテキストはミーム画像と一緒にご主人に送信されます\n\n'
-                '例：\nあはは、このミーム面白すぎ！'
+                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ。あなたのテキストはミーム画像と一緒に送信されます\n\n'
+                '例：\n[MEME]\nあはは、このミーム面白すぎ！'
+            ),
+            'both_meme': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
+                '例：\n[MEME]\nこれ見てるの？あはは、めっちゃリアル...'
+            ),
+            'screen_meme': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
+                '例：\n[MEME]\nこれ見てる？今の雰囲気にぴったりだね！'
+            ),
+            'web_meme': (
+                '出力形式（厳守）：\n'
+                '- パス → [PASS] のみ\n'
+                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
+                '例：\n[MEME]\nこの話題といえば、この画像どっかで見たことない？'
             ),
             'none': (
                 '話すことがなければ [PASS] と返してください。\n'
@@ -1813,11 +1865,29 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 '출력 형식 (엄격 준수):\n'
                 '- 패스 → [PASS]만\n'
-                '- 그 외 → 메시지만 직접 출력 (소스 태그 불필요). 당신의 텍스트는 밈 이미지와 함께 주인에게 전송됩니다\n\n'
-                '예시:\nㅋㅋㅋ 이 밈 진짜 웃기다!'
+                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지. 당신의 텍스트는 밈 이미지와 함께 주인에게 전송됩니다\n\n'
+                '예시:\n[MEME]\nㅋㅋㅋ 이 밈 진짜 웃기다!'
+            ),
+            'both_meme': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
+                '예시:\n[MEME]\n뭐 보고 있어? ㅋㅋㅋ 정말 리얼해...'
+            ),
+            'screen_meme': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
+                '예시:\n[MEME]\n이거 보고 있니? 이 밈이 현재 분위기에 딱이야!'
+            ),
+            'web_meme': (
+                '출력 형식 (엄격 준수):\n'
+                '- 패스 → [PASS]만\n'
+                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
+                '예시:\n[MEME]\n이 주제라면, 이 이미지가 어디서 본 적 있지 않아?'
             ),
             'none': (
-                '말할 게 없으면 [PASS]로 답변.\n'
+                '질문하거나 대화할 게 없으면 [PASS]로 답변.\n'
                 '아니면 메시지만 직접 출력 (소스 태그 불필요).'
             ),
         },
@@ -1852,8 +1922,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 'Формат ответа (строго):\n'
                 '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе просто выведите своё сообщение без тега источника. Ваш текст будет отправлен вместе с мем-изображением хозяину\n\n'
-                'Пример:\nХа-ха, этот мем слишком точный!'
+                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение. Ваш текст будет отправлен вместе с мем-изображением хозяину\n\n'
+                'Пример:\n[MEME]\nХа-ха, этот мем слишком точный!'
+            ),
+            'both_meme': (
+                'Формат ответа (строго):\n'
+                '- Чтобы пропустить, ответьте только [PASS]\n'
+                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
+                'Пример:\n[MEME]\nСмотришь это? Ха-ха, как жизненно...'
+            ),
+            'screen_meme': (
+                'Формат ответа (строго):\n'
+                '- Чтобы пропустить, ответьте только [PASS]\n'
+                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
+                'Пример:\n[MEME]\nСмотришь это? Этот мем идеально подходит под настроение!'
+            ),
+            'web_meme': (
+                'Формат ответа (строго):\n'
+                '- Чтобы пропустить, ответьте только [PASS]\n'
+                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
+                'Пример:\n[MEME]\nГоворя об этой теме, разве это изображение не кажется знакомым?'
             ),
             'none': (
                 'Если нечего уместно сказать, ответьте [PASS].\n'
@@ -1867,8 +1955,33 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     
     # 获取指令和格式，支持混合模式回退
     source_instruction = source_map.get(key, source_map['none'])
-    output_format_section = format_map.get(key, format_map.get(key.replace('_meme', ''), format_map['none']))
+    # 这里的 fallback 逻辑逻辑改进：如果 has_meme 为 True，绝对不能允许 fallback 到 non-tagged 格式
+    output_format_section = format_map.get(key)
+    if not output_format_section:
+        if has_meme:
+            # 优先尝试 meme 专用 fallback
+            output_format_section = format_map.get('meme', "")
+        else:
+            # 常规 fallback
+            output_format_section = format_map.get(key.replace('_meme', ''), format_map.get('none', ""))
     
+    # 确保 output_format_section 是字符串，防止后续 .upper() 报错
+    if not output_format_section:
+        output_format_section = ""
+
+    # 最终防御：如果由于某种原因（如 fallback 到了 none）导致 format 里没有 [MEME] 标签
+    # 且 has_meme 为 True，则在其格式说明中强制注入/强调。
+    if has_meme and '[MEME]' not in output_format_section.upper():
+        # 将“不需要来源标签”或类似措辞替换为强制使用 [MEME]
+        if lang == 'zh':
+            output_format_section = output_format_section.replace('不需要来源标签', '必须在第一行使用 [MEME] 标签')
+        elif lang == 'en':
+            output_format_section = output_format_section.replace('no source tag needed', 'MUST use [MEME] tag on the first line')
+        
+        # 如果还是没有，则直接在开头注入
+        if '[MEME]' not in output_format_section.upper():
+            output_format_section = "[MEME] 标签是必须的！\n" + output_format_section
+
     # 组合最终结果，将 [MEME] 标签提醒加入指令
     return f"{source_instruction}{format_suffix}", output_format_section
 
