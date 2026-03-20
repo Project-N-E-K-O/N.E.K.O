@@ -404,8 +404,10 @@ class LLMSessionManager:
                         self.sync_message_queue.put({'type': 'system', 'data': 'renew session'})
 
                 # 2. agent 任务结果即时触发（无需等待 40s）：有挂起的额外提示 → 立刻启动预热
+                #    语音模式下跳过：extras 由 trigger_agent_callbacks 直接通过 create_response 投递
                 has_extra = bool(getattr(self, 'pending_extra_replies', None))
-                if has_extra and not self.is_preparing_new_session:
+                if has_extra and not self.is_preparing_new_session \
+                        and not isinstance(self.session, OmniRealtimeClient):
                     await self._trigger_immediate_preparation_for_extra()
 
                 # 3. 后台预热（10s 延迟，适用于定时触发路径；
@@ -1841,11 +1843,10 @@ class LLMSessionManager:
 
         # 语音模式：通过 create_response 投递
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            if getattr(self.session, '_is_responding', False) or getattr(self.session, '_audio_in_buffer', False):
-                logger.info("[%s] deliver_text_proactively skipped: voice busy", self.lanlan_name)
+            if not self._can_voice_proactive_deliver():
+                logger.info("[%s] deliver_text_proactively skipped: voice admission failed", self.lanlan_name)
                 return False
-            await self.session.create_response(text)
-            return True
+            return await self._safe_voice_create_response(text, 'deliver_text_proactively')
 
         # Need a live WebSocket
         if not self.websocket:
@@ -1965,6 +1966,29 @@ class LLMSessionManager:
         if self._screenshot_future and not self._screenshot_future.done():
             self._screenshot_future.set_result(b64)
 
+    def _can_voice_proactive_deliver(self) -> bool:
+        """语音模式主动投递准入检查（统一入口）。"""
+        if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
+            return False
+        if getattr(self.session, '_is_responding', False):
+            return False
+        if getattr(self.session, '_audio_in_buffer', False):
+            return False
+        if getattr(self, 'is_hot_swap_imminent', False):
+            return False
+        if not getattr(self.session, 'ws', None):
+            return False
+        return True
+
+    async def _safe_voice_create_response(self, text: str, caller: str = '') -> bool:
+        """安全包装 create_response，失败时记录日志并返回 False 而非抛异常。"""
+        try:
+            await self.session.create_response(text)
+            return True
+        except Exception as e:
+            logger.warning("[%s] %s: create_response failed: %s", self.lanlan_name, caller, e)
+            return False
+
     async def prepare_proactive_delivery(self, min_idle_secs: float = 30.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
         if self.last_user_activity_time is not None:
@@ -1972,15 +1996,9 @@ class LLMSessionManager:
                 logger.info("[%s] prepare_proactive_delivery: user active recently", self.lanlan_name)
                 return False
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            # 语音模式：AI 正在回复或用户正在说话或热切换中时跳过
-            if getattr(self.session, '_is_responding', False):
-                logger.info("[%s] prepare_proactive_delivery: voice session responding, skip", self.lanlan_name)
-                return False
-            if getattr(self.session, '_audio_in_buffer', False):
-                logger.info("[%s] prepare_proactive_delivery: user speaking, skip", self.lanlan_name)
-                return False
-            if getattr(self, 'is_hot_swap_imminent', False):
-                logger.info("[%s] prepare_proactive_delivery: hot-swap imminent, skip", self.lanlan_name)
+            # 语音模式：使用统一准入检查
+            if not self._can_voice_proactive_deliver():
+                logger.info("[%s] prepare_proactive_delivery: voice admission check failed", self.lanlan_name)
                 return False
             # 语音模式不需要生成 speech_id 或启动文本 session，直接放行
             return True
@@ -2024,11 +2042,12 @@ class LLMSessionManager:
         """流式完成后收尾：一次性投递完整文本 + 记录历史 + TTS/turn end 信号。"""
         # 语音模式：通过 create_response 让语音 API 直接朗读
         if self.is_active and isinstance(self.session, OmniRealtimeClient):
-            if getattr(self.session, '_is_responding', False) or getattr(self.session, '_audio_in_buffer', False):
-                logger.info("[%s] finish_proactive_delivery: voice busy, skip", self.lanlan_name)
+            if not self._can_voice_proactive_deliver():
+                logger.info("[%s] finish_proactive_delivery: voice admission failed, skip", self.lanlan_name)
                 return
-            await self.session.create_response(full_text)
-            logger.info("[%s] Voice proactive delivered: %.40s…", self.lanlan_name, full_text)
+            delivered = await self._safe_voice_create_response(full_text, 'finish_proactive_delivery')
+            if delivered:
+                logger.info("[%s] Voice proactive delivered: %.40s…", self.lanlan_name, full_text)
             return
 
         # 文本模式：原有逻辑
@@ -2110,11 +2129,11 @@ class LLMSessionManager:
         self._agent_delivery_in_progress = True
         try:
             if isinstance(self.session, OmniRealtimeClient):
-                if getattr(self.session, '_is_responding', False) or getattr(self.session, '_audio_in_buffer', False):
-                    logger.debug("[%s] trigger_agent_callbacks: voice busy, keeping for later", self.lanlan_name)
+                if not self._can_voice_proactive_deliver():
+                    logger.debug("[%s] trigger_agent_callbacks: voice admission failed, keeping for later", self.lanlan_name)
                     return  # 不清除 callbacks，下次重试
                 self.pending_agent_callbacks.clear()
-                delivered = await self.session.stream_proactive(instruction)
+                delivered = await self._safe_voice_create_response(instruction, 'trigger_agent_callbacks')
                 if delivered:
                     self.pending_extra_replies.clear()
                 else:

@@ -351,6 +351,9 @@
             }
 
             // 检测用户是否在阈值时间内有过输入（语音模式下放宽，VAD 已处理打断）
+            // 注意：前端阈值（5s/20s）与后端 prepare_proactive_delivery 的阈值（5s/30s）有意不同——
+            // 前端 lastUserInputTime 仅追踪显式用户操作（按键/点击），作为快速预过滤避免无谓请求；
+            // 后端 last_user_activity_time 包含更广泛的信号（语音输入、WebSocket 消息等），是权威判断。
             var idleThreshold = S.isRecording ? 5000 : 20000;
             var timeSinceLastInput = Date.now() - (window.lastUserInputTime || 0);
             if (timeSinceLastInput < idleThreshold) {
