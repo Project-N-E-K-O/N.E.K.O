@@ -1378,6 +1378,8 @@
             "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
             "proactiveMusicChat": "Музыкальные рекомендации",
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
+            "proactiveMemeChat": "Мемы",
+            "proactiveMemeChatTooltip": "Делиться смешными мемами для проактивного чата",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",

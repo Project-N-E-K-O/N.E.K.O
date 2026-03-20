@@ -63,6 +63,7 @@ from utils.web_scraper import (
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content
+from utils.meme_fetcher import fetch_meme_content
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -1114,8 +1115,100 @@ async def find_first_image(folder: str = None):
         
     except Exception as e:
         logger.error(f"查找预览图片文件失败: {e}")
-        # 发生异常时不泄露详细信息
         return JSONResponse(content={"success": False, "error": "服务器内部错误"}, status_code=500)
+
+@router.get('/meme/proxy-image')
+async def proxy_meme_image(url: str):
+    """
+    代理远程表情包图片，解决跨域问题
+    """
+    try:
+        logger.info(f"[Meme Proxy] 收到代理请求, url参数: {url[:100] if url else 'None'}...")
+        
+        if not url:
+            logger.warning("[Meme Proxy] 缺少URL参数")
+            return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
+        
+        decoded_url = unquote(url)
+        logger.info(f"[Meme Proxy] 解码后URL: {decoded_url[:100]}...")
+        
+        if not decoded_url.startswith(('http://', 'https://')):
+            logger.warning(f"[Meme Proxy] 无效的URL协议: {decoded_url[:50]}")
+            return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
+        
+        allowed_hosts = [
+            'qn.doutub.com',
+            'img.soutula.com',
+            'i.imgflip.com',
+            'doutub.com',
+            'fabiaoqing.com',
+            'soutula.com'
+        ]
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(decoded_url)
+        hostname = parsed.hostname or ''
+        is_allowed = any(host in hostname for host in allowed_hosts)
+        
+        logger.info(f"[Meme Proxy] hostname: {hostname}, is_allowed: {is_allowed}")
+        
+        if not is_allowed:
+            logger.warning(f"[Meme Proxy] 不允许代理该域名: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名的图片: {hostname}"}, status_code=403)
+        
+        logger.info(f"[Meme Proxy] 开始获取图片: {decoded_url}")
+        
+        referer_map = {
+            'img.soutula.com': 'https://fabiaoqing.com/',
+            'qn.doutub.com': 'https://www.doutub.com/',
+            'doutub.com': 'https://www.doutub.com/',
+            'fabiaoqing.com': 'https://fabiaoqing.com/',
+            'i.imgflip.com': 'https://imgflip.com/',
+        }
+        
+        referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': referer,
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+        }
+        
+        logger.info(f"[Meme Proxy] 使用 Referer: {referer}")
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(decoded_url, headers=headers)
+            response.raise_for_status()
+            
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            if not content_type.startswith('image/'):
+                content_type = 'image/jpeg'
+            
+            logger.info(f"[Meme Proxy] 成功获取图片, size: {len(response.content)} bytes, type: {content_type}")
+            
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={
+                    'Cache-Control': 'public, max-age=86400',
+                    'Access-Control-Allow-Origin': '*'
+                }
+            )
+    except httpx.TimeoutException:
+        logger.error(f"[Meme Proxy] 请求超时: {decoded_url[:100]}")
+        return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[Meme Proxy] HTTP错误: {e.response.status_code}")
+        return JSONResponse(content={"success": False, "error": f"HTTP错误: {e.response.status_code}"}, status_code=e.response.status_code)
+    except Exception as e:
+        logger.error(f"代理表情包图片失败: {e}")
+        return JSONResponse(content={"success": False, "error": f"服务器内部错误: {str(e)}"}, status_code=500)
 
 # 辅助函数
 
@@ -1513,6 +1606,30 @@ async def proactive_chat(request: Request):
             
             elif mode == 'music':
                 return (mode, {'placeholder': True, 'note': '关键词将在 Phase 1 开始前生成'})
+            
+            elif mode == 'meme':
+                meme_content = await fetch_meme_content(keyword='', limit=_PHASE1_FETCH_PER_SOURCE)
+                if not meme_content['success']:
+                    raise ValueError(f"获取表情包失败: {meme_content.get('error')}")
+                formatted = meme_content.get('formatted_content', '')
+                meme_data = meme_content.get('data', [])
+                source_name = meme_content.get('source', '表情包')
+                links = []
+                for item in meme_data:
+                    links.append({
+                        'title': item.get('title', ''),
+                        'url': item.get('url', ''),
+                        'source': item.get('source', source_name),
+                        'type': item.get('type', 'meme')
+                    })
+                print(f"[{lanlan_name}] 成功获取 {len(meme_data)} 个表情包 (来源: {source_name})")
+                return (mode, {
+                    'formatted_content': formatted,
+                    'data': meme_data,
+                    'raw_data': meme_content,
+                    'links': links,
+                    'source': source_name
+                })
 
             else:
                 raise ValueError(f"未知模式: {mode}")
@@ -1706,12 +1823,15 @@ async def proactive_chat(request: Request):
         
         vision_content = sources.get('vision')  # 仅保留给 Phase 2 使用，Phase 1 不处理
         music_content = sources.get('music')
+        meme_content = sources.get('meme')
         logger.info(f"[{lanlan_name}] 主动搭话-音乐内容: type={type(music_content)}, success={music_content.get('success') if music_content else 'N/A'}")
+        logger.info(f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}")
         
         all_web_links: list[dict] = []
         
         # 收集音乐链接（在 Phase 1 Web 筛选完成后）
-        web_modes = [m for m in sources if m != 'vision' and m != 'music']
+        # meme 也不经过 Phase 1 LLM 筛选，直接添加话题
+        web_modes = [m for m in sources if m not in ('vision', 'music', 'meme')]
         
         merged_web_content = ""
         if web_modes:
@@ -1912,6 +2032,40 @@ async def proactive_chat(request: Request):
                     logger.info(f"[{lanlan_name}] Phase 1 音乐话题已添加: {music_topic[:100]}...")
                     phase1_topics.append(('music', music_topic))
         
+        # 表情包模式特殊处理：不经过 Phase 1 LLM 筛选，直接添加表情包话题
+        if meme_content and meme_content.get('formatted_content'):
+            meme_topic = meme_content['formatted_content']
+            if meme_topic:
+                meme_data = meme_content.get('data', [])
+                if meme_data:
+                    first_meme = meme_data[0]
+                    meme_title = first_meme.get('title', '')
+                    meme_url = first_meme.get('url', '')
+                    meme_source = first_meme.get('source', '表情包')
+                    
+                    meme_topic_key = _build_topic_dedup_key(
+                        topic_title=meme_title,
+                        topic_source=meme_source,
+                        topic_url=meme_url
+                    )
+                    
+                    if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
+                        print(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                    else:
+                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加: {meme_topic[:100]}...")
+                        phase1_topics.append(('meme', meme_topic))
+                        meme_link = {
+                            'title': first_meme.get('title', ''),
+                            'url': first_meme.get('url', ''),
+                            'source': first_meme.get('source', '表情包'),
+                            'type': first_meme.get('type', 'meme')
+                        }
+                        source_links.append(meme_link)
+                        print(f"[{lanlan_name}] 添加表情包链接: {meme_link.get('title', '')[:30]} -> {meme_link.get('url', '')[:50]}")
+                else:
+                    logger.info(f"[{lanlan_name}] Phase 1 表情包话题已添加: {meme_topic[:100]}...")
+                    phase1_topics.append(('meme', meme_topic))
+        
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
             return JSONResponse({
@@ -1992,10 +2146,21 @@ async def proactive_chat(request: Request):
             print(f"[{lanlan_name}] 正在播放音乐，已屏蔽音乐推荐素材（仅保留 playing_hint）")
             music_section = ""
         
+        # 构建表情包段（meme 通道）
+        meme_section = ""
+        meme_topic = None
+        for channel, topic in phase1_topics:
+            if channel == 'meme':
+                meme_topic = topic
+                break
+        if meme_topic:
+            meme_section = f"======表情包素材======\n{meme_topic}\n======表情包素材结束======"
+        
         source_instruction, output_format_section = get_proactive_format_sections(
             has_screen=bool(screen_section),
             has_web=bool(external_section),
-            has_music=bool(music_section),  # 分离音乐布尔位
+            has_music=bool(music_section),
+            has_meme=bool(meme_section),
             lang=proactive_lang,
         )
         #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
@@ -2019,6 +2184,7 @@ async def proactive_chat(request: Request):
             screen_section=screen_section,
             external_section=external_section,
             music_section=music_section,
+            meme_section=meme_section,
             master_name=master_name_current,
             source_instruction=source_instruction,
             output_format_section=output_format_section,
@@ -2105,7 +2271,7 @@ async def proactive_chat(request: Request):
                         if m:
                             cleaned = cleaned[m.end():]
                         # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
-                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
+                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
                         if tag_match:
                             source_tag = tag_match.group(1).upper()
                             cleaned = cleaned[tag_match.end():]
@@ -2154,7 +2320,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
@@ -2213,6 +2379,8 @@ async def proactive_chat(request: Request):
         elif source_tag == 'MUSIC':
             source_links = [] # 纯音乐模式不需要 Web 链接
             primary_channel = 'music'
+        elif source_tag == 'MEME':
+            primary_channel = 'meme'
         elif source_tag == 'BOTH':
             # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
             # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容

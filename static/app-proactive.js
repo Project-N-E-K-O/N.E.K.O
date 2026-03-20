@@ -59,7 +59,7 @@
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
                S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-               S.proactiveMusicEnabled;
+               S.proactiveMusicEnabled || S.proactiveMemeEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -75,25 +75,25 @@
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return false;
         }
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return S.proactiveVisionEnabled;
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
-            !S.proactiveMusicEnabled) {
+            !S.proactiveMusicEnabled && !S.proactiveMemeEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
-        // 音乐搭话不需要额外条件，总是允许
+        // 音乐搭话和meme搭话不需要额外条件，总是允许
         return true;
     }
     mod.canTriggerProactively = canTriggerProactively;
@@ -243,6 +243,12 @@
                 availableModes.push('music');
             }
 
+            // Meme搭话
+            if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
+                console.log('[ProactiveChat] Meme模式已启用');
+                availableModes.push('meme');
+            }
+
             // 如果没有选择任何搭话方式，跳过本次搭话
             if (availableModes.length === 0) {
                 console.log('未选择任何搭话方式，跳过本次搭话');
@@ -303,6 +309,10 @@
                 // 音乐搭话
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
                     latestModes.push('music');
+                }
+                // Meme搭话
+                if (S.proactiveMemeEnabled && S.proactiveChatEnabled) {
+                    latestModes.push('meme');
                 }
                 availableModes = availableModes.filter(function (m) { return latestModes.includes(m); });
                 requestBody.enabled_modes = availableModes;
@@ -429,10 +439,10 @@
      */
     function _showProactiveChatSourceLinks(links, dispatchedUrl) {
         try {
+            console.log('[Meme Debug] _showProactiveChatSourceLinks called with links:', JSON.stringify(links, null, 2));
             var chatContent = document.getElementById('chat-content-wrapper');
             if (!chatContent) return;
 
-            // 鲁棒的 URL 比较函数
             var isSameUrl = function (u1, u2) {
                 if (!u1 || !u2) return false;
                 if (u1 === u2) return true;
@@ -444,16 +454,18 @@
                 } catch (e) { return u1 === u2; }
             };
 
-            var validLinks = [];
+            var memeLinks = [];
+            var otherLinks = [];
+            
             for (var i = 0; i < links.length; i++) {
                 var link = links[i];
-
-                // 跳过 null/undefined 条目
                 if (!link) continue;
 
-                // 所有的音乐推荐链接都不显示在聊天框中（由播放器统一处理）
                 var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
                 if (isMusicLink) continue;
+
+                var isMemeLink = link.source === '表情包' || link.source === '斗图吧' || link.source === '发表情' || link.source === 'Imgflip';
+                console.log('[Meme Debug] Link:', link.title, '| source:', link.source, '| isMeme:', isMemeLink, '| url:', link.url);
 
                 var safeUrl = null;
                 try {
@@ -462,16 +474,26 @@
                         safeUrl = u.href;
                     }
                 } catch (e) {
-                    console.warn('解析链接失败:', e);
+                    console.warn('[Meme Debug] 解析链接失败:', e);
                 }
+                
                 if (safeUrl) {
-                    validLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+                    if (isMemeLink) {
+                        memeLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+                    } else {
+                        otherLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
+                    }
                 }
             }
 
-            if (validLinks.length === 0) return;
+            console.log('[Meme Debug] memeLinks:', memeLinks.length, '| otherLinks:', otherLinks.length);
 
-            // 超过 3 个旧卡片时，移除最早的
+            if (memeLinks.length > 0) {
+                _showMemeBubbles(memeLinks, chatContent);
+            }
+
+            if (otherLinks.length === 0) return;
+
             var MAX_LINK_CARDS = 3;
             var existingCards = chatContent.querySelectorAll('.proactive-source-link-card');
             var overflow = existingCards.length - MAX_LINK_CARDS + 1;
@@ -496,7 +518,7 @@
                 'position: relative;';
 
             var closeBtn = document.createElement('span');
-            closeBtn.textContent = '\u2715'; // ✕
+            closeBtn.textContent = '\u2715';
             closeBtn.style.cssText =
                 'position: absolute;' +
                 'top: 6px;' +
@@ -529,7 +551,7 @@
             });
             linkCard.appendChild(closeBtn);
 
-            for (var k = 0; k < validLinks.length; k++) {
+            for (var k = 0; k < otherLinks.length; k++) {
                 (function (vl) {
                     var a = document.createElement('a');
                     a.href = vl.safeUrl;
@@ -554,7 +576,7 @@
                         }
                     });
                     linkCard.appendChild(a);
-                })(validLinks[k]);
+                })(otherLinks[k]);
             }
 
             chatContent.appendChild(linkCard);
@@ -567,12 +589,83 @@
                 setTimeout(function () { linkCard.remove(); }, 500);
             }, 5 * 60 * 1000);
 
-            console.log('已显示主动搭话来源链接:', validLinks.length, '条');
+            console.log('已显示主动搭话来源链接:', otherLinks.length, '条');
         } catch (e) {
             console.warn('显示来源链接失败:', e);
         }
     }
-    mod._showProactiveChatSourceLinks = _showProactiveChatSourceLinks;
+
+    function _showMemeBubbles(memeLinks, chatContent) {
+        if (!chatContent) {
+            console.warn('[Meme] chatContent is null, cannot show meme bubbles');
+            return;
+        }
+        if (!memeLinks || !Array.isArray(memeLinks) || memeLinks.length === 0) {
+            console.warn('[Meme] memeLinks is empty or invalid');
+            return;
+        }
+        
+        function getCurrentTimeString() {
+            var now = new Date();
+            var h = now.getHours().toString().padStart(2, '0');
+            var m = now.getMinutes().toString().padStart(2, '0');
+            var s = now.getSeconds().toString().padStart(2, '0');
+            return h + ':' + m + ':' + s;
+        }
+
+        for (var i = 0; i < memeLinks.length; i++) {
+            (function (meme) {
+                if (!meme || !meme.safeUrl) {
+                    console.warn('[Meme] Invalid meme object:', meme);
+                    return;
+                }
+                
+                var messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', 'gemini');
+
+                var proxyUrl = '/api/meme/proxy-image?url=' + encodeURIComponent(meme.safeUrl);
+
+                var img = document.createElement('img');
+                img.src = proxyUrl;
+                img.alt = meme.title || '表情包';
+                img.style.cssText =
+                    'max-width: 200px;' +
+                    'max-height: 200px;' +
+                    'border-radius: 8px;' +
+                    'cursor: pointer;' +
+                    'display: block;' +
+                    'margin-top: 4px;';
+
+                img.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    if (window.electronShell && window.electronShell.openExternal) {
+                        window.electronShell.openExternal(meme.safeUrl);
+                    } else {
+                        window.open(meme.safeUrl, '_blank', 'noopener,noreferrer');
+                    }
+                });
+
+                img.addEventListener('error', function () {
+                    img.style.display = 'none';
+                    var errSpan = document.createElement('span');
+                    errSpan.textContent = '[表情包加载失败]';
+                    errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6));';
+                    messageDiv.appendChild(errSpan);
+                });
+
+                var timeSpan = document.createElement('span');
+                timeSpan.textContent = '[' + getCurrentTimeString() + '] \uD83C\uDF80 ';
+                messageDiv.appendChild(timeSpan);
+                messageDiv.appendChild(img);
+
+                chatContent.appendChild(messageDiv);
+                chatContent.scrollTop = chatContent.scrollHeight;
+
+                console.log('[Meme] 显示表情包气泡:', meme.title, '->', meme.safeUrl);
+            })(memeLinks[i]);
+        }
+    }
+    mod._showMemeBubbles = _showMemeBubbles;
 
     // ======================== backoff reset ========================
 

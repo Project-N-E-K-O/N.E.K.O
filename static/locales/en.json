@@ -1378,6 +1378,8 @@
             "proactivePersonalChatTooltip": "Use personal updates from connected platforms for proactive chat",
             "proactiveMusicChat": "Music Recommendation",
             "proactiveMusicChatTooltip": "Use recommended music for proactive chat",
+            "proactiveMemeChat": "Meme Sharing",
+            "proactiveMemeChatTooltip": "Share funny memes for proactive chat",
             "agentMaster": "NekoClaw Master Switch",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",

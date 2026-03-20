@@ -7,7 +7,6 @@ from bs4 import BeautifulSoup
 import sys
 import os
 
-# 尝试导入项目内的 logger，如果失败则使用基本的 logging
 try:
     from utils.logger_config import get_module_logger
     logger = get_module_logger(__name__)
@@ -15,6 +14,19 @@ except ImportError:
     import logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+
+try:
+    from utils.language_utils import is_china_region
+except ImportError:
+    def is_china_region() -> bool:
+        import locale
+        try:
+            current_locale = locale.getdefaultlocale()[0]
+            if current_locale:
+                return current_locale.lower().startswith('zh_cn')
+        except:
+            pass
+        return False
 
 # 更广泛且现代的 User-Agent 池
 USER_AGENTS = [
@@ -221,40 +233,522 @@ class MemeFetcher:
         """搜索 GIF 表情包"""
         return await self.search(keyword, limit, search_type="gif")
 
-async def fetch_meme_content(keyword: str, limit: int = 5) -> dict:
+MEME_HOT_KEYWORDS = [
+    "funny", "cat", "dog", "surprised", "laugh", "happy", "sad", "angry",
+    "love", "cute", "anime", "gaming", "reaction", "mood", "relatable",
+    "monday", "friday", "weekend", "work", "sleep", "coffee", "food",
+    "confused", "excited", "tired", "bored", "awkward", "cringe", "wholesome",
+    "sarcastic", "dramatic", "crying", "shocked", "scared",
+    "thumbs up", "facepalm", "eye roll", "wink", "smile", "wave",
+    "thank you", "sorry", "please", "no", "yes", "maybe", "whatever",
+    "good luck", "congrats", "happy birthday", "get well", "miss you",
+    "panda", "bear", "rabbit", "frog", "duck", "penguin",
+    "drake", "distracted boyfriend", "woman yelling", "stonks", "this is fine",
+    "galaxy brain", "expanding brain", "two buttons", "change my mind",
+    "disaster girl", "hide the pain harold", "bad luck brian", "success kid",
+]
+
+MEME_HOT_KEYWORDS_CN = [
+    "搞笑", "猫", "狗", "惊讶", "笑", "开心", "难过", "生气",
+    "爱", "可爱", "动漫", "游戏", "反应", "心情", "真实",
+    "周一", "周五", "周末", "工作", "睡觉", "咖啡", "美食",
+    "熊猫头", "沙雕", "狗头", "滑稽", "大佬", "萌萌", "震惊",
+    "无语", "疑惑", "期待", "满足", "无奈", "嘲讽", "佩服",
+    "打工人", "社畜", "摸鱼", "躺平", "内卷", "摆烂", "卷王",
+    "早安", "午安", "晚安", "早安打工人", "晚安玛卡巴卡", "起床困难",
+    "加班", "下班", "上班", "迟到", "早退", "请假", "摸鱼中",
+    "谢谢", "对不起", "没关系", "好的", "收到", "明白", "懂了",
+    "牛逼", "厉害", "666", "绝了", "太强了", "膜拜",
+    "不行", "不可以", "拒绝", "达咩", "不要", "别吧", "算了",
+    "哈哈哈", "笑死", "笑哭", "笑不活了", "哈哈哈哈", "笑晕",
+    "哭了", "泪目", "感动", "破防", "绷不住了", "泪崩",
+    "迷茫", "懵逼", "黑人问号", "什么情况", "咋回事",
+    "等待", "坐等", "蹲一个", "蹲后续", "催更",
+    "加油", "冲", "冲鸭", "奥利给", "干饭", "干饭人",
+    "猫猫", "狗狗", "兔兔", "猪猪", "鸭鸭", "鼠鼠", "牛牛",
+    "表情包", "斗图", "怼人", "互怼", "吵架", "骂人",
+    "想你", "思念", "想你啦", "想你了", "好想你",
+    "生日快乐", "新年快乐", "节日快乐", "恭喜发财",
+    "努力", "奋斗", "拼搏", "坚持", "不放弃",
+]
+
+
+class DoutubFetcher:
+    """
+    斗图吧 (doutub.com) 表情包爬取类
+    国内网站，无需代理即可访问
+    """
+    def __init__(self):
+        self.base_url = "https://www.doutub.com"
+        self.search_url = f"{self.base_url}/search"
+        self._session: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self) -> "DoutubFetcher":
+        if self._session is None:
+            self._session = httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+    async def close(self):
+        session = self._session
+        if session:
+            await session.aclose()
+            self._session = None
+
+    def _get_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": f"{self.base_url}/",
+            "Connection": "keep-alive",
+        }
+
+    async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    delay = random.uniform(1.0, 2.0) * (2 ** attempt)
+                    logger.info(f"斗图吧第 {attempt + 1} 次重试中，延迟 {delay:.2f}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+
+                headers = self._get_headers()
+                session = self._session
+                
+                if session:
+                    response = await session.get(url, headers=headers)
+                else:
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True) as client:
+                        response = await client.get(url, headers=headers)
+                    
+                response.raise_for_status()
+                return response.text
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                logger.warning(f"斗图吧网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+            except httpx.HTTPStatusError as e:
+                logger.error(f"斗图吧HTTP错误 (状态码 {e.response.status_code}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+            except Exception as e:
+                logger.error(f"斗图吧发生非预期异常: {e}")
+                if attempt == max_retries - 1:
+                    raise e
+        return ""
+
+    async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not keyword:
+            return []
+
+        search_url = f"{self.search_url}/{keyword}"
+        try:
+            html = await self._fetch_html(search_url)
+            if not html:
+                return []
+            
+            soup = BeautifulSoup(html, 'html.parser')
+            results = []
+            
+            def is_valid_meme_url(url: str) -> bool:
+                if not url:
+                    return False
+                invalid_patterns = [
+                    '/images/beian', 'beian_ico', 'footer', 'logo', 'avatar',
+                    'icon', 'banner', 'ad_', 'loading', 'placeholder', 'qrcode'
+                ]
+                url_lower = url.lower()
+                for pattern in invalid_patterns:
+                    if pattern in url_lower:
+                        return False
+                return True
+            
+            img_items = soup.select('img.sc-fHeRUl')
+            
+            for img in img_items:
+                if len(results) >= limit:
+                    break
+                
+                src = img.get('src', '')
+                title = img.get('alt', '') or img.get('title', '')
+                
+                if not src or not is_valid_meme_url(src):
+                    continue
+                
+                if src.startswith('//'):
+                    src = 'https:' + src
+                
+                item_id = ''
+                if '/' in src:
+                    item_id = src.split('/')[-1].split('.')[0]
+                
+                if not title:
+                    title = f"表情包_{len(results) + 1}"
+                
+                img_type = 'gif' if '.gif' in src.lower() else 'meme'
+                
+                results.append({
+                    "type": img_type,
+                    "id": item_id,
+                    "url": src,
+                    "page_url": search_url,
+                    "title": title,
+                    "source": "斗图吧"
+                })
+            
+            if not results:
+                img_items = soup.select('div.cell a img')
+                for img in img_items:
+                    if len(results) >= limit:
+                        break
+                    
+                    src = img.get('src', '') or img.get('data-src', '')
+                    title = img.get('alt', '') or img.get('title', '')
+                    
+                    if not src or not is_valid_meme_url(src):
+                        continue
+                    
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    
+                    item_id = ''
+                    if '/' in src:
+                        item_id = src.split('/')[-1].split('.')[0]
+                    
+                    if not title:
+                        title = f"表情包_{len(results) + 1}"
+                    
+                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
+                    
+                    results.append({
+                        "type": img_type,
+                        "id": item_id,
+                        "url": src,
+                        "page_url": search_url,
+                        "title": title,
+                        "source": "斗图吧"
+                    })
+            
+            if not results:
+                img_items = soup.select('img[class*="sc-"]')
+                for img in img_items:
+                    if len(results) >= limit:
+                        break
+                    
+                    src = img.get('src', '') or img.get('data-src', '')
+                    title = img.get('alt', '') or img.get('title', '')
+                    
+                    if not src or not is_valid_meme_url(src):
+                        continue
+                    
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    
+                    item_id = ''
+                    if '/' in src:
+                        item_id = src.split('/')[-1].split('.')[0]
+                    
+                    if not title:
+                        title = f"表情包_{len(results) + 1}"
+                    
+                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
+                    
+                    results.append({
+                        "type": img_type,
+                        "id": item_id,
+                        "url": src,
+                        "page_url": search_url,
+                        "title": title,
+                        "source": "斗图吧"
+                    })
+            
+            if not results:
+                all_imgs = soup.find_all('img')
+                for img in all_imgs:
+                    if len(results) >= limit:
+                        break
+                    
+                    src = img.get('src', '') or img.get('data-src', '')
+                    title = img.get('alt', '') or img.get('title', '')
+                    
+                    if not src or not is_valid_meme_url(src):
+                        continue
+                    
+                    if 'qn.doutub.com' not in src and 'doutub.com' not in src:
+                        if not src.startswith('//'):
+                            continue
+                    
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    
+                    item_id = ''
+                    if '/' in src:
+                        item_id = src.split('/')[-1].split('.')[0]
+                    
+                    if not title:
+                        title = f"表情包_{len(results) + 1}"
+                    
+                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
+                    
+                    results.append({
+                        "type": img_type,
+                        "id": item_id,
+                        "url": src,
+                        "page_url": search_url,
+                        "title": title,
+                        "source": "斗图吧"
+                    })
+            
+            logger.info(f"斗图吧搜索 '{keyword}' 完成，获得 {len(results)} 条结果")
+            return results
+            
+        except Exception as e:
+            logger.error(f"解析斗图吧搜索结果时出错: {e}")
+            return []
+
+
+class FabiaoqingFetcher:
+    """
+    发表情 (fabiaoqing.com) 表情包爬取类
+    国内网站，无需代理即可访问
+    """
+    def __init__(self):
+        self.base_url = "https://fabiaoqing.com"
+        self.search_url = f"{self.base_url}/search/search/keyword"
+        self._session: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self) -> "FabiaoqingFetcher":
+        if self._session is None:
+            import ssl
+            ssl_context = ssl.create_default_context()
+            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+            self._session = httpx.AsyncClient(
+                timeout=15.0, 
+                follow_redirects=True, 
+                trust_env=True,
+                verify=ssl_context
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
+
+    async def close(self):
+        session = self._session
+        if session:
+            await session.aclose()
+            self._session = None
+
+    def _get_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": f"{self.base_url}/",
+            "Connection": "keep-alive",
+        }
+
+    async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    delay = random.uniform(1.0, 2.0) * (2 ** attempt)
+                    logger.info(f"发表情第 {attempt + 1} 次重试中，延迟 {delay:.2f}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+
+                headers = self._get_headers()
+                session = self._session
+                
+                if session:
+                    response = await session.get(url, headers=headers)
+                else:
+                    import ssl
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+                    async with httpx.AsyncClient(
+                        timeout=15.0, 
+                        follow_redirects=True, 
+                        trust_env=True,
+                        verify=ssl_context
+                    ) as client:
+                        response = await client.get(url, headers=headers)
+                    
+                response.raise_for_status()
+                return response.text
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+            except httpx.HTTPStatusError as e:
+                logger.error(f"发表情HTTP错误 (状态码 {e.response.status_code}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+            except Exception as e:
+                logger.error(f"发表情发生非预期异常: {e}")
+                if attempt == max_retries - 1:
+                    raise e
+        return ""
+
+    async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not keyword:
+            return []
+
+        search_url = f"{self.search_url}/{keyword}"
+        try:
+            html = await self._fetch_html(search_url)
+            if not html:
+                return []
+            
+            soup = BeautifulSoup(html, 'html.parser')
+            results = []
+            
+            def is_valid_meme_url(url: str) -> bool:
+                if not url:
+                    return False
+                invalid_patterns = [
+                    '/images/beian', 'beian_ico', 'footer', 'logo', 'avatar',
+                    'icon', 'banner', 'ad_', 'loading', 'placeholder', 'qrcode'
+                ]
+                url_lower = url.lower()
+                for pattern in invalid_patterns:
+                    if pattern in url_lower:
+                        return False
+                return True
+            
+            img_items = soup.select('img.bqppsearch')
+            
+            for img in img_items:
+                if len(results) >= limit:
+                    break
+                
+                src = img.get('data-original', '') or img.get('src', '')
+                title = img.get('alt', '') or img.get('title', '')
+                
+                if not src or not is_valid_meme_url(src):
+                    continue
+                
+                if src.startswith('//'):
+                    src = 'https:' + src
+                
+                item_id = ''
+                if '/' in src:
+                    item_id = src.split('/')[-1].split('.')[0]
+                
+                if not title:
+                    title = f"表情包_{len(results) + 1}"
+                
+                img_type = 'gif' if '.gif' in src.lower() else 'meme'
+                
+                results.append({
+                    "type": img_type,
+                    "id": item_id,
+                    "url": src,
+                    "page_url": search_url,
+                    "title": title,
+                    "source": "发表情"
+                })
+            
+            logger.info(f"发表情搜索 '{keyword}' 完成，获得 {len(results)} 条结果")
+            return results
+            
+        except Exception as e:
+            logger.error(f"解析发表情搜索结果时出错: {e}")
+            return []
+
+
+async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
     """
     高层封装：搜索表情包并返回结构化数据及格式化内容。
     用于主动搭话流程。
-    """
-    if not keyword:
-        return {"success": False, "error": "关键词为空", "data": [], "formatted_content": ""}
+    根据用户区域选择表情包源：
+    - 中文区域：优先使用国内网站（斗图吧、发表情）
+    - 非中文区域：直接使用 Imgflip
     
-    try:
-        async with MemeFetcher() as fetcher:
-            results = await fetcher.search(keyword, limit=limit)
-            
-            if not results:
-                return {
-                    "success": True, 
-                    "data": [], 
-                    "formatted_content": "",
-                    "raw_data": {"data": []}
-                }
-            
-            # 格式化文本输出，用于 LLM 参考
-            lines = [f"--- 搜到的表情包 ({keyword}) ---"]
-            for i, r in enumerate(results, 1):
-                lines.append(f"{i}. {r['title']} | URL: {r['url']}")
-            
-            return {
-                "success": True,
-                "data": results,
-                "formatted_content": "\n".join(lines),
-                "raw_data": {"data": results}
-            }
-    except Exception as e:
-        logger.error(f"fetch_meme_content 失败: {e}")
-        return {"success": False, "error": str(e), "data": [], "formatted_content": ""}
+    Args:
+        keyword: 搜索关键词，为空时随机选择热门关键词
+        limit: 返回结果数量限制
+    
+    Returns:
+        dict: 包含 success, data, formatted_content, raw_data, keyword_used, source, region
+    """
+    china_region = is_china_region()
+    
+    actual_keyword = keyword
+    
+    if not actual_keyword:
+        if china_region:
+            actual_keyword = random.choice(MEME_HOT_KEYWORDS_CN)
+        else:
+            actual_keyword = random.choice(MEME_HOT_KEYWORDS)
+        logger.info(f"未指定关键词，随机选择热门关键词: {actual_keyword}")
+    
+    results = []
+    source_name = ""
+    
+    CN_FETCHERS = [
+        (DoutubFetcher, "斗图吧"),
+        (FabiaoqingFetcher, "发表情"),
+    ]
+    
+    async def try_fetch(fetcher_class, name: str) -> bool:
+        """尝试从指定源获取表情包，返回是否成功"""
+        nonlocal results, source_name
+        try:
+            async with fetcher_class() as fetcher:
+                fetched = await fetcher.search(actual_keyword, limit=limit)
+                if fetched:
+                    results = fetched
+                    source_name = name
+                    return True
+        except Exception as e:
+            logger.warning(f"{name}获取失败: {e}")
+        return False
+    
+    if china_region:
+        logger.info("检测到中文区域，使用国内表情包源")
+        for fetcher_class, name in CN_FETCHERS:
+            if await try_fetch(fetcher_class, name):
+                break
+        
+        if not results:
+            await try_fetch(MemeFetcher, "Imgflip")
+    else:
+        logger.info("检测到非中文区域，使用 Imgflip 表情包源")
+        if not await try_fetch(MemeFetcher, "Imgflip"):
+            for fetcher_class, name in CN_FETCHERS:
+                if await try_fetch(fetcher_class, name):
+                    break
+    
+    if not results:
+        logger.error(f"所有表情包源均获取失败，关键词: {actual_keyword}")
+        return {
+            "success": False, 
+            "data": [], 
+            "formatted_content": "",
+            "raw_data": {"data": []},
+            "region": "china" if china_region else "non-china",
+            "error": "所有表情包源均获取失败"
+        }
+    
+    lines = [f"--- 搜到的表情包 ({actual_keyword}) - 来源: {source_name} ---"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. {r['title']} | URL: {r['url']}")
+    
+    return {
+        "success": True,
+        "data": results,
+        "formatted_content": "\n".join(lines),
+        "raw_data": {"data": results},
+        "keyword_used": actual_keyword,
+        "source": source_name,
+        "region": "china" if china_region else "non-china"
+    }
 
 # ==========================================
 # 测试模块
@@ -262,25 +756,36 @@ async def fetch_meme_content(keyword: str, limit: int = 5) -> dict:
 
 async def main():
     """单元测试功能"""
-    test_keywords = ["cat", "surprised", "laugh"]
+    test_keywords_cn = ["搞笑", "猫", "熊猫头"]
     
-    print("=== Imgflip Meme Fetcher Test (Session Optimized) ===")
-    
-    # 使用异步上下文管理器以复用 Session，提高批量搜索效率
-    async with MemeFetcher() as fetcher:
-        for kw in test_keywords:
-            print(f"\nSearching for '{kw}'...")
-            
-            # 测试综合搜索
-            results = await fetcher.search(kw, limit=3)
+    print("=== 斗图吧 Meme Fetcher Test ===")
+    async with DoutubFetcher() as fetcher:
+        for kw in test_keywords_cn[:2]:
+            print(f"\nSearching 斗图吧 for '{kw}'...")
+            results = await fetcher.search(kw, limit=2)
             print(f"Total results: {len(results)}")
             for r in results:
-                print(f"[{r['type'].upper()}] {r['title']}")
-                print(f"  URL: {r['url']}")
-                
-            # 测试仅 GIF
-            gifs = await fetcher.search_gifs(kw, limit=2)
-            print(f"GIFs only for '{kw}': {len(gifs)}")
+                print(f"  - {r['title']}: {r['url']}")
+    
+    print("\n=== 发表情 Meme Fetcher Test ===")
+    async with FabiaoqingFetcher() as fetcher:
+        for kw in test_keywords_cn[:2]:
+            print(f"\nSearching 发表情 for '{kw}'...")
+            results = await fetcher.search(kw, limit=2)
+            print(f"Total results: {len(results)}")
+            for r in results:
+                print(f"  - {r['title']}: {r['url']}")
+    
+    print("\n=== fetch_meme_content 综合测试 ===")
+    for kw in ["", "搞笑", "猫"]:
+        print(f"\n测试关键词: '{kw if kw else '(随机)'}'")
+        result = await fetch_meme_content(keyword=kw, limit=3)
+        print(f"成功: {result['success']}")
+        print(f"来源: {result.get('source', 'N/A')}")
+        print(f"关键词: {result.get('keyword_used', 'N/A')}")
+        print(f"结果数: {len(result['data'])}")
+        for r in result['data']:
+            print(f"  - {r['title']}: {r['url']}")
 
 if __name__ == "__main__":
     if sys.platform == 'win32':

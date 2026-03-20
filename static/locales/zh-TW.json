@@ -1378,6 +1378,8 @@
             "proactivePersonalChatTooltip": "使用已連接平台的個人動態進行搭話",
             "proactiveMusicChat": "音樂推薦",
             "proactiveMusicChatTooltip": "使用推薦音樂進行搭話",
+            "proactiveMemeChat": "表情包分享",
+            "proactiveMemeChatTooltip": "使用有趣表情包進行搭話",
             "agentMaster": "貓爪總開關",
             "keyboardControl": "鍵鼠控製",
             "userPlugin": "用戶插件",
