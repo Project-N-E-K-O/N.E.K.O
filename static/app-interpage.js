@@ -276,6 +276,12 @@
                         mmdCanvas.style.visibility = 'hidden';
                         mmdCanvas.style.pointerEvents = 'none';
                     }
+                    if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                        window.mmdManager.pauseRendering();
+                    }
+                    if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                        window.live2dManager.pauseRendering();
+                    }
 
                     // Show & reload VRM
                     console.log('[Model] 加载 VRM 模型:', newModelPath);
@@ -335,6 +341,12 @@
                     if (vrmCanvasMmd) {
                         vrmCanvasMmd.style.visibility = 'hidden';
                         vrmCanvasMmd.style.pointerEvents = 'none';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    }
+                    if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                        window.live2dManager.pauseRendering();
                     }
 
                     // Show MMD container
@@ -406,6 +418,12 @@
                     if (mmdCanvas2) {
                         mmdCanvas2.style.visibility = 'hidden';
                         mmdCanvas2.style.pointerEvents = 'none';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                        window.mmdManager.pauseRendering();
                     }
 
                     // Show & reload Live2D
