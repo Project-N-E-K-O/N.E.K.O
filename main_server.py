@@ -917,6 +917,13 @@ async def on_shutdown():
         except Exception as e:
             logger.debug(f"soxr resampler cleanup failed: {e}")
 
+        # 关闭翻译服务
+        try:
+            from utils.language_utils import aclose_translation_service
+            await aclose_translation_service()
+        except Exception as e:
+            logger.debug(f"Translation service cleanup failed: {e}")
+
         # 保存 Token 用量数据
         try:
             from utils.token_tracker import TokenTracker
