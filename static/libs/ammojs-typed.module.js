@@ -10,6 +10,9 @@ let _AmmoFactory = null;
 
 // Fetch and eval the IIFE to get the Ammo factory
 const response = await fetch(scriptUrl);
+if (!response.ok) {
+    throw new Error(`Failed to load Ammo.js from ${scriptUrl}: ${response.status} ${response.statusText}`);
+}
 const text = await response.text();
 
 // ammo.js defines: var Ammo = (function() { ... })();

@@ -835,15 +835,16 @@
         // ----------------------------------------------------------------
         const resetSubCheckboxes = () => {
             const names = {
-                'live2d-agent-keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '\u952e\u9f20\u63a7\u5236',
-                'live2d-agent-browser': window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
-                'live2d-agent-user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6'
+                'keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '\u952e\u9f20\u63a7\u5236',
+                'browser': window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
+                'user-plugin': window.t ? window.t('settings.toggles.userPlugin') : '\u7528\u6237\u63d2\u4ef6'
             };
             [agentKeyboardCheckbox, agentBrowserCheckbox, agentUserPluginCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
-                    const name = names[cb.id] || '';
+                    const suffix = cb.id.replace(/^(live2d|vrm|mmd)-agent-/, '');
+                    const name = names[suffix] || '';
                     cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: name }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
                     syncCheckboxUI(cb);
                 }

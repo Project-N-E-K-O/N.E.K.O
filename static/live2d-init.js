@@ -247,9 +247,12 @@ async function initLive2DModel() {
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
 
-    // 如果当前为 MMD 子类型，跳过 Live2D 初始化
-    if ((window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd') {
-        console.log('[Live2D Init] MMD 子类型，跳过 Live2D 初始化');
+    // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
+    if (
+        (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
+        (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd'
+    ) {
+        console.log('[Live2D Init] Live3D+MMD 模式，跳过 Live2D 初始化');
         return;
     }
 

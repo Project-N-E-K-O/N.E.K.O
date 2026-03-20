@@ -967,7 +967,11 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
     if (toggle.initialDisabled) {
         checkbox.disabled = true;
         checkbox.title = toggle.initialTitle || (window.t ? window.t('settings.toggles.checking') : '查询中...');
-        checkbox.setAttribute('data-i18n-title', 'settings.toggles.checking');
+        if (!toggle.initialTitle) {
+            checkbox.setAttribute('data-i18n-title', 'settings.toggles.checking');
+        } else {
+            checkbox.removeAttribute('data-i18n-title');
+        }
         toggleItem.style.cursor = 'default';  // 禁用时显示默认光标
     }
 

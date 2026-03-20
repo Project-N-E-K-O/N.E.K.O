@@ -7,6 +7,9 @@ class MMDAnimation {
     constructor(manager) {
         this.manager = manager;
 
+        // 异步加载请求 ID（用于取消过期请求）
+        this._loadRequestId = 0;
+
         // 动画状态
         this.mixer = null;
         this.currentAction = null;
@@ -46,6 +49,7 @@ class MMDAnimation {
     // ═══════════════════ VMD 加载 ═══════════════════
 
     async loadAnimation(vmdUrl) {
+        const requestId = ++this._loadRequestId;
         const THREE = window.THREE;
         if (!THREE) throw new Error('Three.js 未加载');
 
@@ -55,6 +59,7 @@ class MMDAnimation {
         }
 
         const mmdModule = await this._getMMDModule();
+        if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
         if (!mmdModule) throw new Error('three-mmd 模块不可用');
 
         const { VMDLoader, buildAnimation, GrantSolver, processBones } = mmdModule;
@@ -69,6 +74,7 @@ class MMDAnimation {
                 (error) => reject(error)
             );
         });
+        if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
 
         // 清理之前的动画
         this._cleanupAnimation();
@@ -86,6 +92,7 @@ class MMDAnimation {
         if (mmd.iks && mmd.iks.length > 0) {
             try {
                 const { CCDIKSolver } = await import('three/addons/animation/CCDIKSolver.js');
+                if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
                 this.ikSolver = new CCDIKSolver(mmd.mesh, mmd.iks);
             } catch (e) {
                 console.warn('[MMD Animation] CCDIKSolver 不可用:', e);

@@ -126,21 +126,33 @@ window.addEventListener('mmd-modules-ready', async () => {
     try {
         await initMMDModel();
         if (window.mmdManager) {
-            const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
-            await window.mmdManager.loadModel(resolvedPath);
-
-            // 从后端获取并应用保存的 MMD 设置（光照、渲染、物理、鼠标跟踪）
+            // 先获取保存的设置，预置影响加载路径的字段（如物理开关）
             const catgirlName = window.lanlan_config?.lanlan_name;
+            let savedSettings = null;
             if (catgirlName) {
                 try {
                     const settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName) + '/mmd_settings');
-                    const settingsData = await settingsRes.json();
-                    if (settingsData.success && settingsData.settings) {
-                        window.mmdManager.applySettings(settingsData.settings);
+                    if (settingsRes.ok) {
+                        const settingsData = await settingsRes.json();
+                        if (settingsData.success && settingsData.settings) {
+                            savedSettings = settingsData.settings;
+                            // 预置物理开关，避免 loadModel 时不必要的 Ammo 初始化
+                            if (savedSettings.physics?.enabled != null) {
+                                window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                            }
+                        }
                     }
                 } catch (settingsErr) {
                     console.warn('[MMD Init] 获取MMD设置失败:', settingsErr);
                 }
+            }
+
+            const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
+            await window.mmdManager.loadModel(resolvedPath);
+
+            // 加载完成后应用完整设置
+            if (savedSettings) {
+                window.mmdManager.applySettings(savedSettings);
             }
 
             console.log('[MMD Init] MMD 模型自动加载完成');

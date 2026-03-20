@@ -252,12 +252,6 @@
                     }
                 }
 
-                // 2. Update global config
-                if (window.lanlan_config) {
-                    window.lanlan_config.model_type = newModelType;
-                    window.lanlan_config.live3d_sub_type = live3dSubType;
-                }
-
                 // 3. Switch based on model type
                 if (newModelType === 'vrm' || (newModelType === 'live3d' && live3dSubType === 'vrm')) {
                     window.vrmModel = newModelPath;
@@ -382,6 +376,7 @@
                         }
                     } else {
                         console.error('[Model] MMD 管理器初始化失败');
+                        throw new Error('MMD 管理器初始化失败');
                     }
                 } else {
                     // Live2D mode
@@ -464,7 +459,13 @@
                     }
                 }
 
-                // 4. Success toast
+                // 4. Commit config only after successful switch
+                if (window.lanlan_config) {
+                    window.lanlan_config.model_type = newModelType;
+                    window.lanlan_config.live3d_sub_type = live3dSubType;
+                }
+
+                // 5. Success toast
                 window.showStatusToast(
                     window.t ? window.t('app.modelSwitched') : '模型已切换',
                     2000

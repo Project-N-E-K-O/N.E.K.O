@@ -1038,10 +1038,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         # 清理可能的残留目录
         try:
             if target_model_dir and target_model_dir.exists():
-                shutil.rmtree(target_model_dir, ignore_errors=True)
+                shutil.rmtree(target_model_dir)
                 logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
-        except Exception:
-            pass
+        except Exception as cleanup_err:
+            logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
         logger.error(f"上传Live2D模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 

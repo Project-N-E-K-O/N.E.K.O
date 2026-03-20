@@ -177,7 +177,7 @@
 
         loadModelMorphs(modelName, selectionId).then((success) => {
             if (success && selectionId === currentSelectionId) {
-                loadEmotionMapping(modelName);
+                loadEmotionMapping(modelName, selectionId);
             }
         });
     }
@@ -461,9 +461,11 @@
     }
 
     // 加载情感映射配置
-    async function loadEmotionMapping(modelName) {
+    async function loadEmotionMapping(modelName, selectionId) {
         try {
             const response = await fetch(`/api/model/mmd/emotion_mapping?model=${encodeURIComponent(modelName)}`);
+
+            if (selectionId != null && selectionId !== currentSelectionId) return;
 
             if (!response.ok) {
                 console.error(`加载情感映射配置失败: HTTP ${response.status}`, await response.text().catch(() => ''));
@@ -473,6 +475,8 @@
             }
 
             const data = await response.json();
+
+            if (selectionId != null && selectionId !== currentSelectionId) return;
 
             if (data.success && data.mapping && Object.keys(data.mapping).length > 0) {
                 const config = data.mapping;

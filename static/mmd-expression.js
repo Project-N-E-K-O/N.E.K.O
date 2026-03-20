@@ -154,6 +154,12 @@ class MMDExpression {
     setEmotion(emotion) {
         if (!emotion) return;
 
+        if (emotion === 'neutral') {
+            this._clearEmotionMorphs();
+            this.currentMood = 'neutral';
+            return;
+        }
+
         const morphNames = this.moodMap[emotion];
         if (!morphNames || morphNames.length === 0) {
             console.warn(`[MMD Expression] 未知情感: ${emotion}`);
@@ -163,25 +169,21 @@ class MMDExpression {
         const dict = this._getMorphDict();
         if (!dict) return;
 
-        // 先清除所有情感相关 morph
-        this._clearEmotionMorphs();
-
-        // 查找第一个可用的 morph 名称
-        for (const name of morphNames) {
-            if (dict[name] !== undefined) {
-                this.setMorphWeight(name, 1.0);
-                this.currentMood = emotion;
-                this.manualExpressionInProgress = name;
-
-                // 自动回到 neutral
-                if (this.autoReturnToNeutral && emotion !== 'neutral') {
-                    this._scheduleNeutralReturn();
-                }
-                return;
-            }
+        // 先确认目标 morph 存在，再清除旧表情
+        const matchedName = morphNames.find(name => dict[name] !== undefined);
+        if (!matchedName) {
+            console.warn(`[MMD Expression] 情感 "${emotion}" 在当前模型中无匹配 morph`);
+            return;
         }
 
-        console.warn(`[MMD Expression] 情感 "${emotion}" 在当前模型中无匹配 morph`);
+        this._clearEmotionMorphs();
+        this.setMorphWeight(matchedName, 1.0);
+        this.currentMood = emotion;
+        this.manualExpressionInProgress = matchedName;
+
+        if (this.autoReturnToNeutral) {
+            this._scheduleNeutralReturn();
+        }
     }
 
     _clearEmotionMorphs() {
