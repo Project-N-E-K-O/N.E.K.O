@@ -613,7 +613,7 @@
 
                 // 创建包含时间戳、表情和图片的统一气泡
                 var imgBubble = document.createElement('div');
-                imgBubble.classList.add('message', 'gemini');
+                imgBubble.classList.add('message', 'gemini', 'attachment');
                 imgBubble.style.padding = '12px';
                 imgBubble.style.textAlign = 'left';
 
@@ -661,8 +661,8 @@
                 imgBubble.appendChild(imgOuter);
                 chatContainer.appendChild(imgBubble);
 
-                if (window.currentTurnGeminiBubbles) {
-                    window.currentTurnGeminiBubbles.push(imgBubble);
+                if (window.currentTurnGeminiAttachments) {
+                    window.currentTurnGeminiAttachments.push(imgBubble);
                 }
 
                 chatContainer.scrollTop = chatContainer.scrollHeight;

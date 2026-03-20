@@ -257,6 +257,15 @@
                         window.currentTurnGeminiBubbles = [];
                     }
 
+                    if (window.currentTurnGeminiAttachments && window.currentTurnGeminiAttachments.length > 0) {
+                        window.currentTurnGeminiAttachments.forEach(function (attachment) {
+                            if (attachment && attachment.parentNode) {
+                                attachment.parentNode.removeChild(attachment);
+                            }
+                        });
+                        window.currentTurnGeminiAttachments = [];
+                    }
+
                     // Fallback: clear trailing gemini bubbles not tracked
                     var cc = chatContainer();
                     if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&

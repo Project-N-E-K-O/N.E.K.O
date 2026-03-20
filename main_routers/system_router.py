@@ -1213,8 +1213,6 @@ async def proxy_meme_image(url: str):
                     )
             
             return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
-            
-            return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
 
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)

@@ -560,6 +560,9 @@ class FabiaoqingFetcher:
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
+        # 用于在没有持久 session 时跟踪 SSL 降级状态
+        local_ssl_context = None
+
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
@@ -571,36 +574,43 @@ class FabiaoqingFetcher:
 
                 headers = self._get_headers()
                 
-                # 如果还没有 session，或者上一次遇到了 SSL 错误，则创建/重建 session
-                if self._session is None:
-                    self._session = httpx.AsyncClient(
-                        timeout=15.0, 
-                        follow_redirects=True, 
-                        trust_env=True,
-                    )
-
-                try:
-                    response = await self._session.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.text
-                except httpx.ConnectError as e:
-                    # 检查是否为 SSL 错误 (通常表现为 ConnectError 的子类或包含 SSLError)
-                    import ssl
-                    if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
-                        logger.warning(f"发表情 SSL 连接失败，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
-                        # 关闭旧 session 并重建带降级参数的 session
-                        await self.close()
-                        ssl_context = ssl.create_default_context()
-                        ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                        self._session = httpx.AsyncClient(
-                            timeout=15.0, 
-                            follow_redirects=True, 
-                            trust_env=True,
-                            verify=ssl_context
-                        )
-                        # 降级后立即在本轮重试（不增加 attempt 计数可能更好，但这里简单处理直接进入下一轮）
-                        continue 
-                    raise
+                # 如果有持久 session，直接使用
+                if self._session:
+                    try:
+                        response = await self._session.get(url, headers=headers)
+                        response.raise_for_status()
+                        return response.text
+                    except httpx.ConnectError as e:
+                        import ssl
+                        if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
+                            logger.warning(f"发表情 SSL 连接失败 (Session)，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
+                            await self.close()
+                            ssl_context = ssl.create_default_context()
+                            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+                            self._session = httpx.AsyncClient(
+                                timeout=15.0, 
+                                follow_redirects=True, 
+                                trust_env=True,
+                                verify=ssl_context
+                            )
+                            continue 
+                        raise
+                else:
+                    # 使用临时 Client，避免泄露
+                    verify = local_ssl_context if local_ssl_context else True
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True, verify=verify) as client:
+                        try:
+                            response = await client.get(url, headers=headers)
+                            response.raise_for_status()
+                            return response.text
+                        except httpx.ConnectError as e:
+                            import ssl
+                            if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
+                                logger.warning(f"发表情 SSL 连接失败 (临时 Client)，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
+                                local_ssl_context = ssl.create_default_context()
+                                local_ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+                                continue
+                            raise
                 
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -620,7 +630,6 @@ class FabiaoqingFetcher:
         
         if last_exception:
             raise last_exception
-        return ""
         return ""
 
     async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
