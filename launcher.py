@@ -43,9 +43,11 @@ import signal
 import json
 import logging
 import uuid
+import importlib
 from datetime import datetime, timezone
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
+import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils.port_utils import (
     probe_neko_health,
@@ -53,6 +55,7 @@ from utils.port_utils import (
     release_startup_lock,
     get_hyperv_excluded_ranges,
     is_port_in_excluded_range,
+    set_port_probe_reuse,
 )
 
 # 本次 launcher 启动的唯一标识
@@ -97,6 +100,59 @@ MODULE_TO_PORT_KEY: dict[str, str] = {
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
+
+
+def _sync_runtime_config_globals(
+    selected_public: dict[str, int] | None = None,
+    selected_internal: dict[str, int] | None = None,
+) -> None:
+    """Keep the already-imported ``config`` module aligned with launcher choices.
+
+    On Linux/macOS, ``multiprocessing`` defaults to ``fork``. Child processes then
+    inherit the parent's already-imported ``config`` module object, so only writing
+    ``os.environ`` is insufficient: any later ``from config import TOOL_SERVER_PORT``
+    inside forked children would still see the stale pre-launcher values.
+
+    Syncing the module globals here ensures forked children and modules imported
+    after forking observe the negotiated runtime ports and shared instance id.
+    """
+    updates: dict[str, int | str] = {"INSTANCE_ID": INSTANCE_ID}
+    if selected_public:
+        updates.update(selected_public)
+    if selected_internal:
+        updates.update(selected_internal)
+
+    for key, value in updates.items():
+        setattr(config_module, key, value)
+
+
+def _reload_runtime_config_from_env() -> None:
+    """Reload ``config`` inside a child process and sync launcher globals.
+
+    Even after the parent has updated ``config`` globals, a forked child can still
+    inherit stale module state from any earlier imports. Reloading ``config`` from
+    the negotiated ``NEKO_*`` environment variables gives each server process a
+    fresh source of truth before importing its heavy application modules.
+    """
+    global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+
+    reloaded = importlib.reload(config_module)
+    INSTANCE_ID = str(reloaded.INSTANCE_ID)
+    MAIN_SERVER_PORT = int(reloaded.MAIN_SERVER_PORT)
+    MEMORY_SERVER_PORT = int(reloaded.MEMORY_SERVER_PORT)
+    TOOL_SERVER_PORT = int(reloaded.TOOL_SERVER_PORT)
+    _sync_runtime_config_globals(
+        {
+            "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+            "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+            "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+        },
+        {
+            "USER_PLUGIN_SERVER_PORT": int(reloaded.USER_PLUGIN_SERVER_PORT),
+            "AGENT_MQ_PORT": int(reloaded.AGENT_MQ_PORT),
+            "MAIN_AGENT_EVENT_PORT": int(reloaded.MAIN_AGENT_EVENT_PORT),
+        },
+    )
 
 
 def _install_logging_brace_compat() -> None:
@@ -303,9 +359,14 @@ SERVERS = [
 
 # 不再启动主程序，用户自己启动 lanlan_frd.exe
 
-def run_memory_server(ready_event: Event, import_event: Event | None = None):
+def run_memory_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Memory Server"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -343,6 +404,14 @@ def run_memory_server(ready_event: Event, import_event: Event | None = None):
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Memory Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="memory-shutdown-watch", daemon=True).start()
         
         # 在后台线程中运行服务器
         import asyncio
@@ -375,9 +444,14 @@ def run_memory_server(ready_event: Event, import_event: Event | None = None):
         import traceback
         traceback.print_exc()
 
-def run_agent_server(ready_event: Event, import_event: Event | None = None):
+def run_agent_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Agent Server (不需要等待初始化)"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -408,22 +482,38 @@ def run_agent_server(ready_event: Event, import_event: Event | None = None):
         ready_event.set()
         
         _behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
-        uvicorn.run(
-            agent_server.app,
+        config = uvicorn.Config(
+            app=agent_server.app,
             host="127.0.0.1",
             port=TOOL_SERVER_PORT,
             log_level="error",
             proxy_headers=_behind_proxy,
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
+        server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Agent Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="agent-shutdown-watch", daemon=True).start()
+
+        server.run()
     except Exception as e:
         print(f"Agent Server error: {e}")
         import traceback
         traceback.print_exc()
 
-def run_main_server(ready_event: Event, import_event: Event | None = None):
+def run_main_server(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+):
     """运行 Main Server"""
     try:
+        _reload_runtime_config_from_env()
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
             if hasattr(sys, '_MEIPASS'):
@@ -454,6 +544,14 @@ def run_main_server(ready_event: Event, import_event: Event | None = None):
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Main Server] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="main-shutdown-watch", daemon=True).start()
         
         # 添加启动完成的回调
         async def startup():
@@ -536,6 +634,7 @@ def get_port_owners(port: int) -> list[int]:
 def _is_port_bindable(port: int) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", port))
         return True
     except OSError:
@@ -554,6 +653,7 @@ def _pick_fallback_port(preferred_port: int, reserved: set[int]) -> int | None:
     # 2) Fallback to any OS-assigned free port
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
         sock.close()
@@ -695,6 +795,8 @@ def apply_port_strategy() -> bool | str:
     for key, value in chosen_internal.items():
         os.environ[f"NEKO_{key}"] = str(value)
 
+    _sync_runtime_config_globals(chosen, chosen_internal)
+
     for server in SERVERS:
         if server["module"] == "memory_server":
             server["port"] = MEMORY_SERVER_PORT
@@ -803,12 +905,13 @@ def start_server(server: Dict) -> bool:
         # 创建进程间同步事件
         server['ready_event'] = Event()
         server['import_event'] = Event()
+        server['shutdown_event'] = Event()
         
         # 使用 multiprocessing 启动服务器
         # 注意：不能设置 daemon=True，因为 main_server 自己会创建子进程
         server['process'] = Process(
             target=target_func,
-            args=(server['ready_event'], server['import_event']),
+            args=(server['ready_event'], server['import_event'], server['shutdown_event']),
             daemon=False,
         )
         server['process'].start()
@@ -911,48 +1014,57 @@ def cleanup_servers():
             continue
 
         try:
-            # 先尝试温和终止
+            shutdown_evt = server.get('shutdown_event')
+
+            # 先请求子进程优雅退出
+            if proc.is_alive():
+                if shutdown_evt is not None:
+                    shutdown_evt.set()
+                proc.join(timeout=8)
+
+            # 第二步：仍存活则发送终止信号
             if proc.is_alive():
                 proc.terminate()
-                proc.join(timeout=3)
+                proc.join(timeout=5)
 
-            # 第二步：仍存活则 kill
+            # 第三步：仍存活则 kill
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=2)
 
-            # 第三步：兜底强杀整个进程树，防止孙进程残留
-            pid = proc.pid
-            if pid:
-                if sys.platform == 'win32':
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False
-                    )
-                else:
-                    # macOS / Linux 下兜底强杀整个进程树
-                    try:
-                        import psutil
+            # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
+            if proc.is_alive():
+                pid = proc.pid
+                if pid:
+                    if sys.platform == 'win32':
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False
+                        )
+                    else:
+                        # macOS / Linux 下兜底强杀整个进程树
                         try:
-                            parent = psutil.Process(pid)
-                            for child in parent.children(recursive=True):
-                                child.kill()
-                            parent.kill()
-                        except psutil.NoSuchProcess:
-                            pass
-                    except ImportError:
-                        try:
-                            # 尽力而为的 pkill 兜底
-                            subprocess.run(
-                                ["pkill", "-9", "-P", str(pid)],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                check=False
-                            )
-                        except Exception:
-                            pass
+                            import psutil
+                            try:
+                                parent = psutil.Process(pid)
+                                for child in parent.children(recursive=True):
+                                    child.kill()
+                                parent.kill()
+                            except psutil.NoSuchProcess:
+                                pass
+                        except ImportError:
+                            try:
+                                # 尽力而为的 pkill 兜底
+                                subprocess.run(
+                                    ["pkill", "-9", "-P", str(pid)],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    check=False
+                                )
+                            except Exception:
+                                pass
 
             print(f"✓ {server['name']} 已关闭", flush=True)
         except Exception as e:
