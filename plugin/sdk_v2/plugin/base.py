@@ -108,7 +108,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
     def register_static_ui(self, directory: str = "static", *, index_file: str = "index.html", cache_control: str = "public, max-age=3600") -> bool:
         static_dir = self.config_dir / directory
         index_path = static_dir / index_file
-        if not static_dir.exists() or not index_path.exists():
+        if not static_dir.is_dir() or not index_path.is_file():
             return False
         self._static_ui_config = {
             "enabled": True,
@@ -147,7 +147,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
             auto_start=auto_start,
             metadata={"dynamic": True, "enabled": True},
         )
-        setattr(handler, EVENT_META_ATTR, meta)
         self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
         return True
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from plugin.sdk_v2.shared import core
 from plugin.sdk_v2.shared.core import base as core_base
 from plugin.sdk_v2.shared.core import config as core_config
+from plugin.sdk_v2.shared.models.exceptions import TransportError, ValidationError
 from plugin.sdk_v2.shared.core import decorators as core_decorators
 from plugin.sdk_v2.shared.core import events as core_events
 from plugin.sdk_v2.shared.core import hook_executor as core_hook_executor
@@ -180,13 +181,13 @@ async def test_core_config_plugins_router_behaviors() -> None:
     got = await cfg.get("feature.enabled")
     assert got is True
 
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.require("feature.missing")
 
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.set("feature.flag", True)
 
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.update({"a": 1})
 
     listed = await plugins.list()

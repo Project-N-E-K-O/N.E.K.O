@@ -79,7 +79,6 @@ __all__ = [
     "ADAPTER_EVENT_META",
     "ADAPTER_LIFECYCLE_META",
     "AdapterEventMeta",
-    "_not_impl",
     "on_adapter_event",
     "on_adapter_startup",
     "on_adapter_shutdown",

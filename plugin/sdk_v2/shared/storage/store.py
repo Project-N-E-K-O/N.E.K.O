@@ -55,8 +55,8 @@ class PluginStore(StorageResultTemplate):
         if db_path.is_absolute() or any(part == ".." for part in db_path.parts):
             raise ValueError("db_name must stay within plugin_dir")
         safe_name = db_path.name
-        if safe_name in {"", ".", ".."}:
-            raise ValueError("db_name must be a valid filename")
+        if safe_name != db_name or safe_name.strip() in {"", ".", ".."}:
+            raise ValueError("db_name must be a plain filename within plugin_dir")
         self.db_name = safe_name
         self._db_path = self.plugin_dir / safe_name
         self._local = threading.local()

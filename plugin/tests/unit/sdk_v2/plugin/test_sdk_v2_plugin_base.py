@@ -321,7 +321,7 @@ async def test_plugin_base_dynamic_entry_and_status_helpers() -> None:
     assert base.is_entry_enabled("dyn") is True
     assert any(item["id"] == "dyn" for item in base.list_entries())
     assert len([item for item in base.list_entries(include_disabled=True) if item["id"] == "dyn"]) == 1
-    meta = dyn_handler.__neko_event_meta__
+    meta = base._dynamic_entries["dyn"]["meta"]
     assert meta.kind == "action"
     assert meta.metadata == {"dynamic": True, "enabled": True}
     assert base.disable_entry("dyn") is True

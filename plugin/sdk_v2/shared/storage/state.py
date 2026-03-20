@@ -197,6 +197,8 @@ class PluginStatePersistence(StorageResultTemplate):
         return True
 
     def _clear_state(self) -> bool:
+        if self.backend == "off":
+            return False
         if self.backend == "memory":
             existed = self._memory_state is not None
             self._memory_state = None
@@ -207,6 +209,8 @@ class PluginStatePersistence(StorageResultTemplate):
         return False
 
     def _snapshot_state(self) -> JsonObject:
+        if self.backend == "off":
+            return {}
         if self.backend == "memory":
             if self._memory_state is None:
                 return {}
@@ -220,11 +224,15 @@ class PluginStatePersistence(StorageResultTemplate):
         return {}
 
     def _has_saved_state_local(self) -> bool:
+        if self.backend == "off":
+            return False
         if self.backend == "memory":
             return self._memory_state is not None
         return self._state_path.exists()
 
     def _read_state_info(self) -> JsonObject | None:
+        if self.backend == "off":
+            return None
         if not self._has_saved_state_local():
             return None
         if self.backend == "memory":
