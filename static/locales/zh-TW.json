@@ -1264,6 +1264,8 @@
         "autoMuteTimeout": "長時間無語音輸入，已自動關閉麥剋風",
         "deviceSelected": "已選擇 {{device}}",
         "micAccessDenied": "無法訪問麥剋風",
+        "micMuted": "麥剋風已靜音",
+        "micUnmuted": "麥剋風已取消靜音",
         "speaking": "正在語音...",
         "standby": "{{name}}待機中...",
         "micRequired": "請先開啓麥剋風錄音！",
@@ -1334,7 +1336,9 @@
         "agentTools": "猫爪",
         "settings": "設置",
         "leave": "請她離開",
-        "return": "請她迴來"
+        "return": "請她迴來",
+        "micMute": "靜音麥剋風",
+        "micUnmute": "取消靜音"
     },
     "settings": {
         "menu": {

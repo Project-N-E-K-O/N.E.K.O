@@ -1264,6 +1264,8 @@
         "autoMuteTimeout": "No voice input for a long time, microphone auto-closed",
         "deviceSelected": "Selected {{device}}",
         "micAccessDenied": "Cannot access microphone",
+        "micMuted": "Microphone muted",
+        "micUnmuted": "Microphone unmuted",
         "speaking": "Speaking...",
         "standby": "{{name}} on standby...",
         "micRequired": "Please enable microphone first!",
@@ -1334,7 +1336,9 @@
         "agentTools": "NekoClaw",
         "settings": "Settings",
         "leave": "Leave",
-        "return": "Return"
+        "return": "Return",
+        "micMute": "Mute Microphone",
+        "micUnmute": "Unmute"
     },
     "settings": {
         "menu": {
