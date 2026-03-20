@@ -24,7 +24,8 @@ except ImportError:
             current_locale = locale.getdefaultlocale()[0]
             if current_locale:
                 return current_locale.lower().startswith('zh_cn')
-        except:
+        except Exception as e:
+            # 仅在调试时记录，或者静默失败
             pass
         return False
 
@@ -792,5 +793,13 @@ async def main():
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(main())
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception as e:
+            print(f"Failed to set event loop policy: {e}")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"Async main failed: {e}")

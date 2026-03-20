@@ -124,10 +124,10 @@ async def test_real_site_connectivity():
                     resp = await client.head(r['url'])
                     # 某些 CDN 可能拒绝 HEAD，如果 403 但 URL 结构正确也算通过
                     assert resp.status_code in [200, 301, 302, 403, 405]
-        except httpx.ConnectError:
-            pytest.skip("无法连接到 Imgflip，可能由于网络环境或代理设置")
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+            pytest.skip(f"无法连接到 Imgflip (网络错误): {e}")
         except Exception as e:
-            pytest.fail(f"集成测试失败: {e}")
+            pytest.fail(f"集成测试失败 (非网络错误): {e}")
 
 if __name__ == "__main__":
     # 允许直接运行此文件进行快速测试

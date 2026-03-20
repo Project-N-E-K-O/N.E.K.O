@@ -12,8 +12,24 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from utils.music_crawlers import (
     NeteaseCrawler, iTunesCrawler, SoundCloudCrawler, 
-    MusopenCrawler, FMACrawler, MusicCache, fetch_music_content
+    MusopenCrawler, FMACrawler, MusicCache, fetch_music_content,
+    music_cache, close_all_crawlers
 )
+
+# ==========================================
+# 辅助函数 (Helpers)
+# ==========================================
+
+@pytest.fixture(autouse=True)
+async def clear_music_caches():
+    """每个测试前清理全局缓存，防止干扰"""
+    # 清理去重缓存
+    music_cache.cache = []
+    # 关闭并重置爬虫实例缓存
+    await close_all_crawlers()
+    yield
+    # 测试后再次清理
+    await close_all_crawlers()
 
 # ==========================================
 # 模拟数据 (Mock Data)
@@ -220,8 +236,11 @@ async def test_real_itunes_integration():
         results: List[Dict[str, Any]] = await crawler.search("lofi", limit=1)
         assert len(results) > 0
         assert "http" in results[0]['url']
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+        pytest.skip(f"iTunes 集成测试跳过 (网络错误): {e}")
     except Exception as e:
-        pytest.skip(f"iTunes 集成测试跳过: {e}")
+        # 非网络错误（如 AssertionError）应该让测试失败，而不是跳过
+        raise e
     finally:
         await crawler.close()
 

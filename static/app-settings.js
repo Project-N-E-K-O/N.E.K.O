@@ -248,7 +248,6 @@
             console.log('[主动搭话] 调度器已初始化，跳过重复调用');
             return;
         }
-        S._proactiveSchedulerInitialized = true;
         
         // 加载麦克风设备选择
         if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSelectedMicrophone) {
@@ -299,6 +298,9 @@
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
             console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled));
         }
+
+        // 所有步骤完成后，最后才设置初始化成功的标志
+        S._proactiveSchedulerInitialized = true;
     }
 
     // ======================== 导出 ========================

@@ -597,8 +597,11 @@
 
     function _showMemeBubbles(memeLinks, _chatContent) {
         if (window.appChat && window.appChat.addToHistory) {
-            if (_chatContent) {
-                window.appChat.addToHistory('GEMINI_MESSAGE', _chatContent);
+            // 注意：不要把 _chatContent (DOM容器) 传进去，它会导致 history 存入 "[object HTMLDivElement]"
+            // 这里我们只需要记录表情包的消息摘要即可
+            if (memeLinks && Array.isArray(memeLinks) && memeLinks.length > 0) {
+                var summary = '[MEME] ' + (memeLinks[0].title || '表情包');
+                window.appChat.addToHistory('GEMINI_MESSAGE', summary);
             }
             if (memeLinks && Array.isArray(memeLinks)) {
                 memeLinks.forEach(function(meme) {
@@ -674,7 +677,7 @@
                 }
                 
                 chatContainer.scrollTop = chatContainer.scrollHeight;
-                console.log('[Meme] 已移除标题，仅显示图片气泡:', meme.title);
+                console.log('[Meme] 已展示图片气泡:', meme.title);
             })(memeLinks[i]);
         }
     }

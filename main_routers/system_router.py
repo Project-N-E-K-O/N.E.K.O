@@ -1120,95 +1120,89 @@ async def find_first_image(folder: str = None):
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
     """
-    代理远程表情包图片，解决跨域问题
+    代理远程表情包图片，解决跨域问题，包含 SSRF 防护
     """
     try:
-        logger.info(f"[Meme Proxy] 收到代理请求, url参数: {url[:100] if url else 'None'}...")
+        logger.info(f"[Meme Proxy] 收到代理请求, url: {url[:100] if url else 'None'}...")
         
         if not url:
-            logger.warning("[Meme Proxy] 缺少URL参数")
             return JSONResponse(content={"success": False, "error": "缺少URL参数"}, status_code=400)
         
         decoded_url = unquote(url)
-        logger.info(f"[Meme Proxy] 解码后URL: {decoded_url[:100]}...")
-        
         if not decoded_url.startswith(('http://', 'https://')):
-            logger.warning(f"[Meme Proxy] 无效的URL协议: {decoded_url[:50]}")
             return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
         
         allowed_hosts = [
-            'qn.doutub.com',
-            'img.soutula.com',
-            'i.imgflip.com',
-            'doutub.com',
-            'fabiaoqing.com',
-            'soutula.com'
+            'qn.doutub.com', 'img.soutula.com', 'i.imgflip.com',
+            'doutub.com', 'fabiaoqing.com', 'soutula.com'
         ]
         
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, urljoin
         parsed = urlparse(decoded_url)
-        hostname = parsed.hostname or ''
-        is_allowed = any(host in hostname for host in allowed_hosts)
+        hostname = (parsed.hostname or '').lower()
         
-        logger.info(f"[Meme Proxy] hostname: {hostname}, is_allowed: {is_allowed}")
-        
-        if not is_allowed:
-            logger.warning(f"[Meme Proxy] 不允许代理该域名: {hostname}")
-            return JSONResponse(content={"success": False, "error": f"不允许代理该域名的图片: {hostname}"}, status_code=403)
-        
-        logger.info(f"[Meme Proxy] 开始获取图片: {decoded_url}")
-        
+        if not any(hostname == host or hostname.endswith('.' + host) for host in allowed_hosts):
+            logger.warning(f"[Meme Proxy] 非法域名请求: {hostname}")
+            return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
+
+        # 构建请求头
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
             'qn.doutub.com': 'https://www.doutub.com/',
-            'doutub.com': 'https://www.doutub.com/',
-            'fabiaoqing.com': 'https://fabiaoqing.com/',
-            'i.imgflip.com': 'https://imgflip.com/',
+            'i.imgflip.com': 'https://imgflip.com/'
         }
-        
         referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
-        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
             'Referer': referer,
-            'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'image',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
         }
-        
-        logger.info(f"[Meme Proxy] 使用 Referer: {referer}")
-        
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            response = await client.get(decoded_url, headers=headers)
-            response.raise_for_status()
+
+        # 使用自定义 client 严格控制重定向
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            current_url = decoded_url
+            for _ in range(3):  # 最多跟随 3 次重定向
+                resp = await client.get(current_url, headers=headers)
+                
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if not location: break
+                    
+                    new_url = urljoin(current_url, location)
+                    new_parsed = urlparse(new_url)
+                    new_hostname = (new_parsed.hostname or '').lower()
+                    
+                    if not any(new_hostname == host or new_hostname.endswith('.' + host) for host in allowed_hosts):
+                        logger.warning(f"[Meme Proxy] 重定向到非法域名: {new_hostname}")
+                        return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
+                    
+                    current_url = new_url
+                    continue
+                
+                resp.raise_for_status()
+                
+                # 校验 Content-Type
+                content_type = resp.headers.get('Content-Type', '').lower()
+                if not content_type.startswith('image/'):
+                    logger.warning(f"[Meme Proxy] 拒绝非图片内容: {content_type}")
+                    return JSONResponse(content={"success": False, "error": "只允许图片资源"}, status_code=403)
+                
+                return Response(
+                    content=resp.content,
+                    media_type=content_type,
+                    headers={
+                        'Cache-Control': 'public, max-age=86400',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                )
             
-            content_type = response.headers.get('content-type', 'image/jpeg')
-            if not content_type.startswith('image/'):
-                content_type = 'image/jpeg'
-            
-            logger.info(f"[Meme Proxy] 成功获取图片, size: {len(response.content)} bytes, type: {content_type}")
-            
-            return Response(
-                content=response.content,
-                media_type=content_type,
-                headers={
-                    'Cache-Control': 'public, max-age=86400',
-                    'Access-Control-Allow-Origin': '*'
-                }
-            )
+            return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
+
     except httpx.TimeoutException:
-        logger.error(f"[Meme Proxy] 请求超时: {decoded_url[:100]}")
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
-    except httpx.HTTPStatusError as e:
-        logger.error(f"[Meme Proxy] HTTP错误: {e.response.status_code}")
-        return JSONResponse(content={"success": False, "error": f"HTTP错误: {e.response.status_code}"}, status_code=e.response.status_code)
     except Exception as e:
-        logger.error(f"代理表情包图片失败: {e}")
-        return JSONResponse(content={"success": False, "error": f"服务器内部错误: {str(e)}"}, status_code=500)
+        logger.error(f"[Meme Proxy] 代理失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 # 辅助函数
 
@@ -1896,6 +1890,7 @@ async def proactive_chat(request: Request):
         source_links: list[dict] = []  # [{"title": ..., "url": ..., "source": ...}]
         selected_web_topic_key = ''
         selected_music_topic_key = ''  # 暂存音乐话题 key，等 Phase 2 成功后再记录
+        selected_meme_topic_key = ''   # 暂存表情包话题 key，等 Phase 2 成功后再记录
         
         # --- 音乐模式：让 LLM 生成搜索关键词，再用关键词搜索音乐 ---
         # 【加固】如果正在放歌，强制在此环节清空 music_content，彻底跳过 Phase 1 的所有搜歌逻辑
@@ -2054,6 +2049,8 @@ async def proactive_chat(request: Request):
                     else:
                         logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加: {meme_topic[:100]}...")
                         phase1_topics.append(('meme', meme_topic))
+                        # 暂存表情包话题 key
+                        selected_meme_topic_key = meme_topic_key
                         meme_link = {
                             'title': first_meme.get('title', ''),
                             'url': first_meme.get('url', ''),
@@ -2417,6 +2414,11 @@ async def proactive_chat(request: Request):
         # 【增强去重】即使 source_tag 解析为空，只要逻辑上判定使用了音乐（如 BOTH 模式降级处理），也必须记录
         if selected_music_topic_key and is_music_used:
             _record_topic_usage(lanlan_name, selected_music_topic_key)
+            
+        # 【表情包去重记录】由于表情包在 Phase 1 之后直接进入 source_links，只要主通道是 meme 就要记录
+        if selected_meme_topic_key and primary_channel == 'meme':
+            _record_topic_usage(lanlan_name, selected_meme_topic_key)
+            logger.info(f"[{lanlan_name}] 已记录表情包去重: {selected_meme_topic_key}")
 
         return JSONResponse({
             "success": True,
