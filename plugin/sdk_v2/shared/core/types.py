@@ -192,21 +192,6 @@ class RouterProtocol(Protocol):
     def iter_handlers(self) -> Mapping[str, EntryHandler]: ...
 
 
-# Backwards-compat aliases for old Host*/Sdk* names
-HostMemoryBusProtocol = BusMemoryProtocol
-HostMessagesBusProtocol = BusMessagesProtocol
-HostEventsBusProtocol = BusEventsProtocol
-HostLifecycleBusProtocol = BusLifecycleProtocol
-HostConversationsBusProtocol = BusConversationsProtocol
-HostBusProtocol = BusProtocol
-SdkBusMessagesProtocol = BusMessagesProtocol
-SdkBusEventsProtocol = BusEventsProtocol
-SdkBusLifecycleProtocol = BusLifecycleProtocol
-SdkBusConversationsProtocol = BusConversationsProtocol
-SdkBusMemoryProtocol = BusMemoryProtocol
-SdkBusProtocol = BusProtocol
-
-
 __all__ = [
     "BusConversationsProtocol",
     "BusEventsProtocol",
@@ -227,17 +212,4 @@ __all__ = [
     "PluginContextProtocol",
     "PluginRef",
     "RouterProtocol",
-    # Backwards-compat aliases
-    "HostBusProtocol",
-    "HostConversationsBusProtocol",
-    "HostEventsBusProtocol",
-    "HostLifecycleBusProtocol",
-    "HostMemoryBusProtocol",
-    "HostMessagesBusProtocol",
-    "SdkBusConversationsProtocol",
-    "SdkBusEventsProtocol",
-    "SdkBusLifecycleProtocol",
-    "SdkBusMemoryProtocol",
-    "SdkBusMessagesProtocol",
-    "SdkBusProtocol",
 ]

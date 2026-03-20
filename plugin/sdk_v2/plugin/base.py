@@ -122,7 +122,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
     def get_static_ui_config(self) -> dict[str, Any] | None:
         return self._static_ui_config
 
-    async def register_dynamic_entry(
+    def register_dynamic_entry(
         self,
         entry_id: str,
         handler,
@@ -151,10 +151,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
         return True
 
-    async def unregister_dynamic_entry(self, entry_id: str) -> bool:
+    def unregister_dynamic_entry(self, entry_id: str) -> bool:
         return self._dynamic_entries.pop(entry_id, None) is not None
 
-    async def enable_entry(self, entry_id: str) -> bool:
+    def enable_entry(self, entry_id: str) -> bool:
         item = self._dynamic_entries.get(entry_id)
         if item is None:
             return False
@@ -166,7 +166,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             meta.metadata = current
         return True
 
-    async def disable_entry(self, entry_id: str) -> bool:
+    def disable_entry(self, entry_id: str) -> bool:
         item = self._dynamic_entries.get(entry_id)
         if item is None:
             return False

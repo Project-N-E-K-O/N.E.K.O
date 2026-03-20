@@ -4,11 +4,10 @@
 real implementations, while a few subpackages are still evolving.
 """
 
-from . import bus, constants, core, logging, models, runtime, storage, transport
+from . import constants, core, logging, models, runtime, storage, transport
 
 __all__ = [
     "core",
-    "bus",
     "storage",
     "runtime",
     "transport",

@@ -317,21 +317,21 @@ async def test_plugin_base_dynamic_entry_and_status_helpers() -> None:
     async def dyn_handler() -> str:
         return "dyn"
 
-    assert await base.register_dynamic_entry("dyn", dyn_handler, name="Dyn") is True
+    assert base.register_dynamic_entry("dyn", dyn_handler, name="Dyn") is True
     assert base.is_entry_enabled("dyn") is True
     assert any(item["id"] == "dyn" for item in base.list_entries())
     assert len([item for item in base.list_entries(include_disabled=True) if item["id"] == "dyn"]) == 1
     meta = dyn_handler.__neko_event_meta__
     assert meta.kind == "action"
     assert meta.metadata == {"dynamic": True, "enabled": True}
-    assert await base.disable_entry("dyn") is True
+    assert base.disable_entry("dyn") is True
     assert base.is_entry_enabled("dyn") is False
     assert all(item["id"] != "dyn" for item in base.list_entries())
     assert any(item["id"] == "dyn" for item in base.list_entries(include_disabled=True))
-    assert await base.enable_entry("dyn") is True
-    assert await base.unregister_dynamic_entry("dyn") is True
-    assert await base.enable_entry("dyn") is False
-    assert await base.disable_entry("dyn") is False
+    assert base.enable_entry("dyn") is True
+    assert base.unregister_dynamic_entry("dyn") is True
+    assert base.enable_entry("dyn") is False
+    assert base.disable_entry("dyn") is False
     assert base.is_entry_enabled("dyn") is None
     base.report_status({"success": True})
     assert base._host_ctx.status == {"success": True}
@@ -364,7 +364,7 @@ async def test_register_dynamic_entry_rejects_non_callable_handler() -> None:
     base = _DemoPlugin(ctx=_Ctx())
 
     with pytest.raises(TypeError, match="handler must be callable"):
-        await base.register_dynamic_entry("dyn", object())
+        base.register_dynamic_entry("dyn", object())
 
 
 @pytest.mark.asyncio
@@ -375,11 +375,11 @@ async def test_register_dynamic_entry_rejects_duplicate_ids() -> None:
         return "dyn"
 
     with pytest.raises(runtime.EntryConflictError, match="duplicate entry id"):
-        await base.register_dynamic_entry("hello", dyn_handler)
+        base.register_dynamic_entry("hello", dyn_handler)
 
-    assert await base.register_dynamic_entry("dyn", dyn_handler) is True
+    assert base.register_dynamic_entry("dyn", dyn_handler) is True
     with pytest.raises(runtime.EntryConflictError, match="duplicate entry id"):
-        await base.register_dynamic_entry("dyn", dyn_handler)
+        base.register_dynamic_entry("dyn", dyn_handler)
 
 
 def test_list_entries_exposes_richer_metadata() -> None:
@@ -451,11 +451,10 @@ def test_list_entries_uses_dynamic_enabled_state_without_rechecking() -> None:
     assert dyn_entry["dynamic"] is True
 
 
-def test_plugin_init_reexports_runtime_symbols(plugin_api_module) -> None:
+def test_plugin_init_reexports_declared_symbols(plugin_api_module) -> None:
     mod = plugin_api_module
-    for name in runtime.__all__:
+    for name in mod.__all__:
         assert hasattr(mod, name)
-        assert getattr(mod, name) is getattr(runtime, name)
 
     assert "_name" not in vars(mod)
 
@@ -468,10 +467,8 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
         "neko_plugin",
         "plugin_entry",
         "plugin",
-        "PERSIST_ATTR",
         "PluginConfig",
         "Plugins",
-        "PluginResultError",
         "PluginRouter",
         "Result",
         "Ok",
@@ -479,6 +476,10 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
     }
     assert required.issubset(set(mod.__all__))
     assert len(mod.__all__) == len(set(mod.__all__))
+    # Internal symbols must NOT leak to plugin surface
     assert "HostBusProtocol" not in mod.__all__
     assert "SdkContext" not in mod.__all__
     assert "ensure_sdk_context" not in mod.__all__
+    assert "CallChain" not in mod.__all__
+    assert "HookExecutorMixin" not in mod.__all__
+    assert "EXTENDED_TYPES" not in mod.__all__

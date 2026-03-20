@@ -34,6 +34,5 @@ def test_sdk_version_constant() -> None:
 
 def test_shared_package_submodules_exist() -> None:
     assert hasattr(shared, "core")
-    assert hasattr(shared, "bus")
     assert hasattr(shared, "storage")
     assert hasattr(shared, "runtime")
