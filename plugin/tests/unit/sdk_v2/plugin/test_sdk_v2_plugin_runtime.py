@@ -6,6 +6,7 @@ import pytest
 
 from plugin.sdk_v2.plugin import runtime as rt
 from plugin.sdk_v2.shared.models.errors import ErrorCode
+from plugin.sdk_v2.shared.models.exceptions import TransportError, ValidationError
 from plugin.sdk_v2.shared.constants import SDK_VERSION
 
 
@@ -108,11 +109,11 @@ async def test_plugin_config_contract_methods_raise_not_implemented() -> None:
     assert got is True
     required = await cfg.require("feature.enabled")
     assert required is True
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.require("feature.missing")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.set("feature.new", True)
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.update({"x": 1})
 
 

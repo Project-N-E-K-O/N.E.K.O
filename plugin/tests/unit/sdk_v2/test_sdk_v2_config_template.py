@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from plugin.sdk_v2.shared.core import config as core_config
+from plugin.sdk_v2.shared.models.exceptions import TransportError, ValidationError
 # config_runtime was in the deleted public/ layer; helpers are now in core_config
 config_runtime = core_config
 
@@ -77,11 +78,11 @@ async def test_config_template_base_and_profiles_views() -> None:
 
     assert (await cfg.base_dump())["feature"]["enabled"] is True
     assert (await cfg.get_bool("feature.enabled")) is False  # dev profile overrides base
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.get_int("feature.enabled")
     assert (await cfg.base_get("feature.enabled")) is True
     assert (await cfg.base_get("missing", 1)) == 1
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.require("missing")
 
     state = await cfg.profile_state()
@@ -121,9 +122,9 @@ async def test_config_template_main_view_write_semantics() -> None:
     assert updated["feature"]["mode"] == "fast"
 
     fallback = core_config.PluginConfig(_CtxNoProfileApis())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await fallback.set("feature.flag", True)
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await fallback.update({"x": 1})
 
     no_active_ctx = _CtxFull()
@@ -138,11 +139,11 @@ async def test_config_template_main_view_write_semantics() -> None:
 @pytest.mark.asyncio
 async def test_config_template_error_paths() -> None:
     cfg = core_config.PluginConfig(_CtxFull())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.profile_get(" ")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.profile_effective(" ")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.profile_create(" ", {})
 
     class _NoWrite(_CtxFull):
@@ -151,9 +152,9 @@ async def test_config_template_error_paths() -> None:
         set_own_active_profile = None
 
     nowrite = core_config.PluginConfig(_NoWrite())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_delete("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_activate("dev")
 
     class _BadPayload(_CtxFull):
@@ -167,13 +168,13 @@ async def test_config_template_error_paths() -> None:
             return "bad"
 
     bad = core_config.PluginConfig(_BadPayload())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_state()
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_get("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_activate("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_delete("dev")
 
 
@@ -188,11 +189,11 @@ async def test_config_template_branch_coverage() -> None:
             return "bad"
 
     bad_profiles = core_config.PluginConfig(_CtxProfilesBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad_profiles.profile_state()
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad_profiles.profile_list()
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad_profiles.profile_active()
 
     class _CtxProfileBad(_CtxFull):
@@ -200,7 +201,7 @@ async def test_config_template_branch_coverage() -> None:
             return {"data": {"config": "bad"}}
 
     bad_profile = core_config.PluginConfig(_CtxProfileBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad_profile.profile_get("dev")
 
     class _CtxDeleteBad(_CtxFull):
@@ -208,7 +209,7 @@ async def test_config_template_branch_coverage() -> None:
             return "bad"
 
     delete_bad = core_config.PluginConfig(_CtxDeleteBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await delete_bad.profile_delete("dev")
 
     class _CtxActivateBad(_CtxFull):
@@ -216,7 +217,7 @@ async def test_config_template_branch_coverage() -> None:
             return "bad"
 
     activate_bad = core_config.PluginConfig(_CtxActivateBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await activate_bad.profile_activate("dev")
 
     class _CtxSetFallbackBad(_CtxNoProfileApis):
@@ -224,7 +225,7 @@ async def test_config_template_branch_coverage() -> None:
             return {"config": "bad"}
 
     set_fallback_bad = core_config.PluginConfig(_CtxSetFallbackBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await set_fallback_bad.set("x", 1)
 
     class _CtxUpdateFallbackBad(_CtxNoProfileApis):
@@ -232,7 +233,7 @@ async def test_config_template_branch_coverage() -> None:
             raise RuntimeError("boom")
 
     update_fallback_bad = core_config.PluginConfig(_CtxUpdateFallbackBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await update_fallback_bad.update({"x": 1})
 
 
@@ -247,7 +248,7 @@ async def test_config_template_branch_edges() -> None:
             raise RuntimeError("boom")
 
     base = core_config.PluginConfig(_CtxBaseErr())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await base.base_dump()
 
     class _NoWrite(_CtxFull):
@@ -256,13 +257,13 @@ async def test_config_template_branch_edges() -> None:
         set_own_active_profile = None
 
     nowrite = core_config.PluginConfig(_NoWrite())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_delete(" ")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_delete("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_activate(" ")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await nowrite.profile_activate("dev")
 
     class _CtxWriteBoom(_CtxFull):
@@ -274,9 +275,9 @@ async def test_config_template_branch_edges() -> None:
             raise RuntimeError("boom")
 
     boom = core_config.PluginConfig(_CtxWriteBoom())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await boom.profile_delete("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await boom.profile_activate("dev")
 
     class _CtxWriteBad(_CtxFull):
@@ -288,9 +289,9 @@ async def test_config_template_branch_edges() -> None:
             return "bad"
 
     bad = core_config.PluginConfig(_CtxWriteBad())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_delete("dev")
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await bad.profile_activate("dev")
 
     class _CtxFallbackNoUpdater:
@@ -298,9 +299,9 @@ async def test_config_template_branch_edges() -> None:
             raise RuntimeError("boom")
 
     fallback_none = core_config.PluginConfig(_CtxFallbackNoUpdater())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await fallback_none.set("x", 1)
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await fallback_none.update({"x": 1})
 
     class _CtxNoActive(_CtxFull):
@@ -309,9 +310,9 @@ async def test_config_template_branch_edges() -> None:
             self.profiles_state["config_profiles"]["active"] = None
 
     no_active = core_config.PluginConfig(_CtxNoActive())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await no_active.set("x", 1)
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await no_active.update({"x": 1})
 
 
@@ -322,5 +323,5 @@ async def test_config_template_set_profile_write_error_branch() -> None:
             return {"data": {"config": "bad"}}
 
     cfg = core_config.PluginConfig(_CtxSetFail())
-    with pytest.raises(Exception):
+    with pytest.raises((ValidationError, TransportError)):
         await cfg.set("feature.flag", True)

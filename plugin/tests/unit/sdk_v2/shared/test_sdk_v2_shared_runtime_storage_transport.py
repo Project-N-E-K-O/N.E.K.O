@@ -304,21 +304,28 @@ async def test_shared_memory_timeout_bool_and_impl_error_normalization() -> None
     class _CustomSdkError(InvalidArgumentError):
         pass
 
-    async def _boom_query(*args, **kwargs):
-        raise _CustomSdkError("boom")
+    class _BoomCtx:
+        plugin_id = "demo"
+        _host_ctx = None
 
-    async def _boom_get(*args, **kwargs):
-        raise _CustomSdkError("boom")
+        async def query_memory(self, *args, **kwargs):
+            raise _CustomSdkError("boom")
 
-    mem._do_query = _boom_query  # type: ignore[method-assign]
-    mem._do_get = _boom_get  # type: ignore[method-assign]
+        class bus:
+            class memory:
+                @staticmethod
+                async def get(*args, **kwargs):
+                    raise _CustomSdkError("boom")
 
-    query_error = await mem.query("bucket", "q")
+    _BoomCtx._host_ctx = _BoomCtx()  # type: ignore[attr-defined]
+    mem_err = runtime_memory.MemoryClient(_BoomCtx())
+
+    query_error = await mem_err.query("bucket", "q")
     assert query_error.is_err()
     assert isinstance(query_error.error, TransportError)
     assert query_error.error.context["op_name"] == "memory.query"
 
-    get_error = await mem.get("bucket")
+    get_error = await mem_err.get("bucket")
     assert get_error.is_err()
     assert isinstance(get_error.error, TransportError)
     assert get_error.error.context["op_name"] == "memory.get"

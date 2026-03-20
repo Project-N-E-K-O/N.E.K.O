@@ -494,9 +494,9 @@ def test_core_config_static_helpers() -> None:
 
     assert core_config.unwrap_config_payload({"data": {"config": {"x": 1}}}) == {"x": 1}
     assert core_config.unwrap_config_payload({"config": {"x": 1}}) == {"x": 1}
-    with pytest.raises(TypeError):
+    with pytest.raises(CfgValidationError):
         core_config.unwrap_config_payload("x")
-    with pytest.raises(TypeError):
+    with pytest.raises(CfgValidationError):
         core_config.unwrap_config_payload({"config": "x"})
     assert core_config.unwrap_config_payload({"x": 1}) == {"x": 1}
 
@@ -516,23 +516,25 @@ def test_core_config_static_helpers() -> None:
 
 @pytest.mark.asyncio
 async def test_core_config_error_paths() -> None:
+    from plugin.sdk_v2.shared.models.exceptions import ValidationError as _VE, TransportError as _TE
+    _CfgError = (_VE, _TE)
     cfg_err = core_config.PluginConfig(_CtxErrConfig())
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_err.dump()
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_err.set("x", 1)
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_err.update({"x": 1})
 
     cfg_ok = core_config.PluginConfig(_CtxOk())
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_ok.dump(timeout=0)
     # get with missing path returns default (None)
     assert (await cfg_ok.get("missing", default=None)) is None
     assert (await cfg_ok.get("missing", default=1)) == 1
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_ok.set("", {"root": True})
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgError):
         await cfg_ok.set("", 1)
 
 
@@ -1779,6 +1781,9 @@ def test_core_decorators_inference_finalize_and_validation_edges() -> None:
         @staticmethod
         def model_json_schema() -> dict[str, object]:
             return {"type": "object", "properties": {"b": {"type": "string"}}}
+
+    class MissingType:
+        pass
 
     def _multiple(a: _ParamA, b: _ParamB) -> None:
         return None

@@ -238,6 +238,8 @@ class PluginStore(StorageResultTemplate):
         key_ok = self._validate_key(key)
         if isinstance(key_ok, Err):
             return cast(Result[None, StoreError], key_ok)
+        if not self._is_json_value(value):
+            return cast(Result[None, StoreError], Err(InvalidArgumentError("value must be JSON-compatible")))
         return await self._run_local_result("storage.store.set", self._write_value, key, value)
 
     async def delete(self, key: str) -> Result[bool, StoreError]:

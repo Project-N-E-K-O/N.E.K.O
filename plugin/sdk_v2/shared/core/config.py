@@ -27,7 +27,7 @@ from .types import JsonObject, JsonValue, LoggerLike, PluginContextProtocol
 
 def unwrap_config_payload(value: object) -> JsonObject:
     if not isinstance(value, dict):
-        raise TypeError(f"expected dict payload, got {type(value)!r}")
+        raise ValidationError(f"expected dict payload, got {type(value)!r}")
     data = value.get("data")
     if isinstance(data, dict):
         value = data
@@ -35,13 +35,13 @@ def unwrap_config_payload(value: object) -> JsonObject:
     if config is None:
         return value
     if not isinstance(config, dict):
-        raise TypeError(f"expected dict config, got {type(config)!r}")
+        raise ValidationError(f"expected dict config, got {type(config)!r}")
     return config
 
 
 def unwrap_profiles_state(value: object) -> JsonObject:
     if not isinstance(value, dict):
-        raise TypeError(f"expected dict profiles state, got {type(value)!r}")
+        raise ValidationError(f"expected dict profiles state, got {type(value)!r}")
     if isinstance(value.get("data"), dict):
         value = value["data"]
     return value
@@ -49,20 +49,20 @@ def unwrap_profiles_state(value: object) -> JsonObject:
 
 def unwrap_profile_payload(value: object) -> JsonObject:
     if not isinstance(value, dict):
-        raise TypeError(f"expected dict profile payload, got {type(value)!r}")
+        raise ValidationError(f"expected dict profile payload, got {type(value)!r}")
     if isinstance(value.get("data"), dict):
         value = value["data"]
     cfg = value.get("config")
     if cfg is None:
         return {}
     if not isinstance(cfg, dict):
-        raise TypeError(f"expected dict profile config, got {type(cfg)!r}")
+        raise ValidationError(f"expected dict profile config, got {type(cfg)!r}")
     return cfg
 
 
 def validate_profile_name(profile_name: str) -> str:
     if not isinstance(profile_name, str) or profile_name.strip() == "":
-        raise ValueError("profile_name must be non-empty")
+        raise ValidationError("profile_name must be non-empty")
     return profile_name.strip()
 
 
@@ -132,8 +132,8 @@ async def _fetch_ctx(ctx: PluginContextProtocol, getter_name: str, timeout: floa
     try:
         getter = getattr(ctx, getter_name)
         return await getter(timeout=timeout) if arg is None else await getter(arg, timeout=timeout)
-    except AttributeError:
-        raise TransportError(f"ctx.{getter_name} is not available")
+    except AttributeError as error:
+        raise TransportError(f"ctx.{getter_name} is not available") from error
     except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
         raise TransportError(f"failed to fetch {getter_name}: {error}") from error
 
@@ -269,8 +269,8 @@ class PluginConfig:
             raise ValidationError("timeout must be > 0")
         try:
             raw = await self.ctx.delete_own_profile_config(normalized, timeout=timeout)
-        except AttributeError:
-            raise TransportError("ctx.delete_own_profile_config is not available")
+        except AttributeError as error:
+            raise TransportError("ctx.delete_own_profile_config is not available") from error
         except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
             raise TransportError(f"failed to delete profile: {error}") from error
         if not isinstance(raw, dict):
@@ -283,8 +283,8 @@ class PluginConfig:
             raise ValidationError("timeout must be > 0")
         try:
             raw = await self.ctx.set_own_active_profile(normalized, timeout=timeout)
-        except AttributeError:
-            raise TransportError("ctx.set_own_active_profile is not available")
+        except AttributeError as error:
+            raise TransportError("ctx.set_own_active_profile is not available") from error
         except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
             raise TransportError(f"failed to activate profile: {error}") from error
         state = unwrap_profiles_state(raw)
@@ -334,8 +334,8 @@ class PluginConfig:
             raise ValidationError("timeout must be > 0")
         try:
             raw = await self.ctx.upsert_own_profile_config(normalized, dict(config), make_active=make_active, timeout=timeout)
-        except AttributeError:
-            raise TransportError("ctx.upsert_own_profile_config is not available")
+        except AttributeError as error:
+            raise TransportError("ctx.upsert_own_profile_config is not available") from error
         except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
             raise TransportError(f"failed to upsert profile: {error}") from error
         return unwrap_profile_payload(raw)

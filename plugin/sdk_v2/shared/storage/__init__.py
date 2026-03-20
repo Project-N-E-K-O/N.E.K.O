@@ -1,7 +1,4 @@
-"""Shared storage facades for SDK v2.
-
-Shared storage facades and implementations for SDK v2.
-"""
+"""Shared storage facades and implementations for SDK v2."""
 
 from .database import AsyncSessionProtocol, PluginDatabase, PluginKVStore
 from .state import EXTENDED_TYPES, PluginStatePersistence

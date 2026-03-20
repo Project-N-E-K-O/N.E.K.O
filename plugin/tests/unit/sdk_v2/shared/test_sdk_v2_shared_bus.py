@@ -183,6 +183,7 @@ class TestSdkBusList:
         b = _make_list([SdkBusMessageRecord(type="t", message_id="m2")])
         result = a & b
         assert len(result) == 1
+        assert result[0].message_id == "m2"
 
     def test_explain(self) -> None:
         items = _make_list([])

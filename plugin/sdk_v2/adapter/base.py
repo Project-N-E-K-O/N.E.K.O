@@ -138,6 +138,8 @@ class AdapterContext:
         pattern: str | None = None,
         priority: int = 0,
     ) -> None:
+        if not callable(handler):
+            raise TypeError("handler must be callable")
         registration = _RegisteredEventHandler(
             event_type=event_type,
             handler=handler,

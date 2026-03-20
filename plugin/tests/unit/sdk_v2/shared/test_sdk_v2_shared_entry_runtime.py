@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from plugin.sdk_v2.shared.core import entry_runtime
 from plugin.sdk_v2.shared.core.entry_runtime import prepare_entry_kwargs, resolve_entry_timeout
 from plugin.sdk_v2.shared.core.events import EventMeta
@@ -96,7 +98,7 @@ def test_prepare_entry_kwargs_raises_plugin_execution_error_on_invalid_payload()
         model_validate=True,
     )
 
-    try:
+    with pytest.raises(Exception, match="parameter validation failed"):
         prepare_entry_kwargs(
             plugin_id="demo",
             entry_id="run",
@@ -104,10 +106,6 @@ def test_prepare_entry_kwargs_raises_plugin_execution_error_on_invalid_payload()
             meta=meta,
             args={"count": "2"},
         )
-    except Exception as error:
-        assert "parameter validation failed" in str(error)
-    else:  # pragma: no cover
-        raise AssertionError("expected validation failure")
 
 
 def test_resolve_entry_timeout_uses_extra_metadata_and_ignores_invalid_values() -> None:

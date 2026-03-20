@@ -134,6 +134,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise ValueError("entry_id must be a non-empty string")
+        entry_id = entry_id.strip()
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:
             raise EntryConflictError(f"duplicate entry id: {entry_id!r}")

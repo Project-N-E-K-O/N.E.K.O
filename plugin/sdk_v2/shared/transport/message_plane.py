@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect as _inspect
 import time
 import uuid
 from collections import defaultdict
@@ -63,7 +64,9 @@ class MessagePlaneTransport:
             if self.plugin_ctx is not None:
                 push = getattr(self.plugin_ctx, "push_message", None)
                 if callable(push):
-                    await push(text=topic, description=topic, metadata={"payload": payload, "topic": topic}, timeout=timeout)
+                    _result = push(source="message_plane", message_type="notify", description=topic, metadata={"payload": payload, "topic": topic})
+                    if _inspect.isawaitable(_result):
+                        await _result
             for handler in list(self._handlers.get(topic, [])):
                 result = await handler(payload)
                 if isinstance(result, Err):
