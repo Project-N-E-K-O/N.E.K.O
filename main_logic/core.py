@@ -1970,6 +1970,8 @@ class LLMSessionManager:
         """语音模式主动投递准入检查（统一入口）。"""
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
+        if getattr(self.session, '_fatal_error_occurred', False):
+            return False
         if getattr(self.session, '_is_responding', False):
             return False
         if getattr(self.session, '_audio_in_buffer', False):
