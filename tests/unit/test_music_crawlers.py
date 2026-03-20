@@ -200,27 +200,27 @@ async def test_soundcloud_crawler_token_logic():
 async def test_fetch_music_content_orchestration():
     """验证主调度函数是否根据不同参数正确聚合结果 (Mocked Crawlers)"""
     
-    # 模拟 Crawler 类
-    with patch('utils.music_crawlers.NeteaseCrawler') as MockNetease, \
-         patch('utils.music_crawlers.iTunesCrawler') as MockiTunes:
+    # 使用更健壮的 Mock 策略：直接 Patch 工厂加载器，避免单例缓存 _crawlers_cache 污染
+    mock_netease = MagicMock()
+    mock_itunes = MagicMock()
+    
+    # 定义异步 Mock 返回
+    async def mock_netease_search(*args, **kwargs):
+        return [{"name": "Mock Netease", "url": "url1", "artist": "A1"}]
         
-        # 定义异步 Mock 返回
-        async def mock_netease_search(*args, **kwargs):
-            return [{"name": "Mock Netease", "url": "url1", "artist": "A1"}]
-            
-        async def mock_itunes_search(*args, **kwargs):
-            return [{"name": "Mock iTunes", "url": "url2", "artist": "A2"}]
-            
-        async def mock_close(*args, **kwargs):
-            pass
+    async def mock_itunes_search(*args, **kwargs):
+        return [{"name": "Mock iTunes", "url": "url2", "artist": "A2"}]
 
-        # 设置 mock 实例
-        MockNetease.return_value.search = mock_netease_search
-        MockNetease.return_value.close = mock_close
-        
-        MockiTunes.return_value.search = mock_itunes_search
-        MockiTunes.return_value.close = mock_close
-        
+    mock_netease.search = mock_netease_search
+    mock_itunes.search = mock_itunes_search
+    
+    async def mock_close(*args, **kwargs):
+        pass
+
+    mock_netease.close = mock_close
+    mock_itunes.close = mock_close
+    
+    with patch('utils.music_crawlers.get_music_crawlers', return_value={'netease': mock_netease, 'itunes': mock_itunes}):
         with patch('utils.music_crawlers.is_china_region', return_value=True):
             # 在中国区域，应该包含网易云
             response = await fetch_music_content("keyword", limit=1)

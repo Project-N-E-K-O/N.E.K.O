@@ -1158,43 +1158,60 @@ async def proxy_meme_image(url: str):
             'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
         }
 
-        # 使用自定义 client 严格控制重定向
+        # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
+        MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
+        
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             current_url = decoded_url
             for _ in range(3):  # 最多跟随 3 次重定向
-                resp = await client.get(current_url, headers=headers)
-                
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("Location")
-                    if not location: break
+                async with client.stream("GET", current_url, headers=headers) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location: break
+                        
+                        new_url = urljoin(current_url, location)
+                        new_parsed = urlparse(new_url)
+                        new_hostname = (new_parsed.hostname or '').lower()
+                        
+                        if not any(new_hostname == host or new_hostname.endswith('.' + host) for host in allowed_hosts):
+                            logger.warning(f"[Meme Proxy] 重定向到非法域名: {new_hostname}")
+                            return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
+                        
+                        current_url = new_url
+                        continue
                     
-                    new_url = urljoin(current_url, location)
-                    new_parsed = urlparse(new_url)
-                    new_hostname = (new_parsed.hostname or '').lower()
+                    resp.raise_for_status()
                     
-                    if not any(new_hostname == host or new_hostname.endswith('.' + host) for host in allowed_hosts):
-                        logger.warning(f"[Meme Proxy] 重定向到非法域名: {new_hostname}")
-                        return JSONResponse(content={"success": False, "error": "非法重定向"}, status_code=403)
+                    # 校验 Content-Type
+                    content_type = resp.headers.get('Content-Type', '').lower()
+                    if not content_type.startswith('image/'):
+                        logger.warning(f"[Meme Proxy] 拒绝非图片内容: {content_type}")
+                        return JSONResponse(content={"success": False, "error": "只允许图片资源"}, status_code=403)
                     
-                    current_url = new_url
-                    continue
-                
-                resp.raise_for_status()
-                
-                # 校验 Content-Type
-                content_type = resp.headers.get('Content-Type', '').lower()
-                if not content_type.startswith('image/'):
-                    logger.warning(f"[Meme Proxy] 拒绝非图片内容: {content_type}")
-                    return JSONResponse(content={"success": False, "error": "只允许图片资源"}, status_code=403)
-                
-                return Response(
-                    content=resp.content,
-                    media_type=content_type,
-                    headers={
-                        'Cache-Control': 'public, max-age=86400',
-                        'Access-Control-Allow-Origin': '*'
-                    }
-                )
+                    # 校验 Content-Length (如果存在)
+                    content_length = resp.headers.get('Content-Length')
+                    if content_length and int(content_length) > MAX_IMAGE_SIZE:
+                        logger.warning(f"[Meme Proxy] 资源过大 (Content-Length): {content_length}")
+                        return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
+
+                    # 流式读取内容并累加大小校验
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > MAX_IMAGE_SIZE:
+                            logger.warning(f"[Meme Proxy] 资源过大 (实际读取): {len(body)}")
+                            return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
+
+                    return Response(
+                        content=bytes(body),
+                        media_type=content_type,
+                        headers={
+                            'Cache-Control': 'public, max-age=86400',
+                            'Access-Control-Allow-Origin': '*'
+                        }
+                    )
+            
+            return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
             
             return JSONResponse(content={"success": False, "error": "过多的重定向"}, status_code=400)
 
@@ -2051,14 +2068,9 @@ async def proactive_chat(request: Request):
                         phase1_topics.append(('meme', meme_topic))
                         # 暂存表情包话题 key
                         selected_meme_topic_key = meme_topic_key
-                        meme_link = {
-                            'title': first_meme.get('title', ''),
-                            'url': first_meme.get('url', ''),
-                            'source': first_meme.get('source', '表情包'),
-                            'type': first_meme.get('type', 'meme')
-                        }
-                        source_links.append(meme_link)
-                        print(f"[{lanlan_name}] 添加表情包链接: {meme_link.get('title', '')[:30]} -> {meme_link.get('url', '')[:50]}")
+                        # 注意：此处暂不加入 source_links，待 Phase 2 AI 确定选择 MEME 标签后再加入
+                        # 避免 Phase 1 预选的链接污染最终展示（例如 AI 最终选了 WEB 但展示了 pre-selected 的 meme）
+                        print(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
                 else:
                     logger.info(f"[{lanlan_name}] Phase 1 表情包话题已添加: {meme_topic[:100]}...")
                     phase1_topics.append(('meme', meme_topic))
@@ -2378,6 +2390,16 @@ async def proactive_chat(request: Request):
             primary_channel = 'music'
         elif source_tag == 'MEME':
             primary_channel = 'meme'
+            # 只有在正式选择 MEME 通道时，才将预选的链接加入待展示列表
+            if meme_content and meme_content.get('data'):
+                first_meme = meme_content['data'][0]
+                source_links.append({
+                    'title': first_meme.get('title', ''),
+                    'url': first_meme.get('url', ''),
+                    'source': first_meme.get('source', '表情包'),
+                    'type': 'meme'
+                })
+                print(f"[{lanlan_name}] Phase 2 确定选择表情包，已添加链接")
         elif source_tag == 'BOTH':
             # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
             # 前端会优先处理 music 信号，同时渲染 source_links 里的所有内容
@@ -2387,10 +2409,10 @@ async def proactive_chat(request: Request):
                 primary_channel = 'web'
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
-        # 【加固】播放中严禁任何形式的自动补全或兜底推荐
+        # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
         should_try_music_fallback = not is_playing_music and (
             primary_channel == 'music'
-            or (has_music_topic and not any(ch in ('vision', 'web') for ch in active_channels))
+            or (has_music_topic and not any(ch in ('vision', 'web', 'meme') for ch in active_channels))
         )
         if should_try_music_fallback:
             if source_links is None:

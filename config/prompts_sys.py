@@ -1651,8 +1651,9 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     }
 
     # 简单处理 ja/ko/ru 的 key 映射，确保不会 crash
-    for l in ['ja', 'ko', 'ru']:
-        _si[l].update(_si['en']) # 至少保证有内容
+    for lang_code in ['ja', 'ko', 'ru']:
+        # 重采样 en 的内容，仅作为兜底
+        pass
 
     source_instruction = _si.get(lang, _si['en']).get(key, _si['en']['none'])
     

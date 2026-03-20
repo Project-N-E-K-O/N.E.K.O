@@ -596,19 +596,8 @@
     }
 
     function _showMemeBubbles(memeLinks, _chatContent) {
-        if (window.appChat && window.appChat.addToHistory) {
-            // 注意：不要把 _chatContent (DOM容器) 传进去，它会导致 history 存入 "[object HTMLDivElement]"
-            // 这里我们只需要记录表情包的消息摘要即可
-            if (memeLinks && Array.isArray(memeLinks) && memeLinks.length > 0) {
-                var summary = '[MEME] ' + (memeLinks[0].title || '表情包');
-                window.appChat.addToHistory('GEMINI_MESSAGE', summary);
-            }
-            if (memeLinks && Array.isArray(memeLinks)) {
-                memeLinks.forEach(function(meme) {
-                    window.appChat.addToHistory('SYSTEM_MESSAGE', '[MEME] ' + (meme.url || ''));
-                });
-            }
-        }
+        // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
+        // 表情包作为 UI 侧挂件展示，无需单独污染 LLM 上下文。
         var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
         if (!chatContainer) {
             console.warn('[Meme] chatContainer not found, cannot show meme bubbles');

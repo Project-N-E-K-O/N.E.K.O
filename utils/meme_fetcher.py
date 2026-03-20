@@ -21,12 +21,16 @@ except ImportError:
     def is_china_region() -> bool:
         import locale
         try:
-            current_locale = locale.getdefaultlocale()[0]
+            # 优先尝试现代 API (Python 3.11+)
+            try:
+                current_locale = locale.getlocale()[0]
+            except Exception:
+                current_locale = locale.getdefaultlocale()[0]
+                
             if current_locale:
                 return current_locale.lower().startswith('zh_cn')
         except Exception as e:
-            # 仅在调试时记录，或者静默失败
-            pass
+            logger.debug(f"获取区域设置失败: {e}")
         return False
 
 # 更广泛且现代的 User-Agent 池
@@ -527,14 +531,11 @@ class FabiaoqingFetcher:
 
     async def __aenter__(self) -> "FabiaoqingFetcher":
         if self._session is None:
-            import ssl
-            ssl_context = ssl.create_default_context()
-            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+            # 采用渐进式 TLS 策略：默认使用系统最强加密，若失败则降级到 SECLEVEL=1
             self._session = httpx.AsyncClient(
                 timeout=15.0, 
                 follow_redirects=True, 
                 trust_env=True,
-                verify=ssl_context
             )
         return self
 
@@ -557,6 +558,7 @@ class FabiaoqingFetcher:
         }
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
+        last_exception = None
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
@@ -567,36 +569,57 @@ class FabiaoqingFetcher:
                     await asyncio.sleep(random.uniform(0.3, 0.8))
 
                 headers = self._get_headers()
-                session = self._session
                 
-                if session:
-                    response = await session.get(url, headers=headers)
-                else:
-                    import ssl
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                    async with httpx.AsyncClient(
+                # 如果还没有 session，或者上一次遇到了 SSL 错误，则创建/重建 session
+                if self._session is None:
+                    self._session = httpx.AsyncClient(
                         timeout=15.0, 
                         follow_redirects=True, 
                         trust_env=True,
-                        verify=ssl_context
-                    ) as client:
-                        response = await client.get(url, headers=headers)
-                    
-                response.raise_for_status()
-                return response.text
+                    )
+
+                try:
+                    response = await self._session.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except httpx.ConnectError as e:
+                    # 检查是否为 SSL 错误 (通常表现为 ConnectError 的子类或包含 SSLError)
+                    import ssl
+                    if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
+                        logger.warning(f"发表情 SSL 连接失败，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
+                        # 关闭旧 session 并重建带降级参数的 session
+                        await self.close()
+                        ssl_context = ssl.create_default_context()
+                        ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+                        self._session = httpx.AsyncClient(
+                            timeout=15.0, 
+                            follow_redirects=True, 
+                            trust_env=True,
+                            verify=ssl_context
+                        )
+                        # 降级后立即在本轮重试（不增加 attempt 计数可能更好，但这里简单处理直接进入下一轮）
+                        continue 
+                    raise
+                
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise
             except httpx.HTTPStatusError as e:
                 logger.error(f"发表情HTTP错误 (状态码 {e.response.status_code}): {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise
             except Exception as e:
                 logger.error(f"发表情发生非预期异常: {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise e
+        
+        if last_exception:
+            raise last_exception
+        return ""
         return ""
 
     async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
