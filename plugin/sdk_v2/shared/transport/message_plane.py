@@ -68,7 +68,8 @@ class MessagePlaneTransport:
                     if _inspect.isawaitable(_result):
                         await _result
             for handler in list(self._handlers.get(topic, [])):
-                result = await handler(payload)
+                _raw = handler(payload)
+                result = (await _raw) if _inspect.isawaitable(_raw) else _raw
                 if isinstance(result, Err):
                     error = result.error if isinstance(result.error, Exception) else TransportError(str(result.error), op_name=op_name, topic=topic, timeout=timeout)
                     return Err(self._normalize_error(error, op_name=op_name, topic=topic, timeout=timeout))
