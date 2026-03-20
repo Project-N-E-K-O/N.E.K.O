@@ -190,8 +190,9 @@ Live2DManager.prototype._createSettingsMenuButton = function (config) {
         gap: '8px'
     });
 
+    let iconImg = null;
     if (config.icon) {
-        const iconImg = document.createElement('img');
+        iconImg = document.createElement('img');
         iconImg.src = config.icon;
         iconImg.alt = config.label || '';
         Object.assign(iconImg.style, {
@@ -226,7 +227,12 @@ Live2DManager.prototype._createSettingsMenuButton = function (config) {
 
     if (config.labelKey) {
         btn._updateLabelText = () => {
-            if (window.t) label.textContent = window.t(config.labelKey);
+            if (window.t) {
+                label.textContent = window.t(config.labelKey);
+                if (iconImg) {
+                    iconImg.alt = window.t(config.labelKey);
+                }
+            }
         };
     }
 
@@ -1448,11 +1454,13 @@ Live2DManager.prototype._createSidePanelMenuItem = function (item) {
                 window.openOrFocusWindow(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else {
-                if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(finalUrl, windowName);
-                } else {
-                    window.open(finalUrl, windowName);
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) {
+                    windowName = 'neko_chara_manager';
                 }
+
+                isOpening = true;
+                window.openOrFocusWindow(finalUrl, windowName);
+                setTimeout(() => { isOpening = false; }, 500);
             }
         }
     });
