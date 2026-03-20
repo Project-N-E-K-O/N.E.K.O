@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Union
 from bs4 import BeautifulSoup
 import sys
 import os
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 try:
     from utils.logger_config import get_module_logger
@@ -24,9 +24,18 @@ except ImportError:
         try:
             # 优先尝试现代 API (Python 3.11+)
             try:
-                current_locale = locale.getlocale()[0]
+                # getlocale() 可能在某些环境下返回 (None, None) 且不报错
+                res = locale.getlocale()
+                current_locale = res[0] if res else None
             except Exception:
-                current_locale = locale.getdefaultlocale()[0]
+                current_locale = None
+
+            # 如果 getlocale() 失败或返回空，尝试 getdefaultlocale() 或环境变量
+            if not current_locale:
+                try:
+                    current_locale = locale.getdefaultlocale()[0]
+                except Exception:
+                    current_locale = os.environ.get('LANG') or os.environ.get('LC_ALL')
                 
             if current_locale:
                 return current_locale.lower().startswith('zh_cn')
@@ -354,7 +363,7 @@ class DoutubFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
+        search_url = f"{self.search_url}/{quote_plus(keyword)}"
         try:
             html = await self._fetch_html(search_url)
             if not html:
@@ -584,15 +593,10 @@ class FabiaoqingFetcher:
                         import ssl
                         if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
                             logger.warning(f"发表情 SSL 连接失败 (Session)，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
-                            await self.close()
-                            ssl_context = ssl.create_default_context()
-                            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                            self._session = httpx.AsyncClient(
-                                timeout=15.0, 
-                                follow_redirects=True, 
-                                trust_env=True,
-                                verify=ssl_context
-                            )
+                            await self.close() # 关闭并清空 self._session
+                            # 下次迭代将进入 else 分支使用临时 Client，并应用降级后的 ssl_context
+                            local_ssl_context = ssl.create_default_context()
+                            local_ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
                             continue 
                         raise
                 else:
@@ -636,7 +640,7 @@ class FabiaoqingFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
+        search_url = f"{self.search_url}/{quote_plus(keyword)}"
         try:
             html = await self._fetch_html(search_url)
             if not html:

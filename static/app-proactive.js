@@ -414,8 +414,9 @@
 
                     // 无论 source_mode 是什么，只要有链接就尝试显示（音乐推荐链接除外）
                     if (result.source_links && result.source_links.length > 0) {
+                        var targetVersion = window._realisticGeminiVersion;
                         setTimeout(function () {
-                            _showProactiveChatSourceLinks(result.source_links, dispatchedTrackUrl);
+                            _showProactiveChatSourceLinks(result.source_links, dispatchedTrackUrl, targetVersion);
                         }, 3000);
                     }
 
@@ -437,7 +438,7 @@
     /**
      * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
      */
-    function _showProactiveChatSourceLinks(links, dispatchedUrl) {
+    function _showProactiveChatSourceLinks(links, dispatchedUrl, turnVersion) {
         try {
             console.log('[Meme Debug] _showProactiveChatSourceLinks called with links:', JSON.stringify(links, null, 2));
             var chatContent = document.getElementById('chat-content-wrapper');
@@ -489,7 +490,7 @@
             console.log('[Meme Debug] memeLinks:', memeLinks.length, '| otherLinks:', otherLinks.length);
 
             if (memeLinks.length > 0) {
-                _showMemeBubbles(memeLinks, chatContent);
+                _showMemeBubbles(memeLinks, chatContent, turnVersion);
             }
 
             if (otherLinks.length === 0) return;
@@ -595,9 +596,15 @@
         }
     }
 
-    function _showMemeBubbles(memeLinks, _chatContent) {
+    function _showMemeBubbles(memeLinks, _chatContent, turnVersion) {
         // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
         // 表情包作为 UI 侧挂件展示，无需单独污染 LLM 上下文。
+        
+        // --- 轮次校验：如果当前全局版本已变，说明这是上一轮残留的延迟回调，直接丢弃 ---
+        if (typeof turnVersion === 'number' && window._realisticGeminiVersion !== turnVersion) {
+            console.log('[Meme] Turn changed (' + turnVersion + ' -> ' + window._realisticGeminiVersion + '), ignoring stale memes');
+            return;
+        }
         var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
         if (!chatContainer) {
             console.warn('[Meme] chatContainer not found, cannot show meme bubbles');

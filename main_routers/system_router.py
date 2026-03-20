@@ -696,9 +696,6 @@ async def emotion_analysis(request: Request):
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
         
-        # 创建异步客户端
-        client = AsyncOpenAI(api_key=api_key, base_url=emotion_base_url)
-        
         # 构建请求消息
         messages = [
             {
@@ -727,7 +724,10 @@ async def emotion_analysis(request: Request):
         
         from utils.token_tracker import set_call_type
         set_call_type("emotion")
-        response = await client.chat.completions.create(**request_params)
+        
+        # 使用异步上下文管理器确保 client 正确关闭
+        async with AsyncOpenAI(api_key=api_key, base_url=emotion_base_url) as client:
+            response = await client.chat.completions.create(**request_params)
 
         # 解析响应
         result_text = response.choices[0].message.content.strip()
@@ -1163,7 +1163,7 @@ async def proxy_meme_image(url: str):
         
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             current_url = decoded_url
-            for _ in range(3):  # 最多跟随 3 次重定向
+            for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
                 async with client.stream("GET", current_url, headers=headers) as resp:
                     if resp.status_code in (301, 302, 303, 307, 308):
                         location = resp.headers.get("Location")
@@ -1788,9 +1788,6 @@ async def proactive_chat(request: Request):
             actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
             # [临时调试]
             print(f"\n{'='*60}\n[PROACTIVE-DEBUG] LLM call: [{label}] | model={actual_model} | temp={temperature} | max_tokens={max_tokens} | vision={use_vision} | img={'yes' if image_b64 else 'no'}\n{'='*60}\n{system_prompt}\n{'='*60}\n")
-            llm = _make_llm(temperature=temperature, max_tokens=max_tokens,
-                            use_vision=use_vision, disable_thinking=disable_thinking)
-            
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             if image_b64:
                 human_content = [
@@ -1807,13 +1804,16 @@ async def proactive_chat(request: Request):
             retry_delays = [1, 2]
             for attempt in range(max_retries):
                 try:
-                    response = await asyncio.wait_for(
-                        llm.ainvoke(messages),
-                        timeout=timeout
-                    )
-                    # [临时调试]
-                    print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
-                    return response.content.strip()
+                    # 使用 async with 确保 ChatOpenAI (AsyncOpenAI) 实例被正确关闭
+                    async with _make_llm(temperature=temperature, max_tokens=max_tokens,
+                                        use_vision=use_vision, disable_thinking=disable_thinking) as llm:
+                        response = await asyncio.wait_for(
+                            llm.ainvoke(messages),
+                            timeout=timeout
+                        )
+                        # [临时调试]
+                        print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
+                        return response.content.strip()
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -2004,6 +2004,7 @@ async def proactive_chat(request: Request):
                                     'url': matched['url'],
                                     'source': parsed.get('source', matched.get('source', '')),
                                 }
+                                selected_web_topic_key = topic_key # 记录 key，确保后续能写回历史
                                 print(f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title','')[:60]}")
                             else:
                                 print(f"[{lanlan_name}] Phase 1 未在 web_links 中匹配到标题: {parsed.get('title','')[:60]}")
@@ -2041,7 +2042,8 @@ async def proactive_chat(request: Request):
                         logger.info(f"[{lanlan_name}]- Phase 1 音乐话题已添加: {music_topic[:100]}...")
                         # 暂存音乐候选信息，待 Phase 2 确定选择后再记录
                         selected_music_link = {
-                            'title': f"{track_name} - {track_artist}",
+                            'title': track_name,
+                            'artist': track_artist,
                             'url': track_url,
                             'source': '音乐推荐',
                             'type': 'music'
@@ -2279,60 +2281,63 @@ async def proactive_chat(request: Request):
         
         try:
             async with asyncio.timeout(25.0):
-                async for chunk in llm.astream(messages):
-                    content = chunk.content if hasattr(chunk, 'content') else ''
-                    if not content:
-                        continue
-                    
-                    if not tag_parsed:
-                        buffer += content
-                        # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
-                        if len(buffer) < 80 and '\n' not in buffer[min(len(buffer)-1, 10):]:
+                # 使用 async with 确保 ChatOpenAI 正确关闭
+                async with _make_llm(temperature=1.0, max_tokens=1536,
+                                    use_vision=phase2_use_vision, disable_thinking=True) as llm:
+                    async for chunk in llm.astream(messages):
+                        content = chunk.content if hasattr(chunk, 'content') else ''
+                        if not content:
                             continue
-                        # 清理 "主动搭话" 前缀
-                        cleaned = buffer
-                        m = re.search(r'主动搭话\s*\n', cleaned)
-                        if m:
-                            cleaned = cleaned[m.end():]
-                        # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
-                        tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
-                        if tag_match:
-                            source_tag = tag_match.group(1).upper()
-                            cleaned = cleaned[tag_match.end():]
-                        tag_parsed = True
                         
-                        if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
-                            print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                        if not tag_parsed:
+                            buffer += content
+                            # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
+                            if len(buffer) < 80 and '\n' not in buffer[min(len(buffer)-1, 10):]:
+                                continue
+                            # 清理 "主动搭话" 前缀
+                            cleaned = buffer
+                            m = re.search(r'主动搭话\s*\n', cleaned)
+                            if m:
+                                cleaned = cleaned[m.end():]
+                            # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
+                            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+                            if tag_match:
+                                source_tag = tag_match.group(1).upper()
+                                cleaned = cleaned[tag_match.end():]
+                            tag_parsed = True
+                            
+                            if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
+                                aborted = True
+                                break
+                            
+                            # 缓冲中剩余的文本作为首批内容
+                            if cleaned.strip():
+                                full_text += cleaned
+                                await mgr.feed_tts_chunk(cleaned)
+                            continue
+                        
+                        # --- 在线拦截: fence ---
+                        fence_hit = False
+                        for ch in content:
+                            if ch in ('|', '｜'):
+                                pipe_count += 1
+                                if pipe_count >= 2:
+                                    fence_hit = True
+                                    break
+                        if fence_hit:
+                            print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
                             aborted = True
                             break
                         
-                        # 缓冲中剩余的文本作为首批内容
-                        if cleaned.strip():
-                            full_text += cleaned
-                            await mgr.feed_tts_chunk(cleaned)
-                        continue
-                    
-                    # --- 在线拦截: fence ---
-                    fence_hit = False
-                    for ch in content:
-                        if ch in ('|', '｜'):
-                            pipe_count += 1
-                            if pipe_count >= 2:
-                                fence_hit = True
-                                break
-                    if fence_hit:
-                        print(f"[{lanlan_name}] Phase 2 流式 fence 触发 (pipe_count={pipe_count})，abort")
-                        aborted = True
-                        break
-                    
-                    # --- 在线拦截: 长度 ---
-                    if len(full_text) + len(content) > 400:
-                        print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
-                        aborted = True
-                        break
-                    
-                    full_text += content
-                    await mgr.feed_tts_chunk(content)
+                        # --- 在线拦截: 长度 ---
+                        if len(full_text) + len(content) > 400:
+                            print(f"[{lanlan_name}] Phase 2 流式长度超限 ({len(full_text)+len(content)} > 400)，abort")
+                            aborted = True
+                            break
+                        
+                        full_text += content
+                        await mgr.feed_tts_chunk(content)
         
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
@@ -2424,9 +2429,8 @@ async def proactive_chat(request: Request):
                 source_links.append(selected_web_link)
             if selected_music_link:
                 source_links.append(selected_music_link)
-            if selected_meme_link:
-                source_links.append(selected_meme_link)
-            print(f"[{lanlan_name}] Phase 2 确定选择 BOTH，已聚合所有候选链接")
+            # 【修复】BOTH 分支不应自动带回 meme，除非 AI 显式选择了 MEME 标签
+            print(f"[{lanlan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接")
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
         # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback
@@ -2457,8 +2461,10 @@ async def proactive_chat(request: Request):
         
         # 【逻辑优化】精准的话题去重记录：仅当链接真正被加入 source_links 时才记录已使用
         def _is_link_selected(selected_link):
-            if not selected_link: return False
-            return any(l.get('url') == selected_link.get('url') for l in source_links if l)
+            if not selected_link:
+                return False
+            target_url = selected_link.get('url')
+            return any(link.get('url') == target_url for link in source_links if link)
 
         if selected_web_topic_key and _is_link_selected(selected_web_link):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
