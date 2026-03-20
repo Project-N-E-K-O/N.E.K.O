@@ -243,6 +243,13 @@
      * 或在 DOMContentLoaded / 入口处调用
      */
     function initProactiveChatScheduler() {
+        // 防止重复初始化
+        if (S._proactiveSchedulerInitialized) {
+            console.log('[主动搭话] 调度器已初始化，跳过重复调用');
+            return;
+        }
+        S._proactiveSchedulerInitialized = true;
+        
         // 加载麦克风设备选择
         if (typeof window.appAudio !== 'undefined' && window.appAudio.loadSelectedMicrophone) {
             window.appAudio.loadSelectedMicrophone();

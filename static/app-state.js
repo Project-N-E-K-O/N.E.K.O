@@ -97,6 +97,7 @@
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
         isProactiveChatRunning: false,
+        _proactiveSchedulerInitialized: false,
         proactiveChatInterval: 30,
         proactiveVisionFrameTimer: null,
         proactiveVisionInterval: 15,
