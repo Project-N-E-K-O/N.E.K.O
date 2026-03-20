@@ -179,24 +179,43 @@ async function autoSaveCatgirlField(input, catgirlName) {
 
 // 为输入框添加自动保存监听器
 function attachAutoSaveListener(input, type, catgirlName) {
-    // 音色设定不需要自动保存
     if (input.name === 'voice_id') return;
 
-    // 每次都刷新原始值基线（即使监听器已挂载，re-render 后值可能变化）
     storeOriginalValue(input);
 
     if (input.dataset.autoSaveAttached === 'true') return;
     input.dataset.autoSaveAttached = 'true';
     
-    // 监听焦点离开事件
-    input.addEventListener('blur', function() {
-        if (hasInputChanged(input)) {
-            if (type === 'master') {
-                autoSaveMasterField(input);
-            } else if (type === 'catgirl' && catgirlName) {
-                autoSaveCatgirlField(input, catgirlName);
-            }
+    input.addEventListener('blur', function(e) {
+        if (!hasInputChanged(input)) return;
+        
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget) {
+            const isCancelButton = relatedTarget.id === 'cancel-master-btn' || 
+                                   relatedTarget.id === 'cancel-button' ||
+                                   relatedTarget.closest('#cancel-master-btn') ||
+                                   relatedTarget.closest('#cancel-button');
+            if (isCancelButton) return;
         }
+        
+        setTimeout(() => {
+            const activeEl = document.activeElement;
+            if (activeEl) {
+                const isCancelButton = activeEl.id === 'cancel-master-btn' || 
+                                       activeEl.id === 'cancel-button' ||
+                                       activeEl.closest('#cancel-master-btn') ||
+                                       activeEl.closest('#cancel-button');
+                if (isCancelButton) return;
+            }
+            
+            if (hasInputChanged(input)) {
+                if (type === 'master') {
+                    autoSaveMasterField(input);
+                } else if (type === 'catgirl' && catgirlName) {
+                    autoSaveCatgirlField(input, catgirlName);
+                }
+            }
+        }, 0);
     });
 }
 
@@ -3033,26 +3052,143 @@ window.addEventListener('unload', () => {
 const masterSaveBtn = document.querySelector('#master-form button[type="submit"]');
 if (masterSaveBtn) masterSaveBtn.classList.add('sm');
 
+// 检查是否有未保存的改动
+function hasUnsavedChanges() {
+    const masterForm = document.getElementById('master-form');
+    if (masterForm) {
+        const masterInputs = masterForm.querySelectorAll('input, textarea');
+        for (const input of masterInputs) {
+            if (hasInputChanged(input)) {
+                return true;
+            }
+        }
+    }
+
+    const catgirlBlocks = document.querySelectorAll('.catgirl-block');
+    for (const block of catgirlBlocks) {
+        const form = block.querySelector('form');
+        if (form) {
+            const inputs = form.querySelectorAll('input, textarea');
+            for (const input of inputs) {
+                if (hasInputChanged(input)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+// 保存所有未保存的改动
+async function saveAllUnsavedChanges() {
+    const savePromises = [];
+
+    const masterForm = document.getElementById('master-form');
+    if (masterForm) {
+        const masterInputs = masterForm.querySelectorAll('input, textarea');
+        const changedInputs = [];
+        masterInputs.forEach(input => {
+            if (hasInputChanged(input) && input.name) {
+                changedInputs.push(input);
+            }
+        });
+
+        if (changedInputs.length > 0) {
+            const data = {};
+            for (const [k, v] of new FormData(masterForm).entries()) {
+                if (k && v) data[k] = v;
+            }
+
+            if (data['档案名']) {
+                savePromises.push(
+                    fetch('/api/characters/master', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    }).then(response => {
+                        if (response.ok) {
+                            masterInputs.forEach(inp => {
+                                if (inp.name) storeOriginalValue(inp);
+                            });
+                            const saveBtn = masterForm.querySelector('#save-master-btn');
+                            const cancelBtn = masterForm.querySelector('#cancel-master-btn');
+                            if (saveBtn) saveBtn.style.display = 'none';
+                            if (cancelBtn) cancelBtn.style.display = 'none';
+                            showAutoSaveToast();
+                        }
+                    }).catch(err => console.error('自动保存主人设定失败:', err))
+                );
+            }
+        }
+    }
+
+    const catgirlBlocks = document.querySelectorAll('.catgirl-block');
+    catgirlBlocks.forEach(block => {
+        const form = block.querySelector('form');
+        const catgirlName = block.dataset.key;
+        if (!form || !catgirlName) return;
+
+        const inputs = form.querySelectorAll('input, textarea');
+        const changedInputs = [];
+        inputs.forEach(input => {
+            if (hasInputChanged(input) && input.name && input.name !== '档案名') {
+                changedInputs.push(input);
+            }
+        });
+
+        if (changedInputs.length > 0) {
+            const ALL_RESERVED_FIELDS = ['档案名', ...getAllReservedFields()];
+            const data = { '档案名': catgirlName };
+            inputs.forEach(inp => {
+                if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
+                    data[inp.name] = inp.value;
+                }
+            });
+
+            savePromises.push(
+                fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                }).then(response => {
+                    if (response.ok) {
+                        inputs.forEach(inp => {
+                            if (inp.name) storeOriginalValue(inp);
+                        });
+                        const saveBtn = form.querySelector('#save-button');
+                        const cancelBtn = form.querySelector('#cancel-button');
+                        if (saveBtn) saveBtn.style.display = 'none';
+                        if (cancelBtn) cancelBtn.style.display = 'none';
+                        showAutoSaveToast();
+                    }
+                }).catch(err => console.error(`自动保存猫娘 ${catgirlName} 设定失败:`, err))
+            );
+        }
+    });
+
+    if (savePromises.length > 0) {
+        await Promise.all(savePromises);
+    }
+}
+
 // 关闭角色管理页面
-function closeCharaManagerPage() {
+async function closeCharaManagerPage() {
+    if (hasUnsavedChanges()) {
+        await saveAllUnsavedChanges();
+    }
+
     if (window.opener) {
-        // 如果是通过 window.open() 打开的，直接关闭
         window.close();
     } else if (window.parent && window.parent !== window) {
-        // 如果在 iframe 中，通知父窗口关闭
         window.parent.postMessage({ type: 'close_chara_manager' }, window.location.origin);
     } else {
-        // 否则尝试关闭窗口
-        // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭
-        // 在这种情况下，可以尝试返回上一页或显示提示
         if (window.history.length > 1) {
             window.history.back();
         } else {
             window.close();
-            // 如果 window.close() 失败（页面仍然存在），可以显示提示
             setTimeout(() => {
                 if (!window.closed) {
-                    // 窗口未能关闭，返回主页
                     window.location.href = '/';
                 }
             }, 100);
