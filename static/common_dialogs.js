@@ -500,13 +500,13 @@
 })();
 
 /**
- * 禁用浏览器缩放快捷键
- * 阻止 Ctrl+/Ctrl- 和 Ctrl+滚轮 缩放页面
+ * 禁用浏览器缩放和关闭标签页快捷键
+ * 阻止 Ctrl+/Ctrl-、Ctrl+滚轮 和 Ctrl/Cmd+W 关闭标签页
  */
 (function() {
     'use strict';
     
-    // 禁用 Ctrl+/- 和 Ctrl+0 键盘快捷键
+    // 禁用 Ctrl+/-、Ctrl+0 和 Ctrl/Cmd+W 键盘快捷键
     document.addEventListener('keydown', function(event) {
         // 检测 Ctrl 或 Cmd 键（Mac）
         if (event.ctrlKey || event.metaKey) {
@@ -515,7 +515,9 @@
                 event.key === '=' || 
                 event.key === '-' || 
                 event.key === '_' || 
-                event.key === '0') {
+                event.key === '0' ||
+                event.key === 'w' ||
+                event.key === 'W') {
                 event.preventDefault();
                 return false;
             }
@@ -546,7 +548,7 @@
         return false;
     }, { passive: false });
     
-    console.log('页面缩放快捷键已禁用');
+    console.log('页面缩放及关闭标签页快捷键已禁用');
 })();
 
 /**
