@@ -626,23 +626,25 @@ def test_core_base_enable_file_logging_branch(monkeypatch: pytest.MonkeyPatch, t
 
 @pytest.mark.asyncio
 async def test_core_config_remaining_error_paths() -> None:
+    from plugin.sdk_v2.shared.models.exceptions import ValidationError as _VE2, TransportError as _TE2
+    _CfgErr = (_VE2, _TE2)
     cfg = core_config.PluginConfig(_CtxOk())
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg.get("leaf", timeout=0)
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg.require("leaf", timeout=0)
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg.set("leaf", 1, timeout=0)
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg.update({"x": 1}, timeout=0)
 
     class _CtxUpdateBad(_CtxOk):
         async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0) -> object:
             raise ValueError("bad")
 
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await core_config.PluginConfig(_CtxUpdateBad()).set("x", 1)
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await core_config.PluginConfig(_CtxUpdateBad()).update({"x": 1})
 
     class _CtxDumpBad(_CtxOk):
@@ -650,11 +652,11 @@ async def test_core_config_remaining_error_paths() -> None:
             return "bad"
 
     cfg_bad = core_config.PluginConfig(_CtxDumpBad())
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg_bad.get("x")
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg_bad.require("x")
-    with pytest.raises(Exception):
+    with pytest.raises(_CfgErr):
         await cfg_bad.set("x", 1)
 
 
