@@ -127,6 +127,7 @@ class MMDExpression {
      * 批量设置 morph 权重
      */
     setMorphWeights(weightsMap) {
+        if (!weightsMap) return;
         for (const [name, weight] of Object.entries(weightsMap)) {
             this.setMorphWeight(name, weight);
         }
@@ -155,8 +156,13 @@ class MMDExpression {
         if (!emotion) return;
 
         if (emotion === 'neutral') {
+            if (this.neutralReturnTimer) {
+                clearTimeout(this.neutralReturnTimer);
+                this.neutralReturnTimer = null;
+            }
             this._clearEmotionMorphs();
             this.currentMood = 'neutral';
+            this.manualExpressionInProgress = null;
             return;
         }
 

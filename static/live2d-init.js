@@ -24,23 +24,34 @@ window.live2dManager.onModelLoaded = (model) => {
 // 兼容性：保持原有的全局变量，但增加 VRM/Live2D 双模态调度逻辑
 window.LanLan1 = window.LanLan1 || {};
 
+// 根据 lanlan_config 判断当前活跃的模型类型
+function _getActiveModelType() {
+    const cfg = window.lanlan_config;
+    if (!cfg) return 'live2d';
+    const modelType = (cfg.model_type || '').toLowerCase();
+    if (modelType === 'live3d') {
+        const sub = (cfg.live3d_sub_type || '').toLowerCase();
+        return sub === 'mmd' ? 'mmd' : sub === 'vrm' ? 'vrm' : 'live2d';
+    }
+    if (modelType === 'vrm') return 'vrm';
+    return 'live2d';
+}
+
 // 1. 表情控制 (setEmotion / playExpression)
 window.LanLan1.setEmotion = function(emotion) {
-    // 优先检查 MMD 模式
-    if (window.mmdManager && window.mmdManager.currentModel) {
-        if (window.mmdManager.expression) {
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) {
             window.mmdManager.expression.setEmotion(emotion);
         }
         return;
     }
-    // 检查 VRM 模式
-    if (window.vrmManager && window.vrmManager.currentModel) {
-        if (window.vrmManager.expression) {
+    if (activeType === 'vrm') {
+        if (window.vrmManager && window.vrmManager.expression) {
             window.vrmManager.expression.setMood(emotion);
         }
         return;
     }
-    
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);
@@ -52,9 +63,9 @@ window.LanLan1.playExpression = window.LanLan1.setEmotion;
 
 // 2. 动作控制 (playMotion)
 window.LanLan1.playMotion = function(group, no, priority) {
+    const activeType = _getActiveModelType();
     // MMD/VRM 模式下忽略 Live2D 的动作指令
-    if (window.mmdManager && window.mmdManager.currentModel) return;
-    if (window.vrmManager && window.vrmManager.currentModel) return;
+    if (activeType === 'mmd' || activeType === 'vrm') return;
 
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
@@ -64,28 +75,30 @@ window.LanLan1.playMotion = function(group, no, priority) {
 
 // 3. 清除表情/特效
 window.LanLan1.clearEmotionEffects = function() {
-    if (window.mmdManager && window.mmdManager.currentModel) {
-        if (window.mmdManager.expression) window.mmdManager.expression.resetAll();
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) window.mmdManager.expression.resetAll();
         return;
     }
-    if (window.vrmManager && window.vrmManager.currentModel) {
-        if (window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
+    if (activeType === 'vrm') {
+        if (window.vrmManager && window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
         return;
     }
     if (window.live2dManager) window.live2dManager.clearEmotionEffects();
 };
 
 window.LanLan1.clearExpression = function() {
-    if (window.mmdManager && window.mmdManager.currentModel) return;
-    if (window.vrmManager && window.vrmManager.currentModel) return;
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd' || activeType === 'vrm') return;
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
 
 // 4. 嘴型控制
 window.LanLan1.setMouth = function(value) {
+    const activeType = _getActiveModelType();
     // MMD 嘴型：通过 morph target 控制
-    if (window.mmdManager && window.mmdManager.currentModel) {
-        if (window.mmdManager.expression) {
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) {
             window.mmdManager.expression.setMorphWeight('あ', value);
         }
         return;

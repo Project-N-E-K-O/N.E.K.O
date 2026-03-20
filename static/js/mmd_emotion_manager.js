@@ -508,7 +508,9 @@
             }
         } catch (error) {
             console.error('加载情感映射配置失败:', error);
-            applyDefaultConfig();
+            if (selectionId == null || selectionId === currentSelectionId) {
+                applyDefaultConfig();
+            }
         }
     }
 
@@ -572,9 +574,12 @@
             if (data.success) {
                 showStatus(t('mmdEmotionManager.configSaveSuccess', '配置保存成功！'), 'success');
 
-                // 通知父窗口重新加载 moodMap
+                // 通知父窗口重新加载 moodMap（仅当父窗口当前模型与编辑的模型一致时）
                 if (window.opener && !window.opener.closed && window.opener.mmdManager && window.opener.mmdManager.expression) {
-                    window.opener.mmdManager.expression.loadMoodMap(currentModelInfo.name);
+                    const parentModel = window.opener.mmdManager.currentModel;
+                    if (parentModel && parentModel.name === currentModelInfo.name) {
+                        window.opener.mmdManager.expression.loadMoodMap(currentModelInfo.name);
+                    }
                 }
             } else {
                 showStatus(t('mmdEmotionManager.saveFailed', '保存失败') + ': ' + (data.error || t('common.unknownError', '未知错误')), 'error');

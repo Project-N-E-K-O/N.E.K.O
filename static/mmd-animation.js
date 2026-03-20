@@ -236,7 +236,7 @@ class MMDAnimation {
         if (!audioElement) return;
 
         try {
-            if (!this._audioContext) {
+            if (!this._audioContext || this._audioContext.state === 'closed') {
                 this._audioContext = new (window.AudioContext || window.webkitAudioContext)();
             }
 
@@ -259,7 +259,13 @@ class MMDAnimation {
             this._analyser.fftSize = 256;
             this._analyser.smoothingTimeConstant = 0.8;
 
-            this._audioSource = this._audioContext.createMediaElementSource(audioElement);
+            // 使用 captureStream 避免 createMediaElementSource 的单次绑定限制
+            if (audioElement.captureStream) {
+                const stream = audioElement.captureStream();
+                this._audioSource = this._audioContext.createMediaStreamSource(stream);
+            } else {
+                this._audioSource = this._audioContext.createMediaElementSource(audioElement);
+            }
             this._lipSyncAudioElement = audioElement;
             this._audioSource.connect(this._analyser);
             this._analyser.connect(this._audioContext.destination);
