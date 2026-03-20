@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
 import multiprocessing
+from utils.port_utils import set_port_probe_reuse
 freeze_support()
 
 # 设置 multiprocessing 启动方法（确保跨进程共享结构的一致性）
@@ -1152,6 +1153,7 @@ def _is_port_available(port: int) -> bool:
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        set_port_probe_reuse(sock)
         sock.bind(("127.0.0.1", port))
         return True
     except OSError:
@@ -1232,11 +1234,16 @@ if __name__ == "__main__":
     print(f"启动配置: {get_start_config()}")
 
     # 2) 信号处理：Ctrl+C 时快速关闭
+    _shutdown_state = {"signal_count": 0}
+
     def _signal_handler(signum, frame):
+        _shutdown_state["signal_count"] += 1
+        if _shutdown_state["signal_count"] > 1:
+            logger.warning("收到第二次关闭信号，立即强制退出。")
+            os._exit(130)
         logger.info("正在关闭服务器...")
         cleanup()
         server.should_exit = True
-        threading.Timer(3.0, lambda: os._exit(0)).start()
     
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
