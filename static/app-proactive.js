@@ -416,26 +416,26 @@
                     var captureTurnId = result.turn_id || 'fallback';
                     var processed = _processProactiveLinks(result.source_links || [], dispatchedTrackUrl);
 
-                    // 1. 如果有表情包且满足模式，立即显示 (使用已处理的 safeUrl)
+                    // 暂存待展示附件，等待对应的 turn_id 建立后统一 flush
+                    if (!window._proactiveAttachmentBuffer) {
+                        window._proactiveAttachmentBuffer = {};
+                    }
+                    if (!window._proactiveAttachmentBuffer[captureTurnId]) {
+                        window._proactiveAttachmentBuffer[captureTurnId] = { memes: [], links: [] };
+                    }
+                    
                     if (result.source_mode === 'meme' && processed.memeLinks.length > 0) {
                         var MAX_MEME_BUBBLES = 2;
-                        var memesToShow = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
-                        (function waitForTurnReady(retriesLeft) {
-                            if (window.realisticGeminiCurrentTurnId === captureTurnId) {
-                                _showMemeBubbles(memesToShow, captureTurnId);
-                                return;
-                            }
-                            if (retriesLeft > 0) {
-                                setTimeout(function () { waitForTurnReady(retriesLeft - 1); }, 150);
-                            }
-                        })(20); // 最长等待约 3 秒
+                        window._proactiveAttachmentBuffer[captureTurnId].memes = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
+                    }
+                    
+                    if (processed.otherLinks.length > 0) {
+                        window._proactiveAttachmentBuffer[captureTurnId].links = processed.otherLinks;
                     }
 
-                    // 2. 无论模式，外部链接卡片延迟 3s 显示
-                    if (processed.otherLinks.length > 0) {
-                        setTimeout(function () {
-                            _showProactiveSourceCards(processed.otherLinks, captureTurnId);
-                        }, 3000);
+                    // 如果当前 turn 已经就绪（例如主动搭话回复极快），直接 flush
+                    if (window.realisticGeminiCurrentTurnId === captureTurnId) {
+                        _flushProactiveAttachments(captureTurnId);
                     }
 
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
@@ -450,6 +450,33 @@
         }
     }
     mod.triggerProactiveChat = triggerProactiveChat;
+
+    // ======================== attachment buffering ========================
+
+    /**
+     * 统一 flush 对应 turn_id 的主动搭话附件（表情包、来源卡片）
+     */
+    function _flushProactiveAttachments(turnId) {
+        if (!window._proactiveAttachmentBuffer || !window._proactiveAttachmentBuffer[turnId]) {
+            return; // 没有待展示的附件
+        }
+        
+        var attachments = window._proactiveAttachmentBuffer[turnId];
+        
+        if (attachments.memes && attachments.memes.length > 0) {
+            _showMemeBubbles(attachments.memes, turnId);
+        }
+        
+        if (attachments.links && attachments.links.length > 0) {
+            setTimeout(function () {
+                _showProactiveSourceCards(attachments.links, turnId);
+            }, 3000);
+        }
+        
+        // flush 后清理 buffer
+        delete window._proactiveAttachmentBuffer[turnId];
+    }
+    mod._flushProactiveAttachments = _flushProactiveAttachments;
 
     // ======================== source link card ========================
 

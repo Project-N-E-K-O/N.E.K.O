@@ -237,6 +237,10 @@
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
+                        // 如果有暂存的主动搭话附件，立即展示
+                        if (window.appProactive && typeof window.appProactive._flushProactiveAttachments === 'function') {
+                            window.appProactive._flushProactiveAttachments(response.turn_id);
+                        }
                     }
 
                 // -------- response_discarded --------

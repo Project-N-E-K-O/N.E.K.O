@@ -541,12 +541,12 @@ class LLMSessionManager:
                         self._respawn_tts_worker()
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
-        """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
+        """Qwen输出转录回调: 可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 text = self.emotion_pattern.sub('', text)
 
-                # 优先使用传入的 turn_id，兜底使用当前会话记录的 speech_id (即 turn id)
+                # 优先使用传入的 turn_id, 兜底使用当前会话记录的 speech_id (即 turn id)
                 effective_turn_id = turn_id or self.current_speech_id
 
                 message = {
