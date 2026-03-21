@@ -24,9 +24,11 @@ class MMDAnimation {
 
         // 口型同步
         this._lipSyncEnabled = false;
+        this._lipSyncActive = false;
         this._audioContext = null;
         this._analyser = null;
         this._audioSource = null;
+        this._lipSyncAudioElement = null;
 
         // 骨骼缓存（用于 IK/Grant 更新时保存/恢复）
         this._boneBackup = null;
@@ -284,7 +286,7 @@ class MMDAnimation {
         this._analyser.getByteFrequencyData(dataArray);
 
         // 计算人声频率范围（80-600Hz）的平均响度
-        const sampleRate = this._audioContext.sampleRate;
+        const sampleRate = this._audioContext ? this._audioContext.sampleRate : 48000;
         const binWidth = sampleRate / this._analyser.fftSize;
         const lowBin = Math.floor(80 / binWidth);
         const highBin = Math.min(Math.ceil(600 / binWidth), dataArray.length - 1);
@@ -298,7 +300,37 @@ class MMDAnimation {
 
         const average = count > 0 ? sum / count : 0;
         // 归一化到 0-1 范围
-        return Math.min(1, Math.max(0, (average - 20) / 180));
+        const value = Math.min(1, Math.max(0, (average - 20) / 180));
+        
+        if (window.DEBUG_AUDIO && value > 0.1) {
+            console.log('[MMD Animation] getLipSyncValue:', value, 'average:', average);
+        }
+        return value;
+    }
+
+    // ═══════════════════ 兼容 VRMAnimation 的口型同步 API ═══════════════════
+
+    startLipSync(analyser) {
+        console.log('[MMD Animation] startLipSync 被调用', { 
+            hasAnalyser: !!analyser, 
+            hasManager: !!this.manager,
+            hasExpression: !!this.manager.expression 
+        });
+        if (analyser) {
+            this._analyser = analyser;
+        }
+        this._lipSyncActive = true;
+        this._lipSyncEnabled = true;
+        console.log('[MMD Animation] 口型同步已启动 (startLipSync)');
+    }
+
+    stopLipSync() {
+        this._lipSyncActive = false;
+        this._lipSyncEnabled = false;
+        if (this.manager.expression) {
+            this.manager.expression.setMouth(0);
+        }
+        console.log('[MMD Animation] 口型同步已停止 (stopLipSync)');
     }
 
     // ═══════════════════ 清理 ═══════════════════
@@ -339,6 +371,8 @@ class MMDAnimation {
             this._audioContext = null;
         }
         this._lipSyncEnabled = false;
+        this._lipSyncActive = false;
+        this._lipSyncAudioElement = null;
 
         console.log('[MMD Animation] 资源已清理');
     }
