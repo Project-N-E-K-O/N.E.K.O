@@ -329,8 +329,8 @@ async def save_conversation_settings(request: Request):
     """保存全局对话设置（同步到 user_preferences.json 备份）"""
     try:
         data = await request.json()
-        if not data:
-            return {"success": False, "error": "无效的数据"}
+        if not isinstance(data, dict):
+            return {"success": False, "error": "请求体必须为对象"}
 
         if save_global_conversation_settings(data):
             return {"success": True, "message": "对话设置已保存"}
