@@ -372,7 +372,7 @@
     // ======================== syncFloatingScreenButtonState ========================
     function syncFloatingScreenButtonState(isActive) {
         // 更新所有存在的 manager 的按钮状态
-        var managers = [window.live2dManager, window.vrmManager];
+        var managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (var i = 0; i < managers.length; i++) {
             var manager = managers[i];

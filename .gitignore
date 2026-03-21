@@ -35,6 +35,7 @@ lanlan_frd.exe
 
 # 忽略临时文件
 *.tmp
+*.bak
 
 # 忽略 Python 缓存文件和字节码
 __pycache__/

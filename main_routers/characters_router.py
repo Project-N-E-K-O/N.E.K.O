@@ -394,23 +394,30 @@ async def update_catgirl_l2d(name: str, request: Request):
         data = await request.json()
         live2d_model = data.get('live2d')
         vrm_model = data.get('vrm')
+        mmd_model = data.get('mmd')
         model_type = data.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
         item_id = data.get('item_id')  # 获取可选的item_id
         vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
+        mmd_animation = data.get('mmd_animation')  # 获取可选的MMD动作
+        mmd_idle_animation = data.get('mmd_idle_animation')  # 获取可选的MMD待机动作
 
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
         
-        # 【修复】model_type 只允许 {live2d, vrm}，否则 400
-        if model_type_str not in ['live2d', 'vrm']:
+        # 【修复】model_type 只允许 {live2d, vrm, live3d}，否则 400
+        if model_type_str not in ['live2d', 'vrm', 'live3d']:
             return JSONResponse(
                 content={
                     'success': False,
-                    'error': f'无效的模型类型: {model_type}，只允许 live2d 或 vrm'
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d、vrm 或 live3d'
                 },
                 status_code=400
             )
+        
+        # 归一化：旧客户端发送的 'vrm' 统一为 'live3d'（走 Live3D VRM 子分支处理）
+        if model_type_str == 'vrm':
+            model_type_str = 'live3d'
         
         if model_type_str == 'vrm':
             if not vrm_model:
@@ -458,6 +465,34 @@ async def update_catgirl_l2d(name: str, request: Request):
             
             # 使用验证后的值
             vrm_model = vrm_model_str
+        elif model_type_str == 'live3d':
+            # Live3D 模式：接受 VRM 或 MMD 模型
+            if vrm_model and mmd_model:
+                return JSONResponse(content={'success': False, 'error': '不能同时提供VRM和MMD模型，请选择其中一个'}, status_code=400)
+            if vrm_model:
+                # 验证 VRM 路径
+                vrm_model_str = str(vrm_model).strip()
+                if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含URL方案'}, status_code=400)
+                if '..' in vrm_model_str:
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径不能包含路径遍历（..）'}, status_code=400)
+                allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+                if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'}, status_code=400)
+                vrm_model = vrm_model_str
+            elif mmd_model:
+                # 验证 MMD 路径
+                mmd_model_str = str(mmd_model).strip()
+                if '://' in mmd_model_str or mmd_model_str.startswith('data:'):
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含URL方案'}, status_code=400)
+                if '..' in mmd_model_str:
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径不能包含路径遍历（..）'}, status_code=400)
+                allowed_mmd_prefixes = ['/user_mmd/', '/static/mmd/']
+                if not any(mmd_model_str.startswith(prefix) for prefix in allowed_mmd_prefixes):
+                    return JSONResponse(content={'success': False, 'error': 'MMD模型路径必须以 /user_mmd/ 或 /static/mmd/ 开头'}, status_code=400)
+                mmd_model = mmd_model_str
+            else:
+                return JSONResponse(content={'success': False, 'error': '未提供VRM或MMD模型路径'}, status_code=400)
         else:
             if not live2d_model:
                 return JSONResponse(
@@ -576,10 +611,94 @@ async def update_catgirl_l2d(name: str, request: Request):
                     
                     set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
                     logger.debug(f"已保存角色 {name} 的VRM待机动作 {idle_animation_str}")
+        elif model_type_str == 'live3d':
+            # Live3D 模式：清理 live2d 字段
+            set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'model_path', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'asset_source_id', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live3d')
+            
+            if vrm_model:
+                # Live3D + VRM：设置 VRM 路径，清空 MMD 路径
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', vrm_model)
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+                
+                # 处理 VRM 动画（复用同样的验证逻辑）
+                if 'vrm_animation' in data:
+                    if vrm_animation is None or vrm_animation == '':
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
+                    else:
+                        vrm_animation_str = str(vrm_animation).strip()
+                        if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含URL方案'}, status_code=400)
+                        if '..' in vrm_animation_str:
+                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径不能包含路径遍历（..）'}, status_code=400)
+                        allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                        if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                            return JSONResponse(content={'success': False, 'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', vrm_animation_str)
+                
+                if 'idle_animation' in data:
+                    if idle_animation is None or idle_animation == '':
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                    else:
+                        idle_animation_str = str(idle_animation).strip()
+                        if '://' in idle_animation_str or idle_animation_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含URL方案'}, status_code=400)
+                        if '..' in idle_animation_str:
+                            return JSONResponse(content={'success': False, 'error': '待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                        if not any(idle_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                            return JSONResponse(content={'success': False, 'error': '待机动作路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', idle_animation_str)
+                
+                logger.debug(f"已保存角色 {name} 的Live3D(VRM)模型 {vrm_model}")
+            elif mmd_model:
+                # Live3D + MMD：设置 MMD 路径，清空 VRM 路径
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
+                
+                # 处理 MMD 动画
+                if 'mmd_animation' in data:
+                    if mmd_animation is None or mmd_animation == '':
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
+                    else:
+                        mmd_animation_str = str(mmd_animation).strip()
+                        if '://' in mmd_animation_str or mmd_animation_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含URL方案'}, status_code=400)
+                        if '..' in mmd_animation_str:
+                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径不能包含路径遍历（..）'}, status_code=400)
+                        allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
+                        if not any(mmd_animation_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                            return JSONResponse(content={'success': False, 'error': 'MMD动画路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', mmd_animation_str)
+                
+                if 'mmd_idle_animation' in data:
+                    if mmd_idle_animation is None or mmd_idle_animation == '':
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
+                    else:
+                        mmd_idle_str = str(mmd_idle_animation).strip()
+                        if '://' in mmd_idle_str or mmd_idle_str.startswith('data:'):
+                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含URL方案'}, status_code=400)
+                        if '..' in mmd_idle_str:
+                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径不能包含路径遍历（..）'}, status_code=400)
+                        allowed_mmd_anim_prefixes = ['/user_mmd/animation/', '/static/mmd/animation/']
+                        if not any(mmd_idle_str.startswith(prefix) for prefix in allowed_mmd_anim_prefixes):
+                            return JSONResponse(content={'success': False, 'error': 'MMD待机动作路径必须以 /user_mmd/animation/ 或 /static/mmd/animation/ 开头'}, status_code=400)
+                        set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', mmd_idle_str)
+                
+                logger.debug(f"已保存角色 {name} 的Live3D(MMD)模型 {mmd_model}")
         else:
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
             set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)  # 清理 VRM 打光配置
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', '')
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'animation', None)
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'idle_animation', '')
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
             normalized_live2d = str(live2d_model).strip().replace('\\', '/')
@@ -614,6 +733,10 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         if model_type_str == 'vrm':
             message = f'已更新角色 {name} 的VRM模型为 {vrm_model}'
+        elif model_type_str == 'live3d':
+            active_model = vrm_model or mmd_model
+            sub_type = 'VRM' if vrm_model else 'MMD'
+            message = f'已更新角色 {name} 的Live3D({sub_type})模型为 {active_model}'
         else:
             message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
         
@@ -743,8 +866,8 @@ async def update_catgirl_lighting(name: str, request: Request):
         )
         # 统一做 .lower() 处理，避免大小写/空值导致误判
         model_type_normalized = str(model_type).lower() if model_type else 'live2d'
-        if model_type_normalized != 'vrm':
-            logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
+        if model_type_normalized not in ('vrm', 'live3d'):
+            logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
         
         from config import get_default_vrm_lighting
         existing_lighting = get_reserved(
@@ -831,6 +954,139 @@ async def update_catgirl_lighting(name: str, request: Request):
             'error': str(e)
         }, status_code=500)
 
+
+@router.put('/catgirl/{name}/mmd_settings')
+async def update_catgirl_mmd_settings(name: str, request: Request):
+    """更新指定角色的MMD模型设置（光照、渲染、物理、鼠标跟踪）"""
+    def _to_bool(val):
+        if isinstance(val, bool): return val
+        if isinstance(val, str): return val.lower() in ('true', '1', 'yes')
+        return bool(val)
+
+    try:
+        data = await request.json()
+
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        if '猫娘' not in characters or name not in characters['猫娘']:
+            return JSONResponse(content={
+                'success': False,
+                'error': '角色不存在'
+            }, status_code=404)
+
+        from config import (
+            get_default_mmd_settings,
+            MMD_LIGHTING_RANGES,
+            MMD_RENDERING_RANGES,
+            MMD_PHYSICS_RANGES,
+            MMD_CURSOR_FOLLOW_RANGES,
+        )
+
+        defaults = get_default_mmd_settings()
+
+        # --- 光照 ---
+        if 'lighting' in data and isinstance(data['lighting'], dict):
+            lighting = {**defaults['lighting'], **data['lighting']}
+            for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
+                if key in lighting:
+                    val = lighting[key]
+                    if isinstance(val, (int, float)):
+                        lighting[key] = max(min_val, min(max_val, float(val)))
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
+
+        # --- 渲染 ---
+        if 'rendering' in data and isinstance(data['rendering'], dict):
+            rendering = {**defaults['rendering'], **data['rendering']}
+            for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
+                if key in rendering:
+                    val = rendering[key]
+                    if isinstance(val, (int, float)):
+                        rendering[key] = max(min_val, min(max_val, float(val)))
+            if 'outline' in rendering:
+                rendering['outline'] = _to_bool(rendering['outline'])
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
+
+        # --- 物理 ---
+        if 'physics' in data and isinstance(data['physics'], dict):
+            physics = {**defaults['physics'], **data['physics']}
+            if 'enabled' in physics:
+                physics['enabled'] = _to_bool(physics['enabled'])
+            for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
+                if key in physics:
+                    val = physics[key]
+                    if isinstance(val, (int, float)):
+                        physics[key] = max(min_val, min(max_val, float(val)))
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
+
+        # --- 鼠标跟踪 ---
+        # 前端发送 camelCase（cursorFollow），兼容 snake_case（cursor_follow）
+        cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
+        if cursor_follow_data and isinstance(cursor_follow_data, dict):
+            cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
+            for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
+                if key in cursor_follow:
+                    val = cursor_follow[key]
+                    if isinstance(val, (int, float)):
+                        cursor_follow[key] = max(min_val, min(max_val, float(val)))
+            if 'enabled' in cursor_follow:
+                cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
+            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
+
+        _config_manager.save_characters(characters)
+
+        logger.info("已保存角色 %s 的MMD模型设置", name)
+        return JSONResponse(content={
+            'success': True,
+            'message': f'已保存角色 {name} 的MMD模型设置'
+        })
+
+    except Exception as e:
+        logger.error(f"保存MMD设置失败: {e}")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
+
+
+@router.get('/catgirl/{name}/mmd_settings')
+async def get_catgirl_mmd_settings(name: str):
+    """获取指定角色的MMD模型设置"""
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        if '猫娘' not in characters or name not in characters['猫娘']:
+            return JSONResponse(content={
+                'success': False,
+                'error': '角色不存在'
+            }, status_code=404)
+
+        from config import get_default_mmd_settings
+        defaults = get_default_mmd_settings()
+
+        lighting = get_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', default=None)
+        rendering = get_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', default=None)
+        physics = get_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', default=None)
+        cursor_follow = get_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', default=None)
+
+        return JSONResponse(content={
+            'success': True,
+            'settings': {
+                'lighting': lighting if isinstance(lighting, dict) else defaults['lighting'],
+                'rendering': rendering if isinstance(rendering, dict) else defaults['rendering'],
+                'physics': physics if isinstance(physics, dict) else defaults['physics'],
+                # 使用 camelCase 与前端保持一致
+                'cursorFollow': cursor_follow if isinstance(cursor_follow, dict) else defaults['cursor_follow'],
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"获取MMD设置失败: {e}")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
 
 
 @router.put('/catgirl/voice_id/{name}')
@@ -1224,6 +1480,19 @@ async def update_catgirl(name: str, request: Request):
     if voice_id_in_payload:
         requested_voice_id = str(raw_data.get('voice_id') or '').strip()
 
+    # 兼容前端自动修复：允许通过通用接口修改 model_type 保留字段。
+    model_type_in_payload = 'model_type' in raw_data
+    requested_model_type = ''
+    if model_type_in_payload:
+        requested_model_type = str(raw_data.get('model_type') or '').strip().lower()
+        if requested_model_type == 'vrm':
+            requested_model_type = 'live3d'
+        if requested_model_type and requested_model_type not in ('live2d', 'live3d'):
+            return JSONResponse(
+                {'success': False, 'error': f'无效的模型类型: {requested_model_type}，只允许 live2d 或 live3d'},
+                status_code=400,
+            )
+
     data = _filter_mutable_catgirl_fields(raw_data)
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
@@ -1260,6 +1529,10 @@ async def update_catgirl(name: str, request: Request):
     if voice_id_in_payload:
         set_reserved(characters['猫娘'][name], 'voice_id', requested_voice_id)
 
+    # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
+    if model_type_in_payload and requested_model_type:
+        set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+
     _config_manager.save_characters(characters)
 
     new_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
@@ -1267,7 +1540,7 @@ async def update_catgirl(name: str, request: Request):
 
     # 显式记录被过滤的保留字段，避免“被吞掉”无感知。
     ignored_reserved_fields = sorted(
-        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id'}
+        (set(raw_data.keys()) & CHARACTER_RESERVED_FIELD_SET) - {'voice_id', 'model_type'}
     )
     if ignored_reserved_fields:
         logger.info(

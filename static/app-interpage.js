@@ -82,6 +82,18 @@
             .forEach(function (el) { el.remove(); });
     }
 
+    /**
+     * Remove MMD overlay UI elements.
+     */
+    function cleanupMMDOverlayUI() {
+        if (window.mmdManager && typeof window.mmdManager.cleanupFloatingButtons === 'function') {
+            window.mmdManager.cleanupFloatingButtons();
+            return;
+        }
+        document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container')
+            .forEach(function (el) { el.remove(); });
+    }
+
     // =====================================================================
     // Shared: memory-edited session reset logic
     // =====================================================================
@@ -203,6 +215,7 @@
             if (data.success) {
                 var newModelPath = data.model_path || '';
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
+                var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
 
                 console.log('[Model] 模型切换:', {
@@ -227,21 +240,20 @@
                 }
 
                 // Cross-type switch: clean up the old overlay
-                if (oldModelType !== newModelType) {
-                    if (newModelType === 'vrm') {
-                        cleanupLive2DOverlayUI();
-                    } else {
+                var oldLive3dSubType = (window.lanlan_config?.live3d_sub_type || '').toLowerCase();
+                var typeChanged = oldModelType !== newModelType ||
+                    (newModelType === 'live3d' && oldLive3dSubType !== live3dSubType);
+                if (typeChanged) {
+                    if (oldModelType === 'live2d') cleanupLive2DOverlayUI();
+                    if (oldModelType === 'vrm') cleanupVRMOverlayUI();
+                    if (oldModelType === 'live3d') {
                         cleanupVRMOverlayUI();
+                        cleanupMMDOverlayUI();
                     }
                 }
 
-                // 2. Update global config
-                if (window.lanlan_config) {
-                    window.lanlan_config.model_type = newModelType;
-                }
-
                 // 3. Switch based on model type
-                if (newModelType === 'vrm') {
+                if (newModelType === 'vrm' || (newModelType === 'live3d' && live3dSubType === 'vrm')) {
                     window.vrmModel = newModelPath;
                     window.cubism4Model = '';
 
@@ -251,6 +263,24 @@
                     if (live2dContainer) {
                         live2dContainer.style.display = 'none';
                         live2dContainer.classList.add('hidden');
+                    }
+
+                    // Hide MMD
+                    var mmdContainer = document.getElementById('mmd-container');
+                    if (mmdContainer) {
+                        mmdContainer.style.display = 'none';
+                        mmdContainer.classList.add('hidden');
+                    }
+                    var mmdCanvas = document.getElementById('mmd-canvas');
+                    if (mmdCanvas) {
+                        mmdCanvas.style.visibility = 'hidden';
+                        mmdCanvas.style.pointerEvents = 'none';
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                        window.mmdManager.pauseRendering();
+                    }
+                    if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                        window.live2dManager.pauseRendering();
                     }
 
                     // Show & reload VRM
@@ -288,6 +318,78 @@
                     } else {
                         console.error('[Model] VRM 管理器初始化失败');
                     }
+                } else if (newModelType === 'live3d' && live3dSubType === 'mmd') {
+                    // MMD mode (Live3D sub-type)
+                    window.cubism4Model = '';
+                    window.vrmModel = '';
+
+                    // Hide Live2D
+                    console.log('[Model] 隐藏 Live2D 模型');
+                    var live2dContainerMmd = document.getElementById('live2d-container');
+                    if (live2dContainerMmd) {
+                        live2dContainerMmd.style.display = 'none';
+                        live2dContainerMmd.classList.add('hidden');
+                    }
+
+                    // Hide VRM
+                    var vrmContainerMmd = document.getElementById('vrm-container');
+                    if (vrmContainerMmd) {
+                        vrmContainerMmd.style.display = 'none';
+                        vrmContainerMmd.classList.add('hidden');
+                    }
+                    var vrmCanvasMmd = document.getElementById('vrm-canvas');
+                    if (vrmCanvasMmd) {
+                        vrmCanvasMmd.style.visibility = 'hidden';
+                        vrmCanvasMmd.style.pointerEvents = 'none';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    }
+                    if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                        window.live2dManager.pauseRendering();
+                    }
+
+                    // Show MMD container
+                    console.log('[Model] 加载 MMD 模型:', newModelPath);
+                    var mmdContainerShow = document.getElementById('mmd-container');
+                    if (mmdContainerShow) {
+                        mmdContainerShow.classList.remove('hidden');
+                        mmdContainerShow.style.display = 'block';
+                        mmdContainerShow.style.visibility = 'visible';
+                        mmdContainerShow.style.removeProperty('pointer-events');
+                    }
+                    var mmdCanvasShow = document.getElementById('mmd-canvas');
+                    if (mmdCanvasShow) {
+                        mmdCanvasShow.style.visibility = 'visible';
+                        mmdCanvasShow.style.pointerEvents = 'auto';
+                    }
+
+                    // Ensure MMD manager is initialised
+                    if (!window.mmdManager) {
+                        console.log('[Model] MMD 管理器未初始化，等待初始化完成');
+                        if (typeof initMMDModel === 'function') {
+                            await initMMDModel();
+                        }
+                    }
+
+                    // Load MMD model
+                    if (window.mmdManager) {
+                        await window.mmdManager.loadModel(newModelPath);
+
+                        // 从后端获取并应用 MMD 设置（光照、渲染、物理、鼠标跟踪）
+                        try {
+                            var settingsRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(nameForConfig) + '/mmd_settings');
+                            var settingsData = await settingsRes.json();
+                            if (settingsData.success && settingsData.settings) {
+                                window.mmdManager.applySettings(settingsData.settings);
+                            }
+                        } catch (settingsErr) {
+                            console.warn('[Model] 获取MMD设置失败:', settingsErr);
+                        }
+                    } else {
+                        console.error('[Model] MMD 管理器初始化失败');
+                        throw new Error('MMD 管理器初始化失败');
+                    }
                 } else {
                     // Live2D mode
                     window.cubism4Model = newModelPath;
@@ -304,6 +406,24 @@
                     if (vrmCanvas2) {
                         vrmCanvas2.style.visibility = 'hidden';
                         vrmCanvas2.style.pointerEvents = 'none';
+                    }
+
+                    // Hide MMD
+                    var mmdContainer2 = document.getElementById('mmd-container');
+                    if (mmdContainer2) {
+                        mmdContainer2.style.display = 'none';
+                        mmdContainer2.classList.add('hidden');
+                    }
+                    var mmdCanvas2 = document.getElementById('mmd-canvas');
+                    if (mmdCanvas2) {
+                        mmdCanvas2.style.visibility = 'hidden';
+                        mmdCanvas2.style.pointerEvents = 'none';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                        window.mmdManager.pauseRendering();
                     }
 
                     // Show & reload Live2D
@@ -357,7 +477,13 @@
                     }
                 }
 
-                // 4. Success toast
+                // 4. Commit config only after successful switch
+                if (window.lanlan_config) {
+                    window.lanlan_config.model_type = newModelType;
+                    window.lanlan_config.live3d_sub_type = live3dSubType;
+                }
+
+                // 5. Success toast
                 window.showStatusToast(
                     window.t ? window.t('app.modelSwitched') : '模型已切换',
                     2000
@@ -426,6 +552,19 @@
                 vrmCanvas.style.pointerEvents = 'none';
             }
 
+            // Hide MMD
+            var mmdContainer = document.getElementById('mmd-container');
+            if (mmdContainer) {
+                mmdContainer.style.display = 'none';
+                mmdContainer.classList.add('hidden');
+            }
+
+            var mmdCanvas = document.getElementById('mmd-canvas');
+            if (mmdCanvas) {
+                mmdCanvas.style.visibility = 'hidden';
+                mmdCanvas.style.pointerEvents = 'none';
+            }
+
             // Pause render loops to save resources
             if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
                 window.vrmManager.pauseRendering();
@@ -433,6 +572,10 @@
 
             if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
                 window.live2dManager.pauseRendering();
+            }
+
+            if (window.mmdManager && typeof window.mmdManager.pauseRendering === 'function') {
+                window.mmdManager.pauseRendering();
             }
         } catch (error) {
             console.error('[UI] 隐藏主界面失败:', error);
@@ -468,6 +611,39 @@
                 // Resume VRM rendering
                 if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                     window.vrmManager.resumeRendering();
+                }
+            } else if (currentModelType === 'live3d') {
+                // Live3D: determine sub-type from config
+                var live3dSubType = (window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+                
+                if (live3dSubType === 'mmd') {
+                    var mmdContainerR = document.getElementById('mmd-container');
+                    if (mmdContainerR) {
+                        mmdContainerR.style.display = 'block';
+                        mmdContainerR.classList.remove('hidden');
+                    }
+                    var mmdCanvasR = document.getElementById('mmd-canvas');
+                    if (mmdCanvasR) {
+                        mmdCanvasR.style.visibility = 'visible';
+                        mmdCanvasR.style.pointerEvents = 'auto';
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
+                        window.mmdManager.resumeRendering();
+                    }
+                } else {
+                    var vrmContainerR = document.getElementById('vrm-container');
+                    if (vrmContainerR) {
+                        vrmContainerR.style.display = 'block';
+                        vrmContainerR.classList.remove('hidden');
+                    }
+                    var vrmCanvasR = document.getElementById('vrm-canvas');
+                    if (vrmCanvasR) {
+                        vrmCanvasR.style.visibility = 'visible';
+                        vrmCanvasR.style.pointerEvents = 'auto';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
+                        window.vrmManager.resumeRendering();
+                    }
                 }
             } else {
                 // Show Live2D
@@ -580,6 +756,7 @@
     mod.handleMemoryEdited = handleMemoryEdited;
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
+    mod.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
 
     // Backward-compatible window globals
     window.handleModelReload = handleModelReload;
@@ -587,6 +764,7 @@
     window.handleShowMainUI = handleShowMainUI;
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
+    window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
 
     window.appInterpage = mod;
 })();

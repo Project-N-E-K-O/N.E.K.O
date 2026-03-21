@@ -169,7 +169,7 @@
         // 按系统前缀过滤按钮选择器
         const selector = ownerPrefix
             ? `[id^="${ownerPrefix}-btn-"]`
-            : '[id^="vrm-btn-"], [id^="live2d-btn-"]';
+            : '[id^="vrm-btn-"], [id^="live2d-btn-"], [id^="mmd-btn-"]';
 
         // 第一优先级：扫描所有单个按钮
         const allBtns = document.querySelectorAll(selector);
@@ -258,7 +258,8 @@
         // 从 popup ID 推断系统前缀，用于过滤 getButtonZone
         const popupId = popup ? popup.id : '';
         const ownerPrefix = popupId.startsWith('vrm-') ? 'vrm'
-                          : popupId.startsWith('live2d-') ? 'live2d' : '';
+                          : popupId.startsWith('live2d-') ? 'live2d'
+                          : popupId.startsWith('mmd-') ? 'mmd' : '';
 
         if (goDown) {
             // 手机端：向下展开到 popup 下方

@@ -1770,10 +1770,19 @@ function showCatgirlForm(key, container) {
     modelLink.style.display = 'flex';
     modelLink.style.alignItems = 'center';
 
-    // 显示当前模型（优先显示VRM，如果没有则显示Live2D）
+    // 显示当前模型（优先显示Live3D VRM/MMD，如果没有则显示Live2D）
     const modelType = cat['model_type'] || 'live2d';
     let modelDisplayText = '';
     if (modelType === 'vrm' && cat['vrm']) {
+        const vrmPath = cat['vrm'];
+        const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '') : '';
+        modelDisplayText = vrmName;
+    } else if (modelType === 'live3d' && cat['mmd']) {
+        // live3d 模式下 MMD 优先（VRM 是旧字段，可能遗留非空值，与后端 _get_live3d_sub_type 一致）
+        const mmdPath = cat['mmd'];
+        const mmdName = mmdPath ? (mmdPath.split(/[\\/]/).pop() || mmdPath).replace(/\.(pmx|pmd)$/i, '') : '';
+        modelDisplayText = mmdName;
+    } else if (modelType === 'live3d' && cat['vrm']) {
         const vrmPath = cat['vrm'];
         const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath).replace(/\.vrm$/i, '') : '';
         modelDisplayText = vrmName;
