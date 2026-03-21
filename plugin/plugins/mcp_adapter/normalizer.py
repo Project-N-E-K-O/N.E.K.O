@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from plugin.sdk.adapter.gateway_models import (
-    ExternalEnvelope,
+    ExternalRequest,
     GatewayAction,
     GatewayError,
     GatewayErrorException,
@@ -18,9 +18,9 @@ class MCPRequestNormalizer:
     将 MCP JSON-RPC 请求转换为 GatewayRequest。
     """
 
-    async def normalize(self, env: ExternalEnvelope) -> GatewayRequest:
+    async def normalize(self, env: ExternalRequest) -> GatewayRequest:
         """
-        将 ExternalEnvelope 转换为 GatewayRequest。
+        将 ExternalRequest 转换为 GatewayRequest。
         
         MCP 请求格式：
         - action: "tool_call" | "resource_read" | "prompt_get"

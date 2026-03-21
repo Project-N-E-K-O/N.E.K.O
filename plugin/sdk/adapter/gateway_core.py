@@ -1,141 +1,114 @@
-"""Adapter Gateway Core 第一阶段实现。"""
+"""Adapter-facing gateway core facade for SDK v2."""
 
 from __future__ import annotations
 
-import time
+from time import perf_counter
+from typing import cast
 
-from plugin.logging_config import get_logger
+from plugin.sdk.shared.models import Err, Result
+from plugin.sdk.shared.models.exceptions import GatewayErrorLike, SdkError, TransportError
 
-from plugin.sdk.adapter.gateway_contracts import (
-    LoggerLike,
-    PluginInvoker,
-    PolicyEngine,
-    RequestNormalizer,
-    ResponseSerializer,
-    RouteEngine,
-    TransportAdapter,
-)
-from plugin.sdk.adapter.gateway_models import (
-    ExternalEnvelope,
-    GatewayAction,
-    GatewayError,
-    GatewayErrorException,
-    GatewayRequest,
-)
+from .gateway_contracts import PluginInvoker, PolicyEngine, RequestNormalizer, ResponseSerializer, RouteEngine, TransportAdapter
+from .gateway_models import ExternalRequest, GatewayError, GatewayResponse
 
-logger = get_logger("sdk.adapter.gateway_core")
+GatewayRuntimeError = GatewayErrorLike
 
 
 class AdapterGatewayCore:
-    """Gateway Core 编排器。"""
+    """Stable adapter-facing gateway orchestrator."""
 
-    def __init__(
-        self,
-        transport: TransportAdapter,
-        normalizer: RequestNormalizer,
-        policy: PolicyEngine,
-        router: RouteEngine,
-        invoker: PluginInvoker,
-        serializer: ResponseSerializer,
-        logger: LoggerLike | None = None,
-    ) -> None:
-        self._transport = transport
-        self._normalizer = normalizer
-        self._policy = policy
-        self._router = router
-        self._invoker = invoker
-        self._serializer = serializer
-        self._logger = logger if logger is not None else globals().get("logger", get_logger("sdk.adapter.gateway_core"))
-        self._running = False
+    def __init__(self, transport: TransportAdapter, normalizer: RequestNormalizer, policy: PolicyEngine, router: RouteEngine, invoker: PluginInvoker, serializer: ResponseSerializer) -> None:
+        self.transport = transport
+        self.normalizer = normalizer
+        self.policy = policy
+        self.router = router
+        self.invoker = invoker
+        self.serializer = serializer
 
-    async def start(self) -> None:
-        """启动传输层。"""
+    async def start(self) -> Result[None, GatewayErrorLike]:
+        return cast(Result[None, GatewayErrorLike], await self.transport.start())
 
-        if self._running:
-            self._logger.warning("Gateway core already started")
-            return
+    async def stop(self) -> Result[None, GatewayErrorLike]:
+        return cast(Result[None, GatewayErrorLike], await self.transport.stop())
 
-        self._running = True
-        await self._transport.start()
-        self._logger.info("Gateway core started for protocol={}.", self._transport.protocol_name)
-
-    async def stop(self) -> None:
-        """停止传输层。"""
-
-        if not self._running:
-            return
-
-        self._running = False
-        await self._transport.stop()
-        self._logger.info("Gateway core stopped for protocol={}.", self._transport.protocol_name)
-
-    async def run_once(self) -> None:
-        """处理一条请求。"""
-
-        if not self._running:
-            raise RuntimeError("Gateway core must be started before run_once")
-
-        envelope = await self._transport.recv()
-        response = await self.handle_envelope(envelope)
-        await self._transport.send(response)
-
-    async def handle_envelope(self, envelope: ExternalEnvelope):
-        """处理外部输入并返回统一响应。"""
-
-        started_at = time.perf_counter()
-        request: GatewayRequest | None = None
+    async def run_once(self) -> Result[GatewayResponse, GatewayErrorLike]:
         try:
-            request = await self._normalizer.normalize(envelope)
-            await self._policy.authorize(request)
-            decision = await self._router.decide(request)
-            result = await self._invoker.invoke(request, decision)
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            return await self._serializer.ok(request=request, result=result, latency_ms=latency_ms)
-        except GatewayErrorException as exc:
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            fallback_request = request if request is not None else self._fallback_request(envelope)
-            self._logger.warning(
-                "Gateway handled error: protocol={}, request_id={}, code={}",
-                envelope.protocol,
-                envelope.request_id,
-                exc.error.code,
+            incoming = await self.transport.recv()
+        except Exception as error:
+            return Err(TransportError(str(error), op_name="gateway.run_once.recv"))
+        if isinstance(incoming, Err):
+            return cast(Result[GatewayResponse, GatewayErrorLike], incoming)
+        return await self.handle_request(incoming.value)
+
+    async def _build_error_response(
+        self,
+        request,
+        *,
+        code: str,
+        message: str,
+        latency_ms: float,
+    ) -> Result[GatewayResponse, GatewayErrorLike]:
+        try:
+            return cast(
+                Result[GatewayResponse, GatewayErrorLike],
+                await self.serializer.build_error_response(
+                    request,
+                    GatewayError(code=code, message=message),
+                    latency_ms,
+                ),
             )
-            return await self._serializer.fail(
-                request=fallback_request,
-                error=exc.error,
-                latency_ms=latency_ms,
+        except Exception as error:
+            return Err(TransportError(str(error), op_name="gateway.handle_request.serialize_error"))
+
+    async def handle_request(self, incoming: ExternalRequest) -> Result[GatewayResponse, GatewayErrorLike]:
+        started = perf_counter()
+        try:
+            normalized = await self.normalizer.normalize(incoming)
+        except Exception as error:
+            return Err(TransportError(str(error), op_name="gateway.handle_request.normalize"))
+        if isinstance(normalized, Err):
+            return Err(normalized.error if isinstance(normalized.error, SdkError) else TransportError(str(normalized.error), op_name="gateway.handle_request.normalize"))
+        request = normalized.value
+        latency_ms = lambda: (perf_counter() - started) * 1000.0
+        try:
+            authorized = await self.policy.authorize(request)
+            if isinstance(authorized, Err):
+                return await self._build_error_response(
+                    request,
+                    code="policy_denied",
+                    message=str(authorized.error),
+                    latency_ms=latency_ms(),
+                )
+
+            decision = await self.router.decide(request)
+            if isinstance(decision, Err):
+                return await self._build_error_response(
+                    request,
+                    code="route_failed",
+                    message=str(decision.error),
+                    latency_ms=latency_ms(),
+                )
+
+            invoked = await self.invoker.invoke(request, decision.value)
+            if isinstance(invoked, Err):
+                return await self._build_error_response(
+                    request,
+                    code="invoke_failed",
+                    message=str(invoked.error),
+                    latency_ms=latency_ms(),
+                )
+
+            return cast(
+                Result[GatewayResponse, GatewayErrorLike],
+                await self.serializer.build_success_response(request, invoked.value, latency_ms()),
             )
-        except Exception as exc:
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-            fallback_request = request if request is not None else self._fallback_request(envelope)
-            self._logger.exception(
-                "Gateway unexpected error: protocol={}, request_id={}, err={}",
-                envelope.protocol,
-                envelope.request_id,
-                str(exc),
-            )
-            internal_error = GatewayError(
-                code="GATEWAY_INTERNAL_ERROR",
-                message="unexpected gateway error",
-                details={"protocol": envelope.protocol, "request_id": envelope.request_id},
-                retryable=False,
-            )
-            return await self._serializer.fail(
-                request=fallback_request,
-                error=internal_error,
-                latency_ms=latency_ms,
+        except Exception as error:
+            return await self._build_error_response(
+                request,
+                code="internal_error",
+                message=str(error),
+                latency_ms=latency_ms(),
             )
 
-    @staticmethod
-    def _fallback_request(envelope: ExternalEnvelope) -> GatewayRequest:
-        """在 normalize 失败时构造兜底请求对象。"""
 
-        return GatewayRequest(
-            request_id=envelope.request_id,
-            protocol=envelope.protocol,
-            action=GatewayAction.EVENT_PUSH,
-            source_app=envelope.connection_id,
-            trace_id=envelope.request_id,
-            params=envelope.payload,
-            metadata=envelope.metadata,
-        )
+__all__ = ["AdapterGatewayCore"]

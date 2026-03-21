@@ -8,7 +8,7 @@ from typing import Protocol, Dict, Any, Optional, Union, Coroutine, runtime_chec
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from plugin.sdk.bus.types import BusHubProtocol
+    from plugin.core.bus.types import BusHubProtocol
 
 
 @runtime_checkable

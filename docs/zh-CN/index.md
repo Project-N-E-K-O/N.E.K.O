@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Project N.E.K.O.
   text: 开发者文档
-  tagline: 构建有生命力的 AI 伙伴元宇宙 —— 开源、可扩展、多模态。
+  tagline: 主动式全模态 AI 伙伴，具备 24/7 环境感知、智能体能力与具身情感引擎。
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -37,12 +37,12 @@ features:
     linkText: API 参考
   - icon: "\U0001F9E0"
     title: 记忆系统
-    details: 通过嵌入向量实现语义召回，支持时间索引历史、滑动窗口压缩近期记忆，以及持久化用户偏好。
+    details: 通过嵌入向量和 BM25 混合索引实现语义召回，支持时间索引历史、滑动窗口压缩近期记忆，以及持久化用户偏好。
     link: /zh-CN/architecture/memory-system
     linkText: 工作原理
   - icon: "\U0001F916"
     title: 智能体框架
-    details: 通过 MCP、Computer Use 和 Browser Use 适配器执行后台任务。自动任务规划、去重和并行能力评估。
+    details: 通过 MCP、Computer Use、Browser Use 和虚拟机适配器执行后台任务。自动任务规划、去重和并行能力评估。
     link: /zh-CN/architecture/agent-system
     linkText: 探索智能体
   - icon: "\U0001F3A8"
