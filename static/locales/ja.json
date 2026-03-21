@@ -1318,6 +1318,8 @@
         "autoMuteTimeout": "長時間音声入力がないため、マイクを自動オフにしました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
+        "micMuted": "マイクをミュートしました",
+        "micUnmuted": "マイクのミュートを解除しました",
         "speaking": "話し中...",
         "standby": "{{name}}待機中...",
         "micRequired": "まずマイクを有効にしてください！",
@@ -1388,7 +1390,9 @@
         "agentTools": "ネコクロー",
         "settings": "設定",
         "leave": "退出",
-        "return": "戻る"
+        "return": "戻る",
+        "micMute": "マイクをミュート",
+        "micUnmute": "ミュート解除"
     },
     "settings": {
         "menu": {

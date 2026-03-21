@@ -144,6 +144,11 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
         btnWrapper.appendChild(btn);
 
+        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
+            this.createMicMuteButton(btnWrapper);
+        }
+
         // 处理弹窗
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth && window.isMobileWidth() && config.id === 'mic') {

@@ -538,7 +538,7 @@ function createSidePanelMenuItem(manager, prefix, item) {
             let windowName = `neko_${item.id}`;
             let features;
 
-            if ((item.id === `${prefix}-manage` || item.id === 'live2d-manage' || item.id === 'vrm-manage') && item.urlBase) {
+            if ((item.id === `${prefix}-manage` || item.id === 'live2d-manage' || item.id === 'vrm-manage' || item.id === 'mmd-manage') && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
@@ -1900,20 +1900,8 @@ const AvatarPopupMixin = {
         };
 
         ManagerProto._createSettingsMenuItems = function (popup) {
+            // 角色管理已通过侧边面板（_createCharacterSettingsSidePanel）在上方创建，不在此处重复
             const settingsItems = [
-                {
-                    id: 'character',
-                    label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
-                    labelKey: 'settings.menu.characterManage',
-                    icon: '/static/icons/character_icon.png',
-                    action: 'navigate',
-                    url: '/chara_manager',
-                    submenu: [
-                        { id: 'general', label: window.t ? window.t('settings.menu.general') : '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/chara_manager' },
-                        { id: `${prefix}-manage`, label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
-                        { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
-                    ]
-                },
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
                 { id: 'steam-workshop', label: window.t ? window.t('settings.menu.steamWorkshop') : '创意工坊', labelKey: 'settings.menu.steamWorkshop', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
@@ -1922,83 +1910,7 @@ const AvatarPopupMixin = {
             settingsItems.forEach(item => {
                 const menuItem = this._createMenuItem(item);
                 popup.appendChild(menuItem);
-
-                if (item.submenu && item.submenu.length > 0) {
-                    const submenuContainer = this._createSubmenuContainer(item.submenu);
-                    popup.appendChild(submenuContainer);
-
-                    let submenuCollapseTimer = null;
-                    let overflowTimer = null;
-                    const clearSubmenuCollapseTimer = () => { if (submenuCollapseTimer) { clearTimeout(submenuCollapseTimer); submenuCollapseTimer = null; } };
-                    const expandSubmenu = () => {
-                        clearSubmenuCollapseTimer();
-                        if (overflowTimer) { clearTimeout(overflowTimer); overflowTimer = null; }
-                        submenuContainer._expand();
-                        overflowTimer = setTimeout(() => {
-                            overflowTimer = null;
-                            if (!popup.isConnected || popup.style.display === 'none') return;
-                            const rect = popup.getBoundingClientRect();
-                            const bottomMargin = 60;
-                            const topMargin = 8;
-                            if (rect.bottom > window.innerHeight - bottomMargin) {
-                                popup.style.top = `${parseFloat(popup.style.top || 0) - (rect.bottom - (window.innerHeight - bottomMargin))}px`;
-                            }
-                            const newRect = popup.getBoundingClientRect();
-                            if (newRect.top < topMargin) {
-                                popup.style.top = `${parseFloat(popup.style.top || 0) + (topMargin - newRect.top)}px`;
-                            }
-                        }, this._animationDurationMs + 20);
-                    };
-                    const scheduleSubmenuCollapse = () => {
-                        clearSubmenuCollapseTimer();
-                        submenuCollapseTimer = setTimeout(() => { submenuContainer._collapse(); submenuCollapseTimer = null; }, 110);
-                    };
-
-                    menuItem.addEventListener('mouseenter', expandSubmenu);
-                    menuItem.addEventListener('mouseleave', (e) => {
-                        const target = e.relatedTarget;
-                        if (target && (menuItem.contains(target) || submenuContainer.contains(target))) return;
-                        scheduleSubmenuCollapse();
-                    });
-                    submenuContainer.addEventListener('mouseenter', expandSubmenu);
-                    submenuContainer.addEventListener('mouseleave', (e) => {
-                        const target = e.relatedTarget;
-                        if (target && (menuItem.contains(target) || submenuContainer.contains(target))) return;
-                        scheduleSubmenuCollapse();
-                    });
-                }
             });
-        };
-
-        ManagerProto._createSubmenuContainer = function (submenuItems) {
-            const container = document.createElement('div');
-            Object.assign(container.style, {
-                display: 'none', flexDirection: 'column', overflow: 'hidden',
-                height: '0', opacity: '0', transition: 'height 0.2s ease, opacity 0.2s ease'
-            });
-
-            submenuItems.forEach(subItem => {
-                const subMenuItem = this._createMenuItem(subItem, true);
-                container.appendChild(subMenuItem);
-            });
-
-            container._expand = () => {
-                container.style.display = 'flex';
-                requestAnimationFrame(() => {
-                    const calculatedHeight = Math.max(submenuItems.length * 32, container.scrollHeight);
-                    container.style.height = `${calculatedHeight}px`;
-                    container.style.opacity = '1';
-                });
-            };
-            container._collapse = () => {
-                container.style.height = '0';
-                container.style.opacity = '0';
-                setTimeout(() => {
-                    if (container.style.opacity === '0') container.style.display = 'none';
-                }, this._animationDurationMs);
-            };
-
-            return container;
         };
 
         ManagerProto.renderScreenSourceList = async function (popup) {

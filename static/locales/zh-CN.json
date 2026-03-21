@@ -1318,6 +1318,8 @@
         "autoMuteTimeout": "长时间无语音输入，已自动关闭麦克风",
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
+        "micMuted": "麦克风已静音",
+        "micUnmuted": "麦克风已取消静音",
         "speaking": "正在语音...",
         "standby": "{{name}}待机中...",
         "micRequired": "请先开启麦克风录音！",
@@ -1388,7 +1390,9 @@
         "agentTools": "猫爪",
         "settings": "设置",
         "leave": "请她离开",
-        "return": "请她回来"
+        "return": "请她回来",
+        "micMute": "静音麦克风",
+        "micUnmute": "取消静音"
     },
     "settings": {
         "menu": {

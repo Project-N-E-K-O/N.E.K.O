@@ -311,6 +311,26 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
         btnWrapper.appendChild(btn);
 
+        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
+            const muteData = this.createMicMuteButton(btnWrapper);
+            // 监听麦克风切换事件以更新静音按钮可见性
+            const micToggleHandler = (e) => {
+                if (muteData && muteData.updateVisibility) {
+                    muteData.updateVisibility(e.detail.active);
+                }
+            };
+            window.addEventListener('live2d-mic-toggle', micToggleHandler);
+            if (!this._uiWindowHandlers) {
+                this._uiWindowHandlers = [];
+            }
+            this._uiWindowHandlers.push({
+                event: 'live2d-mic-toggle',
+                handler: micToggleHandler,
+                target: window
+            });
+        }
+
         // 处理弹窗
         if (config.hasPopup && config.separatePopupTrigger) {
             if (isMobileWidth() && config.id === 'mic') {
