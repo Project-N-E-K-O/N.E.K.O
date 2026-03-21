@@ -1898,7 +1898,7 @@ async def proactive_chat(request: Request):
                         # [临时调试]
                         print(f"\n[PROACTIVE-DEBUG] LLM output [{label}]: {response.content[:200]}...\n")
                         return response.content.strip()
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                except (asyncio.TimeoutError, APIConnectionError, InternalServerError, RateLimitError) as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"[{lanlan_name}] LLM [{label}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {e}")
                         await asyncio.sleep(retry_delays[attempt])
