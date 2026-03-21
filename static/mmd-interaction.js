@@ -207,11 +207,14 @@ class MMDInteraction {
                 e.preventDefault();
                 e.stopPropagation();
 
-                // 缓存模型包围盒中心作为旋转轴心
+                // 缓存拖拽起始状态，用于计算总旋转量（幂等）
                 const mesh = this.manager.currentModel?.mesh;
                 if (mesh) {
                     const box = new THREE.Box3().setFromObject(mesh);
                     this._orbitPivot = box.getCenter(new THREE.Vector3());
+                    this._orbitStartQuat = mesh.quaternion.clone();
+                    this._orbitStartPos = mesh.position.clone();
+                    this._orbitStartMouse = { x: e.clientX, y: e.clientY };
                 }
 
                 this._disableButtonPointerEvents();
@@ -251,25 +254,20 @@ class MMDInteraction {
                 mesh.position.add(right.multiplyScalar(dx * pixelToWorldX));
                 mesh.position.add(up.multiplyScalar(-dy * pixelToWorldY));
             } else if (this.dragMode === 'orbit') {
-                // 绕模型中心旋转模型本身（不移动相机）
+                // 仅 Y 轴旋转（转盘式），模型原地旋转，位置不变
                 const mesh = this.manager.currentModel?.mesh;
-                if (!mesh) return;
+                if (!mesh || !this._orbitStartQuat) return;
 
-                const pivot = this._orbitPivot || mesh.position;
                 const rotateSpeed = 0.005;
+                const totalDx = e.clientX - this._orbitStartMouse.x;
 
-                // 构建增量旋转四元数（世界空间：dx→绕Y轴，dy→绕X轴）
-                const dQuat = new THREE.Quaternion();
-                const dEuler = new THREE.Euler(dy * rotateSpeed, dx * rotateSpeed, 0, 'YXZ');
-                dQuat.setFromEuler(dEuler);
+                // 仅绕世界 Y 轴旋转
+                const yQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(0, 1, 0), totalDx * rotateSpeed);
 
-                // 将 mesh 位置绕轴心旋转，保持模型中心不动
-                const offset = mesh.position.clone().sub(pivot);
-                offset.applyQuaternion(dQuat);
-                mesh.position.copy(pivot).add(offset);
-
-                // 应用旋转（premultiply = 世界空间叠加）
-                mesh.quaternion.premultiply(dQuat);
+                // 从起始状态重新计算（幂等）
+                mesh.quaternion.copy(this._orbitStartQuat).premultiply(yQuat);
+                // 位置不变 — 模型原地转
             }
         };
 

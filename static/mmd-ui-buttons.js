@@ -1,52 +1,37 @@
 /**
- * MMD UI Buttons - 浮动按钮系统（完整功能版）
- * 与 VRM/Live2D 保持一致：麦克风、屏幕分享、Agent、设置、告别
+ * MMD UI Buttons - 浮动按钮系统（精简版）
+ * 使用 AvatarButtonMixin 的 MMD 特定实现
  */
 
-MMDManager.prototype.setupFloatingButtons = function () {
+// 应用 mixin 到 MMD Manager
+AvatarButtonMixin.apply(MMDManager.prototype, 'mmd', {
+    containerElementId: 'mmd-floating-buttons',
+    returnContainerId: 'mmd-return-button-container',
+    returnBtnId: 'mmd-btn-return',
+    lockIconId: 'mmd-lock-icon',
+    popupPrefix: 'mmd',
+    buttonClassPrefix: 'mmd-floating-btn',
+    triggerBtnClass: 'mmd-trigger-btn',
+    triggerIconClass: 'mmd-trigger-icon',
+    returnBtnClass: 'mmd-return-btn',
+    returnBreathingStyleId: 'mmd-return-button-breathing-styles'
+});
+
+/**
+ * 设置浮动按钮系统（MMD 特定）
+ */
+MMDManager.prototype.setupFloatingButtons = function() {
     if (window.location.pathname.includes('model_manager')) return;
 
-    // 清理旧事件监听
-    if (!this._uiWindowHandlers) this._uiWindowHandlers = [];
-    if (this._uiWindowHandlers.length > 0) {
-        this._uiWindowHandlers.forEach(({ event, handler, target, options }) => {
-            const t = target || window;
-            t.removeEventListener(event, handler, options);
-        });
-        this._uiWindowHandlers = [];
-    }
-    if (this._returnButtonDragHandlers) {
-        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
-        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
-        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
-        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
-        this._returnButtonDragHandlers = null;
-    }
+    // 基础框架初始化
+    const buttonsContainer = this.setupFloatingButtonsBase();
 
-    // 清理旧 DOM
-    document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container').forEach(el => el.remove());
-
-    const buttonsContainer = document.createElement('div');
-    buttonsContainer.id = 'mmd-floating-buttons';
-    document.body.appendChild(buttonsContainer);
-
-    Object.assign(buttonsContainer.style, {
-        position: 'fixed', zIndex: '99999', pointerEvents: 'auto',
-        display: 'none', flexDirection: 'column', gap: '12px',
-        visibility: 'visible', opacity: '1', transform: 'none'
-    });
-    this._floatingButtonsContainer = buttonsContainer;
-
-    const stopContainerEvent = (e) => { e.stopPropagation(); };
-    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
-        buttonsContainer.addEventListener(evt, stopContainerEvent);
-    });
+    const opts = this._avatarButtonOptions;
 
     buttonsContainer.addEventListener('mouseenter', () => { this._mmdButtonsHovered = true; });
     buttonsContainer.addEventListener('mouseleave', () => { this._mmdButtonsHovered = false; });
 
-    // ═══════════════════ 响应式布局 ═══════════════════
-
+    // MMD 特定的响应式布局处理
     const applyResponsiveFloatingLayout = () => {
         if (this._isInReturnState) { buttonsContainer.style.display = 'none'; return; }
         const isLocked = this.isLocked;
@@ -64,12 +49,11 @@ MMDManager.prototype.setupFloatingButtons = function () {
             buttonsContainer.style.right = '';
             buttonsContainer.style.left = '';
             buttonsContainer.style.top = '';
-            // 桌面端位置由 UI 更新循环控制
         }
     };
     applyResponsiveFloatingLayout();
 
-    // 鼠标距离判定用状态
+    // 锁图标显示逻辑
     const shouldShowLockIcon = () => {
         const isLocked = this.isLocked;
         if (this._isInReturnState) return false;
@@ -96,6 +80,7 @@ MMDManager.prototype.setupFloatingButtons = function () {
     };
     this._shouldShowMmdLockIcon = shouldShowLockIcon;
 
+    // 鼠标位置跟踪
     const updateMousePosition = (e) => {
         this._mmdMousePos = { x: typeof e.clientX === 'number' ? e.clientX : 0, y: typeof e.clientY === 'number' ? e.clientY : 0 };
         this._mmdMousePosTs = Date.now();
@@ -108,129 +93,58 @@ MMDManager.prototype.setupFloatingButtons = function () {
     window.addEventListener('resize', applyResponsiveFloatingLayout);
     this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout, target: window });
 
-    // ═══════════════════ 按钮配置 ═══════════════════
-
-    const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
-    const buttonConfigs = [
-        { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
-        { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
-        { id: 'agent', emoji: '🔨', title: window.t ? window.t('buttons.agentTools') : 'NekoClaw', titleKey: 'buttons.agentTools', hasPopup: true, popupToggle: true, exclusive: 'settings', iconOff: '/static/icons/Agent_off.png' + iconVersion, iconOn: '/static/icons/Agent_on.png' + iconVersion },
-        { id: 'settings', emoji: '⚙️', title: window.t ? window.t('buttons.settings') : '设置', titleKey: 'buttons.settings', hasPopup: true, popupToggle: true, exclusive: 'agent', iconOff: '/static/icons/set_off.png' + iconVersion, iconOn: '/static/icons/set_on.png' + iconVersion },
-        { id: 'goodbye', emoji: '💤', title: window.t ? window.t('buttons.leave') : '请她离开', titleKey: 'buttons.leave', hasPopup: false, iconOff: '/static/icons/rest_off.png' + iconVersion, iconOn: '/static/icons/rest_on.png' + iconVersion }
-    ];
+    // 获取按钮配置
+    const buttonConfigs = this.getDefaultButtonConfigs();
     this._buttonConfigs = buttonConfigs;
     this._floatingButtons = this._floatingButtons || {};
 
-    // ═══════════════════ 创建按钮 ═══════════════════
-
+    // 创建按钮
     buttonConfigs.forEach(config => {
         if (window.isMobileWidth && window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) return;
 
-        const btnWrapper = document.createElement('div');
-        Object.assign(btnWrapper.style, { position: 'relative', display: 'flex', alignItems: 'center', gap: '8px', pointerEvents: 'auto' });
-        ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => btnWrapper.addEventListener(evt, e => e.stopPropagation()));
+        const { btnWrapper, btn, imgOff, imgOn } = this.createButtonElement(config, buttonsContainer);
 
-        const btn = document.createElement('div');
-        btn.id = `mmd-btn-${config.id}`;
-        btn.className = 'mmd-floating-btn';
+        // 点击事件处理
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
 
-        Object.assign(btn.style, {
-            width: '48px', height: '48px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
-            backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            cursor: 'pointer', userSelect: 'none', boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
-            transition: 'all 0.1s ease', pointerEvents: 'auto'
-        });
-
-        let imgOff = null;
-        let imgOn = null;
-
-        if (config.iconOff && config.iconOn) {
-            const imgContainer = document.createElement('div');
-            Object.assign(imgContainer.style, { position: 'relative', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center' });
-
-            imgOff = document.createElement('img');
-            imgOff.src = config.iconOff; imgOff.alt = config.emoji;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
-
-            imgOn = document.createElement('img');
-            imgOn.src = config.iconOn; imgOn.alt = config.emoji;
-            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
-
-            imgContainer.appendChild(imgOff);
-            imgContainer.appendChild(imgOn);
-            btn.appendChild(imgContainer);
-
-            this._floatingButtons[config.id] = { button: btn, imgOff: imgOff, imgOn: imgOn };
-
-            // 悬停效果
-            btn.addEventListener('mouseenter', () => {
-                btn.style.transform = 'scale(1.05)';
-                btn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
-                btn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
-                if (config.separatePopupTrigger) {
-                    const popup = document.getElementById(`mmd-popup-${config.id}`);
-                    const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
-                    if (isPopupVisible) return;
-                }
-                if (imgOff && imgOn) { imgOff.style.opacity = '0'; imgOn.style.opacity = '1'; }
-            });
-
-            btn.addEventListener('mouseleave', () => {
-                btn.style.transform = 'scale(1)';
-                btn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
-                const isActive = btn.dataset.active === 'true';
-                const popup = document.getElementById(`mmd-popup-${config.id}`);
-                const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
-                const shouldShowOnIcon = config.separatePopupTrigger ? isActive : (isActive || isPopupVisible);
-                btn.style.background = shouldShowOnIcon ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = shouldShowOnIcon ? '0' : '1';
-                    imgOn.style.opacity = shouldShowOnIcon ? '1' : '0';
-                }
-            });
-
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation(); e.preventDefault();
-
-                if (config.id === 'mic') {
-                    const isMicStarting = window.isMicStarting || false;
-                    if (isMicStarting) {
-                        if (btn.dataset.active !== 'true') this.setButtonActive(config.id, true);
-                        return;
-                    }
-                }
-                if (config.id === 'screen') {
-                    const isRecording = window.isRecording || false;
-                    const wantToActivate = btn.dataset.active !== 'true';
-                    if (wantToActivate && !isRecording) {
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话', 3000);
-                        }
-                        return;
-                    }
-                }
-                if (config.popupToggle) return;
-
-                const currentActive = btn.dataset.active === 'true';
-                let targetActive = !currentActive;
-
-                if (config.id === 'mic' || config.id === 'screen') {
-                    window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, { detail: { active: targetActive } }));
-                    this.setButtonActive(config.id, targetActive);
-                } else if (config.id === 'goodbye') {
-                    window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+            if (config.id === 'mic') {
+                const isMicStarting = window.isMicStarting || false;
+                if (isMicStarting) {
+                    if (btn.dataset.active !== 'true') this.setButtonActive(config.id, true);
                     return;
                 }
+            }
+            if (config.id === 'screen') {
+                const isRecording = window.isRecording || false;
+                const wantToActivate = btn.dataset.active !== 'true';
+                if (wantToActivate && !isRecording) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话', 3000);
+                    }
+                    return;
+                }
+            }
+            if (config.popupToggle) return;
 
-                btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
-            });
-        }
+            const currentActive = btn.dataset.active === 'true';
+            let targetActive = !currentActive;
+
+            if (config.id === 'mic' || config.id === 'screen') {
+                window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, { detail: { active: targetActive } }));
+                this.setButtonActive(config.id, targetActive);
+            } else if (config.id === 'goodbye') {
+                window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                return;
+            }
+
+            btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
+        });
 
         btnWrapper.appendChild(btn);
 
-        // ═══════ 弹窗系统 ═══════
-
+        // 处理弹窗
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth && window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
@@ -243,6 +157,7 @@ MMDManager.prototype.setupFloatingButtons = function () {
             triggerBtn.className = 'mmd-trigger-btn';
             triggerBtn.setAttribute('aria-label', 'Open popup');
 
+            const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
             const triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
             triggerImg.alt = '';
@@ -287,7 +202,6 @@ MMDManager.prototype.setupFloatingButtons = function () {
             btnWrapper.appendChild(triggerWrapper);
         } else if (config.popupToggle) {
             const popup = this.createPopup(config.id);
-            btnWrapper.appendChild(btn);
             btnWrapper.appendChild(popup);
 
             let isToggling = false;
@@ -323,10 +237,10 @@ MMDManager.prototype.setupFloatingButtons = function () {
         }
 
         buttonsContainer.appendChild(btnWrapper);
+        this._floatingButtons[config.id] = { button: btn, imgOff, imgOn };
     });
 
-    // ═══════════════════ Goodbye 处理 ═══════════════════
-
+    // 处理"请她离开"事件
     const goodbyeHandler = () => {
         this._isInReturnState = true;
         if (this._floatingButtonsContainer) this._floatingButtonsContainer.style.display = 'none';
@@ -341,8 +255,7 @@ MMDManager.prototype.setupFloatingButtons = function () {
     this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
 
-    // ═══════════════════ Return 处理 ═══════════════════
-
+    // 处理"请她回来"事件
     const returnHandler = () => {
         this._isInReturnState = false;
         if (this._returnButtonContainer) this._returnButtonContainer.style.display = 'none';
@@ -372,63 +285,12 @@ MMDManager.prototype.setupFloatingButtons = function () {
     window.addEventListener('mmd-return-click', returnHandler);
     window.addEventListener('live2d-return-click', returnHandler);
 
-    // ═══════════════════ "请她回来" 按钮 ═══════════════════
-
-    const returnButtonContainer = document.createElement('div');
-    returnButtonContainer.id = 'mmd-return-button-container';
-    Object.assign(returnButtonContainer.style, {
-        position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
-        zIndex: '99999', pointerEvents: 'auto', display: 'none'
-    });
-
-    const returnBtn = document.createElement('div');
-    returnBtn.id = 'mmd-btn-return';
-    returnBtn.className = 'mmd-return-btn';
-
-    const returnImgOff = document.createElement('img');
-    returnImgOff.src = '/static/icons/rest_off.png' + iconVersion; returnImgOff.alt = '💤';
-    Object.assign(returnImgOff.style, { width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease' });
-
-    const returnImgOn = document.createElement('img');
-    returnImgOn.src = '/static/icons/rest_on.png' + iconVersion; returnImgOn.alt = '💤';
-    Object.assign(returnImgOn.style, { position: 'absolute', width: '64px', height: '64px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease' });
-
-    Object.assign(returnBtn.style, {
-        width: '64px', height: '64px', borderRadius: '50%', background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
-        backdropFilter: 'saturate(180%) blur(20px)', border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
-        transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
-    });
-
-    returnBtn.addEventListener('mouseenter', () => {
-        returnBtn.style.transform = 'scale(1.05)';
-        returnBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
-        returnBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
-        returnImgOff.style.opacity = '0'; returnImgOn.style.opacity = '1';
-    });
-    returnBtn.addEventListener('mouseleave', () => {
-        returnBtn.style.transform = 'scale(1)';
-        returnBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
-        returnBtn.style.background = 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
-        returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
-    });
-    returnBtn.addEventListener('click', (e) => {
-        if (returnButtonContainer.getAttribute('data-dragging') === 'true') { e.preventDefault(); e.stopPropagation(); return; }
-        e.stopPropagation(); e.preventDefault();
-        window.dispatchEvent(new CustomEvent('mmd-return-click'));
-    });
-
-    returnBtn.appendChild(returnImgOff);
-    returnBtn.appendChild(returnImgOn);
-    returnButtonContainer.appendChild(returnBtn);
-    document.body.appendChild(returnButtonContainer);
-    this._returnButtonContainer = returnButtonContainer;
+    // 创建"请她回来"按钮
+    const returnButtonContainer = this.createReturnButton();
     this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
-    // ═══════════════════ Lock 图标 ═══════════════════
-
+    // 创建锁图标
     document.querySelectorAll('#mmd-lock-icon').forEach(el => el.remove());
     const lockIcon = document.createElement('div');
     lockIcon.id = 'mmd-lock-icon';
@@ -466,8 +328,7 @@ MMDManager.prototype.setupFloatingButtons = function () {
     lockIcon.addEventListener('mousedown', toggleLock);
     lockIcon.addEventListener('touchstart', toggleLock, { passive: false });
 
-    // ═══════════════════ 启动 UI 更新循环 ═══════════════════
-
+    // 启动 UI 更新循环
     this._startUIUpdateLoop();
 
     // 初始化后显示按钮
@@ -482,9 +343,10 @@ MMDManager.prototype.setupFloatingButtons = function () {
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
 };
 
-// ═══════════════════ UI 更新循环 ═══════════════════
-
-MMDManager.prototype._startUIUpdateLoop = function () {
+/**
+ * MMD UI 更新循环
+ */
+MMDManager.prototype._startUIUpdateLoop = function() {
     if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) return;
 
     const box = new window.THREE.Box3();
@@ -599,13 +461,11 @@ MMDManager.prototype._startUIUpdateLoop = function () {
                 this._mmdUiNearModel = false;
             }
 
-            // 按钮缩放
             const visibleCount = getVisibleButtonCount();
             const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
             const targetToolbarHeight = modelScreenHeight / 2;
             const scale = Math.max(0.5, Math.min(1.0, targetToolbarHeight / baseToolbarHeight));
 
-            // 更新按钮位置
             if (buttonsContainer) {
                 const isMobile = window.isMobileWidth && window.isMobileWidth();
                 if (isMobile) {
@@ -637,11 +497,14 @@ MMDManager.prototype._startUIUpdateLoop = function () {
                     const currentTop = parseFloat(buttonsContainer.style.top) || 0;
                     const dist = Math.sqrt(Math.pow(boundedX - currentLeft, 2) + Math.pow(boundedY - currentTop, 2));
                     if (dist > 0.5) {
-                        buttonsContainer.style.left = `${boundedX}px`;
-                        buttonsContainer.style.top = `${boundedY}px`;
+                        // 平滑插值防止旋转时闪烁抖动
+                        const lerpFactor = 0.15;
+                        const smoothX = currentLeft + (boundedX - currentLeft) * lerpFactor;
+                        const smoothY = currentTop + (boundedY - currentTop) * lerpFactor;
+                        buttonsContainer.style.left = `${smoothX}px`;
+                        buttonsContainer.style.top = `${smoothY}px`;
                     }
 
-                    // Lock 图标位置
                     if (lockIcon && !this._isInReturnState) {
                         const lockTargetX = canvasRect.left + visibleRight * 0.7 + visibleLeft * 0.3;
                         const lockTargetY = canvasRect.top + visibleTop * 0.3 + visibleBottom * 0.7;
@@ -660,12 +523,14 @@ MMDManager.prototype._startUIUpdateLoop = function () {
                         const currentLockTop = parseFloat(lockIcon.style.top) || 0;
                         const lockDist = Math.sqrt(Math.pow(boundedLockX - currentLockLeft, 2) + Math.pow(boundedLockY - currentLockTop, 2));
                         if (lockDist > 0.5) {
-                            lockIcon.style.left = `${boundedLockX}px`;
-                            lockIcon.style.top = `${boundedLockY}px`;
+                            const lerpFactor = 0.15;
+                            const smoothLockX = currentLockLeft + (boundedLockX - currentLockLeft) * lerpFactor;
+                            const smoothLockY = currentLockTop + (boundedLockY - currentLockTop) * lerpFactor;
+                            lockIcon.style.left = `${smoothLockX}px`;
+                            lockIcon.style.top = `${smoothLockY}px`;
                         }
                         lockIcon.style.display = (this._shouldShowMmdLockIcon && this._shouldShowMmdLockIcon()) ? 'block' : 'none';
 
-                        // 检测是否被弹窗覆盖
                         const lockRect = lockIcon.getBoundingClientRect();
                         let isLockOverlapped = false;
                         document.querySelectorAll('[id^="mmd-popup-"]').forEach(popup => {
@@ -691,136 +556,4 @@ MMDManager.prototype._startUIUpdateLoop = function () {
     };
 
     this._uiUpdateLoopId = requestAnimationFrame(update);
-};
-
-// ═══════════════════ Return 按钮拖拽 ═══════════════════
-
-MMDManager.prototype._setupReturnButtonDrag = function (container) {
-    let isDragging = false;
-    let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
-
-    const handleStart = (clientX, clientY) => {
-        isDragging = true;
-        dragStartX = clientX; dragStartY = clientY;
-        const rect = container.getBoundingClientRect();
-        containerStartX = rect.left; containerStartY = rect.top;
-        container.style.transform = 'none';
-        container.style.left = `${containerStartX}px`;
-        container.style.top = `${containerStartY}px`;
-        container.setAttribute('data-dragging', 'false');
-        container.style.cursor = 'grabbing';
-    };
-    const handleMove = (clientX, clientY) => {
-        if (!isDragging) return;
-        const deltaX = clientX - dragStartX, deltaY = clientY - dragStartY;
-        if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) container.setAttribute('data-dragging', 'true');
-        const w = container.offsetWidth || 64, h = container.offsetHeight || 64;
-        container.style.left = `${Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - w))}px`;
-        container.style.top = `${Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - h))}px`;
-    };
-    const handleEnd = () => {
-        if (isDragging) {
-            isDragging = false;
-            container.style.cursor = 'grab';
-            // 拖拽结束后延迟清除标记，让 click handler 能检测到拖拽
-            // 非拖拽点击由 returnBtn 的 click handler 统一 dispatch
-            setTimeout(() => container.setAttribute('data-dragging', 'false'), 10);
-        }
-    };
-
-    container.addEventListener('mousedown', (e) => { if (container.contains(e.target)) { e.preventDefault(); handleStart(e.clientX, e.clientY); } });
-
-    this._returnButtonDragHandlers = {
-        mouseMove: (e) => handleMove(e.clientX, e.clientY),
-        mouseUp: handleEnd,
-        touchMove: (e) => { if (isDragging) { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); } },
-        touchEnd: handleEnd
-    };
-    document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
-    document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
-    container.addEventListener('touchstart', (e) => { if (container.contains(e.target)) { handleStart(e.touches[0].clientX, e.touches[0].clientY); } }, { passive: true });
-    document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
-    document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
-    container.style.cursor = 'grab';
-};
-
-// ═══════════════════ Return 按钮呼吸灯 ═══════════════════
-
-MMDManager.prototype._addReturnButtonBreathingAnimation = function () {
-    if (document.getElementById('mmd-return-button-breathing-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'mmd-return-button-breathing-styles';
-    style.textContent = `
-        @keyframes mmdReturnButtonBreathing {
-            0%, 100% { box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08); }
-            50% { box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08); }
-        }
-        #mmd-btn-return { animation: mmdReturnButtonBreathing 2s ease-in-out infinite; }
-        #mmd-btn-return:hover { animation: none; }
-    `;
-    document.head.appendChild(style);
-};
-
-// ═══════════════════ 按钮状态管理 ═══════════════════
-
-MMDManager.prototype.setButtonActive = function (buttonId, active) {
-    const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
-    if (!buttonData || !buttonData.button) return;
-    buttonData.button.dataset.active = active ? 'true' : 'false';
-    buttonData.button.style.background = active
-        ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))'
-        : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
-    if (buttonData.imgOff) buttonData.imgOff.style.opacity = active ? '0' : '1';
-    if (buttonData.imgOn) buttonData.imgOn.style.opacity = active ? '1' : '0';
-};
-
-MMDManager.prototype.resetAllButtons = function () {
-    if (!this._floatingButtons) return;
-    Object.keys(this._floatingButtons).forEach(btnId => { this.setButtonActive(btnId, false); });
-};
-
-MMDManager.prototype._syncButtonStatesWithGlobalState = function () {
-    if (!this._floatingButtons) return;
-    const isRecording = window.isRecording || false;
-    if (this._floatingButtons.mic) this.setButtonActive('mic', isRecording);
-
-    let isScreenSharing = false;
-    const screenButton = document.getElementById('screenButton');
-    const stopButton = document.getElementById('stopButton');
-    if (screenButton && screenButton.classList.contains('active')) isScreenSharing = true;
-    else if (stopButton && !stopButton.disabled) isScreenSharing = true;
-    if (this._floatingButtons.screen) this.setButtonActive('screen', isScreenSharing);
-};
-
-// ═══════════════════ 清理 ═══════════════════
-
-MMDManager.prototype.cleanupFloatingButtons = function () {
-    if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-        cancelAnimationFrame(this._uiUpdateLoopId);
-        this._uiUpdateLoopId = null;
-    }
-
-    document.querySelectorAll('#mmd-floating-buttons, #mmd-lock-icon, #mmd-return-button-container').forEach(el => el.remove());
-
-    if (this._uiWindowHandlers) {
-        this._uiWindowHandlers.forEach(({ event, handler, target, options }) => {
-            (target || window).removeEventListener(event, handler, options);
-        });
-        this._uiWindowHandlers = [];
-    }
-
-    if (this._returnButtonDragHandlers) {
-        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
-        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
-        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
-        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
-        this._returnButtonDragHandlers = null;
-    }
-
-    this._mmdLockIcon = null;
-    this._floatingButtons = null;
-    this._returnButtonContainer = null;
-    this._floatingButtonsContainer = null;
-    this._isInReturnState = false;
-    this._mmdButtonsHovered = false;
 };

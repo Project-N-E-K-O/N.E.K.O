@@ -53,12 +53,16 @@ class Constraint {
       if (params.springPosition[i] !== 0) {
         constraint.enableSpring(i, true);
         constraint.setStiffness(i, params.springPosition[i]);
+        // Ammo.js 可能不会像 Bullet C++ 一样默认 m_springDamping=1.0，
+        // 显式设置临界阻尼，防止低阻尼刚体（飘带）在弹簧力下永远振荡
+        if (constraint.setDamping) constraint.setDamping(i, 1.0);
       }
     }
     for (let i = 0; i < 3; i++) {
       if (params.springRotation[i] !== 0) {
         constraint.enableSpring(i + 3, true);
         constraint.setStiffness(i + 3, params.springRotation[i]);
+        if (constraint.setDamping) constraint.setDamping(i + 3, 1.0);
       }
     }
     if (constraint.setParam !== void 0) {
@@ -678,7 +682,10 @@ class MMDPhysics {
     const dispatcher = new Ammo.btCollisionDispatcher(config);
     const cache = new Ammo.btDbvtBroadphase();
     const solver = new Ammo.btSequentialImpulseConstraintSolver();
-    return new Ammo.btDiscreteDynamicsWorld(dispatcher, cache, solver, config);
+    const world = new Ammo.btDiscreteDynamicsWorld(dispatcher, cache, solver, config);
+    // Split Impulse: 将穿模位置修正与速度求解分离
+    // 防止堆叠刚体（如缎带上叠加其他物理体）因 ERP 位置修正注入动量而产生振荡
+    return world;
   }
   _init(mesh, rigidBodyParams, constraintParams) {
     const manager = this.manager;
@@ -835,7 +842,9 @@ const MMDAmmoPhysics = (mmd) => {
   return {
     createHelper: () => physics.createHelper(),
     reset: () => physics.reset(),
-    update: (delta) => physics.update(delta)
+    update: (delta) => physics.update(delta),
+    setGravity: (gravity) => physics.setGravity(gravity),
+    getPhysics: () => physics
   };
 };
 

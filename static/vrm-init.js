@@ -23,9 +23,10 @@
             '/static/vrm-manager.js'
         ];
 
-        // 必须顺序加载的 UI 模块（vrm-ui-buttons.js 依赖 vrm-ui-popup.js 中定义的 createPopup）
+        // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）
+        // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
+        // 已由 HTML 静态 <script> 加载，此处不再重复加载
         const sequentialModules = [
-            '/static/vrm-ui-popup.js',
             '/static/vrm-ui-buttons.js'
         ];
 

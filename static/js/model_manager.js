@@ -6,6 +6,8 @@
         // 注意：不能用 vrmModuleLoaded，因为下游 waitForVRM 会误判为已完成
         window._vrmModulesLoading = true;
 
+        // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
+        // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const vrmModules = [
             '/static/vrm-orientation.js',
             '/static/vrm-core.js',
@@ -14,7 +16,6 @@
             '/static/vrm-interaction.js',
             '/static/vrm-cursor-follow.js',
             '/static/vrm-manager.js',
-            '/static/vrm-ui-popup.js',
             '/static/vrm-ui-buttons.js',
             '/static/vrm-init.js'
         ];
@@ -59,6 +60,8 @@
         console.log('[MMD] 开始加载依赖模块');
         window._mmdModulesLoading = true;
 
+        // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
+        // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
             '/static/mmd-core.js',
             '/static/mmd-animation.js',
@@ -66,7 +69,6 @@
             '/static/mmd-interaction.js',
             '/static/mmd-cursor-follow.js',
             '/static/mmd-manager.js',
-            '/static/mmd-ui-popup.js',
             '/static/mmd-ui-buttons.js',
             '/static/mmd-init.js'
         ];

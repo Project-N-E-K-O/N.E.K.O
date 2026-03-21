@@ -75,6 +75,35 @@ class MMDCore {
         this.manager.renderer.setPixelRatio(pixelRatio);
     }
 
+    /**
+     * 应用画质设置（模仿 VRM 的画质分级系统）
+     * low:    pixelRatio=0.8, 物理关, 描边关
+     * medium: pixelRatio=1.0, 物理开, 描边关
+     * high:   pixelRatio=auto, 物理开, 描边开
+     */
+    applyQualitySettings(quality) {
+        if (!this.manager.renderer) return;
+
+        const devicePixelRatio = window.devicePixelRatio || 1;
+
+        if (quality === 'low') {
+            this.manager.renderer.setPixelRatio(Math.min(0.8, devicePixelRatio));
+            this.manager.enablePhysics = false;
+            this.manager.useOutlineEffect = false;
+        } else if (quality === 'medium') {
+            this.manager.renderer.setPixelRatio(Math.min(1.0, devicePixelRatio));
+            this.manager.enablePhysics = true;
+            this.manager.useOutlineEffect = false;
+        } else {
+            // high: 使用性能检测的原始像素比
+            this.applyPerformanceSettings();
+            this.manager.enablePhysics = true;
+            this.manager.useOutlineEffect = true;
+        }
+
+        console.log(`[MMD] 画质设置: ${quality}, physics=${this.manager.enablePhysics}, outline=${this.manager.useOutlineEffect}`);
+    }
+
     // ═══════════════════ 模块动态导入 ═══════════════════
 
     async _getMMDModule() {
@@ -217,6 +246,7 @@ class MMDCore {
         this.manager.renderer.setClearColor(0x000000, 0); // 透明背景
         this.manager.renderer.debug.checkShaderErrors = true;
         this.applyPerformanceSettings();
+        this.applyQualitySettings(window.renderQuality || 'medium');
 
         // 颜色空间
         if (THREE.SRGBColorSpace !== undefined) {
@@ -285,6 +315,21 @@ class MMDCore {
         if (!alreadyRegistered) {
             this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
             window.addEventListener('resize', this.manager._resizeHandler);
+        }
+
+        // 监听画质变更事件
+        const qualityChangeHandler = (e) => {
+            const quality = e.detail?.quality;
+            if (quality && window.mmdManager?.core) {
+                window.mmdManager.core.applyQualitySettings(quality);
+            }
+        };
+        const alreadyQualityRegistered = this.manager._coreWindowHandlers.some(
+            h => h.event === 'neko-render-quality-changed' && h.handler === qualityChangeHandler
+        );
+        if (!alreadyQualityRegistered) {
+            this.manager._coreWindowHandlers.push({ event: 'neko-render-quality-changed', handler: qualityChangeHandler });
+            window.addEventListener('neko-render-quality-changed', qualityChangeHandler);
         }
 
         // 应用已保存的调试渲染设置
@@ -747,19 +792,34 @@ class MMDCore {
         // 限制 delta 以防止长时间切页后的突变
         const clampedDelta = Math.min(delta, 0.1);
 
-        // 更新物理
-        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
-            this.manager.currentModel.update(clampedDelta);
-        }
+        // ── MMD 标准更新顺序：动画 → IK/Grant → 鼠标跟踪 → 物理 ──
 
-        // 更新动画
+        // 1. 更新动画（骨骼关键帧）
         if (this.manager.animationModule && this.manager.animationModule.isPlaying) {
             this.manager.animationModule.update(clampedDelta);
         }
 
-        // 更新鼠标跟踪
+        // 2. IK/Grant 求解（每帧执行）
+        //    Grant（付与変換）常用负比率实现骨骼联动（如裙摆反向补偿），
+        //    必须每帧执行，否则 kinematic 骨骼位置错误导致物理镜像分离。
+        if (this.manager.animationModule && !this.manager.animationModule.isPlaying) {
+            const anim = this.manager.animationModule;
+            const mmd = this.manager.currentModel;
+            if (mmd && mmd.mesh) {
+                mmd.mesh.updateMatrixWorld(true);
+                if (anim.ikSolver) anim.ikSolver.update();
+                if (anim.grantSolver) anim.grantSolver.update();
+            }
+        }
+
+        // 3. 更新鼠标跟踪（在物理之前，让 kinematic 骨骼到位）
         if (this.manager.cursorFollow) {
             this.manager.cursorFollow.update(clampedDelta);
+        }
+
+        // 4. 更新物理（库内部有 substep）
+        if (this.manager.enablePhysics && this.manager.currentModel && this.manager.currentModel.physics) {
+            this.manager.currentModel.update(clampedDelta);
         }
 
         // 更新 OrbitControls

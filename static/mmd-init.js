@@ -22,9 +22,10 @@
             '/static/mmd-manager.js'
         ];
 
-        // UI 模块（popup 必须在 buttons 之前，debug 在 buttons 之后）
+        // UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons → debug）
+        // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
+        // 已由 HTML 静态 <script> 加载，此处不再重复加载
         const sequentialModules = [
-            '/static/mmd-ui-popup.js',
             '/static/mmd-ui-buttons.js',
             '/static/mmd-ui-debug.js'
         ];
