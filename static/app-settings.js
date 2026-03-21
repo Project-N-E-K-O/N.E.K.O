@@ -65,19 +65,25 @@
      * 将对话设置同步到服务器（异步，不阻塞）
      * 用于定期备份和跨会话持久化
      */
-    function syncSettingsToServer() {
+    async function syncSettingsToServer() {
         const settings = getConversationSettings();
-        fetch('/api/config/conversation-settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(settings)
-        }).then(response => {
+        try {
+            const response = await fetch('/api/config/conversation-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
             if (!response.ok) {
-                console.warn('[app-settings] 同步设置到服务器失败:', response.status);
+                console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                return;
             }
-        }).catch(err => {
-            console.warn('[app-settings] 同步设置到服务器失败:', err);
-        });
+            const data = await response.json();
+            if (!data.success) {
+                console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+            }
+        } catch (err) {
+            console.error('[app-settings] 同步设置到服务器失败:', err);
+        }
     }
 
     /**
@@ -323,21 +329,29 @@
                             hasUpdate = true;
                         }
                     }
+                    // 同步字幕设置到 subtitle.js（内部闭包变量）
+                    if (serverSettings.subtitleEnabled !== undefined && window.subtitleBridge) {
+                        window.subtitleBridge.setSubtitleEnabled(serverSettings.subtitleEnabled);
+                    }
+                    if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
+                        window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
+                    }
                     if (hasUpdate) {
                         console.log('[app-settings] 已从服务器合并对话设置');
+                        // 同步 window 镜像变量，防止 saveSettings() 回滚
+                        window.proactiveChatEnabled = S.proactiveChatEnabled;
+                        window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                        window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
+                        window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
+                        window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
+                        window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
+                        window.proactiveMusicEnabled = S.proactiveMusicEnabled;
+                        window.mergeMessagesEnabled = S.mergeMessagesEnabled;
+                        window.focusModeEnabled = S.focusModeEnabled;
+                        window.proactiveChatInterval = S.proactiveChatInterval;
+                        window.proactiveVisionInterval = S.proactiveVisionInterval;
                         // 同步回 localStorage
                         saveSettings();
-                    }
-                    // 同步字幕设置到 subtitle.js
-                    if (serverSettings.subtitleEnabled !== undefined) {
-                        S.subtitleEnabled = serverSettings.subtitleEnabled;
-                        localStorage.setItem('subtitleEnabled', S.subtitleEnabled.toString());
-                    }
-                    if (serverSettings.userLanguage !== undefined) {
-                        S.userLanguage = serverSettings.userLanguage;
-                        if (S.userLanguage) {
-                            localStorage.setItem('userLanguage', S.userLanguage);
-                        }
                     }
                 }
             });

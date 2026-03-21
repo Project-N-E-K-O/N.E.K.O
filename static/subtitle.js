@@ -831,3 +831,22 @@ function initSubtitleDrag() {
 
     console.log('[Subtitle] 字幕拖拽功能已初始化');
 }
+
+// ======================== 外部桥接接口 ========================
+// 供 app-settings.js 等其他模块在合并服务器设置后调用，保持内部状态同步
+window.subtitleBridge = {
+    setSubtitleEnabled: function(enabled) {
+        subtitleEnabled = enabled;
+        if (typeof window.appState !== 'undefined') {
+            window.appState.subtitleEnabled = subtitleEnabled;
+        }
+        localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
+    },
+    setUserLanguage: function(lang) {
+        userLanguage = lang;
+        if (typeof window.appState !== 'undefined') {
+            window.appState.userLanguage = userLanguage;
+        }
+        localStorage.setItem('userLanguage', userLanguage);
+    }
+};

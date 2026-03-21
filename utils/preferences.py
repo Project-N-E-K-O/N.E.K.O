@@ -13,7 +13,7 @@ PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
     加载用户偏好设置
-    
+
     Returns:
         List[Dict[str, Any]]: 用户偏好列表，每个元素对应一个模型的偏好设置，如果文件不存在或读取失败则返回空列表
     """
@@ -28,7 +28,8 @@ def load_user_preferences() -> List[Dict[str, Any]]:
                     else:
                         return []
                 elif isinstance(data, list):
-                    return data
+                    # 过滤掉全局对话设置的哨兵条目
+                    return [pref for pref in data if pref.get('model_path') != GLOBAL_CONVERSATION_KEY]
                 else:
                     return []
     except Exception as e:
@@ -259,21 +260,32 @@ def move_model_to_top(model_path: str) -> bool:
 
 GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 
+# 全局对话设置允许的字段（白名单）
+_ALLOWED_CONVERSATION_SETTINGS = {
+    'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+    'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+    'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
+}
+
 
 def load_global_conversation_settings() -> Dict[str, Any]:
     """
     加载全局对话设置（从 user_preferences.json 的全局条目中读取）
+    直接读取文件，不经过 load_user_preferences()（后者会过滤掉哨兵）
 
     Returns:
         Dict[str, Any]: 对话设置字典，如果不存在则返回空字典
     """
     try:
-        preferences = load_user_preferences()
-        for pref in preferences:
-            if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
-                # 提取对话设置（排除 model_path 本身）
-                settings = {k: v for k, v in pref.items() if k != 'model_path'}
-                return settings
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for pref in data:
+                        if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                            # 提取对话设置（排除 model_path 本身）
+                            return {k: v for k, v in pref.items() if k != 'model_path'}
     except Exception as e:
         print(f"加载全局对话设置失败: {e}")
     return {}
@@ -282,6 +294,7 @@ def load_global_conversation_settings() -> Dict[str, Any]:
 def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
     """
     保存全局对话设置（写入 user_preferences.json 的全局条目）
+    使用白名单过滤，只保存允许的字段，model_path 固定为哨兵值
 
     Args:
         settings (Dict[str, Any]): 要保存的对话设置字典
@@ -290,27 +303,39 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         bool: 保存成功返回True，失败返回False
     """
     try:
-        preferences = load_user_preferences()
+        # 直接读取完整文件（不经过 load_user_preferences，避免哨兵被过滤）
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = []
+
+        if not isinstance(data, list):
+            data = []
 
         # 查找全局对话设置条目的索引
         global_index = -1
-        for i, pref in enumerate(preferences):
+        for i, pref in enumerate(data):
             if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
                 global_index = i
                 break
 
-        # 创建全局对话设置条目
+        # 白名单过滤：只保留允许的字段，防止恶意覆盖
+        filtered_settings = {k: v for k, v in settings.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
+
+        # 创建全局对话设置条目（model_path 固定，不可被用户输入篡改）
         global_pref = {'model_path': GLOBAL_CONVERSATION_KEY}
-        global_pref.update(settings)
+        global_pref.update(filtered_settings)
 
         if global_index >= 0:
             # 更新现有条目（保留其他模型偏好不变）
-            preferences[global_index] = global_pref
+            data[global_index] = global_pref
         else:
             # 添加新条目到列表末尾
-            preferences.append(global_pref)
+            data.append(global_pref)
 
-        return save_user_preferences(preferences)
+        atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
+        return True
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
         return False 
