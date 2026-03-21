@@ -66,6 +66,16 @@ class _Ctx:
         return {"config": merged}
 
 
+class _AsyncLineStream:
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+
+    async def readline(self) -> bytes:
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
+
 @pytest.mark.asyncio
 async def test_mcp_normalizer_returns_result_and_preserves_plugin_target() -> None:
     normalizer = MCPRequestNormalizer()
@@ -221,6 +231,55 @@ async def test_mcp_gateway_invoke_uses_handle_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_http_response_reader_supports_sse_payload() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+
+    class _Response:
+        headers = {"Content-Type": "text/event-stream"}
+        content = _AsyncLineStream([
+            b"event: message\n",
+            b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\n",
+            b"\n",
+        ])
+
+    payload = await client._read_http_response_payload(_Response(), expected_id=9)
+
+    assert payload == {"jsonrpc": "2.0", "id": 9, "result": {"ok": True}}
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_register_uses_extended_dynamic_entry_timeout() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._tool_timeout = 60.0
+    plugin._clients["fetch"] = type("Client", (), {})()
+
+    captured: dict[str, object] = {}
+
+    def _register_dynamic_entry(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    plugin.register_dynamic_entry = _register_dynamic_entry  # type: ignore[method-assign]
+
+    ok = await plugin._on_tool_register(
+        "mcp_fetch_fetch",
+        "[fetch] fetch",
+        "Fetch URL",
+        {"type": "object"},
+    )
+
+    assert ok is True
+    assert captured["timeout"] == 65.0
+
+
+@pytest.mark.asyncio
 async def test_mcp_http_call_tool_passes_timeout_to_http_request() -> None:
     client = MCPClient(
         MCPServerConfig(
@@ -250,6 +309,142 @@ async def test_mcp_http_call_tool_passes_timeout_to_http_request() -> None:
         "params": {"name": "demo_tool", "arguments": {"q": 1}},
         "timeout": 12.5,
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_treats_is_error_payload_as_error() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+    client.connected = True
+
+    async def _send_request(method: str, params, *, timeout: float = 60.0):
+        return {
+            "result": {
+                "content": [
+                    {"type": "text", "text": "Input validation error: '' should be non-empty"}
+                ],
+                "isError": True,
+            }
+        }
+
+    client._send_request = _send_request  # type: ignore[method-assign]
+
+    result = await client.call_tool("demo_tool", {"q": ""}, timeout=12.5)
+
+    assert result["error"] == "Input validation error: '' should be non-empty"
+    assert result["result"]["isError"] is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_treats_error_tag_in_success_payload_as_error() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="demo",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+    client.connected = True
+
+    async def _send_request(method: str, params, *, timeout: float = 60.0):
+        return {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Contents of https://example.com:\n<error>Page failed to be simplified from HTML</error>",
+                    }
+                ],
+                "isError": False,
+            }
+        }
+
+    client._send_request = _send_request  # type: ignore[method-assign]
+
+    result = await client.call_tool("demo_tool", {"url": "https://example.com"}, timeout=12.5)
+
+    assert result["error"] == "Page failed to be simplified from HTML"
+    assert result["result"]["isError"] is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_recovers_html_via_generic_raw_mode_support() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="demo",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+    client.connected = True
+    client.tools = [
+        type(
+            "Tool",
+            (),
+            {
+                "name": "demo_tool",
+                "description": "",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "raw": {"type": "boolean"},
+                    },
+                },
+                "server_name": "demo",
+            },
+        )()
+    ]
+
+    seen_arguments: list[dict[str, object]] = []
+
+    async def _send_request(method: str, params, *, timeout: float = 60.0):
+        seen_arguments.append(dict(params["arguments"]))
+        if len(seen_arguments) == 1:
+            return {
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Contents of https://example.com:\n<error>Page failed to be simplified from HTML</error>",
+                        }
+                    ],
+                    "isError": False,
+                }
+            }
+        return {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Content type text/html cannot be simplified to markdown, but here is the raw content:\nContents of https://example.com:\n\n<!DOCTYPE html><html><body><main><h1>Example</h1><p>Hello world</p></main></body></html>",
+                    }
+                ],
+                "isError": False,
+            }
+        }
+
+    client._send_request = _send_request  # type: ignore[method-assign]
+
+    result = await client.call_tool("demo_tool", {"url": "https://example.com"}, timeout=12.5)
+
+    assert result["result"]["isError"] is False
+    rendered = result["result"]["content"][0]["text"]
+    assert "Contents of https://example.com:" in rendered
+    assert "# Example" in rendered
+    assert "Hello world" in rendered
+    assert seen_arguments == [
+        {"url": "https://example.com"},
+        {"url": "https://example.com", "raw": True},
+    ]
 
 
 @pytest.mark.asyncio
@@ -426,6 +621,60 @@ async def test_mcp_reconnect_server_cleans_task_slot_on_early_return() -> None:
     await plugin._reconnect_server("missing")
 
     assert "missing" not in plugin._reconnect_tasks
+
+
+@pytest.mark.asyncio
+async def test_mcp_disconnect_server_cancels_pending_reconnect_task() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    async def _sleep_forever():
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_sleep_forever())
+    plugin._reconnect_tasks["fetch"] = task
+    plugin._clients["fetch"] = type("Client", (), {"disconnect": lambda self: asyncio.sleep(0)})()
+
+    async def _unregister_mcp_tools(server_name: str) -> None:
+        return None
+
+    plugin._unregister_mcp_tools = _unregister_mcp_tools  # type: ignore[method-assign]
+
+    result = await plugin.disconnect_server("fetch")
+
+    assert isinstance(result, Ok)
+    assert "fetch" not in plugin._reconnect_tasks
+    await asyncio.sleep(0)
+    assert task.cancelled() is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_remove_servers_cancels_pending_reconnect_task() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._servers_config = {
+        "fetch": {"transport": "streamable-http", "url": "https://example.com"}
+    }
+
+    async def _sleep_forever():
+        await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_sleep_forever())
+    plugin._reconnect_tasks["fetch"] = task
+
+    async def _dump(*, timeout: float = 5.0):
+        return {"mcp_servers": {"fetch": {"transport": "streamable-http", "url": "https://example.com"}}}
+
+    async def _update_own_config(updates, timeout: float = 10.0):
+        return {"config": {"mcp_servers": {}}}
+
+    plugin.config.dump = _dump  # type: ignore[method-assign]
+    plugin.ctx.update_own_config = _update_own_config  # type: ignore[method-assign]
+
+    result = await plugin.remove_servers(["fetch"])
+
+    assert isinstance(result, Ok)
+    assert "fetch" not in plugin._reconnect_tasks
+    await asyncio.sleep(0)
+    assert task.cancelled() is True
 
 
 @pytest.mark.asyncio

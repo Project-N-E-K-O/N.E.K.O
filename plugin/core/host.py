@@ -900,6 +900,9 @@ def _plugin_process_runner(
         def _resolve_timeout(entry_id: str):
             entry_meta = entry_meta_map.get(entry_id)
             if entry_meta:
+                timeout_value = getattr(entry_meta, "timeout", None)
+                if timeout_value is not None:
+                    return None if timeout_value <= 0 else timeout_value
                 extra = getattr(entry_meta, "extra", None) or {}
                 ct = extra.get("timeout")
                 if ct is not None:
@@ -929,6 +932,27 @@ def _plugin_process_runner(
                 or getattr(instance, entry_id, None)
                 or getattr(instance, f"entry_{entry_id}", None)
             )
+            if method is None and hasattr(instance, "collect_entries") and callable(instance.collect_entries):
+                try:
+                    _rebuild_entry_map()
+                    method = (
+                        entry_map.get(entry_id)
+                        or getattr(instance, entry_id, None)
+                        or getattr(instance, f"entry_{entry_id}", None)
+                    )
+                    if method is not None:
+                        logger.info(
+                            "[Plugin Process] Rebuilt dynamic entry map and resolved entry='{}' req_id={}",
+                            entry_id,
+                            req_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to rebuild entry map while resolving '{}' req_id={}: {}",
+                        entry_id,
+                        req_id,
+                        e,
+                    )
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
 
             run_id = None

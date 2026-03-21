@@ -12,10 +12,14 @@ MCP (Model Context Protocol) Router - 连接 MCP servers 并将其 tools 暴露�
 import asyncio
 import json
 import os
+import re
 import subprocess
 import copy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
+
+from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
 
 from plugin.sdk.plugin import (
     neko_plugin,
@@ -109,6 +113,185 @@ class MCPClient:
         # 重连配置
         self._reconnect_attempts = 0
         self._on_disconnect_callback: Optional[Callable] = None
+        self._content_error_pattern = re.compile(r"<error>\s*(.*?)\s*</error>", re.IGNORECASE | re.DOTALL)
+        self._simplification_error_pattern = re.compile(
+            r"(failed to be simplified from html|cannot be simplified to markdown)",
+            re.IGNORECASE,
+        )
+
+    def _extract_tool_error_message(self, payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+
+        content = payload.get("content")
+        text_parts: list[str] = []
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+
+        if payload.get("isError") is True:
+            if text_parts:
+                return "\n".join(text_parts)
+
+            structured_error = payload.get("error")
+            if isinstance(structured_error, dict):
+                message = structured_error.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+            if isinstance(structured_error, str) and structured_error.strip():
+                return structured_error.strip()
+
+            return "MCP tool returned isError=true"
+
+        for text in text_parts:
+            match = self._content_error_pattern.search(text)
+            if match is not None:
+                extracted = match.group(1).strip()
+                if extracted:
+                    return extracted
+
+        return None
+
+    def _get_tool_schema(self, tool_name: str) -> Dict[str, object] | None:
+        for tool in self.tools:
+            if tool.name == tool_name:
+                return tool.input_schema
+        return None
+
+    def _tool_supports_raw_mode(self, tool_name: str) -> bool:
+        schema = self._get_tool_schema(tool_name)
+        if not isinstance(schema, dict):
+            return False
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        raw_obj = properties.get("raw")
+        if not isinstance(raw_obj, dict):
+            return False
+        return raw_obj.get("type") == "boolean"
+
+    def _should_retry_with_raw_mode(
+        self,
+        tool_name: str,
+        arguments: Dict[str, object],
+        payload: object,
+    ) -> bool:
+        if "raw" in arguments:
+            return False
+        if not self._tool_supports_raw_mode(tool_name):
+            return False
+        error_message = self._extract_tool_error_message(payload)
+        if not isinstance(error_message, str):
+            return False
+        return self._simplification_error_pattern.search(error_message) is not None
+
+    def _extract_embedded_html(self, payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        content = payload.get("content")
+        if not isinstance(content, list):
+            return None
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str):
+                continue
+            html_start = text.find("<!DOCTYPE")
+            if html_start < 0:
+                html_start = text.find("<html")
+            if html_start >= 0:
+                return text[html_start:].strip()
+        return None
+
+    def _normalize_html_payload(self, payload: object, *, source_url: str | None = None) -> Dict[str, object] | None:
+        html = self._extract_embedded_html(payload)
+        if not isinstance(html, str) or not html.strip():
+            return None
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
+            tag.decompose()
+
+        target = soup.body or soup
+        markdown = markdownify_html(str(target), heading_style="ATX").strip()
+        if not markdown:
+            return None
+
+        text = markdown if not source_url else f"Contents of {source_url}:\n{markdown}"
+        return {
+            "content": [{"type": "text", "text": text}],
+            "isError": False,
+        }
+
+    async def _read_http_response_payload(
+        self,
+        response: object,
+        *,
+        expected_id: int | None = None,
+    ) -> Dict[str, object]:
+        headers = getattr(response, "headers", {}) or {}
+        content_type_obj = headers.get("Content-Type") or headers.get("content-type") or ""
+        content_type = str(content_type_obj).lower()
+
+        if "text/event-stream" not in content_type:
+            payload = await response.json()
+            if not isinstance(payload, dict):
+                raise ValueError(f"Expected JSON object response, got {type(payload).__name__}")
+            return payload
+
+        content = getattr(response, "content", None)
+        if content is None:
+            raise ValueError("SSE response missing content stream")
+
+        data_lines: list[str] = []
+        matched_payload: Dict[str, object] | None = None
+
+        async def _flush_event() -> Dict[str, object] | None:
+            nonlocal data_lines
+            if not data_lines:
+                return None
+            raw = "\n".join(data_lines).strip()
+            data_lines = []
+            if not raw:
+                return None
+            payload_obj = json.loads(raw)
+            if not isinstance(payload_obj, dict):
+                return None
+            if expected_id is None:
+                return payload_obj
+            payload_id = payload_obj.get("id")
+            if payload_id == expected_id:
+                return payload_obj
+            return None
+
+        while True:
+            line = await content.readline()
+            if not line:
+                payload = await _flush_event()
+                if payload is not None:
+                    matched_payload = payload
+                break
+
+            decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if decoded == "":
+                payload = await _flush_event()
+                if payload is not None:
+                    matched_payload = payload
+                    break
+                continue
+            if decoded.startswith(":"):
+                continue
+            if decoded.startswith("data:"):
+                data_lines.append(decoded[5:].lstrip())
+
+        if matched_payload is None:
+            raise ValueError("No matching JSON-RPC payload found in SSE response")
+        return matched_payload
     
     async def connect(self, timeout: float = 30.0) -> bool:
         """连接到 MCP Server"""
@@ -263,7 +446,7 @@ class MCPClient:
             ) as resp:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
-                init_result = await resp.json()
+                init_result = await self._read_http_response_payload(resp, expected_id=1)
                 # 保存 session ID（如果服务器返回）
                 session_id = resp.headers.get("mcp-session-id")
                 if session_id:
@@ -297,7 +480,7 @@ class MCPClient:
             ) as resp:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
-                tools_result = await resp.json()
+                tools_result = await self._read_http_response_payload(resp, expected_id=2)
 
             if "error" in tools_result:
                 raise ValueError(f"Failed to list tools: {tools_result['error']}")
@@ -411,8 +594,34 @@ class MCPClient:
             
             if result.get("error"):
                 return {"error": result["error"]}
-            
-            return {"result": result.get("result", {})}
+
+            payload = result.get("result", {})
+            tool_error = self._extract_tool_error_message(payload)
+            if tool_error is not None:
+                if self._should_retry_with_raw_mode(tool_name, arguments, payload):
+                    retry_arguments = dict(arguments)
+                    retry_arguments["raw"] = True
+                    retry_result = await asyncio.wait_for(
+                        self._send_request("tools/call", {
+                            "name": tool_name,
+                            "arguments": retry_arguments,
+                        }, timeout=timeout),
+                        timeout=timeout
+                    )
+                    if retry_result.get("error"):
+                        return {"error": retry_result["error"]}
+                    retry_payload = retry_result.get("result", {})
+                    source_url = arguments.get("url") if isinstance(arguments.get("url"), str) else None
+                    normalized_retry_payload = self._normalize_html_payload(retry_payload, source_url=source_url)
+                    if normalized_retry_payload is not None:
+                        return {"result": normalized_retry_payload}
+                    retry_error = self._extract_tool_error_message(retry_payload)
+                    if retry_error is None:
+                        return {"result": retry_payload}
+                    return {"error": retry_error, "result": retry_payload}
+                return {"error": tool_error, "result": payload}
+
+            return {"result": payload}
             
         except asyncio.TimeoutError:
             return {"error": f"Tool call timed out after {timeout}s"}
@@ -476,7 +685,7 @@ class MCPClient:
         ) as resp:
             if resp.status != 200:
                 raise Exception(f"HTTP {resp.status}: {await resp.text()}")
-            result = await resp.json()
+            result = await self._read_http_response_payload(resp, expected_id=request_id)
         
         if "error" in result:
             return {"error": result["error"]}
@@ -639,6 +848,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._auto_reconnect = True
         self._reconnect_interval = 5
         self._max_reconnect_attempts = 3
+        self._tool_timeout = 60.0
         self._servers_config: Dict[str, Dict[str, object]] = {}
         
         # Gateway Core 组件
@@ -671,6 +881,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._auto_reconnect = self._coerce_bool(adapter_config.get("auto_reconnect", True), True)
         self._reconnect_interval = self._coerce_int(adapter_config.get("reconnect_interval", 5), 5, minimum=0)
         self._max_reconnect_attempts = self._coerce_int(adapter_config.get("max_reconnect_attempts", 3), 3, minimum=0)
+        self._tool_timeout = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
         self._servers_config = servers_config
         
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
@@ -729,8 +940,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             target_client = self._clients.get(server_name)
             if not target_client:
                 return Err(SdkError(f"Server '{server_name}' not connected"))
-            
-            result = await target_client.call_tool(tool_name, arguments)
+
+            result = await target_client.call_tool(tool_name, arguments, timeout=self._tool_timeout)
             if "error" in result:
                 return Err(SdkError(str(result["error"])))
             return Ok(result.get("result", {}))
@@ -743,6 +954,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             description=description,
             input_schema=schema,
             kind="action",
+            timeout=self._tool_timeout + 5.0,
         )
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
@@ -919,6 +1131,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         if self._route_engine:
             count = await self._route_engine.register_server_tools(server_name, client)
             self.ctx.logger.info(f"Registered {count} tools from MCP server '{server_name}'")
+
+    def _cancel_reconnect_task(self, server_name: str) -> bool:
+        task = self._reconnect_tasks.pop(server_name, None)
+        if task is None:
+            return False
+        task.cancel()
+        return True
     
     async def _unregister_mcp_tools(self, server_name: str) -> None:
         """
@@ -1241,6 +1460,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """断开与指定 MCP server 的连接"""
         if server_name not in self._clients:
             return Err(SdkError(f"Server '{server_name}' is not connected"))
+
+        self._cancel_reconnect_task(server_name)
         
         # 注销 MCP tools
         await self._unregister_mcp_tools(server_name)
@@ -1415,6 +1636,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             if name not in servers_config:
                 not_found.append(name)
                 continue
+
+            self._cancel_reconnect_task(name)
             
             # 如果已连接，先断开
             if name in self._clients:

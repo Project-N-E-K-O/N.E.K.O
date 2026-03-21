@@ -179,6 +179,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         input_schema: dict[str, Any] | None = None,
         kind: str = "action",
         auto_start: bool = False,
+        timeout: float | None = None,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
@@ -196,8 +197,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
             input_schema=input_schema,
             kind=kind,
             auto_start=auto_start,
+            timeout=timeout,
             metadata={"dynamic": True, "enabled": True},
         )
+        if timeout is not None:
+            meta.extra["timeout"] = timeout
         self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
         self._notify_dynamic_entry_registered(entry_id, meta, enabled=True)
         return True

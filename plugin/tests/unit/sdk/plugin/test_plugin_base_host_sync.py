@@ -57,3 +57,14 @@ def test_dynamic_entry_updates_notify_host() -> None:
     seen = {(item.get("type"), item.get("action"), item.get("entry_id")) for item in ctx.message_queue.items}
     assert ("ENTRY_UPDATE", "register", "dyn") in seen
     assert ("ENTRY_UPDATE", "unregister", "dyn") in seen
+
+
+def test_register_dynamic_entry_preserves_timeout_in_meta() -> None:
+    ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
+    plugin = _Plugin(ctx)
+
+    plugin.register_dynamic_entry("dyn", lambda **_: {"ok": True}, name="Dyn", timeout=42.0)
+
+    event_handler = plugin.collect_entries()["dyn"]
+    assert event_handler.meta.timeout == 42.0
+    assert event_handler.meta.extra["timeout"] == 42.0
