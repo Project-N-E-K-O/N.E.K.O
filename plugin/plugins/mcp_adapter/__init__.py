@@ -181,7 +181,7 @@ class MCPClient:
         arguments: Dict[str, object],
         payload: object,
     ) -> bool:
-        if "raw" in arguments:
+        if arguments.get("raw") is True:
             return False
         if not self._tool_supports_raw_mode(tool_name):
             return False
@@ -205,6 +205,14 @@ class MCPClient:
             html_start = text.find("<!DOCTYPE")
             if html_start < 0:
                 html_start = text.find("<html")
+            if html_start < 0:
+                html_start = text.find("<body")
+            if html_start < 0:
+                html_start = text.find("<main")
+            if html_start < 0:
+                generic_match = re.search(r"<([a-zA-Z][a-zA-Z0-9:_-]*)(\s|>)", text)
+                if generic_match is not None:
+                    html_start = generic_match.start()
             if html_start >= 0:
                 return text[html_start:].strip()
         return None

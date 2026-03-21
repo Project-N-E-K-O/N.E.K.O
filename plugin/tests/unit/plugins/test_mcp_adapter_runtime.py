@@ -478,6 +478,78 @@ async def test_mcp_call_tool_recovers_html_via_generic_raw_mode_support() -> Non
 
 
 @pytest.mark.asyncio
+async def test_mcp_call_tool_retries_raw_mode_when_raw_false_was_explicitly_passed() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="demo",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+    client.connected = True
+    client.tools = [
+        type(
+            "Tool",
+            (),
+            {
+                "name": "demo_tool",
+                "description": "",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "raw": {"type": "boolean"},
+                    },
+                },
+                "server_name": "demo",
+            },
+        )()
+    ]
+
+    seen_arguments: list[dict[str, object]] = []
+
+    async def _send_request(method: str, params, *, timeout: float = 60.0):
+        seen_arguments.append(dict(params["arguments"]))
+        if len(seen_arguments) == 1:
+            return {
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Page failed to be simplified from HTML",
+                        }
+                    ],
+                    "isError": True,
+                }
+            }
+        return {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "<main><h1>Example</h1><p>Hello world</p></main>",
+                    }
+                ],
+                "isError": False,
+            }
+        }
+
+    client._send_request = _send_request  # type: ignore[method-assign]
+
+    result = await client.call_tool("demo_tool", {"url": "https://example.com", "raw": False}, timeout=12.5)
+
+    assert result["result"]["isError"] is False
+    rendered = result["result"]["content"][0]["text"]
+    assert "# Example" in rendered
+    assert "Hello world" in rendered
+    assert seen_arguments == [
+        {"url": "https://example.com", "raw": False},
+        {"url": "https://example.com", "raw": True},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_mcp_connect_http_rejects_tools_list_jsonrpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
     client = MCPClient(
         MCPServerConfig(
