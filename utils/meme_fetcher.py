@@ -461,6 +461,8 @@ class DoutubFetcher:
                         break
                 
                 for item in meme_list:
+                    if len(results) >= limit:
+                        break
                     if not isinstance(item, dict):
                         continue
                     url = item.get('url') or item.get('src') or item.get('imgUrl') or item.get('path')

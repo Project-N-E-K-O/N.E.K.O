@@ -1624,7 +1624,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'both':   '- 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
         'screen': '- 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
         'web':    '- 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-        'music':  '- 可以围绕提供的音乐推荐来搭话，比如聊歌曲、歌手、风格或要不要播放；但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+        'music':  '- 可以围绕提供的音乐推荐来搭话，比如聊聊曲风、节奏、氛围或是否要播放；但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
         'meme':   '- 系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给主人看。你的文字会配合这张图片一起发送，请用文字配合图片的内容/情绪来吐槽、卖萌或调侃主人。注意：表情包是发给主人看的，不是发给你的',
         'none':   '- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
     }
@@ -1643,7 +1643,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         'both':   '- You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
         'screen': '- You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
         'web':    '- You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
-        'music':  '- You may use the provided music recommendations as conversation material, such as talking about the song, artist, style, or whether to play it, but skip if you\'ve recently talked about something similar or you\'re not interested in it',
+        'music':  '- You may use the provided music recommendations as conversation material, such as talking about the genre, rhythm, atmosphere, or whether to play it, but skip if you\'ve recently talked about something similar or you\'re not interested in it',
         'meme':   '- The system will automatically send a funny meme image (like pandas, silly pictures, etc.) to the master. Your text will be sent together with the image, so please match the content/mood of the image to tease, act cute, or poke fun at the master. Note: The meme is sent TO the master, not TO you',
         'none':   '- You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
     }
@@ -1661,9 +1661,14 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     source_instruction = _si.get(lang, _si['en']).get(key, _si['en']['none'])
     
     # 强制在有 meme 时要求 AI 使用 [MEME] 标签
-    format_suffix = ""
-    if has_meme:
-        format_suffix = " (如果你打算配合表情包说话，请务必开篇使用 [MEME] 标签)" if lang == 'zh' else " (If you speak with the meme, MUST start with [MEME] tag)"
+    meme_required_hint = {
+        'zh': "\n\n(如果你打算配合表情包说话，请务必开篇使用 [MEME] 标签。注意：[MEME] 标签是必须的！)",
+        'en': "\n\n(If you speak with the meme, MUST start with [MEME] tag. Note: [MEME] tag is required!)",
+        'ja': "\n\n(ミームに合わせて話す場合は、必ず冒頭に [MEME] タグを使用してください。[MEME] タグは必須です！)",
+        'ko': "\n\n(밈과 함께 대화할 경우, 반드시 시작 부분에 [MEME] 태그를 사용하십시오. [MEME] 태그는 필수입니다!)",
+        'ru': "\n\n(Если вы говорите с мемом, ОБЯЗАТЕЛЬНО начните с тега [MEME]. Тег [MEME] обязателен!)",
+    }
+    format_suffix = meme_required_hint.get(lang, meme_required_hint['en']) if has_meme else ""
 
     # 下面是原有的 output_format_section 构建逻辑 (假设原有逻辑在下面，这里直接复用并增强)
 
@@ -1764,19 +1769,19 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '输出格式（严格遵守）：\n'
                 '- 放弃搭话 → 只输出 [PASS]\n'
                 '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n你在看这个啊？感觉你现在的心情就像这张图一样。'
+                '示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！'
             ),
             'screen_meme': (
                 '输出格式（严格遵守）：\n'
                 '- 放弃搭话 → 只输出 [PASS]\n'
                 '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n是不是觉得这个画面特别似曾相识？'
+                '示例：\n[MEME]\n虽然帮不上忙，但希望能逗你开心一下~'
             ),
             'web_meme': (
                 '输出格式（严格遵守）：\n'
                 '- 放弃搭话 → 只输出 [PASS]\n'
                 '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n说到这个话题，我打赌你现在的表情肯定跟这张图一模一样。'
+                '示例：\n[MEME]\n一直盯着屏幕眼睛会累的，稍微休息下吧？'
             ),
             'none': (
                 '如果没有什么好聊的，回复 [PASS]。\n'
@@ -1885,7 +1890,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
                 '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nWatching this? This meme fits the mood perfectly!'
+                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
             ),
             'web_meme': (
                 'Output format (strict):\n'
@@ -1988,19 +1993,19 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '出力形式（厳守）：\n'
                 '- パス → [PASS] のみ\n'
                 '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ。あなたのテキストはミーム画像と一緒に送信されます\n\n'
-                '例：\n[MEME]\nあはは、このミーム面白すぎ！'
+                '例：\n[MEME]\nお疲れ様！そばで応援してるからね〜'
             ),
             'both_meme': (
                 '出力形式（厳守）：\n'
                 '- パス → [PASS] のみ\n'
                 '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\nこれ見てるの？あはは、めっちゃリアル...'
+                '例：\n[MEME]\nずっと画面を見てると目が疲れちゃうよ、たまには休憩してね。'
             ),
             'screen_meme': (
                 '出力形式（厳守）：\n'
                 '- パス → [PASS] のみ\n'
                 '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\nこれ見てる？今の雰囲気にぴったりだね！'
+                '例：\n[MEME]\n少しでもあなたの力になれたら嬉しいな！'
             ),
             'web_meme': (
                 '出力形式（厳守）：\n'

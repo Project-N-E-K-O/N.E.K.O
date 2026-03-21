@@ -245,6 +245,13 @@ class ChatOpenAI:
             if content:
                 yield LLMStreamChunk(content=content)
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._aclient.close()
+        self._client.close()
+
 
 # ────────────────────────────────────────────────────────────────
 # OpenAIEmbeddings replacement (langchain_openai.OpenAIEmbeddings)

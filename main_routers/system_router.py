@@ -1120,8 +1120,12 @@ async def find_first_image(folder: str = None):
         logger.error(f"查找预览图片文件失败: {e}")
         return JSONResponse(content={"success": False, "error": "服务器内部错误"}, status_code=500)
 
-# 统一的表情包代理缓存，O(1) 过期管理
-MEME_PROXY_CACHE = TTLCache(maxsize=50, ttl=1800)
+# 统一的表情包代理缓存，使用 byte-based 限制 (50MB)，防止 OOM
+MEME_PROXY_CACHE = TTLCache(
+    maxsize=50 * 1024 * 1024,  # 50MB 内存预算
+    ttl=1800,
+    getsizeof=lambda item: len(item.get('body', b''))
+)
 
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
@@ -1541,8 +1545,6 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
             primary_channel = 'meme'
             if ctx.get('selected_meme_link'):
                 source_links.append(ctx['selected_meme_link'])
-                if ctx.get('selected_web_link'):
-                    source_links.append(ctx['selected_web_link'])
                 logger.debug(f"[{lan_name}] Phase 2 确定选择 MEME，已添加相关链接")
             else:
                 logger.warning(f"[{lan_name}] Phase 2 AI 选择 MEME 但无可用表情包链接，回退处理")
@@ -1715,6 +1717,7 @@ async def proactive_chat(request: Request):
                     })
                 print(f"[{lanlan_name}] 成功获取 {len(meme_data)} 个表情包 (来源: {source_name})")
                 return (mode, {
+                    'success': meme_content.get('success', True),
                     'formatted_content': formatted,
                     'data': meme_data,
                     'raw_data': meme_content,
