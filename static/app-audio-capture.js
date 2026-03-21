@@ -915,8 +915,13 @@
 
     window.toggleMicMute = function(showToast = true) {
         S.isMicMuted = !S.isMicMuted;
-        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', { 
-            detail: { muted: S.isMicMuted } 
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
         }));
         if (showToast && typeof window.showStatusToast === 'function') {
             const message = S.isMicMuted
@@ -929,8 +934,13 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
-        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', { 
-            detail: { muted: S.isMicMuted } 
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
         }));
         if (showToast && typeof window.showStatusToast === 'function') {
             const message = S.isMicMuted
