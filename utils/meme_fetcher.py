@@ -6,7 +6,14 @@ from typing import List, Dict, Any, Optional, Union
 from bs4 import BeautifulSoup
 import sys
 import os
+import jmespath
 from urllib.parse import quote, quote_plus, urljoin, urlparse
+
+# 全局的表情包图源白名单注册表，由爬虫层维护并供其他模块引用
+MEME_ALLOWED_HOSTS = [
+    'qn.doutub.com', 'img.soutula.com', 'i.imgflip.com',
+    'doutub.com', 'fabiaoqing.com', 'soutula.com'
+]
 
 try:
     from utils.logger_config import get_module_logger
@@ -301,6 +308,29 @@ class DoutubFetcher:
         self.search_url = f"{self.base_url}/search"
         self._session: Optional[httpx.AsyncClient] = None
 
+    def _add_meme_item(self, results: list, found_urls: set, url: str, title_raw: str, id_raw: str, search_url: str):
+        """统一的数据装配和过滤私有辅助方法，践行 DRY 原则"""
+        if not url or not isinstance(url, str) or not is_valid_meme_url(url):
+            return
+        
+        src = url if url.startswith('http') else ('https:' + url if url.startswith('//') else f"https://www.doutub.com{url}")
+        if src in found_urls:
+            return
+        
+        title = title_raw if title_raw else f"表情包_{len(results) + 1}"
+        item_id = str(id_raw) or (src.split('/')[-1].split('.')[0] if '/' in src else '')
+        img_type = 'gif' if '.gif' in src.lower() else 'meme'
+        
+        results.append({
+            "type": img_type,
+            "id": item_id,
+            "url": src,
+            "page_url": search_url,
+            "title": title,
+            "source": "斗图吧"
+        })
+        found_urls.add(src)
+
     async def __aenter__(self) -> "DoutubFetcher":
         if self._session is None:
             self._session = httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True)
@@ -363,7 +393,7 @@ class DoutubFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{quote_plus(keyword)}"
+        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
         try:
             html = await self._fetch_html(search_url)
             if not html:
@@ -385,141 +415,101 @@ class DoutubFetcher:
                         return False
                 return True
             
-            img_items = soup.select('img.sc-fHeRUl')
+            # 优先嗅探 SSR 静态数据块
+            ssr_data = None
+            import re
+            import json
             
-            for img in img_items:
-                if len(results) >= limit:
-                    break
-                
-                src = img.get('src', '')
-                title = img.get('alt', '') or img.get('title', '')
-                
-                if not src or not is_valid_meme_url(src):
-                    continue
-                
-                if src.startswith('//'):
-                    src = 'https:' + src
-                
-                item_id = ''
-                if '/' in src:
-                    item_id = src.split('/')[-1].split('.')[0]
-                
-                if not title:
-                    title = f"表情包_{len(results) + 1}"
-                
-                img_type = 'gif' if '.gif' in src.lower() else 'meme'
-                
-                results.append({
-                    "type": img_type,
-                    "id": item_id,
-                    "url": src,
-                    "page_url": search_url,
-                    "title": title,
-                    "source": "斗图吧"
-                })
+            nuxt_match = re.search(r'window\.__NUXT__\s*=\s*({.*?});', html, re.DOTALL)
+            next_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+            init_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
             
+            if next_match:
+                try:
+                    ssr_data = json.loads(next_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            elif nuxt_match:
+                try:
+                    ssr_data = json.loads(nuxt_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            elif init_match:
+                try:
+                    ssr_data = json.loads(init_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+            found_urls = set()
+            
+            # 尝试精准提取框架数据结构，摈弃全局散弹枪递归
+            if ssr_data:
+                possible_paths = [
+                    "props.pageProps.data.rows",
+                    "props.pageProps.list",
+                    "props.pageProps.memeList",
+                    "payload.data[0].list",
+                    "payload.data[0].rows",
+                    "data.rows"
+                ]
+                meme_list = []
+                for path in possible_paths:
+                    res = jmespath.search(path, ssr_data)
+                    if isinstance(res, list) and len(res) > 0:
+                        meme_list = res
+                        break
+                
+                for item in meme_list:
+                    if not isinstance(item, dict):
+                        continue
+                    url = item.get('url') or item.get('src') or item.get('imgUrl') or item.get('path')
+                    title_raw = item.get('title') or item.get('alt') or item.get('name') or ''
+                    id_raw = item.get('id', '')
+                    self._add_meme_item(results, found_urls, url, title_raw, id_raw, search_url)
+
+            # 若 SSR 内未提取到，且 results 依然为空，则尝试直接抓取 XHR 内部 API
             if not results:
-                img_items = soup.select('div.cell a img')
-                for img in img_items:
+                api_url = f"{self.base_url}/api/search/emotion/list"
+                api_params = {"keyword": keyword, "page": 1}
+                try:
+                    if self._session:
+                        api_resp = await self._session.get(api_url, params=api_params, headers=self._get_headers())
+                    else:
+                        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, trust_env=True) as client:
+                            api_resp = await client.get(api_url, params=api_params, headers=self._get_headers())
+                    
+                    if api_resp.status_code == 200:
+                        api_data = api_resp.json()
+                        rows = api_data.get('data', {}).get('rows', []) or api_data.get('data', [])
+                        if isinstance(rows, list):
+                            for item in rows:
+                                if len(results) >= limit:
+                                    break
+                                src = item.get('url', '') or item.get('path', '')
+                                title_raw = item.get('name', '') or item.get('title', '')
+                                id_raw = item.get('id', '')
+                                self._add_meme_item(results, found_urls, src, title_raw, id_raw, search_url)
+                except Exception as e:
+                    logger.debug(f"尝试抓取 XHR API 失败: {e}")
+
+            # 最后的退路：仅使用健壮的通用选择器，拒绝使用前端哈希类名 (如 sc-fHeRUl)
+            if not results:
+                image_selectors = [
+                    'div.cell a img',
+                    'a.pic-link img',
+                    'div.img-box img'
+                ]
+                for selector in image_selectors:
                     if len(results) >= limit:
                         break
-                    
-                    src = img.get('src', '') or img.get('data-src', '')
-                    title = img.get('alt', '') or img.get('title', '')
-                    
-                    if not src or not is_valid_meme_url(src):
-                        continue
-                    
-                    if src.startswith('//'):
-                        src = 'https:' + src
-                    
-                    item_id = ''
-                    if '/' in src:
-                        item_id = src.split('/')[-1].split('.')[0]
-                    
-                    if not title:
-                        title = f"表情包_{len(results) + 1}"
-                    
-                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
-                    
-                    results.append({
-                        "type": img_type,
-                        "id": item_id,
-                        "url": src,
-                        "page_url": search_url,
-                        "title": title,
-                        "source": "斗图吧"
-                    })
-            
-            if not results:
-                img_items = soup.select('img[class*="sc-"]')
-                for img in img_items:
-                    if len(results) >= limit:
-                        break
-                    
-                    src = img.get('src', '') or img.get('data-src', '')
-                    title = img.get('alt', '') or img.get('title', '')
-                    
-                    if not src or not is_valid_meme_url(src):
-                        continue
-                    
-                    if src.startswith('//'):
-                        src = 'https:' + src
-                    
-                    item_id = ''
-                    if '/' in src:
-                        item_id = src.split('/')[-1].split('.')[0]
-                    
-                    if not title:
-                        title = f"表情包_{len(results) + 1}"
-                    
-                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
-                    
-                    results.append({
-                        "type": img_type,
-                        "id": item_id,
-                        "url": src,
-                        "page_url": search_url,
-                        "title": title,
-                        "source": "斗图吧"
-                    })
-            
-            if not results:
-                all_imgs = soup.find_all('img')
-                for img in all_imgs:
-                    if len(results) >= limit:
-                        break
-                    
-                    src = img.get('src', '') or img.get('data-src', '')
-                    title = img.get('alt', '') or img.get('title', '')
-                    
-                    if not src or not is_valid_meme_url(src):
-                        continue
-                    
-                    if 'qn.doutub.com' not in src and 'doutub.com' not in src:
-                        if not src.startswith('//'):
-                            continue
-                    
-                    if src.startswith('//'):
-                        src = 'https:' + src
-                    
-                    item_id = ''
-                    if '/' in src:
-                        item_id = src.split('/')[-1].split('.')[0]
-                    
-                    if not title:
-                        title = f"表情包_{len(results) + 1}"
-                    
-                    img_type = 'gif' if '.gif' in src.lower() else 'meme'
-                    
-                    results.append({
-                        "type": img_type,
-                        "id": item_id,
-                        "url": src,
-                        "page_url": search_url,
-                        "title": title,
-                        "source": "斗图吧"
-                    })
+                    img_items = soup.select(selector)
+                    for img in img_items:
+                        if len(results) >= limit:
+                            break
+                        src = img.get('src', '') or img.get('data-src', '')
+                        title_raw = img.get('alt', '') or img.get('title', '')
+                        id_raw = ''
+                        self._add_meme_item(results, found_urls, src, title_raw, id_raw, search_url)
             
             logger.info(f"斗图吧搜索 '{keyword}' 完成，获得 {len(results)} 条结果")
             return results
@@ -569,8 +559,6 @@ class FabiaoqingFetcher:
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
-        # 用于在没有持久 session 时跟踪 SSL 降级状态
-        local_ssl_context = None
 
         for attempt in range(max_retries):
             try:
@@ -585,36 +573,15 @@ class FabiaoqingFetcher:
                 
                 # 如果有持久 session，直接使用
                 if self._session:
-                    try:
-                        response = await self._session.get(url, headers=headers)
+                    response = await self._session.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                else:
+                    #严禁使用 SECLEVEL=1 自废武功，使用默认验证
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True) as client:
+                        response = await client.get(url, headers=headers)
                         response.raise_for_status()
                         return response.text
-                    except httpx.ConnectError as e:
-                        import ssl
-                        if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
-                            logger.warning(f"发表情 SSL 连接失败 (Session)，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
-                            await self.close() # 关闭并清空 self._session
-                            # 下次迭代将进入 else 分支使用临时 Client，并应用降级后的 ssl_context
-                            local_ssl_context = ssl.create_default_context()
-                            local_ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                            continue 
-                        raise
-                else:
-                    # 使用临时 Client，避免泄露
-                    verify = local_ssl_context if local_ssl_context else True
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True, verify=verify) as client:
-                        try:
-                            response = await client.get(url, headers=headers)
-                            response.raise_for_status()
-                            return response.text
-                        except httpx.ConnectError as e:
-                            import ssl
-                            if any(isinstance(arg, ssl.SSLError) for arg in e.args) or "SSL" in str(e):
-                                logger.warning(f"发表情 SSL 连接失败 (临时 Client)，尝试降级 TLS 安全等级 (SECLEVEL=1): {e}")
-                                local_ssl_context = ssl.create_default_context()
-                                local_ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                                continue
-                            raise
                 
             except (httpx.ConnectError, httpx.TimeoutException) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -630,7 +597,7 @@ class FabiaoqingFetcher:
                 logger.error(f"发表情发生非预期异常: {e}")
                 last_exception = e
                 if attempt == max_retries - 1:
-                    raise e
+                    raise
         
         if last_exception:
             raise last_exception
@@ -640,7 +607,7 @@ class FabiaoqingFetcher:
         if not keyword:
             return []
 
-        search_url = f"{self.search_url}/{quote_plus(keyword)}"
+        search_url = f"{self.search_url}/{quote(keyword, safe='')}"
         try:
             html = await self._fetch_html(search_url)
             if not html:

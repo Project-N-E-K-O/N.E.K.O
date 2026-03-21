@@ -26,6 +26,7 @@ from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from utils.llm_client import ChatOpenAI, SystemMessage, HumanMessage
 import httpx
+from cachetools import TTLCache
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
@@ -63,11 +64,13 @@ from utils.web_scraper import (
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content
-from utils.meme_fetcher import fetch_meme_content
+from utils.meme_fetcher import fetch_meme_content, MEME_ALLOWED_HOSTS
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = get_module_logger(__name__, "Main")
+
+# 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 
 @router.get("/token-usage")
@@ -1117,11 +1120,31 @@ async def find_first_image(folder: str = None):
         logger.error(f"查找预览图片文件失败: {e}")
         return JSONResponse(content={"success": False, "error": "服务器内部错误"}, status_code=500)
 
+# 统一的表情包代理缓存，O(1) 过期管理
+MEME_PROXY_CACHE = TTLCache(maxsize=50, ttl=1800)
+
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
     """
     代理远程表情包图片，解决跨域问题，包含 SSRF 防护
     """
+    import time
+    
+    # 检查缓存
+    cache_key = url
+    if cache_key in MEME_PROXY_CACHE:
+        logger.info(f"[Meme Proxy] 命中缓存: {url[:60]}...")
+        cached = MEME_PROXY_CACHE[cache_key]
+        return Response(
+            content=cached['body'],
+            media_type=cached['content_type'],
+            headers={
+                'Cache-Control': 'public, max-age=86400',
+                'Access-Control-Allow-Origin': '*',
+                'X-Cache': 'HIT'
+            }
+        )
+    
     try:
         logger.info(f"[Meme Proxy] 收到代理请求, url: {url[:100] if url else 'None'}...")
         
@@ -1132,10 +1155,7 @@ async def proxy_meme_image(url: str):
         if not decoded_url.startswith(('http://', 'https://')):
             return JSONResponse(content={"success": False, "error": "无效的URL"}, status_code=400)
         
-        allowed_hosts = [
-            'qn.doutub.com', 'img.soutula.com', 'i.imgflip.com',
-            'doutub.com', 'fabiaoqing.com', 'soutula.com'
-        ]
+        allowed_hosts = MEME_ALLOWED_HOSTS
         
         from urllib.parse import urlparse, urljoin
         parsed = urlparse(decoded_url)
@@ -1146,10 +1166,15 @@ async def proxy_meme_image(url: str):
             return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
 
         # 构建请求头
+        # 【修复】完善所有域名的 Referer 映射，避免被反爬拦截
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
+            'fabiaoqing.com': 'https://fabiaoqing.com/',
             'qn.doutub.com': 'https://www.doutub.com/',
-            'i.imgflip.com': 'https://imgflip.com/'
+            'doutub.com': 'https://www.doutub.com/',
+            'i.imgflip.com': 'https://imgflip.com/',
+            'imgflip.com': 'https://imgflip.com/',
+            'soutula.com': 'https://fabiaoqing.com/',
         }
         referer = referer_map.get(hostname, f'{parsed.scheme}://{hostname}/')
         headers = {
@@ -1203,12 +1228,19 @@ async def proxy_meme_image(url: str):
                             logger.warning(f"[Meme Proxy] 资源过大 (实际读取): {len(body)}")
                             return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
 
+                    # 存入 TTLCache
+                    MEME_PROXY_CACHE[cache_key] = {
+                        'body': bytes(body),
+                        'content_type': content_type
+                    }
+                    
                     return Response(
                         content=bytes(body),
                         media_type=content_type,
                         headers={
                             'Cache-Control': 'public, max-age=86400',
-                            'Access-Control-Allow-Origin': '*'
+                            'Access-Control-Allow-Origin': '*',
+                            'X-Cache': 'MISS'
                         }
                     )
             
@@ -1483,6 +1515,55 @@ async def backend_screenshot(request: Request):
         logger.error(f"后端截图失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
+
+# ================================================================
+# 主动搭话响应构建 (Response builder pure function)
+# ================================================================
+def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
+    primary_channel = 'unknown'
+    source_links = []
+    lan_name = ctx.get('lanlan_name', 'System')
+    
+    match source_tag:
+        case 'SCREEN':
+            primary_channel = 'vision'
+        case 'WEB':
+            primary_channel = 'web'
+            if ctx.get('selected_web_link'):
+                source_links.append(ctx['selected_web_link'])
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 WEB，已添加链接")
+        case 'MUSIC':
+            primary_channel = 'music'
+            if ctx.get('selected_music_link'):
+                source_links.append(ctx['selected_music_link'])
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 MUSIC，已添加链接")
+        case 'MEME':
+            primary_channel = 'meme'
+            if ctx.get('selected_meme_link'):
+                source_links.append(ctx['selected_meme_link'])
+                if ctx.get('selected_web_link'):
+                    source_links.append(ctx['selected_web_link'])
+                logger.debug(f"[{lan_name}] Phase 2 确定选择 MEME，已添加相关链接")
+            else:
+                logger.warning(f"[{lan_name}] Phase 2 AI 选择 MEME 但无可用表情包链接，回退处理")
+                if ctx.get('selected_web_link'):
+                    primary_channel = 'web'
+                    source_links.append(ctx['selected_web_link'])
+                    logger.debug(f"[{lan_name}] Phase 2 回退到 WEB 通道")
+                elif ctx.get('vision_content'):
+                    primary_channel = 'vision'
+                    logger.debug(f"[{lan_name}] Phase 2 回退到 VISION 通道")
+                else:
+                    logger.debug(f"[{lan_name}] Phase 2 MEME 无表情包且无回退通道，将跳过链接展示")
+        case 'BOTH':
+            primary_channel = 'music' if ctx.get('is_music_used') else 'web'
+            if ctx.get('selected_web_link'):
+                source_links.append(ctx['selected_web_link'])
+            if ctx.get('selected_music_link'):
+                source_links.append(ctx['selected_music_link'])
+            logger.debug(f"[{lan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接")
+            
+    return primary_channel, source_links
 
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
@@ -2055,15 +2136,14 @@ async def proactive_chat(request: Request):
                     phase1_topics.append(('music', music_topic))
         
         # 表情包模式特殊处理：不经过 Phase 1 LLM 筛选，直接添加表情包话题
-        if meme_content and meme_content.get('formatted_content'):
-            meme_topic = meme_content['formatted_content']
-            if meme_topic:
-                meme_data = meme_content.get('data', [])
-                if meme_data:
-                    first_meme = meme_data[0]
-                    meme_title = first_meme.get('title', '')
-                    meme_url = first_meme.get('url', '')
-                    meme_source = first_meme.get('source', '表情包')
+        if meme_content and meme_content.get('success') and meme_content.get('data'):
+            meme_data = meme_content.get('data', [])
+            if meme_data:
+                # 【修复】遍历所有表情包，找到第一个未去重的候选
+                for candidate_meme in meme_data:
+                    meme_title = candidate_meme.get('title', '')
+                    meme_url = candidate_meme.get('url', '')
+                    meme_source = candidate_meme.get('source', '表情包')
                     
                     meme_topic_key = _build_topic_dedup_key(
                         topic_title=meme_title,
@@ -2072,25 +2152,29 @@ async def proactive_chat(request: Request):
                     )
                     
                     if meme_topic_key and _is_recent_topic_used(lanlan_name, meme_topic_key):
-                        print(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
-                    else:
-                        # 【加固】如果有多张表情包，Phase 1 仅给 AI 展示第一张的信息，
-                        # 确保 AI 的文字内容与最终输出的唯一一张图片完全对齐（避免串台）
-                        single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
-                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
-                        phase1_topics.append(('meme', single_meme_topic))
-                        # 暂存表情包候选信息
-                        selected_meme_link = {
-                            'title': meme_title,
-                            'url': meme_url,
-                            'source': meme_source,
-                            'type': 'meme'
-                        }
-                        selected_meme_topic_key = meme_topic_key
-                        print(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
+                        logger.info(f"[{lanlan_name}]- Phase 1 表情包话题去重命中，跳过: {meme_title[:30]}")
+                        continue
+                    
+                    # 【加固】Phase 1 仅给 AI 展示一张表情包的信息，
+                    # 确保 AI 的文字内容与最终输出的唯一一张图片完全对齐（避免串台）
+                    single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
+                    logger.info(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
+                    phase1_topics.append(('meme', single_meme_topic))
+                    # 暂存表情包候选信息
+                    selected_meme_link = {
+                        'title': meme_title,
+                        'url': meme_url,
+                        'source': meme_source,
+                        'type': candidate_meme.get('type', 'meme')
+                    }
+                    selected_meme_topic_key = meme_topic_key
+                    logger.info(f"[{lanlan_name}] 预选表情包话题: {meme_title[:30]}")
+                    break  # 找到有效候选后退出循环
                 else:
-                    logger.info(f"[{lanlan_name}] Phase 1 表情包话题已添加: {meme_topic[:100]}...")
-                    phase1_topics.append(('meme', meme_topic))
+                    # 所有表情包都被去重了
+                    logger.info(f"[{lanlan_name}]- Phase 1 所有表情包候选均被去重，跳过表情包话题")
+            else:
+                logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
         if not phase1_topics and not vision_content:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -2400,37 +2484,15 @@ async def proactive_chat(request: Request):
                 "message": f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消"
             })
 
-        source_links = [] # Phase 2 重新聚合链接，确保与 source_tag 匹配
-        if source_tag == 'SCREEN':
-            primary_channel = 'vision'
-        elif source_tag == 'WEB':
-            primary_channel = 'web'
-            if selected_web_link:
-                source_links.append(selected_web_link)
-                print(f"[{lanlan_name}] Phase 2 确定选择 WEB，已添加链接")
-        elif source_tag == 'MUSIC':
-            primary_channel = 'music'
-            if selected_music_link:
-                source_links.append(selected_music_link)
-                print(f"[{lanlan_name}] Phase 2 确定选择 MUSIC，已添加链接")
-        elif source_tag == 'MEME':
-            primary_channel = 'meme'
-            if selected_meme_link:
-                source_links.append(selected_meme_link)
-                # 如果是 web_meme 模式，同时带回关联的 Web 链接
-                if selected_web_link:
-                    source_links.append(selected_web_link)
-                print(f"[{lanlan_name}] Phase 2 确定选择 MEME，已添加相关链接")
-        elif source_tag == 'BOTH':
-            # BOTH 模式下，如果包含音乐，强制设为 music 模式以触发前端播放器
-            primary_channel = 'music' if is_music_used else 'web'
-            # 聚合所有通过 Phase 1 筛选的链接
-            if selected_web_link:
-                source_links.append(selected_web_link)
-            if selected_music_link:
-                source_links.append(selected_music_link)
-            # 【修复】BOTH 分支不应自动带回 meme，除非 AI 显式选择了 MEME 标签
-            print(f"[{lanlan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接")
+        # 使用纯函数构建响应
+        primary_channel, source_links = build_proactive_response(source_tag, {
+            'lanlan_name': lanlan_name,
+            'is_music_used': is_music_used,
+            'selected_web_link': selected_web_link,
+            'selected_music_link': selected_music_link,
+            'selected_meme_link': selected_meme_link,
+            'vision_content': vision_content
+        })
 
         # 兜底：当最终主通道已经落到 music，或当前实际上只剩音乐通道时，
         # 【逻辑加固】如果 active_channels 里包含 meme 且 primary_channel 是 meme，不触发 fallback

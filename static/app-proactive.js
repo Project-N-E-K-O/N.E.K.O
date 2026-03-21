@@ -465,7 +465,36 @@
                 var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
                 if (isMusicLink) continue;
 
-                var isMemeLink = link.type === 'meme' || link.source === '表情包' || link.source === '斗图吧' || link.source === '发表情' || link.source === 'Imgflip';
+                // 【优化】更完善的表情包识别逻辑：
+                // 1. 显式标记 type === 'meme'
+                // 2. 来源标记为表情包相关
+                // 3. URL 匹配已知表情包域名
+                var isMemeLink = link.type === 'meme' || link.type === 'gif';
+                if (!isMemeLink) {
+                    var memeSourceKeywords = ['表情包', '斗图吧', '发表情', 'Imgflip', 'meme', 'sticker'];
+                    var linkSource = String(link.source || '').toLowerCase();
+                    for (var k = 0; k < memeSourceKeywords.length; k++) {
+                        if (linkSource.indexOf(memeSourceKeywords[k].toLowerCase()) !== -1) {
+                            isMemeLink = true;
+                            break;
+                        }
+                    }
+                }
+                if (!isMemeLink && link.url) {
+                    // 已知表情包域名列表（与后端 proxy_meme_image allowed_hosts 保持同步）
+                    var memeDomains = ['qn.doutub.com', 'img.soutula.com', 'i.imgflip.com', 'doutub.com', 'fabiaoqing.com', 'soutula.com'];
+                    var linkHost = '';
+                    try {
+                        var tempUrl = new URL(String(link.url), window.location.origin);
+                        linkHost = tempUrl.hostname.toLowerCase();
+                    } catch (e) {}
+                    for (var m = 0; m < memeDomains.length; m++) {
+                        if (linkHost === memeDomains[m] || linkHost.endsWith('.' + memeDomains[m])) {
+                            isMemeLink = true;
+                            break;
+                        }
+                    }
+                }
                 console.log('[Meme Debug] Link:', link.title, '| source:', link.source, '| type:', link.type, '| isMeme:', isMemeLink, '| url:', link.url);
 
                 var safeUrl = null;
@@ -489,6 +518,13 @@
 
             console.log('[Meme Debug] memeLinks:', memeLinks.length, '| otherLinks:', otherLinks.length);
 
+            // 【修复】限制表情包展示数量，避免刷屏
+            var MAX_MEME_BUBBLES = 2;
+            if (memeLinks.length > MAX_MEME_BUBBLES) {
+                memeLinks = memeLinks.slice(0, MAX_MEME_BUBBLES);
+                console.log('[Meme] 限制表情包数量为', MAX_MEME_BUBBLES);
+            }
+            
             if (memeLinks.length > 0) {
                 _showMemeBubbles(memeLinks, chatContent, turnVersion);
             }
@@ -645,6 +681,10 @@
                 img.alt = meme.title || 'Meme';
                 img.style.cssText = 'max-width: 100%; max-height: 350px; border-radius: 8px; cursor: pointer; display: inline-block;';
 
+                // 【修复】添加重试机制，最多重试 2 次
+                var retryCount = 0;
+                var maxRetries = 2;
+
                 img.addEventListener('load', function () {
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 });
@@ -657,11 +697,28 @@
                     }
                 });
                 img.addEventListener('error', function () {
-                    img.style.display = 'none';
-                    var errSpan = document.createElement('span');
-                    errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
-                    errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6));';
-                    imgOuter.appendChild(errSpan);
+                    if (img.dataset.failed) return;
+                    retryCount++;
+                    if (retryCount <= maxRetries) {
+                        console.log('[Meme] 加载失败，重试第', retryCount, '次:', meme.title);
+                        // 添加随机参数避免缓存（proxyUrl 已包含 ?url=，所以用 &）
+                        img.src = proxyUrl + '&retry=' + retryCount + '&t=' + Date.now();
+                    } else {
+                        img.dataset.failed = "true";
+                        img.src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg4OCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjMiIHk9IjMiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgcng9IjIiIHJ5PSIyIjPjwvcmVjdD48Y2lyY2xlIGN4PSI4LjUiIGN5PSI4LjUiIHI9IjEuNSI+PC9jaXJjbGU+PHBvbHlsaW5lIHBvaW50cz0iMjEgMTUgMTYgMTAgNSAyMSI+PC9wb2x5bGluZT48bGluZSB4MT0iNCIgeTE9IjQiIHgyPSIyMCIgeTI9IjIwIiBzdHJva2U9IiNmNDQzMzYiIG9wYWNpdHk9IjAuOCI+PC9saW5lPjwvc3ZnPg==";
+                        img.style.objectFit = "none";
+                        img.style.backgroundColor = "rgba(128,128,128,0.05)";
+                        img.style.border = "1px dashed var(--border-color, rgba(128,128,128,0.3))";
+                        img.style.minWidth = "120px";
+                        img.style.minHeight = "120px";
+                        img.style.cursor = "default";
+                        img.onclick = null;
+                        
+                        var errSpan = document.createElement('div');
+                        errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
+                        errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6)); font-size: 12px; margin-top: 4px;';
+                        imgOuter.appendChild(errSpan);
+                    }
                 });
 
                 imgOuter.appendChild(img);
