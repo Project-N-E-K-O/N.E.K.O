@@ -836,6 +836,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const updateRowStyle = () => {
         const isChecked = checkbox.checked;
         updateIndicatorStyle(isChecked);
+        trackingRow.setAttribute('aria-checked', String(isChecked));
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();

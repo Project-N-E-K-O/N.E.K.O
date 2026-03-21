@@ -959,8 +959,10 @@ async def update_catgirl_lighting(name: str, request: Request):
 async def update_catgirl_mmd_settings(name: str, request: Request):
     """更新指定角色的MMD模型设置（光照、渲染、物理、鼠标跟踪）"""
     def _to_bool(val):
-        if isinstance(val, bool): return val
-        if isinstance(val, str): return val.lower() in ('true', '1', 'yes')
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.lower() in ('true', '1', 'yes')
         return bool(val)
 
     try:
