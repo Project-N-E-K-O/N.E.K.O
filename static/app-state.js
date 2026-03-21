@@ -63,6 +63,7 @@
         micVolumeAnimationId: null,
         silenceDetectionTimer: null,
         hasSoundDetected: false,
+        isMicMuted: false,
 
         // --- 会话 / WebSocket ---
         socket: null,
