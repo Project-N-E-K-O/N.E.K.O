@@ -455,6 +455,27 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             # 继续处理其他条目，不中断整个插件加载
 
 
+def _remove_scanned_metadata(pid: str) -> None:
+    removed_any = False
+    with state.acquire_event_handlers_write_lock():
+        prefix_dot = f"{pid}."
+        prefix_colon = f"{pid}:"
+        keys_to_remove = [
+            key
+            for key in list(state.event_handlers.keys())
+            if key.startswith(prefix_dot) or key.startswith(prefix_colon)
+        ]
+        for key in keys_to_remove:
+            del state.event_handlers[key]
+            removed_any = True
+    for plugin_key in list(plugin_entry_method_map.keys()):
+        if plugin_key[0] == pid:
+            del plugin_entry_method_map[plugin_key]
+            removed_any = True
+    if removed_any:
+        state.invalidate_snapshot_cache("handlers")
+
+
 def _build_plugin_meta(
     pid: str,
     pdata: dict,
@@ -1301,6 +1322,7 @@ def _load_adapter_plugin(
             with state.acquire_plugin_hosts_write_lock():
                 state.plugin_hosts.pop(pid, None)
             state.invalidate_snapshot_cache("hosts")
+        _remove_scanned_metadata(pid)
         return None
     
     # 更新运行时状态

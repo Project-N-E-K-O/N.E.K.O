@@ -75,3 +75,25 @@ async def test_run_on_owner_loop_closes_coro_when_cross_loop_schedule_fails() ->
     with pytest.raises(AttributeError):
         await manager._run_on_owner_loop(coro)
     assert coro.cr_frame is None
+
+
+@pytest.mark.asyncio
+async def test_run_on_owner_loop_falls_back_when_owner_loop_not_running() -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+
+    class _StoppedLoop:
+        def is_closed(self) -> bool:
+            return False
+
+        def is_running(self) -> bool:
+            return False
+
+    manager._owner_loop = _StoppedLoop()  # type: ignore[assignment]
+
+    result = await manager._run_on_owner_loop(asyncio.sleep(0, result="ok"))
+
+    assert result == "ok"

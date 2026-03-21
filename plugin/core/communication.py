@@ -63,7 +63,12 @@ class PluginCommunicationResourceManager:
     async def _run_on_owner_loop(self, coro: Awaitable[_T]) -> _T:
         owner_loop = self._owner_loop
         current_loop = asyncio.get_running_loop()
-        if owner_loop is None or owner_loop.is_closed():
+        owner_loop_running = getattr(owner_loop, "is_running", None)
+        if (
+            owner_loop is None
+            or owner_loop.is_closed()
+            or (callable(owner_loop_running) and not owner_loop_running())
+        ):
             self._owner_loop = current_loop
             return await coro
         if owner_loop is current_loop:

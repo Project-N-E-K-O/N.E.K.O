@@ -106,22 +106,40 @@ class MCPRouteEngine:
                     tool.name,
                 )
                 continue
-            self._tool_index[tool_id] = server_name
-            self._tool_details[tool_id] = {
+            tool_details = {
                 "name": tool.name,
                 "description": tool.description,
                 "schema": tool.input_schema,
                 "server": server_name,
             }
-            
-            # 触发注册回调
+
+            callback_ok = True
             if self._on_tool_register:
-                await self._on_tool_register(
-                    tool_id,
-                    f"[{server_name}] {tool.name}",
-                    tool.description or f"MCP tool from {server_name}",
-                    tool.input_schema,
+                try:
+                    callback_result = await self._on_tool_register(
+                        tool_id,
+                        f"[{server_name}] {tool.name}",
+                        tool.description or f"MCP tool from {server_name}",
+                        tool.input_schema,
+                    )
+                    callback_ok = callback_result is not False
+                except Exception:
+                    callback_ok = False
+                    self._logger.exception(
+                        "Tool register callback failed: tool_id={}, server='{}'",
+                        tool_id,
+                        server_name,
+                    )
+            if not callback_ok:
+                self._logger.warning(
+                    "Tool register callback rejected MCP tool '{}', server='{}'",
+                    tool.name,
+                    server_name,
                 )
+                continue
+
+            self._tool_index[tool_id] = server_name
+            self._tool_details[tool_id] = tool_details
             count += 1
         
         self._logger.info(
@@ -146,23 +164,40 @@ class MCPRouteEngine:
             if srv == server_name
         ]
         
+        removed_count = 0
         for tool_id in tools_to_remove:
-            del self._tool_index[tool_id]
-            if tool_id in self._tool_details:
-                del self._tool_details[tool_id]
-            
-            # 触发注销回调
+            callback_ok = True
             if self._on_tool_unregister:
-                await self._on_tool_unregister(tool_id)
+                try:
+                    callback_result = await self._on_tool_unregister(tool_id)
+                    callback_ok = callback_result is not False
+                except Exception:
+                    callback_ok = False
+                    self._logger.exception(
+                        "Tool unregister callback failed: tool_id={}, server='{}'",
+                        tool_id,
+                        server_name,
+                    )
+            if not callback_ok:
+                self._logger.warning(
+                    "Tool unregister callback rejected MCP tool '{}' from server '{}'",
+                    tool_id,
+                    server_name,
+                )
+                continue
+
+            del self._tool_index[tool_id]
+            self._tool_details.pop(tool_id, None)
+            removed_count += 1
         
-        if tools_to_remove:
+        if removed_count > 0:
             self._logger.info(
                 "Unregistered {} tools from MCP server '{}'",
-                len(tools_to_remove),
+                removed_count,
                 server_name,
             )
         
-        return len(tools_to_remove)
+        return removed_count
 
     async def decide(self, request: GatewayRequest) -> Result[RouteDecision, TransportError]:
         """

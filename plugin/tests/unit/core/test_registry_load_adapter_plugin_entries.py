@@ -110,3 +110,76 @@ def test_load_adapter_plugin_registers_entries_preview_and_handlers() -> None:
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+def test_load_adapter_plugin_rolls_back_scanned_handlers_when_register_fails() -> None:
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    method_map_backup = dict(module.plugin_entry_method_map)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+        module.plugin_entry_method_map.clear()
+        module.state.invalidate_snapshot_cache()
+
+        ctx = module.PluginContext(
+            pid="mcp_adapter",
+            conf={"adapter": {"mode": "gateway"}},
+            pdata={
+                "id": "mcp_adapter",
+                "name": "MCP Adapter",
+                "type": "adapter",
+                "description": "desc",
+                "version": "0.1.0",
+            },
+            toml_path=Path("/tmp/mcp_adapter/plugin.toml"),
+            entry="tests.fake_mcp:FakeAdapterPlugin",
+            sdk_supported_str=">=0.1.0,<0.3.0",
+            sdk_recommended_str=">=0.1.0,<0.2.0",
+            sdk_untested_str=None,
+            sdk_conflicts_list=[],
+            dependencies=[],
+            enabled=True,
+            auto_start=True,
+        )
+
+        original_import_module = module.importlib.import_module
+        original_register_plugin = module.register_plugin
+        try:
+            module.importlib.import_module = lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
+            module.register_plugin = lambda *args, **kwargs: None
+
+            host = module._load_adapter_plugin(
+                ctx,
+                logger=module._DEFAULT_LOGGER,
+                process_host_factory=lambda *args, **kwargs: _FakeHost(),
+            )
+        finally:
+            module.importlib.import_module = original_import_module
+            module.register_plugin = original_register_plugin
+
+        assert host is None
+        with module.state.acquire_event_handlers_read_lock():
+            assert "mcp_adapter.list_servers" not in module.state.event_handlers
+        assert ("mcp_adapter", "list_servers") not in module.plugin_entry_method_map
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        module.plugin_entry_method_map.clear()
+        module.plugin_entry_method_map.update(method_map_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup

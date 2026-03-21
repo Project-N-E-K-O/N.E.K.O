@@ -92,6 +92,66 @@ async def test_mcp_router_returns_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_router_register_server_tools_skips_tool_when_callback_rejects() -> None:
+    logger = _Logger()
+
+    class _Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.description = ""
+            self.input_schema = {}
+
+    client = type("Client", (), {"tools": [_Tool("demo_tool")]})()
+    engine = MCPRouteEngine(
+        mcp_clients={},
+        logger=logger,
+        on_tool_register=lambda *args, **kwargs: _reject_register(),
+    )
+
+    async def _reject_register() -> bool:
+        return False
+
+    count = await engine.register_server_tools("srv", client)
+
+    assert count == 0
+    assert engine.get_tool_server("mcp_srv_demo_tool") is None
+
+
+@pytest.mark.asyncio
+async def test_mcp_router_unregister_server_tools_keeps_index_when_callback_rejects() -> None:
+    logger = _Logger()
+
+    class _Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.description = ""
+            self.input_schema = {}
+
+    client = type("Client", (), {"tools": [_Tool("demo_tool")]})()
+
+    async def _accept_register(*args, **kwargs) -> bool:
+        return True
+
+    async def _reject_unregister(*args, **kwargs) -> bool:
+        return False
+
+    engine = MCPRouteEngine(
+        mcp_clients={},
+        logger=logger,
+        on_tool_register=_accept_register,
+        on_tool_unregister=_reject_unregister,
+    )
+
+    count = await engine.register_server_tools("srv", client)
+    assert count == 1
+
+    removed = await engine.unregister_server_tools("srv")
+
+    assert removed == 0
+    assert engine.get_tool_server("mcp_srv_demo_tool") == "srv"
+
+
+@pytest.mark.asyncio
 async def test_mcp_invoker_returns_err_for_drop() -> None:
     invoker = MCPPluginInvoker(mcp_clients={}, plugin_call_fn=None, logger=_Logger())
     result = await invoker.invoke(
