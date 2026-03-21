@@ -18,6 +18,8 @@ def load_user_preferences() -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: 用户偏好列表，每个元素对应一个模型的偏好设置，如果文件不存在或读取失败则返回空列表
     """
     try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -75,6 +77,11 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         bool: 更新成功返回True，失败返回False
     """
     try:
+        # 拒绝保留键作为模型路径，防止破坏全局对话设置条目
+        if model_path == GLOBAL_CONVERSATION_KEY:
+            print(f"拒绝更新模型偏好：model_path 不能使用保留键 '{GLOBAL_CONVERSATION_KEY}'")
+            return False
+
         # 加载现有偏好
         current_preferences = load_user_preferences()
         
@@ -281,6 +288,8 @@ def load_global_conversation_settings() -> Dict[str, Any]:
         Dict[str, Any]: 对话设置字典，如果不存在则返回空字典
     """
     try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)

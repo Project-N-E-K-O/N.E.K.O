@@ -37,8 +37,8 @@
             proactiveVisionInterval: S.proactiveVisionInterval,
             subtitleEnabled: S.subtitleEnabled
         };
-        // 只有在 userLanguage 是有效非空值时才包含
-        if (S.userLanguage) {
+        // 只有在 S 上存在 userLanguage 属性时才包含（含 null，支持显式清除语义）
+        if ('userLanguage' in S) {
             settings.userLanguage = S.userLanguage;
         }
         return settings;
@@ -99,6 +99,17 @@
             syncSettingsToServer();
         }, SYNC_INTERVAL_MS);
         console.log('[app-settings] 已启动定期同步到服务器，间隔', SYNC_INTERVAL_MS / 1000, '秒');
+    }
+
+    /**
+     * 停止定期同步到服务器
+     */
+    function stopPeriodicSync() {
+        if (_syncTimerId !== null) {
+            clearInterval(_syncTimerId);
+            _syncTimerId = null;
+            console.log('[app-settings] 已停止定期同步到服务器');
+        }
     }
 
     /**
@@ -458,6 +469,7 @@
     mod.getConversationSettings = getConversationSettings;
     mod.initProactiveChatScheduler = initProactiveChatScheduler;
     mod._isUserRegionChina = _isUserRegionChina;
+    mod.stopPeriodicSync = stopPeriodicSync;
 
     window.appSettings = mod;
 

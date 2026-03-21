@@ -172,6 +172,11 @@ async def save_preferences(request: Request):
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
         
+        # 防止使用保留的全局对话设置键作为模型路径
+        from utils.preferences import GLOBAL_CONVERSATION_KEY
+        if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
+            return {"success": False, "error": "model_path 不能使用保留键"}
+        
         # 获取参数（可选）
         parameters = data.get('parameters')
         # 获取显示器信息（可选，用于多屏幕位置恢复）
