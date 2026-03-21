@@ -320,8 +320,8 @@ async def get_conversation_settings():
         settings = load_global_conversation_settings()
         return {"success": True, "settings": settings}
     except Exception as e:
-        logger.error(f"获取对话设置失败: {e}")
-        return {"success": False, "error": str(e), "settings": {}}
+        logger.exception(f"获取对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error", "settings": {}}
 
 
 @router.post("/conversation-settings")
@@ -337,8 +337,8 @@ async def save_conversation_settings(request: Request):
         else:
             return {"success": False, "error": "保存失败"}
     except Exception as e:
-        logger.error(f"保存对话设置失败: {e}")
-        return {"success": False, "error": str(e)}
+        logger.exception(f"保存对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error"}
 
 
 @router.get("/steam_language")
