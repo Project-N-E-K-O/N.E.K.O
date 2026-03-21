@@ -23,6 +23,7 @@ class _Ctx:
     def __init__(self, config_path: Path) -> None:
         self.config_path = config_path
         self.message_queue = _Queue()
+        self._plugin_comm_queue = _Queue()
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},
             "plugin_state": {"backend": "memory"},
@@ -42,7 +43,8 @@ def test_register_static_ui_notifies_host() -> None:
     plugin = _Plugin(ctx)
 
     assert plugin.register_static_ui("static") is True
-    assert ctx.message_queue.items[-1]["type"] == "STATIC_UI_REGISTER"
+    assert ctx._plugin_comm_queue.items[-1]["type"] == "STATIC_UI_REGISTER"
+    assert ctx.message_queue.items == []
 
 
 def test_dynamic_entry_updates_notify_host() -> None:
@@ -54,7 +56,7 @@ def test_dynamic_entry_updates_notify_host() -> None:
     plugin.enable_entry("dyn")
     plugin.unregister_dynamic_entry("dyn")
 
-    seen = {(item.get("type"), item.get("action"), item.get("entry_id")) for item in ctx.message_queue.items}
+    seen = {(item.get("type"), item.get("action"), item.get("entry_id")) for item in ctx._plugin_comm_queue.items}
     assert ("ENTRY_UPDATE", "register", "dyn") in seen
     assert ("ENTRY_UPDATE", "unregister", "dyn") in seen
 

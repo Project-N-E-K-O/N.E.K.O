@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import copy
+from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
 
@@ -297,7 +298,9 @@ class MCPClient:
         """连接到 MCP Server"""
         if self.config.transport == "stdio":
             return await self._connect_stdio(timeout)
-        elif self.config.transport in ("sse", "streamable-http"):
+        elif self.config.transport == "sse":
+            return await self._connect_sse(timeout)
+        elif self.config.transport == "streamable-http":
             return await self._connect_http(timeout)
         else:
             if self.logger:
@@ -518,7 +521,104 @@ class MCPClient:
             return False
         except Exception as e:
             if self.logger:
-                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}': {e}")
+                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}' via HTTP: {e}")
+            await self.disconnect()
+            return False
+
+    async def _connect_sse(self, timeout: float) -> bool:
+        """通过 legacy HTTP+SSE 连接到 MCP Server。"""
+        try:
+            if not self.config.url:
+                raise ValueError("URL is required for SSE transport")
+
+            import aiohttp
+
+            url = self.config.url.rstrip("/")
+            if self.logger:
+                self.logger.info(f"Connecting to MCP server '{self.config.name}' via SSE: {url}")
+
+            self._http_session = aiohttp.ClientSession(
+                **aiohttp_session_kwargs_for_url(url)
+            )
+            headers = {
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+            }
+
+            response = await self._http_session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout, sock_read=timeout),
+            )
+            if response.status != 200:
+                body = await response.text()
+                response.release()
+                raise ValueError(f"HTTP {response.status}: {body}")
+
+            self._sse_response = response
+            endpoint_future: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._read_task = asyncio.create_task(self._read_sse_loop(endpoint_future=endpoint_future))
+
+            endpoint_url = await asyncio.wait_for(endpoint_future, timeout=timeout)
+            if not isinstance(endpoint_url, str) or not endpoint_url.strip():
+                raise ValueError("SSE endpoint event did not provide a valid message endpoint")
+            self._sse_message_url = urljoin(f"{url}/", endpoint_url.strip())
+
+            result = await asyncio.wait_for(
+                self._send_request("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "neko-mcp-adapter",
+                        "version": "0.1.0"
+                    }
+                }, timeout=timeout),
+                timeout=timeout,
+            )
+
+            if result.get("error"):
+                raise ValueError(f"Initialize failed: {result['error']}")
+
+            await self._send_notification("notifications/initialized", {})
+
+            tools_result = await asyncio.wait_for(
+                self._send_request("tools/list", {}, timeout=timeout),
+                timeout=timeout,
+            )
+            if tools_result.get("error"):
+                raise ValueError(f"Failed to list tools: {tools_result['error']}")
+
+            self.tools = []
+            result_obj = tools_result.get("result")
+            tools_list: list[object] = []
+            if isinstance(result_obj, dict):
+                tools_raw = result_obj.get("tools")
+                if isinstance(tools_raw, list):
+                    tools_list = tools_raw
+            for tool in tools_list:
+                if not isinstance(tool, dict):
+                    continue
+                self.tools.append(MCPTool(
+                    name=str(tool.get("name", "")),
+                    description=str(tool.get("description", "")),
+                    input_schema=dict(tool.get("inputSchema", {})) if isinstance(tool.get("inputSchema"), dict) else {},
+                    server_name=self.config.name,
+                ))
+
+            self.connected = True
+            if self.logger:
+                self.logger.info(
+                    f"Connected to MCP server '{self.config.name}' via SSE with {len(self.tools)} tools"
+                )
+            return True
+        except asyncio.TimeoutError:
+            if self.logger:
+                self.logger.error(f"Timeout connecting to MCP server '{self.config.name}' via SSE")
+            await self.disconnect()
+            return False
+        except Exception as e:
+            if self.logger:
+                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}' via SSE: {e}")
             await self.disconnect()
             return False
     
@@ -568,6 +668,15 @@ class MCPClient:
         self.tools = []
         
         # 关闭 HTTP session
+        sse_response = getattr(self, "_sse_response", None)
+        if sse_response is not None:
+            try:
+                sse_response.close()
+            except Exception:
+                pass
+            self._sse_response = None
+        self._sse_message_url = None
+        self._http_session_id = None
         if hasattr(self, '_http_session') and self._http_session:
             await self._http_session.close()
             self._http_session = None
@@ -643,6 +752,54 @@ class MCPClient:
             **aiohttp_session_kwargs_for_url(self.config.url or "")
         ) as session:
             return await self._do_http_request(session, method, params, timeout=timeout)
+
+    async def _send_sse_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
+        import aiohttp
+
+        session = getattr(self, "_http_session", None)
+        message_url = getattr(self, "_sse_message_url", None)
+        if session is None or not message_url:
+            raise Exception("SSE transport is not initialized")
+
+        self._request_id += 1
+        request_id = self._request_id
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }
+
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_requests[request_id] = future
+        try:
+            async with session.post(
+                message_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status >= 400:
+                    raise Exception(f"HTTP {resp.status}: {await resp.text()}")
+                content_type = str(resp.headers.get("Content-Type", "")).lower()
+                if "application/json" in content_type or "text/event-stream" in content_type:
+                    payload_obj = await self._read_http_response_payload(resp, expected_id=request_id)
+                    return payload_obj
+                if resp.status == 200:
+                    try:
+                        payload_obj = await self._read_http_response_payload(resp, expected_id=request_id)
+                        return payload_obj
+                    except Exception:
+                        pass
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self._pending_requests.pop(request_id, None)
     
     async def _do_http_request(
         self,
@@ -701,8 +858,10 @@ class MCPClient:
     ) -> Dict[str, object]:
         """发送 JSON-RPC 请求"""
         # HTTP 传输
-        if self.config.transport in ("sse", "streamable-http"):
+        if self.config.transport == "streamable-http":
             return await self._send_http_request(method, params, timeout=timeout)
+        if self.config.transport == "sse":
+            return await self._send_sse_request(method, params, timeout=timeout)
         
         # stdio 传输
         if not self.writer:
@@ -735,6 +894,28 @@ class MCPClient:
     
     async def _send_notification(self, method: str, params: Dict[str, object]):
         """发送 JSON-RPC 通知（无响应）"""
+        if self.config.transport == "sse":
+            import aiohttp
+
+            session = getattr(self, "_http_session", None)
+            message_url = getattr(self, "_sse_message_url", None)
+            if session is None or not message_url:
+                raise Exception("SSE transport is not initialized")
+            message = {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }
+            async with session.post(
+                message_url,
+                json=message,
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=30.0),
+            ) as resp:
+                if resp.status >= 400:
+                    raise Exception(f"HTTP {resp.status}: {await resp.text()}")
+            return
+
         if not self.writer:
             raise Exception("Not connected")
         
@@ -801,6 +982,60 @@ class MCPClient:
                 self.connected = False
                 if self._on_disconnect_callback:
                     asyncio.create_task(self._on_disconnect_callback(self.config.name))
+
+    async def _read_sse_loop(self, *, endpoint_future: asyncio.Future | None = None) -> None:
+        response = getattr(self, "_sse_response", None)
+        if response is None:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.set_exception(RuntimeError("SSE response not initialized"))
+            return
+
+        event_name = "message"
+        data_lines: list[str] = []
+        try:
+            while not self._shutdown:
+                line = await response.content.readline()
+                if not line:
+                    if endpoint_future is not None and not endpoint_future.done():
+                        endpoint_future.set_exception(RuntimeError("SSE stream closed before endpoint event"))
+                    if not self._shutdown and self.connected and self._on_disconnect_callback:
+                        self.connected = False
+                        asyncio.create_task(self._on_disconnect_callback(self.config.name))
+                    break
+
+                decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if decoded == "":
+                    raw_data = "\n".join(data_lines).strip()
+                    if event_name == "endpoint" and endpoint_future is not None and not endpoint_future.done():
+                        endpoint_future.set_result(raw_data)
+                    elif event_name == "message" and raw_data:
+                        try:
+                            message = json.loads(raw_data)
+                            await self._handle_message(message)
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.warning(f"Invalid SSE message from MCP server '{self.config.name}': {e}")
+                    event_name = "message"
+                    data_lines = []
+                    continue
+                if decoded.startswith(":"):
+                    continue
+                if decoded.startswith("event:"):
+                    event_name = decoded[6:].strip() or "message"
+                    continue
+                if decoded.startswith("data:"):
+                    data_lines.append(decoded[5:].lstrip())
+        except asyncio.CancelledError:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.cancel()
+        except Exception as e:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.set_exception(e)
+            if self.logger:
+                self.logger.exception(f"Error in SSE read loop: {e}")
+            if not self._shutdown and self.connected and self._on_disconnect_callback:
+                self.connected = False
+                asyncio.create_task(self._on_disconnect_callback(self.config.name))
     
     async def _handle_message(self, message: Dict[str, object]):
         """处理收到的消息"""

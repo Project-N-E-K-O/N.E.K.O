@@ -106,7 +106,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return names
 
     def _notify_host_comm(self, payload: dict[str, Any]) -> None:
-        queue = getattr(self._host_ctx, "message_queue", None)
+        queue = getattr(self._host_ctx, "_plugin_comm_queue", None)
+        if queue is None:
+            queue = getattr(self._host_ctx, "message_queue", None)
         if queue is None:
             return
         try:

@@ -76,6 +76,36 @@ class _AsyncLineStream:
         return b""
 
 
+class _Response:
+    def __init__(
+        self,
+        *,
+        status: int,
+        payload: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        lines: list[bytes] | None = None,
+    ) -> None:
+        self.status = status
+        self._payload = payload or {}
+        self.headers = headers or {}
+        self.content = _AsyncLineStream(lines or [])
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return str(self._payload)
+
+    def release(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_mcp_normalizer_returns_result_and_preserves_plugin_target() -> None:
     normalizer = MCPRequestNormalizer()
@@ -458,24 +488,6 @@ async def test_mcp_connect_http_rejects_tools_list_jsonrpc_error(monkeypatch: py
         logger=_Logger(),
     )
 
-    class _Response:
-        def __init__(self, *, status: int, payload: dict[str, object], headers: dict[str, str] | None = None):
-            self.status = status
-            self._payload = payload
-            self.headers = headers or {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def json(self):
-            return self._payload
-
-        async def text(self):
-            return str(self._payload)
-
     class _Session:
         def __init__(self, *args, **kwargs):
             self._responses = [
@@ -497,6 +509,104 @@ async def test_mcp_connect_http_rejects_tools_list_jsonrpc_error(monkeypatch: py
     assert ok is False
     assert client.connected is False
     assert client.tools == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_connect_sse_uses_endpoint_event_and_loads_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="sse",
+            url="https://example.com/sse",
+        ),
+        logger=_Logger(),
+    )
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            self.posts: list[str] = []
+
+        async def get(self, *args, **kwargs):
+            return _Response(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    b"event: endpoint\n",
+                    b"data: /messages\n",
+                    b"\n",
+                ],
+            )
+
+        def post(self, url, *args, **kwargs):
+            self.posts.append(url)
+            payload = kwargs["json"]
+            if payload.get("method") == "initialize":
+                return _Response(status=200, payload={"jsonrpc": "2.0", "id": payload["id"], "result": {}})
+            if payload.get("method") == "notifications/initialized":
+                return _Response(status=202, payload={})
+            return _Response(
+                status=200,
+                payload={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "fetch",
+                                "description": "Fetch URL",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                },
+            )
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+
+    ok = await client.connect(timeout=5.0)
+
+    assert ok is True
+    assert client.connected is True
+    assert client._sse_message_url == "https://example.com/messages"
+    assert [tool.name for tool in client.tools] == ["fetch"]
+
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_mcp_send_sse_request_reads_direct_sse_post_response() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="sse",
+            url="https://example.com/sse",
+        ),
+        logger=_Logger(),
+    )
+
+    class _Session:
+        def post(self, *args, **kwargs):
+            request_id = kwargs["json"]["id"]
+            return _Response(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    b"event: message\n",
+                    f"data: {{\"jsonrpc\":\"2.0\",\"id\":{request_id},\"result\":{{\"ok\":true}}}}\n".encode(),
+                    b"\n",
+                ],
+            )
+
+    client._http_session = _Session()
+    client._sse_message_url = "https://example.com/messages"
+
+    payload = await client._send_sse_request("tools/list", {}, timeout=5.0)
+
+    assert payload == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    assert client._pending_requests == {}
 
 
 @pytest.mark.asyncio
