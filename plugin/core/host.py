@@ -645,11 +645,17 @@ def _plugin_process_runner(
             logger.debug("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
             # 如果有保存的状态，尝试恢复
             state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if state_persistence and state_persistence.has_saved_state():
-                logger.debug("[Plugin Process] Restoring saved state...")
-                state_persistence.load(instance)
-                state_persistence.clear()  # 恢复后清除
-                ctx._restored_from_freeze = True  # 标记为从冻结恢复
+            if state_persistence:
+                try:
+                    has_saved_state = asyncio.run(state_persistence.has_saved_state())
+                    if bool(getattr(has_saved_state, "value", False)):
+                        logger.debug("[Plugin Process] Restoring saved state...")
+                        load_result = asyncio.run(state_persistence.load(instance))
+                        if bool(getattr(load_result, "value", False)):
+                            asyncio.run(state_persistence.clear())  # 恢复后清除
+                            ctx._restored_from_freeze = True  # 标记为从冻结恢复
+                except Exception as e:
+                    logger.warning("[Plugin Process] Failed to restore saved state: {}", e)
         
         def _should_persist(method) -> bool:
             """判断是否应该保存状态"""

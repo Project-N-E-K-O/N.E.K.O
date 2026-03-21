@@ -391,7 +391,8 @@ def register_plugin(
         if entry_point is not None:
             plugin_dump["entry_point"] = entry_point
         state.plugins[resolved_id] = plugin_dump
-    
+    state.invalidate_snapshot_cache("plugins")
+
     return resolved_id
 
 
@@ -400,6 +401,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     在不实例化的情况下扫描类属性，提取 @EventHandler 元数据并填充全局表。
     """
     # 使用模块级 logger
+    handlers_updated = False
     for name, member in inspect.getmembers(cls):
         event_meta = getattr(member, EVENT_META_ATTR, None)
         if event_meta is None and hasattr(member, "__wrapped__"):
@@ -415,8 +417,11 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                     state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
                 else:
                     state.event_handlers[f"{pid}:{etype}:{eid}"] = handler_obj
+            handlers_updated = True
             if etype == "plugin_entry":
                 plugin_entry_method_map[(pid, str(eid))] = name
+    if handlers_updated:
+        state.invalidate_snapshot_cache("handlers")
 
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:
@@ -1222,6 +1227,7 @@ def _load_adapter_plugin(
         创建的 host 对象，或 None 如果加载失败
     """
     pid = plugin_id or ctx.pid
+    conf = ctx.conf
     pdata = ctx.pdata
     toml_path = ctx.toml_path
     entry = ctx.entry
@@ -1229,11 +1235,22 @@ def _load_adapter_plugin(
     # 解析 adapter 配置
     adapter_conf = ctx.conf.get("adapter", {})
     adapter_mode = adapter_conf.get("mode", "hybrid")
+    entries_preview: List[Dict[str, Any]] = []
     
     logger.info(
         "Loading adapter '{}' (mode={})",
         pid, adapter_mode,
     )
+
+    try:
+        module_path, class_name = entry.split(":", 1)
+        mod = importlib.import_module(module_path)
+        cls = getattr(mod, class_name)
+        if isinstance(cls, type):
+            entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
+            scan_static_metadata(pid, cls, conf, pdata)
+    except Exception:
+        logger.debug("Adapter {}: failed to extract entries preview", pid, exc_info=True)
     
     # 构建插件元数据
     plugin_meta = _build_plugin_meta(
@@ -1293,8 +1310,11 @@ def _load_adapter_plugin(
             # type 是唯一权威字段；plugin_type 仅做兼容镜像。
             meta["type"] = "adapter"
             meta["plugin_type"] = meta["type"]
+            meta["entries_preview"] = entries_preview
+            state.plugins[resolved_id] = meta
             meta["adapter_mode"] = adapter_mode
             state.plugins[resolved_id] = meta
+    state.invalidate_snapshot_cache("plugins")
 
     if resolved_id != pid:
         _migrate_plugin_id(pid, resolved_id, host, logger)

@@ -493,6 +493,37 @@ class GlobalState:
             elif cache_type in self._snapshot_cache:
                 # 指定类型失效
                 self._snapshot_cache[cache_type]["timestamp"] = 0.0
+
+    def register_event_handler(self, plugin_id: str, handler: EventHandler) -> None:
+        meta = getattr(handler, "meta", None)
+        event_type = getattr(meta, "event_type", None) or "plugin_entry"
+        entry_id = getattr(meta, "id", None)
+        if not isinstance(plugin_id, str) or not plugin_id:
+            raise ValueError("plugin_id is required")
+        if not isinstance(entry_id, str) or not entry_id:
+            raise ValueError("handler.meta.id is required")
+
+        with self.acquire_event_handlers_write_lock():
+            if event_type == "plugin_entry":
+                self.event_handlers[f"{plugin_id}.{entry_id}"] = handler
+                self.event_handlers[f"{plugin_id}:plugin_entry:{entry_id}"] = handler
+            else:
+                self.event_handlers[f"{plugin_id}:{event_type}:{entry_id}"] = handler
+        self.invalidate_snapshot_cache("handlers")
+
+    def unregister_event_handler(self, plugin_id: str, entry_id: str, event_type: str = "plugin_entry") -> None:
+        if not isinstance(plugin_id, str) or not plugin_id:
+            raise ValueError("plugin_id is required")
+        if not isinstance(entry_id, str) or not entry_id:
+            raise ValueError("entry_id is required")
+
+        with self.acquire_event_handlers_write_lock():
+            if event_type == "plugin_entry":
+                self.event_handlers.pop(f"{plugin_id}.{entry_id}", None)
+                self.event_handlers.pop(f"{plugin_id}:plugin_entry:{entry_id}", None)
+            else:
+                self.event_handlers.pop(f"{plugin_id}:{event_type}:{entry_id}", None)
+        self.invalidate_snapshot_cache("handlers")
     
     @contextmanager
     def acquire_locks_in_order(self, *lock_names: str, timeout: float = DEFAULT_LOCK_TIMEOUT):
