@@ -420,7 +420,15 @@
                     if (result.source_mode === 'meme' && processed.memeLinks.length > 0) {
                         var MAX_MEME_BUBBLES = 2;
                         var memesToShow = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
-                        _showMemeBubbles(memesToShow, captureTurnId);
+                        (function waitForTurnReady(retriesLeft) {
+                            if (window.realisticGeminiCurrentTurnId === captureTurnId) {
+                                _showMemeBubbles(memesToShow, captureTurnId);
+                                return;
+                            }
+                            if (retriesLeft > 0) {
+                                setTimeout(function () { waitForTurnReady(retriesLeft - 1); }, 150);
+                            }
+                        })(20); // 最长等待约 3 秒
                     }
 
                     // 2. 无论模式，外部链接卡片延迟 3s 显示

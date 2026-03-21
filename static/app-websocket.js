@@ -267,8 +267,8 @@
                             }
                         });
                         window.currentTurnGeminiAttachments = [];
-                        window.realisticGeminiCurrentTurnId = null;
                     }
+                    window.realisticGeminiCurrentTurnId = null;
 
                     // Fallback: clear trailing gemini bubbles not tracked
                     var cc = chatContainer();

@@ -1743,7 +1743,10 @@ async def proactive_chat(request: Request):
                 raise ValueError(f"未知模式: {mode}")
         
         # 并行获取所有信息源
-        fetch_tasks = [_fetch_source(m) for m in enabled_modes]
+        fetch_tasks = [
+            asyncio.wait_for(_fetch_source(m), timeout=12.0) if m == 'meme' else _fetch_source(m)
+            for m in enabled_modes
+        ]
         fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
         
         # 收集成功的信息源

@@ -411,10 +411,10 @@ class DoutubFetcher:
                             response = await temp_client.get(url, headers=headers)
                     response.raise_for_status()
                     return response.text
-                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                    logger.warning(f"斗图吧 HTTPS 默认请求失败，尝试降低安全级别 (第{attempt+1}次): {e}")
+                except ssl.SSLError as e:
+                    logger.warning(f"斗图吧 HTTPS SSL握手失败，尝试降低安全级别重试 (第{attempt+1}次): {e}")
                     try:
-                        # 降级 TLS 尝试
+                        # 仅在 SSL 错误时执行降级 TLS 尝试
                         if self._session:
                             await self.close()
                             self._session = self._create_client(seclevel1=True)
@@ -428,6 +428,10 @@ class DoutubFetcher:
                         logger.warning(f"斗图吧降级请求依然失败 (第{attempt+1}次): {inner_e}")
                         last_exception = inner_e
                         # 关键修复：不在此处抛出，允许进入下方的 sleep 并开始下一轮 attempt
+                except (httpx.TransportError, httpx.ConnectError) as e:
+                    logger.warning(f"斗图吧 HTTPS 网络传输异常 (第{attempt+1}次): {e}")
+                    last_exception = e
+                    # 仅警告，交由下方 sleep 进入下一轮默认 TLS 重试
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"斗图吧网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -645,10 +649,10 @@ class FabiaoqingFetcher:
                             response = await temp_client.get(url, headers=headers)
                     response.raise_for_status()
                     return response.text
-                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                    logger.warning(f"发表情 HTTPS 默认请求失败，尝试降低安全级别 (第{attempt+1}次): {e}")
+                except ssl.SSLError as e:
+                    logger.warning(f"发表情 HTTPS SSL握手失败，尝试降低安全级别重试 (第{attempt+1}次): {e}")
                     try:
-                        # 降级 TLS 尝试
+                        # 仅在 SSL 错误时执行降级 TLS 尝试
                         if self._session:
                             await self.close()
                             self._session = self._create_client(seclevel1=True)
@@ -662,6 +666,10 @@ class FabiaoqingFetcher:
                         logger.warning(f"发表情降级请求依然失败 (第{attempt+1}次): {inner_e}")
                         last_exception = inner_e
                         # 关键修复：不在此处抛出，允许进入下方的 sleep 并开始下一轮 attempt
+                except (httpx.TransportError, httpx.ConnectError) as e:
+                    logger.warning(f"发表情 HTTPS 网络传输异常 (第{attempt+1}次): {e}")
+                    last_exception = e
+                    # 仅警告，交由下方 sleep 进入下一轮默认 TLS 重试
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
