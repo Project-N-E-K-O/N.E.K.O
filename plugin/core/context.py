@@ -1672,7 +1672,7 @@ class PluginContext:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
         try:
-            return await self._send_request_and_wait_async(
+            payload = await self._send_request_and_wait_async(
                 method_name="update_own_config",
                 request_type="PLUGIN_CONFIG_UPDATE",
                 request_data={
@@ -1683,5 +1683,8 @@ class PluginContext:
                 wrap_result=True,
                 error_log_template=None,
             )
+            config_obj = payload.get("config") if isinstance(payload, dict) else None
+            self._effective_config = copy.deepcopy(config_obj) if isinstance(config_obj, dict) else None
+            return payload
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e

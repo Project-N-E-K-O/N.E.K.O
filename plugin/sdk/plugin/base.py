@@ -105,6 +105,53 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 names.append(router_name)
         return names
 
+    def _notify_host_comm(self, payload: dict[str, Any]) -> None:
+        queue = getattr(self._host_ctx, "message_queue", None)
+        if queue is None:
+            return
+        try:
+            queue.put_nowait(payload)
+        except Exception:
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                try:
+                    logger.debug("failed to notify host comm: {}", payload.get("type", "unknown"))
+                except Exception:
+                    pass
+
+    def _notify_static_ui_registered(self, config: dict[str, Any]) -> None:
+        self._notify_host_comm({
+            "type": "STATIC_UI_REGISTER",
+            "plugin_id": self.plugin_id,
+            "config": dict(config),
+        })
+
+    def _notify_dynamic_entry_registered(self, entry_id: str, meta: EventMeta, *, enabled: bool = True) -> None:
+        self._notify_host_comm({
+            "type": "ENTRY_UPDATE",
+            "action": "register",
+            "plugin_id": self.plugin_id,
+            "entry_id": entry_id,
+            "meta": {
+                "id": getattr(meta, "id", entry_id),
+                "name": getattr(meta, "name", entry_id),
+                "description": getattr(meta, "description", ""),
+                "input_schema": dict(getattr(meta, "input_schema", None) or {}),
+                "kind": getattr(meta, "kind", "action"),
+                "auto_start": bool(getattr(meta, "auto_start", False)),
+                "enabled": enabled,
+                "metadata": dict(getattr(meta, "metadata", None) or {}),
+            },
+        })
+
+    def _notify_dynamic_entry_unregistered(self, entry_id: str) -> None:
+        self._notify_host_comm({
+            "type": "ENTRY_UPDATE",
+            "action": "unregister",
+            "plugin_id": self.plugin_id,
+            "entry_id": entry_id,
+        })
+
     def register_static_ui(self, directory: str = "static", *, index_file: str = "index.html", cache_control: str = "public, max-age=3600") -> bool:
         static_dir = self.config_dir / directory
         index_path = static_dir / index_file
@@ -117,6 +164,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             "cache_control": cache_control,
             "plugin_id": self.plugin_id,
         }
+        self._notify_static_ui_registered(self._static_ui_config)
         return True
 
     def get_static_ui_config(self) -> dict[str, Any] | None:
@@ -131,11 +179,16 @@ class NekoPluginBase(_SharedNekoPluginBase):
         input_schema: dict[str, Any] | None = None,
         kind: str = "action",
         auto_start: bool = False,
+        timeout: float | None = None,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
         if not isinstance(entry_id, str) or not entry_id.strip():
             raise ValueError("entry_id must be a non-empty string")
+        if timeout is not None:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise TypeError("timeout must be a number or None")
+            timeout = float(timeout)
         entry_id = entry_id.strip()
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:
@@ -148,13 +201,20 @@ class NekoPluginBase(_SharedNekoPluginBase):
             input_schema=input_schema,
             kind=kind,
             auto_start=auto_start,
+            timeout=timeout,
             metadata={"dynamic": True, "enabled": True},
         )
+        if timeout is not None:
+            meta.extra["timeout"] = timeout
         self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
+        self._notify_dynamic_entry_registered(entry_id, meta, enabled=True)
         return True
 
     def unregister_dynamic_entry(self, entry_id: str) -> bool:
-        return self._dynamic_entries.pop(entry_id, None) is not None
+        removed = self._dynamic_entries.pop(entry_id, None) is not None
+        if removed:
+            self._notify_dynamic_entry_unregistered(entry_id)
+        return removed
 
     def enable_entry(self, entry_id: str) -> bool:
         item = self._dynamic_entries.get(entry_id)
@@ -166,6 +226,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             current = dict(getattr(meta, "metadata", None) or {})
             current["enabled"] = True
             meta.metadata = current
+            self._notify_dynamic_entry_registered(entry_id, meta, enabled=True)
         return True
 
     def disable_entry(self, entry_id: str) -> bool:
@@ -178,6 +239,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             current = dict(getattr(meta, "metadata", None) or {})
             current["enabled"] = False
             meta.metadata = current
+        self._notify_dynamic_entry_unregistered(entry_id)
         return True
 
     def is_entry_enabled(self, entry_id: str) -> bool | None:
