@@ -1372,8 +1372,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         2. 触发回调注册为动态 entry（出现在前端管理面板）
         """
         if self._route_engine:
-            count = await self._route_engine.register_server_tools(server_name, client)
-            self.ctx.logger.info(f"Registered {count} tools from MCP server '{server_name}'")
+            await self._route_engine.register_server_tools(server_name, client)
 
     def _cancel_reconnect_task(self, server_name: str) -> bool:
         task = self._reconnect_tasks.pop(server_name, None)
@@ -1391,9 +1390,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         2. 触发回调注销动态 entry
         """
         if self._route_engine:
-            count = await self._route_engine.unregister_server_tools(server_name)
-            if count > 0:
-                self.ctx.logger.info(f"Unregistered {count} tools from MCP server '{server_name}'")
+            await self._route_engine.unregister_server_tools(server_name)
     
     @lifecycle(id="shutdown")
     async def on_shutdown(self):

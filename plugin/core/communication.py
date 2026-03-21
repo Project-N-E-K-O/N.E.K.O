@@ -561,7 +561,7 @@ class PluginCommunicationResourceManager:
                     self.logger.info("Static UI registered for plugin {}: {}", plugin_id, config.get("directory"))
                 else:
                     self.logger.warning("Plugin {} not found in state.plugins", plugin_id)
-            if updated:
-                state.invalidate_snapshot_cache("plugins")
+                if updated:
+                    state.invalidate_snapshot_cache("plugins")
         except Exception:
             self.logger.exception("Failed to handle STATIC_UI_REGISTER")

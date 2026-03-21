@@ -185,6 +185,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
             raise TypeError("handler must be callable")
         if not isinstance(entry_id, str) or not entry_id.strip():
             raise ValueError("entry_id must be a non-empty string")
+        if timeout is not None:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise TypeError("timeout must be a number or None")
+            timeout = float(timeout)
         entry_id = entry_id.strip()
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:

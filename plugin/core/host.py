@@ -909,6 +909,23 @@ def _plugin_process_runner(
                     return None if ct <= 0 else ct
             return PLUGIN_TRIGGER_TIMEOUT
 
+        async def _save_plugin_state(reason: str) -> None:
+            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            if not sp:
+                return
+
+            save_method = getattr(sp, "save", None)
+            if not callable(save_method):
+                return
+
+            try:
+                save_result = save_method(instance)
+            except TypeError:
+                save_result = save_method(instance, freezable_keys, reason=reason)
+
+            if inspect.isawaitable(save_result):
+                await save_result
+
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}
 
@@ -995,9 +1012,7 @@ def _plugin_process_runner(
 
                 if _should_persist(method):
                     try:
-                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-                        if sp:
-                            sp.save(instance, freezable_keys, reason="auto")
+                        await _save_plugin_state("auto")
                     except Exception:
                         pass
 
@@ -1140,9 +1155,7 @@ def _plugin_process_runner(
                             with ctx._handler_scope("lifecycle.freeze"):
                                 await freeze_fn()
                         if freezable_keys:
-                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-                            if sp:
-                                sp.save(instance, freezable_keys, reason="freeze")
+                            await _save_plugin_state("freeze")
                         ret["success"] = True
                         ret["data"] = {"frozen": True, "freezable_keys": freezable_keys}
                     except Exception as e:

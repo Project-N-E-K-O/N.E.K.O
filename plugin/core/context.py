@@ -1684,8 +1684,7 @@ class PluginContext:
                 error_log_template=None,
             )
             config_obj = payload.get("config") if isinstance(payload, dict) else None
-            if isinstance(config_obj, dict):
-                self._effective_config = copy.deepcopy(config_obj)
+            self._effective_config = copy.deepcopy(config_obj) if isinstance(config_obj, dict) else None
             return payload
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
