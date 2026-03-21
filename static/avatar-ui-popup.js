@@ -264,21 +264,9 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
 
-    // 3. 角色设置按钮（如果有配置）
-    if (manager._characterMenuItems && manager._characterMenuItems.length > 0) {
-        const charSettingsBtn = manager._createSettingsMenuButton({
-            label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
-            labelKey: 'settings.menu.characterSettings',
-            icon: '/static/icons/character_icon.png'
-        });
-        popup.appendChild(charSettingsBtn);
-        const charSidePanel = manager._createCharacterSettingsSidePanel();
-        charSidePanel._anchorElement = charSettingsBtn;
-        charSidePanel._popupElement = popup;
-        manager._attachSidePanelHover(charSettingsBtn, charSidePanel);
-    }
+    // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
-    // 4. 主动搭话和自主视觉
+    // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 30 },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
@@ -1900,7 +1888,20 @@ const AvatarPopupMixin = {
         };
 
         ManagerProto._createSettingsMenuItems = function (popup) {
-            // 角色管理已通过侧边面板（_createCharacterSettingsSidePanel）在上方创建，不在此处重复
+            // 角色设置按钮（带侧边面板）
+            if (this._characterMenuItems && this._characterMenuItems.length > 0) {
+                const charSettingsBtn = this._createSettingsMenuButton({
+                    label: window.t ? window.t('settings.menu.characterSettings') : '角色设置',
+                    labelKey: 'settings.menu.characterSettings',
+                    icon: '/static/icons/character_icon.png'
+                });
+                popup.appendChild(charSettingsBtn);
+                const charSidePanel = this._createCharacterSettingsSidePanel();
+                charSidePanel._anchorElement = charSettingsBtn;
+                charSidePanel._popupElement = popup;
+                this._attachSidePanelHover(charSettingsBtn, charSidePanel);
+            }
+
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
