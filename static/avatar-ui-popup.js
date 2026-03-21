@@ -9,49 +9,6 @@
 // 常量
 const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
 
-const NEKO_INTERACTIVE_DESCENDANT_SELECTOR = [
-    'button',
-    'input',
-    'textarea',
-    'select',
-    'summary',
-    'a[href]',
-    'label',
-    'iframe',
-    '[role]',
-    '[tabindex]',
-    '[contenteditable="true"]',
-    '[aria-haspopup="true"]',
-    '[data-action]',
-    '[data-neko-sidepanel]',
-    '[data-neko-sidepanel-owner]',
-    '[onclick]'
-].join(',');
-
-function markInteractive(element, role = 'interactive', options = {}) {
-    if (!element || typeof element.setAttribute !== 'function') return element;
-    element.setAttribute('data-neko-interactive', role);
-    if (options.surface) element.setAttribute('data-neko-surface', role);
-    if (options.popup) element.setAttribute('data-neko-popup-surface', role);
-    if (options.panel) element.setAttribute('data-neko-panel-surface', role);
-    if (options.role && !element.getAttribute('role')) {
-        element.setAttribute('role', options.role);
-    }
-    if (options.tabIndex != null && !element.hasAttribute('tabindex')) {
-        element.tabIndex = options.tabIndex;
-    }
-    return element;
-}
-
-function markInteractiveSubtree(root, role = 'interactive', options = {}) {
-    if (!root || typeof root.querySelectorAll !== 'function') return root;
-    markInteractive(root, role, options);
-    root.querySelectorAll(NEKO_INTERACTIVE_DESCENDANT_SELECTOR).forEach((node) => {
-        markInteractive(node, node.getAttribute('role') || role);
-    });
-    return root;
-}
-
 /**
  * 注入指定前缀的 CSS 样式
  */
@@ -232,7 +189,6 @@ function createPopup(manager, prefix, buttonId) {
     const popup = document.createElement('div');
     popup.id = `${prefix}-popup-${buttonId}`;
     popup.className = `${prefix}-popup`;
-    markInteractive(popup, 'popup', { surface: true, popup: true, role: 'dialog' });
 
     const stopEventPropagation = (e) => { e.stopPropagation(); };
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
@@ -260,7 +216,7 @@ function createPopup(manager, prefix, buttonId) {
         manager._createSettingsPopupContent(popup);
     }
 
-    return markInteractiveSubtree(popup, 'popup', { surface: true, popup: true });
+    return popup;
 }
 
 /**
@@ -397,7 +353,6 @@ function createSettingsPopupContent(manager, prefix, popup) {
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
-    markInteractive(btn, 'menu-item', { role: 'button', tabIndex: 0 });
     Object.assign(btn.style, {
         justifyContent: 'space-between'
     });
@@ -517,7 +472,6 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
-    markInteractive(menuItem, 'menu-item', { role: 'button', tabIndex: 0 });
     Object.assign(menuItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -630,7 +584,6 @@ function createSidePanelMenuItem(manager, prefix, item) {
 function createSettingsLinkItem(manager, prefix, item, popup) {
     const linkItem = document.createElement('div');
     linkItem.id = `${prefix}-link-${item.id}`;
-    markInteractive(linkItem, 'menu-item', { role: 'button', tabIndex: 0 });
     Object.assign(linkItem.style, {
         display: 'none',
         alignItems: 'center',
@@ -941,7 +894,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 function createSidePanelContainer(manager, prefix, options = {}) {
     const container = document.createElement('div');
     container.setAttribute('data-neko-sidepanel', '');
-    markInteractive(container, 'sidepanel', { surface: true, panel: true, role: 'dialog' });
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1076,7 +1028,6 @@ function createIntervalControl(manager, prefix, toggle) {
     const container = document.createElement('div');
     container.className = `${prefix}-interval-control-${toggle.id}`;
     container.setAttribute('data-neko-sidepanel', '');
-    markInteractive(container, 'sidepanel', { surface: true, panel: true, role: 'dialog' });
     Object.assign(container.style, {
         position: 'fixed',
         display: 'none',
@@ -1119,7 +1070,6 @@ function createIntervalControl(manager, prefix, toggle) {
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.id = `${prefix}-${toggle.id}-interval`;
-    markInteractive(slider, 'slider');
     const minVal = toggle.id === 'proactive-chat' ? 10 : 5;
     slider.min = minVal;
     slider.max = '120';
@@ -1257,7 +1207,6 @@ function createCheckIndicator(manager, prefix) {
 function createToggleItem(manager, prefix, toggle, popup) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
-    markInteractive(toggleItem, 'toggle-item', { role: 'switch', tabIndex: 0 });
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
     toggleItem.setAttribute('aria-checked', 'false');
@@ -1266,7 +1215,6 @@ function createToggleItem(manager, prefix, toggle, popup) {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `${prefix}-${toggle.id}`;
-    markInteractive(checkbox, 'checkbox');
     Object.assign(checkbox.style, {
         position: 'absolute',
         opacity: '0',
@@ -1284,7 +1232,6 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
-    markInteractive(indicator, 'toggle-indicator');
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
@@ -1295,7 +1242,6 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const label = document.createElement('label');
     label.className = `${prefix}-toggle-label`;
-    markInteractive(label, 'toggle-label');
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
     label.htmlFor = `${prefix}-${toggle.id}`;
@@ -1389,7 +1335,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
-    markInteractive(toggleItem, 'toggle-item', { role: 'switch', tabIndex: 0 });
     toggleItem.setAttribute('role', 'switch');
     toggleItem.setAttribute('tabIndex', '0');
     toggleItem.setAttribute('aria-checked', 'false');
@@ -1401,7 +1346,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `${prefix}-${toggle.id}`;
-    markInteractive(checkbox, 'checkbox');
     Object.assign(checkbox.style, {
         position: 'absolute',
         width: '1px',
@@ -1430,7 +1374,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
-    markInteractive(indicator, 'toggle-indicator');
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
@@ -1453,7 +1396,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     const label = document.createElement('label');
-    markInteractive(label, 'toggle-label');
     label.innerText = toggle.label;
     if (toggle.labelKey) {
         label.setAttribute('data-i18n', toggle.labelKey);
@@ -1615,7 +1557,6 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 function createMenuItem(manager, prefix, config) {
     const menuItem = document.createElement('div');
     menuItem.className = `${prefix}-popup-item`;
-    markInteractive(menuItem, 'menu-item', { role: 'button', tabIndex: 0 });
     menuItem.textContent = config.label;
     if (config.selected) menuItem.classList.add('selected');
 
@@ -1686,7 +1627,6 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
-            markInteractive(menuItem, 'menu-item', { role: 'button', tabIndex: 0 });
             Object.assign(menuItem.style, {
                 display: 'flex',
                 alignItems: 'center',
@@ -2194,5 +2134,3 @@ const AvatarPopupMixin = {
 };
 
 window.AvatarPopupMixin = AvatarPopupMixin;
-window.AvatarPopupMixin.markInteractive = markInteractive;
-window.AvatarPopupMixin.markInteractiveSubtree = markInteractiveSubtree;

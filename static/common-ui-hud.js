@@ -173,9 +173,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             sidePanel._popupElement = popup;
 
             const configBtn = document.createElement('div');
-            if (window.AvatarPopupMixin && typeof window.AvatarPopupMixin.markInteractive === 'function') {
-                window.AvatarPopupMixin.markInteractive(configBtn, 'menu-item', { role: 'button', tabIndex: 0 });
-            }
             const LABEL_KEY = 'settings.toggles.pluginManagementPanel';
             const LABEL_FALLBACK = '管理面板';
             Object.assign(configBtn.style, {

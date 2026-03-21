@@ -574,10 +574,6 @@
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features) {
-        if (window.nekoWindowing && typeof window.nekoWindowing.openOrFocusWindow === 'function') {
-            return window.nekoWindowing.openOrFocusWindow(url, windowName, features);
-        }
-
         // 默认窗口特性（移除 noopener 以便获取窗口引用）
         const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no';
         features = features || defaultFeatures;
@@ -615,11 +611,6 @@
      * @param {string} windowName - 窗口名称
      */
     window.closeNamedWindow = function(windowName) {
-        if (window.nekoWindowing && typeof window.nekoWindowing.close === 'function') {
-            window.nekoWindowing.close(windowName);
-            return;
-        }
-
         const win = window._openedWindows[windowName];
         if (win && !win.closed) {
             win.close();
@@ -656,3 +647,4 @@
     
     console.log('窗口管理工具已加载');
 })();
+
