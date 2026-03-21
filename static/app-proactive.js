@@ -424,7 +424,7 @@
                         window._proactiveAttachmentBuffer[captureTurnId] = { memes: [], links: [] };
                     }
                     
-                    if (result.source_mode === 'meme' && processed.memeLinks.length > 0) {
+                    if (processed.memeLinks.length > 0) {
                         var MAX_MEME_BUBBLES = 2;
                         window._proactiveAttachmentBuffer[captureTurnId].memes = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
                     }
@@ -535,12 +535,15 @@
             }
 
             var safeUrl = null;
-            try {
-                var u = new URL(String(link.url || ''), window.location.origin);
-                if (u.protocol === 'http:' || u.protocol === 'https:') {
-                    safeUrl = u.href;
-                }
-            } catch (e) {}
+            var rawUrl = String(link.url || '').trim();
+            if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
+                try {
+                    var u = new URL(rawUrl);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        safeUrl = u.href;
+                    }
+                } catch (e) {}
+            }
 
             if (safeUrl) {
                 if (isMemeLink) {

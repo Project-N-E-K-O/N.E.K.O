@@ -862,6 +862,8 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
             "data": [], 
             "formatted_content": "",
             "raw_data": {"data": []},
+            "keyword_used": actual_keyword,
+            "source": "",
             "region": "china" if china_region else "non-china",
             "error": "所有表情包源均获取失败"
         }
