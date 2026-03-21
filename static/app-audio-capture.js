@@ -464,7 +464,10 @@
             S.workletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                // Focus模式：focusModeEnabled为true且AI正在播放语音时，自动静音麦克风
+                if (S.isMicMuted) {
+                    return;
+                }
+
                 if (S.focusModeEnabled === true && S.isPlaying === true) {
                     return;
                 }
@@ -753,7 +756,7 @@
         let cachedBarFill = document.getElementById('mic-volume-bar-fill');
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
-        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -761,7 +764,7 @@
                 cachedBarFill = document.getElementById('mic-volume-bar-fill');
                 cachedStatus = document.getElementById('mic-volume-status');
                 cachedHint = document.getElementById('mic-volume-hint');
-                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
             }
 
             if (!cachedBarFill) {
@@ -909,6 +912,47 @@
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+
+    window.toggleMicMute = function(showToast = true) {
+        S.isMicMuted = !S.isMicMuted;
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
+        }));
+        if (showToast && typeof window.showStatusToast === 'function') {
+            const message = S.isMicMuted
+                ? (window.t ? window.t('app.micMuted') : '麦克风已静音')
+                : (window.t ? window.t('app.micUnmuted') : '麦克风已取消静音');
+            window.showStatusToast(message, 2000);
+        }
+        return S.isMicMuted;
+    };
+
+    window.setMicMuted = function(muted, showToast = false) {
+        S.isMicMuted = muted;
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
+        }));
+        if (showToast && typeof window.showStatusToast === 'function') {
+            const message = S.isMicMuted
+                ? (window.t ? window.t('app.micMuted') : '麦克风已静音')
+                : (window.t ? window.t('app.micUnmuted') : '麦克风已取消静音');
+            window.showStatusToast(message, 2000);
+        }
+    };
+
+    window.isMicMuted = function() {
+        return S.isMicMuted;
+    };
     // setMicrophoneGain / getMicrophoneGain 已在上方直接定义为 window 属性
 
     // ======================== 模块导出 ========================
@@ -967,7 +1011,7 @@
             try {
                 var devices = await navigator.mediaDevices.enumerateDevices();
                 cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
-                var micPopup = document.getElementById('live2d-popup-mic');
+                var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
                 if (micPopup && micPopup.style.display === 'flex') {
                     await window.renderFloatingMicList();
                 }
@@ -979,7 +1023,7 @@
 
     /** 为浮动弹出框渲染麦克风列表 */
     window.renderFloatingMicList = async function (popupArg) {
-        var micPopup = popupArg || document.getElementById('live2d-popup-mic');
+        var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
 
         try {
@@ -1213,7 +1257,7 @@
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return;
         var options = micPopup.querySelectorAll('.mic-option');
         options.forEach(function (option) {

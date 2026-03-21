@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from plugin.sdk.shared import core
 from plugin.sdk.shared.core import base as core_base
 from plugin.sdk.shared.core import config as core_config
+from plugin.sdk.shared.core.context import SdkContext
 from plugin.sdk.shared.models.exceptions import TransportError, ValidationError
 from plugin.sdk.shared.core import decorators as core_decorators
 from plugin.sdk.shared.core import events as core_events
@@ -120,6 +121,15 @@ class _DemoPlugin(core_base.NekoPluginBase):
 
     async def plain(self) -> str:
         return "plain"
+
+
+@pytest.mark.asyncio
+async def test_sdk_context_forwards_update_own_config() -> None:
+    ctx = SdkContext(_CoreCtx())
+
+    payload = await ctx.update_own_config({"mcp_servers": {"fetch": {"url": "https://example.com"}}})
+
+    assert payload == {"config": {"mcp_servers": {"fetch": {"url": "https://example.com"}}}}
 
 
 def test_core_base_and_hook_classes() -> None:

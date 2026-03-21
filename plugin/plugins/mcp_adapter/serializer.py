@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from plugin.sdk.adapter import Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_models import (
     GatewayError,
     GatewayRequest,
@@ -16,12 +17,12 @@ class MCPResponseSerializer:
     将 Gateway 响应转换为 MCP JSON-RPC 格式。
     """
 
-    async def ok(
+    async def build_success_response(
         self,
         request: GatewayRequest,
         result: object,
         latency_ms: float,
-    ) -> GatewayResponse:
+    ) -> Result[GatewayResponse, TransportError]:
         """
         构造成功响应。
         
@@ -38,24 +39,26 @@ class MCPResponseSerializer:
         # 将结果包装为 MCP content 格式
         mcp_result = self._wrap_result(result)
         
-        return GatewayResponse(
-            request_id=request.request_id,
-            success=True,
-            data=mcp_result,
-            latency_ms=latency_ms,
-            metadata={
-                "trace_id": request.trace_id,
-                "protocol": "mcp",
-                "action": request.action.value,
-            },
+        return Ok(
+            GatewayResponse(
+                request_id=request.request_id,
+                success=True,
+                data=mcp_result,
+                latency_ms=latency_ms,
+                metadata={
+                    "trace_id": request.trace_id,
+                    "protocol": "mcp",
+                    "action": request.action.value,
+                },
+            )
         )
 
-    async def fail(
+    async def build_error_response(
         self,
         request: GatewayRequest,
         error: GatewayError,
         latency_ms: float,
-    ) -> GatewayResponse:
+    ) -> Result[GatewayResponse, TransportError]:
         """
         构造错误响应。
         
@@ -84,16 +87,18 @@ class MCPResponseSerializer:
             retryable=error.retryable,
         )
         
-        return GatewayResponse(
-            request_id=request.request_id,
-            success=False,
-            error=mcp_error,
-            latency_ms=latency_ms,
-            metadata={
-                "trace_id": request.trace_id,
-                "protocol": "mcp",
-                "action": request.action.value if hasattr(request, "action") else "unknown",
-            },
+        return Ok(
+            GatewayResponse(
+                request_id=request.request_id,
+                success=False,
+                error=mcp_error,
+                latency_ms=latency_ms,
+                metadata={
+                    "trace_id": request.trace_id,
+                    "protocol": "mcp",
+                    "action": request.action.value if hasattr(request, "action") else "unknown",
+                },
+            )
         )
 
     def _wrap_result(self, result: object) -> dict[str, object]:

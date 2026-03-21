@@ -89,23 +89,43 @@ async function loadPageConfig() {
             const modelType = (data.model_type || 'live2d').toLowerCase();
             // 将 model_type 写回 lanlan_config，减少各处"猜模式"的分支
             lanlan_config.model_type = modelType;
+            // 保存 live3d_sub_type 供 vrm-init.js / mmd-init.js 判断
+            const live3dSubType = (data.live3d_sub_type || '').toLowerCase();
+            lanlan_config.live3d_sub_type = live3dSubType;
             window.lanlan_config = lanlan_config;
-            // 根据model_type判断是Live2D还是VRM
-            if (modelType === 'vrm') {
-                if (modelPath &&
+            // 根据model_type判断是Live2D还是Live3D (VRM/MMD)
+            if (modelType === 'live3d' || modelType === 'vrm') {
+                const validPath = modelPath &&
                     modelPath !== 'undefined' &&
                     modelPath !== 'null' &&
                     typeof modelPath === 'string' &&
-                    modelPath.trim() !== '') {
-                    vrmModel = modelPath;
-                    window.vrmModel = vrmModel;
-                } else {
-                    // 如果路径无效，设置为空字符串，让 vrm-init.js 使用默认模型
-                    vrmModel = "";
-                    window.vrmModel = "";
+                    modelPath.trim() !== '';
+                if (validPath) {
+                    if (live3dSubType === 'mmd') {
+                        // MMD 子类型：路径给 mmdModel，不设置 vrmModel
+                        window.mmdModel = modelPath;
+                        vrmModel = '';
+                        window.vrmModel = '';
+                    } else {
+                        // VRM 子类型（默认）
+                        vrmModel = modelPath;
+                        window.vrmModel = vrmModel;
+                        window.mmdModel = '';
+                    }
+                    cubism4Model = "";
+                    window.cubism4Model = "";
+
+                    // 尽早切换容器可见性，避免空白 live2d-container 闪烁
+                    const live2dC = document.getElementById('live2d-container');
+                    if (live2dC) { live2dC.style.display = 'none'; }
+                    if (live3dSubType === 'mmd') {
+                        const mmdC = document.getElementById('mmd-container');
+                        if (mmdC) { mmdC.style.display = 'block'; mmdC.style.visibility = 'visible'; }
+                    } else {
+                        const vrmC = document.getElementById('vrm-container');
+                        if (vrmC) { vrmC.style.display = 'block'; }
+                    }
                 }
-                cubism4Model = "";
-                window.cubism4Model = "";
             } else {
                 cubism4Model = modelPath;
                 window.cubism4Model = cubism4Model;

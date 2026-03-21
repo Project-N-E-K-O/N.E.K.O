@@ -525,7 +525,9 @@ html #chat-container {
 [data-theme="dark"] #live2d-popup-mic div[style*="border-right"],
 [data-theme="dark"] #live2d-popup-mic div[style*="border-left"],
 [data-theme="dark"] #vrm-popup-mic div[style*="border-right"],
-[data-theme="dark"] #vrm-popup-mic div[style*="border-left"] {
+[data-theme="dark"] #vrm-popup-mic div[style*="border-left"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-right"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-left"] {
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -1364,7 +1366,7 @@ html #chat-container {
 /* 保存设置、情感配置按钮 — 背景图和样式不被暗色模式覆盖 */
 [data-theme="dark"] #save-position-btn,
 [data-theme="dark"] #emotion-config-btn,
-[data-theme="dark"] #vrm-emotion-config-btn {
+[data-theme="dark"] #live3d-emotion-config-btn {
   background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
   background-color: transparent !important;
   filter: none !important;

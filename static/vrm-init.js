@@ -23,9 +23,10 @@
             '/static/vrm-manager.js'
         ];
 
-        // 必须顺序加载的 UI 模块（vrm-ui-buttons.js 依赖 vrm-ui-popup.js 中定义的 createPopup）
+        // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）
+        // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
+        // 已由 HTML 静态 <script> 加载，此处不再重复加载
         const sequentialModules = [
-            '/static/vrm-ui-popup.js',
             '/static/vrm-ui-buttons.js'
         ];
 
@@ -430,6 +431,12 @@ async function initVRMModel() {
         // 如果是模型管理页面，不自动加载模型，直接返回
         if (isModelManagerPage()) {
             console.log('[VRM Init] 模型管理页面，跳过自动模型加载');
+            return;
+        }
+
+        // 如果是 MMD 子类型，跳过 VRM 加载（由 mmd-init.js 处理）
+        if ((window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd') {
+            console.log('[VRM Init] MMD 子类型，跳过 VRM 加载');
             return;
         }
 

@@ -34,6 +34,9 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "live2d_item_id",
     "item_id",
     "idleAnimation",
+    "mmd",
+    "mmd_animation",
+    "mmd_idle_animation",
     "touch_set",
 )
 
@@ -76,6 +79,16 @@ RESERVED_FIELD_SCHEMA = {
             "animation": (str, dict, list, type(None)),
             "idle_animation": str,
             "lighting": (dict, type(None)),
+            "cursor_follow": (dict, type(None)),
+        },
+        "mmd": {
+            "model_path": str,
+            "animation": (str, dict, list, type(None)),
+            "idle_animation": str,
+            "lighting": (dict, type(None)),
+            "rendering": (dict, type(None)),
+            "physics": (dict, type(None)),
+            "cursor_follow": (dict, type(None)),
         },
     },
 }
@@ -94,6 +107,9 @@ LEGACY_FLAT_TO_RESERVED = {
     "vrm_animation": ("avatar", "vrm", "animation"),
     "idleAnimation": ("avatar", "vrm", "idle_animation"),
     "lighting": ("avatar", "vrm", "lighting"),
+    "mmd": ("avatar", "mmd", "model_path"),
+    "mmd_animation": ("avatar", "mmd", "animation"),
+    "mmd_idle_animation": ("avatar", "mmd", "idle_animation"),
 }
 
 # 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
@@ -264,6 +280,11 @@ DEFAULT_LANLAN_TEMPLATE = {
                     "idle_animation": "",
                     "lighting": None,
                 },
+                "mmd": {
+                    "model_path": "",
+                    "animation": None,
+                    "idle_animation": "",
+                },
             },
         },
     }
@@ -297,6 +318,73 @@ VRM_LIGHTING_RANGES = {
 def get_default_vrm_lighting() -> dict[str, float]:
     """获取默认VRM打光配置的副本"""
     return dict(DEFAULT_VRM_LIGHTING)
+
+
+# ─── MMD 默认设置 ───
+_DEFAULT_MMD_LIGHTING_MUTABLE = {
+    "ambientIntensity": 3.0,
+    "ambientColor": "#aaaaaa",
+    "directionalIntensity": 2.0,
+    "directionalColor": "#ffffff",
+}
+
+DEFAULT_MMD_LIGHTING = MappingProxyType(_DEFAULT_MMD_LIGHTING_MUTABLE)
+
+MMD_LIGHTING_RANGES = {
+    "ambientIntensity": (0, 10.0),
+    "directionalIntensity": (0, 10.0),
+}
+
+_DEFAULT_MMD_RENDERING_MUTABLE = {
+    "toneMapping": 0,
+    "exposure": 1.0,
+    "outline": True,
+    "pixelRatio": 0,
+}
+
+DEFAULT_MMD_RENDERING = MappingProxyType(_DEFAULT_MMD_RENDERING_MUTABLE)
+
+MMD_RENDERING_RANGES = {
+    "toneMapping": (0, 7),
+    "exposure": (0, 5.0),
+    "pixelRatio": (0, 2.0),
+}
+
+_DEFAULT_MMD_PHYSICS_MUTABLE = {
+    "enabled": True,
+    "strength": 1.0,
+}
+
+DEFAULT_MMD_PHYSICS = MappingProxyType(_DEFAULT_MMD_PHYSICS_MUTABLE)
+
+MMD_PHYSICS_RANGES = {
+    "strength": (0.1, 2.0),
+}
+
+_DEFAULT_MMD_CURSOR_FOLLOW_MUTABLE = {
+    "enabled": True,
+    "headYaw": 30,
+    "headPitch": 20,
+    "smoothSpeed": 3.0,
+}
+
+DEFAULT_MMD_CURSOR_FOLLOW = MappingProxyType(_DEFAULT_MMD_CURSOR_FOLLOW_MUTABLE)
+
+MMD_CURSOR_FOLLOW_RANGES = {
+    "headYaw": (10, 50),
+    "headPitch": (5, 30),
+    "smoothSpeed": (1.0, 8.0),
+}
+
+
+def get_default_mmd_settings() -> dict:
+    """获取默认MMD设置的副本"""
+    return {
+        "lighting": dict(DEFAULT_MMD_LIGHTING),
+        "rendering": dict(DEFAULT_MMD_RENDERING),
+        "physics": dict(DEFAULT_MMD_PHYSICS),
+        "cursor_follow": dict(DEFAULT_MMD_CURSOR_FOLLOW),
+    }
 
 DEFAULT_CHARACTERS_CONFIG = {
     "主人": deepcopy(DEFAULT_MASTER_TEMPLATE),
@@ -629,6 +717,15 @@ __all__ = [
     'DEFAULT_VRM_LIGHTING',
     'VRM_LIGHTING_RANGES',
     'get_default_vrm_lighting',
+    'DEFAULT_MMD_LIGHTING',
+    'MMD_LIGHTING_RANGES',
+    'DEFAULT_MMD_RENDERING',
+    'MMD_RENDERING_RANGES',
+    'DEFAULT_MMD_PHYSICS',
+    'MMD_PHYSICS_RANGES',
+    'DEFAULT_MMD_CURSOR_FOLLOW',
+    'MMD_CURSOR_FOLLOW_RANGES',
+    'get_default_mmd_settings',
     'DEFAULT_CHARACTERS_CONFIG',
     'get_localized_default_characters',
     'get_lanlan_prompt',

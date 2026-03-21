@@ -352,13 +352,12 @@ def _build_plugin_list_sync() -> list[dict[str, object]]:
                 plugin_id=plugin_id,
                 handlers_snapshot=handlers_snapshot,
             )
-            if not entries:
-                _append_entries_from_preview(
-                    plugin_id=plugin_id,
-                    plugin_meta=plugin_meta,
-                    entries=entries,
-                    seen=seen,
-                )
+            _append_entries_from_preview(
+                plugin_id=plugin_id,
+                plugin_meta=plugin_meta,
+                entries=entries,
+                seen=seen,
+            )
 
             plugin_info["entries"] = entries
             result.append(plugin_info)

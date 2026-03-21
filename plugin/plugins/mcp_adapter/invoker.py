@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
+from plugin.sdk.adapter import Err, Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
-    GatewayError,
-    GatewayErrorException,
     GatewayRequest,
     RouteDecision,
     RouteMode,
@@ -53,7 +52,7 @@ class MCPPluginInvoker:
         entry_id: str,
         params: dict[str, object],
         timeout_s: float,
-    ) -> object:
+    ) -> Any:
         """
         调用注入的插件调用函数，兼容旧签名：
         - 新签名: fn(plugin_id, entry_id, params, timeout_s)
@@ -113,15 +112,11 @@ class MCPPluginInvoker:
             调用结果
         """
         if decision.mode == RouteMode.DROP:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    "route decision is drop",
+                    op_name="mcp.invoker.invoke",
                     code="ROUTE_NOT_FOUND",
-                    message="route decision is drop",
-                    details={
-                        "request_id": request.request_id,
-                        "reason": decision.reason,
-                    },
-                    retryable=False,
                 )
             )
 
@@ -133,21 +128,19 @@ class MCPPluginInvoker:
 
         if decision.mode == RouteMode.BROADCAST:
             # 暂不支持广播模式
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    "broadcast mode not supported yet",
+                    op_name="mcp.invoker.invoke",
                     code="UNSUPPORTED_ROUTE_MODE",
-                    message="broadcast mode not supported yet",
-                    details={"mode": decision.mode.value},
-                    retryable=False,
                 )
             )
 
-        raise GatewayErrorException(
-            GatewayError(
+        return Err(
+            TransportError(
+                f"unknown route mode: {decision.mode}",
+                op_name="mcp.invoker.invoke",
                 code="UNKNOWN_ROUTE_MODE",
-                message=f"unknown route mode: {decision.mode}",
-                details={"mode": str(decision.mode)},
-                retryable=False,
             )
         )
 
@@ -155,16 +148,15 @@ class MCPPluginInvoker:
         self,
         request: GatewayRequest,
         decision: RouteDecision,
-    ) -> object:
+    ) -> Result[object, TransportError]:
         """调用 MCP tool。"""
         entry_id = decision.entry_id or request.target_entry_id
         if entry_id is None:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    "tool name is required for MCP call",
+                    op_name="mcp.invoker.invoke_mcp_tool",
                     code="MCP_MISSING_TOOL_NAME",
-                    message="tool name is required for MCP call",
-                    details={"request_id": request.request_id},
-                    retryable=False,
                 )
             )
 
@@ -174,12 +166,11 @@ class MCPPluginInvoker:
         if server_hint is not None:
             target_client = self._mcp_clients.get(server_hint)
             if target_client is None:
-                raise GatewayErrorException(
-                    GatewayError(
+                return Err(
+                    TransportError(
+                        f"MCP server '{server_hint}' not connected",
+                        op_name="mcp.invoker.invoke_mcp_tool",
                         code="MCP_SERVER_NOT_CONNECTED",
-                        message=f"MCP server '{server_hint}' not connected",
-                        details={"entry_id": entry_id, "server": server_hint},
-                        retryable=True,
                     )
                 )
         else:
@@ -195,22 +186,20 @@ class MCPPluginInvoker:
                 target_client = candidates[0]
             elif len(candidates) > 1:
                 servers = [client.config.name for client in candidates]
-                raise GatewayErrorException(
-                    GatewayError(
+                return Err(
+                    TransportError(
+                        f"MCP tool '{tool_name}' exists on multiple servers: {servers}",
+                        op_name="mcp.invoker.invoke_mcp_tool",
                         code="MCP_TOOL_AMBIGUOUS",
-                        message=f"MCP tool '{tool_name}' exists on multiple servers",
-                        details={"tool_name": tool_name, "servers": servers},
-                        retryable=False,
                     )
                 )
 
         if target_client is None:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    f"MCP tool '{tool_name}' not found in any connected server",
+                    op_name="mcp.invoker.invoke_mcp_tool",
                     code="MCP_TOOL_NOT_FOUND",
-                    message=f"MCP tool '{tool_name}' not found in any connected server",
-                    details={"tool_name": tool_name, "entry_id": entry_id},
-                    retryable=False,
                 )
             )
 
@@ -229,46 +218,40 @@ class MCPPluginInvoker:
         )
 
         if "error" in result:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    str(result["error"]),
+                    op_name="mcp.invoker.invoke_mcp_tool",
                     code="MCP_TOOL_ERROR",
-                    message=str(result["error"]),
-                    details={"tool_name": tool_name, "server": target_client.config.name},
-                    retryable=True,
                 )
             )
 
-        return result.get("result", {})
+        return Ok(result.get("result", {}))
 
     async def _invoke_neko_plugin(
         self,
         request: GatewayRequest,
         decision: RouteDecision,
-    ) -> object:
+    ) -> Result[object, TransportError]:
         """调用 NEKO 插件 entry。"""
         plugin_id = decision.plugin_id
         entry_id = decision.entry_id or request.target_entry_id
 
         if plugin_id is None or entry_id is None:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    "plugin_id and entry_id are required for PLUGIN mode",
+                    op_name="mcp.invoker.invoke_neko_plugin",
                     code="INVALID_ROUTE_DECISION",
-                    message="plugin_id and entry_id are required for PLUGIN mode",
-                    details={
-                        "plugin_id": plugin_id,
-                        "entry_id": entry_id,
-                    },
-                    retryable=False,
                 )
             )
 
         if self._plugin_call_fn is None:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    "plugin call function not configured",
+                    op_name="mcp.invoker.invoke_neko_plugin",
                     code="PLUGIN_CALL_NOT_CONFIGURED",
-                    message="plugin call function not configured",
-                    details={"plugin_id": plugin_id, "entry_id": entry_id},
-                    retryable=False,
                 )
             )
 
@@ -289,17 +272,14 @@ class MCPPluginInvoker:
             # 如果是协程，等待它
             if asyncio.iscoroutine(result):
                 result = await result
-            return result
+            return Ok(result)
         except Exception as exc:
-            raise GatewayErrorException(
-                GatewayError(
+            return Err(
+                TransportError(
+                    str(exc),
+                    op_name="mcp.invoker.invoke_neko_plugin",
+                    plugin_id=plugin_id,
+                    entry_ref=f"{plugin_id}:{entry_id}",
                     code="PLUGIN_CALL_ERROR",
-                    message=str(exc),
-                    details={
-                        "plugin_id": plugin_id,
-                        "entry_id": entry_id,
-                        "error_type": type(exc).__name__,
-                    },
-                    retryable=True,
                 )
-            ) from exc
+            )
