@@ -1277,6 +1277,7 @@ def _load_adapter_plugin(
         # 注册到 plugin_hosts
         with state.acquire_plugin_hosts_write_lock():
             state.plugin_hosts[pid] = host
+        state.invalidate_snapshot_cache("hosts")
         
     except (OSError, RuntimeError) as e:
         logger.error("Failed to start adapter process for {}: {}", pid, e, exc_info=True)
@@ -1299,6 +1300,7 @@ def _load_adapter_plugin(
             _shutdown_host_safely(host, logger, pid)
             with state.acquire_plugin_hosts_write_lock():
                 state.plugin_hosts.pop(pid, None)
+            state.invalidate_snapshot_cache("hosts")
         return None
     
     # 更新运行时状态
@@ -1311,7 +1313,6 @@ def _load_adapter_plugin(
             meta["type"] = "adapter"
             meta["plugin_type"] = meta["type"]
             meta["entries_preview"] = entries_preview
-            state.plugins[resolved_id] = meta
             meta["adapter_mode"] = adapter_mode
             state.plugins[resolved_id] = meta
     state.invalidate_snapshot_cache("plugins")

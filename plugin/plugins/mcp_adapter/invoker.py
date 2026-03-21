@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from plugin.sdk.adapter import Err, Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
-    GatewayError,
-    GatewayErrorException,
     GatewayRequest,
     RouteDecision,
     RouteMode,
@@ -54,7 +52,7 @@ class MCPPluginInvoker:
         entry_id: str,
         params: dict[str, object],
         timeout_s: float,
-    ) -> Result[object, TransportError]:
+    ) -> Any:
         """
         调用注入的插件调用函数，兼容旧签名：
         - 新签名: fn(plugin_id, entry_id, params, timeout_s)

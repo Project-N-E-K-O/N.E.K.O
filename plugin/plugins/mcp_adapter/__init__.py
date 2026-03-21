@@ -968,10 +968,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 # 使用 Gateway Core 注册 tools
                 await self._register_mcp_tools(server_name, client)
                 
-                # 重建路由索引
-                if self._route_engine:
-                    self._route_engine.rebuild_tool_index()
-                
                 # 更新状态
                 self._server_states[server_name] = {
                     "connected": True,

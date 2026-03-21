@@ -52,3 +52,26 @@ async def test_comm_manager_shutdown_tolerates_cross_loop_uplink_task() -> None:
 
     await manager.shutdown(timeout=0.1)
     thread.join(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_run_on_owner_loop_closes_coro_when_cross_loop_schedule_fails() -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+
+    class _FakeLoop:
+        def is_closed(self) -> bool:
+            return False
+
+    manager._owner_loop = _FakeLoop()  # type: ignore[assignment]
+
+    async def _sample() -> None:
+        await asyncio.sleep(0)
+
+    coro = _sample()
+    with pytest.raises(AttributeError):
+        await manager._run_on_owner_loop(coro)
+    assert coro.cr_frame is None

@@ -68,7 +68,12 @@ class PluginCommunicationResourceManager:
             return await coro
         if owner_loop is current_loop:
             return await coro
-        future = asyncio.run_coroutine_threadsafe(coro, owner_loop)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, owner_loop)
+        except Exception:
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            raise
         return await asyncio.wrap_future(future)
 
     async def _start_local(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
@@ -529,7 +534,6 @@ class PluginCommunicationResourceManager:
                 self.logger.info("Dynamic entry unregistered: {} for plugin {}", entry_id, plugin_id)
             else:
                 self.logger.warning("Unknown ENTRY_UPDATE action: {}", action)
-            state.invalidate_snapshot_cache("handlers")
         except Exception:
             self.logger.exception("Failed to handle ENTRY_UPDATE")
 
@@ -542,14 +546,17 @@ class PluginCommunicationResourceManager:
                 self.logger.warning("STATIC_UI_REGISTER missing config from plugin {}", plugin_id)
                 return
             self.logger.info("Processing STATIC_UI_REGISTER: plugin_id={}", plugin_id)
+            updated = False
             with state.acquire_plugins_write_lock():
                 plugin_meta = state.plugins.get(plugin_id)
                 if isinstance(plugin_meta, dict):
                     plugin_meta["static_ui_config"] = config
                     state.plugins[plugin_id] = plugin_meta
-                    state.invalidate_snapshot_cache("plugins")
+                    updated = True
                     self.logger.info("Static UI registered for plugin {}: {}", plugin_id, config.get("directory"))
                 else:
                     self.logger.warning("Plugin {} not found in state.plugins", plugin_id)
+            if updated:
+                state.invalidate_snapshot_cache("plugins")
         except Exception:
             self.logger.exception("Failed to handle STATIC_UI_REGISTER")
