@@ -1720,6 +1720,51 @@
                         }
                     }
                 });
+                // 隐藏静音按钮（语音功能未开启时不显示）
+                const muteButtonData = window.live2dManager._floatingButtons['mic-mute'];
+                if (muteButtonData && muteButtonData.button) {
+                    muteButtonData.button.style.display = 'none';
+                }
+            }
+            // 同步更新VRM浮动按钮的状态
+            if (window.vrmManager && window.vrmManager._floatingButtons) {
+                ['mic', 'screen'].forEach(buttonId => {
+                    const buttonData = window.vrmManager._floatingButtons[buttonId];
+                    if (buttonData && buttonData.button) {
+                        buttonData.button.dataset.active = 'false';
+                        if (buttonData.imgOff) {
+                            buttonData.imgOff.style.opacity = '1';
+                        }
+                        if (buttonData.imgOn) {
+                            buttonData.imgOn.style.opacity = '0';
+                        }
+                    }
+                });
+                // 隐藏静音按钮（语音功能未开启时不显示）
+                const vrmMuteButtonData = window.vrmManager._floatingButtons['mic-mute'];
+                if (vrmMuteButtonData && vrmMuteButtonData.button) {
+                    vrmMuteButtonData.button.style.display = 'none';
+                }
+            }
+            // 同步更新MMD浮动按钮的状态
+            if (window.mmdManager && window.mmdManager._floatingButtons) {
+                ['mic', 'screen'].forEach(buttonId => {
+                    const buttonData = window.mmdManager._floatingButtons[buttonId];
+                    if (buttonData && buttonData.button) {
+                        buttonData.button.dataset.active = 'false';
+                        if (buttonData.imgOff) {
+                            buttonData.imgOff.style.opacity = '1';
+                        }
+                        if (buttonData.imgOn) {
+                            buttonData.imgOn.style.opacity = '0';
+                        }
+                    }
+                });
+                // 隐藏静音按钮（语音功能未开启时不显示）
+                const mmdMuteButtonData = window.mmdManager._floatingButtons['mic-mute'];
+                if (mmdMuteButtonData && mmdMuteButtonData.button) {
+                    mmdMuteButtonData.button.style.display = 'none';
+                }
             }
 
             // 启用所有基本输入按钮
