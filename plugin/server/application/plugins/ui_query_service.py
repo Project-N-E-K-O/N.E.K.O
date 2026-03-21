@@ -49,8 +49,35 @@ def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
 def _get_static_ui_config_from_meta(plugin_meta: Mapping[str, object]) -> dict[str, object] | None:
     static_ui_obj = plugin_meta.get("static_ui_config")
     if not isinstance(static_ui_obj, Mapping):
-        return None
+        return _infer_static_ui_config_from_meta(plugin_meta)
     return _normalize_mapping(static_ui_obj, context="plugins.static_ui_config")
+
+
+def _infer_static_ui_config_from_meta(plugin_meta: Mapping[str, object]) -> dict[str, object] | None:
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        return None
+
+    try:
+        config_path = Path(config_path_obj)
+    except Exception:
+        return None
+
+    static_dir = config_path.parent / "static"
+    index_file = static_dir / "index.html"
+    if not static_dir.is_dir() or not index_file.is_file():
+        return None
+
+    plugin_id_obj = plugin_meta.get("id") or plugin_meta.get("plugin_id")
+    plugin_id = str(plugin_id_obj) if plugin_id_obj is not None else ""
+    return {
+        "enabled": True,
+        "directory": str(static_dir),
+        "index_file": "index.html",
+        "cache_control": "public, max-age=3600",
+        "plugin_id": plugin_id,
+        "inferred": True,
+    }
 
 
 def _resolve_static_dir(static_ui_config: Mapping[str, object]) -> Path | None:

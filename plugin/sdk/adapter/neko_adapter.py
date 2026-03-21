@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, cast
 
-from plugin.sdk.shared.core.base import NekoPluginBase
+from plugin.sdk.plugin.base import NekoPluginBase
 from plugin.sdk.shared.models import Err, Ok, Result
 from plugin.sdk.shared.models.exceptions import AdapterErrorLike, CapabilityUnavailableError, InvalidArgumentError, SdkError, TransportError
 

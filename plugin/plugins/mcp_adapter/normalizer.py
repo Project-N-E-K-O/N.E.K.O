@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from plugin.sdk.adapter import Err, Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_models import (
     ExternalRequest,
     GatewayAction,
@@ -18,7 +19,7 @@ class MCPRequestNormalizer:
     将 MCP JSON-RPC 请求转换为 GatewayRequest。
     """
 
-    async def normalize(self, env: ExternalRequest) -> GatewayRequest:
+    async def normalize(self, env: ExternalRequest) -> Result[GatewayRequest, TransportError]:
         """
         将 ExternalRequest 转换为 GatewayRequest。
         
@@ -26,44 +27,82 @@ class MCPRequestNormalizer:
         - action: "tool_call" | "resource_read" | "prompt_get"
         - payload: {"name": "tool_name", "arguments": {...}}
         """
-        action = self._parse_action(env.action)
-        
-        # 提取 MCP 特定字段
-        payload = env.payload
-        tool_name = self._extract_string(payload, "name")
-        arguments = self._extract_dict(payload, "arguments")
-        
-        # tool_call 和 resource_read 必须有 name
-        if action in (GatewayAction.TOOL_CALL, GatewayAction.RESOURCE_READ):
-            if tool_name is None:
+        try:
+            action = self._parse_action(env.action)
+
+            # 提取 MCP 特定字段
+            payload = env.payload
+            tool_name = self._extract_string(payload, "name")
+            arguments = self._extract_dict(payload, "arguments")
+
+            # tool_call 和 resource_read 必须有 name
+            if action in (GatewayAction.TOOL_CALL, GatewayAction.RESOURCE_READ):
+                if tool_name is None:
+                    raise GatewayErrorException(
+                        GatewayError(
+                            code="MCP_INVALID_REQUEST",
+                            message="'name' field is required for tool_call/resource_read",
+                            details={"action": env.action},
+                            retryable=False,
+                        )
+                    )
+
+            # 提取可选字段
+            trace_id = self._extract_string(payload, "id") or env.request_id
+            if "timeout_s" in payload:
+                timeout_raw = payload.get("timeout_s")
+                if timeout_raw is None:
+                    timeout_raw = payload.get("timeout")
+            else:
+                timeout_raw = payload.get("timeout")
+            timeout_s = 60.0
+            if isinstance(timeout_raw, bool):
                 raise GatewayErrorException(
                     GatewayError(
-                        code="MCP_INVALID_REQUEST",
-                        message="'name' field is required for tool_call/resource_read",
-                        details={"action": env.action},
+                        code="MCP_INVALID_FIELD",
+                        message="field 'timeout_s' must be number",
+                        details={"field": "timeout_s", "actual_type": type(timeout_raw).__name__},
                         retryable=False,
                     )
                 )
-        
-        # 提取可选字段
-        trace_id = self._extract_string(payload, "id") or env.request_id
-        timeout_raw = payload.get("timeout")
-        timeout_s = 60.0
-        if isinstance(timeout_raw, (int, float)):
-            timeout_s = float(timeout_raw)
-        
-        return GatewayRequest(
-            request_id=env.request_id,
-            protocol="mcp",
-            action=action,
-            source_app=env.connection_id,
-            trace_id=trace_id,
-            params=arguments,
-            target_plugin_id=None,  # MCP 模式下由路由器决定
-            target_entry_id=tool_name,
-            timeout_s=timeout_s,
-            metadata=env.metadata,
-        )
+            if timeout_raw is not None and not isinstance(timeout_raw, (int, float)):
+                raise GatewayErrorException(
+                    GatewayError(
+                        code="MCP_INVALID_FIELD",
+                        message="field 'timeout_s' must be number",
+                        details={"field": "timeout_s", "actual_type": type(timeout_raw).__name__},
+                        retryable=False,
+                    )
+                )
+            if isinstance(timeout_raw, (int, float)):
+                timeout_s = float(timeout_raw)
+
+            target_plugin_id = self._extract_string(payload, "target_plugin_id")
+
+            return Ok(
+                GatewayRequest(
+                    request_id=env.request_id,
+                    protocol="mcp",
+                    action=action,
+                    source_app=env.connection_id,
+                    trace_id=trace_id,
+                    params=arguments,
+                    target_plugin_id=target_plugin_id,
+                    target_entry_id=tool_name,
+                    timeout_s=timeout_s,
+                    metadata=env.metadata,
+                )
+            )
+        except GatewayErrorException as error:
+            return Err(
+                TransportError(
+                    error.error.message,
+                    op_name="mcp.normalizer.normalize",
+                    code=error.error.code,
+                )
+            )
+        except Exception as error:
+            return Err(TransportError(str(error), op_name="mcp.normalizer.normalize"))
 
     def _parse_action(self, raw_action: str) -> GatewayAction:
         """解析 MCP action 到 GatewayAction。"""

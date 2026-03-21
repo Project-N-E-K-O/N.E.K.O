@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Awaitable, Optional
 
+from plugin.sdk.adapter import Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
     GatewayAction,
@@ -105,22 +106,40 @@ class MCPRouteEngine:
                     tool.name,
                 )
                 continue
-            self._tool_index[tool_id] = server_name
-            self._tool_details[tool_id] = {
+            tool_details = {
                 "name": tool.name,
                 "description": tool.description,
                 "schema": tool.input_schema,
                 "server": server_name,
             }
-            
-            # 触发注册回调
+
+            callback_ok = True
             if self._on_tool_register:
-                await self._on_tool_register(
-                    tool_id,
-                    f"[{server_name}] {tool.name}",
-                    tool.description or f"MCP tool from {server_name}",
-                    tool.input_schema,
+                try:
+                    callback_result = await self._on_tool_register(
+                        tool_id,
+                        f"[{server_name}] {tool.name}",
+                        tool.description or f"MCP tool from {server_name}",
+                        tool.input_schema,
+                    )
+                    callback_ok = callback_result is not False
+                except Exception:
+                    callback_ok = False
+                    self._logger.exception(
+                        "Tool register callback failed: tool_id={}, server='{}'",
+                        tool_id,
+                        server_name,
+                    )
+            if not callback_ok:
+                self._logger.warning(
+                    "Tool register callback rejected MCP tool '{}', server='{}'",
+                    tool.name,
+                    server_name,
                 )
+                continue
+
+            self._tool_index[tool_id] = server_name
+            self._tool_details[tool_id] = tool_details
             count += 1
         
         self._logger.info(
@@ -145,25 +164,42 @@ class MCPRouteEngine:
             if srv == server_name
         ]
         
+        removed_count = 0
         for tool_id in tools_to_remove:
-            del self._tool_index[tool_id]
-            if tool_id in self._tool_details:
-                del self._tool_details[tool_id]
-            
-            # 触发注销回调
+            callback_ok = True
             if self._on_tool_unregister:
-                await self._on_tool_unregister(tool_id)
+                try:
+                    callback_result = await self._on_tool_unregister(tool_id)
+                    callback_ok = callback_result is not False
+                except Exception:
+                    callback_ok = False
+                    self._logger.exception(
+                        "Tool unregister callback failed: tool_id={}, server='{}'",
+                        tool_id,
+                        server_name,
+                    )
+            if not callback_ok:
+                self._logger.warning(
+                    "Tool unregister callback rejected MCP tool '{}' from server '{}'",
+                    tool_id,
+                    server_name,
+                )
+                continue
+
+            del self._tool_index[tool_id]
+            self._tool_details.pop(tool_id, None)
+            removed_count += 1
         
-        if tools_to_remove:
+        if removed_count > 0:
             self._logger.info(
                 "Unregistered {} tools from MCP server '{}'",
-                len(tools_to_remove),
+                removed_count,
                 server_name,
             )
         
-        return len(tools_to_remove)
+        return removed_count
 
-    async def decide(self, request: GatewayRequest) -> RouteDecision:
+    async def decide(self, request: GatewayRequest) -> Result[RouteDecision, TransportError]:
         """
         决定请求路由。
         
@@ -175,41 +211,41 @@ class MCPRouteEngine:
         """
         # 如果显式指定了 plugin_id 和 entry_id，路由到 PLUGIN
         if request.target_plugin_id is not None and request.target_entry_id is not None:
-            return RouteDecision(
+            return Ok(RouteDecision(
                 mode=RouteMode.PLUGIN,
                 plugin_id=request.target_plugin_id,
                 entry_id=request.target_entry_id,
                 reason="explicit plugin target",
-            )
+            ))
 
         # 如果只有 entry_id，检查是否是 MCP tool
         if request.target_entry_id is not None:
             if request.target_entry_id in self._tool_index:
-                return RouteDecision(
+                return Ok(RouteDecision(
                     mode=RouteMode.SELF,
                     entry_id=request.target_entry_id,
                     reason=f"MCP tool on server '{self._tool_index[request.target_entry_id]}'",
-                )
+                ))
 
             # 对于 TOOL_CALL action，如果找不到 tool，返回 DROP
             if request.action == GatewayAction.TOOL_CALL:
-                return RouteDecision(
+                return Ok(RouteDecision(
                     mode=RouteMode.DROP,
                     reason=f"MCP tool '{request.target_entry_id}' not found",
-                )
+                ))
 
         # 对于 EVENT_PUSH，可以考虑广播（暂时 DROP）
         if request.action == GatewayAction.EVENT_PUSH:
-            return RouteDecision(
+            return Ok(RouteDecision(
                 mode=RouteMode.DROP,
                 reason="event push not routed",
-            )
+            ))
 
         # 默认 DROP
-        return RouteDecision(
+        return Ok(RouteDecision(
             mode=RouteMode.DROP,
             reason="no route target specified",
-        )
+        ))
 
     def get_tool_server(self, tool_name: str) -> str | None:
         """获取 tool 所在的 server 名称。"""
