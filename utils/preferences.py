@@ -287,8 +287,8 @@ def load_global_conversation_settings() -> Dict[str, Any]:
                 if isinstance(data, list):
                     for pref in data:
                         if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
-                            # 提取对话设置（排除 model_path 本身）
-                            return {k: v for k, v in pref.items() if k != 'model_path'}
+                            # 提取对话设置：仅返回白名单字段，防止泄露无关数据
+                            return {k: v for k, v in pref.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
     except Exception as e:
         print(f"加载全局对话设置失败: {e}")
     return {}
@@ -306,6 +306,11 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         bool: 保存成功返回True，失败返回False
     """
     try:
+        # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
+        _config_manager.ensure_config_directory()
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = str(_config_manager.get_config_path('user_preferences.json'))
+
         # 直接读取完整文件（不经过 load_user_preferences，避免哨兵被过滤）
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:

@@ -222,6 +222,7 @@
      * 加载后异步从服务器同步最新设置
      */
     function loadSettings() {
+        // 内层 try：仅处理本地 JSON 解析与迁移
         try {
             const saved = localStorage.getItem('project_neko_settings');
             if (saved) {
@@ -317,12 +318,22 @@
                 saveSettings();
             }
 
-            // 加载字幕设置（从 localStorage 读取，因为 subtitle.js 也用同一份）
-            const savedSubtitleEnabled = localStorage.getItem('subtitleEnabled');
-            S.subtitleEnabled = savedSubtitleEnabled === 'true';
-            S.userLanguage = localStorage.getItem('userLanguage') || null;
+        } catch (error) {
+            console.error('加载本地设置失败:', error);
+            // 出错时也要确保全局变量被初始化
+            window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
+            window.mouseTrackingEnabled = true;
+        }
 
-            // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+        // 以下逻辑不依赖本地 JSON 解析结果，始终执行
+
+        // 加载字幕设置（从 localStorage 读取，因为 subtitle.js 也用同一份）
+        const savedSubtitleEnabled = localStorage.getItem('subtitleEnabled');
+        S.subtitleEnabled = savedSubtitleEnabled === 'true';
+        S.userLanguage = localStorage.getItem('userLanguage') || null;
+
+        // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+        try {
             loadSettingsFromServer().then(serverSettings => {
                 if (serverSettings) {
                     // 用服务器设置覆盖本地设置
@@ -363,10 +374,7 @@
             // 启动定期同步到服务器
             startPeriodicSync();
         } catch (error) {
-            console.error('加载设置失败:', error);
-            // 出错时也要确保全局变量被初始化
-            window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
-            window.mouseTrackingEnabled = true;
+            console.error('服务器设置同步启动失败:', error);
         }
     }
 
