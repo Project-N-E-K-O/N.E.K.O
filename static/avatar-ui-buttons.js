@@ -624,8 +624,17 @@ const AvatarButtonMixin = {
                 }
             });
 
-            window.addEventListener('mic-mute-state-changed', (e) => {
-                updateMuteButtonState(e.detail.muted);
+            const micMuteStateChangedHandler = (e) => {
+                updateMuteButtonState(Boolean(e && e.detail && e.detail.muted));
+            };
+            window.addEventListener('mic-mute-state-changed', micMuteStateChangedHandler);
+            if (!this._uiWindowHandlers) {
+                this._uiWindowHandlers = [];
+            }
+            this._uiWindowHandlers.push({
+                event: 'mic-mute-state-changed',
+                handler: micMuteStateChangedHandler,
+                target: window
             });
 
             btnWrapper.appendChild(muteBtn);
