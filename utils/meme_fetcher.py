@@ -368,7 +368,30 @@ class DoutubFetcher:
             "Connection": "keep-alive",
         }
 
+    def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
+        """根据需求创建 AsyncClient，支持 SECLEVEL=1 降级"""
+        if seclevel1:
+            context = ssl.create_default_context()
+            try:
+                context.set_ciphers('DEFAULT@SECLEVEL=1')
+            except Exception as e:
+                logger.warning(f"设置 SECLEVEL=1 失败: {e}")
+            
+            return httpx.AsyncClient(
+                timeout=15.0, 
+                follow_redirects=True, 
+                verify=context,
+                trust_env=True
+            )
+        else:
+            return httpx.AsyncClient(
+                timeout=15.0, 
+                follow_redirects=True, 
+                trust_env=True
+            )
+
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
+        last_exception = None
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
@@ -379,26 +402,35 @@ class DoutubFetcher:
                     await asyncio.sleep(random.uniform(0.3, 0.8))
 
                 headers = self._get_headers()
-                session = self._session
                 
-                if session:
-                    response = await session.get(url, headers=headers)
-                else:
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True) as client:
-                        response = await client.get(url, headers=headers)
-                    
-                response.raise_for_status()
-                return response.text
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                if not self._session:
+                    self._session = self._create_client(seclevel1=False)
+                
+                try:
+                    response = await self._session.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                    logger.warning(f"斗图吧 TLS 握手疑似失败，尝试降级到 SECLEVEL=1: {e}")
+                    await self.close()
+                    self._session = self._create_client(seclevel1=True)
+                    response = await self._session.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                
+            except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"斗图吧网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise
             except httpx.HTTPStatusError as e:
                 logger.error(f"斗图吧HTTP错误 (状态码 {e.response.status_code}): {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise
             except Exception as e:
                 logger.error(f"斗图吧发生非预期异常: {e}")
+                last_exception = e
                 if attempt == max_retries - 1:
                     raise e
         return ""
@@ -560,10 +592,37 @@ class FabiaoqingFetcher:
             "Connection": "keep-alive",
         }
 
+    def _create_client(self, seclevel1: bool = False) -> httpx.AsyncClient:
+        """根据需求创建 AsyncClient，支持 SECLEVEL=1 降级"""
+        if seclevel1:
+            # 针对国内某些旧 SSL 协议站点，强制降级到 SECLEVEL=1 
+            # 这里的 verify=False 虽然不安全，但对于表情包爬取这种公开非敏感数据是必要的折中
+            context = ssl.create_default_context()
+            try:
+                context.set_ciphers('DEFAULT@SECLEVEL=1')
+            except Exception as e:
+                logger.warning(f"设置 SECLEVEL=1 失败: {e}")
+            
+            return httpx.AsyncClient(
+                timeout=15.0, 
+                follow_redirects=True, 
+                verify=context,
+                trust_env=True
+            )
+        else:
+            return httpx.AsyncClient(
+                timeout=15.0, 
+                follow_redirects=True, 
+                trust_env=True
+            )
+
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
 
         for attempt in range(max_retries):
+            # 针对某些站点（如发表情），如果默认 TLS 握手失败，尝试降级
+            use_seclevel1 = False
+            
             try:
                 if attempt > 0:
                     delay = random.uniform(1.0, 2.0) * (2 ** attempt)
@@ -574,19 +633,24 @@ class FabiaoqingFetcher:
 
                 headers = self._get_headers()
                 
-                # 如果有持久 session，直接使用
-                if self._session:
+                # 第一次尝试或之前的成功 session
+                if not self._session:
+                    self._session = self._create_client(seclevel1=False)
+                
+                try:
                     response = await self._session.get(url, headers=headers)
                     response.raise_for_status()
                     return response.text
-                else:
-                    #严禁使用 SECLEVEL=1 自废武功，使用默认验证
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=True) as client:
-                        response = await client.get(url, headers=headers)
-                        response.raise_for_status()
-                        return response.text
+                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                    # 如果疑似 SSL/TLS 握手问题，尝试重建 Session 降级
+                    logger.warning(f"发表情 TLS 握手疑似失败，尝试降级到 SECLEVEL=1: {e}")
+                    await self.close()
+                    self._session = self._create_client(seclevel1=True)
+                    response = await self._session.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
                 
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
+            except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
                 last_exception = e
                 if attempt == max_retries - 1:
@@ -695,7 +759,7 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
     ]
     
     async def try_fetch_concurrent(fetcher_list):
-        """并发尝试一组源，返回第一个成功的（结果，源名）"""
+        """并发尝试一组源，处理好任务生命周期，避免泄露"""
         tasks = []
         for f_class, name in fetcher_list:
             async def wrap(fc=f_class, nm=name):
@@ -706,13 +770,24 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
                 except Exception as e:
                     logger.warning(f"{nm}并发探测失败: {e}")
                     return None, nm
-            tasks.append(wrap())
+            # 必须显式 create_task 才能管理任务生命周期
+            tasks.append(asyncio.create_task(wrap()))
         
-        # 使用 as_completed 只要一个成功就立刻返回
-        for coro in asyncio.as_completed(tasks):
-            res, nm = await coro
-            if res:
-                return res, nm
+        try:
+            # 使用 as_completed 只要一个成功就立刻返回
+            for coro in asyncio.as_completed(tasks):
+                res, nm = await coro
+                if res:
+                    return res, nm
+        finally:
+            # 找到结果或异常退出时，必须显式取消其他还在跑的任务
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            # 给取消的任务一个收尾的机会
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
         return None, ""
 
     if china_region:

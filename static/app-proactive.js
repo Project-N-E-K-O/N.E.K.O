@@ -523,6 +523,7 @@
      */
     function _showProactiveSourceCards(otherLinks, targetTurnId) {
         try {
+            if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
             var chatContent = document.getElementById('chat-content-wrapper');
             if (!chatContent || otherLinks.length === 0) return;
 
@@ -566,8 +567,7 @@
             chatContent.appendChild(linkCard);
             chatContent.scrollTop = chatContent.scrollHeight;
 
-            var isCurrentTurn = (window.realisticGeminiCurrentTurnId === targetTurnId);
-            if (isCurrentTurn && window.currentTurnGeminiAttachments) {
+            if (window.currentTurnGeminiAttachments) {
                 window.currentTurnGeminiAttachments.push(linkCard);
             }
 
@@ -579,6 +579,7 @@
     }
 
     function _showMemeBubbles(memeLinks, targetTurnId) {
+        if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
         // [优化] 不再此处手动 addToHistory，因为正向的对话流(response_text) 已经由 finish_proactive_delivery 记录。
         // 表情包作为 UI 侧挂件展示，无需单独污染 LLM 上下文。
         var chatContainer = S.dom.chatContainer || document.getElementById('chatContainer');
@@ -674,8 +675,7 @@
                 imgBubble.appendChild(imgOuter);
                 chatContainer.appendChild(imgBubble);
 
-                var isCurrentTurn = (window.realisticGeminiCurrentTurnId === targetTurnId);
-                if (isCurrentTurn && window.currentTurnGeminiAttachments) {
+                if (window.currentTurnGeminiAttachments) {
                     window.currentTurnGeminiAttachments.push(imgBubble);
                 }
 

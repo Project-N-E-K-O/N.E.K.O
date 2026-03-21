@@ -2116,6 +2116,7 @@ async def proactive_chat(request: Request):
                     track_name = first_track.get('name', '')
                     track_artist = first_track.get('artist', '')
                     track_url = first_track.get('url', '')
+                    track_cover = first_track.get('cover', '')
                     
                     # 复用通用的去重键生成函数，优先利用 URL 的唯一性，
                     # 即使没有 URL 也会结合“歌名 - 艺术家”来生成 key，避免同名曲误伤
@@ -2134,6 +2135,7 @@ async def proactive_chat(request: Request):
                             'title': track_name,
                             'artist': track_artist,
                             'url': track_url,
+                            'cover': track_cover,
                             'source': '音乐推荐',
                             'type': 'music'
                         }
