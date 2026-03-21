@@ -647,12 +647,31 @@ def _plugin_process_runner(
             state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
             if state_persistence:
                 try:
-                    has_saved_state = asyncio.run(state_persistence.has_saved_state())
-                    if bool(getattr(has_saved_state, "value", False)):
+                    def _unwrap_state_result(op_name: str, result_obj: object) -> object:
+                        is_ok = getattr(result_obj, "is_ok", None)
+                        if callable(is_ok):
+                            if is_ok():
+                                return getattr(result_obj, "value", None)
+                            error_obj = getattr(result_obj, "error", None)
+                            logger.warning(
+                                "[Plugin Process] State persistence {} failed: {}",
+                                op_name,
+                                error_obj,
+                            )
+                            raise RuntimeError(f"state persistence {op_name} failed: {error_obj}")
+                        return result_obj
+
+                    has_saved_state_result = asyncio.run(state_persistence.has_saved_state())
+                    has_saved_state = _unwrap_state_result("has_saved_state", has_saved_state_result)
+                    if bool(has_saved_state):
                         logger.debug("[Plugin Process] Restoring saved state...")
-                        load_result = asyncio.run(state_persistence.load(instance))
-                        if bool(getattr(load_result, "value", False)):
-                            asyncio.run(state_persistence.clear())  # 恢复后清除
+                        load_result_obj = asyncio.run(state_persistence.load(instance))
+                        load_result = _unwrap_state_result("load", load_result_obj)
+                        if bool(load_result):
+                            clear_result_obj = asyncio.run(state_persistence.clear())  # 恢复后清除
+                            clear_result = _unwrap_state_result("clear", clear_result_obj)
+                            if not bool(clear_result):
+                                raise RuntimeError("state persistence clear returned falsy result")
                             ctx._restored_from_freeze = True  # 标记为从冻结恢复
                 except Exception as e:
                     logger.warning("[Plugin Process] Failed to restore saved state: {}", e)

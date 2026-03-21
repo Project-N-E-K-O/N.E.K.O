@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
 from plugin.server.application.plugins.ui_query_service import _get_static_ui_config_from_meta
 
 
-def test_static_ui_config_infers_from_config_path_when_missing() -> None:
-    root = Path(tempfile.mkdtemp())
+def test_static_ui_config_infers_from_config_path_when_missing(tmp_path) -> None:
+    root = tmp_path
     plugin_dir = root / "demo_plugin"
     static_dir = plugin_dir / "static"
     static_dir.mkdir(parents=True)

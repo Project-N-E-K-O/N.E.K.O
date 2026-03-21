@@ -119,6 +119,9 @@ class _DemoPlugin(core_base.NekoPluginBase):
     async def hello(self) -> str:
         return "hello"
 
+    async def plain(self) -> str:
+        return "plain"
+
 
 @pytest.mark.asyncio
 async def test_sdk_context_forwards_update_own_config() -> None:
@@ -127,9 +130,6 @@ async def test_sdk_context_forwards_update_own_config() -> None:
     payload = await ctx.update_own_config({"mcp_servers": {"fetch": {"url": "https://example.com"}}})
 
     assert payload == {"config": {"mcp_servers": {"fetch": {"url": "https://example.com"}}}}
-
-    async def plain(self) -> str:
-        return "plain"
 
 
 def test_core_base_and_hook_classes() -> None:

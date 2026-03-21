@@ -137,10 +137,18 @@ class MemoReminderPlugin(NekoPluginBase):
         self._reminders_lock = threading.Lock()
 
     def _store_get_sync(self, key: str, default: Any = None) -> Any:
-        return self.store._read_value(key, default)
+        try:
+            return self.store._read_value(key, default)
+        except Exception as exc:
+            self.logger.warning("MemoReminder store get failed for key {!r}: {}", key, exc)
+            return default
 
     def _store_set_sync(self, key: str, value: Any) -> None:
-        self.store._write_value(key, value)
+        try:
+            self.store._write_value(key, value)
+        except Exception as exc:
+            self.logger.warning("MemoReminder store set failed for key {!r}: {}", key, exc)
+            raise SdkError(f"Failed to persist reminder store key '{key}': {exc}") from exc
 
     def _load_reminders_unlocked(self) -> List[Dict[str, Any]]:
         data = self._store_get_sync(_STORE_KEY, [])

@@ -60,6 +60,15 @@ class MCPRequestNormalizer:
                         retryable=False,
                     )
                 )
+            if timeout_raw is not None and not isinstance(timeout_raw, (int, float)):
+                raise GatewayErrorException(
+                    GatewayError(
+                        code="MCP_INVALID_FIELD",
+                        message="field 'timeout_s' must be number",
+                        details={"field": "timeout_s", "actual_type": type(timeout_raw).__name__},
+                        retryable=False,
+                    )
+                )
             if isinstance(timeout_raw, (int, float)):
                 timeout_s = float(timeout_raw)
 

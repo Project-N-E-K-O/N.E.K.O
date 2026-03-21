@@ -2055,7 +2055,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return Err(SdkError(str(exc)))
 
         if isinstance(response_result, Err):
-            self.ctx.logger.warning("Gateway invoke failed before response build: {}", response_result.error)
+            self.ctx.logger.warning(f"Gateway invoke failed before response build: {response_result.error}")
             return Err(SdkError(str(response_result.error)))
 
         response = response_result.value

@@ -130,6 +130,28 @@ async def test_mcp_normalizer_returns_result_and_preserves_plugin_target() -> No
 
 
 @pytest.mark.asyncio
+async def test_mcp_normalizer_rejects_non_numeric_timeout() -> None:
+    normalizer = MCPRequestNormalizer()
+    normalized = await normalizer.normalize(
+        ExternalRequest(
+            protocol="mcp",
+            connection_id="conn",
+            request_id="req-1",
+            action="tool_call",
+            payload={
+                "name": "demo_tool",
+                "arguments": {"a": 1},
+                "timeout_s": "12",
+            },
+        )
+    )
+
+    assert isinstance(normalized, Err)
+    assert "timeout_s" in str(normalized.error)
+    assert "must be number" in str(normalized.error)
+
+
+@pytest.mark.asyncio
 async def test_mcp_router_returns_result() -> None:
     logger = _Logger()
     engine = MCPRouteEngine(mcp_clients={}, logger=logger)
