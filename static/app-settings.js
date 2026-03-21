@@ -370,6 +370,12 @@
                         window.proactiveVisionInterval = S.proactiveVisionInterval;
                         // 同步回 localStorage
                         saveSettings();
+                        // 重新初始化主动搭话调度器（使用最新标志）
+                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                            window.appProactive.scheduleProactiveChat();
+                        } else if (typeof window.scheduleProactiveChat === 'function') {
+                            window.scheduleProactiveChat();
+                        }
                     }
                 }
             });
