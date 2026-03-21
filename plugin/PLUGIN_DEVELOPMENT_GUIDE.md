@@ -347,6 +347,60 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html
 
 通知宿主任务完成。
 
+#### Agent Reply Contract
+
+`return` / `finish()` / `export_push()` / `push_message()` 可以通过 `agent` 元数据控制是否触发主系统回复，以及主系统实际能看到哪些字段。
+
+```python
+return await self.finish(
+    data={"summary": "天气晴朗", "raw": {"temp": 25, "humidity": 60}},
+    reply=True,
+    meta={
+        "agent": {
+            "fields": ["summary"],
+            "summary": "天气查询已完成",
+        }
+    },
+)
+
+await self.export_push(
+    export_type="json",
+    json_data={"summary": "已保存", "internal": "debug-only"},
+    reply=True,
+    metadata={
+        "agent": {
+            "fields": ["summary"],
+            "priority": 10,
+        }
+    },
+)
+
+self.push_message(
+    source="memo",
+    message_type="proactive_notification",
+    content="原始提醒文本",
+    metadata={
+        "agent": {
+            "reply": True,
+            "summary": "提醒时间到了",
+        }
+    },
+)
+```
+
+支持的 `agent` 字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `reply` | `bool` | 是否允许该输出触发主系统回复 |
+| `include` | `bool` | 是否允许 agent 读取原始正文/JSON |
+| `fields` | `list[str]` | 对 JSON 输出做字段级可见性裁剪 |
+| `summary` | `str` | 直接提供给主系统的摘要 |
+| `detail` | `str` | 直接提供给主系统的详细文本 |
+| `priority` | `int` | 多个 reply 候选同时存在时的优先级 |
+
+如果入口点声明了 `llm_result_fields`，而 `agent.fields` 未显式提供，则 `return/finish()` 会默认使用这些字段。
+
 ### 3.4 Result 类型：Ok / Err
 
 SDK 使用 Rust 风格的 Result 类型进行错误处理，替代传统异常：
@@ -484,7 +538,7 @@ def process(self, data: str, **_):
 | `timeout` | `float` | `None` | 执行超时（秒） |
 | `llm_result_fields` | `list[str]` | `None` | LLM 结果提取字段 |
 | `llm_result_model` | `type` | `None` | 结果的 Pydantic 模型 |
-| `metadata` | `dict` | `None` | 额外元数据 |
+| `metadata` | `dict` | `None` | 额外元数据；可包含 `agent.fields / agent.summary / agent.detail / agent.priority` |
 
 > 提示：始终在入口函数签名中包含 `**_`，以优雅处理未使用的参数。
 

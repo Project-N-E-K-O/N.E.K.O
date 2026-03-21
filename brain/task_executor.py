@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
 from config import get_extra_body, USER_PLUGIN_SERVER_PORT
+from plugin.reply_contract import (
+    choose_reply_candidate,
+    export_item_candidate,
+    export_payload_from_item,
+    is_trigger_response_item,
+    trigger_response_candidate,
+)
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -63,7 +70,6 @@ class UserPluginDecision:
     entry_id: Optional[str] = None
     plugin_args: Optional[Dict] = None
     reason: str = ""
-
 
 class DirectTaskExecutor:
     """
@@ -981,6 +987,19 @@ Return only the JSON object, nothing else.
                         entry_id=plugin_entry_id,
                         reason=reason or "invalid_entry_id",
                     )
+        declared_llm_result_fields: Optional[List[str]] = None
+        if plugin_entry_id and plugin_meta:
+            for e in (plugin_meta.get("entries") or []):
+                if not isinstance(e, dict) or e.get("id") != plugin_entry_id:
+                    continue
+                raw_fields = e.get("llm_result_fields")
+                if isinstance(raw_fields, list):
+                    declared_llm_result_fields = [
+                        field_name
+                        for field_name in raw_fields
+                        if isinstance(field_name, str) and field_name
+                    ] or None
+                break
 
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:
@@ -1071,7 +1090,10 @@ Return only the JSON object, nothing else.
             # Phase 2: await run completion and fetch actual result
             try:
                 completion = await self._await_run_completion(
-                    run_id, timeout=300.0, on_progress=on_progress,
+                    run_id,
+                    timeout=300.0,
+                    on_progress=on_progress,
+                    llm_result_fields=declared_llm_result_fields,
                 )
             except Exception as e:
                 logger.warning("[TaskExecutor] _await_run_completion error: %r", e)
@@ -1088,7 +1110,13 @@ Return only the JSON object, nothing else.
                 "run_status": completion.get("status"),
                 "run_success": run_success,
                 "run_data": completion.get("data"),
-                "run_error": completion.get("error"),
+                "run_error": completion.get("run_error", completion.get("error")),
+                "reply": completion.get("reply"),
+                "reply_suppressed": completion.get("reply_suppressed", False),
+                "reply_message": completion.get("reply_message") or completion.get("message") or "",
+                "progress": completion.get("progress"),
+                "stage": completion.get("stage"),
+                "message": completion.get("message"),
             }
             return TaskResult(
                 task_id=task_id,
@@ -1128,6 +1156,7 @@ Return only the JSON object, nothing else.
         timeout: float = 300.0,
         poll_interval: float = 0.5,
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
+        llm_result_fields: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Poll /runs/{run_id} until it reaches a terminal state, then fetch the export result.
 
@@ -1208,6 +1237,11 @@ Return only the JSON object, nothing else.
                 "progress": run_data.get("progress"),
                 "stage": run_data.get("stage"),
                 "message": run_data.get("message"),
+                "run_data": None,
+                "run_error": None,
+                "reply": None,
+                "reply_suppressed": False,
+                "reply_message": "",
             }
 
             if last_status in ("failed", "canceled", "timeout"):
@@ -1224,13 +1258,15 @@ Return only the JSON object, nothing else.
                 if r.status_code == 200:
                     export_data = r.json()
                     items = export_data.get("items") or []
+                    reply_candidates = []
                     for item in items:
                         if not isinstance(item, dict):
                             continue
-                        # Look for the system trigger_response export
-                        if item.get("type") == "json" and (item.get("json") is not None or item.get("json_data") is not None):
-                            raw = item.get("json") or item.get("json_data")
+                        if is_trigger_response_item(item):
+                            raw = export_payload_from_item(item)
                             if isinstance(raw, dict):
+                                plugin_result["run_data"] = raw.get("data")
+                                plugin_result["run_error"] = raw.get("error")
                                 plugin_result["data"] = raw.get("data")
                                 if raw.get("error"):
                                     err = raw["error"]
@@ -1238,7 +1274,31 @@ Return only the JSON object, nothing else.
                                         plugin_result["error"] = err.get("message") or str(err)
                                     elif isinstance(err, str):
                                         plugin_result["error"] = err
-                            break
+                                reply_candidates.append(
+                                    trigger_response_candidate(
+                                        raw,
+                                        fallback_fields=llm_result_fields,
+                                        sequence=len(reply_candidates),
+                                    )
+                                )
+                            continue
+                        reply_candidates.append(
+                            export_item_candidate(item, sequence=len(reply_candidates))
+                        )
+
+                    chosen_candidate = choose_reply_candidate(reply_candidates)
+                    if chosen_candidate is not None:
+                        plugin_result["reply"] = chosen_candidate.as_dict()
+                        plugin_result["reply_message"] = chosen_candidate.message
+                    elif any(
+                        candidate.spec.explicit
+                        and (
+                            not candidate.reply_enabled
+                            or not candidate.has_visible_content()
+                        )
+                        for candidate in reply_candidates
+                    ):
+                        plugin_result["reply_suppressed"] = True
             except Exception as e:
                 logger.debug("[_await_run_completion] export fetch error: %s", e)
 

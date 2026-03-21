@@ -130,6 +130,45 @@ Push export data to the host.
 
 Signal task completion to the host.
 
+### Agent Reply Contract
+
+Plugin outputs can carry `agent` metadata to control whether they trigger a main reply and which fields are visible to the agent/main LLM.
+
+```python
+return await self.finish(
+    data={"summary": "Done", "internal": {"debug": True}},
+    reply=True,
+    meta={"agent": {"fields": ["summary"], "summary": "Task finished"}},
+)
+
+await self.export_push(
+    export_type="json",
+    json_data={"summary": "Saved", "internal": "debug"},
+    reply=True,
+    metadata={"agent": {"fields": ["summary"], "priority": 10}},
+)
+
+self.push_message(
+    source="memo",
+    message_type="proactive_notification",
+    content="Raw reminder text",
+    metadata={"agent": {"reply": True, "summary": "Reminder is due"}},
+)
+```
+
+Supported `agent` metadata fields:
+
+| Field | Type | Meaning |
+|------|------|------|
+| `reply` | `bool` | Whether this output may trigger a main reply |
+| `include` | `bool` | Whether agent-side consumers may read the raw body / JSON |
+| `fields` | `list[str]` | Field-level visibility filter for JSON payloads |
+| `summary` | `str` | Explicit short summary for the main reply |
+| `detail` | `str` | Explicit detailed text for the main reply |
+| `priority` | `int` | Priority when multiple reply candidates exist |
+
+If an entry declares `llm_result_fields` and `agent.fields` is omitted, `return/finish()` falls back to the declared `llm_result_fields`.
+
 ---
 
 ## Result Types: Ok / Err

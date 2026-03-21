@@ -15,6 +15,7 @@ import threading
 import time
 
 from plugin.logging_config import get_logger
+from plugin.reply_contract import parse_agent_reply_spec
 
 try:
     import zmq
@@ -121,12 +122,25 @@ class ProactiveBridge:
                     continue
 
                 raw_content = payload.get("content")
+                metadata = payload.get("metadata") or {}
                 # 通过 result_parser 确保 content 不含原始 JSON
                 try:
                     from brain.result_parser import parse_push_message_content
-                    content = parse_push_message_content(raw_content)
+                    render_content = parse_push_message_content(raw_content)
                 except Exception:
-                    content = str(raw_content or "").strip()
+                    render_content = str(raw_content or "").strip()
+                reply_spec = parse_agent_reply_spec(
+                    metadata if isinstance(metadata, dict) else None,
+                    default_reply=True,
+                    default_mode="proactive",
+                )
+                if not reply_spec.reply_enabled:
+                    continue
+                if reply_spec.include is False:
+                    render_content = ""
+                summary = reply_spec.summary or reply_spec.detail or render_content
+                detail = reply_spec.detail or render_content
+                content = summary or detail
 
                 raw_str = str(raw_content or "")
                 if content != raw_str.strip():
@@ -143,15 +157,14 @@ class ProactiveBridge:
                 if not content:
                     continue
 
-                metadata = payload.get("metadata") or {}
                 plugin_id = payload.get("plugin_id", "")
 
                 proactive_event = {
                     "event_type": "proactive_message",
                     "lanlan_name": metadata.get("target_lanlan") or None,
                     "text": content,
-                    "summary": content,
-                    "detail": content,
+                    "summary": summary,
+                    "detail": detail,
                     "channel": f"plugin:{plugin_id}" if plugin_id else "plugin",
                     "task_id": metadata.get("task_id", ""),
                     "success": True,

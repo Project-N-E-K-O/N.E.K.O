@@ -152,7 +152,7 @@ def test_finish_helpers_normalize_meta_and_structured_data() -> None:
 
 def test_finish_normalize_meta_replaces_non_mapping_agent_meta() -> None:
     envelope = core_finish.build_finish_envelope(data=None, meta={"agent": "bad"})
-    assert envelope["meta"] == {"agent": {"reply": True}}
+    assert envelope["meta"] == {"agent": {"reply": True, "include": True}}
 
 
 def test_core_base_collect_entries_covers_router_collect_entries_and_iter_handler_edges() -> None:
