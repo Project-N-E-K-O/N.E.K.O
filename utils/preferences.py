@@ -28,8 +28,7 @@ def load_user_preferences() -> List[Dict[str, Any]]:
                     else:
                         return []
                 elif isinstance(data, list):
-                    # 过滤掉全局对话设置的哨兵条目
-                    return [pref for pref in data if pref.get('model_path') != GLOBAL_CONVERSATION_KEY]
+                    return data
                 else:
                     return []
     except Exception as e:
@@ -79,10 +78,10 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         # 加载现有偏好
         current_preferences = load_user_preferences()
         
-        # 查找是否已存在该模型的偏好
+        # 查找是否已存在该模型的偏好（跳过哨兵）
         model_index = -1
         for i, pref in enumerate(current_preferences):
-            if pref.get('model_path') == model_path:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
                 model_index = i
                 break
         
@@ -178,8 +177,11 @@ def get_model_preferences(model_path: Optional[str] = None) -> Optional[Dict[str
                 return pref
         return None
     else:
-        # 返回首选模型（列表第一个）的偏好
-        return preferences[0] if preferences else None
+        # 返回首选模型（列表第一个）的偏好，跳过哨兵
+        for pref in preferences:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY:
+                return pref
+        return None
 
 def get_preferred_model_path() -> Optional[str]:
     """
@@ -189,8 +191,9 @@ def get_preferred_model_path() -> Optional[str]:
         Optional[str]: 首选模型的路径，如果没有则返回None
     """
     preferences = load_user_preferences()
-    if preferences and len(preferences) > 0:
-        return preferences[0].get('model_path')
+    for pref in preferences:
+        if pref.get('model_path') != GLOBAL_CONVERSATION_KEY:
+            return pref.get('model_path')
     return None
 
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
@@ -236,10 +239,10 @@ def move_model_to_top(model_path: str) -> bool:
     try:
         preferences = load_user_preferences()
         
-        # 查找模型索引
+        # 查找模型索引（跳过哨兵）
         model_index = -1
         for i, pref in enumerate(preferences):
-            if pref.get('model_path') == model_path:
+            if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
                 model_index = i
                 break
         
@@ -310,7 +313,10 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         else:
             data = []
 
-        if not isinstance(data, list):
+        if isinstance(data, dict):
+            # 兼容旧 dict 格式：包装为列表
+            data = [data]
+        elif not isinstance(data, list):
             data = []
 
         # 查找全局对话设置条目的索引

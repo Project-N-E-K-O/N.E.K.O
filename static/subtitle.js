@@ -843,7 +843,11 @@ window.subtitleBridge = {
         localStorage.setItem('subtitleEnabled', subtitleEnabled.toString());
     },
     setUserLanguage: function(lang) {
-        userLanguage = lang;
+        // 空值时回退到默认值
+        if (!lang || typeof lang !== 'string') {
+            lang = 'zh';
+        }
+        userLanguage = normalizeLanguageCode(lang.trim().toLowerCase());
         if (typeof window.appState !== 'undefined') {
             window.appState.userLanguage = userLanguage;
         }

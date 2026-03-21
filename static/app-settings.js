@@ -23,7 +23,7 @@
      * 注意：不包含 renderQuality、targetFrameRate、mouseTrackingEnabled 等性能/外观设置
      */
     function getConversationSettings() {
-        return {
+        const settings = {
             proactiveChatEnabled: S.proactiveChatEnabled,
             proactiveVisionEnabled: S.proactiveVisionEnabled,
             proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
@@ -35,9 +35,13 @@
             focusModeEnabled: S.focusModeEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
             proactiveVisionInterval: S.proactiveVisionInterval,
-            subtitleEnabled: S.subtitleEnabled,
-            userLanguage: S.userLanguage
+            subtitleEnabled: S.subtitleEnabled
         };
+        // 只有在 userLanguage 是有效非空值时才包含
+        if (S.userLanguage) {
+            settings.userLanguage = S.userLanguage;
+        }
+        return settings;
     }
 
     /**
