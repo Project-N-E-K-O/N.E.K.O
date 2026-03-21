@@ -9,7 +9,7 @@ N.E.K.O. is a UGC (User-Generated Content) platform for AI companions. Users can
 - **Real-time voice conversation** via WebSocket with Realtime API providers (Qwen, OpenAI, Gemini, Step, GLM)
 - **Live2D and VRM model rendering** with emotion-mapped animations
 - **Persistent memory** across sessions with semantic recall and time-indexed history
-- **Background agent execution** via MCP, Computer Use, and Browser Use adapters
+- **Background agent execution** via MCP, Computer Use, Browser Use, and Virtual Machine adapters
 - **Voice cloning** with custom TTS voices
 - **Steam Workshop integration** for content sharing
 - **Plugin system** for developer extensions

@@ -933,6 +933,18 @@
             "loop": "Loop",
             "speed": "Speed:"
         },
+        "mmdModel": {
+            "selectModel": "Select MMD Model",
+            "deleteModel": "Delete Imported MMD Models",
+            "deleteModelTitle": "Delete Imported MMD Models",
+            "deleteWarning": "Below are all imported user MMD models. Select models to delete (model folder and textures will be deleted together).",
+            "noUserModels": "No user MMD models to delete",
+            "deleteSelected": "Delete Selected"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "Select VMD Animation",
+            "noAnimation": "No Animation"
+        },
         "modelFilesFetchFailed": "Failed to fetch model files list",
         "modelConfigFetchFailed": "Failed to fetch model config: {{status}}",
         "updatedPersistentExpression": "Updated persistent expression",
@@ -1518,6 +1530,47 @@
             "title": "Idle Animation",
             "changed": "Idle animation changed: {{name}}",
             "changeFailed": "Failed to change idle animation"
+        },
+        "settingsTitle": "VRM Model Settings",
+        "cursorFollow": {
+            "title": "Cursor Follow",
+            "preset": "Follow Intensity",
+            "none": "Off",
+            "low": "Low",
+            "medium": "Medium",
+            "high": "High",
+            "eyeSensitivity": "Eye Sensitivity",
+            "headSensitivity": "Head Sensitivity",
+            "headSpeed": "Head Tracking Speed"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD Model Settings",
+        "lighting": {
+            "title": "MMD Lighting",
+            "ambientIntensity": "Ambient Intensity",
+            "ambientColor": "Ambient Color",
+            "directionalIntensity": "Directional Intensity",
+            "directionalColor": "Directional Color"
+        },
+        "rendering": {
+            "title": "MMD Rendering",
+            "toneMapping": "Tone Mapping",
+            "exposure": "Exposure",
+            "outline": "Outline Effect",
+            "pixelRatio": "Pixel Ratio"
+        },
+        "physics": {
+            "title": "MMD Physics",
+            "enabled": "Physics Simulation",
+            "strength": "Simulation Strength"
+        },
+        "cursorFollow": {
+            "title": "Cursor Follow",
+            "enabled": "Head Tracking",
+            "headYaw": "Yaw Range",
+            "headPitch": "Pitch Range",
+            "smoothSpeed": "Tracking Smoothness"
         }
     },
     "modelManager": {
@@ -2177,6 +2230,45 @@
             "sad": "Sad",
             "angry": "Angry",
             "surprised": "Surprised"
+        }
+    },
+    "mmdEmotionManager": {
+        "title": "MMD Emotion Mapping Manager - Project N.E.K.O.",
+        "pageTitle": "MMD Emotion Mapping Manager",
+        "subtitle": "Configure MorphTarget mappings for different emotions",
+        "selectModel": "Select MMD Model",
+        "morphPreview": "Morph Preview",
+        "morphCandidates": "Morph Candidates",
+        "selectMorph": "Select Morph",
+        "saveConfig": "Save Configuration",
+        "resetToDefault": "Reset to Default",
+        "loading": "Loading...",
+        "loadingMorphs": "Loading morph list",
+        "pleaseSelectModel": "Please select a model",
+        "noModelsFound": "No available MMD models found",
+        "noMorphsFound": "No available morphs",
+        "loadModelListFailed": "Failed to load model list",
+        "loadMorphsFailed": "Failed to load morph list",
+        "morphsLoadedFromModel": "Morph list loaded from current model",
+        "useDefaultMorphs": "Using default morph list (please load model on main page first for accurate list)",
+        "configLoadSuccess": "Configuration loaded successfully",
+        "configLoadFailed": "Failed to load configuration",
+        "configUseDefault": "Using default configuration",
+        "configSaveSuccess": "Configuration saved successfully!",
+        "saveFailed": "Save failed",
+        "configReset": "Configuration has been reset to default",
+        "pleaseSelectModelFirst": "Please select a model first",
+        "tip": "Tip: ",
+        "tipContent": "MMD model expressions use MorphTargets. Please select multiple candidate morphs for each emotion, the system will automatically match the morphs supported by the model.",
+        "close": "Close",
+        "emotions": {
+            "neutral": "Neutral",
+            "happy": "Happy",
+            "relaxed": "Relaxed",
+            "sad": "Sad",
+            "angry": "Angry",
+            "surprised": "Surprised",
+            "fear": "Fear"
         }
     },
     "theme": {

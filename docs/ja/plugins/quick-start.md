@@ -43,18 +43,30 @@ supported = ">=0.1.0,<0.3.0"
 ## ステップ 3: `__init__.py` の作成
 
 ```python
-from plugin.sdk.plugin import NekoPluginBase
-from plugin.sdk.plugin import neko_plugin, plugin_entry
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err,
+)
 from typing import Any
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World plugin example"""
+    """Hello World プラグインのサンプル。"""
 
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.logger.info("HelloWorldPlugin initialized")
+        self.counter = 0
+
+    @lifecycle(id="startup")
+    def on_startup(self, **_):
+        self.logger.info("HelloWorldPlugin started!")
+        return Ok({"status": "ready"})
+
+    @lifecycle(id="shutdown")
+    def on_shutdown(self, **_):
+        self.logger.info("HelloWorldPlugin stopped!")
+        return Ok({"status": "stopped"})
 
     @plugin_entry(
         id="greet",
@@ -72,13 +84,20 @@ class HelloWorldPlugin(NekoPluginBase):
         }
     )
     def greet(self, name: str = "World", **_):
-        """Greeting function"""
-        message = f"Hello, {name}!"
+        self.counter += 1
+        message = f"Hello, {name}! (call #{self.counter})"
         self.logger.info(f"Greeting: {message}")
-        return {
-            "message": message
-        }
+        return Ok({"message": message, "count": self.counter})
 ```
+
+### 重要なポイント
+
+- **`@neko_plugin`** — 必須のクラスデコレーター、クラスをプラグインとして登録します
+- **`NekoPluginBase`** — すべてのプラグインが継承する必要があるベースクラス
+- **`@plugin_entry`** — 外部から呼び出し可能なエントリーポイントを定義します
+- **`@lifecycle`** — ライフサイクルイベント（`startup`、`shutdown`、`reload`）を処理します
+- **`Ok(...)` / `Err(...)`** — 型安全なエラーハンドリングのための Result 型を返します
+- **`**_`** — 追加パラメーターをキャプチャするため、エントリーポイントのシグネチャに常に含めてください
 
 ## ステップ 4: テスト
 
@@ -96,6 +115,6 @@ curl -X POST http://localhost:48916/plugin/trigger \
 
 ## 次のステップ
 
-- [SDK リファレンス](./sdk-reference) — `NekoPluginBase` と `PluginContext` について学ぶ
-- [デコレーター](./decorators) — 利用可能なすべてのデコレータータイプ
+- [SDK リファレンス](./sdk-reference) — `NekoPluginBase`、Result 型、ランタイムヘルパーについて学ぶ
+- [デコレーター](./decorators) — フックを含むすべてのデコレータータイプ
 - [サンプル](./examples) — 完全に動作するプラグインのサンプル

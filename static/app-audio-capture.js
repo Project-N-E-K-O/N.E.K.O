@@ -756,7 +756,7 @@
         let cachedBarFill = document.getElementById('mic-volume-bar-fill');
         let cachedStatus = document.getElementById('mic-volume-status');
         let cachedHint = document.getElementById('mic-volume-hint');
-        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
 
         function updateVolumeDisplay() {
             // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
@@ -764,7 +764,7 @@
                 cachedBarFill = document.getElementById('mic-volume-bar-fill');
                 cachedStatus = document.getElementById('mic-volume-status');
                 cachedHint = document.getElementById('mic-volume-hint');
-                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
             }
 
             if (!cachedBarFill) {
@@ -1001,7 +1001,7 @@
             try {
                 var devices = await navigator.mediaDevices.enumerateDevices();
                 cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
-                var micPopup = document.getElementById('live2d-popup-mic');
+                var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
                 if (micPopup && micPopup.style.display === 'flex') {
                     await window.renderFloatingMicList();
                 }
@@ -1013,7 +1013,7 @@
 
     /** 为浮动弹出框渲染麦克风列表 */
     window.renderFloatingMicList = async function (popupArg) {
-        var micPopup = popupArg || document.getElementById('live2d-popup-mic');
+        var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
 
         try {
@@ -1247,7 +1247,7 @@
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return;
         var options = micPopup.querySelectorAll('.mic-option');
         options.forEach(function (option) {

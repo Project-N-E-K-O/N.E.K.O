@@ -1,6 +1,6 @@
 # N.E.K.O 插件系统开发指南
 
-> 一份极其详尽的插件开发教程，包含完整的功能介绍、实例代码和最佳实践
+> SDK v2 完整开发教程，包含 Plugin / Extension / Adapter 三种开发范式
 
 ## 目录
 
@@ -8,12 +8,14 @@
 - [第二章：快速开始](#第二章快速开始)
 - [第三章：SDK 核心功能](#第三章sdk-核心功能)
 - [第四章：装饰器详解](#第四章装饰器详解)
-- [第五章：上下文对象](#第五章上下文对象)
+- [第五章：上下文与运行时](#第五章上下文与运行时)
 - [第六章：完整示例](#第六章完整示例)
-- [第七章：高级主题](#第七章高级主题)
-- [第八章：最佳实践](#第八章最佳实践)
-- [第九章：常见问题](#第九章常见问题)
-- [第十章：API 参考](#第十章api-参考)
+- [第七章：Extension 扩展开发](#第七章extension-扩展开发)
+- [第八章：Adapter 适配器开发](#第八章adapter-适配器开发)
+- [第九章：高级主题](#第九章高级主题)
+- [第十章：最佳实践](#第十章最佳实践)
+- [第十一章：常见问题](#第十一章常见问题)
+- [第十二章：API 参考](#第十二章api-参考)
 
 ---
 
@@ -21,67 +23,99 @@
 
 ### 1.1 什么是 N.E.K.O 插件系统？
 
-N.E.K.O 插件系统是一个基于 Python 的插件框架，允许开发者创建可扩展的功能模块。每个插件运行在独立的进程中，通过进程间通信与主系统交互。
+N.E.K.O 插件系统是一个基于 Python 的插件框架，允许开发者创建可扩展的功能模块。每个插件运行在独立的进程中，通过 ZMQ IPC 与主系统交互。
 
-### 1.2 核心特性
+### 1.2 三种开发范式
 
-- ✅ **进程隔离**：每个插件运行在独立进程中，提高稳定性和安全性
-- ✅ **异步支持**：支持同步和异步函数
-- ✅ **类型安全**：使用 Pydantic 进行数据验证
-- ✅ **生命周期管理**：完整的启动、运行、关闭生命周期
-- ✅ **消息推送**：插件可以向主系统推送消息
-- ✅ **状态管理**：插件可以上报运行状态
-- ✅ **定时任务**：支持定时执行任务
-- ✅ **事件驱动**：支持多种事件类型
+| 范式 | 导入路径 | 用途 | 运行方式 |
+|------|---------|------|---------|
+| **Plugin** | `plugin.sdk.plugin` | 独立功能（搜索、提醒等） | 独立进程 |
+| **Extension** | `plugin.sdk.extension` | 为现有插件添加路由/钩子 | 注入宿主插件进程 |
+| **Adapter** | `plugin.sdk.adapter` | 对接外部协议（MCP、NoneBot 等） | 独立进程 + 网关管线 |
 
-### 1.3 系统架构
+**如何选择？**
+
+- **「我想添加一个新的独立功能」** → 用 **Plugin**（99% 的开发者只需要这个）
+- **「我想给现有插件添加额外命令」** → 用 **Extension**
+- **「我想把 MCP/NoneBot 等外部协议请求转发给插件」** → 用 **Adapter**
+
+### 1.3 核心特性
+
+- **进程隔离**：每个插件运行在独立进程中，崩溃不影响主系统
+- **异步支持**：支持同步和异步入口函数
+- **Result 类型**：`Ok`/`Err` 类型安全的错误处理（替代异常流）
+- **Hook 系统**：`@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry` 面向切面编程
+- **跨插件调用**：`self.plugins.call_entry("other_plugin:entry_id")` 插件间通信
+- **Memory 客户端**：`self.memory` 访问宿主记忆系统
+- **系统信息**：`self.system_info` 查询宿主元数据
+- **持久化存储**：`PluginStore` 键值对持久化
+- **Bus 系统**：`self.bus` 事件发布/订阅
+- **动态入口**：运行时注册/注销入口点
+- **静态 UI**：从插件目录提供 Web UI
+- **生命周期**：`startup`, `shutdown`, `reload`, `freeze`, `unfreeze`, `config_change`
+- **定时任务**：`@timer_interval` 周期执行
+- **消息处理**：`@message` 响应主系统消息
+
+### 1.4 系统架构
 
 ```text
-┌─────────────────────────────────────────┐
-│         主进程 (Main Process)            │
-│  ┌───────────────────────────────────┐  │
-│  │   Plugin Server (FastAPI)        │  │
-│  │   - HTTP API 端点                 │  │
-│  │   - 插件注册表                    │  │
-│  │   - 消息队列                      │  │
-│  └───────────────────────────────────┘  │
-│           │                              │
-│           │ Queue (IPC)                  │
-│           ▼                              │
-└─────────────────────────────────────────┘
-           │
-    ┌──────┴──────┬──────────┬──────────┐
-    │             │          │          │
-    ▼             ▼          ▼          ▼
-┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐
-│Plugin 1│  │Plugin 2│  │Plugin 3│  │Plugin N│
-│Process │  │Process │  │Process │  │Process │
-└────────┘  └────────┘  └────────┘  └────────┘
+┌────────────────────────────────────────────────────┐
+│              主进程 (Host)                          │
+│  ┌──────────────────────────────────────────────┐  │
+│  │   Plugin Host (core/)                        │  │
+│  │   - 插件生命周期管理                          │  │
+│  │   - Bus 系统 (memory, events, messages)      │  │
+│  │   - Extension 注入                           │  │
+│  │   - ZMQ IPC 传输                             │  │
+│  └──────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────┐  │
+│  │   Plugin Server (server/)                    │  │
+│  │   - HTTP API 端点 (FastAPI)                  │  │
+│  │   - 插件注册表                                │  │
+│  │   - 消息队列                                  │  │
+│  └──────────────────────────────────────────────┘  │
+└────────────────────┬───────────────────────────────┘
+                     │ ZMQ IPC
+      ┌──────────────┼──────────────┬────────────────┐
+      ▼              ▼              ▼                ▼
+  Plugin A       Plugin B      Extension C      Adapter D
+  (独立进程)     (独立进程)     (注入宿主)       (独立进程)
 ```
 
-### 1.4 插件目录结构
+### 1.5 SDK 包结构
+
+```text
+plugin/sdk/
+├── plugin/         ← 标准插件开发入口（99% 的开发者只需要这个）
+├── extension/      ← 扩展开发入口（为现有插件添加路由/钩子）
+└── adapter/        ← 适配器开发入口（对接外部协议）
+```
+
+> `plugin/sdk/shared/` 是内部实现细节，不应被开发者直接导入。
+
+### 1.6 插件目录结构
 
 ```text
 plugin/plugins/
-├── my_plugin/
-│   ├── __init__.py          # 插件主代码
-│   └── plugin.toml          # 插件配置文件
+└── my_plugin/
+    ├── __init__.py      # 插件代码（入口点）
+    ├── plugin.toml      # 插件配置
+    ├── config.json      # 可选：自定义配置
+    ├── data/            # 可选：运行时数据目录
+    └── static/          # 可选：Web UI 文件
 ```
 
 ---
 
 ## 第二章：快速开始
 
-### 2.1 创建你的第一个插件
-
-#### 步骤 1：创建插件目录
+### 2.1 创建插件目录
 
 ```bash
 mkdir -p plugin/plugins/hello_world
-cd plugin/plugins/hello_world
 ```
 
-#### 步骤 2：创建配置文件 `plugin.toml`
+### 2.2 创建 `plugin.toml`
 
 ```toml
 [plugin]
@@ -92,48 +126,61 @@ version = "1.0.0"
 entry = "plugins.hello_world:HelloWorldPlugin"
 
 [plugin.sdk]
-# 推荐使用的 SDK 版本范围
 recommended = ">=0.1.0,<0.2.0"
-# 完全支持的 SDK 版本范围（必须满足或落在 untested 范围）
 supported = ">=0.1.0,<0.3.0"
-# 未经过完整测试但允许加载的范围（会告警）
-untested = ">=0.3.0,<0.4.0"
-# 明确冲突的范围（命中即拒绝加载）
-conflicts = ["<0.1.0", ">=0.4.0"]
 ```
 
-**配置说明：**
-- `id`: 插件的唯一标识符（必须）
-- `name`: 插件的显示名称
-- `description`: 插件描述
-- `version`: 插件版本号
-- `plugin.sdk`: SDK 版本要求专用区块
-  - `recommended`: 推荐使用的 SDK 范围，命中之外会提示警告
-  - `supported`: 完全支持的 SDK 范围，未命中将拒绝加载（除非命中 `untested`）
-  - `untested`: 未经完整测试但允许加载的范围，命中时会告警
-  - `conflicts`: 明确冲突的范围，命中即拒绝加载
-- `entry`: 插件入口点，格式为 `模块路径:类名`
+#### 配置字段说明
 
-#### 步骤 3：创建插件代码 `__init__.py`
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `id` | 是 | 插件唯一标识符 |
+| `name` | 否 | 显示名称 |
+| `description` | 否 | 插件描述 |
+| `version` | 否 | 插件版本 |
+| `entry` | 是 | 入口点：`模块路径:类名` |
+
+#### SDK 版本字段
+
+| 字段 | 说明 |
+|------|------|
+| `recommended` | 推荐的 SDK 版本范围 |
+| `supported` | 最低支持范围（不满足时拒绝加载） |
+| `untested` | 允许但加载时会警告 |
+| `conflicts` | 拒绝的版本范围 |
+
+### 2.3 创建 `__init__.py`
 
 ```python
-from plugin.sdk.plugin import NekoPluginBase
-from plugin.sdk.plugin import neko_plugin, plugin_entry
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError,
+)
 from typing import Any
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
     """Hello World 插件示例"""
-    
+
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.logger.info("HelloWorldPlugin initialized")
-    
+        self.counter = 0
+
+    @lifecycle(id="startup")
+    def on_startup(self, **_):
+        self.logger.info("HelloWorldPlugin 已启动！")
+        return Ok({"status": "ready"})
+
+    @lifecycle(id="shutdown")
+    def on_shutdown(self, **_):
+        self.logger.info("HelloWorldPlugin 已停止！")
+        return Ok({"status": "stopped"})
+
     @plugin_entry(
         id="greet",
-        name="Greet",
-        description="返回问候语",
+        name="问候",
+        description="返回一条问候消息",
         input_schema={
             "type": "object",
             "properties": {
@@ -146,21 +193,27 @@ class HelloWorldPlugin(NekoPluginBase):
         }
     )
     def greet(self, name: str = "World", **_):
-        """问候函数"""
-        message = f"Hello, {name}!"
-        self.logger.info(f"Greeting: {message}")
-        return {
-            "message": message,
-            "timestamp": "2024-01-01T00:00:00Z"
-        }
+        self.counter += 1
+        message = f"Hello, {name}! (第 {self.counter} 次调用)"
+        self.logger.info(f"问候: {message}")
+        return Ok({"message": message, "count": self.counter})
 ```
 
-#### 步骤 4：测试插件
+### 2.4 关键要点
 
-启动插件服务器后，可以通过 HTTP API 调用插件：
+- **`@neko_plugin`** — 必须的类装饰器，将类注册为插件
+- **`NekoPluginBase`** — 所有插件必须继承的基类
+- **`@plugin_entry`** — 定义外部可调用的入口点
+- **`@lifecycle`** — 处理生命周期事件（`startup`, `shutdown`, `reload`）
+- **`Ok(...)` / `Err(...)`** — 返回 Result 类型，类型安全的错误处理
+- **`**_`** — 入口点签名中始终包含，用于捕获额外参数
+
+### 2.5 测试
+
+启动插件服务器后，通过 HTTP 调用插件：
 
 ```bash
-curl -X POST http://localhost:8000/plugin/trigger \
+curl -X POST http://localhost:48916/plugin/trigger \
   -H "Content-Type: application/json" \
   -d '{
     "plugin_id": "hello_world",
@@ -173,149 +226,209 @@ curl -X POST http://localhost:8000/plugin/trigger \
 
 ## 第三章：SDK 核心功能
 
-### 3.1 NekoPluginBase 基类
+### 3.1 导入方式
 
-所有插件都必须继承 `NekoPluginBase` 基类。
-
-#### 3.1.1 初始化
+所有插件开发 API 从 `plugin.sdk.plugin` 导入：
 
 ```python
-class MyPlugin(NekoPluginBase):
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        # ctx 是 PluginContext 对象，包含：
-        # - ctx.plugin_id: 插件ID
-        # - ctx.logger: 日志记录器
-        # - ctx.config_path: 配置文件路径
-        # - ctx.update_status(): 更新状态方法
-        # - ctx.push_message(): 推送消息方法
+from plugin.sdk.plugin import (
+    # 基类
+    NekoPluginBase, PluginMeta,
+    # 装饰器
+    neko_plugin, plugin_entry, lifecycle, timer_interval, message, on_event,
+    custom_event, hook, before_entry, after_entry, around_entry, replace_entry,
+    # Result 类型
+    Ok, Err, Result, unwrap, unwrap_or,
+    # 运行时工具
+    Plugins, PluginRouter, PluginConfig, PluginStore,
+    SystemInfo, MemoryClient,
+    # 错误
+    SdkError, TransportError,
+    # 日志
+    get_plugin_logger,
+)
 ```
 
-#### 3.1.2 基类方法
+### 3.2 NekoPluginBase 属性
 
-**`get_input_schema()`**
-```python
-def get_input_schema(self) -> Dict[str, Any]:
-    """获取插件的输入模式"""
-    # 默认从类属性 input_schema 获取
-    # 可以重写此方法提供自定义模式
-    return {
-        "type": "object",
-        "properties": {
-            "param1": {"type": "string"}
-        }
-    }
-```
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `self.ctx` | `PluginContext` | 运行时上下文（宿主注入） |
+| `self.plugin_id` | `str` | 插件唯一标识符 |
+| `self.config_dir` | `Path` | `plugin.toml` 所在目录 |
+| `self.metadata` | `dict` | 来自 `plugin.toml` 的元数据 |
+| `self.bus` | `Bus` | 事件总线（发布/订阅） |
+| `self.plugins` | `Plugins` | 跨插件调用工具 |
+| `self.memory` | `MemoryClient` | 宿主记忆系统访问 |
+| `self.system_info` | `SystemInfo` | 宿主系统元数据 |
 
-**`report_status()`**
-```python
-def report_status(self, status: Dict[str, Any]) -> None:
-    """上报插件状态到主进程"""
-    # 实际实现略
-```
+### 3.3 NekoPluginBase 方法
 
-使用示例：
+#### `report_status(status: dict) -> None`
+
+向宿主报告插件状态：
 
 ```python
 self.report_status({
-    "status": "running",
+    "status": "processing",
     "progress": 50,
-    "message": "Processing...",
+    "message": "处理中..."
 })
 ```
 
-**`collect_entries()`**
-```python
-def collect_entries(self) -> Dict[str, EventHandler]:
-    """收集所有入口点（通常不需要手动调用）"""
-    # 系统会自动扫描带有 @plugin_entry 装饰器的方法
-    return entries
-```
+#### `push_message(**kwargs) -> object`
 
-### 3.2 插件上下文 (PluginContext)
-
-`PluginContext` 是插件运行时上下文，提供了与主系统交互的接口。
-
-#### 3.2.1 属性
+向主系统推送消息：
 
 ```python
-ctx.plugin_id      # str: 插件ID
-ctx.config_path    # Path: 配置文件路径
-ctx.logger         # Logger: 日志记录器
-ctx.status_queue   # Queue: 状态队列（内部使用）
-ctx.message_queue  # Queue: 消息队列（内部使用）
+self.push_message(
+    source="my_feature",
+    message_type="text",        # "text" | "url" | "binary" | "binary_url"
+    description="任务完成",
+    priority=5,                 # 0-10 (0=低, 10=紧急)
+    content="结果文本",
+)
 ```
 
-#### 3.2.2 方法
+#### `data_path(*parts) -> Path`
 
-**`update_status()`**
+获取插件 `data/` 目录下的路径：
+
 ```python
-def update_status(self, status: Dict[str, Any]) -> None:
-    """更新插件状态"""
-    ctx.update_status({
-        "status": "processing",
-        "current_item": 10,
-        "total_items": 100
-    })
+db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
 ```
 
-**`push_message()`**
+#### `register_dynamic_entry(entry_id, handler, ...) -> bool`
+
+运行时动态注册入口点（不通过装饰器）：
+
 ```python
-def push_message(
-    self,
-    source: str,                    # 消息来源标识
-    message_type: str,              # "text" | "url" | "binary" | "binary_url"
-    description: str = "",         # 消息描述
-    priority: int = 0,              # 优先级 (0-10)
-    content: Optional[str] = None,  # 文本内容或URL
-    binary_data: Optional[bytes] = None,  # 二进制数据
-    binary_url: Optional[str] = None,     # 二进制文件URL
-    metadata: Optional[Dict[str, Any]] = None  # 额外元数据
-) -> None:
-    """推送消息到主进程"""
-    
-    # 示例：推送文本消息
-    ctx.push_message(
-        source="my_feature",
-        message_type="text",
-        description="处理完成",
-        priority=5,
-        content="任务已成功完成",
-        metadata={"task_id": "123", "duration": 10.5}
-    )
-    
-    # 示例：推送URL消息
-    ctx.push_message(
-        source="web_scraper",
-        message_type="url",
-        description="发现新链接",
-        priority=7,
-        content="https://example.com/article",
-        metadata={"title": "Example Article"}
-    )
-    
-    # 示例：推送二进制数据（小文件）
-    with open("image.png", "rb") as f:
-        image_data = f.read()
-    ctx.push_message(
-        source="image_processor",
-        message_type="binary",
-        description="处理后的图片",
-        priority=6,
-        binary_data=image_data,
-        metadata={"format": "png", "size": len(image_data)}
-    )
-    
-    # 示例：推送大文件的URL引用
-    ctx.push_message(
-        source="file_processor",
-        message_type="binary_url",
-        description="大文件处理完成",
-        priority=8,
-        binary_url="https://storage.example.com/files/large_file.zip",
-        metadata={"size": 1024*1024*100, "format": "zip"}
-    )
+self.register_dynamic_entry(
+    entry_id="dynamic_greet",
+    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    name="动态问候",
+    description="动态注册的问候入口",
+)
 ```
+
+#### `unregister_dynamic_entry(entry_id) -> bool`
+
+移除动态注册的入口点。
+
+#### `list_entries(include_disabled=False) -> list[dict]`
+
+列出所有入口点（静态 + 动态）。
+
+#### `enable_entry(entry_id) / disable_entry(entry_id) -> bool`
+
+启用或禁用动态入口点。
+
+#### `register_static_ui(directory, *, index_file, cache_control) -> bool`
+
+注册插件的静态 Web UI 目录：
+
+```python
+self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html
+```
+
+#### `include_router(router, *, prefix) -> None`
+
+挂载 `PluginRouter`（Extension 使用）。
+
+#### `run_update(**kwargs) -> object` (async)
+
+在长时间运行操作期间发送更新。
+
+#### `export_push(**kwargs) -> object` (async)
+
+向宿主推送导出数据。
+
+#### `finish(**kwargs) -> Any` (async)
+
+通知宿主任务完成。
+
+### 3.4 Result 类型：Ok / Err
+
+SDK 使用 Rust 风格的 Result 类型进行错误处理，替代传统异常：
+
+```python
+from plugin.sdk.plugin import Ok, Err, unwrap, unwrap_or, SdkError
+
+# 返回成功
+return Ok({"data": result})
+
+# 返回错误
+return Err(SdkError("出错了"))
+
+# 消费结果
+result = await self.plugins.call_entry("other:do_stuff")
+if isinstance(result, Ok):
+    data = result.value
+else:
+    error = result.error
+    self.logger.error(f"调用失败: {error}")
+
+# 辅助函数
+value = unwrap(result)           # Err 时抛出异常
+value = unwrap_or(result, None)  # Err 时返回默认值
+```
+
+### 3.5 跨插件调用 (Plugins)
+
+通过 `self.plugins` 访问：
+
+```python
+# 列出所有插件
+result = await self.plugins.list()
+
+# 只列出已启用的插件
+result = await self.plugins.list(enabled=True)
+
+# 获取插件 ID 列表
+result = await self.plugins.list_ids()
+
+# 检查插件是否存在
+result = await self.plugins.exists("other_plugin")
+
+# 调用另一个插件的入口点
+result = await self.plugins.call_entry("other_plugin:do_work", {"key": "value"})
+
+# 调用并确保返回 JSON 对象
+result = await self.plugins.call_entry_json("other_plugin:get_data")
+
+# 要求插件必须存在且已启用
+result = await self.plugins.require_enabled("dependency_plugin")
+```
+
+所有方法返回 `Result` 类型 — 使用前用 `isinstance(result, Ok)` 检查。
+
+### 3.6 持久化存储 (PluginStore)
+
+```python
+from plugin.sdk.plugin import PluginStore
+
+store = PluginStore(self.ctx)
+await store.set("key", {"count": 42})
+value = await store.get("key")  # → {"count": 42}
+```
+
+### 3.7 消息类型
+
+| 类型 | 用途 |
+|------|------|
+| `text` | 纯文本消息 |
+| `url` | URL 链接 |
+| `binary` | 小型二进制数据（直接传输） |
+| `binary_url` | 大文件（通过 URL 引用） |
+
+### 3.8 优先级
+
+| 范围 | 级别 | 用途 |
+|------|------|------|
+| 0-2 | 低 | 信息性消息 |
+| 3-5 | 中 | 一般通知 |
+| 6-8 | 高 | 重要通知 |
+| 9-10 | 紧急 | 需要立即处理 |
 
 ---
 
@@ -323,1302 +436,653 @@ def push_message(
 
 ### 4.1 @neko_plugin
 
-标记一个类为 N.E.K.O 插件。
+标记类为 N.E.K.O 插件，**所有插件类必须使用**：
 
 ```python
-from plugin.sdk.plugin import neko_plugin
-
 @neko_plugin
 class MyPlugin(NekoPluginBase):
     pass
 ```
 
-**说明：**
-- 必须放在类定义之前
-- 不需要参数
-- 插件元数据从 `plugin.toml` 读取
-
 ### 4.2 @plugin_entry
 
-定义插件的外部可调用入口点。
-
-#### 4.2.1 基本用法
-
-```python
-from plugin.sdk.plugin import plugin_entry
-
-@plugin_entry(
-    id="my_function",
-    name="My Function",
-    description="这是一个示例函数"
-)
-def my_function(self, param1: str, **_):
-    return {"result": param1}
-```
-
-#### 4.2.2 完整参数
+定义外部可调用的入口点：
 
 ```python
 @plugin_entry(
-    id="process_data",              # 入口点ID（必须）
-    name="Process Data",            # 显示名称
-    description="处理数据",        # 描述
-    input_schema={                  # JSON Schema 输入验证
-        "type": "object",
-        "properties": {
-            "data": {
-                "type": "string",
-                "description": "要处理的数据"
-            },
-            "options": {
-                "type": "object",
-                "properties": {
-                    "format": {
-                        "type": "string",
-                        "enum": ["json", "xml", "csv"],
-                        "default": "json"
-                    }
-                }
-            }
-        },
-        "required": ["data"]
-    },
-    kind="action",                  # "action" | "service" | "hook"
-    auto_start=False,               # 是否自动启动
-    extra={                         # 额外元数据
-        "category": "data_processing",
-        "version": "1.0"
-    }
+    id="process",                  # 入口点 ID（省略时自动使用方法名）
+    name="处理数据",                # 显示名称
+    description="处理输入数据",      # 描述
+    input_schema={...},            # JSON Schema 验证
+    params=MyParamsModel,          # 或 Pydantic 模型（自动生成 schema）
+    kind="action",                 # "action" | "service" | "hook" | "custom"
+    auto_start=False,              # 加载时自动启动
+    persist=False,                 # 跨重载持久化
+    model_validate=True,           # 启用 Pydantic 验证
+    timeout=30.0,                  # 执行超时（秒）
+    llm_result_fields=["text"],    # LLM 消费的字段
+    llm_result_model=MyResult,     # 结果的 Pydantic 模型
+    metadata={"category": "data"}  # 额外元数据
 )
-def process_data(self, data: str, options: dict = None, **_):
-    """处理数据的函数"""
-    # 函数实现
-    return {"processed": True}
+def process(self, data: str, **_):
+    return Ok({"result": data})
 ```
 
-#### 4.2.3 输入模式 (input_schema)
+#### 参数说明
 
-使用 JSON Schema 定义输入参数：
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `id` | `str` | 方法名 | 入口点唯一标识符 |
+| `name` | `str` | `None` | 显示名称 |
+| `description` | `str` | `""` | 描述 |
+| `input_schema` | `dict` | `None` | 输入的 JSON Schema |
+| `params` | `type` | `None` | Pydantic 模型（自动生成 `input_schema`） |
+| `kind` | `str` | `"action"` | 入口类型 |
+| `auto_start` | `bool` | `False` | 加载时自动启动 |
+| `persist` | `bool` | `None` | 跨重载持久化状态 |
+| `model_validate` | `bool` | `True` | 启用 Pydantic 验证 |
+| `timeout` | `float` | `None` | 执行超时（秒） |
+| `llm_result_fields` | `list[str]` | `None` | LLM 结果提取字段 |
+| `llm_result_model` | `type` | `None` | 结果的 Pydantic 模型 |
+| `metadata` | `dict` | `None` | 额外元数据 |
 
-```python
-input_schema = {
-    "type": "object",
-    "properties": {
-        # 字符串类型
-        "name": {
-            "type": "string",
-            "description": "名称",
-            "minLength": 1,
-            "maxLength": 100
-        },
-        # 数字类型
-        "age": {
-            "type": "integer",
-            "description": "年龄",
-            "minimum": 0,
-            "maximum": 150
-        },
-        # 布尔类型
-        "enabled": {
-            "type": "boolean",
-            "description": "是否启用",
-            "default": True
-        },
-        # 数组类型
-        "tags": {
-            "type": "array",
-            "description": "标签列表",
-            "items": {
-                "type": "string"
-            },
-            "minItems": 0,
-            "maxItems": 10
-        },
-        # 对象类型
-        "config": {
-            "type": "object",
-            "description": "配置对象",
-            "properties": {
-                "key1": {"type": "string"},
-                "key2": {"type": "integer"}
-            }
-        },
-        # 枚举类型
-        "status": {
-            "type": "string",
-            "enum": ["pending", "processing", "completed"],
-            "default": "pending"
-        }
-    },
-    "required": ["name", "age"]  # 必填字段
-}
-```
-
-#### 4.2.4 函数签名
-
-入口函数可以接受关键字参数：
-
-```python
-@plugin_entry(id="example")
-def example(self, param1: str, param2: int = 10, **_):
-    """
-    参数说明：
-    - param1: 必需参数
-    - param2: 可选参数，有默认值
-    - **_: 捕获其他未使用的参数（推荐添加）
-    """
-    return {"result": f"{param1}:{param2}"}
-```
-
-#### 4.2.5 异步支持
-
-```python
-import asyncio
-
-@plugin_entry(id="async_example")
-async def async_example(self, url: str, **_):
-    """异步函数示例"""
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            data = await response.text()
-            return {"data": data}
-```
+> 提示：始终在入口函数签名中包含 `**_`，以优雅处理未使用的参数。
 
 ### 4.3 @lifecycle
 
-定义生命周期事件处理器。
-
-#### 4.3.1 startup - 启动事件
+定义生命周期事件处理器：
 
 ```python
-from plugin.sdk.plugin import lifecycle
+@lifecycle(id="startup")
+def on_startup(self, **_):
+    return Ok({"status": "ready"})
 
-@lifecycle(
-    id="startup",
-    name="Plugin Startup",
-    description="插件启动时执行"
-)
-def startup(self, **_):
-    """插件启动时的初始化逻辑"""
-    self.logger.info("Plugin starting up...")
-    
-    # 初始化资源
-    self._initialize_resources()
-    
-    # 上报状态
-    self.report_status({"status": "initialized"})
-    
-    return {"status": "ready"}
+@lifecycle(id="shutdown")
+def on_shutdown(self, **_):
+    return Ok({"status": "stopped"})
+
+@lifecycle(id="reload")
+def on_reload(self, **_):
+    return Ok({"status": "reloaded"})
 ```
 
-#### 4.3.2 shutdown - 关闭事件
-
-```python
-@lifecycle(
-    id="shutdown",
-    name="Plugin Shutdown",
-    description="插件关闭时执行"
-)
-def shutdown(self, **_):
-    """插件关闭时的清理逻辑"""
-    self.logger.info("Plugin shutting down...")
-    
-    # 清理资源
-    self._cleanup_resources()
-    
-    # 保存状态
-    self._save_state()
-    
-    return {"status": "stopped"}
-```
-
-#### 4.3.3 reload - 重载事件
-
-```python
-@lifecycle(
-    id="reload",
-    name="Plugin Reload",
-    description="插件重载时执行"
-)
-def reload(self, **_):
-    """插件重载时的逻辑"""
-    self.logger.info("Plugin reloading...")
-    
-    # 重新加载配置
-    self._reload_config()
-    
-    return {"status": "reloaded"}
-```
-
-**注意：** `auto_start` 参数对 lifecycle 事件无效，系统会自动调用。
+有效的生命周期 ID：`startup`, `shutdown`, `reload`, `freeze`, `unfreeze`, `config_change`
 
 ### 4.4 @timer_interval
 
-定义定时任务，按固定间隔执行。
+定义周期执行的定时任务：
 
 ```python
-from plugin.sdk.plugin import timer_interval
-
 @timer_interval(
-    id="periodic_task",
-    seconds=60,                    # 每60秒执行一次
-    name="Periodic Task",
-    description="定期执行的任务",
-    auto_start=True               # 自动启动
+    id="cleanup",
+    seconds=3600,           # 每小时执行一次
+    name="清理任务",
+    auto_start=True          # 自动启动（默认 True）
 )
-def periodic_task(self, **_):
-    """定期执行的任务"""
-    self.logger.info("Running periodic task...")
-    
-    # 执行任务逻辑
-    result = self._do_work()
-    
-    # 推送消息
-    self.ctx.push_message(
-        source="periodic_task",
-        message_type="text",
-        description="定期任务完成",
-        priority=3,
-        content=f"任务结果: {result}",
-        metadata={"task_id": "periodic_001"}
-    )
-    
-    return {"executed": True}
+def cleanup(self, **_):
+    # 在独立线程中运行
+    return Ok({"cleaned": True})
 ```
 
-**重要说明：**
-- `auto_start=True` 时，插件加载后自动开始定时执行
-- 定时任务在独立线程中运行
-- 支持同步和异步函数
-- 任务异常不会中断定时器，会记录日志并继续
+> 注意：定时任务在独立线程中运行。异常会被记录但不会停止定时器。
 
 ### 4.5 @message
 
-定义消息事件处理器（用于处理来自主系统的消息）。
+定义来自主系统的消息处理器：
 
 ```python
-from plugin.sdk.plugin import message
-
 @message(
     id="handle_chat",
-    name="Handle Chat Message",
-    description="处理聊天消息",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "text": {"type": "string"},
-            "sender": {"type": "string"},
-            "timestamp": {"type": "string"}
-        }
-    },
-    source="chat",                # 消息来源过滤
-    auto_start=True               # 自动订阅
+    source="chat",           # 按消息来源过滤
+    auto_start=True
 )
-def handle_chat(self, text: str, sender: str, timestamp: str, **_):
-    """处理聊天消息"""
-    self.logger.info(f"Received message from {sender}: {text}")
-    
-    # 处理消息逻辑
-    response = self._process_message(text)
-    
-    # 推送回复
-    self.ctx.push_message(
-        source="chat_handler",
-        message_type="text",
-        description="消息回复",
-        priority=5,
-        content=response,
-        metadata={"original_sender": sender}
-    )
-    
-    return {"handled": True}
+def handle_chat(self, text: str, sender: str, **_):
+    return Ok({"handled": True})
 ```
 
 ### 4.6 @on_event
 
-通用事件装饰器，可以定义自定义事件类型。
+通用事件处理器：
 
 ```python
-from plugin.sdk.plugin import on_event
-
 @on_event(
-    event_type="custom_event",    # 自定义事件类型
-    id="my_custom_handler",
-    name="Custom Event Handler",
-    description="处理自定义事件",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "event_data": {"type": "string"}
-        }
-    },
-    kind="hook",
-    auto_start=False,
-    extra={
-        "category": "custom",
-        "version": "1.0"
-    }
+    event_type="custom_event",
+    id="my_handler",
+    kind="hook"
 )
 def custom_handler(self, event_data: str, **_):
-    """处理自定义事件"""
-    # 处理逻辑
-    return {"processed": True}
+    return Ok({"processed": True})
+```
+
+### 4.7 @custom_event
+
+带触发方式控制的事件处理器：
+
+```python
+@custom_event(
+    event_type="data_refresh",
+    id="refresh_handler",
+    trigger_method="message",
+    auto_start=False
+)
+def on_refresh(self, source: str, **_):
+    return Ok({"refreshed": True})
+```
+
+### 4.8 Hook 装饰器（AOP 面向切面）
+
+Hook 装饰器提供面向切面编程能力，可以拦截入口点的执行。
+
+#### @before_entry — 前置钩子
+
+```python
+@before_entry(target="process", priority=0)
+def validate_input(self, *, args, entry_id, **_):
+    if not args.get("data"):
+        return Err(SdkError("data 是必填的"))
+    # 返回 None 继续执行，返回 Err 中止
+```
+
+#### @after_entry — 后置钩子
+
+```python
+@after_entry(target="process", priority=0)
+def log_result(self, *, result, entry_id, **_):
+    self.logger.info(f"入口 {entry_id} 返回: {result}")
+    # 返回 None 保留原结果，返回新值替换
+```
+
+#### @around_entry — 环绕钩子
+
+```python
+@around_entry(target="process", priority=0)
+async def timing_wrapper(self, *, proceed, args, **_):
+    import time
+    start = time.time()
+    result = await proceed(**args)
+    elapsed = time.time() - start
+    self.logger.info(f"耗时 {elapsed:.2f}s")
+    return result
+```
+
+#### @replace_entry — 替换钩子
+
+```python
+@replace_entry(target="old_entry", priority=0)
+def new_implementation(self, **kwargs):
+    return Ok({"replaced": True})
+```
+
+#### Hook 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `target` | `str` | `"*"` | 目标入口 ID（`"*"` = 所有入口） |
+| `priority` | `int` | `0` | 执行顺序（越小越先） |
+| `condition` | `str` | `None` | 可选条件表达式 |
+
+### 4.9 命名空间风格：`plugin.*`
+
+更简洁的替代语法：
+
+```python
+from plugin.sdk.plugin import plugin
+
+@plugin.entry(id="greet", description="打招呼")
+def greet(self, name: str = "World", **_):
+    return Ok({"message": f"Hello, {name}!"})
+
+@plugin.lifecycle(id="startup")
+def on_startup(self, **_):
+    return Ok({"status": "ready"})
+
+@plugin.hook(target="greet", timing="before")
+def validate(self, *, args, **_):
+    pass
+
+@plugin.timer(id="heartbeat", seconds=60)
+def heartbeat(self, **_):
+    return Ok({"alive": True})
 ```
 
 ---
 
-## 第五章：上下文对象
+## 第五章：上下文与运行时
 
-### 5.1 日志记录
+### 5.1 PluginContext (ctx)
+
+`ctx` 对象在构造时由宿主注入：
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `ctx.plugin_id` | `str` | 插件标识符 |
+| `ctx.config_path` | `Path` | `plugin.toml` 的路径 |
+| `ctx.logger` | `Logger` | 日志实例 |
+| `ctx.bus` | `Bus` | 事件总线 |
+| `ctx.metadata` | `dict` | 插件元数据 |
+
+### 5.2 事件总线 (Bus)
 
 ```python
-class MyPlugin(NekoPluginBase):
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-    
-    @plugin_entry(id="example")
-    def example(self, **_):
-        # 不同级别的日志
-        self.logger.debug("调试信息")
-        self.logger.info("一般信息")
-        self.logger.warning("警告信息")
-        self.logger.error("错误信息")
-        self.logger.exception("异常信息（包含堆栈）")
-        
-        return {"status": "ok"}
+# 发布事件
+self.bus.emit("my_event", {"key": "value"})
+
+# 订阅事件（通常在 startup 中）
+self.bus.on("some_event", self._handle_event)
 ```
 
-### 5.2 状态管理
+### 5.3 PluginConfig
+
+结构化配置，支持多环境 Profile：
 
 ```python
-@plugin_entry(id="long_task")
-def long_task(self, **_):
-    """长时间运行的任务"""
-    total_steps = 100
-    
-    for i in range(total_steps):
-        # 执行步骤
-        self._do_step(i)
-        
-        # 更新状态
-        self.report_status({
-            "status": "processing",
-            "current_step": i + 1,
-            "total_steps": total_steps,
-            "progress": (i + 1) / total_steps * 100,
-            "message": f"处理中: {i + 1}/{total_steps}"
-        })
-    
-    # 完成
-    self.report_status({
-        "status": "completed",
-        "message": "任务完成"
-    })
-    
-    return {"completed": True}
-```
+from plugin.sdk.plugin import PluginConfig
 
-### 5.3 消息推送
-
-#### 5.3.1 文本消息
-
-```python
-self.ctx.push_message(
-    source="my_feature",
-    message_type="text",
-    description="操作完成",
-    priority=5,
-    content="任务已成功完成",
-    metadata={
-        "task_id": "123",
-        "duration": 10.5,
-        "result": "success"
-    }
-)
-```
-
-#### 5.3.2 URL 消息
-
-```python
-self.ctx.push_message(
-    source="web_scraper",
-    message_type="url",
-    description="发现新文章",
-    priority=7,
-    content="https://example.com/article/123",
-    metadata={
-        "title": "Example Article",
-        "author": "John Doe",
-        "published_at": "2024-01-01T00:00:00Z"
-    }
-)
-```
-
-#### 5.3.3 二进制数据
-
-```python
-# 小文件直接传输
-with open("image.png", "rb") as f:
-    image_data = f.read()
-
-self.ctx.push_message(
-    source="image_processor",
-    message_type="binary",
-    description="处理后的图片",
-    priority=6,
-    binary_data=image_data,
-    metadata={
-        "format": "png",
-        "width": 1920,
-        "height": 1080,
-        "size": len(image_data)
-    }
-)
-
-# 大文件使用URL引用
-self.ctx.push_message(
-    source="file_processor",
-    message_type="binary_url",
-    description="大文件处理完成",
-    priority=8,
-    binary_url="https://storage.example.com/files/large_file.zip",
-    metadata={
-        "size": 1024 * 1024 * 100,  # 100MB
-        "format": "zip",
-        "checksum": "abc123..."
-    }
-)
-```
-
-#### 5.3.4 优先级说明
-
-优先级范围：0-10
-- `0-2`: 低优先级（信息性消息）
-- `3-5`: 中优先级（一般通知）
-- `6-8`: 高优先级（重要通知）
-- `9-10`: 紧急优先级（需要立即处理）
-
-### 5.4 配置文件访问
-
-```python
-from pathlib import Path
-import json
-
-class MyPlugin(NekoPluginBase):
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        self.config_path = ctx.config_path
-        self._load_config()
-    
-    def _load_config(self):
-        """加载插件配置"""
-        # config_path 指向 plugin.toml 文件
-        config_dir = self.config_path.parent
-        
-        # 可以读取额外的配置文件
-        custom_config_path = config_dir / "config.json"
-        if custom_config_path.exists():
-            with open(custom_config_path) as f:
-                self.custom_config = json.load(f)
-        else:
-            self.custom_config = {}
+config = PluginConfig(self.ctx)
+timeout = config.get("timeout", default=30)
 ```
 
 ---
 
 ## 第六章：完整示例
 
-### 6.1 示例 1：文件处理插件
+### 6.1 带 Result 类型的基础插件
 
 ```python
-"""
-文件处理插件示例
-功能：处理文件上传、转换、下载
-"""
-import os
-import shutil
-from pathlib import Path
-from typing import Any, Optional
-from plugin.sdk.plugin import NekoPluginBase
+from typing import Any
 from plugin.sdk.plugin import (
-    neko_plugin,
-    plugin_entry,
-    lifecycle,
-    timer_interval
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
-class FileProcessorPlugin(NekoPluginBase):
-    """文件处理插件"""
-    
+class GreeterPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.work_dir = Path("/tmp/file_processor")
-        self.work_dir.mkdir(exist_ok=True)
-        self.processed_count = 0
-    
+        self.greet_count = 0
+
     @lifecycle(id="startup")
-    def startup(self, **_):
-        """启动时初始化"""
-        self.logger.info("FileProcessorPlugin starting...")
-        self.report_status({
-            "status": "initialized",
-            "work_dir": str(self.work_dir)
-        })
-        return {"status": "ready"}
-    
-    @lifecycle(id="shutdown")
-    def shutdown(self, **_):
-        """关闭时清理"""
-        self.logger.info("FileProcessorPlugin shutting down...")
-        
-        # 清理临时文件
-        if self.work_dir.exists():
-            shutil.rmtree(self.work_dir)
-        
-        self.report_status({"status": "stopped"})
-        return {"status": "stopped"}
-    
+    def on_startup(self, **_):
+        self.logger.info("GreeterPlugin 就绪")
+        return Ok({"status": "ready"})
+
     @plugin_entry(
-        id="process_file",
-        name="Process File",
-        description="处理上传的文件",
+        id="greet",
+        name="问候",
+        description="根据名字打招呼",
         input_schema={
             "type": "object",
             "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "文件路径"
-                },
-                "operation": {
-                    "type": "string",
-                    "enum": ["compress", "extract", "convert"],
-                    "description": "操作类型"
-                },
-                "options": {
-                    "type": "object",
-                    "properties": {
-                        "format": {"type": "string"},
-                        "quality": {"type": "integer", "minimum": 1, "maximum": 100}
-                    }
-                }
-            },
-            "required": ["file_path", "operation"]
+                "name": {"type": "string", "default": "World"}
+            }
         }
     )
-    def process_file(
-        self,
-        file_path: str,
-        operation: str,
-        options: Optional[dict] = None,
-        **_
-    ):
-        """处理文件"""
-        options = options or {}
-        
-        self.logger.info(f"Processing file: {file_path}, operation: {operation}")
-        
-        # 更新状态
-        self.report_status({
-            "status": "processing",
-            "file": file_path,
-            "operation": operation
+    def greet(self, name: str = "World", **_):
+        if not name.strip():
+            return Err(SdkError("名字不能为空"))
+
+        self.greet_count += 1
+        return Ok({
+            "message": f"Hello, {name}!",
+            "total_greets": self.greet_count,
         })
-        
-        try:
-            # 执行处理
-            if operation == "compress":
-                result = self._compress_file(file_path, options)
-            elif operation == "extract":
-                result = self._extract_file(file_path, options)
-            elif operation == "convert":
-                result = self._convert_file(file_path, options)
-            else:
-                raise ValueError(f"Unknown operation: {operation}")
-            
-            self.processed_count += 1
-            
-            # 推送成功消息
-            self.ctx.push_message(
-                source="file_processor",
-                message_type="text",
-                description="文件处理完成",
-                priority=6,
-                content=f"文件 {file_path} 处理成功",
-                metadata={
-                    "operation": operation,
-                    "result_path": result.get("output_path"),
-                    "size": result.get("size")
-                }
-            )
-            
-            # 更新状态
-            self.report_status({
-                "status": "completed",
-                "processed_count": self.processed_count
-            })
-            
-            return {
-                "success": True,
-                "result": result
-            }
-            
-        except Exception as e:
-            self.logger.exception(f"Error processing file: {e}")
-            
-            # 推送错误消息
-            self.ctx.push_message(
-                source="file_processor",
-                message_type="text",
-                description="文件处理失败",
-                priority=9,  # 高优先级错误
-                content=f"处理文件 {file_path} 时出错: {str(e)}",
-                metadata={
-                    "operation": operation,
-                    "error": str(e)
-                }
-            )
-            
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    def _compress_file(self, file_path: str, options: dict) -> dict:
-        """压缩文件"""
-        # 实现压缩逻辑
-        output_path = f"{file_path}.zip"
-        # ... 压缩代码 ...
-        return {
-            "output_path": output_path,
-            "size": os.path.getsize(output_path)
-        }
-    
-    def _extract_file(self, file_path: str, options: dict) -> dict:
-        """解压文件"""
-        # 实现解压逻辑
-        output_dir = f"{file_path}_extracted"
-        # ... 解压代码 ...
-        return {
-            "output_path": output_dir,
-            "size": 0
-        }
-    
-    def _convert_file(self, file_path: str, options: dict) -> dict:
-        """转换文件"""
-        # 实现转换逻辑
-        format = options.get("format", "pdf")
-        output_path = f"{file_path}.{format}"
-        # ... 转换代码 ...
-        return {
-            "output_path": output_path,
-            "size": os.path.getsize(output_path)
-        }
-    
-    @timer_interval(
-        id="cleanup_temp_files",
-        seconds=3600,  # 每小时执行一次
-        name="Cleanup Temp Files",
-        description="清理临时文件"
-    )
-    def cleanup_temp_files(self, **_):
-        """定期清理临时文件"""
-        self.logger.info("Cleaning up temporary files...")
-        
-        # 清理超过24小时的文件
-        # ... 清理逻辑 ...
-        
-        self.ctx.push_message(
-            source="file_processor",
-            message_type="text",
-            description="临时文件清理完成",
-            priority=2,
-            content="已清理临时文件",
-            metadata={"cleaned_count": 10}
-        )
-        
-        return {"cleaned": True}
 ```
 
-**配置文件 `plugin.toml`:**
-```toml
-[plugin]
-id = "file_processor"
-name = "File Processor Plugin"
-description = "处理文件上传、转换、下载"
-version = "1.0.0"
-entry = "plugins.file_processor:FileProcessorPlugin"
-```
-
-### 6.2 示例 2：Web API 客户端插件
+### 6.2 异步 API 客户端 + 跨插件调用
 
 ```python
-"""
-Web API 客户端插件示例
-功能：调用外部API、处理响应、错误重试
-"""
-import asyncio
 import aiohttp
-from typing import Any, Optional, Dict
-from plugin.sdk.plugin import NekoPluginBase
-from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle
+from typing import Any, Optional
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    Ok, Err, SdkError, unwrap_or,
+)
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
-    """API客户端插件"""
-    
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
         self.session: Optional[aiohttp.ClientSession] = None
-        self.base_url = "https://api.example.com"
-    
+
     @lifecycle(id="startup")
     async def startup(self, **_):
-        """启动时创建HTTP会话"""
-        self.logger.info("APIClientPlugin starting...")
         self.session = aiohttp.ClientSession()
-        self.report_status({"status": "ready"})
-        return {"status": "ready"}
-    
+        return Ok({"status": "ready"})
+
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
-        """关闭时清理会话"""
-        self.logger.info("APIClientPlugin shutting down...")
         if self.session:
             await self.session.close()
-        self.report_status({"status": "stopped"})
-        return {"status": "stopped"}
-    
-    @plugin_entry(
-        id="fetch_data",
-        name="Fetch Data",
-        description="从API获取数据",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoint": {
-                    "type": "string",
-                    "description": "API端点路径"
-                },
-                "method": {
-                    "type": "string",
-                    "enum": ["GET", "POST", "PUT", "DELETE"],
-                    "default": "GET"
-                },
-                "params": {
-                    "type": "object",
-                    "description": "查询参数"
-                },
-                "data": {
-                    "type": "object",
-                    "description": "请求体数据"
-                },
-                "headers": {
-                    "type": "object",
-                    "description": "请求头"
-                }
-            },
-            "required": ["endpoint"]
-        }
-    )
-    async def fetch_data(
-        self,
-        endpoint: str,
-        method: str = "GET",
-        params: Optional[Dict] = None,
-        data: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        **_
-    ):
-        """从API获取数据"""
-        if not self.session:
-            raise RuntimeError("Session not initialized")
-        
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
-        self.logger.info(f"Fetching data from {url}")
-        
-        # 更新状态
-        self.report_status({
-            "status": "fetching",
-            "url": url,
-            "method": method
-        })
-        
+        return Ok({"status": "stopped"})
+
+    @plugin_entry(id="fetch")
+    async def fetch(self, endpoint: str, method: str = "GET", **_):
         try:
-            async with self.session.request(
-                method=method,
-                url=url,
-                params=params,
-                json=data,
-                headers=headers
-            ) as response:
-                # 检查状态码
-                if response.status >= 400:
-                    error_text = await response.text()
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=error_text
-                    )
-                
-                # 解析响应
-                result = await response.json()
-                
-                # 推送成功消息
-                self.ctx.push_message(
-                    source="api_client",
-                    message_type="text",
-                    description="API调用成功",
-                    priority=5,
-                    content=f"成功获取数据: {endpoint}",
-                    metadata={
-                        "url": url,
-                        "status": response.status,
-                        "data_size": len(str(result))
-                    }
-                )
-                
-                # 更新状态
-                self.report_status({
-                    "status": "completed",
-                    "endpoint": endpoint
-                })
-                
-                return {
-                    "success": True,
-                    "data": result,
-                    "status": response.status
-                }
-                
-        except aiohttp.ClientError as e:
-            self.logger.error(f"API request failed: {e}")
-            
-            # 推送错误消息
-            self.ctx.push_message(
-                source="api_client",
-                message_type="text",
-                description="API调用失败",
-                priority=9,
-                content=f"API调用失败: {endpoint} - {str(e)}",
-                metadata={
-                    "url": url,
-                    "error": str(e)
-                }
-            )
-            
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    @plugin_entry(
-        id="batch_fetch",
-        name="Batch Fetch",
-        description="批量获取数据",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoints": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "端点列表"
-                },
-                "concurrent": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "default": 3,
-                    "description": "并发数量"
-                }
-            },
-            "required": ["endpoints"]
-        }
-    )
-    async def batch_fetch(
-        self,
-        endpoints: list,
-        concurrent: int = 3,
-        **_
-    ):
-        """批量获取数据"""
-        self.logger.info(f"Batch fetching {len(endpoints)} endpoints")
-        
-        # 创建信号量限制并发
-        semaphore = asyncio.Semaphore(concurrent)
-        
-        async def fetch_with_limit(endpoint: str):
-            async with semaphore:
-                return await self.fetch_data(endpoint)
-        
-        # 并发执行
-        tasks = [fetch_with_limit(ep) for ep in endpoints]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 处理结果
-        success_count = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-        
-        self.ctx.push_message(
-            source="api_client",
-            message_type="text",
-            description="批量获取完成",
-            priority=6,
-            content=f"批量获取完成: {success_count}/{len(endpoints)} 成功",
-            metadata={
-                "total": len(endpoints),
-                "success": success_count,
-                "failed": len(endpoints) - success_count
-            }
-        )
-        
-        return {
-            "success": True,
-            "results": results,
-            "success_count": success_count,
-            "total_count": len(endpoints)
-        }
+            async with self.session.request(method, endpoint) as response:
+                data = await response.json()
+                return Ok({"status": response.status, "data": data})
+        except Exception as e:
+            return Err(SdkError(f"请求失败: {e}"))
+
+    @plugin_entry(id="fetch_with_cache")
+    async def fetch_with_cache(self, endpoint: str, **_):
+        # 跨插件调用：先查缓存插件
+        cached = await self.plugins.call_entry("cache_plugin:get", {"key": endpoint})
+        cached_value = unwrap_or(cached, None)
+        if cached_value and cached_value.get("hit"):
+            return Ok(cached_value["data"])
+
+        result = await self.fetch(endpoint=endpoint)
+        if isinstance(result, Ok):
+            await self.plugins.call_entry("cache_plugin:set", {"key": endpoint, "value": result.value})
+        return result
 ```
 
-### 6.3 示例 3：数据采集插件
+### 6.3 带 Hook 和定时器的插件
 
 ```python
-"""
-数据采集插件示例
-功能：定时采集数据、存储、推送通知
-"""
-import json
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, List, Dict
-from plugin.sdk.plugin import NekoPluginBase
+from typing import Any
 from plugin.sdk.plugin import (
-    neko_plugin,
-    plugin_entry,
-    lifecycle,
-    timer_interval
+    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    timer_interval, before_entry, after_entry,
+    Ok, Err, SdkError,
 )
 
 @neko_plugin
-class DataCollectorPlugin(NekoPluginBase):
-    """数据采集插件"""
-    
+class MonitoredPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         self.logger = ctx.logger
-        self.data_dir = Path("/tmp/data_collector")
-        self.data_dir.mkdir(exist_ok=True)
-        self.collection_count = 0
-        self.last_collection_time: Optional[datetime] = None
-    
+        self.call_stats: dict[str, int] = {}
+
     @lifecycle(id="startup")
-    def startup(self, **_):
-        """启动时初始化"""
-        self.logger.info("DataCollectorPlugin starting...")
+    def on_startup(self, **_):
+        return Ok({"status": "ready"})
+
+    @before_entry(target="*")
+    def count_calls(self, *, entry_id, **_):
+        """统计每个入口点的调用次数"""
+        self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
+
+    @after_entry(target="*")
+    def log_results(self, *, entry_id, result, **_):
+        """记录每个入口点的返回结果"""
+        self.logger.info(f"[{entry_id}] result={result}")
+
+    @plugin_entry(id="process", description="处理数据")
+    def process(self, data: str, **_):
+        return Ok({"processed": data.upper()})
+
+    @plugin_entry(id="stats", description="获取调用统计")
+    def stats(self, **_):
+        return Ok({"stats": dict(self.call_stats)})
+
+    @timer_interval(id="health_check", seconds=300, auto_start=True)
+    def health_check(self, **_):
         self.report_status({
-            "status": "initialized",
-            "data_dir": str(self.data_dir)
+            "status": "healthy",
+            "total_calls": sum(self.call_stats.values()),
         })
-        return {"status": "ready"}
-    
-    @plugin_entry(
-        id="collect",
-        name="Collect Data",
-        description="采集数据",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "数据源"
-                },
-                "filters": {
-                    "type": "object",
-                    "description": "过滤条件"
-                }
-            },
-            "required": ["source"]
-        }
-    )
-    def collect(self, source: str, filters: Optional[Dict] = None, **_):
-        """采集数据"""
-        self.logger.info(f"Collecting data from source: {source}")
-        
-        filters = filters or {}
-        
-        # 更新状态
-        self.report_status({
-            "status": "collecting",
-            "source": source
-        })
-        
-        try:
-            # 模拟数据采集
-            data = self._fetch_data(source, filters)
-            
-            # 保存数据
-            timestamp = datetime.now().isoformat()
-            filename = f"{source}_{timestamp}.json"
-            filepath = self.data_dir / filename
-            
-            with open(filepath, 'w') as f:
-                json.dump(data, f, indent=2)
-            
-            self.collection_count += 1
-            self.last_collection_time = datetime.now()
-            
-            # 推送消息
-            self.ctx.push_message(
-                source="data_collector",
-                message_type="text",
-                description="数据采集完成",
-                priority=6,
-                content=f"从 {source} 采集了 {len(data)} 条数据",
-                metadata={
-                    "source": source,
-                    "count": len(data),
-                    "file": filename,
-                    "timestamp": timestamp
-                }
-            )
-            
-            # 更新状态
-            self.report_status({
-                "status": "completed",
-                "collection_count": self.collection_count,
-                "last_collection": timestamp
-            })
-            
-            return {
-                "success": True,
-                "data_count": len(data),
-                "file": filename,
-                "timestamp": timestamp
-            }
-            
-        except Exception as e:
-            self.logger.exception(f"Error collecting data: {e}")
-            
-            self.ctx.push_message(
-                source="data_collector",
-                message_type="text",
-                description="数据采集失败",
-                priority=9,
-                content=f"从 {source} 采集数据失败: {str(e)}",
-                metadata={
-                    "source": source,
-                    "error": str(e)
-                }
-            )
-            
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    def _fetch_data(self, source: str, filters: Dict) -> List[Dict]:
-        """获取数据（模拟）"""
-        # 实际实现中，这里会调用真实的API或数据库
-        return [
-            {"id": 1, "name": "Item 1", "value": 100},
-            {"id": 2, "name": "Item 2", "value": 200},
-        ]
-    
-    @timer_interval(
-        id="auto_collect",
-        seconds=300,  # 每5分钟执行一次
-        name="Auto Collect",
-        description="自动采集数据"
-    )
-    def auto_collect(self, **_):
-        """自动采集数据"""
-        self.logger.info("Running auto collection...")
-        
-        # 从配置中获取数据源列表
-        sources = ["source1", "source2", "source3"]
-        
-        results = []
-        for source in sources:
-            try:
-                result = self.collect(source=source)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Auto collect failed for {source}: {e}")
-        
-        success_count = sum(1 for r in results if r.get("success"))
-        
-        self.ctx.push_message(
-            source="data_collector",
-            message_type="text",
-            description="自动采集完成",
-            priority=4,
-            content=f"自动采集完成: {success_count}/{len(sources)} 成功",
-            metadata={
-                "sources": sources,
-                "success_count": success_count
-            }
-        )
-        
-        return {"collected": success_count, "total": len(sources)}
-    
-    @plugin_entry(
-        id="get_stats",
-        name="Get Statistics",
-        description="获取采集统计信息"
-    )
-    def get_stats(self, **_):
-        """获取统计信息"""
-        # 统计文件数量
-        json_files = list(self.data_dir.glob("*.json"))
-        
-        return {
-            "collection_count": self.collection_count,
-            "file_count": len(json_files),
-            "last_collection": self.last_collection_time.isoformat() if self.last_collection_time else None,
-            "data_dir": str(self.data_dir)
-        }
+        return Ok({"healthy": True})
+```
+
+### 6.4 带持久化存储的插件
+
+```python
+from typing import Any
+from plugin.sdk.plugin import (
+    NekoPluginBase, neko_plugin, plugin_entry,
+    PluginStore, Ok, Err, SdkError,
+)
+
+@neko_plugin
+class NotesPlugin(NekoPluginBase):
+    def __init__(self, ctx: Any):
+        super().__init__(ctx)
+        self.store = PluginStore(ctx)
+
+    @plugin_entry(id="save_note")
+    async def save_note(self, title: str, content: str, **_):
+        await self.store.set(f"note:{title}", {"title": title, "content": content})
+        return Ok({"saved": title})
+
+    @plugin_entry(id="get_note")
+    async def get_note(self, title: str, **_):
+        note = await self.store.get(f"note:{title}")
+        if note is None:
+            return Err(SdkError(f"笔记未找到: {title}"))
+        return Ok(note)
 ```
 
 ---
 
-## 第七章：高级主题
+## 第七章：Extension 扩展开发
 
-### 7.1 异步编程
+### 7.1 什么是 Extension？
 
-插件支持异步函数，适合I/O密集型操作：
+Extension 为现有插件添加路由和钩子，无需修改原插件代码。它运行在宿主插件的进程内（不是独立进程）。
+
+### 7.2 何时使用 Extension？
+
+- 想给现有插件添加新命令
+- 想钩住另一个插件的入口点
+- 想实现插件内的模块化代码组织
+
+### 7.3 创建 Extension
 
 ```python
-import asyncio
-import aiohttp
+from plugin.sdk.extension import (
+    NekoExtensionBase, extension, extension_entry, extension_hook,
+    Ok, Err,
+)
 
-@plugin_entry(id="async_task")
-async def async_task(self, url: str, **_):
-    """异步任务示例"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            data = await response.json()
-            return {"data": data}
+@extension
+class MyExtension(NekoExtensionBase):
+    """为宿主插件添加额外命令"""
 
-# 并发执行多个异步任务
-@plugin_entry(id="parallel_tasks")
-async def parallel_tasks(self, urls: list, **_):
-    """并行执行多个异步任务"""
-    async def fetch_url(url: str):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                return await response.json()
-    
-    tasks = [fetch_url(url) for url in urls]
-    results = await asyncio.gather(*tasks)
-    
-    return {"results": results}
+    @extension_entry(id="extra_command", description="扩展添加的额外命令")
+    def extra_command(self, param: str = "", **_):
+        return Ok({"extended": True, "param": param})
+
+    @extension_hook(target="original_entry", timing="before")
+    def validate(self, *, args, **_):
+        # 在宿主插件的 "original_entry" 之前运行
+        if not args.get("required_field"):
+            return Err("缺少 required_field")
 ```
 
-### 7.2 线程安全
+### 7.4 Extension 工作原理
 
-如果插件使用多线程，需要注意线程安全：
+1. 宿主在配置中注册 Extension
+2. 启动时，宿主将 Extension 作为 `PluginRouter` 实例注入
+3. Extension 的入口点在宿主插件的命名空间下可访问
+4. Extension 的钩子可以拦截宿主的入口点
+
+### 7.5 Extension SDK 导出
+
+从 `plugin.sdk.extension` 导入：
+
+- `NekoExtensionBase` — Extension 基类
+- `extension` — 类装饰器
+- `extension_entry` — 定义入口点
+- `extension_hook` — 定义钩子
+- `Ok`, `Err`, `Result` — Result 类型
+- `PluginRouter` — 路由器
+- `PluginConfig` — 配置
+- `CallChain`, `AsyncCallChain` — 调用链追踪
+- 完整的日志和错误处理工具
+
+---
+
+## 第八章：Adapter 适配器开发
+
+### 8.1 什么是 Adapter？
+
+Adapter 将外部协议（MCP、NoneBot 等）的请求翻译成内部插件调用。它实现了**网关管线 (Gateway Pipeline)** 模式。
+
+### 8.2 何时使用 Adapter？
+
+- 想通过 MCP（Model Context Protocol）暴露 N.E.K.O 插件
+- 想接收 NoneBot 消息并路由到插件
+- 想桥接任何外部协议到插件系统
+
+### 8.3 网关管线架构
+
+```
+外部请求 → Normalizer → PolicyEngine → RouteEngine → PluginInvoker → ResponseSerializer → 外部响应
+```
+
+| 阶段 | 职责 |
+|------|------|
+| **Normalizer** | 将外部协议格式转换为 `GatewayRequest` |
+| **PolicyEngine** | 访问控制、速率限制、验证 |
+| **RouteEngine** | 决定调用哪个插件/入口 |
+| **PluginInvoker** | 执行实际的插件调用 |
+| **ResponseSerializer** | 将结果转换回外部协议格式 |
+
+### 8.4 创建 Adapter
+
+```python
+from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle, Ok, Err, SdkError
+from plugin.sdk.adapter import (
+    AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin,
+)
+from plugin.sdk.adapter.gateway_models import ExternalRequest
+
+@neko_plugin
+class MyProtocolAdapter(NekoAdapterPlugin):
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self.gateway = None
+
+    @lifecycle(id="startup")
+    async def startup(self, **_):
+        self.gateway = AdapterGatewayCore(
+            normalizer=MyNormalizer(),
+            policy_engine=DefaultPolicyEngine(),
+            route_engine=MyRouteEngine(),
+            invoker=MyInvoker(self.ctx),
+            serializer=MySerializer(),
+            logger=self.logger,
+        )
+        return Ok({"status": "ready"})
+
+    @plugin_entry(id="handle_request")
+    async def handle_request(self, raw_data: dict, **_):
+        external = ExternalRequest(protocol="my_protocol", raw=raw_data)
+        response = await self.gateway.process(external)
+        return Ok(response.to_dict())
+```
+
+### 8.5 Adapter 模式
+
+| 模式 | 说明 |
+|------|------|
+| `GATEWAY` | 完整管线处理 |
+| `ROUTER` | 仅路由（跳过策略） |
+| `BRIDGE` | 直接透传 |
+| `HYBRID` | 按请求选择模式 |
+
+### 8.6 内置参考：MCP Adapter
+
+参见 `plugin/plugins/mcp_adapter/` 获取完整的 Adapter 实现，演示了：
+- 自定义 Normalizer (`MCPRequestNormalizer`)
+- 自定义路由引擎 (`MCPRouteEngine`)
+- 自定义调用器 (`MCPPluginInvoker`)
+- 自定义序列化器 (`MCPResponseSerializer`)
+- 自定义传输层 (`MCPTransportAdapter`)
+
+### 8.7 Adapter SDK 导出
+
+从 `plugin.sdk.adapter` 导入：
+
+- `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` — 基础类
+- `NekoAdapterPlugin` — 适配器插件基类
+- `AdapterGatewayCore` — 网关核心
+- `DefaultPolicyEngine`, `DefaultRouteEngine` 等 — 默认管线组件
+- `ExternalRequest`, `GatewayRequest`, `GatewayResponse` 等 — 数据模型
+- 装饰器：`on_adapter_startup`, `on_adapter_shutdown`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message`
+
+---
+
+## 第九章：高级主题
+
+### 9.1 异步编程
+
+入口点可以是同步或异步的：
+
+```python
+# 同步入口（在线程池中运行）
+@plugin_entry(id="sync_task")
+def sync_task(self, **_):
+    return Ok({"result": "done"})
+
+# 异步入口（在事件循环中运行）
+@plugin_entry(id="async_task")
+async def async_task(self, url: str, **_):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return Ok({"data": await response.json()})
+```
+
+### 9.2 线程安全
+
+定时任务在独立线程中运行，保护共享状态：
 
 ```python
 import threading
-from typing import Any
 
 @neko_plugin
 class ThreadSafePlugin(NekoPluginBase):
-    def __init__(self, ctx: Any):
+    def __init__(self, ctx):
         super().__init__(ctx)
         self._lock = threading.Lock()
-        self._shared_data = {}
-    
-    @plugin_entry(id="update_data")
-    def update_data(self, key: str, value: Any, **_):
-        """线程安全地更新数据"""
+        self._counter = 0
+
+    @plugin_entry(id="increment")
+    def increment(self, **_):
         with self._lock:
-            self._shared_data[key] = value
-            return {"updated": True}
-    
-    @plugin_entry(id="get_data")
-    def get_data(self, key: str, **_):
-        """线程安全地获取数据"""
+            self._counter += 1
+            return Ok({"count": self._counter})
+
+    @timer_interval(id="report", seconds=60, auto_start=True)
+    def report(self, **_):
         with self._lock:
-            return {"value": self._shared_data.get(key)}
+            count = self._counter
+        self.report_status({"count": count})
 ```
 
-### 7.3 错误处理和重试
-
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@plugin_entry(id="retry_task")
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10)
-)
-def retry_task(self, url: str, **_):
-    """带重试的任务"""
-    import requests
-    response = requests.get(url)
-    response.raise_for_status()
-    return {"data": response.json()}
-```
-
-### 7.4 配置管理
+### 9.3 自定义配置
 
 ```python
 import json
-from pathlib import Path
 
 class ConfigurablePlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
-        self._load_config()
-    
-    def _load_config(self):
-        """加载配置"""
-        config_file = self.ctx.config_path.parent / "config.json"
+        config_file = self.config_dir / "config.json"
         if config_file.exists():
-            with open(config_file) as f:
-                self.config = json.load(f)
+            self.config = json.loads(config_file.read_text())
         else:
-            self.config = {
-                "default_value": "default",
-                "timeout": 30
-            }
-    
-    @plugin_entry(id="get_config")
-    def get_config(self, **_):
-        """获取配置"""
-        return {"config": self.config}
-    
-    @plugin_entry(id="update_config")
-    def update_config(self, key: str, value: Any, **_):
-        """更新配置"""
-        self.config[key] = value
-        # 保存到文件
-        config_file = self.ctx.config_path.parent / "config.json"
-        with open(config_file, 'w') as f:
-            json.dump(self.config, f, indent=2)
-        return {"updated": True}
+            self.config = {"timeout": 30}
 ```
 
-### 7.5 数据持久化
+### 9.4 SQLite 数据持久化
 
 ```python
 import sqlite3
-from pathlib import Path
 
 class PersistentPlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.db_path = ctx.config_path.parent / "data.db"
-        self._init_database()
-    
-    def _init_database(self):
-        """初始化数据库"""
+        self.db_path = self.data_path("records.db")
+        self.data_path().mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _init_db(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS records (
@@ -1630,466 +1094,152 @@ class PersistentPlugin(NekoPluginBase):
         """)
         conn.commit()
         conn.close()
-    
-    @plugin_entry(id="save_data")
-    def save_data(self, key: str, value: str, **_):
-        """保存数据"""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO records (key, value) VALUES (?, ?)",
-            (key, value)
-        )
-        conn.commit()
-        conn.close()
-        return {"saved": True}
-    
-    @plugin_entry(id="load_data")
-    def load_data(self, key: str, **_):
-        """加载数据"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute(
-            "SELECT value FROM records WHERE key = ?",
-            (key,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        return {"value": row[0] if row else None}
 ```
 
 ---
 
-## 第八章：最佳实践
+## 第十章：最佳实践
 
-### 8.1 代码组织
-
-```python
-# ✅ 好的实践：清晰的代码组织
-@neko_plugin
-class WellOrganizedPlugin(NekoPluginBase):
-    def __init__(self, ctx):
-        super().__init__(ctx)
-        self._initialize()
-    
-    def _initialize(self):
-        """初始化逻辑"""
-        pass
-    
-    def _helper_method(self):
-        """辅助方法（私有）"""
-        pass
-    
-    @plugin_entry(id="public_method")
-    def public_method(self, **_):
-        """公开方法"""
-        pass
-
-# ❌ 不好的实践：所有逻辑混在一起
-@neko_plugin
-class BadPlugin(NekoPluginBase):
-    @plugin_entry(id="everything")
-    def everything(self, **_):
-        # 所有逻辑都在这里，难以维护
-        pass
-```
-
-### 8.2 错误处理
+### 10.1 始终使用 Result 类型
 
 ```python
-# ✅ 好的实践：详细的错误处理
-@plugin_entry(id="robust_task")
-def robust_task(self, param: str, **_):
+@plugin_entry(id="process")
+def process(self, data: str, **_):
+    if not data:
+        return Err(SdkError("data 是必填的"))
     try:
-        # 参数验证
-        if not param:
-            raise ValueError("param is required")
-        
-        # 业务逻辑
-        result = self._do_work(param)
-        
-        return {"success": True, "result": result}
-        
-    except ValueError as e:
-        self.logger.warning(f"Validation error: {e}")
-        return {"success": False, "error": str(e)}
+        result = self._do_work(data)
+        return Ok({"result": result})
     except Exception as e:
-        self.logger.exception(f"Unexpected error: {e}")
-        return {"success": False, "error": "Internal error"}
-
-# ❌ 不好的实践：忽略错误
-@plugin_entry(id="fragile_task")
-def fragile_task(self, param: str, **_):
-    # 没有错误处理，任何异常都会导致插件崩溃
-    result = self._do_work(param)
-    return result
+        self.logger.exception(f"意外错误: {e}")
+        return Err(SdkError("内部错误"))
 ```
 
-### 8.3 日志记录
+### 10.2 合理使用日志级别
+
+| 级别 | 用途 |
+|------|------|
+| `debug` | 详细诊断信息 |
+| `info` | 正常运行里程碑 |
+| `warning` | 意外但已处理的情况 |
+| `error` | 需要关注的错误 |
+| `exception` | 带完整堆栈的错误 |
+
+### 10.3 跨插件调用错误处理
 
 ```python
-# ✅ 好的实践：适当的日志级别
-@plugin_entry(id="good_logging")
-def good_logging(self, **_):
-    self.logger.debug("Detailed debug information")
-    self.logger.info("General information")
-    self.logger.warning("Warning message")
-    self.logger.error("Error message")
-    self.logger.exception("Exception with stack trace")
+@plugin_entry(id="orchestrate")
+async def orchestrate(self, **_):
+    dep = await self.plugins.require_enabled("dependency_plugin")
+    if isinstance(dep, Err):
+        return Err(SdkError("依赖插件不可用"))
 
-# ❌ 不好的实践：过度或不足的日志
-@plugin_entry(id="bad_logging")
-def bad_logging(self, **_):
-    # 太多日志
-    self.logger.info("Step 1")
-    self.logger.info("Step 2")
-    self.logger.info("Step 3")
-    # ... 或者没有日志
+    result = await self.plugins.call_entry("dependency_plugin:do_work", {"key": "val"})
+    if isinstance(result, Err):
+        self.logger.error(f"跨插件调用失败: {result.error}")
+        return Err(SdkError("依赖调用失败"))
+
+    return Ok({"combined": result.value})
 ```
 
-### 8.4 状态管理
+### 10.4 优雅关闭
 
 ```python
-# ✅ 好的实践：及时更新状态
-@plugin_entry(id="good_status")
-def good_status(self, **_):
-    self.report_status({"status": "starting"})
-    
-    # 执行步骤1
-    self._step1()
-    self.report_status({"status": "step1_complete", "progress": 33})
-    
-    # 执行步骤2
-    self._step2()
-    self.report_status({"status": "step2_complete", "progress": 66})
-    
-    # 完成
-    self.report_status({"status": "completed", "progress": 100})
-    
-    return {"success": True}
-
-# ❌ 不好的实践：不更新状态
-@plugin_entry(id="bad_status")
-def bad_status(self, **_):
-    # 长时间运行但没有状态更新
-    self._long_running_task()
-    return {"success": True}
+@lifecycle(id="shutdown")
+async def on_shutdown(self, **_):
+    if self.session:
+        await self.session.close()
+    self.logger.info("插件优雅关闭")
+    return Ok({"status": "stopped"})
 ```
 
-### 8.5 输入验证
+### 10.5 使用路径工具
 
 ```python
-# ✅ 好的实践：详细的输入模式
-@plugin_entry(
-    id="validated",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "email": {
-                "type": "string",
-                "format": "email",
-                "description": "邮箱地址"
-            },
-            "age": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 150,
-                "description": "年龄"
-            }
-        },
-        "required": ["email", "age"]
-    }
-)
-def validated(self, email: str, age: int, **_):
-    # 输入已经通过验证
-    return {"email": email, "age": age}
+# 插件目录（plugin.toml 所在位置）
+config_file = self.config_dir / "config.json"
 
-# ❌ 不好的实践：没有输入验证
-@plugin_entry(id="unvalidated")
-def unvalidated(self, email: str, age: int, **_):
-    # 需要手动验证
-    if not email or "@" not in email:
-        raise ValueError("Invalid email")
-    if age < 0 or age > 150:
-        raise ValueError("Invalid age")
-    return {"email": email, "age": age}
+# 数据目录
+db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
+logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
 ```
+
+### 10.6 插件发布检查清单
+
+- [ ] 所有入口点返回 `Ok`/`Err`（不是裸 dict 或异常）
+- [ ] 实现了 `@lifecycle(id="startup")` 和 `@lifecycle(id="shutdown")`
+- [ ] 所有接受参数的入口点定义了 `input_schema`
+- [ ] 所有入口点签名包含 `**_`
+- [ ] 使用 Logger 而非 `print()`
+- [ ] 如果使用定时器，共享状态受锁保护
+- [ ] 跨插件调用处理了 `Err` 结果
+- [ ] `plugin.toml` 的 `entry` 路径和 SDK 版本约束正确
 
 ---
 
-## 第九章：常见问题
+## 第十一章：常见问题
 
-### Q1: 插件如何接收参数？
+### Q: 插件崩溃会影响主系统吗？
 
-A: 通过函数参数接收，系统会根据 `input_schema` 验证参数：
+不会。每个插件运行在独立进程中，崩溃不影响主系统或其他插件。
 
-```python
-@plugin_entry(
-    id="example",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"},
-            "age": {"type": "integer"}
-        }
-    }
-)
-def example(self, name: str, age: int, **_):
-    return {"name": name, "age": age}
-```
+### Q: 如何在插件间传递数据？
 
-### Q2: 如何处理可选参数？
+使用 `self.plugins.call_entry("target_plugin:entry_id", {"key": "value"})` 进行跨插件调用。所有返回值都是 `Result` 类型。
 
-A: 使用默认值：
+### Q: 同步还是异步？
 
-```python
-@plugin_entry(id="example")
-def example(self, required: str, optional: str = "default", **_):
-    return {"required": required, "optional": optional}
-```
+都支持。I/O 密集型操作建议用异步。同步入口点在线程池中运行，异步入口点在事件循环中运行。
 
-### Q3: 插件可以访问文件系统吗？
+### Q: 如何调试插件？
 
-A: 可以，但建议使用 `ctx.config_path.parent` 作为工作目录：
+1. 使用 `self.logger` 输出日志
+2. 使用 `self.report_status()` 报告状态
+3. 检查插件进程的标准输出/错误输出
 
-```python
-work_dir = self.ctx.config_path.parent / "data"
-work_dir.mkdir(exist_ok=True)
-```
+### Q: Plugin vs Extension vs Adapter 怎么选？
 
-### Q4: 如何实现插件间的通信？
+- **Plugin**：99% 的情况，写独立功能
+- **Extension**：给别人的插件加功能，不改原代码
+- **Adapter**：桥接外部协议（MCP、NoneBot 等）
 
-A: 目前通过主系统的消息队列，未来可能支持直接通信。
+### Q: `shared` 包是什么？我需要用它吗？
 
-### Q5: 定时任务可以动态启动/停止吗？
-
-A: 目前定时任务在插件加载时自动启动（如果 `auto_start=True`），未来可能支持动态控制。
-
-### Q6: 插件崩溃会影响主系统吗？
-
-A: 不会，每个插件运行在独立进程中，崩溃不会影响主系统。
-
-### Q7: 如何调试插件？
-
-A: 使用 `ctx.logger` 记录日志，查看插件进程的日志输出。
-
-### Q8: 插件可以访问网络吗？
-
-A: 可以，使用 `aiohttp` 或 `requests` 等库。
-
-### Q9: 如何测试插件？
-
-A: 可以编写单元测试，或者通过 HTTP API 调用插件进行测试。
-
-### Q10: 插件可以访问数据库吗？
-
-A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pymongo` 等）。
+`shared` 是 SDK 的内部实现细节，包含 Plugin/Extension/Adapter 三者共享的底层基础设施。**你不应该直接导入它。** 始终从 `plugin.sdk.plugin`、`plugin.sdk.extension` 或 `plugin.sdk.adapter` 导入。
 
 ---
 
-## 第十章：API 参考
+## 第十二章：API 参考
 
-### 10.1 装饰器
+### Plugin SDK (`plugin.sdk.plugin`)
 
-#### @neko_plugin
-```python
-@neko_plugin
-class MyPlugin(NekoPluginBase):
-    pass
-```
+| 类别 | 导出 |
+|------|------|
+| **基类** | `NekoPluginBase`, `PluginMeta` |
+| **装饰器** | `neko_plugin`, `plugin_entry`, `lifecycle`, `timer_interval`, `message`, `on_event`, `custom_event`, `hook`, `before_entry`, `after_entry`, `around_entry`, `replace_entry`, `plugin` |
+| **Result** | `Ok`, `Err`, `Result`, `unwrap`, `unwrap_or` |
+| **运行时** | `Plugins`, `PluginRouter`, `PluginConfig`, `PluginStore`, `SystemInfo`, `MemoryClient` |
+| **错误** | `SdkError`, `TransportError` |
+| **日志** | `get_plugin_logger` |
 
-#### @plugin_entry
-```python
-@plugin_entry(
-    id: str,                    # 入口点ID
-    name: str | None = None,    # 显示名称
-    description: str = "",      # 描述
-    input_schema: dict | None = None,  # JSON Schema
-    kind: str = "action",       # "action" | "service" | "hook"
-    auto_start: bool = False,  # 是否自动启动
-    extra: dict | None = None  # 额外元数据
-)
-```
+### Extension SDK (`plugin.sdk.extension`)
 
-#### @lifecycle
-```python
-@lifecycle(
-    id: Literal["startup", "shutdown", "reload"],  # 生命周期事件
-    name: str | None = None,
-    description: str = "",
-    extra: dict | None = None
-)
-```
+| 类别 | 导出 |
+|------|------|
+| **基类** | `NekoExtensionBase`, `ExtensionMeta` |
+| **装饰器** | `extension`, `extension_entry`, `extension_hook` |
+| **运行时** | `PluginRouter`, `PluginConfig`, `ExtensionRuntime`, `MessagePlaneTransport` |
+| **Result** | `Ok`, `Err`, `Result` + 完整 Result 工具集 |
+| **调用链** | `CallChain`, `AsyncCallChain` + 追踪工具 |
 
-#### @timer_interval
-```python
-@timer_interval(
-    id: str,                    # 定时器ID
-    seconds: int,              # 间隔秒数
-    name: str | None = None,
-    description: str = "",
-    auto_start: bool = True,    # 是否自动启动
-    extra: dict | None = None
-)
-```
+### Adapter SDK (`plugin.sdk.adapter`)
 
-#### @message
-```python
-@message(
-    id: str,                    # 消息处理器ID
-    name: str | None = None,
-    description: str = "",
-    input_schema: dict | None = None,
-    source: str | None = None,  # 消息来源过滤
-    extra: dict | None = None
-)
-```
-
-#### @on_event
-```python
-@on_event(
-    event_type: str,            # 事件类型
-    id: str,                    # 事件ID
-    name: str | None = None,
-    description: str = "",
-    input_schema: dict | None = None,
-    kind: str = "action",
-    auto_start: bool = False,
-    extra: dict | None = None
-)
-```
-
-### 10.2 基类方法
-
-#### NekoPluginBase.get_input_schema()
-```python
-def get_input_schema(self) -> Dict[str, Any]:
-    """获取输入模式"""
-```
-
-#### NekoPluginBase.report_status()
-```python
-def report_status(self, status: Dict[str, Any]) -> None:
-    """上报状态"""
-```
-
-#### NekoPluginBase.collect_entries()
-```python
-def collect_entries(self) -> Dict[str, EventHandler]:
-    """收集入口点"""
-```
-
-### 10.3 上下文方法
-
-#### PluginContext.update_status()
-```python
-def update_status(self, status: Dict[str, Any]) -> None:
-    """更新状态"""
-```
-
-#### PluginContext.push_message()
-```python
-def push_message(
-    self,
-    source: str,
-    message_type: str,          # "text" | "url" | "binary" | "binary_url"
-    description: str = "",
-    priority: int = 0,          # 0-10
-    content: Optional[str] = None,
-    binary_data: Optional[bytes] = None,
-    binary_url: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None
-) -> None:
-    """推送消息"""
-```
-
----
-
-## 附录
-
-### A. 插件配置文件示例
-
-```toml
-[plugin]
-id = "my_plugin"
-name = "My Plugin"
-description = "插件描述"
-version = "1.0.0"
-entry = "plugins.my_plugin:MyPlugin"
-
-# 可选：定义入口点（也可以在代码中使用装饰器定义）
-# [plugin.entries]
-# [[plugin.entries]]
-# id = "entry1"
-# name = "Entry 1"
-# description = "Entry 1 description"
-```
-
-### B. JSON Schema 参考
-
-```json
-{
-  "type": "object",
-  "properties": {
-    "string_field": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 100,
-      "pattern": "^[a-z]+$"
-    },
-    "number_field": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 100
-    },
-    "integer_field": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 100
-    },
-    "boolean_field": {
-      "type": "boolean"
-    },
-    "array_field": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "minItems": 0,
-      "maxItems": 10
-    },
-    "object_field": {
-      "type": "object",
-      "properties": {
-        "nested": {"type": "string"}
-      }
-    },
-    "enum_field": {
-      "type": "string",
-      "enum": ["option1", "option2", "option3"]
-    }
-  },
-  "required": ["string_field", "number_field"]
-}
-```
-
-### C. 消息类型说明
-
-- **text**: 纯文本消息
-- **url**: URL链接消息
-- **binary**: 二进制数据（小文件，直接传输）
-- **binary_url**: 二进制文件URL（大文件，使用URL引用）
-
-### D. 优先级说明
-
-- **0-2**: 低优先级（信息性）
-- **3-5**: 中优先级（一般通知）
-- **6-8**: 高优先级（重要通知）
-- **9-10**: 紧急优先级（需要立即处理）
-
----
-
-## 结语
-
-这份教程涵盖了 N.E.K.O 插件系统开发的所有核心内容。如果你有任何问题或建议，欢迎反馈！
-
-**祝你开发愉快！** 🚀
-
+| 类别 | 导出 |
+|------|------|
+| **基类** | `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` |
+| **插件基类** | `NekoAdapterPlugin` |
+| **网关** | `AdapterGatewayCore`, `DefaultPolicyEngine`, `DefaultRouteEngine`, `DefaultRequestNormalizer`, `DefaultResponseSerializer`, `CallablePluginInvoker` |
+| **数据模型** | `ExternalRequest`, `GatewayRequest`, `GatewayResponse`, `GatewayAction`, `GatewayError`, `RouteDecision`, `RouteMode` |
+| **协议** | `TransportAdapter`, `RequestNormalizer`, `PolicyEngine`, `RouteEngine`, `PluginInvoker`, `ResponseSerializer` |
+| **装饰器** | `on_adapter_startup`, `on_adapter_shutdown`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message` |
+| **类型** | `Protocol`, `RouteTarget`, `AdapterMessage`, `AdapterResponse`, `RouteRule` |

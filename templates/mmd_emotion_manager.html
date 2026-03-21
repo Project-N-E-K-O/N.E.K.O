@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="mmdEmotionManager.title">MMD 情感映射管理器 - Project N.E.K.O.</title>
+
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
+
+    <!-- 样式文件 -->
+    <link rel="stylesheet" href="/static/css/mmd_emotion_manager.css">
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <script src="/static/theme-manager.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1 data-text="MMD 情感映射管理器" data-i18n="mmdEmotionManager.pageTitle">MMD 情感映射管理器</h1>
+                <p data-i18n="mmdEmotionManager.subtitle">配置不同情绪对应的 MorphTarget 映射</p>
+            </div>
+            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="mmdEmotionManager.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="mmdEmotionManager.close">
+            </button>
+        </div>
+
+        <div class="container-content">
+            <div class="info-box">
+                <strong data-i18n="mmdEmotionManager.tip">提示：</strong><span data-i18n="mmdEmotionManager.tipContent">MMD模型的表情使用 MorphTarget（モーフ）实现。
+                每个模型的 Morph 名称可能不同（通常使用日文名如「笑い」「怒り」等）。
+                请为每种情绪选择对应的候选 Morph，系统会自动匹配模型支持的 Morph。</span>
+            </div>
+
+            <div class="field-row">
+                <label for="model-select" data-i18n="mmdEmotionManager.selectModel">选择 MMD 模型</label>
+                <select id="model-select" style="display: none;">
+                    <option value="" data-i18n="mmdEmotionManager.pleaseSelectModel">请选择模型</option>
+                </select>
+                <div class="custom-singleselect" id="model-singleselect">
+                    <div class="singleselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-singleselect-options">
+                        <span class="selected-text" data-i18n="mmdEmotionManager.pleaseSelectModel">请选择模型</span>
+                    </div>
+                    <div class="singleselect-options" id="model-singleselect-options" role="listbox"></div>
+                </div>
+            </div>
+
+            <div id="emotion-config" style="display: none;">
+            <!-- Preview Section -->
+            <div class="preview-section">
+                <div class="preview-header" data-i18n="mmdEmotionManager.morphPreview">Morph 预览</div>
+                <div class="preview-buttons" id="preview-buttons">
+                    <span class="loading" data-i18n="mmdEmotionManager.loadingMorphs">加载 Morph 列表</span>
+                </div>
+            </div>
+
+            <!-- Neutral -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.neutral">平静 (Neutral)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="neutral">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Happy -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.happy">开心 (Happy)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="happy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Relaxed -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.relaxed">放松 (Relaxed)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="relaxed">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sad -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.sad">悲伤 (Sad)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="sad">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Angry -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.angry">生气 (Angry)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="angry">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Surprised -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.surprised">惊讶 (Surprised)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="surprised">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Fear -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="mmdEmotionManager.emotions.fear">恐惧 (Fear)</div>
+                <div class="select-group">
+                    <label data-i18n="mmdEmotionManager.morphCandidates">Morph 候选</label>
+                    <div class="custom-multiselect emotion-morph-select" data-emotion="fear">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="mmdEmotionManager.selectMorph">选择 Morph</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="save-btn" class="btn btn-primary" data-i18n="mmdEmotionManager.saveConfig">保存配置</button>
+                <button id="reset-btn" class="btn btn-secondary" data-i18n="mmdEmotionManager.resetToDefault">重置为默认</button>
+            </div>
+
+            <div id="status-message" class="status-message"></div>
+        </div>
+        </div>
+    </div>
+
+    <!-- 脚本文件 -->
+    <script src="/static/js/mmd_emotion_manager.js"></script>
+    <script src="/static/libs/driver.min.js"></script>
+    <script src="/static/universal-tutorial-manager.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
+</body>
+</html>

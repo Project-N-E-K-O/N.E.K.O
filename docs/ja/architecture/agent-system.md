@@ -1,6 +1,6 @@
 # エージェントシステム
 
-エージェントシステムにより、N.E.K.O. のキャラクターはバックグラウンドタスク — Webブラウジング、コンピューター操作、外部ツールの呼び出し — を会話コンテキストに基づいて実行できます。
+エージェントシステムにより、N.E.K.O. のキャラクターはバックグラウンドタスク — Webブラウジング、コンピューター操作、サンドボックスでのコード実行、外部ツールの呼び出し — を会話コンテキストに基づいて実行できます。
 
 ## アーキテクチャ
 
@@ -16,7 +16,8 @@ Main Server                          Agent Server
 │   │            │  PUSH/PULL       │ Adapters:            │
 └────────────────┘                  │   ├── MCP Client     │
                                     │   ├── Computer Use   │
-                                    │   └── Browser Use    │
+                                    │   ├── Browser Use    │
+                                    │   └── Virtual Machine│
                                     └────────────────────┘
 ```
 
@@ -30,6 +31,7 @@ Main Server                          Agent Server
 | `computer_use_enabled` | false | スクリーンショット分析、マウス/キーボード |
 | `mcp_enabled` | false | Model Context Protocolツール呼び出し |
 | `browser_use_enabled` | false | Webブラウジング自動化 |
+| `vm_enabled` | false | 仮想マシンサンドボックス実行 |
 
 ## タスク実行パイプライン
 
@@ -41,6 +43,7 @@ Main Server                          Agent Server
    - **MCP Client** — Model Context Protocol経由で外部ツールを呼び出し
    - **Computer Use** — スクリーンショットを撮影し、ビジョンモデルで分析し、マウス/キーボード操作を実行
    - **Browser Use** — Webページのナビゲーション、コンテンツの抽出、フォームの入力
+   - **Virtual Machine** — 隔離されたサンドボックス環境でコードとコマンドを実行
 
 4. **分析**: `Analyzer` がタスクの目標が達成されたかどうかを評価します。
 
@@ -76,6 +79,15 @@ Browser Useアダプター（`brain/browser_use_adapter.py`）は、Web自動化
 - フォームの入力
 - 要素のクリック
 - ページスクリーンショットの撮影
+
+## Virtual Machine
+
+仮想マシンアダプターは、コード実行のための隔離されたサンドボックス環境を提供します：
+
+- サンドボックスVM内でコードやシェルコマンドを実行
+- ファイルシステムの隔離により、ホストへの意図しない変更を防止
+- タイムアウト制御付きの長時間実行タスクをサポート
+- 結果はZeroMQ経由でストリーミング返却
 
 ## APIエンドポイント
 

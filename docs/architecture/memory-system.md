@@ -9,12 +9,12 @@ N.E.K.O.'s memory system provides persistent context across sessions, enabling c
 | **Recent memory** | JSON files (`recent_*.json`) | Sliding window | Direct read, per-character |
 | **Time-indexed original** | SQLite (`time_indexed_original`) | Permanent | Time range queries |
 | **Time-indexed compressed** | SQLite (`time_indexed_compressed`) | Permanent | Time range queries |
-| **Semantic memory** | Vector embeddings (`text-embedding-v4`) | Permanent | Similarity search |
+| **Semantic memory** | Hybrid index: vector embeddings (`text-embedding-v4`) + BM25 | Permanent | Similarity search |
 
 ## How memory flows into conversations
 
 1. When a new session starts, the system loads **recent memory** (last N messages) as immediate context.
-2. A **semantic search** retrieves relevant past conversations based on the current topic.
+2. A **semantic search** using hybrid embedding-vector and BM25 indexing retrieves relevant past conversations based on the current topic.
 3. A **time-indexed query** provides chronological context for temporal references ("yesterday", "last week").
 4. All retrieved memory is injected into the LLM system prompt as context.
 

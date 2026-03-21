@@ -4,7 +4,7 @@
 
 ### v0.7 — Agent system (target: Feb 2026)
 - Complete Agent-related features
-- MCP, Computer Use, Browser Use integration
+- MCP, Computer Use, Browser Use, Virtual Machine integration
 
 ### v0.8 — Memory system (target: Mar 2026)
 - Enhanced memory management

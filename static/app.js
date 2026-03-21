@@ -267,4 +267,34 @@ window.addEventListener('message', function (event) {
             }, window.location.origin);
         }
     }
+
+    if (event.data.type === 'mmd-get-morphs') {
+        console.log('[MMD] 收到 Morph 列表请求');
+        let morphs = [];
+        if (window.mmdManager && window.mmdManager.expression) {
+            morphs = window.mmdManager.expression.getMorphNames();
+        }
+        if (event.source) {
+            event.source.postMessage({
+                type: 'mmd-morphs-response',
+                morphs: morphs
+            }, window.location.origin);
+        }
+    }
+
+    if (event.data.type === 'mmd-preview-morph') {
+        if (typeof event.data.morph === 'undefined') return;
+        console.log('[MMD] 收到 Morph 预览请求:', event.data.morph);
+        if (window.mmdManager && window.mmdManager.expression) {
+            clearTimeout(window._mmdMorphPreviewTimer);
+            window.mmdManager.expression._clearEmotionMorphs();
+            window.mmdManager.expression.setMorphWeight(event.data.morph, 1.0);
+            var morphToReset = event.data.morph;
+            window._mmdMorphPreviewTimer = setTimeout(() => {
+                if (window.mmdManager && window.mmdManager.expression) {
+                    window.mmdManager.expression.setMorphWeight(morphToReset, 0);
+                }
+            }, 3000);
+        }
+    }
 });

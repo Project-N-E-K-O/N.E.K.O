@@ -1,5 +1,27 @@
 # ベストプラクティス
 
+## Result 型を一貫して使用する
+
+エントリーポイントでは例外を発生させる代わりに、常に `Ok`/`Err` を返してください：
+
+```python
+from plugin.sdk.plugin import Ok, Err, SdkError
+
+@plugin_entry(id="process")
+def process(self, data: str, **_):
+    if not data:
+        return Err(SdkError("data is required"))
+
+    try:
+        result = self._do_work(data)
+        return Ok({"result": result})
+    except ValueError as e:
+        return Err(SdkError(f"Validation error: {e}"))
+    except Exception as e:
+        self.logger.exception(f"Unexpected error: {e}")
+        return Err(SdkError(f"Internal error"))
+```
+
 ## コード構成
 
 初期化、ヘルパー、パブリックエントリーポイントを分離してください：
@@ -11,40 +33,25 @@ class WellOrganizedPlugin(NekoPluginBase):
         super().__init__(ctx)
         self._initialize()
 
-    # プライベートヘルパー
+    # --- ライフサイクル ---
+    @lifecycle(id="startup")
+    def on_startup(self, **_):
+        return Ok({"status": "ready"})
+
+    # --- プライベートヘルパー ---
     def _initialize(self):
-        """リソースのセットアップ"""
+        """リソースのセットアップ。"""
         pass
 
-    def _helper(self, data):
-        """内部ロジック"""
+    def _validate(self, data):
+        """内部バリデーション。"""
         pass
 
-    # パブリックエントリーポイント
+    # --- パブリックエントリーポイント ---
     @plugin_entry(id="process")
     def process(self, data: str, **_):
-        result = self._helper(data)
-        return {"result": result}
-```
-
-## エラーハンドリング
-
-常にエラーを適切に処理し、構造化されたレスポンスを返してください：
-
-```python
-@plugin_entry(id="task")
-def task(self, param: str, **_):
-    try:
-        if not param:
-            raise ValueError("param is required")
-        result = self._do_work(param)
-        return {"success": True, "result": result}
-    except ValueError as e:
-        self.logger.warning(f"Validation error: {e}")
-        return {"success": False, "error": str(e)}
-    except Exception as e:
-        self.logger.exception(f"Unexpected error: {e}")
-        return {"success": False, "error": "Internal error"}
+        self._validate(data)
+        return Ok({"result": self._do_work(data)})
 ```
 
 ## ロギング
@@ -59,9 +66,17 @@ def task(self, param: str, **_):
 | `error` | 注意が必要なエラー |
 | `exception` | スタックトレース付きエラー |
 
+```python
+self.logger.debug(f"Processing item {item_id}")
+self.logger.info(f"Plugin started successfully")
+self.logger.warning(f"Retry attempt {attempt}/3")
+self.logger.error(f"Failed to connect: {err}")
+self.logger.exception(f"Unexpected error in process()")
+```
+
 ## ステータス更新
 
-長時間実行されるオペレーション中は進捗を報告してください：
+長時間実行される操作中は進捗を報告してください：
 
 ```python
 @plugin_entry(id="batch_job")
@@ -76,14 +91,15 @@ def batch_job(self, items: list, **_):
         })
 
     self.report_status({"status": "completed", "progress": 100})
-    return {"processed": total}
+    return Ok({"processed": total})
 ```
 
 ## 入力バリデーション
 
-自動バリデーションのために `input_schema` を JSON Schema で定義してください：
+自動 JSON Schema バリデーションのために `input_schema` を使用するか、Pydantic モデルのために `params` を使用してください：
 
 ```python
+# オプション A: JSON Schema
 @plugin_entry(
     id="validated",
     input_schema={
@@ -96,15 +112,82 @@ def batch_job(self, items: list, **_):
     }
 )
 def validated(self, email: str, age: int, **_):
-    # 入力はフレームワークにより既にバリデーション済み
-    return {"email": email, "age": age}
+    return Ok({"email": email, "age": age})
+
+# オプション B: Pydantic モデル（スキーマを自動生成）
+from pydantic import BaseModel, Field
+
+class UserInput(BaseModel):
+    email: str = Field(..., description="User email")
+    age: int = Field(..., ge=0, le=150)
+
+@plugin_entry(id="validated_v2", params=UserInput)
+def validated_v2(self, email: str, age: int, **_):
+    return Ok({"email": email, "age": age})
 ```
 
 ## 作業ディレクトリ
 
-プラグイン固有のファイルのベースとして `ctx.config_path.parent` を使用してください：
+ハードコードされたパスの代わりに `self.config_dir` と `self.data_path()` を使用してください：
 
 ```python
-work_dir = self.ctx.config_path.parent / "data"
-work_dir.mkdir(exist_ok=True)
+# プラグインディレクトリ（plugin.toml がある場所）
+config_file = self.config_dir / "config.json"
+
+# データディレクトリ（自動作成されるサブディレクトリ）
+db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
+logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
 ```
+
+## プラグイン間呼び出しのエラーハンドリング
+
+他のプラグインを呼び出す際は常に `Err` を処理してください：
+
+```python
+@plugin_entry(id="orchestrate")
+async def orchestrate(self, **_):
+    # まず依存関係を確認
+    dep = await self.plugins.require_enabled("dependency_plugin")
+    if isinstance(dep, Err):
+        return Err(SdkError("Required plugin 'dependency_plugin' is not available"))
+
+    # 呼び出しを実行
+    result = await self.plugins.call_entry("dependency_plugin:do_work", {"key": "val"})
+    if isinstance(result, Err):
+        self.logger.error(f"Cross-plugin call failed: {result.error}")
+        return Err(SdkError("Dependency call failed"))
+
+    return Ok({"combined": result.value})
+```
+
+## グレースフルシャットダウン
+
+shutdown ライフサイクルでリソースをクリーンアップしてください：
+
+```python
+@lifecycle(id="shutdown")
+async def on_shutdown(self, **_):
+    # ネットワーク接続を閉じる
+    if self.session:
+        await self.session.close()
+
+    # 保留中のデータをフラッシュ
+    await self.store.flush()
+
+    # タイマーをキャンセル（自動的に処理されますが、ログに記録）
+    self.logger.info("Plugin shutting down gracefully")
+    return Ok({"status": "stopped"})
+```
+
+## プラグインチェックリスト
+
+プラグインをリリースする前に確認してください：
+
+- [ ] すべてのエントリーポイントが `Ok`/`Err` を返している（生の dict や例外ではなく）
+- [ ] `@lifecycle(id="startup")` と `@lifecycle(id="shutdown")` が実装されている
+- [ ] パラメーターを受け取るすべてのエントリーポイントに `input_schema` が定義されている
+- [ ] すべてのエントリーポイントのシグネチャに `**_` が含まれている
+- [ ] `print()` の代わりにロガーが使用されている
+- [ ] タイマーを使用する場合、共有状態がロックで保護されている
+- [ ] プラグイン間呼び出しが `Err` 結果を処理している
+- [ ] `plugin.toml` に正しい `entry` パスと SDK バージョン制約が設定されている
