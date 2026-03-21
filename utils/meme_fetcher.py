@@ -393,54 +393,56 @@ class DoutubFetcher:
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
+        backoff_factor = random.uniform(1.0, 1.5)
+        
         for attempt in range(max_retries):
             try:
-                if attempt > 0:
-                    delay = random.uniform(1.0, 2.0) * (2 ** attempt)
-                    logger.info(f"斗图吧第 {attempt + 1} 次重试中，延迟 {delay:.2f}s...")
-                    await asyncio.sleep(delay)
-                else:
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
-
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                
                 headers = self._get_headers()
                 
                 # 默认 TLS 尝试
-                if self._session:
-                    response = await self._session.get(url, headers=headers)
-                else:
-                    async with self._create_client(seclevel1=False) as temp_client:
-                        response = await temp_client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
-            except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                logger.warning(f"斗图吧 HTTPS 请求失败，尝试降低安全级别重试: {e}")
-                # 降级 TLS 尝试
-                if self._session:
-                    await self.close()
-                    self._session = self._create_client(seclevel1=True)
-                    response = await self._session.get(url, headers=headers)
-                else:
-                    async with self._create_client(seclevel1=True) as temp_client:
-                        response = await temp_client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
+                try:
+                    if self._session:
+                        response = await self._session.get(url, headers=headers)
+                    else:
+                        async with self._create_client(seclevel1=False) as temp_client:
+                            response = await temp_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                    logger.warning(f"斗图吧 HTTPS 默认请求失败，尝试降低安全级别 (第{attempt+1}次): {e}")
+                    try:
+                        # 降级 TLS 尝试
+                        if self._session:
+                            await self.close()
+                            self._session = self._create_client(seclevel1=True)
+                            response = await self._session.get(url, headers=headers)
+                        else:
+                            async with self._create_client(seclevel1=True) as temp_client:
+                                response = await temp_client.get(url, headers=headers)
+                        response.raise_for_status()
+                        return response.text
+                    except Exception as inner_e:
+                        logger.warning(f"斗图吧降级请求依然失败 (第{attempt+1}次): {inner_e}")
+                        last_exception = inner_e
+                        # 关键修复：不在此处抛出，允许进入下方的 sleep 并开始下一轮 attempt
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"斗图吧网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
                 last_exception = e
-                if attempt == max_retries - 1:
-                    raise
             except httpx.HTTPStatusError as e:
                 logger.error(f"斗图吧HTTP错误 (状态码 {e.response.status_code}): {e}")
                 last_exception = e
-                if attempt == max_retries - 1:
-                    raise
-            except Exception as e:
-                logger.error(f"斗图吧发生非预期异常: {e}")
-                last_exception = e
-                if attempt == max_retries - 1:
-                    raise e
-        return ""
+                # 对于某些 HTTP 错误（如 404），重试可能无意义，但此处遵循全局重试逻辑
+            
+            # 指数退避休眠
+            if attempt < max_retries - 1:
+                delay = backoff_factor * (2 ** attempt)
+                await asyncio.sleep(delay)
+                
+        raise last_exception or Exception(f"达到最大重试次数 ({max_retries})，抓取失败")
 
     async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
         if not keyword:
@@ -625,62 +627,58 @@ class FabiaoqingFetcher:
 
     async def _fetch_html(self, url: str, max_retries: int = 3) -> str:
         last_exception = None
+        backoff_factor = random.uniform(1.0, 1.5)
 
         for attempt in range(max_retries):
-            # 针对某些站点（如发表情），如果默认 TLS 握手失败，尝试降级
-            use_seclevel1 = False
-            
             try:
-                if attempt > 0:
-                    delay = random.uniform(1.0, 2.0) * (2 ** attempt)
-                    logger.info(f"发表情第 {attempt + 1} 次重试中，延迟 {delay:.2f}s...")
-                    await asyncio.sleep(delay)
-                else:
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
-
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                
                 headers = self._get_headers()
                 
-                # 第一次尝试或之前的成功 session
                 # 默认 TLS 尝试
-                if self._session:
-                    response = await self._session.get(url, headers=headers)
-                else:
-                    async with self._create_client(seclevel1=False) as temp_client:
-                        response = await temp_client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
-            except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                logger.warning(f"发表情 HTTPS 请求失败，尝试降低安全级别重试: {e}")
-                # 降级 TLS 尝试
-                if self._session:
-                    await self.close()
-                    self._session = self._create_client(seclevel1=True)
-                    response = await self._session.get(url, headers=headers)
-                else:
-                    async with self._create_client(seclevel1=True) as temp_client:
-                        response = await temp_client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.text
+                try:
+                    if self._session:
+                        response = await self._session.get(url, headers=headers)
+                    else:
+                        async with self._create_client(seclevel1=False) as temp_client:
+                            response = await temp_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    return response.text
+                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                    logger.warning(f"发表情 HTTPS 默认请求失败，尝试降低安全级别 (第{attempt+1}次): {e}")
+                    try:
+                        # 降级 TLS 尝试
+                        if self._session:
+                            await self.close()
+                            self._session = self._create_client(seclevel1=True)
+                            response = await self._session.get(url, headers=headers)
+                        else:
+                            async with self._create_client(seclevel1=True) as temp_client:
+                                response = await temp_client.get(url, headers=headers)
+                        response.raise_for_status()
+                        return response.text
+                    except Exception as inner_e:
+                        logger.warning(f"发表情降级请求依然失败 (第{attempt+1}次): {inner_e}")
+                        last_exception = inner_e
+                        # 关键修复：不在此处抛出，允许进入下方的 sleep 并开始下一轮 attempt
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
                 last_exception = e
-                if attempt == max_retries - 1:
-                    raise
             except httpx.HTTPStatusError as e:
                 logger.error(f"发表情HTTP错误 (状态码 {e.response.status_code}): {e}")
                 last_exception = e
-                if attempt == max_retries - 1:
-                    raise
             except Exception as e:
                 logger.error(f"发表情发生非预期异常: {e}")
                 last_exception = e
-                if attempt == max_retries - 1:
-                    raise
-        
-        if last_exception:
-            raise last_exception
-        return ""
+            
+            # 指数退避休眠
+            if attempt < max_retries - 1:
+                delay = backoff_factor * (2 ** attempt)
+                await asyncio.sleep(delay)
+                
+        raise last_exception or Exception(f"达到最大重试次数 ({max_retries})，抓取失败")
 
     async def search(self, keyword: str, limit: int = 10) -> List[Dict[str, Any]]:
         if not keyword:

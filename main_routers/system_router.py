@@ -1570,12 +1570,14 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
                 else:
                     logger.debug(f"[{lan_name}] Phase 2 MEME 无表情包且无回退通道，将跳过链接展示")
         case 'BOTH':
-            primary_channel = 'music' if ctx.get('is_music_used') else 'web'
+            # 使用一个专门的内部变量记录兜底，绝对不要覆盖外层的 source_mode / type
+            fallback_channel = 'music' if ctx.get('is_music_used') else 'web'
+            primary_channel = 'both'  # 保持 'both' 给前端
             if ctx.get('selected_web_link'):
                 source_links.append(ctx['selected_web_link'])
             if ctx.get('selected_music_link'):
                 source_links.append(ctx['selected_music_link'])
-            logger.debug(f"[{lan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接")
+            logger.debug(f"[{lan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接，内部兜底为 {fallback_channel}")
             
     return primary_channel, source_links
 
@@ -2578,7 +2580,7 @@ async def proactive_chat(request: Request):
             "action": "chat",
             "message": "主动搭话已发送",
             "lanlan_name": lanlan_name,
-            "source_mode": primary_channel,
+            "source_mode": primary_channel.lower(),
             "source_tag": source_tag or "unknown",
             "active_channels": active_channels,
             "source_links": source_links,
