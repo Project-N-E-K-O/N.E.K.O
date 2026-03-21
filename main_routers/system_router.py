@@ -1145,7 +1145,8 @@ async def proxy_meme_image(url: str):
             headers={
                 'Cache-Control': 'public, max-age=86400',
                 'Access-Control-Allow-Origin': '*',
-                'X-Cache': 'HIT'
+                'X-Cache': 'HIT',
+                'X-Content-Type-Options': 'nosniff'
             }
         )
     
@@ -1212,11 +1213,16 @@ async def proxy_meme_image(url: str):
                     
                     resp.raise_for_status()
                     
-                    # 校验 Content-Type
-                    content_type = resp.headers.get('Content-Type', '').lower()
-                    if not content_type.startswith('image/'):
-                        logger.warning(f"[Meme Proxy] 拒绝非图片内容: {content_type}")
-                        return JSONResponse(content={"success": False, "error": "只允许图片资源"}, status_code=403)
+                    # 校验 Content-Type (严格白名单，防 SVG XSS 注入)
+                    raw_content_type = resp.headers.get('Content-Type', '').lower()
+                    content_type = raw_content_type.split(';', 1)[0].strip()
+                    allowed_content_types = {
+                        'image/jpeg', 'image/png', 'image/gif', 
+                        'image/webp', 'image/avif', 'image/bmp'
+                    }
+                    if content_type not in allowed_content_types:
+                        logger.warning(f"[Meme Proxy] 拒绝非安全图片内容: {raw_content_type}")
+                        return JSONResponse(content={"success": False, "error": "格式不支持或含有潜在风险"}, status_code=403)
                     
                     # 校验 Content-Length (如果存在)
                     content_length = resp.headers.get('Content-Length')
@@ -1249,7 +1255,8 @@ async def proxy_meme_image(url: str):
                         headers={
                             'Cache-Control': 'public, max-age=86400',
                             'Access-Control-Allow-Origin': '*',
-                            'X-Cache': 'MISS'
+                            'X-Cache': 'MISS',
+                            'X-Content-Type-Options': 'nosniff'
                         }
                     )
             
@@ -2533,8 +2540,26 @@ async def proactive_chat(request: Request):
         def _is_link_selected(selected_link):
             if not selected_link:
                 return False
-            target_url = selected_link.get('url')
-            return any(link.get('url') == target_url for link in source_links if link)
+
+            target_url = (selected_link.get('url') or '').strip()
+            if target_url:
+                # 存在有效 URL 时，按 URL 对比
+                return any((link.get('url') or '').strip() == target_url for link in source_links if link)
+
+            # URL 为空（如音乐降级记录），按元数据签名对比
+            target_sig = (
+                (selected_link.get('title') or '').strip(),
+                (selected_link.get('artist') or '').strip(),
+                (selected_link.get('source') or '').strip(),
+            )
+            return any(
+                (
+                    (link.get('title') or '').strip(),
+                    (link.get('artist') or '').strip(),
+                    (link.get('source') or '').strip(),
+                ) == target_sig
+                for link in source_links if link
+            )
 
         if selected_web_topic_key and _is_link_selected(selected_web_link):
             _record_topic_usage(lanlan_name, selected_web_topic_key)
@@ -2556,7 +2581,8 @@ async def proactive_chat(request: Request):
             "source_mode": primary_channel,
             "source_tag": source_tag or "unknown",
             "active_channels": active_channels,
-            "source_links": source_links
+            "source_links": source_links,
+            "turn_id": mgr.current_speech_id
         })
         
     except asyncio.TimeoutError:

@@ -235,6 +235,9 @@
                     if (typeof window.appendMessage === 'function') {
                         window.appendMessage(response.text, 'gemini', isNewMessage);
                     }
+                    if (response.turn_id) {
+                        window.realisticGeminiCurrentTurnId = response.turn_id;
+                    }
 
                 // -------- response_discarded --------
                 } else if (response.type === 'response_discarded') {

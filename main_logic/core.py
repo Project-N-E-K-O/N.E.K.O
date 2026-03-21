@@ -540,16 +540,20 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False):
+    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str = None):
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 text = self.emotion_pattern.sub('', text)
 
+                # 优先使用传入的 turn_id，兜底使用当前会话记录的 speech_id (即 turn id)
+                effective_turn_id = turn_id or self.current_speech_id
+
                 message = {
                     "type": "gemini_response",
                     "text": text,
-                    "isNewMessage": is_first_chunk
+                    "isNewMessage": is_first_chunk,
+                    "turn_id": effective_turn_id
                 }
                 await self.websocket.send_json(message)
                 if is_first_chunk:

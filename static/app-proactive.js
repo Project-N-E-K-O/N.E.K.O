@@ -412,8 +412,8 @@
                         }
                     }
 
-                    // 【重构】统一处理链接，确保 safeUrl 协议收敛
-                    var captureTurnId = window.realisticGeminiCurrentTurnId || 'fallback';
+                    // 【重构】统一处理链接，使用服务端返回的 turn_id 绑定，解决 HTTP/WS 竞态
+                    var captureTurnId = result.turn_id || 'fallback';
                     var processed = _processProactiveLinks(result.source_links || [], dispatchedTrackUrl);
 
                     // 1. 如果有表情包且满足模式，立即显示 (使用已处理的 safeUrl)
