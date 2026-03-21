@@ -29,6 +29,7 @@ class MMDAnimation {
         this._analyser = null;
         this._audioSource = null;
         this._lipSyncAudioElement = null;
+        this._ownsAnalyser = false;
 
         // 骨骼缓存（用于 IK/Grant 更新时保存/恢复）
         this._boneBackup = null;
@@ -260,6 +261,7 @@ class MMDAnimation {
             this._analyser = this._audioContext.createAnalyser();
             this._analyser.fftSize = 256;
             this._analyser.smoothingTimeConstant = 0.8;
+            this._ownsAnalyser = true; // 自己创建的 analyser 由我们管理
 
             // 使用 captureStream 避免 createMediaElementSource 的单次绑定限制
             if (audioElement.captureStream) {
@@ -286,7 +288,13 @@ class MMDAnimation {
         this._analyser.getByteFrequencyData(dataArray);
 
         // 计算人声频率范围（80-600Hz）的平均响度
-        const sampleRate = this._audioContext ? this._audioContext.sampleRate : 48000;
+        // 优先使用 analyser 自己的 context，否则回退到 _audioContext，最后使用默认值
+        let sampleRate = 48000;
+        if (this._analyser.context) {
+            sampleRate = this._analyser.context.sampleRate;
+        } else if (this._audioContext) {
+            sampleRate = this._audioContext.sampleRate;
+        }
         const binWidth = sampleRate / this._analyser.fftSize;
         const lowBin = Math.floor(80 / binWidth);
         const highBin = Math.min(Math.ceil(600 / binWidth), dataArray.length - 1);
@@ -318,6 +326,7 @@ class MMDAnimation {
         });
         if (analyser) {
             this._analyser = analyser;
+            this._ownsAnalyser = false; // 外部传入的 analyser 不由我们管理
         }
         this._lipSyncActive = true;
         this._lipSyncEnabled = true;
@@ -362,10 +371,12 @@ class MMDAnimation {
             try { this._audioSource.disconnect(); } catch (e) { /* ignore */ }
             this._audioSource = null;
         }
-        if (this._analyser) {
+        // 仅当自己创建的 analyser 时才断开（外部传入的由外部管理）
+        if (this._analyser && this._ownsAnalyser) {
             try { this._analyser.disconnect(); } catch (e) { /* ignore */ }
-            this._analyser = null;
         }
+        this._analyser = null;
+        this._ownsAnalyser = false;
         if (this._audioContext && this._audioContext.state !== 'closed') {
             this._audioContext.close().catch(() => {});
             this._audioContext = null;
