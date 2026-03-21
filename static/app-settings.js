@@ -168,7 +168,7 @@
 
         // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
         const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
-        const currentUserLanguage = S.userLanguage || localStorage.getItem('userLanguage') || null;
+        const currentUserLanguage = S.hasOwnProperty('userLanguage') ? S.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         const settings = {
             proactiveChatEnabled: currentProactive,
@@ -191,8 +191,10 @@
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
         // 同时保存字幕设置到独立 key（兼容 subtitle.js）
         localStorage.setItem('subtitleEnabled', currentSubtitleEnabled.toString());
-        if (currentUserLanguage) {
+        if (currentUserLanguage != null) {
             localStorage.setItem('userLanguage', currentUserLanguage);
+        } else {
+            localStorage.removeItem('userLanguage');
         }
 
         // 同步回共享状态，保持一致性
@@ -330,7 +332,8 @@
         // 加载字幕设置（从 localStorage 读取，因为 subtitle.js 也用同一份）
         const savedSubtitleEnabled = localStorage.getItem('subtitleEnabled');
         S.subtitleEnabled = savedSubtitleEnabled === 'true';
-        S.userLanguage = localStorage.getItem('userLanguage') || null;
+        const savedUserLanguage = localStorage.getItem('userLanguage');
+        S.userLanguage = savedUserLanguage ? savedUserLanguage : null;
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
         try {

@@ -334,6 +334,28 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         # 白名单过滤：只保留允许的字段，防止恶意覆盖
         filtered_settings = {k: v for k, v in settings.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
 
+        # 值级别验证：确保字段类型和范围正确
+        _BOOL_FIELDS = {
+            'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+            'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+            'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled', 'subtitleEnabled'
+        }
+        _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
+        _STRING_FIELDS = {'userLanguage'}
+
+        validated = {}
+        for k, v in filtered_settings.items():
+            if k in _BOOL_FIELDS:
+                if isinstance(v, bool):
+                    validated[k] = v
+            elif k in _INT_INTERVAL_FIELDS:
+                if isinstance(v, int) and 1000 <= v <= 3600000:
+                    validated[k] = v
+            elif k in _STRING_FIELDS:
+                if isinstance(v, str) and v:
+                    validated[k] = v
+        filtered_settings = validated
+
         # 创建全局对话设置条目（model_path 固定，不可被用户输入篡改）
         global_pref = {'model_path': GLOBAL_CONVERSATION_KEY}
         global_pref.update(filtered_settings)
