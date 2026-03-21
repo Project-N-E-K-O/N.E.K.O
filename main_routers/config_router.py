@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -220,6 +220,34 @@ async def set_preferred_model(request: Request):
             return {"success": False, "error": "模型不存在或更新失败"}
             
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/conversation-settings")
+async def get_conversation_settings():
+    """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
+    try:
+        settings = load_global_conversation_settings()
+        return {"success": True, "settings": settings}
+    except Exception as e:
+        logger.error(f"获取对话设置失败: {e}")
+        return {"success": False, "error": str(e), "settings": {}}
+
+
+@router.post("/conversation-settings")
+async def save_conversation_settings(request: Request):
+    """保存全局对话设置（同步到 user_preferences.json 备份）"""
+    try:
+        data = await request.json()
+        if not data:
+            return {"success": False, "error": "无效的数据"}
+
+        if save_global_conversation_settings(data):
+            return {"success": True, "message": "对话设置已保存"}
+        else:
+            return {"success": False, "error": "保存失败"}
+    except Exception as e:
+        logger.error(f"保存对话设置失败: {e}")
         return {"success": False, "error": str(e)}
 
 

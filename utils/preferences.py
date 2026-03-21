@@ -252,4 +252,65 @@ def move_model_to_top(model_path: str) -> bool:
             return False
     except Exception as e:
         print(f"移动模型到顶部失败: {e}")
+        return False
+
+
+# ========== 全局对话设置（用于 localStorage 同步备份）==========
+
+GLOBAL_CONVERSATION_KEY = "__global_conversation__"
+
+
+def load_global_conversation_settings() -> Dict[str, Any]:
+    """
+    加载全局对话设置（从 user_preferences.json 的全局条目中读取）
+
+    Returns:
+        Dict[str, Any]: 对话设置字典，如果不存在则返回空字典
+    """
+    try:
+        preferences = load_user_preferences()
+        for pref in preferences:
+            if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                # 提取对话设置（排除 model_path 本身）
+                settings = {k: v for k, v in pref.items() if k != 'model_path'}
+                return settings
+    except Exception as e:
+        print(f"加载全局对话设置失败: {e}")
+    return {}
+
+
+def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
+    """
+    保存全局对话设置（写入 user_preferences.json 的全局条目）
+
+    Args:
+        settings (Dict[str, Any]): 要保存的对话设置字典
+
+    Returns:
+        bool: 保存成功返回True，失败返回False
+    """
+    try:
+        preferences = load_user_preferences()
+
+        # 查找全局对话设置条目的索引
+        global_index = -1
+        for i, pref in enumerate(preferences):
+            if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
+                global_index = i
+                break
+
+        # 创建全局对话设置条目
+        global_pref = {'model_path': GLOBAL_CONVERSATION_KEY}
+        global_pref.update(settings)
+
+        if global_index >= 0:
+            # 更新现有条目（保留其他模型偏好不变）
+            preferences[global_index] = global_pref
+        else:
+            # 添加新条目到列表末尾
+            preferences.append(global_pref)
+
+        return save_user_preferences(preferences)
+    except Exception as e:
+        print(f"保存全局对话设置失败: {e}")
         return False 

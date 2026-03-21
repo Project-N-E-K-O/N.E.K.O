@@ -13,6 +13,84 @@
 
     // ======================== 内部辅助 ========================
 
+    // 定时同步到服务器的 timer ID
+    let _syncTimerId = null;
+    // 同步间隔（毫秒）：60秒
+    const SYNC_INTERVAL_MS = 60000;
+
+    /**
+     * 获取对话相关设置（仅包含需要同步到服务器的设置）
+     * 注意：不包含 renderQuality、targetFrameRate、mouseTrackingEnabled 等性能/外观设置
+     */
+    function getConversationSettings() {
+        return {
+            proactiveChatEnabled: S.proactiveChatEnabled,
+            proactiveVisionEnabled: S.proactiveVisionEnabled,
+            proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
+            proactiveNewsChatEnabled: S.proactiveNewsChatEnabled,
+            proactiveVideoChatEnabled: S.proactiveVideoChatEnabled,
+            proactivePersonalChatEnabled: S.proactivePersonalChatEnabled,
+            proactiveMusicEnabled: S.proactiveMusicEnabled,
+            mergeMessagesEnabled: S.mergeMessagesEnabled,
+            focusModeEnabled: S.focusModeEnabled,
+            proactiveChatInterval: S.proactiveChatInterval,
+            proactiveVisionInterval: S.proactiveVisionInterval,
+            subtitleEnabled: S.subtitleEnabled,
+            userLanguage: S.userLanguage
+        };
+    }
+
+    /**
+     * 从服务器加载对话设置（异步）
+     * 成功时返回设置对象，失败时返回 null
+     */
+    async function loadSettingsFromServer() {
+        try {
+            const response = await fetch('/api/config/conversation-settings', {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            if (data.success && data.settings && Object.keys(data.settings).length > 0) {
+                return data.settings;
+            }
+        } catch (e) {
+            console.warn('[app-settings] 从服务器加载设置失败:', e);
+        }
+        return null;
+    }
+
+    /**
+     * 将对话设置同步到服务器（异步，不阻塞）
+     * 用于定期备份和跨会话持久化
+     */
+    function syncSettingsToServer() {
+        const settings = getConversationSettings();
+        fetch('/api/config/conversation-settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(settings)
+        }).then(response => {
+            if (!response.ok) {
+                console.warn('[app-settings] 同步设置到服务器失败:', response.status);
+            }
+        }).catch(err => {
+            console.warn('[app-settings] 同步设置到服务器失败:', err);
+        });
+    }
+
+    /**
+     * 启动定期同步到服务器
+     */
+    function startPeriodicSync() {
+        if (_syncTimerId !== null) return; // 防止重复启动
+        _syncTimerId = setInterval(() => {
+            syncSettingsToServer();
+        }, SYNC_INTERVAL_MS);
+        console.log('[app-settings] 已启动定期同步到服务器，间隔', SYNC_INTERVAL_MS / 1000, '秒');
+    }
+
     /**
      * 检测用户是否处于中国地区
      * 通过时区和浏览器语言判断
@@ -78,6 +156,10 @@
             ? window.mouseTrackingEnabled
             : true;
 
+        // 读取字幕设置（从 S 读取，因为 subtitle.js 会写入 S）
+        const currentSubtitleEnabled = typeof S.subtitleEnabled !== 'undefined' ? S.subtitleEnabled : (localStorage.getItem('subtitleEnabled') === 'true');
+        const currentUserLanguage = S.userLanguage || localStorage.getItem('userLanguage') || null;
+
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
@@ -92,9 +174,16 @@
             proactiveVisionInterval: currentProactiveVisionInterval,
             renderQuality: currentRenderQuality,
             targetFrameRate: currentTargetFrameRate,
-            mouseTrackingEnabled: currentMouseTracking
+            mouseTrackingEnabled: currentMouseTracking,
+            subtitleEnabled: currentSubtitleEnabled,
+            userLanguage: currentUserLanguage
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+        // 同时保存字幕设置到独立 key（兼容 subtitle.js）
+        localStorage.setItem('subtitleEnabled', currentSubtitleEnabled.toString());
+        if (currentUserLanguage) {
+            localStorage.setItem('userLanguage', currentUserLanguage);
+        }
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;
@@ -110,6 +199,9 @@
         S.proactiveVisionInterval = currentProactiveVisionInterval;
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
+        // 同步字幕设置到共享状态
+        S.subtitleEnabled = currentSubtitleEnabled;
+        S.userLanguage = currentUserLanguage;
     }
 
     // ======================== loadSettings ========================
@@ -117,6 +209,7 @@
     /**
      * 从 localStorage 加载设置，包含迁移逻辑
      * 首次启动时检测用户地区，中国用户自动开启自主视觉
+     * 加载后异步从服务器同步最新设置
      */
     function loadSettings() {
         try {
@@ -213,6 +306,44 @@
                 // 持久化首次启动设置，避免每次重新检测
                 saveSettings();
             }
+
+            // 加载字幕设置（从 localStorage 读取，因为 subtitle.js 也用同一份）
+            const savedSubtitleEnabled = localStorage.getItem('subtitleEnabled');
+            S.subtitleEnabled = savedSubtitleEnabled === 'true';
+            S.userLanguage = localStorage.getItem('userLanguage') || null;
+
+            // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+            loadSettingsFromServer().then(serverSettings => {
+                if (serverSettings) {
+                    // 用服务器设置覆盖本地设置
+                    let hasUpdate = false;
+                    for (const key of Object.keys(serverSettings)) {
+                        if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
+                            S[key] = serverSettings[key];
+                            hasUpdate = true;
+                        }
+                    }
+                    if (hasUpdate) {
+                        console.log('[app-settings] 已从服务器合并对话设置');
+                        // 同步回 localStorage
+                        saveSettings();
+                    }
+                    // 同步字幕设置到 subtitle.js
+                    if (serverSettings.subtitleEnabled !== undefined) {
+                        S.subtitleEnabled = serverSettings.subtitleEnabled;
+                        localStorage.setItem('subtitleEnabled', S.subtitleEnabled.toString());
+                    }
+                    if (serverSettings.userLanguage !== undefined) {
+                        S.userLanguage = serverSettings.userLanguage;
+                        if (S.userLanguage) {
+                            localStorage.setItem('userLanguage', S.userLanguage);
+                        }
+                    }
+                }
+            });
+
+            // 启动定期同步到服务器
+            startPeriodicSync();
         } catch (error) {
             console.error('加载设置失败:', error);
             // 出错时也要确保全局变量被初始化
@@ -288,6 +419,8 @@
 
     mod.saveSettings = saveSettings;
     mod.loadSettings = loadSettings;
+    mod.syncSettingsToServer = syncSettingsToServer;
+    mod.getConversationSettings = getConversationSettings;
     mod.initProactiveChatScheduler = initProactiveChatScheduler;
     mod._isUserRegionChina = _isUserRegionChina;
 
