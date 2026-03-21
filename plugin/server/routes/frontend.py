@@ -12,7 +12,7 @@ router = APIRouter()
 
 def _get_frontend_root_dir() -> Path:
     plugin_root = Path(__file__).resolve().parents[2]
-    exported = plugin_root / "frontend" / "exported"
+    exported = plugin_root / "frontend" / "vue-project" / "dist"
     return exported
 
 
