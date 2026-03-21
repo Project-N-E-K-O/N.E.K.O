@@ -508,6 +508,154 @@ const AvatarButtonMixin = {
         };
 
         /**
+         * 创建麦克风静音按钮（附加在麦克风按钮左侧）
+         * @param {HTMLElement} btnWrapper - 麦克风按钮的包装器
+         * @returns {Object|null} 静音按钮数据，包含 button, updateVisibility 等
+         */
+        ManagerPrototype.createMicMuteButton = function(btnWrapper) {
+            const opts = this._avatarButtonOptions;
+            const prefix = this._avatarPrefix;
+
+            const muteBtn = document.createElement('div');
+            muteBtn.id = `${prefix}-btn-mic-mute`;
+            muteBtn.className = `${opts.buttonClassPrefix} ${prefix}-mic-mute-btn`;
+            muteBtn.title = window.t ? window.t('buttons.micMute') : '静音麦克风';
+            muteBtn.setAttribute('data-i18n-title', 'buttons.micMute');
+
+            const muteSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            muteSvg.setAttribute('viewBox', '0 0 24 24');
+            muteSvg.setAttribute('width', '16');
+            muteSvg.setAttribute('height', '16');
+            muteSvg.style.pointerEvents = 'none';
+
+            const micPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            micPath.setAttribute('d', 'M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z');
+            micPath.setAttribute('fill', '#4a90d9');
+            micPath.setAttribute('class', 'mic-mute-body');
+
+            const micStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            micStand.setAttribute('d', 'M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z');
+            micStand.setAttribute('fill', '#4a90d9');
+            micStand.setAttribute('class', 'mic-mute-stand');
+
+            const slashLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            slashLine.setAttribute('x1', '4');
+            slashLine.setAttribute('y1', '4');
+            slashLine.setAttribute('x2', '20');
+            slashLine.setAttribute('y2', '20');
+            slashLine.setAttribute('stroke', '#ff4757');
+            slashLine.setAttribute('stroke-width', '2.5');
+            slashLine.setAttribute('stroke-linecap', 'round');
+            slashLine.setAttribute('opacity', '0');
+            slashLine.setAttribute('class', 'mic-mute-slash');
+
+            muteSvg.appendChild(micPath);
+            muteSvg.appendChild(micStand);
+            muteSvg.appendChild(slashLine);
+            muteBtn.appendChild(muteSvg);
+
+            Object.assign(muteBtn.style, {
+                width: '24px', height: '24px', borderRadius: '50%',
+                background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+                backdropFilter: 'saturate(180%) blur(20px)',
+                border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', userSelect: 'none',
+                boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
+                transition: 'all 0.1s ease', pointerEvents: 'auto',
+                position: 'absolute',
+                left: '-28px',
+                top: '50%',
+                transform: 'translateY(-50%)'
+            });
+
+            const stopMuteEvent = (e) => { e.stopPropagation(); };
+            ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => muteBtn.addEventListener(evt, stopMuteEvent));
+
+            const updateMuteButtonState = (isMuted) => {
+                if (isMuted) {
+                    micPath.setAttribute('fill', '#999');
+                    micStand.setAttribute('fill', '#999');
+                    slashLine.setAttribute('opacity', '1');
+                    muteBtn.style.background = 'rgba(255, 71, 87, 0.25)';
+                    muteBtn.title = window.t ? window.t('buttons.micUnmute') : '取消静音';
+                } else {
+                    micPath.setAttribute('fill', '#4a90d9');
+                    micStand.setAttribute('fill', '#4a90d9');
+                    slashLine.setAttribute('opacity', '0');
+                    muteBtn.style.background = 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
+                    muteBtn.title = window.t ? window.t('buttons.micMute') : '静音麦克风';
+                }
+            };
+
+            const isRecording = window.isRecording || false;
+            muteBtn.style.display = isRecording ? 'flex' : 'none';
+
+            const updateMuteButtonVisibility = (visible) => {
+                muteBtn.style.display = visible ? 'flex' : 'none';
+            };
+
+            if (typeof window.isMicMuted === 'function') {
+                updateMuteButtonState(window.isMicMuted());
+            }
+
+            muteBtn.addEventListener('mouseenter', () => {
+                muteBtn.style.transform = 'translateY(-50%) scale(1.1)';
+                muteBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+                const isMuted = typeof window.isMicMuted === 'function' && window.isMicMuted();
+                if (!isMuted) {
+                    muteBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
+                }
+            });
+
+            muteBtn.addEventListener('mouseleave', () => {
+                muteBtn.style.transform = 'translateY(-50%) scale(1)';
+                muteBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
+                const isMuted = typeof window.isMicMuted === 'function' && window.isMicMuted();
+                updateMuteButtonState(isMuted);
+            });
+
+            muteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (typeof window.toggleMicMute === 'function') {
+                    const newMuted = window.toggleMicMute();
+                    updateMuteButtonState(newMuted);
+                }
+            });
+
+            const micMuteStateChangedHandler = (e) => {
+                updateMuteButtonState(Boolean(e && e.detail && e.detail.muted));
+            };
+            window.addEventListener('mic-mute-state-changed', micMuteStateChangedHandler);
+            if (!this._uiWindowHandlers) {
+                this._uiWindowHandlers = [];
+            }
+            this._uiWindowHandlers.push({
+                event: 'mic-mute-state-changed',
+                handler: micMuteStateChangedHandler,
+                target: window
+            });
+
+            btnWrapper.appendChild(muteBtn);
+
+            const muteData = {
+                button: muteBtn,
+                svg: muteSvg,
+                micPath: micPath,
+                micStand: micStand,
+                slashLine: slashLine,
+                updateVisibility: updateMuteButtonVisibility
+            };
+
+            if (this._floatingButtons) {
+                this._floatingButtons['mic-mute'] = muteData;
+            }
+
+            return muteData;
+        };
+
+        /**
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
@@ -524,6 +672,14 @@ const AvatarButtonMixin = {
             }
             if (buttonData.imgOn) {
                 buttonData.imgOn.style.opacity = active ? '1' : '0';
+            }
+
+            // 同步静音按钮的显示状态
+            if (buttonId === 'mic') {
+                const muteButtonData = this._floatingButtons && this._floatingButtons['mic-mute'];
+                if (muteButtonData && muteButtonData.updateVisibility) {
+                    muteButtonData.updateVisibility(active);
+                }
             }
         };
 

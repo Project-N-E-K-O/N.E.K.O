@@ -1276,6 +1276,8 @@
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "micMuted": "마이크가 음소거되었습니다",
+        "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",
         "standby": "{{name}} 대기 중...",
         "micRequired": "먼저 마이크를 활성화해 주세요!",
@@ -1346,7 +1348,9 @@
         "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
-        "return": "복귀"
+        "return": "복귀",
+        "micMute": "마이크 음소거",
+        "micUnmute": "음소거 해제"
     },
     "settings": {
         "menu": {

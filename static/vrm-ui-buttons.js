@@ -177,6 +177,11 @@ VRMManager.prototype.setupFloatingButtons = function() {
         // 先将主按钮添加到包装器（所有按钮都需要）
         btnWrapper.appendChild(btn);
 
+        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) {
+            this.createMicMuteButton(btnWrapper);
+        }
+
         // 处理弹窗
         if (config.hasPopup && config.separatePopupTrigger) {
             if (window.isMobileWidth() && config.id === 'mic') {

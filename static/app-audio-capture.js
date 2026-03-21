@@ -464,7 +464,10 @@
             S.workletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                // Focus模式：focusModeEnabled为true且AI正在播放语音时，自动静音麦克风
+                if (S.isMicMuted) {
+                    return;
+                }
+
                 if (S.focusModeEnabled === true && S.isPlaying === true) {
                     return;
                 }
@@ -909,6 +912,47 @@
     window.startMicVolumeVisualization = startMicVolumeVisualization;
     window.stopMicVolumeVisualization = stopMicVolumeVisualization;
     window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+
+    window.toggleMicMute = function(showToast = true) {
+        S.isMicMuted = !S.isMicMuted;
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
+        }));
+        if (showToast && typeof window.showStatusToast === 'function') {
+            const message = S.isMicMuted
+                ? (window.t ? window.t('app.micMuted') : '麦克风已静音')
+                : (window.t ? window.t('app.micUnmuted') : '麦克风已取消静音');
+            window.showStatusToast(message, 2000);
+        }
+        return S.isMicMuted;
+    };
+
+    window.setMicMuted = function(muted, showToast = false) {
+        S.isMicMuted = muted;
+        if (S.isMicMuted) {
+            stopSilenceDetection();
+        } else if (S.isRecording) {
+            startSilenceDetection();
+        }
+        window.dispatchEvent(new CustomEvent('mic-mute-state-changed', {
+            detail: { muted: S.isMicMuted }
+        }));
+        if (showToast && typeof window.showStatusToast === 'function') {
+            const message = S.isMicMuted
+                ? (window.t ? window.t('app.micMuted') : '麦克风已静音')
+                : (window.t ? window.t('app.micUnmuted') : '麦克风已取消静音');
+            window.showStatusToast(message, 2000);
+        }
+    };
+
+    window.isMicMuted = function() {
+        return S.isMicMuted;
+    };
     // setMicrophoneGain / getMicrophoneGain 已在上方直接定义为 window 属性
 
     // ======================== 模块导出 ========================
