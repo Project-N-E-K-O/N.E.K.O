@@ -407,62 +407,6 @@ async def test_mcp_call_tool_returns_summary_for_llm() -> None:
     assert isinstance(result, Ok)
     assert result.value["summary"] == "tool output"
     assert result.value["result"] == {"content": [{"type": "text", "text": "tool output"}]}
-
-
-def test_mcp_summary_handles_image_content_naturally() -> None:
-    plugin = MCPAdapterPlugin(_Ctx())
-
-    summary = plugin._summarize_mcp_result(
-        {
-            "content": [
-                {"type": "image", "mimeType": "image/png"},
-            ]
-        }
-    )
-
-    assert summary == "Image (image/png)"
-
-
-def test_mcp_summary_handles_resource_text_naturally() -> None:
-    plugin = MCPAdapterPlugin(_Ctx())
-
-    summary = plugin._summarize_mcp_result(
-        {
-            "content": [
-                {
-                    "type": "resource",
-                    "resource": {
-                        "name": "notes.md",
-                        "mimeType": "text/markdown",
-                        "text": "# Title\nHello world",
-                    },
-                }
-            ]
-        }
-    )
-
-    assert summary == "Resource notes.md: # Title\nHello world"
-
-
-def test_mcp_summary_handles_resource_link_naturally() -> None:
-    plugin = MCPAdapterPlugin(_Ctx())
-
-    summary = plugin._summarize_mcp_result(
-        {
-            "content": [
-                {
-                    "type": "resource_link",
-                    "name": "report.csv",
-                    "uri": "file:///tmp/report.csv",
-                    "mimeType": "text/csv",
-                }
-            ]
-        }
-    )
-
-    assert summary == "Resource report.csv (text/csv)"
-
-
 @pytest.mark.asyncio
 async def test_mcp_http_call_tool_passes_timeout_to_http_request() -> None:
     client = MCPClient(

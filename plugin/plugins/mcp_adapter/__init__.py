@@ -1379,84 +1379,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return cleaned
         return cleaned[:limit] + "..."
 
-    def _string_field(self, value: object) -> str:
-        return str(value or "").strip()
-
-    def _describe_mcp_content_item(self, item: Dict[str, object]) -> str:
-        item_type = self._string_field(item.get("type")).lower()
-        label = (
-            self._string_field(item.get("title"))
-            or self._string_field(item.get("name"))
-            or self._string_field(item.get("description"))
-        )
-        mime_type = self._string_field(item.get("mimeType"))
-        uri = self._string_field(item.get("uri"))
-
-        if item_type == "image":
-            parts = ["Image"]
-            if label:
-                parts.append(label)
-            if mime_type:
-                parts.append(f"({mime_type})")
-            elif uri:
-                parts.append(f"({uri})")
-            return " ".join(parts)
-
-        if item_type == "audio":
-            parts = ["Audio"]
-            if label:
-                parts.append(label)
-            if mime_type:
-                parts.append(f"({mime_type})")
-            elif uri:
-                parts.append(f"({uri})")
-            return " ".join(parts)
-
-        if item_type in {"resource", "resource_link"}:
-            resource_obj = item.get("resource")
-            resource = resource_obj if isinstance(resource_obj, dict) else item
-            resource_name = (
-                self._string_field(resource.get("name"))
-                or self._string_field(resource.get("title"))
-                or label
-            )
-            resource_mime = self._string_field(resource.get("mimeType")) or mime_type
-            resource_uri = self._string_field(resource.get("uri")) or uri
-            resource_text = self._string_field(resource.get("text"))
-            if resource_text:
-                prefix_parts = ["Resource"]
-                if resource_name:
-                    prefix_parts.append(resource_name)
-                elif resource_uri:
-                    prefix_parts.append(resource_uri)
-                prefix = " ".join(prefix_parts)
-                if prefix != "Resource":
-                    prefix += ": "
-                else:
-                    prefix = ""
-                return prefix + self._truncate_llm_text(resource_text, limit=500)
-
-            parts = ["Resource"]
-            if resource_name:
-                parts.append(resource_name)
-            elif resource_uri:
-                parts.append(resource_uri)
-            if resource_mime:
-                parts.append(f"({resource_mime})")
-            return " ".join(parts)
-
-        if item_type:
-            parts = [item_type.capitalize()]
-            if label:
-                parts.append(label)
-            elif mime_type:
-                parts.append(f"({mime_type})")
-            elif uri:
-                parts.append(f"({uri})")
-            return " ".join(parts)
-
-        return ""
-
     def _summarize_mcp_result(self, result: object) -> str:
         if result is None:
             return ""
@@ -1477,9 +1399,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         if text:
                             parts.append(text)
                             continue
-                    described = self._describe_mcp_content_item(item)
-                    if described:
-                        parts.append(described)
+                    if item_type:
+                        marker = str(item.get("mimeType") or item.get("uri") or item_type).strip()
+                        parts.append(f"[{marker}]")
                 if parts:
                     return self._truncate_llm_text("\n".join(parts))
 
