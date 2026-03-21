@@ -68,6 +68,15 @@ async def vrm_emotion_manager(request: Request):
     })
 
 
+@router.get("/mmd_emotion_manager", response_class=HTMLResponse)
+async def mmd_emotion_manager(request: Request):
+    """MMD情感映射管理器页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
+        "request": request
+    })
+
+
 @router.get('/chara_manager', response_class=HTMLResponse)
 async def chara_manager(request: Request):
     """渲染主控制页面"""

@@ -24,18 +24,35 @@ window.live2dManager.onModelLoaded = (model) => {
 // 兼容性：保持原有的全局变量，但增加 VRM/Live2D 双模态调度逻辑
 window.LanLan1 = window.LanLan1 || {};
 
+// 根据 lanlan_config 判断当前活跃的模型类型
+function _getActiveModelType() {
+    const cfg = window.lanlan_config;
+    if (!cfg) return 'live2d';
+    const modelType = (cfg.model_type || '').toLowerCase();
+    if (modelType === 'live3d') {
+        const sub = (cfg.live3d_sub_type || '').toLowerCase();
+        return sub === 'mmd' ? 'mmd' : sub === 'vrm' ? 'vrm' : 'live2d';
+    }
+    if (modelType === 'vrm') return 'vrm';
+    return 'live2d';
+}
+
 // 1. 表情控制 (setEmotion / playExpression)
 window.LanLan1.setEmotion = function(emotion) {
-    // 优先检查 VRM 模式
-    if (window.vrmManager && window.vrmManager.currentModel) {
-        if (window.vrmManager.expression) {
-            // 调用 VRM 的情绪切换
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) {
+            window.mmdManager.expression.setEmotion(emotion);
+        }
+        return;
+    }
+    if (activeType === 'vrm') {
+        if (window.vrmManager && window.vrmManager.expression) {
             window.vrmManager.expression.setMood(emotion);
         }
-        return; // VRM 处理完直接返回，不再打扰 Live2D
+        return;
     }
-    
-    // 如果不是 VRM，且 Live2D 模型已加载，才调用 Live2D
+    // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);
     }
@@ -46,10 +63,9 @@ window.LanLan1.playExpression = window.LanLan1.setEmotion;
 
 // 2. 动作控制 (playMotion)
 window.LanLan1.playMotion = function(group, no, priority) {
-    // VRM 模式下忽略 Live2D 的动作指令，防止报错
-    if (window.vrmManager && window.vrmManager.currentModel) {
-        return;
-    }
+    const activeType = _getActiveModelType();
+    // MMD/VRM 模式下忽略 Live2D 的动作指令
+    if (activeType === 'mmd' || activeType === 'vrm') return;
 
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
@@ -59,21 +75,34 @@ window.LanLan1.playMotion = function(group, no, priority) {
 
 // 3. 清除表情/特效
 window.LanLan1.clearEmotionEffects = function() {
-    if (window.vrmManager && window.vrmManager.currentModel) {
-        // VRM 暂时不需要清除特效逻辑，或在此重置表情
-        if (window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) window.mmdManager.expression.resetAllMorphs();
+        return;
+    }
+    if (activeType === 'vrm') {
+        if (window.vrmManager && window.vrmManager.expression) window.vrmManager.expression.setMood('neutral');
         return;
     }
     if (window.live2dManager) window.live2dManager.clearEmotionEffects();
 };
 
 window.LanLan1.clearExpression = function() {
-    if (window.vrmManager && window.vrmManager.currentModel) return;
+    const activeType = _getActiveModelType();
+    if (activeType === 'mmd' || activeType === 'vrm') return;
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
 
 // 4. 嘴型控制
 window.LanLan1.setMouth = function(value) {
+    const activeType = _getActiveModelType();
+    // MMD 嘴型：通过 morph target 控制
+    if (activeType === 'mmd') {
+        if (window.mmdManager && window.mmdManager.expression) {
+            window.mmdManager.expression.setMorphWeight('あ', value);
+        }
+        return;
+    }
     // VRM 的嘴型通常由 Audio 分析自动控制 (vrm-animation.js)，这里主要服务 Live2D
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setMouth(value);
@@ -194,10 +223,11 @@ async function cleanupVRMResources() {
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function initLive2DModel() {
-    // 检查是否在 VRM 模式下，如果是则跳过 Live2D 初始化
+    // 检查是否在 VRM/MMD 模式下，如果是则跳过 Live2D 初始化
     const isVRMMode = window.vrmManager && window.vrmManager.currentModel;
-    if (isVRMMode) {
-        console.log('[Live2D Init] 当前为 VRM 模式，跳过 Live2D 初始化');
+    const isMMDMode = window.mmdManager && window.mmdManager.currentModel;
+    if (isVRMMode || isMMDMode) {
+        console.log('[Live2D Init] 当前为 VRM/MMD 模式，跳过 Live2D 初始化');
         return;
     }
 
@@ -207,8 +237,8 @@ async function initLive2DModel() {
         // 兼容 model_manager.html：当前使用的是 <select id="model-type-select"> (live2d/vrm)
         const modelTypeSelect = document.getElementById('model-type-select');
         const activeModelType = modelTypeSelect?.value || localStorage.getItem('modelType');
-        if (activeModelType === 'vrm') {
-            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型，跳过 Live2D 初始化');
+        if (activeModelType === 'vrm' || activeModelType === 'live3d') {
+            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM/Live3D 模型，跳过 Live2D 初始化');
             return;
         }
 
@@ -229,6 +259,15 @@ async function initLive2DModel() {
 
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
+
+    // 如果当前为 Live3D+MMD 模式，跳过 Live2D 初始化
+    if (
+        (window.lanlan_config?.model_type || '').toLowerCase() === 'live3d' &&
+        (window.lanlan_config?.live3d_sub_type || '').toLowerCase() === 'mmd'
+    ) {
+        console.log('[Live2D Init] Live3D+MMD 模式，跳过 Live2D 初始化');
+        return;
+    }
 
     if (!targetModelPath && !isModelManagerPage) {
         console.log('未设置模型路径，且不在模型管理页面，跳过Live2D初始化');
@@ -262,9 +301,9 @@ async function initLive2DModel() {
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer) live2dContainer.style.display = 'block';
 
-        // 初始化 PIXI 应用；再次检查是否在 VRM 模式下（防止在异步操作期间切换到 VRM）
-        if (window.vrmManager && window.vrmManager.currentModel) {
-            console.log('[Live2D Init] 检测到 VRM 模式，取消 Live2D 初始化');
+        // 初始化 PIXI 应用；再次检查是否在 VRM/MMD 模式下（防止在异步操作期间切换）
+        if ((window.vrmManager && window.vrmManager.currentModel) || (window.mmdManager && window.mmdManager.currentModel)) {
+            console.log('[Live2D Init] 检测到 VRM/MMD 模式，取消 Live2D 初始化');
             return;
         }
 

@@ -933,6 +933,18 @@
             "loop": "루프",
             "speed": "속도:"
         },
+        "mmdModel": {
+            "selectModel": "MMD 모델 선택",
+            "deleteModel": "가져온 MMD 모델 삭제",
+            "deleteModelTitle": "가져온 MMD 모델 삭제",
+            "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
+            "noUserModels": "삭제할 사용자 MMD 모델이 없습니다",
+            "deleteSelected": "선택 삭제"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "VMD 애니메이션 선택",
+            "noAnimation": "애니메이션 없음"
+        },
         "modelFilesFetchFailed": "모델 파일 목록을 가져오지 못했습니다.",
         "modelConfigFetchFailed": "모델 구성을 가져오지 못했습니다: {{status}}",
         "updatedPersistentExpression": "업데이트된 영구 표현",
@@ -1264,6 +1276,8 @@
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
+        "micMuted": "마이크가 음소거되었습니다",
+        "micUnmuted": "마이크 음소거가 해제되었습니다",
         "speaking": "말하기...",
         "standby": "{{name}} 대기 중...",
         "micRequired": "먼저 마이크를 활성화해 주세요!",
@@ -1334,7 +1348,9 @@
         "agentTools": "네코클로",
         "settings": "설정",
         "leave": "나가기",
-        "return": "복귀"
+        "return": "복귀",
+        "micMute": "마이크 음소거",
+        "micUnmute": "음소거 해제"
     },
     "settings": {
         "menu": {
@@ -1514,6 +1530,47 @@
             "title": "대기 애니메이션",
             "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
             "changeFailed": "대기 애니메이션 변경 실패"
+        },
+        "settingsTitle": "VRM 모델 설정",
+        "cursorFollow": {
+            "title": "마우스 추적",
+            "preset": "추적 강도",
+            "none": "끄기",
+            "low": "낮음",
+            "medium": "중간",
+            "high": "높음",
+            "eyeSensitivity": "눈 감도",
+            "headSensitivity": "머리 감도",
+            "headSpeed": "머리 추적 속도"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD 모델 설정",
+        "lighting": {
+            "title": "MMD 조명",
+            "ambientIntensity": "환경광 강도",
+            "ambientColor": "환경광 색상",
+            "directionalIntensity": "주 광원 강도",
+            "directionalColor": "주 광원 색상"
+        },
+        "rendering": {
+            "title": "MMD 렌더링",
+            "toneMapping": "톤 매핑",
+            "exposure": "노출",
+            "outline": "윤곽선 효과",
+            "pixelRatio": "픽셀 비율"
+        },
+        "physics": {
+            "title": "MMD 물리",
+            "enabled": "물리 시뮬레이션",
+            "strength": "시뮬레이션 강도"
+        },
+        "cursorFollow": {
+            "title": "마우스 추적",
+            "enabled": "머리 추적",
+            "headYaw": "좌우 회전 범위",
+            "headPitch": "상하 회전 범위",
+            "smoothSpeed": "추적 부드러움"
         }
     },
     "modelManager": {
@@ -2173,6 +2230,45 @@
             "sad": "슬픔 (Sad)",
             "angry": "화남 (Angry)",
             "surprised": "놀람 (Surprised)"
+        }
+    },
+    "mmdEmotionManager": {
+        "title": "MMD 감정 매핑 관리자 - Project N.E.K.O.",
+        "pageTitle": "MMD 감정 매핑 관리자",
+        "subtitle": "각 감정에 해당하는 모프타겟 매핑을 설정합니다",
+        "selectModel": "MMD 모델 선택",
+        "morphPreview": "모프 미리보기",
+        "morphCandidates": "모프 후보",
+        "selectMorph": "모프 선택",
+        "saveConfig": "설정 저장",
+        "resetToDefault": "기본값으로 초기화",
+        "loading": "로딩 중...",
+        "loadingMorphs": "모프 목록 로딩 중",
+        "pleaseSelectModel": "모델을 선택하세요",
+        "noModelsFound": "사용 가능한 MMD 모델이 없습니다",
+        "noMorphsFound": "사용 가능한 모프가 없습니다",
+        "loadModelListFailed": "모델 목록을 로드하지 못했습니다",
+        "loadMorphsFailed": "모프 목록을 로드하지 못했습니다",
+        "morphsLoadedFromModel": "현재 모델에서 모프 목록을 로드했습니다",
+        "useDefaultMorphs": "기본 모프 목록 사용 (정확한 목록을 위해 먼저 메인 페이지에서 모델을 로드하세요)",
+        "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
+        "configLoadFailed": "설정을 로드하지 못했습니다",
+        "configUseDefault": "기본 설정 사용",
+        "configSaveSuccess": "설정이 저장되었습니다!",
+        "saveFailed": "저장 실패",
+        "configReset": "기본 설정으로 초기화되었습니다",
+        "pleaseSelectModelFirst": "먼저 모델을 선택하세요",
+        "tip": "팁: ",
+        "tipContent": "MMD 모델의 표정은 모프타겟으로 구현됩니다. 각 감정에 대해 여러 후보 모프를 선택하세요. 시스템이 모델이 지원하는 모프를 자동으로 매칭합니다.",
+        "close": "닫기",
+        "emotions": {
+            "neutral": "평온 (Neutral)",
+            "happy": "행복 (Happy)",
+            "relaxed": "편안함 (Relaxed)",
+            "sad": "슬픔 (Sad)",
+            "angry": "화남 (Angry)",
+            "surprised": "놀람 (Surprised)",
+            "fear": "공포 (Fear)"
         }
     },
     "theme": {
