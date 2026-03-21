@@ -574,8 +574,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             const toggleItem = checkbox.parentElement;
             if (!toggleItem) return;
 
-            const indicator = toggleItem.querySelector('.vrm-toggle-indicator');
-            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
+            const indicator = toggleItem.querySelector('[class*="-toggle-indicator"]');
+            const checkmark = indicator?.querySelector('[class*="-toggle-checkmark"]');
             if (!indicator || !checkmark) return;
 
             if (checkbox.checked) {

@@ -866,16 +866,18 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     trackingRow.addEventListener('click', (e) => {
         e.stopPropagation();
         handleTrackingChange();
+        trackingRow.setAttribute('aria-checked', String(checkbox.checked));
     });
 
     trackingRow.setAttribute('role', 'switch');
-    trackingRow.setAttribute('aria-checked', checkbox.checked);
+    trackingRow.setAttribute('aria-checked', String(checkbox.checked));
+    trackingRow.tabIndex = 0;
     trackingRow.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             e.stopPropagation();
             handleTrackingChange();
-            trackingRow.setAttribute('aria-checked', checkbox.checked);
+            trackingRow.setAttribute('aria-checked', String(checkbox.checked));
         }
     });
 

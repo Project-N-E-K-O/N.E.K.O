@@ -525,7 +525,9 @@ html #chat-container {
 [data-theme="dark"] #live2d-popup-mic div[style*="border-right"],
 [data-theme="dark"] #live2d-popup-mic div[style*="border-left"],
 [data-theme="dark"] #vrm-popup-mic div[style*="border-right"],
-[data-theme="dark"] #vrm-popup-mic div[style*="border-left"] {
+[data-theme="dark"] #vrm-popup-mic div[style*="border-left"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-right"],
+[data-theme="dark"] #mmd-popup-mic div[style*="border-left"] {
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 

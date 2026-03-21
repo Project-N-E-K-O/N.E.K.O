@@ -125,13 +125,14 @@ function createMMDPopup(parentElement, items, options = {}) {
 }
 function showMMDPopup(popup) {
     if (!popup) return;
+    if (popup._hideTimer) { clearTimeout(popup._hideTimer); popup._hideTimer = null; }
     popup.style.display = 'flex';
     requestAnimationFrame(() => { popup.classList.add('visible'); });
 }
 function hideMMDPopup(popup) {
     if (!popup) return;
     popup.classList.remove('visible');
-    setTimeout(() => { popup.style.display = 'none'; }, AVATAR_POPUP_ANIMATION_DURATION_MS);
+    popup._hideTimer = setTimeout(() => { popup.style.display = 'none'; }, AVATAR_POPUP_ANIMATION_DURATION_MS);
 }
 window.createMMDPopup = createMMDPopup;
 window.showMMDPopup = showMMDPopup;

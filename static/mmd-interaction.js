@@ -254,19 +254,24 @@ class MMDInteraction {
                 mesh.position.add(right.multiplyScalar(dx * pixelToWorldX));
                 mesh.position.add(up.multiplyScalar(-dy * pixelToWorldY));
             } else if (this.dragMode === 'orbit') {
-                // 仅 Y 轴旋转（转盘式），模型原地旋转，位置不变
+                // 模型原地旋转（Y轴+X轴），位置不变
                 const mesh = this.manager.currentModel?.mesh;
                 if (!mesh || !this._orbitStartQuat) return;
 
                 const rotateSpeed = 0.005;
                 const totalDx = e.clientX - this._orbitStartMouse.x;
+                const totalDy = e.clientY - this._orbitStartMouse.y;
 
-                // 仅绕世界 Y 轴旋转
+                // Y轴左右 + X轴上下
                 const yQuat = new THREE.Quaternion().setFromAxisAngle(
                     new THREE.Vector3(0, 1, 0), totalDx * rotateSpeed);
+                const xQuat = new THREE.Quaternion().setFromAxisAngle(
+                    new THREE.Vector3(1, 0, 0), totalDy * rotateSpeed);
+                const totalQuat = new THREE.Quaternion();
+                totalQuat.multiplyQuaternions(yQuat, xQuat);
 
                 // 从起始状态重新计算（幂等）
-                mesh.quaternion.copy(this._orbitStartQuat).premultiply(yQuat);
+                mesh.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);
                 // 位置不变 — 模型原地转
             }
         };

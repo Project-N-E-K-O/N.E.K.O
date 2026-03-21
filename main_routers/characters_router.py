@@ -467,6 +467,8 @@ async def update_catgirl_l2d(name: str, request: Request):
             vrm_model = vrm_model_str
         elif model_type_str == 'live3d':
             # Live3D 模式：接受 VRM 或 MMD 模型
+            if vrm_model and mmd_model:
+                return JSONResponse(content={'success': False, 'error': '不能同时提供VRM和MMD模型，请选择其中一个'}, status_code=400)
             if vrm_model:
                 # 验证 VRM 路径
                 vrm_model_str = str(vrm_model).strip()
@@ -657,7 +659,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'model_path', mmd_model)
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'model_path', '')
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'animation', None)
-                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', '')
+                set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'idle_animation', None)
                 set_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', None)
                 
                 # 处理 MMD 动画
@@ -956,6 +958,11 @@ async def update_catgirl_lighting(name: str, request: Request):
 @router.put('/catgirl/{name}/mmd_settings')
 async def update_catgirl_mmd_settings(name: str, request: Request):
     """更新指定角色的MMD模型设置（光照、渲染、物理、鼠标跟踪）"""
+    def _to_bool(val):
+        if isinstance(val, bool): return val
+        if isinstance(val, str): return val.lower() in ('true', '1', 'yes')
+        return bool(val)
+
     try:
         data = await request.json()
 
@@ -997,14 +1004,14 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                     if isinstance(val, (int, float)):
                         rendering[key] = max(min_val, min(max_val, float(val)))
             if 'outline' in rendering:
-                rendering['outline'] = bool(rendering['outline'])
+                rendering['outline'] = _to_bool(rendering['outline'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
 
         # --- 物理 ---
         if 'physics' in data and isinstance(data['physics'], dict):
             physics = {**defaults['physics'], **data['physics']}
             if 'enabled' in physics:
-                physics['enabled'] = bool(physics['enabled'])
+                physics['enabled'] = _to_bool(physics['enabled'])
             for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
                 if key in physics:
                     val = physics[key]
@@ -1023,7 +1030,7 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
                     if isinstance(val, (int, float)):
                         cursor_follow[key] = max(min_val, min(max_val, float(val)))
             if 'enabled' in cursor_follow:
-                cursor_follow['enabled'] = bool(cursor_follow['enabled'])
+                cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
             set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
         _config_manager.save_characters(characters)

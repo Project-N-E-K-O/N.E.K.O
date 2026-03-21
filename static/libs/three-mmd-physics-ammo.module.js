@@ -553,6 +553,7 @@ class RigidBody {
     this.manager.freeTransform(form);
     this.manager.freeTransform(boneForm);
     this.manager.freeThreeVector3(vector);
+    this.manager.freeThreeQuaternion(rotation);
   }
   _getBoneTransform() {
     const manager = this.manager;
@@ -724,6 +725,10 @@ class MMDPhysics {
       const params = constraints[i];
       const bodyA = this.bodies[params.rigidbodyIndexA];
       const bodyB = this.bodies[params.rigidbodyIndexB];
+      if (bodyA === undefined || bodyA === null || bodyB === undefined || bodyB === null) {
+        console.warn(`Constraint ${i} has undefined rigidbody: bodyA=${bodyA}, bodyB=${bodyB}`);
+        continue;
+      }
       this.constraints.push(new Constraint(this.mesh, this.world, bodyA, bodyB, params, this.manager));
     }
   }
