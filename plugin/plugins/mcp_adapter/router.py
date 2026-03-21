@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Awaitable, Optional
 
+from plugin.sdk.adapter import Ok, Result, TransportError
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
 from plugin.sdk.adapter.gateway_models import (
     GatewayAction,
@@ -163,7 +164,7 @@ class MCPRouteEngine:
         
         return len(tools_to_remove)
 
-    async def decide(self, request: GatewayRequest) -> RouteDecision:
+    async def decide(self, request: GatewayRequest) -> Result[RouteDecision, TransportError]:
         """
         决定请求路由。
         
@@ -175,41 +176,41 @@ class MCPRouteEngine:
         """
         # 如果显式指定了 plugin_id 和 entry_id，路由到 PLUGIN
         if request.target_plugin_id is not None and request.target_entry_id is not None:
-            return RouteDecision(
+            return Ok(RouteDecision(
                 mode=RouteMode.PLUGIN,
                 plugin_id=request.target_plugin_id,
                 entry_id=request.target_entry_id,
                 reason="explicit plugin target",
-            )
+            ))
 
         # 如果只有 entry_id，检查是否是 MCP tool
         if request.target_entry_id is not None:
             if request.target_entry_id in self._tool_index:
-                return RouteDecision(
+                return Ok(RouteDecision(
                     mode=RouteMode.SELF,
                     entry_id=request.target_entry_id,
                     reason=f"MCP tool on server '{self._tool_index[request.target_entry_id]}'",
-                )
+                ))
 
             # 对于 TOOL_CALL action，如果找不到 tool，返回 DROP
             if request.action == GatewayAction.TOOL_CALL:
-                return RouteDecision(
+                return Ok(RouteDecision(
                     mode=RouteMode.DROP,
                     reason=f"MCP tool '{request.target_entry_id}' not found",
-                )
+                ))
 
         # 对于 EVENT_PUSH，可以考虑广播（暂时 DROP）
         if request.action == GatewayAction.EVENT_PUSH:
-            return RouteDecision(
+            return Ok(RouteDecision(
                 mode=RouteMode.DROP,
                 reason="event push not routed",
-            )
+            ))
 
         # 默认 DROP
-        return RouteDecision(
+        return Ok(RouteDecision(
             mode=RouteMode.DROP,
             reason="no route target specified",
-        )
+        ))
 
     def get_tool_server(self, tool_name: str) -> str | None:
         """获取 tool 所在的 server 名称。"""

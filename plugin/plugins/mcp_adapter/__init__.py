@@ -42,17 +42,17 @@ class _MCPInternalTransport:
 
     protocol_name = "mcp_internal"
 
-    async def start(self) -> None:
-        return
+    async def start(self):
+        return Ok(None)
 
-    async def stop(self) -> None:
-        return
+    async def stop(self):
+        return Ok(None)
 
-    async def recv(self) -> ExternalRequest:
-        raise RuntimeError("mcp_internal transport does not support recv()")
+    async def recv(self):
+        return Err(SdkError("mcp_internal transport does not support recv()"))
 
-    async def send(self, response: object) -> None:
-        return
+    async def send(self, response: object):
+        return Ok(None)
 
 
 @dataclass
@@ -716,7 +716,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return Ok(result.get("result", {}))
         
         # 注册为动态 entry
-        return await self.register_dynamic_entry(
+        return self.register_dynamic_entry(
             entry_id=tool_id,
             handler=tool_handler,
             name=display_name,
@@ -727,7 +727,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
         """Gateway Core 工具注销回调 - 注销动态 entry。"""
-        return await self.unregister_dynamic_entry(tool_id)
+        return self.unregister_dynamic_entry(tool_id)
     
     def _init_gateway_core(self) -> None:
         """初始化 Gateway Core 组件。"""
@@ -764,7 +764,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             router=self._route_engine,
             invoker=self._invoker,
             serializer=self._serializer,
-            logger=self.ctx.logger,  # type: ignore[arg-type]
         )
         
         self.ctx.logger.info("Gateway Core components initialized")
@@ -1457,10 +1456,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 payload=payload,
                 metadata={},
             )
-            response = await self._gateway_core.handle_envelope(envelope)
+            response_result = await self._gateway_core.handle_request(envelope)
         except Exception as exc:
             self.ctx.logger.exception(f"Gateway invoke raised unexpected exception: {exc}")
             return Err(SdkError(str(exc)))
+
+        if isinstance(response_result, Err):
+            self.ctx.logger.warning("Gateway invoke failed before response build: {}", response_result.error)
+            return Err(SdkError(str(response_result.error)))
+
+        response = response_result.value
 
         if response.success:
             return Ok({

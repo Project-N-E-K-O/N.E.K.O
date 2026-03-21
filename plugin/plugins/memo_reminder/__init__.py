@@ -136,12 +136,18 @@ class MemoReminderPlugin(NekoPluginBase):
         self._checker_thread: Optional[threading.Thread] = None
         self._reminders_lock = threading.Lock()
 
+    def _store_get_sync(self, key: str, default: Any = None) -> Any:
+        return self.store._read_value(key, default)
+
+    def _store_set_sync(self, key: str, value: Any) -> None:
+        self.store._write_value(key, value)
+
     def _load_reminders_unlocked(self) -> List[Dict[str, Any]]:
-        data = self.store.get(_STORE_KEY, [])
+        data = self._store_get_sync(_STORE_KEY, [])
         return data if isinstance(data, list) else []
 
     def _save_reminders_unlocked(self, reminders: List[Dict[str, Any]]) -> None:
-        self.store.set(_STORE_KEY, reminders)
+        self._store_set_sync(_STORE_KEY, reminders)
 
     def _load_reminders(self) -> List[Dict[str, Any]]:
         with self._reminders_lock:
@@ -567,7 +573,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
-            cfg = self.store.get("_memo_cfg", {})
+            cfg = self._store_get_sync("_memo_cfg", {})
             max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
             if len(reminders) >= max_r:
                 return Err(SdkError(f"提醒数量已达上限 ({max_r})"))

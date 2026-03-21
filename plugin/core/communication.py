@@ -73,21 +73,58 @@ class PluginCommunicationResourceManager:
         # Let the consumer drain briefly, then cancel.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
         if self._uplink_consumer_task and not self._uplink_consumer_task.done():
-            try:
-                await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
-            except asyncio.TimeoutError:
-                self._uplink_consumer_task.cancel()
+            current_loop = asyncio.get_running_loop()
+            task_loop = self._uplink_consumer_task.get_loop()
+            if task_loop is current_loop:
                 try:
-                    await self._uplink_consumer_task
-                except asyncio.CancelledError:
-                    pass
+                    await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
+                except asyncio.TimeoutError:
+                    self._uplink_consumer_task.cancel()
+                    try:
+                        await self._uplink_consumer_task
+                    except asyncio.CancelledError:
+                        pass
+            else:
+                # The communication task may have been created from another server loop.
+                # Awaiting it here raises "future belongs to a different loop", so we
+                # request cancellation on its owner loop and continue best-effort cleanup.
+                try:
+                    task_loop.call_soon_threadsafe(self._uplink_consumer_task.cancel)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to cancel cross-loop uplink consumer for plugin {}",
+                        self.plugin_id,
+                        exc_info=True,
+                    )
+                self.logger.debug(
+                    "Skipped awaiting cross-loop uplink consumer for plugin {} during shutdown",
+                    self.plugin_id,
+                )
 
         self._cleanup_pending_futures()
 
         if self._background_tasks:
+            current_loop = asyncio.get_running_loop()
+            same_loop_tasks: list[asyncio.Task] = []
             for t in list(self._background_tasks):
-                t.cancel()
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+                try:
+                    task_loop = t.get_loop()
+                except Exception:
+                    task_loop = current_loop
+                try:
+                    if task_loop is current_loop:
+                        t.cancel()
+                        same_loop_tasks.append(t)
+                    else:
+                        task_loop.call_soon_threadsafe(t.cancel)
+                except Exception:
+                    self.logger.debug(
+                        "Failed to cancel background task during shutdown for plugin {}",
+                        self.plugin_id,
+                        exc_info=True,
+                    )
+            if same_loop_tasks:
+                await asyncio.gather(*same_loop_tasks, return_exceptions=True)
             self._background_tasks.clear()
 
         self.logger.debug("Communication for plugin {} shutdown complete", self.plugin_id)
