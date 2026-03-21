@@ -938,8 +938,12 @@ async def on_shutdown():
 
         # 关闭翻译服务
         try:
-            from utils.language_utils import aclose_translation_service
-            await aclose_translation_service()
+            from utils import language_utils
+            close_fn = getattr(language_utils, "aclose_translation_service", None)
+            if callable(close_fn):
+                await close_fn()
+            else:
+                logger.debug("Translation service cleanup skipped: function not implemented")
         except Exception as e:
             logger.debug(f"Translation service cleanup failed: {e}")
 

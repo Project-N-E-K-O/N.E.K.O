@@ -404,20 +404,26 @@ class DoutubFetcher:
 
                 headers = self._get_headers()
                 
-                if not self._session:
-                    self._session = self._create_client(seclevel1=False)
-                
-                try:
+                # 默认 TLS 尝试
+                if self._session:
                     response = await self._session.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.text
-                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                    logger.warning(f"斗图吧 TLS 握手疑似失败，尝试降级到 SECLEVEL=1: {e}")
+                else:
+                    async with self._create_client(seclevel1=False) as temp_client:
+                        response = await temp_client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.text
+            except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                logger.warning(f"斗图吧 HTTPS 请求失败，尝试降低安全级别重试: {e}")
+                # 降级 TLS 尝试
+                if self._session:
                     await self.close()
                     self._session = self._create_client(seclevel1=True)
                     response = await self._session.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.text
+                else:
+                    async with self._create_client(seclevel1=True) as temp_client:
+                        response = await temp_client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.text
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"斗图吧网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
@@ -635,21 +641,26 @@ class FabiaoqingFetcher:
                 headers = self._get_headers()
                 
                 # 第一次尝试或之前的成功 session
-                if not self._session:
-                    self._session = self._create_client(seclevel1=False)
-                
-                try:
+                # 默认 TLS 尝试
+                if self._session:
                     response = await self._session.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.text
-                except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
-                    # 如果疑似 SSL/TLS 握手问题，尝试重建 Session 降级
-                    logger.warning(f"发表情 TLS 握手疑似失败，尝试降级到 SECLEVEL=1: {e}")
+                else:
+                    async with self._create_client(seclevel1=False) as temp_client:
+                        response = await temp_client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.text
+            except (ssl.SSLError, httpx.TransportError, httpx.ConnectError) as e:
+                logger.warning(f"发表情 HTTPS 请求失败，尝试降低安全级别重试: {e}")
+                # 降级 TLS 尝试
+                if self._session:
                     await self.close()
                     self._session = self._create_client(seclevel1=True)
                     response = await self._session.get(url, headers=headers)
-                    response.raise_for_status()
-                    return response.text
+                else:
+                    async with self._create_client(seclevel1=True) as temp_client:
+                        response = await temp_client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.text
                 
             except (httpx.ConnectError, httpx.TimeoutException, ssl.SSLError) as e:
                 logger.warning(f"发表情网络连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
