@@ -1877,7 +1877,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MEME], then your message on next line(s). Your text will be sent with the meme image\n\n'
+                '- Otherwise, first line = [MEME], then your message on next line(s). Focus on a warm, interactive chat with the user\n\n'
                 'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
             ),
             'both_meme': (
@@ -1896,7 +1896,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
                 '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nSpeaking of this topic, doesn\'t this image feel familiar?'
+                'Example:\n[MEME]\nSpeaking of this topic, I’m always here to support you!'
             ),
             'none': (
                 'If nothing feels right to bring up, reply [PASS].\n'
@@ -2011,7 +2011,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '出力形式（厳守）：\n'
                 '- パス → [PASS] のみ\n'
                 '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\nこの話題といえば、この画像どっかで見たことない？'
+                '例：\n[MEME]\nこの話題といえば、いつもあなたの味方だからね！'
             ),
             'none': (
                 '話すことがなければ [PASS] と返してください。\n'
@@ -2107,26 +2107,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 '출력 형식 (엄격 준수):\n'
                 '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지. 당신의 텍스트는 밈 이미지와 함께 주인에게 전송됩니다\n\n'
-                '예시:\n[MEME]\nㅋㅋㅋ 이 밈 진짜 웃기다!'
+                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지. 주인과 따뜻하고 친근하게 대화하세요\n\n'
+                '예시:\n[MEME]\n오늘도 고생 많았어! 내가 항상 응원하고 있는 거 알지?'
             ),
             'both_meme': (
                 '출력 형식 (엄격 준수):\n'
                 '- 패스 → [PASS]만\n'
                 '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n뭐 보고 있어? ㅋㅋㅋ 정말 리얼해...'
+                '예시:\n[MEME]\n항상 곁에서 힘이 되어주고 싶어! 조금만 더 힘내자!'
             ),
             'screen_meme': (
                 '출력 형식 (엄격 준수):\n'
                 '- 패스 → [PASS]만\n'
                 '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n이거 보고 있니? 이 밈이 현재 분위기에 딱이야!'
+                '예시:\n[MEME]\n오늘 기분은 어때? 네가 웃는 모습이 제일 보기 좋아!'
             ),
             'web_meme': (
                 '출력 형식 (엄격 준수):\n'
                 '- 패스 → [PASS]만\n'
                 '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n이 주제라면, 이 이미지가 어디서 본 적 있지 않아?'
+                '예시:\n[MEME]\n이 주제라면, 언제든 나랑 같이 이야기하자!'
             ),
             'none': (
                 '질문하거나 대화할 게 없으면 [PASS]로 답변.\n'
@@ -2222,26 +2222,26 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
             'meme': (
                 'Формат ответа (строго):\n'
                 '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение. Ваш текст будет отправлен вместе с мем-изображением хозяину\n\n'
-                'Пример:\n[MEME]\nХа-ха, этот мем слишком точный!'
+                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение. Создайте теплую и дружелюбную атмосферу для хозяина\n\n'
+                'Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.'
             ),
             'both_meme': (
                 'Формат ответа (строго):\n'
                 '- Чтобы пропустить, ответьте только [PASS]\n'
                 '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nСмотришь это? Ха-ха, как жизненно...'
+                'Пример:\n[MEME]\nНадеюсь, это поднимет тебе настроение! Ты заслуживаешь улыбки.'
             ),
             'screen_meme': (
                 'Формат ответа (строго):\n'
                 '- Чтобы пропустить, ответьте только [PASS]\n'
                 '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nСмотришь это? Этот мем идеально подходит под настроение!'
+                'Пример:\n[MEME]\nВсё будет хорошо! Давай сделаем небольшой перерыв?'
             ),
             'web_meme': (
                 'Формат ответа (строго):\n'
                 '- Чтобы пропустить, ответьте только [PASS]\n'
                 '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nГоворя об этой теме, разве это изображение не кажется знакомым?'
+                'Пример:\n[MEME]\nЕсли будет скучно — я всегда готова поболтать с тобой!'
             ),
             'none': (
                 'Если нечего уместно сказать, ответьте [PASS].\n'

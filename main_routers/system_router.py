@@ -1220,9 +1220,14 @@ async def proxy_meme_image(url: str):
                     
                     # 校验 Content-Length (如果存在)
                     content_length = resp.headers.get('Content-Length')
-                    if content_length and int(content_length) > MAX_IMAGE_SIZE:
-                        logger.warning(f"[Meme Proxy] 资源过大 (Content-Length): {content_length}")
-                        return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except (ValueError, TypeError):
+                            declared_size = None  # 解析失败就当未知长度，靠流式校验兜底
+                        if declared_size is not None and declared_size > MAX_IMAGE_SIZE:
+                            logger.warning(f"[Meme Proxy] 资源过大 (Content-Length): {content_length}")
+                            return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
 
                     # 流式读取内容并累加大小校验
                     body = bytearray()

@@ -694,34 +694,39 @@ async def fetch_meme_content(keyword: str = '', limit: int = 5) -> dict:
         (FabiaoqingFetcher, "发表情"),
     ]
     
-    async def try_fetch(fetcher_class, name: str) -> bool:
-        """尝试从指定源获取表情包，返回是否成功"""
-        nonlocal results, source_name
-        try:
-            async with fetcher_class() as fetcher:
-                fetched = await fetcher.search(actual_keyword, limit=limit)
-                if fetched:
-                    results = fetched
-                    source_name = name
-                    return True
-        except Exception as e:
-            logger.warning(f"{name}获取失败: {e}")
-        return False
-    
-    if china_region:
-        logger.info("检测到中文区域，使用国内表情包源")
-        for fetcher_class, name in CN_FETCHERS:
-            if await try_fetch(fetcher_class, name):
-                break
+    async def try_fetch_concurrent(fetcher_list):
+        """并发尝试一组源，返回第一个成功的（结果，源名）"""
+        tasks = []
+        for f_class, name in fetcher_list:
+            async def wrap(fc=f_class, nm=name):
+                try:
+                    async with fc() as fetcher:
+                        res = await fetcher.search(actual_keyword, limit=limit)
+                        return res, nm
+                except Exception as e:
+                    logger.warning(f"{nm}并发探测失败: {e}")
+                    return None, nm
+            tasks.append(wrap())
         
+        # 使用 as_completed 只要一个成功就立刻返回
+        for coro in asyncio.as_completed(tasks):
+            res, nm = await coro
+            if res:
+                return res, nm
+        return None, ""
+
+    if china_region:
+        logger.info("检测到中文区域，并发开启国内源探测")
+        results, source_name = await try_fetch_concurrent(CN_FETCHERS)
         if not results:
-            await try_fetch(MemeFetcher, "Imgflip")
+            logger.info("国内源全挂，尝试 Imgflip 兜底")
+            results, source_name = await try_fetch_concurrent([(MemeFetcher, "Imgflip")])
     else:
-        logger.info("检测到非中文区域，使用 Imgflip 表情包源")
-        if not await try_fetch(MemeFetcher, "Imgflip"):
-            for fetcher_class, name in CN_FETCHERS:
-                if await try_fetch(fetcher_class, name):
-                    break
+        logger.info("检测到非中文区域，首选 Imgflip")
+        results, source_name = await try_fetch_concurrent([(MemeFetcher, "Imgflip")])
+        if not results:
+            logger.info("Imgflip 获取失败，并发尝试国内源兜底")
+            results, source_name = await try_fetch_concurrent(CN_FETCHERS)
     
     if not results:
         logger.error(f"所有表情包源均获取失败，关键词: {actual_keyword}")

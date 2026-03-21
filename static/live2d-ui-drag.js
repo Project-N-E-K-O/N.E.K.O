@@ -622,10 +622,6 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 更新 proactive chat checkbox 状态和视觉样式
-        // 【重构】使用配置对象动态判断，拒绝硬编码枚举
-        const hasOtherSubMode = (window.CHAT_MODE_CONFIG || []).some(cfg => 
-            cfg.globalVarName !== globalVarName && Boolean(window[cfg.globalVarName])
-        );
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
             const newChecked = window.proactiveChatEnabled;
             if (proactiveChatCheckbox.checked !== newChecked) {
