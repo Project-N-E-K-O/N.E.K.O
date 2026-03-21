@@ -645,11 +645,36 @@ def _plugin_process_runner(
             logger.debug("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
             # 如果有保存的状态，尝试恢复
             state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if state_persistence and state_persistence.has_saved_state():
-                logger.debug("[Plugin Process] Restoring saved state...")
-                state_persistence.load(instance)
-                state_persistence.clear()  # 恢复后清除
-                ctx._restored_from_freeze = True  # 标记为从冻结恢复
+            if state_persistence:
+                try:
+                    def _unwrap_state_result(op_name: str, result_obj: object) -> object:
+                        is_ok = getattr(result_obj, "is_ok", None)
+                        if callable(is_ok):
+                            if is_ok():
+                                return getattr(result_obj, "value", None)
+                            error_obj = getattr(result_obj, "error", None)
+                            logger.warning(
+                                "[Plugin Process] State persistence {} failed: {}",
+                                op_name,
+                                error_obj,
+                            )
+                            raise RuntimeError(f"state persistence {op_name} failed: {error_obj}")
+                        return result_obj
+
+                    has_saved_state_result = asyncio.run(state_persistence.has_saved_state())
+                    has_saved_state = _unwrap_state_result("has_saved_state", has_saved_state_result)
+                    if bool(has_saved_state):
+                        logger.debug("[Plugin Process] Restoring saved state...")
+                        load_result_obj = asyncio.run(state_persistence.load(instance))
+                        load_result = _unwrap_state_result("load", load_result_obj)
+                        if bool(load_result):
+                            clear_result_obj = asyncio.run(state_persistence.clear())  # 恢复后清除
+                            clear_result = _unwrap_state_result("clear", clear_result_obj)
+                            if not bool(clear_result):
+                                raise RuntimeError("state persistence clear returned falsy result")
+                            ctx._restored_from_freeze = True  # 标记为从冻结恢复
+                except Exception as e:
+                    logger.warning("[Plugin Process] Failed to restore saved state: {}", e)
         
         def _should_persist(method) -> bool:
             """判断是否应该保存状态"""
@@ -894,11 +919,31 @@ def _plugin_process_runner(
         def _resolve_timeout(entry_id: str):
             entry_meta = entry_meta_map.get(entry_id)
             if entry_meta:
+                timeout_value = getattr(entry_meta, "timeout", None)
+                if timeout_value is not None:
+                    return None if timeout_value <= 0 else timeout_value
                 extra = getattr(entry_meta, "extra", None) or {}
                 ct = extra.get("timeout")
                 if ct is not None:
                     return None if ct <= 0 else ct
             return PLUGIN_TRIGGER_TIMEOUT
+
+        async def _save_plugin_state(reason: str) -> None:
+            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            if not sp:
+                return
+
+            save_method = getattr(sp, "save", None)
+            if not callable(save_method):
+                return
+
+            try:
+                save_result = save_method(instance)
+            except TypeError:
+                save_result = save_method(instance, freezable_keys, reason=reason)
+
+            if inspect.isawaitable(save_result):
+                await save_result
 
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}
@@ -923,6 +968,27 @@ def _plugin_process_runner(
                 or getattr(instance, entry_id, None)
                 or getattr(instance, f"entry_{entry_id}", None)
             )
+            if method is None and hasattr(instance, "collect_entries") and callable(instance.collect_entries):
+                try:
+                    _rebuild_entry_map()
+                    method = (
+                        entry_map.get(entry_id)
+                        or getattr(instance, entry_id, None)
+                        or getattr(instance, f"entry_{entry_id}", None)
+                    )
+                    if method is not None:
+                        logger.info(
+                            "[Plugin Process] Rebuilt dynamic entry map and resolved entry='{}' req_id={}",
+                            entry_id,
+                            req_id,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to rebuild entry map while resolving '{}' req_id={}: {}",
+                        entry_id,
+                        req_id,
+                        e,
+                    )
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
 
             run_id = None
@@ -965,9 +1031,7 @@ def _plugin_process_runner(
 
                 if _should_persist(method):
                     try:
-                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-                        if sp:
-                            sp.save(instance, freezable_keys, reason="auto")
+                        await _save_plugin_state("auto")
                     except Exception:
                         pass
 
@@ -1110,9 +1174,7 @@ def _plugin_process_runner(
                             with ctx._handler_scope("lifecycle.freeze"):
                                 await freeze_fn()
                         if freezable_keys:
-                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-                            if sp:
-                                sp.save(instance, freezable_keys, reason="freeze")
+                            await _save_plugin_state("freeze")
                         ret["success"] = True
                         ret["data"] = {"frozen": True, "freezable_keys": freezable_keys}
                     except Exception as e:

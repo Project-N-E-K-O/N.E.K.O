@@ -382,6 +382,23 @@ async def test_register_dynamic_entry_rejects_duplicate_ids() -> None:
         base.register_dynamic_entry("dyn", dyn_handler)
 
 
+@pytest.mark.asyncio
+async def test_register_dynamic_entry_rejects_invalid_timeout_values() -> None:
+    base = _DemoPlugin(ctx=_Ctx())
+
+    async def dyn_handler() -> str:
+        return "dyn"
+
+    with pytest.raises(TypeError, match="timeout must be a number or None"):
+        base.register_dynamic_entry("dyn_bool", dyn_handler, timeout=True)
+
+    with pytest.raises(TypeError, match="timeout must be a number or None"):
+        base.register_dynamic_entry("dyn_str", dyn_handler, timeout="5")  # type: ignore[arg-type]
+
+    assert base.register_dynamic_entry("dyn_num", dyn_handler, timeout=5) is True
+    assert base.collect_entries()["dyn_num"].meta.timeout == 5.0
+
+
 def test_list_entries_exposes_richer_metadata() -> None:
     plugin = _RichPlugin(ctx=_Ctx())
     item = next(entry for entry in plugin.list_entries() if entry["id"] == "typed")

@@ -12,9 +12,15 @@ MCP (Model Context Protocol) Router - 连接 MCP servers 并将其 tools 暴露�
 import asyncio
 import json
 import os
+import re
 import subprocess
+import copy
+from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
+
+from bs4 import BeautifulSoup  # type: ignore[import-untyped]
+from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
 
 from plugin.sdk.plugin import (
     neko_plugin,
@@ -42,17 +48,17 @@ class _MCPInternalTransport:
 
     protocol_name = "mcp_internal"
 
-    async def start(self) -> None:
-        return
+    async def start(self):
+        return Ok(None)
 
-    async def stop(self) -> None:
-        return
+    async def stop(self):
+        return Ok(None)
 
-    async def recv(self) -> ExternalRequest:
-        raise RuntimeError("mcp_internal transport does not support recv()")
+    async def recv(self):
+        return Err(SdkError("mcp_internal transport does not support recv()"))
 
-    async def send(self, response: object) -> None:
-        return
+    async def send(self, response: object):
+        return Ok(None)
 
 
 @dataclass
@@ -108,12 +114,201 @@ class MCPClient:
         # 重连配置
         self._reconnect_attempts = 0
         self._on_disconnect_callback: Optional[Callable] = None
+        self._content_error_pattern = re.compile(r"<error>\s*(.*?)\s*</error>", re.IGNORECASE | re.DOTALL)
+        self._simplification_error_pattern = re.compile(
+            r"(failed to be simplified from html|cannot be simplified to markdown)",
+            re.IGNORECASE,
+        )
+
+    def _extract_tool_error_message(self, payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+
+        content = payload.get("content")
+        text_parts: list[str] = []
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+
+        if payload.get("isError") is True:
+            if text_parts:
+                return "\n".join(text_parts)
+
+            structured_error = payload.get("error")
+            if isinstance(structured_error, dict):
+                message = structured_error.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+            if isinstance(structured_error, str) and structured_error.strip():
+                return structured_error.strip()
+
+            return "MCP tool returned isError=true"
+
+        for text in text_parts:
+            match = self._content_error_pattern.search(text)
+            if match is not None:
+                extracted = match.group(1).strip()
+                if extracted:
+                    return extracted
+
+        return None
+
+    def _get_tool_schema(self, tool_name: str) -> Dict[str, object] | None:
+        for tool in self.tools:
+            if tool.name == tool_name:
+                return tool.input_schema
+        return None
+
+    def _tool_supports_raw_mode(self, tool_name: str) -> bool:
+        schema = self._get_tool_schema(tool_name)
+        if not isinstance(schema, dict):
+            return False
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        raw_obj = properties.get("raw")
+        if not isinstance(raw_obj, dict):
+            return False
+        return raw_obj.get("type") == "boolean"
+
+    def _should_retry_with_raw_mode(
+        self,
+        tool_name: str,
+        arguments: Dict[str, object],
+        payload: object,
+    ) -> bool:
+        if arguments.get("raw") is True:
+            return False
+        if not self._tool_supports_raw_mode(tool_name):
+            return False
+        error_message = self._extract_tool_error_message(payload)
+        if not isinstance(error_message, str):
+            return False
+        return self._simplification_error_pattern.search(error_message) is not None
+
+    def _extract_embedded_html(self, payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        content = payload.get("content")
+        if not isinstance(content, list):
+            return None
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if not isinstance(text, str):
+                continue
+            html_start = text.find("<!DOCTYPE")
+            if html_start < 0:
+                html_start = text.find("<html")
+            if html_start < 0:
+                html_start = text.find("<body")
+            if html_start < 0:
+                html_start = text.find("<main")
+            if html_start < 0:
+                generic_match = re.search(r"<([a-zA-Z][a-zA-Z0-9:_-]*)(\s|>)", text)
+                if generic_match is not None:
+                    html_start = generic_match.start()
+            if html_start >= 0:
+                return text[html_start:].strip()
+        return None
+
+    def _normalize_html_payload(self, payload: object, *, source_url: str | None = None) -> Dict[str, object] | None:
+        html = self._extract_embedded_html(payload)
+        if not isinstance(html, str) or not html.strip():
+            return None
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
+            tag.decompose()
+
+        target = soup.body or soup
+        markdown = markdownify_html(str(target), heading_style="ATX").strip()
+        if not markdown:
+            return None
+
+        text = markdown if not source_url else f"Contents of {source_url}:\n{markdown}"
+        return {
+            "content": [{"type": "text", "text": text}],
+            "isError": False,
+        }
+
+    async def _read_http_response_payload(
+        self,
+        response: object,
+        *,
+        expected_id: int | None = None,
+    ) -> Dict[str, object]:
+        headers = getattr(response, "headers", {}) or {}
+        content_type_obj = headers.get("Content-Type") or headers.get("content-type") or ""
+        content_type = str(content_type_obj).lower()
+
+        if "text/event-stream" not in content_type:
+            payload = await response.json()
+            if not isinstance(payload, dict):
+                raise ValueError(f"Expected JSON object response, got {type(payload).__name__}")
+            return payload
+
+        content = getattr(response, "content", None)
+        if content is None:
+            raise ValueError("SSE response missing content stream")
+
+        data_lines: list[str] = []
+        matched_payload: Dict[str, object] | None = None
+
+        async def _flush_event() -> Dict[str, object] | None:
+            nonlocal data_lines
+            if not data_lines:
+                return None
+            raw = "\n".join(data_lines).strip()
+            data_lines = []
+            if not raw:
+                return None
+            payload_obj = json.loads(raw)
+            if not isinstance(payload_obj, dict):
+                return None
+            if expected_id is None:
+                return payload_obj
+            payload_id = payload_obj.get("id")
+            if payload_id == expected_id:
+                return payload_obj
+            return None
+
+        while True:
+            line = await content.readline()
+            if not line:
+                payload = await _flush_event()
+                if payload is not None:
+                    matched_payload = payload
+                break
+
+            decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if decoded == "":
+                payload = await _flush_event()
+                if payload is not None:
+                    matched_payload = payload
+                    break
+                continue
+            if decoded.startswith(":"):
+                continue
+            if decoded.startswith("data:"):
+                data_lines.append(decoded[5:].lstrip())
+
+        if matched_payload is None:
+            raise ValueError("No matching JSON-RPC payload found in SSE response")
+        return matched_payload
     
     async def connect(self, timeout: float = 30.0) -> bool:
         """连接到 MCP Server"""
         if self.config.transport == "stdio":
             return await self._connect_stdio(timeout)
-        elif self.config.transport in ("sse", "streamable-http"):
+        elif self.config.transport == "sse":
+            return await self._connect_sse(timeout)
+        elif self.config.transport == "streamable-http":
             return await self._connect_http(timeout)
         else:
             if self.logger:
@@ -262,7 +457,7 @@ class MCPClient:
             ) as resp:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
-                init_result = await resp.json()
+                init_result = await self._read_http_response_payload(resp, expected_id=1)
                 # 保存 session ID（如果服务器返回）
                 session_id = resp.headers.get("mcp-session-id")
                 if session_id:
@@ -278,7 +473,8 @@ class MCPClient:
                 "method": "notifications/initialized"
             }
             async with self._http_session.post(url, json=notif_payload, headers=headers) as resp:
-                pass  # 通知不需要响应
+                if resp.status >= 400:
+                    raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
             
             # 获取 tools 列表
             tools_payload = {
@@ -295,7 +491,10 @@ class MCPClient:
             ) as resp:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
-                tools_result = await resp.json()
+                tools_result = await self._read_http_response_payload(resp, expected_id=2)
+
+            if "error" in tools_result:
+                raise ValueError(f"Failed to list tools: {tools_result['error']}")
             
             # 解析 tools
             self.tools = []
@@ -330,7 +529,104 @@ class MCPClient:
             return False
         except Exception as e:
             if self.logger:
-                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}': {e}")
+                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}' via HTTP: {e}")
+            await self.disconnect()
+            return False
+
+    async def _connect_sse(self, timeout: float) -> bool:
+        """通过 legacy HTTP+SSE 连接到 MCP Server。"""
+        try:
+            if not self.config.url:
+                raise ValueError("URL is required for SSE transport")
+
+            import aiohttp
+
+            url = self.config.url.rstrip("/")
+            if self.logger:
+                self.logger.info(f"Connecting to MCP server '{self.config.name}' via SSE: {url}")
+
+            self._http_session = aiohttp.ClientSession(
+                **aiohttp_session_kwargs_for_url(url)
+            )
+            headers = {
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+            }
+
+            response = await self._http_session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(connect=timeout),
+            )
+            if response.status != 200:
+                body = await response.text()
+                response.release()
+                raise ValueError(f"HTTP {response.status}: {body}")
+
+            self._sse_response = response
+            endpoint_future: asyncio.Future = asyncio.get_running_loop().create_future()
+            self._read_task = asyncio.create_task(self._read_sse_loop(endpoint_future=endpoint_future))
+
+            endpoint_url = await asyncio.wait_for(endpoint_future, timeout=timeout)
+            if not isinstance(endpoint_url, str) or not endpoint_url.strip():
+                raise ValueError("SSE endpoint event did not provide a valid message endpoint")
+            self._sse_message_url = urljoin(f"{url}/", endpoint_url.strip())
+
+            result = await asyncio.wait_for(
+                self._send_request("initialize", {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "neko-mcp-adapter",
+                        "version": "0.1.0"
+                    }
+                }, timeout=timeout),
+                timeout=timeout,
+            )
+
+            if result.get("error"):
+                raise ValueError(f"Initialize failed: {result['error']}")
+
+            await self._send_notification("notifications/initialized", {})
+
+            tools_result = await asyncio.wait_for(
+                self._send_request("tools/list", {}, timeout=timeout),
+                timeout=timeout,
+            )
+            if tools_result.get("error"):
+                raise ValueError(f"Failed to list tools: {tools_result['error']}")
+
+            self.tools = []
+            result_obj = tools_result.get("result")
+            tools_list: list[object] = []
+            if isinstance(result_obj, dict):
+                tools_raw = result_obj.get("tools")
+                if isinstance(tools_raw, list):
+                    tools_list = tools_raw
+            for tool in tools_list:
+                if not isinstance(tool, dict):
+                    continue
+                self.tools.append(MCPTool(
+                    name=str(tool.get("name", "")),
+                    description=str(tool.get("description", "")),
+                    input_schema=dict(tool.get("inputSchema", {})) if isinstance(tool.get("inputSchema"), dict) else {},
+                    server_name=self.config.name,
+                ))
+
+            self.connected = True
+            if self.logger:
+                self.logger.info(
+                    f"Connected to MCP server '{self.config.name}' via SSE with {len(self.tools)} tools"
+                )
+            return True
+        except asyncio.TimeoutError:
+            if self.logger:
+                self.logger.error(f"Timeout connecting to MCP server '{self.config.name}' via SSE")
+            await self.disconnect()
+            return False
+        except Exception as e:
+            if self.logger:
+                self.logger.exception(f"Failed to connect to MCP server '{self.config.name}' via SSE: {e}")
             await self.disconnect()
             return False
     
@@ -380,6 +676,15 @@ class MCPClient:
         self.tools = []
         
         # 关闭 HTTP session
+        sse_response = getattr(self, "_sse_response", None)
+        if sse_response is not None:
+            try:
+                sse_response.close()
+            except Exception:
+                pass
+            self._sse_response = None
+        self._sse_message_url = None
+        self._http_session_id = None
         if hasattr(self, '_http_session') and self._http_session:
             await self._http_session.close()
             self._http_session = None
@@ -400,21 +705,53 @@ class MCPClient:
                 self._send_request("tools/call", {
                     "name": tool_name,
                     "arguments": arguments,
-                }),
+                }, timeout=timeout),
                 timeout=timeout
             )
             
             if result.get("error"):
                 return {"error": result["error"]}
-            
-            return {"result": result.get("result", {})}
+
+            payload = result.get("result", {})
+            tool_error = self._extract_tool_error_message(payload)
+            if tool_error is not None:
+                if self._should_retry_with_raw_mode(tool_name, arguments, payload):
+                    retry_arguments = dict(arguments)
+                    retry_arguments["raw"] = True
+                    retry_result = await asyncio.wait_for(
+                        self._send_request("tools/call", {
+                            "name": tool_name,
+                            "arguments": retry_arguments,
+                        }, timeout=timeout),
+                        timeout=timeout
+                    )
+                    if retry_result.get("error"):
+                        return {"error": retry_result["error"]}
+                    retry_payload = retry_result.get("result", {})
+                    source_url = arguments.get("url") if isinstance(arguments.get("url"), str) else None
+                    normalized_retry_payload = self._normalize_html_payload(retry_payload, source_url=source_url)
+                    if normalized_retry_payload is not None:
+                        return {"result": normalized_retry_payload}
+                    retry_error = self._extract_tool_error_message(retry_payload)
+                    if retry_error is None:
+                        return {"result": retry_payload}
+                    return {"error": retry_error, "result": retry_payload}
+                return {"error": tool_error, "result": payload}
+
+            return {"result": payload}
             
         except asyncio.TimeoutError:
             return {"error": f"Tool call timed out after {timeout}s"}
         except Exception as e:
             return {"error": str(e)}
     
-    async def _send_http_request(self, method: str, params: Dict[str, object]) -> Dict[str, object]:
+    async def _send_http_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
         """通过 HTTP 发送 JSON-RPC 请求"""
         import aiohttp
         
@@ -422,13 +759,63 @@ class MCPClient:
         async with aiohttp.ClientSession(
             **aiohttp_session_kwargs_for_url(self.config.url or "")
         ) as session:
-            return await self._do_http_request(session, method, params)
+            return await self._do_http_request(session, method, params, timeout=timeout)
+
+    async def _send_sse_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
+        import aiohttp
+
+        session = getattr(self, "_http_session", None)
+        message_url = getattr(self, "_sse_message_url", None)
+        if session is None or not message_url:
+            raise Exception("SSE transport is not initialized")
+
+        self._request_id += 1
+        request_id = self._request_id
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }
+
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_requests[request_id] = future
+        try:
+            async with session.post(
+                message_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                if resp.status >= 400:
+                    raise Exception(f"HTTP {resp.status}: {await resp.text()}")
+                content_type = str(resp.headers.get("Content-Type", "")).lower()
+                if "application/json" in content_type or "text/event-stream" in content_type:
+                    payload_obj = await self._read_http_response_payload(resp, expected_id=request_id)
+                    return payload_obj
+                if resp.status == 200:
+                    try:
+                        payload_obj = await self._read_http_response_payload(resp, expected_id=request_id)
+                        return payload_obj
+                    except Exception:
+                        pass
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self._pending_requests.pop(request_id, None)
     
     async def _do_http_request(
         self,
         session: object,
         method: str,
         params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
     ) -> Dict[str, object]:
         """执行实际的 HTTP 请求"""
         import aiohttp
@@ -459,22 +846,30 @@ class MCPClient:
             url,
             json=payload,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=60)
+            timeout=aiohttp.ClientTimeout(total=timeout)
         ) as resp:
             if resp.status != 200:
                 raise Exception(f"HTTP {resp.status}: {await resp.text()}")
-            result = await resp.json()
+            result = await self._read_http_response_payload(resp, expected_id=request_id)
         
         if "error" in result:
             return {"error": result["error"]}
         
         return result
     
-    async def _send_request(self, method: str, params: Dict[str, object]) -> Dict[str, object]:
+    async def _send_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
         """发送 JSON-RPC 请求"""
         # HTTP 传输
-        if self.config.transport in ("sse", "streamable-http"):
-            return await self._send_http_request(method, params)
+        if self.config.transport == "streamable-http":
+            return await self._send_http_request(method, params, timeout=timeout)
+        if self.config.transport == "sse":
+            return await self._send_sse_request(method, params, timeout=timeout)
         
         # stdio 传输
         if not self.writer:
@@ -507,6 +902,28 @@ class MCPClient:
     
     async def _send_notification(self, method: str, params: Dict[str, object]):
         """发送 JSON-RPC 通知（无响应）"""
+        if self.config.transport == "sse":
+            import aiohttp
+
+            session = getattr(self, "_http_session", None)
+            message_url = getattr(self, "_sse_message_url", None)
+            if session is None or not message_url:
+                raise Exception("SSE transport is not initialized")
+            message = {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }
+            async with session.post(
+                message_url,
+                json=message,
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                timeout=aiohttp.ClientTimeout(total=30.0),
+            ) as resp:
+                if resp.status >= 400:
+                    raise Exception(f"HTTP {resp.status}: {await resp.text()}")
+            return
+
         if not self.writer:
             raise Exception("Not connected")
         
@@ -573,6 +990,60 @@ class MCPClient:
                 self.connected = False
                 if self._on_disconnect_callback:
                     asyncio.create_task(self._on_disconnect_callback(self.config.name))
+
+    async def _read_sse_loop(self, *, endpoint_future: asyncio.Future | None = None) -> None:
+        response = getattr(self, "_sse_response", None)
+        if response is None:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.set_exception(RuntimeError("SSE response not initialized"))
+            return
+
+        event_name = "message"
+        data_lines: list[str] = []
+        try:
+            while not self._shutdown:
+                line = await response.content.readline()
+                if not line:
+                    if endpoint_future is not None and not endpoint_future.done():
+                        endpoint_future.set_exception(RuntimeError("SSE stream closed before endpoint event"))
+                    if not self._shutdown and self.connected and self._on_disconnect_callback:
+                        self.connected = False
+                        asyncio.create_task(self._on_disconnect_callback(self.config.name))
+                    break
+
+                decoded = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if decoded == "":
+                    raw_data = "\n".join(data_lines).strip()
+                    if event_name == "endpoint" and endpoint_future is not None and not endpoint_future.done():
+                        endpoint_future.set_result(raw_data)
+                    elif event_name == "message" and raw_data:
+                        try:
+                            message = json.loads(raw_data)
+                            await self._handle_message(message)
+                        except Exception as e:
+                            if self.logger:
+                                self.logger.warning(f"Invalid SSE message from MCP server '{self.config.name}': {e}")
+                    event_name = "message"
+                    data_lines = []
+                    continue
+                if decoded.startswith(":"):
+                    continue
+                if decoded.startswith("event:"):
+                    event_name = decoded[6:].strip() or "message"
+                    continue
+                if decoded.startswith("data:"):
+                    data_lines.append(decoded[5:].lstrip())
+        except asyncio.CancelledError:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.cancel()
+        except Exception as e:
+            if endpoint_future is not None and not endpoint_future.done():
+                endpoint_future.set_exception(e)
+            if self.logger:
+                self.logger.exception(f"Error in SSE read loop: {e}")
+            if not self._shutdown and self.connected and self._on_disconnect_callback:
+                self.connected = False
+                asyncio.create_task(self._on_disconnect_callback(self.config.name))
     
     async def _handle_message(self, message: Dict[str, object]):
         """处理收到的消息"""
@@ -607,6 +1078,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     """
     
     __freezable__ = ["_server_states"]
+    _CONFIG_DELETE_MARKER = "__DELETE__"
     
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -619,6 +1091,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._auto_reconnect = True
         self._reconnect_interval = 5
         self._max_reconnect_attempts = 3
+        self._tool_timeout = 60.0
         self._servers_config: Dict[str, Dict[str, object]] = {}
         
         # Gateway Core 组件
@@ -645,12 +1118,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         servers_config = config.get("mcp_servers", {})
         adapter_config = config.get("mcp_adapter", {})
         
-        connect_timeout = adapter_config.get("connect_timeout", 30)
+        connect_timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
         
         # 缓存重连配置
-        self._auto_reconnect = adapter_config.get("auto_reconnect", True)
-        self._reconnect_interval = adapter_config.get("reconnect_interval", 5)
-        self._max_reconnect_attempts = adapter_config.get("max_reconnect_attempts", 3)
+        self._auto_reconnect = self._coerce_bool(adapter_config.get("auto_reconnect", True), True)
+        self._reconnect_interval = self._coerce_int(adapter_config.get("reconnect_interval", 5), 5, minimum=0)
+        self._max_reconnect_attempts = self._coerce_int(adapter_config.get("max_reconnect_attempts", 3), 3, minimum=0)
+        self._tool_timeout = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
         self._servers_config = servers_config
         
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
@@ -709,25 +1183,26 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             target_client = self._clients.get(server_name)
             if not target_client:
                 return Err(SdkError(f"Server '{server_name}' not connected"))
-            
-            result = await target_client.call_tool(tool_name, arguments)
+
+            result = await target_client.call_tool(tool_name, arguments, timeout=self._tool_timeout)
             if "error" in result:
                 return Err(SdkError(str(result["error"])))
             return Ok(result.get("result", {}))
         
         # 注册为动态 entry
-        return await self.register_dynamic_entry(
+        return self.register_dynamic_entry(
             entry_id=tool_id,
             handler=tool_handler,
             name=display_name,
             description=description,
             input_schema=schema,
             kind="action",
+            timeout=self._tool_timeout + 5.0,
         )
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
         """Gateway Core 工具注销回调 - 注销动态 entry。"""
-        return await self.unregister_dynamic_entry(tool_id)
+        return self.unregister_dynamic_entry(tool_id)
     
     def _init_gateway_core(self) -> None:
         """初始化 Gateway Core 组件。"""
@@ -764,7 +1239,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             router=self._route_engine,
             invoker=self._invoker,
             serializer=self._serializer,
-            logger=self.ctx.logger,  # type: ignore[arg-type]
         )
         
         self.ctx.logger.info("Gateway Core components initialized")
@@ -791,6 +1265,103 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             params=dict(params),  # 转换为 Dict[str, Any]
             timeout=float(timeout_s),
         )
+
+    async def _persist_servers_config(self, servers_config: Dict[str, object]) -> None:
+        """Persist the full MCP server map through the runtime-supported config API."""
+        current = self._servers_config if isinstance(self._servers_config, dict) else {}
+        remove_names = [name for name in current.keys() if name not in servers_config]
+
+        updates: Dict[str, object] = {"mcp_servers": {}}
+        mcp_updates = updates["mcp_servers"]
+        if not isinstance(mcp_updates, dict):  # pragma: no cover - defensive guard
+            raise TypeError("mcp_servers update payload must be a dict")
+
+        for name in remove_names:
+            mcp_updates[name] = self._CONFIG_DELETE_MARKER
+        for name, server_cfg in servers_config.items():
+            mcp_updates[name] = copy.deepcopy(server_cfg)
+
+        await self.ctx.update_own_config(updates)
+
+    def _coerce_timeout(self, value: object, default: float) -> float:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            timeout = float(value)
+        elif isinstance(value, str):
+            try:
+                timeout = float(value.strip())
+            except ValueError:
+                return default
+        else:
+            return default
+        return timeout if timeout > 0 else default
+
+    def _coerce_bool(self, value: object, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    def _coerce_int(self, value: object, default: int, *, minimum: int | None = None) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            result = value
+        elif isinstance(value, float):
+            result = int(value)
+        elif isinstance(value, str):
+            try:
+                result = int(value.strip())
+            except ValueError:
+                return default
+        else:
+            return default
+        if minimum is not None and result < minimum:
+            return minimum
+        return result
+
+    def _normalize_server_config_payload(
+        self,
+        *,
+        transport: str,
+        command: Optional[str] = None,
+        args: Optional[List[str]] = None,
+        url: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        enabled: bool = True,
+    ) -> Dict[str, object]:
+        server_cfg: Dict[str, object] = {
+            "transport": transport,
+            "enabled": enabled,
+        }
+        if command:
+            server_cfg["command"] = command
+        if args:
+            server_cfg["args"] = list(args)
+        if url:
+            server_cfg["url"] = url
+        if env:
+            server_cfg["env"] = dict(env)
+        return server_cfg
+
+    def _is_same_server_config(self, current: object, incoming: Dict[str, object]) -> bool:
+        if not isinstance(current, dict):
+            return False
+        normalized_current = self._normalize_server_config_payload(
+            transport=str(current.get("transport", "")),
+            command=str(current["command"]) if isinstance(current.get("command"), str) else None,
+            args=list(current["args"]) if isinstance(current.get("args"), list) else None,
+            url=str(current["url"]) if isinstance(current.get("url"), str) else None,
+            env=dict(current["env"]) if isinstance(current.get("env"), dict) else None,
+            enabled=self._coerce_bool(current.get("enabled", True), True),
+        )
+        return normalized_current == incoming
     
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
         """
@@ -801,8 +1372,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         2. 触发回调注册为动态 entry（出现在前端管理面板）
         """
         if self._route_engine:
-            count = await self._route_engine.register_server_tools(server_name, client)
-            self.ctx.logger.info(f"Registered {count} tools from MCP server '{server_name}'")
+            await self._route_engine.register_server_tools(server_name, client)
+
+    def _cancel_reconnect_task(self, server_name: str) -> bool:
+        task = self._reconnect_tasks.pop(server_name, None)
+        if task is None:
+            return False
+        task.cancel()
+        return True
     
     async def _unregister_mcp_tools(self, server_name: str) -> None:
         """
@@ -813,9 +1390,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         2. 触发回调注销动态 entry
         """
         if self._route_engine:
-            count = await self._route_engine.unregister_server_tools(server_name)
-            if count > 0:
-                self.ctx.logger.info(f"Unregistered {count} tools from MCP server '{server_name}'")
+            await self._route_engine.unregister_server_tools(server_name)
     
     @lifecycle(id="shutdown")
     async def on_shutdown(self):
@@ -872,53 +1447,53 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     async def _reconnect_server(self, server_name: str) -> None:
         """尝试重连服务器"""
-        server_cfg = self._servers_config.get(server_name)
-        if not server_cfg:
-            self.ctx.logger.warning(f"No config found for server '{server_name}', cannot reconnect")
-            return
-        
-        attempts = 0
-        while not self._shutdown and attempts < self._max_reconnect_attempts:
-            attempts += 1
-            self.ctx.logger.info(
-                f"Attempting to reconnect to MCP server '{server_name}' "
-                f"(attempt {attempts}/{self._max_reconnect_attempts})"
-            )
+        try:
+            server_cfg = self._servers_config.get(server_name)
+            if not server_cfg:
+                self.ctx.logger.warning(f"No config found for server '{server_name}', cannot reconnect")
+                return
             
-            # 更新状态
-            self._server_states[server_name] = {
-                **self._server_states.get(server_name, {}),
-                "reconnect_attempts": attempts,
-            }
-            
-            # 等待重连间隔
-            await asyncio.sleep(self._reconnect_interval)
-            
-            if self._shutdown:
-                break
-            
-            # 尝试重连
-            config = await self.config.dump()
-            adapter_config = config.get("mcp_adapter", {})
-            timeout = adapter_config.get("connect_timeout", 30)
-            
-            if await self._connect_server(server_name, server_cfg, timeout):
-                self.ctx.logger.info(f"Successfully reconnected to MCP server '{server_name}'")
-                break
-        else:
-            if not self._shutdown:
-                self.ctx.logger.error(
-                    f"Failed to reconnect to MCP server '{server_name}' "
-                    f"after {self._max_reconnect_attempts} attempts"
+            attempts = 0
+            while not self._shutdown and attempts < self._max_reconnect_attempts:
+                attempts += 1
+                self.ctx.logger.info(
+                    f"Attempting to reconnect to MCP server '{server_name}' "
+                    f"(attempt {attempts}/{self._max_reconnect_attempts})"
                 )
+                
+                # 更新状态
                 self._server_states[server_name] = {
                     **self._server_states.get(server_name, {}),
-                    "connected": False,
-                    "error": f"Reconnection failed after {self._max_reconnect_attempts} attempts",
+                    "reconnect_attempts": attempts,
                 }
-        
-        # 清理重连任务
-        self._reconnect_tasks.pop(server_name, None)
+                
+                # 等待重连间隔
+                await asyncio.sleep(self._reconnect_interval)
+                
+                if self._shutdown:
+                    break
+                
+                # 尝试重连
+                config = await self.config.dump()
+                adapter_config = config.get("mcp_adapter", {})
+                timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                
+                if await self._connect_server(server_name, server_cfg, timeout):
+                    self.ctx.logger.info(f"Successfully reconnected to MCP server '{server_name}'")
+                    break
+            else:
+                if not self._shutdown:
+                    self.ctx.logger.error(
+                        f"Failed to reconnect to MCP server '{server_name}' "
+                        f"after {self._max_reconnect_attempts} attempts"
+                    )
+                    self._server_states[server_name] = {
+                        **self._server_states.get(server_name, {}),
+                        "connected": False,
+                        "error": f"Reconnection failed after {self._max_reconnect_attempts} attempts",
+                    }
+        finally:
+            self._reconnect_tasks.pop(server_name, None)
     
     async def _connect_server(
         self,
@@ -928,6 +1503,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     ) -> bool:
         """连接到单个 MCP server"""
         try:
+            timeout = self._coerce_timeout(timeout, 30.0)
             # 提取配置字段并进行类型转换
             transport_raw = server_cfg.get("transport", "stdio")
             transport = str(transport_raw) if transport_raw else "stdio"
@@ -944,8 +1520,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             env_raw = server_cfg.get("env", {})
             env = dict(env_raw) if isinstance(env_raw, dict) else {}
             
-            enabled_raw = server_cfg.get("enabled", True)
-            enabled = bool(enabled_raw) if enabled_raw is not None else True
+            enabled = self._coerce_bool(server_cfg.get("enabled", True), True)
             
             config = MCPServerConfig(
                 name=server_name,
@@ -967,11 +1542,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 client._reconnect_attempts = 0  # 重置重连计数
                 
                 # 使用 Gateway Core 注册 tools
-                await self._register_mcp_tools(server_name, client)
-                
-                # 重建路由索引
-                if self._route_engine:
-                    self._route_engine.rebuild_tool_index()
+                try:
+                    await self._register_mcp_tools(server_name, client)
+                except Exception:
+                    self._clients.pop(server_name, None)
+                    await client.disconnect()
+                    raise
                 
                 # 更新状态
                 self._server_states[server_name] = {
@@ -1094,7 +1670,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         server_cfg = servers_config[server_name]
         adapter_config = config.get("mcp_adapter", {})
-        timeout = adapter_config.get("connect_timeout", 30)
+        timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
         
         if await self._connect_server(server_name, server_cfg, timeout):
             return Ok({
@@ -1124,6 +1700,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """断开与指定 MCP server 的连接"""
         if server_name not in self._clients:
             return Err(SdkError(f"Server '{server_name}' is not connected"))
+
+        self._cancel_reconnect_task(server_name)
         
         # 注销 MCP tools
         await self._unregister_mcp_tools(server_name)
@@ -1203,9 +1781,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         
-        if name in servers_config:
-            return Err(SdkError(f"Server '{name}' already exists"))
-        
         # 验证配置
         if transport == "stdio" and not command:
             return Err(SdkError("Command is required for stdio transport"))
@@ -1213,23 +1788,42 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return Err(SdkError("URL is required for sse/http transport"))
         
         # 构建配置
-        server_cfg: Dict[str, object] = {
-            "transport": transport,
-            "enabled": enabled,
-        }
-        if command:
-            server_cfg["command"] = command
-        if args:
-            server_cfg["args"] = args
-        if url:
-            server_cfg["url"] = url
-        if env:
-            server_cfg["env"] = env
+        server_cfg = self._normalize_server_config_payload(
+            transport=transport,
+            command=command,
+            args=args,
+            url=url,
+            env=env,
+            enabled=enabled,
+        )
+
+        existing_cfg = servers_config.get(name)
+        if existing_cfg is not None:
+            if self._is_same_server_config(existing_cfg, server_cfg):
+                self.ctx.logger.info(f"Server '{name}' already exists with identical config")
+                if auto_connect and enabled and name not in self._clients:
+                    adapter_config = config.get("mcp_adapter", {})
+                    timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                    if await self._connect_server(name, server_cfg, timeout_val):
+                        return Ok({
+                            "message": f"Server '{name}' already exists and is now connected",
+                            "tools_count": len(self._clients[name].tools),
+                            "already_exists": True,
+                        })
+                return Ok({
+                    "message": f"Server '{name}' already exists",
+                    "already_exists": True,
+                    "connected": name in self._clients,
+                })
+            return Err(SdkError(f"Server '{name}' already exists with different config"))
         
         # 保存到配置
         servers_config[name] = server_cfg
         self.ctx.logger.info(f"Saving mcp_servers config: {list(servers_config.keys())}")
-        await self.config.set("mcp_servers", servers_config)
+        try:
+            await self._persist_servers_config(servers_config)
+        except Exception as exc:
+            return Err(SdkError(f"Failed to save server config: {exc}"))
         
         # 缓存配置
         self._servers_config = servers_config
@@ -1238,8 +1832,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 如果需要自动连接
         if auto_connect and enabled:
             adapter_config = config.get("mcp_adapter", {})
-            timeout = adapter_config.get("connect_timeout", 30)
-            timeout_val = float(timeout) if isinstance(timeout, (int, float)) else 30.0
+            timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
             
             if await self._connect_server(name, server_cfg, timeout_val):
                 return Ok({
@@ -1283,6 +1876,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             if name not in servers_config:
                 not_found.append(name)
                 continue
+
+            self._cancel_reconnect_task(name)
             
             # 如果已连接，先断开
             if name in self._clients:
@@ -1299,12 +1894,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             
             removed.append(name)
         
-        # 保存配置（使用 __replace__ 标记强制替换整个 mcp_servers 配置）
         self.ctx.logger.info(f"Saving updated mcp_servers config: {list(servers_config.keys())}")
-        replace_config = dict(servers_config)
-        replace_config["__replace__"] = True
-        result = await self.config.set("mcp_servers", replace_config)
-        self.ctx.logger.info(f"Config update result: {result}")
+        try:
+            await self._persist_servers_config(dict(servers_config))
+        except Exception as exc:
+            return Err(SdkError(f"Failed to save server config: {exc}"))
         self._servers_config = servers_config
         
         return Ok({
@@ -1352,9 +1946,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         config = await self.config.dump()
         adapter_config = config.get("mcp_adapter", {})
-        timeout = adapter_config.get("tool_timeout", 60)
-        
-        timeout_val = float(timeout) if isinstance(timeout, (int, float)) else 60.0
+        timeout_val = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
         result = await client.call_tool(tool_name, arguments or {}, timeout=timeout_val)
         
         if "error" in result:
@@ -1457,10 +2049,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 payload=payload,
                 metadata={},
             )
-            response = await self._gateway_core.handle_envelope(envelope)
+            response_result = await self._gateway_core.handle_request(envelope)
         except Exception as exc:
             self.ctx.logger.exception(f"Gateway invoke raised unexpected exception: {exc}")
             return Err(SdkError(str(exc)))
+
+        if isinstance(response_result, Err):
+            self.ctx.logger.warning(f"Gateway invoke failed before response build: {response_result.error}")
+            return Err(SdkError(str(response_result.error)))
+
+        response = response_result.value
 
         if response.success:
             return Ok({
