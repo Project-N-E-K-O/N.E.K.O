@@ -2337,8 +2337,6 @@ async def proactive_chat(request: Request):
         
         # --- 构建 LLM + messages ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
-        llm = _make_llm(temperature=1.0, max_tokens=1536,
-                        use_vision=phase2_use_vision, disable_thinking=True)
         
         begin_text = _loc(BEGIN_GENERATE, proactive_lang)
         if phase2_use_vision:

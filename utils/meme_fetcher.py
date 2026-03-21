@@ -151,7 +151,7 @@ class MemeFetcher:
                     logger.warning(f"触发频率限制 (429)，对于关键词: {q_val}")
                     continue
                 elif response.status_code == 403:
-                    logger.warning(f"由于反爬拦截被拒绝 (403)，尝试更换请求头重试...")
+                    logger.warning("由于反爬拦截被拒绝 (403)，尝试更换请求头重试...")
                     continue
                     
                 response.raise_for_status()
@@ -298,6 +298,20 @@ MEME_HOT_KEYWORDS_CN = [
 ]
 
 
+def _is_valid_meme_url(url: str) -> bool:
+    """检查URL是否为有效的表情包图片URL"""
+    if not url:
+        return False
+    invalid_patterns = [
+        '/images/beian', 'beian_ico', 'footer', 'logo', 'avatar',
+        'icon', 'banner', 'ad_', 'loading', 'placeholder', 'qrcode'
+    ]
+    url_lower = url.lower()
+    for pattern in invalid_patterns:
+        if pattern in url_lower:
+            return False
+    return True
+
 class DoutubFetcher:
     """
     斗图吧 (doutub.com) 表情包爬取类
@@ -310,7 +324,7 @@ class DoutubFetcher:
 
     def _add_meme_item(self, results: list, found_urls: set, url: str, title_raw: str, id_raw: str, search_url: str):
         """统一的数据装配和过滤私有辅助方法，践行 DRY 原则"""
-        if not url or not isinstance(url, str) or not is_valid_meme_url(url):
+        if not url or not isinstance(url, str) or not _is_valid_meme_url(url):
             return
         
         src = url if url.startswith('http') else ('https:' + url if url.startswith('//') else f"https://www.doutub.com{url}")
@@ -401,19 +415,6 @@ class DoutubFetcher:
             
             soup = BeautifulSoup(html, 'html.parser')
             results = []
-            
-            def is_valid_meme_url(url: str) -> bool:
-                if not url:
-                    return False
-                invalid_patterns = [
-                    '/images/beian', 'beian_ico', 'footer', 'logo', 'avatar',
-                    'icon', 'banner', 'ad_', 'loading', 'placeholder', 'qrcode'
-                ]
-                url_lower = url.lower()
-                for pattern in invalid_patterns:
-                    if pattern in url_lower:
-                        return False
-                return True
             
             # 优先嗅探 SSR 静态数据块
             ssr_data = None
@@ -616,19 +617,6 @@ class FabiaoqingFetcher:
             soup = BeautifulSoup(html, 'html.parser')
             results = []
             
-            def is_valid_meme_url(url: str) -> bool:
-                if not url:
-                    return False
-                invalid_patterns = [
-                    '/images/beian', 'beian_ico', 'footer', 'logo', 'avatar',
-                    'icon', 'banner', 'ad_', 'loading', 'placeholder', 'qrcode'
-                ]
-                url_lower = url.lower()
-                for pattern in invalid_patterns:
-                    if pattern in url_lower:
-                        return False
-                return True
-            
             img_items = soup.select('img.bqppsearch')
             
             for img in img_items:
@@ -638,7 +626,7 @@ class FabiaoqingFetcher:
                 src = img.get('data-original', '') or img.get('src', '')
                 title = img.get('alt', '') or img.get('title', '')
                 
-                if not src or not is_valid_meme_url(src):
+                if not src or not _is_valid_meme_url(src):
                     continue
                 
                 if src.startswith('//'):

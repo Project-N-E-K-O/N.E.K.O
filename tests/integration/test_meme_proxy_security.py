@@ -89,10 +89,11 @@ async def test_meme_proxy_redirect_safety():
     async def mock_stream_evil(*args, **kwargs):
         yield mock_resp_evil
         
-    with patch("httpx.AsyncClient.stream", side_effect=[mock_stream_302(), mock_stream_evil()]):
+    with patch("httpx.AsyncClient.stream", side_effect=[mock_stream_302(), mock_stream_evil()]) as mock_stream:
         response = await proxy_meme_image(url_trigger)
         # 应该在第二次请求前拦截并返回 403
         assert response.status_code == 403
+        assert mock_stream.call_count == 1
 
 @pytest.mark.integration
 @pytest.mark.asyncio

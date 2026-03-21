@@ -1593,44 +1593,21 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     """
     lang = _normalize_prompt_language(lang)
 
-    # 素材组合逻辑：需要正确处理所有组合，特别是 meme + music 的情况
-    # 关键：当 has_meme=True 时，has_music 也需要被检查，否则音乐模式会被吃掉
-    if has_meme:
-        if has_music:
-            if has_screen and has_web:
-                key = 'both_music_meme'
-            elif has_screen:
-                key = 'screen_music_meme'
-            elif has_web:
-                key = 'web_music_meme'
-            else:
-                key = 'music_meme'
-        else:
-            if has_screen and has_web:
-                key = 'both_meme'
-            elif has_screen:
-                key = 'screen_meme'
-            elif has_web:
-                key = 'web_meme'
-            else:
-                key = 'meme'
-    elif has_music:
-        if has_screen and has_web:
-            key = 'both_music'
-        elif has_screen:
-            key = 'screen_music'
-        elif has_web:
-            key = 'web_music'
-        else:
-            key = 'music'
-    elif has_screen and has_web:
-        key = 'both'
+    # 素材组合逻辑
+    components = []
+    if has_screen and has_web:
+        components.append('both')
     elif has_screen:
-        key = 'screen'
+        components.append('screen')
     elif has_web:
-        key = 'web'
-    else:
-        key = 'none'
+        components.append('web')
+        
+    if has_music:
+        components.append('music')
+    if has_meme:
+        components.append('meme')
+        
+    key = '_'.join(components) if components else 'none'
 
     # 定义各个 key 的指令描述
     _si_zh = {
@@ -1676,9 +1653,9 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
     _si = {
         'zh': _si_zh,
         'en': _si_en,
-        'ja': _si_en,  # 待翻译
-        'ko': _si_en,
-        'ru': _si_en,
+        'ja': _si_en,  # TODO: 翻译 ja 参考 _si_zh
+        'ko': _si_en,  # TODO: 翻译 ko 
+        'ru': _si_en,  # TODO: 翻译 ru 
     }
 
     source_instruction = _si.get(lang, _si['en']).get(key, _si['en']['none'])
@@ -1896,13 +1873,13 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
                 '- Otherwise, first line = [MEME], then your message on next line(s). Your text will be sent with the meme image\n\n'
-                'Example:\n[MEME]\nHahaha this meme is so relatable!'
+                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
             ),
             'both_meme': (
                 'Output format (strict):\n'
                 '- To skip: reply only [PASS]\n'
                 '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nAre you looking at this? Hahaha so relatable...'
+                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
             ),
             'screen_meme': (
                 'Output format (strict):\n'
@@ -2298,7 +2275,14 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
         
         # 如果还是没有，则直接在开头注入
         if '[MEME]' not in output_format_section.upper():
-            output_format_section = "[MEME] 标签是必须的！\n" + output_format_section
+            meme_required_hint = {
+                'zh': "[MEME] 标签是必须的！\n",
+                'en': "[MEME] tag is required!\n",
+                'ja': "[MEME] タグは必須です！\n",
+                'ko': "[MEME] 태그는 필수입니다!\n",
+                'ru': "Тег [MEME] обязателен!\n",
+            }
+            output_format_section = meme_required_hint.get(lang, meme_required_hint['en']) + output_format_section
 
     # 组合最终结果，将 [MEME] 标签提醒加入指令
     return f"{source_instruction}{format_suffix}", output_format_section

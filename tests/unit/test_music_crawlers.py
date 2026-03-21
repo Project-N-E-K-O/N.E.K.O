@@ -3,7 +3,7 @@ import sys
 import pytest
 import asyncio
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from typing import List, Dict, Any
 import httpx
 
@@ -120,7 +120,7 @@ async def test_netease_crawler_parsing():
     mock_response = MagicMock(status_code=200)
     mock_response.json.return_value = MOCK_NETEASE_JSON
     
-    with patch.object(httpx.AsyncClient, 'post', return_value=mock_response):
+    with patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=mock_response)):
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
         assert results[0]['name'] == "Netease Song"
@@ -134,7 +134,7 @@ async def test_itunes_crawler_parsing():
     mock_response = MagicMock(status_code=200)
     mock_response.json.return_value = MOCK_ITUNES_JSON
     
-    with patch.object(httpx.AsyncClient, 'get', return_value=mock_response):
+    with patch.object(httpx.AsyncClient, 'get', new=AsyncMock(return_value=mock_response)):
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
         assert results[0]['name'] == "iTunes Song"
@@ -147,7 +147,7 @@ async def test_fma_crawler_parsing():
     crawler = FMACrawler()
     mock_response = MagicMock(status_code=200, text=MOCK_FMA_HTML)
     
-    with patch.object(httpx.AsyncClient, 'get', return_value=mock_response):
+    with patch.object(httpx.AsyncClient, 'get', new=AsyncMock(return_value=mock_response)):
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
         assert results[0]['name'] == "FMA Song"
@@ -159,7 +159,7 @@ async def test_musopen_crawler_parsing():
     crawler = MusopenCrawler()
     mock_response = MagicMock(status_code=200, text=MOCK_MUSOPEN_HTML)
     
-    with patch.object(httpx.AsyncClient, 'get', return_value=mock_response):
+    with patch.object(httpx.AsyncClient, 'get', new=AsyncMock(return_value=mock_response)):
         results: List[Dict[str, Any]] = await crawler.search("Chopin", limit=1)
         assert len(results) == 1
         assert "Test" in results[0]['name']
@@ -185,7 +185,7 @@ async def test_soundcloud_crawler_token_logic():
     mock_stream.json.return_value = {"url": "http://sc.real/audio.mp3"}
 
     # 按顺序触发不同的 get 请求
-    with patch.object(httpx.AsyncClient, 'get', side_effect=[mock_home, mock_js, mock_search, mock_stream]):
+    with patch.object(httpx.AsyncClient, 'get', new=AsyncMock(side_effect=[mock_home, mock_js, mock_search, mock_stream])):
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
         assert results[0]['url'] == "http://sc.real/audio.mp3"
@@ -236,7 +236,7 @@ async def test_real_itunes_integration():
         results: List[Dict[str, Any]] = await crawler.search("lofi", limit=1)
         assert len(results) > 0
         assert "http" in results[0]['url']
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as e:
         pytest.skip(f"iTunes 集成测试跳过 (网络错误): {e}")
     except Exception as e:
         # 非网络错误（如 AssertionError）应该让测试失败，而不是跳过
