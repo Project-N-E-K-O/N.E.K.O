@@ -48,12 +48,12 @@ from plugin.settings import (
 _PUSH_LOCK_INIT = threading.Lock()
 
 if TYPE_CHECKING:
-    from plugin.sdk.bus.types import BusHubProtocol
-    from plugin.sdk.bus.events import EventClient
-    from plugin.sdk.bus.lifecycle import LifecycleClient
-    from plugin.sdk.memory import MemoryClient
-    from plugin.sdk.bus.messages import MessageClient
-    from plugin.sdk.bus.conversations import ConversationClient
+    from plugin.core.bus.types import BusHubProtocol
+    from plugin.core.bus.events import EventClient
+    from plugin.core.bus.lifecycle import LifecycleClient
+    from plugin.core.bus.memory_client import MemoryClient
+    from plugin.core.bus.messages import MessageClient
+    from plugin.core.bus.conversations import ConversationClient
     from loguru import Logger as LoguruLogger
 
 
@@ -68,31 +68,31 @@ class _BusHub:
 
     @functools.cached_property
     def memory(self) -> "MemoryClient":
-        from plugin.sdk.memory import MemoryClient
+        from plugin.core.bus.memory_client import MemoryClient
 
         return MemoryClient(self._ctx)
 
     @functools.cached_property
     def messages(self) -> "MessageClient":
-        from plugin.sdk.bus.messages import MessageClient
+        from plugin.core.bus.messages import MessageClient
 
         return MessageClient(self._ctx)
 
     @functools.cached_property
     def events(self) -> "EventClient":
-        from plugin.sdk.bus.events import EventClient
+        from plugin.core.bus.events import EventClient
 
         return EventClient(self._ctx)
 
     @functools.cached_property
     def lifecycle(self) -> "LifecycleClient":
-        from plugin.sdk.bus.lifecycle import LifecycleClient
+        from plugin.core.bus.lifecycle import LifecycleClient
 
         return LifecycleClient(self._ctx)
 
     @functools.cached_property
     def conversations(self) -> "ConversationClient":
-        from plugin.sdk.bus.conversations import ConversationClient
+        from plugin.core.bus.conversations import ConversationClient
 
         return ConversationClient(self._ctx)
 

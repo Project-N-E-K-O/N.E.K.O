@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Project N.E.K.O.
   text: Developer Documentation
-  tagline: Build the living AI companion metaverse — open source, extensible, multi-modal.
+  tagline: A proactive, omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -37,12 +37,12 @@ features:
     linkText: API reference
   - icon: 🧠
     title: Memory System
-    details: Semantic recall via embeddings, time-indexed history, compressed recent memory with sliding window, and persistent user preferences.
+    details: Semantic recall via hybrid embedding-vector and BM25 indexing, time-indexed history, sliding-window compressed recent memory, and persistent user preferences.
     link: /architecture/memory-system
     linkText: How it works
   - icon: 🤖
     title: Agent Framework
-    details: Background task execution via MCP, Computer Use, and Browser Use adapters. Automatic task planning, deduplication, and parallel capability assessment.
+    details: Background task execution via MCP, Computer Use, Browser Use, and Virtual Machine adapters. Automatic task planning, deduplication, and parallel capability assessment.
     link: /architecture/agent-system
     linkText: Explore agents
   - icon: 🎨

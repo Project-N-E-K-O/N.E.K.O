@@ -31,7 +31,7 @@ try:
 except Exception:  # pragma: no cover
     ormsgpack = None
 
-from plugin.sdk.message_plane_transport import format_rpc_error
+from plugin.core.message_plane_transport import format_rpc_error
 from contextlib import contextmanager
 
 

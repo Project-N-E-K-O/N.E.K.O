@@ -12,7 +12,7 @@ Project N.E.K.O. is built as a **multi-process microservice system** where three
 |--------|------|-------------|------|
 | **Main Server** | 48911 | `main_server.py` | Web UI, REST API, WebSocket chat, TTS |
 | **Memory Server** | 48912 | `memory_server.py` | Semantic recall, time-indexed history, memory compression |
-| **Agent Server** | 48915 | `agent_server.py` | Background task execution (MCP, Computer Use, Browser Use) |
+| **Agent Server** | 48915 | `agent_server.py` | Background task execution (MCP, Computer Use, Browser Use, Virtual Machine) |
 
 The main server is the user-facing entry point. It serves the Web UI, handles all REST API requests, and maintains WebSocket connections for real-time voice/text chat. The memory and agent servers are internal services that the main server communicates with.
 
