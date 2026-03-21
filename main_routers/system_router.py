@@ -1144,7 +1144,6 @@ async def proxy_meme_image(url: str):
             media_type=cached['content_type'],
             headers={
                 'Cache-Control': 'public, max-age=86400',
-                'Access-Control-Allow-Origin': '*',
                 'X-Cache': 'HIT',
                 'X-Content-Type-Options': 'nosniff'
             }
@@ -1254,7 +1253,6 @@ async def proxy_meme_image(url: str):
                         media_type=content_type,
                         headers={
                             'Cache-Control': 'public, max-age=86400',
-                            'Access-Control-Allow-Origin': '*',
                             'X-Cache': 'MISS',
                             'X-Content-Type-Options': 'nosniff'
                         }

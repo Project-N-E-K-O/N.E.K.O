@@ -540,7 +540,7 @@ class LLMSessionManager:
                     if is_first_chunk and self.tts_thread and not self.tts_thread.is_alive():
                         self._respawn_tts_worker()
 
-    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str = None):
+    async def send_lanlan_response(self, text: str, is_first_chunk: bool = False, turn_id: str | None = None):
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
