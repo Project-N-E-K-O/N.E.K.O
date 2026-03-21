@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings
+from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -258,7 +258,6 @@ async def save_preferences(request: Request):
             return {"success": False, "error": "偏好数据格式无效"}
         
         # 防止使用保留的全局对话设置键作为模型路径
-        from utils.preferences import GLOBAL_CONVERSATION_KEY
         if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
             return {"success": False, "error": "model_path 不能使用保留键"}
         
