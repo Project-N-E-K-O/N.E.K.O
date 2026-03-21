@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
 import pytest
+import aiohttp
 
-from plugin.plugins.mcp_adapter import MCPAdapterPlugin
+from plugin.plugins.mcp_adapter import MCPAdapterPlugin, MCPClient, MCPServerConfig
 from plugin.plugins.mcp_adapter.invoker import MCPPluginInvoker
 from plugin.plugins.mcp_adapter.normalizer import MCPRequestNormalizer
 from plugin.plugins.mcp_adapter.router import MCPRouteEngine
@@ -46,6 +48,22 @@ class _Ctx:
 
     async def trigger_plugin_event(self, **kwargs):
         return {"ok": True, "kwargs": kwargs}
+
+    async def get_own_config(self, timeout: float = 5.0):
+        return {"config": self._effective_config}
+
+    async def update_own_config(self, updates, timeout: float = 10.0):
+        merged = dict(self._effective_config)
+        if "mcp_servers" in updates and isinstance(updates["mcp_servers"], dict):
+            current_servers = dict(merged.get("mcp_servers", {}))
+            for name, value in updates["mcp_servers"].items():
+                if value == "__DELETE__":
+                    current_servers.pop(name, None)
+                else:
+                    current_servers[name] = value
+            merged["mcp_servers"] = current_servers
+        self._effective_config = merged
+        return {"config": merged}
 
 
 @pytest.mark.asyncio
@@ -200,3 +218,263 @@ async def test_mcp_gateway_invoke_uses_handle_request() -> None:
     result = await plugin.gateway_invoke(tool_name="demo_tool", arguments={"x": 1})
     assert isinstance(result, Ok)
     assert result.value["result"] == {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_mcp_http_call_tool_passes_timeout_to_http_request() -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+    client.connected = True
+
+    observed: dict[str, object] = {}
+
+    async def _send_request(method: str, params, *, timeout: float = 60.0):
+        observed["method"] = method
+        observed["params"] = params
+        observed["timeout"] = timeout
+        return {"result": {"ok": True}}
+
+    client._send_request = _send_request  # type: ignore[method-assign]
+
+    result = await client.call_tool("demo_tool", {"q": 1}, timeout=12.5)
+
+    assert result == {"result": {"ok": True}}
+    assert observed == {
+        "method": "tools/call",
+        "params": {"name": "demo_tool", "arguments": {"q": 1}},
+        "timeout": 12.5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_connect_http_rejects_tools_list_jsonrpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MCPClient(
+        MCPServerConfig(
+            name="fetch",
+            transport="streamable-http",
+            url="https://example.com/mcp",
+        ),
+        logger=_Logger(),
+    )
+
+    class _Response:
+        def __init__(self, *, status: int, payload: dict[str, object], headers: dict[str, str] | None = None):
+            self.status = status
+            self._payload = payload
+            self.headers = headers or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def json(self):
+            return self._payload
+
+        async def text(self):
+            return str(self._payload)
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            self._responses = [
+                _Response(status=200, payload={"result": {}}, headers={"mcp-session-id": "sid"}),
+                _Response(status=200, payload={}),
+                _Response(status=200, payload={"error": {"message": "tools unavailable"}}),
+            ]
+
+        def post(self, *args, **kwargs):
+            return self._responses.pop(0)
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+
+    ok = await client.connect(timeout=5.0)
+
+    assert ok is False
+    assert client.connected is False
+    assert client.tools == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_add_server_persists_via_runtime_config_update() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    saved: dict[str, object] = {}
+
+    async def _update_own_config(updates, timeout: float = 10.0):
+        saved["updates"] = updates
+        return {"config": {"mcp_servers": {"fetch": updates["mcp_servers"]["fetch"]}}}
+
+    plugin.ctx.update_own_config = _update_own_config  # type: ignore[method-assign]
+
+    result = await plugin.add_server(
+        name="fetch",
+        transport="streamable-http",
+        url="https://example.com/mcp",
+        auto_connect=False,
+    )
+
+    assert isinstance(result, Ok)
+    assert saved["updates"] == {
+        "mcp_servers": {
+            "fetch": {
+                "transport": "streamable-http",
+                "enabled": True,
+                "url": "https://example.com/mcp",
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_add_server_is_idempotent_for_identical_config() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    async def _dump(*, timeout: float = 5.0):
+        return {
+            "mcp_servers": {
+                "fetch": {
+                    "transport": "streamable-http",
+                    "enabled": True,
+                    "url": "https://example.com/mcp",
+                }
+            }
+        }
+
+    plugin.config.dump = _dump  # type: ignore[method-assign]
+
+    result = await plugin.add_server(
+        name="fetch",
+        transport="streamable-http",
+        url="https://example.com/mcp",
+        auto_connect=False,
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["already_exists"] is True
+    assert result.value["connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_add_server_rejects_duplicate_name_with_different_config() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    async def _dump(*, timeout: float = 5.0):
+        return {
+            "mcp_servers": {
+                "fetch": {
+                    "transport": "streamable-http",
+                    "enabled": True,
+                    "url": "https://example.com/old",
+                }
+            }
+        }
+
+    plugin.config.dump = _dump  # type: ignore[method-assign]
+
+    result = await plugin.add_server(
+        name="fetch",
+        transport="streamable-http",
+        url="https://example.com/new",
+        auto_connect=False,
+    )
+
+    assert isinstance(result, Err)
+    assert "different config" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_mcp_remove_servers_persists_delete_marker_patch() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._servers_config = {
+        "fetch": {"transport": "streamable-http", "url": "https://example.com"}
+    }
+
+    saved: dict[str, object] = {}
+
+    async def _dump(*, timeout: float = 5.0):
+        return {"mcp_servers": {"fetch": {"transport": "streamable-http", "url": "https://example.com"}}}
+
+    plugin.config.dump = _dump  # type: ignore[method-assign]
+
+    async def _update_own_config(updates, timeout: float = 10.0):
+        saved["updates"] = updates
+        return {"config": {"mcp_servers": {}}}
+
+    plugin.ctx.update_own_config = _update_own_config  # type: ignore[method-assign]
+
+    result = await plugin.remove_servers(["fetch"])
+
+    assert isinstance(result, Ok)
+    assert saved["updates"] == {"mcp_servers": {"fetch": "__DELETE__"}}
+
+
+@pytest.mark.asyncio
+async def test_mcp_reconnect_server_cleans_task_slot_on_early_return() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._reconnect_tasks["missing"] = asyncio.current_task()
+
+    await plugin._reconnect_server("missing")
+
+    assert "missing" not in plugin._reconnect_tasks
+
+
+@pytest.mark.asyncio
+async def test_mcp_connect_server_coerces_string_flags_and_rolls_back_on_tool_register_failure() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._route_engine = object()
+
+    observed: dict[str, object] = {}
+
+    class _Client:
+        def __init__(self, config, logger=None):
+            observed["enabled"] = config.enabled
+            self.config = config
+            self.tools = []
+
+        def set_disconnect_callback(self, callback):
+            self._callback = callback
+
+        async def connect(self, timeout: float = 30.0) -> bool:
+            observed["timeout"] = timeout
+            return True
+
+        async def disconnect(self) -> None:
+            observed["disconnected"] = True
+
+    async def _register_mcp_tools(server_name: str, client) -> None:
+        raise RuntimeError("register failed")
+
+    plugin._register_mcp_tools = _register_mcp_tools  # type: ignore[method-assign]
+
+    from plugin.plugins import mcp_adapter as module
+
+    original_client_cls = module.MCPClient
+    try:
+        module.MCPClient = _Client
+        ok = await plugin._connect_server(
+            "fetch",
+            {
+                "transport": "streamable-http",
+                "url": "https://example.com/mcp",
+                "enabled": "false",
+            },
+            timeout="12.5",  # type: ignore[arg-type]
+        )
+    finally:
+        module.MCPClient = original_client_cls
+
+    assert ok is False
+    assert observed["enabled"] is False
+    assert observed["timeout"] == 12.5
+    assert observed["disconnected"] is True
+    assert "fetch" not in plugin._clients

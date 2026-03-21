@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import subprocess
+import copy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
 
@@ -278,7 +279,8 @@ class MCPClient:
                 "method": "notifications/initialized"
             }
             async with self._http_session.post(url, json=notif_payload, headers=headers) as resp:
-                pass  # 通知不需要响应
+                if resp.status >= 400:
+                    raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
             
             # 获取 tools 列表
             tools_payload = {
@@ -296,6 +298,9 @@ class MCPClient:
                 if resp.status != 200:
                     raise ValueError(f"HTTP {resp.status}: {await resp.text()}")
                 tools_result = await resp.json()
+
+            if "error" in tools_result:
+                raise ValueError(f"Failed to list tools: {tools_result['error']}")
             
             # 解析 tools
             self.tools = []
@@ -400,7 +405,7 @@ class MCPClient:
                 self._send_request("tools/call", {
                     "name": tool_name,
                     "arguments": arguments,
-                }),
+                }, timeout=timeout),
                 timeout=timeout
             )
             
@@ -414,7 +419,13 @@ class MCPClient:
         except Exception as e:
             return {"error": str(e)}
     
-    async def _send_http_request(self, method: str, params: Dict[str, object]) -> Dict[str, object]:
+    async def _send_http_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
         """通过 HTTP 发送 JSON-RPC 请求"""
         import aiohttp
         
@@ -422,13 +433,15 @@ class MCPClient:
         async with aiohttp.ClientSession(
             **aiohttp_session_kwargs_for_url(self.config.url or "")
         ) as session:
-            return await self._do_http_request(session, method, params)
+            return await self._do_http_request(session, method, params, timeout=timeout)
     
     async def _do_http_request(
         self,
         session: object,
         method: str,
         params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
     ) -> Dict[str, object]:
         """执行实际的 HTTP 请求"""
         import aiohttp
@@ -459,7 +472,7 @@ class MCPClient:
             url,
             json=payload,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=60)
+            timeout=aiohttp.ClientTimeout(total=timeout)
         ) as resp:
             if resp.status != 200:
                 raise Exception(f"HTTP {resp.status}: {await resp.text()}")
@@ -470,11 +483,17 @@ class MCPClient:
         
         return result
     
-    async def _send_request(self, method: str, params: Dict[str, object]) -> Dict[str, object]:
+    async def _send_request(
+        self,
+        method: str,
+        params: Dict[str, object],
+        *,
+        timeout: float = 60.0,
+    ) -> Dict[str, object]:
         """发送 JSON-RPC 请求"""
         # HTTP 传输
         if self.config.transport in ("sse", "streamable-http"):
-            return await self._send_http_request(method, params)
+            return await self._send_http_request(method, params, timeout=timeout)
         
         # stdio 传输
         if not self.writer:
@@ -607,6 +626,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     """
     
     __freezable__ = ["_server_states"]
+    _CONFIG_DELETE_MARKER = "__DELETE__"
     
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -645,12 +665,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         servers_config = config.get("mcp_servers", {})
         adapter_config = config.get("mcp_adapter", {})
         
-        connect_timeout = adapter_config.get("connect_timeout", 30)
+        connect_timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
         
         # 缓存重连配置
-        self._auto_reconnect = adapter_config.get("auto_reconnect", True)
-        self._reconnect_interval = adapter_config.get("reconnect_interval", 5)
-        self._max_reconnect_attempts = adapter_config.get("max_reconnect_attempts", 3)
+        self._auto_reconnect = self._coerce_bool(adapter_config.get("auto_reconnect", True), True)
+        self._reconnect_interval = self._coerce_int(adapter_config.get("reconnect_interval", 5), 5, minimum=0)
+        self._max_reconnect_attempts = self._coerce_int(adapter_config.get("max_reconnect_attempts", 3), 3, minimum=0)
         self._servers_config = servers_config
         
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
@@ -790,6 +810,103 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             params=dict(params),  # 转换为 Dict[str, Any]
             timeout=float(timeout_s),
         )
+
+    async def _persist_servers_config(self, servers_config: Dict[str, object]) -> None:
+        """Persist the full MCP server map through the runtime-supported config API."""
+        current = self._servers_config if isinstance(self._servers_config, dict) else {}
+        remove_names = [name for name in current.keys() if name not in servers_config]
+
+        updates: Dict[str, object] = {"mcp_servers": {}}
+        mcp_updates = updates["mcp_servers"]
+        if not isinstance(mcp_updates, dict):  # pragma: no cover - defensive guard
+            raise TypeError("mcp_servers update payload must be a dict")
+
+        for name in remove_names:
+            mcp_updates[name] = self._CONFIG_DELETE_MARKER
+        for name, server_cfg in servers_config.items():
+            mcp_updates[name] = copy.deepcopy(server_cfg)
+
+        await self.ctx.update_own_config(updates)
+
+    def _coerce_timeout(self, value: object, default: float) -> float:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            timeout = float(value)
+        elif isinstance(value, str):
+            try:
+                timeout = float(value.strip())
+            except ValueError:
+                return default
+        else:
+            return default
+        return timeout if timeout > 0 else default
+
+    def _coerce_bool(self, value: object, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    def _coerce_int(self, value: object, default: int, *, minimum: int | None = None) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            result = value
+        elif isinstance(value, float):
+            result = int(value)
+        elif isinstance(value, str):
+            try:
+                result = int(value.strip())
+            except ValueError:
+                return default
+        else:
+            return default
+        if minimum is not None and result < minimum:
+            return minimum
+        return result
+
+    def _normalize_server_config_payload(
+        self,
+        *,
+        transport: str,
+        command: Optional[str] = None,
+        args: Optional[List[str]] = None,
+        url: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        enabled: bool = True,
+    ) -> Dict[str, object]:
+        server_cfg: Dict[str, object] = {
+            "transport": transport,
+            "enabled": enabled,
+        }
+        if command:
+            server_cfg["command"] = command
+        if args:
+            server_cfg["args"] = list(args)
+        if url:
+            server_cfg["url"] = url
+        if env:
+            server_cfg["env"] = dict(env)
+        return server_cfg
+
+    def _is_same_server_config(self, current: object, incoming: Dict[str, object]) -> bool:
+        if not isinstance(current, dict):
+            return False
+        normalized_current = self._normalize_server_config_payload(
+            transport=str(current.get("transport", "")),
+            command=str(current["command"]) if isinstance(current.get("command"), str) else None,
+            args=list(current["args"]) if isinstance(current.get("args"), list) else None,
+            url=str(current["url"]) if isinstance(current.get("url"), str) else None,
+            env=dict(current["env"]) if isinstance(current.get("env"), dict) else None,
+            enabled=self._coerce_bool(current.get("enabled", True), True),
+        )
+        return normalized_current == incoming
     
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
         """
@@ -871,53 +988,53 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     
     async def _reconnect_server(self, server_name: str) -> None:
         """尝试重连服务器"""
-        server_cfg = self._servers_config.get(server_name)
-        if not server_cfg:
-            self.ctx.logger.warning(f"No config found for server '{server_name}', cannot reconnect")
-            return
-        
-        attempts = 0
-        while not self._shutdown and attempts < self._max_reconnect_attempts:
-            attempts += 1
-            self.ctx.logger.info(
-                f"Attempting to reconnect to MCP server '{server_name}' "
-                f"(attempt {attempts}/{self._max_reconnect_attempts})"
-            )
+        try:
+            server_cfg = self._servers_config.get(server_name)
+            if not server_cfg:
+                self.ctx.logger.warning(f"No config found for server '{server_name}', cannot reconnect")
+                return
             
-            # 更新状态
-            self._server_states[server_name] = {
-                **self._server_states.get(server_name, {}),
-                "reconnect_attempts": attempts,
-            }
-            
-            # 等待重连间隔
-            await asyncio.sleep(self._reconnect_interval)
-            
-            if self._shutdown:
-                break
-            
-            # 尝试重连
-            config = await self.config.dump()
-            adapter_config = config.get("mcp_adapter", {})
-            timeout = adapter_config.get("connect_timeout", 30)
-            
-            if await self._connect_server(server_name, server_cfg, timeout):
-                self.ctx.logger.info(f"Successfully reconnected to MCP server '{server_name}'")
-                break
-        else:
-            if not self._shutdown:
-                self.ctx.logger.error(
-                    f"Failed to reconnect to MCP server '{server_name}' "
-                    f"after {self._max_reconnect_attempts} attempts"
+            attempts = 0
+            while not self._shutdown and attempts < self._max_reconnect_attempts:
+                attempts += 1
+                self.ctx.logger.info(
+                    f"Attempting to reconnect to MCP server '{server_name}' "
+                    f"(attempt {attempts}/{self._max_reconnect_attempts})"
                 )
+                
+                # 更新状态
                 self._server_states[server_name] = {
                     **self._server_states.get(server_name, {}),
-                    "connected": False,
-                    "error": f"Reconnection failed after {self._max_reconnect_attempts} attempts",
+                    "reconnect_attempts": attempts,
                 }
-        
-        # 清理重连任务
-        self._reconnect_tasks.pop(server_name, None)
+                
+                # 等待重连间隔
+                await asyncio.sleep(self._reconnect_interval)
+                
+                if self._shutdown:
+                    break
+                
+                # 尝试重连
+                config = await self.config.dump()
+                adapter_config = config.get("mcp_adapter", {})
+                timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                
+                if await self._connect_server(server_name, server_cfg, timeout):
+                    self.ctx.logger.info(f"Successfully reconnected to MCP server '{server_name}'")
+                    break
+            else:
+                if not self._shutdown:
+                    self.ctx.logger.error(
+                        f"Failed to reconnect to MCP server '{server_name}' "
+                        f"after {self._max_reconnect_attempts} attempts"
+                    )
+                    self._server_states[server_name] = {
+                        **self._server_states.get(server_name, {}),
+                        "connected": False,
+                        "error": f"Reconnection failed after {self._max_reconnect_attempts} attempts",
+                    }
+        finally:
+            self._reconnect_tasks.pop(server_name, None)
     
     async def _connect_server(
         self,
@@ -927,6 +1044,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     ) -> bool:
         """连接到单个 MCP server"""
         try:
+            timeout = self._coerce_timeout(timeout, 30.0)
             # 提取配置字段并进行类型转换
             transport_raw = server_cfg.get("transport", "stdio")
             transport = str(transport_raw) if transport_raw else "stdio"
@@ -943,8 +1061,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             env_raw = server_cfg.get("env", {})
             env = dict(env_raw) if isinstance(env_raw, dict) else {}
             
-            enabled_raw = server_cfg.get("enabled", True)
-            enabled = bool(enabled_raw) if enabled_raw is not None else True
+            enabled = self._coerce_bool(server_cfg.get("enabled", True), True)
             
             config = MCPServerConfig(
                 name=server_name,
@@ -966,7 +1083,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 client._reconnect_attempts = 0  # 重置重连计数
                 
                 # 使用 Gateway Core 注册 tools
-                await self._register_mcp_tools(server_name, client)
+                try:
+                    await self._register_mcp_tools(server_name, client)
+                except Exception:
+                    self._clients.pop(server_name, None)
+                    await client.disconnect()
+                    raise
                 
                 # 更新状态
                 self._server_states[server_name] = {
@@ -1089,7 +1211,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         server_cfg = servers_config[server_name]
         adapter_config = config.get("mcp_adapter", {})
-        timeout = adapter_config.get("connect_timeout", 30)
+        timeout = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
         
         if await self._connect_server(server_name, server_cfg, timeout):
             return Ok({
@@ -1198,9 +1320,6 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         
-        if name in servers_config:
-            return Err(SdkError(f"Server '{name}' already exists"))
-        
         # 验证配置
         if transport == "stdio" and not command:
             return Err(SdkError("Command is required for stdio transport"))
@@ -1208,23 +1327,42 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             return Err(SdkError("URL is required for sse/http transport"))
         
         # 构建配置
-        server_cfg: Dict[str, object] = {
-            "transport": transport,
-            "enabled": enabled,
-        }
-        if command:
-            server_cfg["command"] = command
-        if args:
-            server_cfg["args"] = args
-        if url:
-            server_cfg["url"] = url
-        if env:
-            server_cfg["env"] = env
+        server_cfg = self._normalize_server_config_payload(
+            transport=transport,
+            command=command,
+            args=args,
+            url=url,
+            env=env,
+            enabled=enabled,
+        )
+
+        existing_cfg = servers_config.get(name)
+        if existing_cfg is not None:
+            if self._is_same_server_config(existing_cfg, server_cfg):
+                self.ctx.logger.info(f"Server '{name}' already exists with identical config")
+                if auto_connect and enabled and name not in self._clients:
+                    adapter_config = config.get("mcp_adapter", {})
+                    timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
+                    if await self._connect_server(name, server_cfg, timeout_val):
+                        return Ok({
+                            "message": f"Server '{name}' already exists and is now connected",
+                            "tools_count": len(self._clients[name].tools),
+                            "already_exists": True,
+                        })
+                return Ok({
+                    "message": f"Server '{name}' already exists",
+                    "already_exists": True,
+                    "connected": name in self._clients,
+                })
+            return Err(SdkError(f"Server '{name}' already exists with different config"))
         
         # 保存到配置
         servers_config[name] = server_cfg
         self.ctx.logger.info(f"Saving mcp_servers config: {list(servers_config.keys())}")
-        await self.config.set("mcp_servers", servers_config)
+        try:
+            await self._persist_servers_config(servers_config)
+        except Exception as exc:
+            return Err(SdkError(f"Failed to save server config: {exc}"))
         
         # 缓存配置
         self._servers_config = servers_config
@@ -1233,8 +1371,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         # 如果需要自动连接
         if auto_connect and enabled:
             adapter_config = config.get("mcp_adapter", {})
-            timeout = adapter_config.get("connect_timeout", 30)
-            timeout_val = float(timeout) if isinstance(timeout, (int, float)) else 30.0
+            timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
             
             if await self._connect_server(name, server_cfg, timeout_val):
                 return Ok({
@@ -1294,12 +1431,11 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             
             removed.append(name)
         
-        # 保存配置（使用 __replace__ 标记强制替换整个 mcp_servers 配置）
         self.ctx.logger.info(f"Saving updated mcp_servers config: {list(servers_config.keys())}")
-        replace_config = dict(servers_config)
-        replace_config["__replace__"] = True
-        result = await self.config.set("mcp_servers", replace_config)
-        self.ctx.logger.info(f"Config update result: {result}")
+        try:
+            await self._persist_servers_config(dict(servers_config))
+        except Exception as exc:
+            return Err(SdkError(f"Failed to save server config: {exc}"))
         self._servers_config = servers_config
         
         return Ok({
@@ -1347,9 +1483,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         config = await self.config.dump()
         adapter_config = config.get("mcp_adapter", {})
-        timeout = adapter_config.get("tool_timeout", 60)
-        
-        timeout_val = float(timeout) if isinstance(timeout, (int, float)) else 60.0
+        timeout_val = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
         result = await client.call_tool(tool_name, arguments or {}, timeout=timeout_val)
         
         if "error" in result:
