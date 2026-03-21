@@ -90,7 +90,11 @@
         loadCounters() {
             try {
                 const data = localStorage.getItem(STORAGE_KEY);
-                return data ? JSON.parse(data) : {};
+                if (!data) return {};
+                const parsed = JSON.parse(data);
+                return (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))
+                    ? parsed
+                    : {};
             } catch (e) {
                 console.error('加载成就计数器失败:', e);
                 return {};
@@ -110,7 +114,9 @@
         loadUnlockedAchievements() {
             try {
                 const data = localStorage.getItem(UNLOCKED_KEY);
-                return data ? JSON.parse(data) : [];
+                if (!data) return [];
+                const parsed = JSON.parse(data);
+                return Array.isArray(parsed) ? parsed : [];
             } catch (e) {
                 console.error('加载已解锁成就失败:', e);
                 return [];
@@ -205,12 +211,12 @@
         // 增加计数器
         incrementCounter(counterName, amount = 1) {
             const delta = Number(amount);
-            if (!Number.isFinite(delta)) {
+            if (!Number.isFinite(delta) || delta <= 0) {
                 console.warn(`无效的成就计数增量: ${counterName} = ${amount}`);
                 return;
             }
             // 如果计数器不存在，自动创建
-            if (!this.counters.hasOwnProperty(counterName)) {
+            if (!Object.prototype.hasOwnProperty.call(this.counters, counterName)) {
                 this.counters[counterName] = 0;
             }
 

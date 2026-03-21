@@ -405,7 +405,7 @@ class PluginCommunicationResourceManager:
     async def _handle_entry_update(self, msg: Dict[str, Any]) -> None:
         try:
             from plugin.core.state import state
-            from plugin.sdk.events import EventMeta, EventHandler
+            from plugin._types.events import EventMeta, EventHandler
 
             action = msg.get("action")
             entry_id = msg.get("entry_id")

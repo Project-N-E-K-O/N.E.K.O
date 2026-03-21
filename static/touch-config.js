@@ -1,31 +1,26 @@
 
 function touchPage_open(){
 
-    const t = (key, fallback) => (typeof window.t === 'function') ? window.t(key) : fallback
     try {
         const live2dManager = window.live2dManager
         if (!live2dManager) {
-            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.managerNotFound', 'Live2DManager 未找到') })
+            createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.managerNotFound', 'Live2DManager 未找到') })
             return
         }
         
         const model = live2dManager.getCurrentModel()
         if (!model) {
-            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.modelNotFound', '当前没有加载模型') })
+            createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.modelNotFound', '当前没有加载模型') })
             return
         }
         
         const internalModel = model.internalModel
         if (!internalModel || !internalModel.settings) {
-            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
+            createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
             return
         }
         
-        const hitAreas = internalModel.settings.hitAreas
-        if (!hitAreas || hitAreas.length === 0) {
-            createTouchConfigFloatingWindow({ content: t('live2d.touchAnim.noHitAreas', '模型没有定义可触摸位置') })
-            return
-        }
+        const hitAreas = internalModel.settings.hitAreas || []
         
         const settings = internalModel.settings.json
         const motions = settings.FileReferences?.Motions || {}
@@ -39,8 +34,18 @@ function touchPage_open(){
 }
 
 async function InitializationTouchSet(characterJson) {
+    
+    while(typeof window.t !== 'function'){
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
+    const modelType = localStorage.getItem('modelType') || 'live2d';
+    if (modelType !== 'live2d') {
+        console.log('[TouchSet] 当前模型类型不是 Live2D，跳过触摸配置初始化');
+        return;
+    }
 
+            
     if (!characterJson){
         // // 获取角色名称
         // const lanlanName = await getLanlanName();
@@ -73,77 +78,97 @@ async function InitializationTouchSet(characterJson) {
     }else{
         // 呃
     }
+    let model 
+    for(let i = 0;i<5;i++){
+        model = window.live2dManager.getCurrentModel()
+        if (model){
+            break
+        }else{
+            console.warn(`[TouchSet] 模型不存在，等待 1 秒后重试 (${i+1}/5)`)
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+
     const touchSet = characterJson._reserved?.touch_set || {};
+    
+    if(!touchSet[window.live2dManager.modelName]){
+        touchSet[window.live2dManager.modelName] = {"default":{"motions": [], "expressions": []}}
+    }
     window.live2dManager.touchSet = touchSet;
-    // 根据当前模型 ID 获取对应配置
-    // const live2dManager = window.live2dManager;
-    // const modelId = live2dManager?.modelName || '';
-    window.touchSet = structuredClone( touchSet || {}) ;
-    window.live2dManager.setupHitAreaInteraction(window.live2dManager.getCurrentModel())
     window.live2dManager.touchSetFilter = {}
+    window.live2dManager.touchSetHitEventLock = false
+
+    window.live2dManager.setupHitAreaInteraction(model)
 }
 
-function copyTouchSet(){
-    window.live2dManager.touchSet = structuredClone(window.touchSet || {})
-}
-function saveTempTouchSet(){
-    const 用于检查的变量A = window.touchSet //仅调试时检查不做实际用处
-    const 用于检查的变量B = window.live2dManager?.touchSet //仅调试时检查不做实际用处
-    const nowmodle = window.live2dManager?.modelName || '';
-    function getTagblock(T,tagname){
-        for(let i = 0; i < T.children.length;i++){
-            if (Array.from(T.children[i].classList).includes(tagname)){
-                return T.children[i]
-            }
-        }
-        return null
+async function saveTouchSetToServer() {
+    const modelName = window.live2dManager?.modelName;
+    const lanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || window.lanlan_config?.lanlan_name;
+    
+    if (!modelName || !lanlanName) {
+        console.error('[TouchSet] 无法保存：缺少模型名称或角色名称');
+        return false;
     }
-    const nowmodle_touchSet = {};
+    
+    const touchSetData = collectAllTouchSetData();
+    
+    try {
+        const response = await fetch(`/api/characters/catgirl/${encodeURIComponent(lanlanName)}/touch_set`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model_name: modelName,
+                touch_set: touchSetData
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            window.live2dManager.touchSet[modelName] = touchSetData;
+            console.log(`[TouchSet] 已保存模型 ${modelName} 的触摸配置到服务器`);
+            return true;
+        } else {
+            console.error('[TouchSet] 保存失败:', result.error);
+            return false;
+        }
+    } catch (error) {
+        console.error('[TouchSet] 保存请求失败:', error);
+        return false;
+    }
+}
+
+function collectAllTouchSetData() {
+    const touchSetData = {};
     
     const hitAreaItems = document.querySelectorAll('.hitarea-item');
     hitAreaItems.forEach(item => {
-        const hitAreaId = item.querySelector('.hitarea-title').textContent.replace('HitAreaID: ', '');
-
-
-
-        let motionMSdomlist = getTagblock(item,'touch_set_motion')
-        let expressionMSdomlist = getTagblock(item,'touch_set_expression')
-        const motionMS = []
-        const expressionMS = []
+        const titleElement = item.querySelector('.hitarea-title');
+        const hitAreaId = titleElement.dataset.hitAreaId || titleElement.textContent.replace('HitAreaID: ', '');
         
-        if (motionMSdomlist !== null){
-            const ddddd = Array.from(motionMSdomlist.children[1].children[0].children[0].children)
-            ddddd.forEach((i) => {
-                if (i.textContent){
-                    motionMS.push(i.textContent)
-                }
-            })
-        }
-
-        if (expressionMSdomlist !== null){
-            const ddddd = Array.from(expressionMSdomlist.children[1].children[0].children[0].children)
-            ddddd.forEach((i) => {
-                if (i.textContent){
-                    expressionMS.push(i.textContent)
-                }
-            })
-        }
-
-
-
-        nowmodle_touchSet[hitAreaId] = {motions:motionMS,expressions:expressionMS}
-
+        const motionMultiselect = item.querySelector('.custom-multiselect[data-type="motion"]');
+        const expressionMultiselect = item.querySelector('.custom-multiselect[data-type="expression"]');
+        
+        const motions = motionMultiselect ? 
+            Array.from(motionMultiselect.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
+        const expressions = expressionMultiselect ? 
+            Array.from(expressionMultiselect.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value) : [];
+        
+        touchSetData[hitAreaId] = {
+            motions: motions,
+            expressions: expressions
+        };
     });
     
-    window.touchSet[nowmodle] = nowmodle_touchSet;
-    console.log("触摸反应 配置已存储到 window.touchSet:", window.touchSet[nowmodle]);
+    return touchSetData;
 }
 
 function showTouchSetConfigWindow(hitAreas, motions, expressions){
-    const t = (key, fallback) => (typeof window.t === 'function') ? window.t(key) : fallback
     
     const floatingWindow = createTouchConfigFloatingWindow({
-        title: t('live2d.touchAnim.title', '触摸动画配置'),
+        title: window.t('live2d.touchAnim.title', '触摸动画配置'),
         showCloseButton: false
     })
     
@@ -337,12 +362,43 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     container.appendChild(style)
     
     const nowmodle = window.live2dManager?.modelName || '';
-    const TouchSet = window.touchSet[nowmodle] || {};
+    const TouchSet = window.live2dManager?.touchSet?.[nowmodle] || {};
+    
+    const closeButton = document.createElement("button")
+    closeButton.className = "hitarea-btn hitarea-btn-secondary"
+    closeButton.textContent = window.t('live2d.touchAnim.close', '关闭')
+    closeButton.style.cssText = `
+        order: 999;
+        margin-top: 20px;
+    `
+
+    const cleanupMultiselect = () => {
+        document.removeEventListener('click', closeAllMultiselects);
+    };
+    floatingWindow.onClose = function(){
+        if (autoSaveTimeout) {
+            clearTimeout(autoSaveTimeout)
+            autoSaveTimeout = null
+        }
+        saveTouchSetToServer()
+        cleanupMultiselect()
+        console.log("[TouchSet] 配置窗口已关闭")
+    }
+    closeButton.onclick = function(){
+        floatingWindow.close()
+    }
+    
+    container.appendChild(closeButton)
     
     const configDiv = document.createElement("div")
     configDiv.className = "hitarea-config"
     configDiv.id = configDiv.className
-    hitAreas.forEach(hitArea => {
+    
+    const hitAreasCopy = [...hitAreas]
+    const defaultHitArea = { id: "default", Name: "default" }
+    hitAreasCopy.unshift(defaultHitArea)
+    
+    hitAreasCopy.forEach(hitArea => {
         const hitAreaId = hitArea.id || hitArea.Id
         const hitAreaName = hitArea.Name || hitAreaId
         
@@ -351,7 +407,12 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         
         const titleDiv = document.createElement("div")
         titleDiv.className = "hitarea-title"
-        titleDiv.textContent = `HitAreaID: ${hitAreaName}`
+        titleDiv.dataset.hitAreaId = hitAreaId
+        if (hitAreaId === "default") {
+            titleDiv.textContent = window.t('live2d.touchAnim.defaultClickAnim', '默认点击动画')
+        } else {
+            titleDiv.textContent = `HitAreaID: ${hitAreaName}`
+        }
         itemDiv.appendChild(titleDiv)
         
         const motionSection = document.createElement("div")
@@ -359,7 +420,7 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         
         const motionLabel = document.createElement("label")
         motionLabel.className = "hitarea-label"
-        motionLabel.textContent = t('live2d.touchAnim.selectMotion', '绑定动作') + ":"
+        motionLabel.textContent = window.t('live2d.touchAnim.selectMotion', '绑定动作') + ":"
         motionSection.appendChild(motionLabel)
         
         const selectedMotions = TouchSet[hitAreaId]?.motions || [];
@@ -369,13 +430,15 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
             if (Array.isArray(motionGroup)) {
                 motionGroup.forEach(motion => {
                     if (motion.File) {
-                        motionOptionsSet.add(motion.File.split("motions/")[1].replace(".motion3","").replace(".json",""))
+                        const parts = motion.File.split("motions/")
+                        const raw = parts.length > 1 ? parts[parts.length - 1] : motion.File.split("/").pop() || motion.File
+                        motionOptionsSet.add(raw.replace(".motion3","").replace(".json",""))
                     }
                 })
             }
         })
         const motionOptions = Array.from(motionOptionsSet).sort((a, b) => a.localeCompare(b))
-        const motionMultiselect = createMultiSelect("motion", motionOptions, selectedMotions)
+        const motionMultiselect = createMultiSelect("motion", motionOptions, selectedMotions, hitAreaId)
         motionSection.appendChild(motionMultiselect)
         itemDiv.appendChild(motionSection)
         
@@ -384,11 +447,11 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
         
         const expressionLabel = document.createElement("label")
         expressionLabel.className = "hitarea-label"
-        expressionLabel.textContent = t('live2d.touchAnim.selectExpression', '绑定表情') + ":"
+        expressionLabel.textContent = window.t('live2d.touchAnim.selectExpression', '绑定表情') + ":"
         expressionSection.appendChild(expressionLabel)
         
         const selectedExpressions = TouchSet[hitAreaId]?.expressions || [];
-        const expressionMultiselect = createMultiSelect("expression", expressions.map(e => e.Name), selectedExpressions)
+        const expressionMultiselect = createMultiSelect("expression", expressions.map(e => e.Name), selectedExpressions, hitAreaId)
         expressionSection.appendChild(expressionMultiselect)
         itemDiv.appendChild(expressionSection)
         
@@ -396,22 +459,6 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     })
     
     container.appendChild(configDiv)
-    
-    const closeButton = document.createElement("button")
-    closeButton.className = "hitarea-btn hitarea-btn-secondary"
-    closeButton.textContent = t('live2d.touchAnim.close', '关闭')
-
-    const cleanupMultiselect = () => {
-        document.removeEventListener('click', closeAllMultiselects);
-    };
-    closeButton.onclick = function(){
-        console.error("closeButton.onclick()")
-        saveTempTouchSet()
-        cleanupMultiselect()
-        floatingWindow.close()
-    }
-    
-    container.appendChild(closeButton)
     
     setTimeout(() => {
         document.addEventListener('click', closeAllMultiselects)
@@ -428,11 +475,12 @@ function closeAllMultiselects(e){
     }
 }
 
-function createMultiSelect(type, options, selectedValues = []){
-    const t = (key, fallback) => (typeof window.t === 'function') ? window.t(key) : fallback
+function createMultiSelect(type, options, selectedValues = [], hitAreaId){
     
     const multiselect = document.createElement("div")
     multiselect.className = "custom-multiselect"
+    multiselect.dataset.type = type
+    multiselect.dataset.hitAreaId = hitAreaId
     
     const header = document.createElement("div")
     header.className = "multiselect-header"
@@ -442,7 +490,7 @@ function createMultiSelect(type, options, selectedValues = []){
     
     const selectedText = document.createElement("span")
     selectedText.className = "selected-text"
-    selectedText.textContent = type === "motion" ? t('live2d.selectMotion', '选择动作') : t('live2d.selectExpression', '选择表情')
+    selectedText.textContent = type === "motion" ? window.t('live2d.selectMotion', '选择动作') : window.t('live2d.selectExpression', '选择表情')
     header.appendChild(selectedText)
     
     multiselect.appendChild(header)
@@ -474,6 +522,12 @@ function createMultiSelect(type, options, selectedValues = []){
                 checkbox.checked = !checkbox.checked
             }
             updateMultiSelectHeader(multiselect)
+            triggerAutoSave()
+        }
+        
+        checkbox.onchange = function(){
+            updateMultiSelectHeader(multiselect)
+            triggerAutoSave()
         }
     })
     
@@ -490,15 +544,70 @@ function createMultiSelect(type, options, selectedValues = []){
     return multiselect
 }
 
+let autoSaveTimeout = null
+let isSaving = false
+
+function triggerAutoSave() {
+    if (autoSaveTimeout) {
+        clearTimeout(autoSaveTimeout)
+    }
+    
+    autoSaveTimeout = setTimeout(async () => {
+        if (isSaving) {
+            triggerAutoSave()
+            return
+        }
+        
+        isSaving = true
+        try {
+            const success = await saveTouchSetToServer()
+            
+            if (success) {
+                showSaveIndicator()
+            }
+        } finally {
+            isSaving = false
+        }
+    }, 500)
+}
+
+function showSaveIndicator() {
+    let indicator = document.getElementById('touch-set-save-indicator')
+    if (!indicator) {
+        indicator = document.createElement('div')
+        indicator.id = 'touch-set-save-indicator'
+        indicator.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            z-index: 10001;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        `
+        document.body.appendChild(indicator)
+    }
+    
+    indicator.textContent = window.t('live2d.touchAnim.saved', '已保存')
+    indicator.style.opacity = '1'
+    
+    setTimeout(() => {
+        indicator.style.opacity = '0'
+    }, 1500)
+}
+
 function updateMultiSelectHeader(multiselect){
-    const t = (key, fallback) => (typeof window.t === 'function') ? window.t(key) : fallback
     const checkboxes = multiselect.querySelectorAll('input[type="checkbox"]:checked')
     const headerContainer = multiselect.querySelector('.selected-text')
     
     headerContainer.innerHTML = ''
     
     if (checkboxes.length === 0) {
-        headerContainer.textContent = t('live2d.touchAnim.select', '选择')
+        headerContainer.textContent = window.t('live2d.touchAnim.select', '选择')
     } else {
         checkboxes.forEach(cb => {
             const label = cb.closest('.multiselect-item').querySelector('span').textContent
@@ -553,6 +662,8 @@ function createTouchConfigFloatingWindow(options = {}){
     
     const contentContainer = document.createElement("div")
     contentContainer.style.cssText = `
+        display: flex;
+        flex-direction: column;
         line-height: 1.6;
         color: #555;
     `
@@ -592,28 +703,40 @@ function createTouchConfigFloatingWindow(options = {}){
     overlay.appendChild(modal)
     document.body.appendChild(overlay)
     
-    overlay.onclick = function(e){
-        if (e.target === overlay) {
-            document.body.removeChild(overlay)
-        }
-    }
-    
-    return {
+    const windowObj = {
+        onClose: null,
         getContentContainer: function(){
             return contentContainer
         },
         close: function(cleanup){
             if (typeof cleanup === 'function') cleanup();
+            if (typeof windowObj.onClose === 'function') windowObj.onClose();
             document.body.removeChild(overlay)
         },
         setTitle: function(text){
             titleElement.textContent = text
         }
     }
+
+    overlay.onclick = function(e){
+        if (e.target === overlay) {
+            windowObj.close()
+        }
+    }
+
+    return windowObj
 }
 
 
-function touchPage_init(){
+async function touchPage_init(){
+
+    
+    while(typeof window.t !== 'function'){
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    
+    
     function sset(s,d){
         Object.keys(d).forEach((key) => {
             if (key == "innerHTML"){
@@ -646,7 +769,7 @@ function touchPage_init(){
     d.appendChild(icon)
     
     const text = document.createElement("span")
-    const displayText = (typeof window.t === 'function') ? window.t('live2d.touchAnim.title') : '触摸动画配置'
+    const displayText = window.t('live2d.touchAnim.title', '触摸动画配置')
     sset(text,{id:"touch-anim-text","class":"round-stroke-text","data-i18n":"live2d.touchAnim.title","data-text":displayText,"innerHTML":displayText})
     d.appendChild(text)
     

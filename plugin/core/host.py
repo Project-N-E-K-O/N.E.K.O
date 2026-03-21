@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Type
 from loguru import logger
 
 from plugin._types.events import EVENT_META_ATTR
-from plugin.sdk.decorators import PERSIST_ATTR
+from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.core.communication import PluginCommunicationResourceManager
@@ -34,8 +34,8 @@ from plugin.settings import (
     PROCESS_SHUTDOWN_TIMEOUT,
     PROCESS_TERMINATE_TIMEOUT,
 )
-from plugin.sdk.router import PluginRouter
-from plugin.sdk.bus.types import dispatch_bus_change
+from plugin.sdk.shared.core.router import PluginRouter
+from plugin.core.bus.types import dispatch_bus_change
 from plugin.core.zmq_transport import (
     HostTransport, ChildTransport, CH_CMD, CH_RES, CH_STS, CH_MSG, CH_COMM, CH_RESP,
 )
@@ -951,8 +951,17 @@ def _plugin_process_runner(
                         method(**args), entry_id, timeout_seconds,
                     )
 
-                ret["success"] = True
-                ret["data"] = result
+                if hasattr(result, "is_ok") and callable(result.is_ok):
+                    if result.is_ok():
+                        ret["success"] = True
+                        ret["data"] = result.value
+                    else:
+                        ret["success"] = False
+                        err = result.error
+                        ret["error"] = str(err) if err is not None else "Unknown error"
+                else:
+                    ret["success"] = True
+                    ret["data"] = result
 
                 if _should_persist(method):
                     try:
@@ -1018,8 +1027,17 @@ def _plugin_process_runner(
                         PLUGIN_TRIGGER_TIMEOUT,
                     )
 
-                ret["success"] = True
-                ret["data"] = result
+                if hasattr(result, "is_ok") and callable(result.is_ok):
+                    if result.is_ok():
+                        ret["success"] = True
+                        ret["data"] = result.value
+                    else:
+                        ret["success"] = False
+                        err = result.error
+                        ret["error"] = str(err) if err is not None else "Unknown error"
+                else:
+                    ret["success"] = True
+                    ret["data"] = result
 
             except asyncio.CancelledError:
                 ret["error"] = "Execution cancelled"

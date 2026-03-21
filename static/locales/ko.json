@@ -834,7 +834,8 @@
             "modelNotFound": "로드된 모델 없음",
             "modelDataNotReady": "모델 내부 데이터 준비되지 않음",
             "managerNotFound": "Live2DManager를 찾을 수 없음",
-            "select": "선택"
+            "select": "선택",
+            "defaultClickAnim": "기본 클릭 애니메이션"
         },
         "emotionConfig": "감정 구성",
         "saveSettings": "설정 저장",
@@ -1051,6 +1052,8 @@
         "registerSuccess": "등록이 완료되었습니다! voice_id: {{voiceId}}",
         "reusedExisting": "기존 음색을 재사용했습니다. 업로드를 건너뛰었습니다. voice_id: {{voiceId}}",
         "registerFailed": "등록 실패: {{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "접두사는 영어 문자와 숫자여야 합니다",
+        "invalidApiKeyProvided": "제공된 API 키가 유효하지 않습니다",
         "requestError": "요청 오류: {{error}}",
         "voiceIdSaveFailed": "voice_id를 자동으로 저장하지 못했습니다: {{error}}",
         "voiceIdSaved": "voice_id가 자동으로 캐릭터에 저장되었습니다.",
@@ -1245,7 +1248,10 @@
         "renameError": "이름 변경 실패: {{error}}",
         "renameMasterTitle": "주인 이름 변경",
         "renameSuccess": "이름 변경 성공",
-        "saveMasterError": "주인 설정 저장 실패"
+        "autoSaveError": "설정 저장 실패",
+        "saveMasterError": "주인 설정 저장 실패",
+        "autoSaved": "설정 자동 저장됨",
+        "autoSaveFailed": "자동 저장 실패, 페이지를 닫기 전에 수동으로 저장하세요"
     },
     "app": {
         "welcomeBack": "{{name}}이 돌아왔습니다!",

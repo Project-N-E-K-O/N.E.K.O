@@ -8,9 +8,10 @@
    driver.js 全局样式覆盖
    ============================================ */
 
-/* 高亮遮罩层 */
+/* 高亮遮罩层（SVG 元素，颜色由 path fill 控制） */
 .driver-overlay {
-    background: rgba(0, 0, 0, 0.6) !important;
+    background: none !important;
+    overflow: visible !important;
     pointer-events: none;
 }
 
@@ -22,10 +23,9 @@
     backdrop-filter: none !important;
 }
 
-/* 高亮框 */
+/* 高亮框（遮罩由 SVG 负责，只保留发光效果） */
 .driver-highlight {
-    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6),
-                0 0 20px rgba(68, 183, 254, 0.4) !important;
+    box-shadow: 0 0 20px rgba(68, 183, 254, 0.4) !important;
     border-radius: 8px;
 }
 
@@ -207,10 +207,6 @@
    ============================================ */
 
 @media (prefers-color-scheme: dark) {
-    .driver-overlay {
-        background: rgba(0, 0, 0, 0.7) !important;
-    }
-
     .driver-popover {
         background: rgba(20, 20, 30, 0.98) !important;
         border-color: rgba(68, 183, 254, 0.4) !important;
@@ -262,32 +258,48 @@
     position: fixed;
     top: 16px;
     right: 20px;
-    z-index: 100001; /* 高于 driver.js 遮罩层 */
-    padding: 6px 16px;
-    background: transparent;
+    z-index: 100005;
+    width: auto;
+    height: auto;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent !important;
     color: rgba(60, 60, 60, 0.6);
     border: 3px solid rgba(60, 60, 60, 0.5);
     border-radius: 10px;
-    font-size: 30px;
+    font-size: 28px;
     font-weight: 600;
-    cursor: pointer;
-    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    line-height: 1;
+    cursor: pointer !important;
+    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease, transform 0.15s ease !important;
     backdrop-filter: blur(4px);
-    pointer-events: auto;
+    pointer-events: auto !important;
+    user-select: none;
+    outline: none !important;
+    white-space: nowrap;
+    box-sizing: border-box !important;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
 }
 
 #neko-tutorial-skip-btn:hover {
     color: rgba(255, 255, 255, 0.95);
     border-color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.08) !important;
 }
 
-/* ============================================
-   高亮框通用修正
-   ============================================ */
+#neko-tutorial-skip-btn:active {
+    opacity: 0.8;
+}
 
-.driver-highlight {
-    box-sizing: border-box !important;
+#neko-tutorial-skip-btn:focus-visible {
+    outline: 2px solid rgba(68, 183, 254, 0.6) !important;
+    outline-offset: 2px;
 }
 
 /* ============================================

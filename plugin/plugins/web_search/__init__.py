@@ -1,27 +1,27 @@
 """
 网络搜索插件 (Web Search)
 
-通过 DuckDuckGo 搜索网络内容，无需 API Key。
-优先使用 duckduckgo-search 库，不可用时回退到 httpx + BeautifulSoup 直接抓取。
+根据用户真实 IP 自动选择搜索引擎：
+- 中国大陆 → Baidu
+- 海外 → DuckDuckGo HTML 抓取
+全部基于 httpx + BeautifulSoup，不依赖任何第三方搜索库。
 """
 
 from __future__ import annotations
 
-import asyncio
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
-from plugin.sdk import ok, fail
-
-_DDGS_AVAILABLE = False
-try:
-    from duckduckgo_search import DDGS  # type: ignore[import-untyped]
-    _DDGS_AVAILABLE = True
-except ImportError:
-    pass
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    neko_plugin,
+    plugin_entry,
+    lifecycle,
+    Ok,
+    Err,
+    SdkError,
+)
 
 import httpx
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
@@ -34,10 +34,39 @@ _UA = (
 
 _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 _DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
+_BAIDU_SEARCH_URL = "https://www.baidu.com/s"
+_GEOIP_URL = "http://ip-api.com/json/?fields=countryCode"
 
+# Countries that cannot reliably access DuckDuckGo
+_CN_COUNTRIES = frozenset({"CN"})
+
+
+# ---------------------------------------------------------------------------
+# GeoIP detection (same approach as ConfigManager, real IP, no proxy)
+# ---------------------------------------------------------------------------
+
+async def _detect_country(timeout: float = 4.0) -> Optional[str]:
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            proxy=None,
+        ) as client:
+            resp = await client.get(
+                _GEOIP_URL,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            data = resp.json()
+            return (data.get("countryCode") or "").upper() or None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# DuckDuckGo HTML scraping (international)
+# ---------------------------------------------------------------------------
 
 def _extract_real_url(href: str) -> str:
-    """从 DuckDuckGo 跳转链接中提取真实 URL。"""
     if "uddg=" in href:
         match = re.search(r"uddg=([^&]+)", href)
         if match:
@@ -51,11 +80,10 @@ async def _search_ddg_html(
     region: str = "wt-wt",
     timeout: float = 15.0,
 ) -> List[Dict[str, str]]:
-    """通过 DuckDuckGo HTML 端点抓取搜索结果。"""
     headers = {
         "User-Agent": _UA,
         "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://duckduckgo.com/",
     }
     data = {"q": query, "kl": region}
@@ -85,11 +113,7 @@ async def _search_ddg_html(
             if sn:
                 snippet = sn.get_text(strip=True)
 
-        results.append({
-            "title": title,
-            "url": real_url,
-            "snippet": snippet,
-        })
+        results.append({"title": title, "url": real_url, "snippet": snippet})
         if len(results) >= max_results:
             break
 
@@ -102,11 +126,10 @@ async def _search_ddg_lite(
     region: str = "wt-wt",
     timeout: float = 15.0,
 ) -> List[Dict[str, str]]:
-    """回退: 通过 DuckDuckGo Lite 端点抓取。"""
     headers = {
         "User-Agent": _UA,
         "Accept": "text/html",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
     }
     data = {"q": query, "kl": region}
 
@@ -140,52 +163,71 @@ async def _search_ddg_lite(
                 snippet = snippet_cell.get_text(strip=True)
 
         if title and real_url:
-            results.append({
-                "title": title,
-                "url": real_url,
-                "snippet": snippet,
-            })
+            results.append({"title": title, "url": real_url, "snippet": snippet})
         if len(results) >= max_results:
             break
 
     return results
 
 
-def _search_ddgs_lib(
+# ---------------------------------------------------------------------------
+# Baidu scraping (China mainland)
+# ---------------------------------------------------------------------------
+
+async def _search_baidu(
     query: str,
     max_results: int = 8,
-    region: str = "wt-wt",
+    timeout: float = 15.0,
 ) -> List[Dict[str, str]]:
-    """通过 duckduckgo-search 库搜索。"""
-    raw = DDGS().text(query, region=region, max_results=max_results)
+    headers = {
+        "User-Agent": _UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.baidu.com/",
+    }
+    params = {"wd": query, "rn": str(min(max_results, 50))}
+
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        resp = await client.get(_BAIDU_SEARCH_URL, params=params)
+        resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
     results: List[Dict[str, str]] = []
-    for item in raw:
-        results.append({
-            "title": item.get("title", ""),
-            "url": item.get("href", ""),
-            "snippet": item.get("body", ""),
-        })
+
+    for item in soup.select("div.result, div.c-container"):
+        link = item.find("a", href=True)
+        if not link:
+            continue
+        title = link.get_text(strip=True)
+        href = str(link.get("href", ""))
+        if not title or not href:
+            continue
+
+        snippet = ""
+        for sel in ("div.c-abstract", "span.content-right_8Zs40", "div.c-span-last"):
+            sn = item.select_one(sel)
+            if sn:
+                snippet = sn.get_text(strip=True)
+                break
+        if not snippet:
+            abs_tag = item.find("div", class_=re.compile(r"abstract|summary|desc"))
+            if abs_tag:
+                snippet = abs_tag.get_text(strip=True)
+
+        results.append({"title": title, "url": href, "snippet": snippet})
+        if len(results) >= max_results:
+            break
+
     return results
 
 
-def _search_news_ddgs_lib(
-    query: str,
-    max_results: int = 8,
-    region: str = "wt-wt",
-) -> List[Dict[str, str]]:
-    """通过 duckduckgo-search 库搜索新闻。"""
-    raw = DDGS().news(query, region=region, max_results=max_results)
-    results: List[Dict[str, str]] = []
-    for item in raw:
-        results.append({
-            "title": item.get("title", ""),
-            "url": item.get("url", ""),
-            "snippet": item.get("body", ""),
-            "source": item.get("source", ""),
-            "date": item.get("date", ""),
-        })
-    return results
-
+# ---------------------------------------------------------------------------
+# Plugin class
+# ---------------------------------------------------------------------------
 
 @neko_plugin
 class WebSearchPlugin(NekoPluginBase):
@@ -195,6 +237,8 @@ class WebSearchPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._cfg: Dict[str, Any] = {}
+        self._country: Optional[str] = None
+        self._is_cn: bool = False
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -202,26 +246,20 @@ class WebSearchPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("search") if isinstance(cfg.get("search"), dict) else {}
 
-        backend = "ddgs_lib" if _DDGS_AVAILABLE else "httpx_scrape"
-        forced = str(self._cfg.get("backend", "auto")).strip().lower()
-        if forced == "httpx":
-            backend = "httpx_scrape"
-        elif forced == "ddgs":
-            backend = "ddgs_lib" if _DDGS_AVAILABLE else "httpx_scrape"
+        self._country = await _detect_country()
+        self._is_cn = self._country in _CN_COUNTRIES if self._country else False
 
-        self._backend = backend
+        backend = "baidu" if self._is_cn else "duckduckgo"
         self.logger.info(
-            "WebSearch started, backend={}, ddgs_lib_available={}, region={}",
-            backend,
-            _DDGS_AVAILABLE,
-            self._cfg.get("region", "wt-wt"),
+            "WebSearch started: country={}, is_cn={}, backend={}",
+            self._country, self._is_cn, backend,
         )
-        return ok(data={"status": "running", "backend": backend})
+        return Ok({"status": "running", "backend": backend, "country": self._country})
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
         self.logger.info("WebSearch shutdown")
-        return ok(data={"status": "shutdown"})
+        return Ok({"status": "shutdown"})
 
     def _defaults(self):
         try:
@@ -235,52 +273,40 @@ class WebSearchPlugin(NekoPluginBase):
             to = 15.0
         if to <= 0:
             to = 15.0
-        rgn = str(self._cfg.get("region", "wt-wt")).strip() or "wt-wt"
-        return {"max_results": mr, "region": rgn, "timeout": to}
+        return {"max_results": mr, "timeout": to}
 
     async def _do_text_search(
         self,
         query: str,
         max_results: int,
-        region: str,
         timeout: float,
     ) -> List[Dict[str, str]]:
-        if self._backend == "ddgs_lib":
-            try:
-                return await asyncio.to_thread(
-                    _search_ddgs_lib, query, max_results, region,
-                )
-            except Exception as e:
-                self.logger.warning("ddgs lib failed, falling back to httpx: {}", e)
+        if self._is_cn:
+            return await _search_baidu(query, max_results, timeout)
 
         try:
-            return await _search_ddg_html(query, max_results, region, timeout)
+            return await _search_ddg_html(query, max_results, timeout=timeout)
         except Exception as e:
-            self.logger.warning("html endpoint failed, trying lite: {}", e)
+            self.logger.warning("DDG html failed, trying lite: {}", e)
 
-        return await _search_ddg_lite(query, max_results, region, timeout)
+        return await _search_ddg_lite(query, max_results, timeout=timeout)
 
-    async def _do_news_search(
-        self,
-        query: str,
-        max_results: int,
-        region: str,
-    ) -> List[Dict[str, str]]:
-        if self._backend == "ddgs_lib":
-            try:
-                return await asyncio.to_thread(
-                    _search_news_ddgs_lib, query, max_results, region,
-                )
-            except Exception as e:
-                self.logger.warning("ddgs news failed: {}", e)
-                return []
-        return []
+    @staticmethod
+    def _build_summary(query: str, results: List[Dict[str, str]]) -> str:
+        lines: list[str] = [f'搜索: "{query}" (共 {len(results)} 条结果)\n']
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r['title']}")
+            if r.get("snippet"):
+                lines.append(f"   {r['snippet']}")
+            lines.append(f"   链接: {r['url']}")
+            lines.append("")
+        return "\n".join(lines)
 
     @plugin_entry(
         id="search",
         name="网络搜索",
-        description="通过 DuckDuckGo 搜索网络内容。返回标题、链接和摘要。",
-        llm_result_fields=["count"],
+        description="搜索网络内容。自动根据用户地区选择搜索引擎（国内百度/海外DuckDuckGo）。",
+        llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
@@ -292,11 +318,6 @@ class WebSearchPlugin(NekoPluginBase):
                     "type": "integer",
                     "description": "最大结果数 (默认 8)",
                     "default": 8,
-                },
-                "region": {
-                    "type": "string",
-                    "description": "搜索区域，如 wt-wt(全球), cn-zh(中国), us-en(美国)",
-                    "default": "wt-wt",
                 },
             },
             "required": ["query"],
@@ -306,90 +327,29 @@ class WebSearchPlugin(NekoPluginBase):
         self,
         query: str,
         max_results: int = 0,
-        region: str = "",
         **_,
     ):
         if not query or not query.strip():
-            return fail("EMPTY_QUERY", "搜索关键词不能为空")
+            return Err(SdkError("搜索关键词不能为空"))
 
         defs = self._defaults()
         max_r = max_results if max_results > 0 else defs["max_results"]
-        rgn = region.strip() or defs["region"]
         timeout = defs["timeout"]
 
-        self.logger.info("Searching: query={!r} max={} region={}", query, max_r, rgn)
+        self.logger.info("Searching: query={!r} max={} engine={}", query, max_r, "baidu" if self._is_cn else "duckduckgo")
 
         try:
-            results = await self._do_text_search(query, max_r, rgn, timeout)
+            results = await self._do_text_search(query, max_r, timeout)
         except Exception as e:
             self.logger.exception("Search failed for query={!r}", query)
-            return fail("SEARCH_ERROR", f"搜索失败: {e}")
+            return Err(SdkError(f"搜索失败: {e}"))
 
+        summary = self._build_summary(query, results)
         self.logger.info("Search returned {} results for {!r}", len(results), query)
-        return ok(data={
+        return Ok({
             "query": query,
             "count": len(results),
-            "results": results,
-        })
-
-    @plugin_entry(
-        id="search_news",
-        name="新闻搜索",
-        description="通过 DuckDuckGo 搜索最新新闻（需要 duckduckgo-search 库）。",
-        llm_result_fields=["count"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "最大结果数 (默认 8)",
-                    "default": 8,
-                },
-                "region": {
-                    "type": "string",
-                    "description": "搜索区域",
-                    "default": "wt-wt",
-                },
-            },
-            "required": ["query"],
-        },
-    )
-    async def search_news(
-        self,
-        query: str,
-        max_results: int = 0,
-        region: str = "",
-        **_,
-    ):
-        if not query or not query.strip():
-            return fail("EMPTY_QUERY", "搜索关键词不能为空")
-
-        defs = self._defaults()
-        max_r = max_results if max_results > 0 else defs["max_results"]
-        rgn = region.strip() or defs["region"]
-
-        if not _DDGS_AVAILABLE:
-            return fail(
-                "NEWS_UNAVAILABLE",
-                "新闻搜索需要 duckduckgo-search 库，请运行: pip install duckduckgo-search",
-            )
-
-        self.logger.info("News search: query={!r} max={} region={}", query, max_r, rgn)
-
-        try:
-            results = await self._do_news_search(query, max_r, rgn)
-        except Exception as e:
-            self.logger.exception("News search failed for query={!r}", query)
-            return fail("SEARCH_ERROR", f"新闻搜索失败: {e}")
-
-        self.logger.info("News search returned {} results for {!r}", len(results), query)
-        return ok(data={
-            "query": query,
-            "count": len(results),
+            "summary": summary,
             "results": results,
         })
 
@@ -416,30 +376,20 @@ class WebSearchPlugin(NekoPluginBase):
     )
     async def search_summary(self, query: str, max_results: int = 5, **_):
         if not query or not query.strip():
-            return fail("EMPTY_QUERY", "搜索关键词不能为空")
+            return Err(SdkError("搜索关键词不能为空"))
 
         defs = self._defaults()
         max_r = max_results if max_results > 0 else defs["max_results"]
         timeout = defs["timeout"]
-        rgn = defs["region"]
 
         try:
-            results = await self._do_text_search(query, max_r, rgn, timeout)
+            results = await self._do_text_search(query, max_r, timeout)
         except Exception as e:
-            return fail("SEARCH_ERROR", f"搜索失败: {e}")
+            return Err(SdkError(f"搜索失败: {e}"))
 
-        lines: list[str] = [f'搜索: "{query}" (共 {len(results)} 条结果)\n']
-        for i, r in enumerate(results, 1):
-            lines.append(f"{i}. {r['title']}")
-            if r.get("snippet"):
-                lines.append(f"   {r['snippet']}")
-            lines.append(f"   链接: {r['url']}")
-            lines.append("")
-
-        summary_text = "\n".join(lines)
-        return ok(data={
+        return Ok({
             "query": query,
             "count": len(results),
-            "summary": summary_text,
+            "summary": self._build_summary(query, results),
             "results": results,
         })

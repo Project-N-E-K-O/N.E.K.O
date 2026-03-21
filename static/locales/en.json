@@ -834,7 +834,8 @@
             "modelNotFound": "No model loaded",
             "modelDataNotReady": "Model internal data not ready",
             "managerNotFound": "Live2DManager not found",
-            "select": "Select"
+            "select": "Select",
+            "defaultClickAnim": "Default Click Animation"
         },
         "emotionConfig": "Emotion Config",
         "saveSettings": "Save Settings",
@@ -1051,6 +1052,8 @@
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
         "reusedExisting": "Reused existing voice, upload skipped. voice_id: {{voiceId}}",
         "registerFailed": "Registration failed: {{error}}",
+        "prefixShouldBeEnglishLetterAndNumber": "Prefix should be English letters and numbers",
+        "invalidApiKeyProvided": "Invalid API-key provided",
         "requestError": "Request error: {{error}}",
         "voiceIdSaveFailed": "Failed to automatically save voice_id: {{error}}",
         "voiceIdSaved": "voice_id has been automatically saved to character",
@@ -1245,7 +1248,10 @@
         "renameError": "Rename failed: {{error}}",
         "renameMasterTitle": "Rename Master",
         "renameSuccess": "Rename successful",
-        "saveMasterError": "Failed to save master settings"
+        "autoSaveError": "Failed to save settings",
+        "saveMasterError": "Failed to save master settings",
+        "autoSaved": "Settings auto-saved",
+        "autoSaveFailed": "Auto-save failed, please save manually before closing"
     },
     "app": {
         "welcomeBack": "{{name}} is back!",

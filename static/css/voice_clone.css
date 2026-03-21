@@ -147,6 +147,15 @@ body .container-header {
     color: red;
 }
 
+@keyframes error-flash {
+    0%, 100% { text-shadow: none; }
+    50% { text-shadow: 0 0 10px red, 0 0 20px red; }
+}
+
+.error-flash {
+    animation: error-flash 0.3s ease-in-out 2;
+}
+
 .file-input-wrapper {
     position: relative;
     margin-top: 5px;

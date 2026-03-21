@@ -1,6 +1,6 @@
 [plugin]
 name = "网络搜索"
-description = "通过 DuckDuckGo 搜索网络内容。无需 API Key，免费使用。支持文本搜索和新闻搜索。"
+description = "联网搜索。自动根据用户 IP 选择搜索引擎（国内百度/海外DuckDuckGo），无需 API Key。"
 version = "0.1.0"
 id = "web_search"
 entry = "plugin.plugins.web_search:WebSearchPlugin"
@@ -21,6 +21,4 @@ enabled = false
 
 [search]
 max_results = 8
-region = "wt-wt"
 timeout_seconds = 15
-backend = "auto"

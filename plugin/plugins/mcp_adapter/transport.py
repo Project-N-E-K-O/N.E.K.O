@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from plugin.sdk.adapter.gateway_contracts import LoggerLike
-from plugin.sdk.adapter.gateway_models import ExternalEnvelope, GatewayResponse
+from plugin.sdk.adapter.gateway_models import ExternalRequest, GatewayResponse
 
 if TYPE_CHECKING:
     from plugin.plugins.mcp_adapter import MCPClient
@@ -27,7 +27,7 @@ class MCPTransportAdapter:
     client: "MCPClient"
     logger: LoggerLike
     protocol_name: str = "mcp"
-    _request_queue: asyncio.Queue[ExternalEnvelope] = field(
+    _request_queue: asyncio.Queue[ExternalRequest] = field(
         default_factory=lambda: asyncio.Queue(maxsize=1000)
     )
     _running: bool = False
@@ -60,7 +60,7 @@ class MCPTransportAdapter:
         await self.client.disconnect()
         self.logger.info("MCPTransportAdapter stopped for server '{}'", self.client.config.name)
 
-    async def recv(self) -> ExternalEnvelope:
+    async def recv(self) -> ExternalRequest:
         """
         接收外部请求。
         
@@ -92,7 +92,7 @@ class MCPTransportAdapter:
                 response.latency_ms or 0.0,
             )
 
-    def enqueue_request(self, envelope: ExternalEnvelope) -> bool:
+    def enqueue_request(self, envelope: ExternalRequest) -> bool:
         """
         将请求推入队列（供外部调用）。
         

@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 更新语言包内容时可以递增此值
-    const LOCALE_VERSION = '2026-02-23-1';
+    const LOCALE_VERSION = '2026-03-16-1';
 
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
@@ -881,13 +881,7 @@
             if (message.code && typeof message.code === 'string') {
                 const translationKey = `errors.${message.code}`;
                 const details = message.details || {};
-                const translated = i18next.t(translationKey, details);
-                
-                // If translation succeeds (doesn't return the key), return it
-                if (translated && translated !== translationKey) return translated;
-                
-                // Fallback: use message field or details.msg or raw code
-                return message.message || details.msg || message.code;
+                return i18next.t(translationKey, details);
             }
             if (message.message) {
                 message = message.message;

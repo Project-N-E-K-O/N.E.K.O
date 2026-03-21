@@ -12,7 +12,7 @@ from plugin._types.exceptions import PluginError
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
-from plugin.sdk.responses import fail, is_envelope, ok
+from plugin.core.responses import fail, is_envelope, ok
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 
 logger = get_logger("server.runs.trigger")

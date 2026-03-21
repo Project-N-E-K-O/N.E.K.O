@@ -155,6 +155,8 @@ VRMManager.prototype.createPopup = function (buttonId) {
     ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
         popup.addEventListener(evt, stopEventPropagation, true);
     });
+    // 阻止 click 冒泡至 document，防止菜单内操作误触全局关闭（冒泡阶段）
+    popup.addEventListener('click', stopEventPropagation);
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
@@ -361,6 +363,27 @@ VRMManager.prototype._createSettingsMenuButton = function (config) {
         justifyContent: 'space-between'
     });
 
+    const leftWrapper = document.createElement('div');
+    Object.assign(leftWrapper.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px'
+    });
+
+    let iconImg = null;
+    if (config.icon) {
+        iconImg = document.createElement('img');
+        iconImg.src = config.icon;
+        iconImg.alt = config.label || '';
+        Object.assign(iconImg.style, {
+            width: '24px',
+            height: '24px',
+            objectFit: 'contain',
+            flexShrink: '0'
+        });
+        leftWrapper.appendChild(iconImg);
+    }
+
     const label = document.createElement('span');
     label.textContent = config.label;
     if (config.labelKey) label.setAttribute('data-i18n', config.labelKey);
@@ -368,7 +391,9 @@ VRMManager.prototype._createSettingsMenuButton = function (config) {
         userSelect: 'none',
         fontSize: '13px'
     });
-    btn.appendChild(label);
+    leftWrapper.appendChild(label);
+
+    btn.appendChild(leftWrapper);
 
     const arrow = document.createElement('span');
     arrow.textContent = '›';
@@ -382,7 +407,12 @@ VRMManager.prototype._createSettingsMenuButton = function (config) {
 
     if (config.labelKey) {
         btn._updateLabelText = () => {
-            if (window.t) label.textContent = window.t(config.labelKey);
+            if (window.t) {
+                label.textContent = window.t(config.labelKey);
+                if (iconImg) {
+                    iconImg.alt = window.t(config.labelKey);
+                }
+            }
         };
     }
 
@@ -1347,23 +1377,154 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle) {
     return toggleItem;
 };
 
+// 创建角色设置侧边弹出面板（通用设置 + 模型管理 + 声音克隆）
+VRMManager.prototype._createCharacterSettingsSidePanel = function () {
+    const container = this._createSidePanelContainer();
+    container.style.flexDirection = 'column';
+    container.style.alignItems = 'stretch';
+    container.style.gap = '2px';
+    container.style.minWidth = '140px';
+    container.style.padding = '4px 8px';
+
+    const characterSubmenuItems = [
+        { id: 'general', label: window.t ? window.t('settings.menu.general') : '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/chara_manager' },
+        { id: 'vrm-manage', label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+        { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
+    ];
+
+    characterSubmenuItems.forEach(subItem => {
+        const linkItem = this._createSidePanelMenuItem(subItem);
+        container.appendChild(linkItem);
+    });
+
+    document.body.appendChild(container);
+    return container;
+};
+
+// 创建侧边面板中的菜单项
+VRMManager.prototype._createSidePanelMenuItem = function (item) {
+    const menuItem = document.createElement('div');
+    menuItem.id = `vrm-sidepanel-${item.id}`;
+    Object.assign(menuItem.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '6px 8px',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        transition: 'background 0.2s ease',
+        fontSize: '12px',
+        whiteSpace: 'nowrap',
+        color: 'var(--neko-popup-text, #333)'
+    });
+
+    if (item.icon) {
+        const iconImg = document.createElement('img');
+        iconImg.src = item.icon;
+        iconImg.alt = item.label || '';
+        Object.assign(iconImg.style, {
+            width: '16px',
+            height: '16px',
+            objectFit: 'contain',
+            flexShrink: '0'
+        });
+        menuItem.appendChild(iconImg);
+    }
+
+    const labelText = document.createElement('span');
+    labelText.textContent = item.label || '';
+    if (item.labelKey) {
+        labelText.setAttribute('data-i18n', item.labelKey);
+    }
+    Object.assign(labelText.style, {
+        userSelect: 'none',
+        fontSize: '12px'
+    });
+    menuItem.appendChild(labelText);
+
+    if (item.labelKey) {
+        menuItem._updateLabelText = () => {
+            if (window.t) {
+                labelText.textContent = window.t(item.labelKey);
+                if (item.icon && menuItem.querySelector('img')) {
+                    menuItem.querySelector('img').alt = window.t(item.labelKey);
+                }
+            }
+        };
+    }
+
+    menuItem.addEventListener('mouseenter', () => {
+        menuItem.style.background = 'var(--neko-popup-hover, rgba(68,183,254,0.1))';
+    });
+    menuItem.addEventListener('mouseleave', () => {
+        menuItem.style.background = 'transparent';
+    });
+
+    let isOpening = false;
+
+    menuItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isOpening) return;
+
+        if (item.action === 'navigate') {
+            let finalUrl = item.url || item.urlBase;
+            let windowName = `neko_${item.id}`;
+            let features;
+
+            if ((item.id === 'vrm-manage' || item.id === 'live2d-manage') && item.urlBase) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                isOpening = true;
+                window.location.href = finalUrl;
+                setTimeout(() => { isOpening = false; }, 500);
+            } else if (item.id === 'voice-clone' && item.url) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                const lanlanNameForKey = lanlanName || 'default';
+                finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                const width = 700;
+                const height = 750;
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+                isOpening = true;
+                window.openOrFocusWindow(finalUrl, windowName, features);
+                setTimeout(() => { isOpening = false; }, 500);
+            } else {
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) {
+                    windowName = 'neko_chara_manager';
+                }
+
+                isOpening = true;
+                window.openOrFocusWindow(finalUrl, windowName);
+                setTimeout(() => { isOpening = false; }, 500);
+            }
+        }
+    });
+
+    return menuItem;
+};
+
 // 创建设置菜单项 (保持与Live2D一致)
 VRMManager.prototype._createSettingsMenuItems = function (popup) {
+    // 1. 角色管理按钮（侧边弹出：通用设置 + 模型管理 + 声音克隆）
+    const characterSettingsBtn = this._createSettingsMenuButton({
+        label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
+        labelKey: 'settings.menu.characterManage',
+        icon: '/static/icons/character_icon.png'
+    });
+    characterSettingsBtn.id = 'vrm-menu-character';
+    popup.appendChild(characterSettingsBtn);
+
+    const characterSidePanel = this._createCharacterSettingsSidePanel();
+    characterSidePanel._anchorElement = characterSettingsBtn;
+    characterSidePanel._popupElement = popup;
+    this._attachSidePanelHover(characterSettingsBtn, characterSidePanel);
+
+    // 2. 其他菜单项（无子菜单）
     const settingsItems = [
-        {
-            id: 'character',
-            label: window.t ? window.t('settings.menu.characterManage') : '角色管理',
-            labelKey: 'settings.menu.characterManage',
-            icon: '/static/icons/character_icon.png',
-            action: 'navigate',
-            url: '/chara_manager',
-            // 子菜单：通用设置、模型管理、声音克隆
-            submenu: [
-                { id: 'general', label: window.t ? window.t('settings.menu.general') : '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/chara_manager' },
-                { id: 'vrm-manage', label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
-                { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
-            ]
-        },
         { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
         { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
         { id: 'steam-workshop', label: window.t ? window.t('settings.menu.steamWorkshop') : '创意工坊', labelKey: 'settings.menu.steamWorkshop', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
@@ -1372,67 +1533,6 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
     settingsItems.forEach(item => {
         const menuItem = this._createMenuItem(item);
         popup.appendChild(menuItem);
-
-        // 如果有子菜单，创建可折叠的子菜单容器
-        if (item.submenu && item.submenu.length > 0) {
-            const submenuContainer = this._createSubmenuContainer(item.submenu);
-            popup.appendChild(submenuContainer);
-
-            // 鼠标悬停展开/收缩：增加缓冲，避免主项和子项之间小缝隙导致抖动
-            let submenuCollapseTimer = null;
-            let overflowTimer = null;
-            const clearSubmenuCollapseTimer = () => {
-                if (submenuCollapseTimer) {
-                    clearTimeout(submenuCollapseTimer);
-                    submenuCollapseTimer = null;
-                }
-            };
-            const expandSubmenu = () => {
-                clearSubmenuCollapseTimer();
-                if (overflowTimer) { clearTimeout(overflowTimer); overflowTimer = null; }
-                submenuContainer._expand();
-                // 展开动画完成后修正父 popup 垂直溢出
-                overflowTimer = setTimeout(() => {
-                    overflowTimer = null;
-                    if (!popup.isConnected || popup.style.display === 'none') return;
-                    const rect = popup.getBoundingClientRect();
-                    const bottomMargin = 60;
-                    const topMargin = 8;
-                    if (rect.bottom > window.innerHeight - bottomMargin) {
-                        const overflow = rect.bottom - (window.innerHeight - bottomMargin);
-                        popup.style.top = `${parseFloat(popup.style.top || 0) - overflow}px`;
-                    }
-                    const newRect = popup.getBoundingClientRect();
-                    if (newRect.top < topMargin) {
-                        popup.style.top = `${parseFloat(popup.style.top || 0) + (topMargin - newRect.top)}px`;
-                    }
-                }, VRM_POPUP_ANIMATION_DURATION_MS + 20);
-            };
-            const scheduleSubmenuCollapse = () => {
-                clearSubmenuCollapseTimer();
-                submenuCollapseTimer = setTimeout(() => {
-                    submenuContainer._collapse();
-                    submenuCollapseTimer = null;
-                }, 110);
-            };
-
-            menuItem.addEventListener('mouseenter', expandSubmenu);
-            menuItem.addEventListener('mouseleave', (e) => {
-                const target = e.relatedTarget;
-                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
-                    return;
-                }
-                scheduleSubmenuCollapse();
-            });
-            submenuContainer.addEventListener('mouseenter', expandSubmenu);
-            submenuContainer.addEventListener('mouseleave', (e) => {
-                const target = e.relatedTarget;
-                if (target && (menuItem.contains(target) || submenuContainer.contains(target))) {
-                    return;
-                }
-                scheduleSubmenuCollapse();
-            });
-        }
     });
 };
 
@@ -1657,6 +1757,11 @@ VRMManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
         const popupId = popup.id.replace('vrm-popup-', '');
         if (popupId !== currentButtonId && popup.style.display === 'flex') this.closePopupById(popupId);
     });
+};
+
+// 关闭所有弹出框（不排除任何按钮）
+VRMManager.prototype.closeAllPopups = function () {
+    this.closeAllPopupsExcept(null);
 };
 
 // 辅助方法：关闭设置窗口

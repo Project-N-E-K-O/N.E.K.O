@@ -398,7 +398,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         item_id = data.get('item_id')  # 获取可选的item_id
         vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         idle_animation = data.get('idle_animation')  # 获取可选的VRM待机动作
-        touch_set = data.get('touch_set', {})  # 获取可选的live2d(与VRM?)触摸动作
 
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
@@ -606,14 +605,6 @@ async def update_catgirl_l2d(name: str, request: Request):
                 set_reserved(characters['猫娘'][name], 'avatar', 'asset_source', 'local')
                 logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
-        
-        #一个角色切换模型后得重新配置触摸动画好像蛮麻烦 先留着吧出问题再说
-        existing_touch_set = get_reserved(characters['猫娘'][name], 'avatar', 'touch_set', default={})
-        existing_touch_set.update(touch_set)
-        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        logger.debug(f"已保存角色 {name} 的 触摸/点击 配置")
-
-
         # 保存配置
         _config_manager.save_characters(characters)
         # 自动重新加载配置
@@ -637,6 +628,83 @@ async def update_catgirl_l2d(name: str, request: Request):
             'success': False,
             'error': str(e)
         })
+
+
+@router.patch('/catgirl/{name}/touch_set')
+async def update_catgirl_touch_set(name: str, request: Request):
+    """全量更新指定猫娘当前模型的触摸动画配置
+    
+    请求体格式:
+    {
+        "model_name": "模型名称",
+        "touch_set": {
+            "default": {"motions": [], "expressions": []},
+            "HitArea1": {"motions": ["motion1"], "expressions": ["exp1"]}
+        }
+    }
+    """
+    try:
+        data = await request.json()
+        
+        model_name = data.get('model_name')
+        touch_set_data = data.get('touch_set')
+
+        if not isinstance(model_name, str) or not model_name.strip():
+            return JSONResponse(
+                content={'success': False, 'error': 'model_name 必须是非空字符串'},
+                status_code=400
+            )
+        model_name = model_name.strip()
+        
+        if touch_set_data is None:
+            return JSONResponse(
+                content={'success': False, 'error': '缺少 touch_set 参数'},
+                status_code=400
+            )
+        
+        if not isinstance(touch_set_data, dict):
+            return JSONResponse(
+                content={'success': False, 'error': 'touch_set 必须是对象'},
+                status_code=400
+            )
+        
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        
+        if '猫娘' not in characters or name not in characters['猫娘']:
+            return JSONResponse(
+                content={'success': False, 'error': '角色不存在'},
+                status_code=404
+            )
+        
+        existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
+        
+        if not existing_touch_set:
+            existing_touch_set = {}
+        
+        existing_touch_set[model_name] = touch_set_data
+        
+        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
+        _config_manager.save_characters(characters)
+        
+        initialize_character_data = get_initialize_character_data()
+        if initialize_character_data:
+            await initialize_character_data()
+        
+        logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
+        
+        return JSONResponse(content={
+            'success': True,
+            'message': f'已更新角色 {name} 的触摸配置',
+            'touch_set': existing_touch_set
+        })
+        
+    except Exception as e:
+        logger.exception("更新触摸配置失败")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
 
 
 @router.put('/catgirl/{name}/lighting')
@@ -934,23 +1002,42 @@ async def unregister_voice(name: str):
     """解除猫娘的声音注册"""
     try:
         _config_manager = get_config_manager()
+        session_manager = get_session_manager()
         characters = _config_manager.load_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
         # 检查是否已有voice_id
-        if not get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)):
+        old_voice_id = get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))
+        if not old_voice_id:
             return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
         
         # COMPAT(v1->v2): 统一落到 _reserved.voice_id，旧平铺 voice_id 不再写入/删除。
         set_reserved(characters['猫娘'][name], 'voice_id', '')
         _config_manager.save_characters(characters)
+
+        # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
+        session_ended = False
+
+        if is_current_catgirl and name in session_manager:
+            if session_manager[name].is_active:
+                logger.info(f"检测到 {name} 的voice_id已清空（{old_voice_id} -> ''），准备刷新...")
+                await send_reload_page_notice(session_manager[name], "音色已清除，页面即将刷新")
+                try:
+                    await session_manager[name].end_session(by_server=True)
+                    session_ended = True
+                    logger.info(f"{name} 的session已结束")
+                except Exception as e:
+                    logger.error(f"结束session时出错: {e}")
+
         # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        if is_current_catgirl:
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
         
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
-        return {"success": True, "message": "声音注册已解除"}
+        return {"success": True, "message": "声音注册已解除", "session_restarted": session_ended, "voice_id_changed": True}
         
     except Exception as e:
         logger.error(f"解除声音注册时出错: {e}")
