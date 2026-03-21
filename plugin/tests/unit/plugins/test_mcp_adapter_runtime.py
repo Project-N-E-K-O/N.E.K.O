@@ -296,12 +296,13 @@ async def test_mcp_gateway_invoke_uses_handle_request() -> None:
     class _Gateway:
         async def handle_request(self, incoming):
             assert incoming.payload["name"] == "demo_tool"
-            return Ok(type("Resp", (), {"request_id": "r1", "success": True, "data": {"x": 1}, "latency_ms": 3.0, "error": None})())
+            return Ok(type("Resp", (), {"request_id": "r1", "success": True, "data": {"content": [{"type": "text", "text": "hello from mcp"}]}, "latency_ms": 3.0, "error": None})())
 
     plugin._gateway_core = _Gateway()
     result = await plugin.gateway_invoke(tool_name="demo_tool", arguments={"x": 1})
     assert isinstance(result, Ok)
-    assert result.value["result"] == {"x": 1}
+    assert result.value["result"] == {"content": [{"type": "text", "text": "hello from mcp"}]}
+    assert result.value["summary"] == "hello from mcp"
 
 
 @pytest.mark.asyncio
@@ -351,6 +352,115 @@ async def test_mcp_tool_register_uses_extended_dynamic_entry_timeout() -> None:
 
     assert ok is True
     assert captured["timeout"] == 65.0
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_register_handler_returns_finish_envelope_with_summary() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    plugin._tool_timeout = 60.0
+
+    class _Client:
+        async def call_tool(self, tool_name, arguments, timeout):
+            assert tool_name == "fetch"
+            assert arguments == {"url": "https://example.com"}
+            assert timeout == 60.0
+            return {"result": {"content": [{"type": "text", "text": "page title"}]}}
+
+    plugin._clients["fetch"] = _Client()
+
+    captured: dict[str, object] = {}
+
+    def _register_dynamic_entry(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    plugin.register_dynamic_entry = _register_dynamic_entry  # type: ignore[method-assign]
+
+    ok = await plugin._on_tool_register(
+        "mcp_fetch_fetch",
+        "[fetch] fetch",
+        "Fetch URL",
+        {"type": "object"},
+    )
+
+    assert ok is True
+    handler = captured["handler"]
+    response = await handler(url="https://example.com")
+    assert response["data"]["summary"] == "page title"
+    assert response["data"]["result"] == {"content": [{"type": "text", "text": "page title"}]}
+    assert response["meta"]["agent"]["fields"] == ["summary"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_tool_returns_summary_for_llm() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    class _Client:
+        async def call_tool(self, tool_name, arguments, timeout):
+            assert tool_name == "demo_tool"
+            assert arguments == {"x": 1}
+            return {"result": {"content": [{"type": "text", "text": "tool output"}]}}
+
+    plugin._clients["srv"] = _Client()
+    result = await plugin.call_tool(server_name="srv", tool_name="demo_tool", arguments={"x": 1})
+
+    assert isinstance(result, Ok)
+    assert result.value["summary"] == "tool output"
+    assert result.value["result"] == {"content": [{"type": "text", "text": "tool output"}]}
+
+
+def test_mcp_summary_handles_image_content_naturally() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    summary = plugin._summarize_mcp_result(
+        {
+            "content": [
+                {"type": "image", "mimeType": "image/png"},
+            ]
+        }
+    )
+
+    assert summary == "Image (image/png)"
+
+
+def test_mcp_summary_handles_resource_text_naturally() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    summary = plugin._summarize_mcp_result(
+        {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "name": "notes.md",
+                        "mimeType": "text/markdown",
+                        "text": "# Title\nHello world",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert summary == "Resource notes.md: # Title\nHello world"
+
+
+def test_mcp_summary_handles_resource_link_naturally() -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+
+    summary = plugin._summarize_mcp_result(
+        {
+            "content": [
+                {
+                    "type": "resource_link",
+                    "name": "report.csv",
+                    "uri": "file:///tmp/report.csv",
+                    "mimeType": "text/csv",
+                }
+            ]
+        }
+    )
+
+    assert summary == "Resource report.csv (text/csv)"
 
 
 @pytest.mark.asyncio
