@@ -556,7 +556,7 @@ class MCPClient:
             response = await self._http_session.get(
                 url,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout, sock_read=timeout),
+                timeout=aiohttp.ClientTimeout(connect=timeout),
             )
             if response.status != 200:
                 body = await response.text()

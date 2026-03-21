@@ -49,7 +49,12 @@ class MCPRequestNormalizer:
 
             # 提取可选字段
             trace_id = self._extract_string(payload, "id") or env.request_id
-            timeout_raw = payload.get("timeout_s", payload.get("timeout"))
+            if "timeout_s" in payload:
+                timeout_raw = payload.get("timeout_s")
+                if timeout_raw is None:
+                    timeout_raw = payload.get("timeout")
+            else:
+                timeout_raw = payload.get("timeout")
             timeout_s = 60.0
             if isinstance(timeout_raw, bool):
                 raise GatewayErrorException(

@@ -517,7 +517,7 @@ class PluginCommunicationResourceManager:
                     return
                 event_meta = EventMeta(
                     event_type="plugin_entry",
-                    id=meta_dict.get("id", entry_id),
+                    id=entry_id,
                     name=meta_dict.get("name", entry_id),
                     description=meta_dict.get("description", ""),
                     input_schema=meta_dict.get("input_schema"),

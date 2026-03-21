@@ -141,6 +141,8 @@ class MemoReminderPlugin(NekoPluginBase):
             return self.store._read_value(key, default)
         except Exception as exc:
             self.logger.warning("MemoReminder store get failed for key {!r}: {}", key, exc)
+            if key == _STORE_KEY:
+                raise SdkError(f"Failed to load reminder store key '{key}': {exc}") from exc
             return default
 
     def _store_set_sync(self, key: str, value: Any) -> None:
