@@ -862,6 +862,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
     import shutil
     import tempfile
     
+    target_model_dir = None
     try:
         if not files:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
@@ -912,10 +913,16 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # 如果目标目录已存在，返回错误或覆盖（这里选择返回错误）
             if target_model_dir.exists():
-                return JSONResponse(status_code=400, content={
-                    "success": False, 
-                    "error": f"模型 {model_name} 已存在，请先删除或重命名现有模型"
-                })
+                # 检查是否包含有效模型文件，若无则为残留空目录，自动清理
+                has_valid_model = any(target_model_dir.rglob('*.model3.json'))
+                if has_valid_model:
+                    return JSONResponse(status_code=400, content={
+                        "success": False, 
+                        "error": f"模型 {model_name} 已存在，请先删除或重命名现有模型"
+                    })
+                else:
+                    logger.info(f"清理残留的无效模型目录: {target_model_dir}")
+                    shutil.rmtree(target_model_dir, ignore_errors=True)
             
             # 复制模型根目录到用户文档的live2d目录
             shutil.copytree(model_root_dir, target_model_dir)
@@ -1028,6 +1035,13 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             })
             
     except Exception as e:
+        # 清理可能的残留目录
+        try:
+            if target_model_dir and target_model_dir.exists():
+                shutil.rmtree(target_model_dir)
+                logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
+        except Exception as cleanup_err:
+            logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
         logger.error(f"上传Live2D模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
@@ -1267,6 +1281,7 @@ def get_user_models():
             for scan_dir, url_prefix in _scan_dirs:
                 if not os.path.exists(scan_dir):
                     continue
+                found_dirs = set()  # 记录已识别为有效模型的目录
                 for root, dirs, files in os.walk(scan_dir):
                     for file in files:
                         if file.endswith('.model3.json'):
@@ -1289,6 +1304,9 @@ def get_user_models():
                                 path = f'{url_prefix}/{rel_path_posix}/{file}'
                             else:
                                 path = f'{url_prefix}/{file}'
+                            # 记录顶层目录名
+                            top_dir = rel_path.split(os.sep)[0] if rel_path != '.' else model_name
+                            found_dirs.add(top_dir)
                             user_models.append({
                                 'name': model_name,
                                 'path': path,
@@ -1296,6 +1314,18 @@ def get_user_models():
                             })
                             # Prune deeper traversal after finding a .model3.json
                             dirs[:] = []
+                
+                # 查找残缺模型目录（有目录但无 .model3.json 的顶层子目录）
+                # 这些通常是导入失败后留下的残留，需要显示在列表中以便用户删除
+                for item in os.listdir(scan_dir):
+                    item_path = os.path.join(scan_dir, item)
+                    if os.path.isdir(item_path) and item not in found_dirs:
+                        user_models.append({
+                            'name': item,
+                            'path': '',
+                            'source': 'user_documents',
+                            'broken': True
+                        })
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
 

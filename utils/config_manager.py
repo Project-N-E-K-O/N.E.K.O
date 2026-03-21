@@ -174,9 +174,13 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     model_type = str(
         get_reserved(catgirl_data, "avatar", "model_type", default="", legacy_keys=("model_type",))
     ).strip().lower()
-    if model_type not in {"live2d", "vrm"}:
+    if model_type not in {"live2d", "vrm", "live3d"}:
         has_vrm = catgirl_data.get("vrm") or get_reserved(catgirl_data, "avatar", "vrm", "model_path")
-        model_type = "vrm" if has_vrm else "live2d"
+        has_mmd = catgirl_data.get("mmd") or get_reserved(catgirl_data, "avatar", "mmd", "model_path")
+        model_type = "live3d" if (has_vrm or has_mmd) else "live2d"
+    # 归一化：旧配置中的 'vrm' 统一为 'live3d'
+    if model_type == "vrm":
+        model_type = "live3d"
     changed |= set_reserved(catgirl_data, "avatar", "model_type", model_type)
 
     asset_source_id = get_reserved(
@@ -255,6 +259,40 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
     if isinstance(lighting, dict):
         changed |= set_reserved(catgirl_data, "avatar", "vrm", "lighting", lighting)
 
+    # MMD 模型路径迁移
+    mmd_model_path = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "model_path",
+        default="",
+        legacy_keys=("mmd",),
+    )
+    if mmd_model_path:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "model_path", str(mmd_model_path).strip())
+
+    mmd_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "animation",
+        default=None,
+        legacy_keys=("mmd_animation",),
+    )
+    if mmd_animation is not None:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "animation", mmd_animation)
+
+    mmd_idle_animation = get_reserved(
+        catgirl_data,
+        "avatar",
+        "mmd",
+        "idle_animation",
+        default="",
+        legacy_keys=("mmd_idle_animation",),
+    )
+    if mmd_idle_animation:
+        changed |= set_reserved(catgirl_data, "avatar", "mmd", "idle_animation", str(mmd_idle_animation))
+
     # COMPAT(v1->v2): 保留字段统一迁入 _reserved 后，移除旧平铺字段，避免再次泄露到可编辑字段。
     for legacy_key in (
         "voice_id",
@@ -268,6 +306,9 @@ def migrate_catgirl_reserved(catgirl_data: dict) -> bool:
         "idleAnimation",
         "lighting",
         "vrm_rotation",
+        "mmd",
+        "mmd_animation",
+        "mmd_idle_animation",
     ):
         if legacy_key in catgirl_data:
             catgirl_data.pop(legacy_key, None)
@@ -317,7 +358,19 @@ def flatten_reserved(catgirl_data: dict) -> dict:
     lighting = get_reserved(result, "avatar", "vrm", "lighting", default=None)
     if isinstance(lighting, dict):
         result["lighting"] = lighting
-    
+
+    mmd_model_path = get_reserved(result, "avatar", "mmd", "model_path", default="")
+    if mmd_model_path:
+        result["mmd"] = mmd_model_path
+
+    mmd_animation = get_reserved(result, "avatar", "mmd", "animation", default=None)
+    if mmd_animation is not None:
+        result["mmd_animation"] = mmd_animation
+
+    mmd_idle_animation = get_reserved(result, "avatar", "mmd", "idle_animation", default="")
+    if mmd_idle_animation:
+        result["mmd_idle_animation"] = mmd_idle_animation
+
     touch_set = get_reserved(result, 'touch_set', default=None)
     if touch_set:
         result['touch_set'] = touch_set
@@ -362,6 +415,9 @@ class ConfigManager:
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
         self.vrm_dir = self.app_docs_dir / "vrm"
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
+        # MMD模型存储在用户文档目录下
+        self.mmd_dir = self.app_docs_dir / "mmd"
+        self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -684,6 +740,18 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create vrm directory: {e}", file=sys.stderr)
+            return False
+    
+    def ensure_mmd_directory(self):
+        """确保用户文档目录下的mmd目录和animation子目录存在"""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.mmd_dir.mkdir(parents=True, exist_ok=True)
+            self.mmd_animation_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create mmd directory: {e}", file=sys.stderr)
             return False
         
     def ensure_chara_directory(self):

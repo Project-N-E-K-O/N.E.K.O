@@ -16,9 +16,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
-from plugin.sdk import ok, fail
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    neko_plugin,
+    plugin_entry,
+    lifecycle,
+    Ok,
+    Err,
+    SdkError,
+)
 
 _STORE_KEY = "reminders"
 
@@ -173,7 +179,7 @@ class MemoReminderPlugin(NekoPluginBase):
 
         count = len(self._load_reminders())
         self.logger.info("MemoReminder started, {} pending reminders, tz={} (event-driven)", count, self._tz)
-        return ok(data={"status": "running", "pending": count, "mode": "event-driven", "timezone": str(self._tz)})
+        return Ok({"status": "running", "pending": count, "mode": "event-driven", "timezone": str(self._tz)})
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_):
@@ -182,7 +188,7 @@ class MemoReminderPlugin(NekoPluginBase):
         if self._checker_thread and self._checker_thread.is_alive():
             self._checker_thread.join(timeout=3.0)
         self.logger.info("MemoReminder shutdown")
-        return ok(data={"status": "shutdown"})
+        return Ok({"status": "shutdown"})
 
     def _next_trigger_seconds(self) -> Optional[float]:
         """计算距离最近一条提醒的剩余秒数，无提醒返回 None。"""
@@ -494,14 +500,14 @@ class MemoReminderPlugin(NekoPluginBase):
         try:
             max_count = int(max_count)
         except (TypeError, ValueError):
-            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+            return Err(SdkError(f"max_count 必须为正整数: {max_count}"))
         if max_count <= 0:
-            return fail("INVALID_MAX_COUNT", f"max_count 必须为正整数: {max_count}")
+            return Err(SdkError(f"max_count 必须为正整数: {max_count}"))
 
         tz = getattr(self, "_tz", ZoneInfo(_DEFAULT_TZ))
         parsed = _parse_time(time, tz)
         if parsed is None:
-            return fail("INVALID_TIME", f"无法解析时间: {time}")
+            return Err(SdkError(f"无法解析时间: {time}"))
 
         trigger_dt, has_date = parsed
         repeat = _normalize_repeat(repeat)
@@ -510,18 +516,18 @@ class MemoReminderPlugin(NekoPluginBase):
                 try:
                     val = float(repeat[:-1])
                     if val <= 0:
-                        return fail("INVALID_REPEAT", f"重复间隔必须为正数: {repeat}")
+                        return Err(SdkError(f"重复间隔必须为正数: {repeat}"))
                 except ValueError:
-                    return fail("INVALID_REPEAT", f"无法解析重复模式: {repeat}")
+                    return Err(SdkError(f"无法解析重复模式: {repeat}"))
             else:
-                return fail("INVALID_REPEAT", f"不支持的重复模式: {repeat}")
+                return Err(SdkError(f"不支持的重复模式: {repeat}"))
         now = _now(_TZ_UTC)
 
         if trigger_dt <= now:
             if repeat == "once":
                 if has_date:
                     local_str = trigger_dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
-                    return fail("TIME_PAST", f"指定时间 {local_str} 已过去")
+                    return Err(SdkError(f"指定时间 {local_str} 已过去"))
                 trigger_dt += timedelta(days=1)
             else:
                 placeholder = {
@@ -530,7 +536,7 @@ class MemoReminderPlugin(NekoPluginBase):
                 }
                 advanced = self._reschedule(placeholder, now)
                 if advanced is None:
-                    return fail("INVALID_REPEAT", f"无法调度重复模式: {repeat}")
+                    return Err(SdkError(f"无法调度重复模式: {repeat}"))
                 trigger_dt = datetime.fromisoformat(advanced["trigger_at"])
 
         ctx_obj = kwargs.get("_ctx")
@@ -564,7 +570,7 @@ class MemoReminderPlugin(NekoPluginBase):
             cfg = self.store.get("_memo_cfg", {})
             max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
             if len(reminders) >= max_r:
-                return fail("LIMIT_REACHED", f"提醒数量已达上限 ({max_r})")
+                return Err(SdkError(f"提醒数量已达上限 ({max_r})"))
             reminders.append(reminder)
             self._save_reminders_unlocked(reminders)
         self._notify_change()
@@ -581,7 +587,7 @@ class MemoReminderPlugin(NekoPluginBase):
         if max_count is not None and repeat != "once":
             repeat_desc += f" (max {max_count} times)"
 
-        return ok(data={
+        return Ok({
             "status": "scheduled",
             "deferred": needs_deferred,
             "reminder_id": rid,
@@ -612,8 +618,8 @@ class MemoReminderPlugin(NekoPluginBase):
                     r["deferred_bind_pending"] = False  # 清除标志，表示绑定完成
                     self._save_reminders_unlocked(reminders)
                     self.logger.info("Bound agent_task_id={} to reminder={}", agent_task_id, reminder_id)
-                    return ok(data={"bound": True})
-        return fail("NOT_FOUND", f"Reminder {reminder_id} not found")
+                    return Ok({"bound": True})
+        return Err(SdkError(f"Reminder {reminder_id} not found"))
 
     @plugin_entry(
         id="list_reminders",
@@ -624,7 +630,7 @@ class MemoReminderPlugin(NekoPluginBase):
     async def list_reminders(self, **_):
         reminders = self._load_reminders()
         reminders_sorted = sorted(reminders, key=lambda r: r.get("trigger_at", ""))
-        return ok(data={"count": len(reminders_sorted), "reminders": reminders_sorted})
+        return Ok({"count": len(reminders_sorted), "reminders": reminders_sorted})
 
     @plugin_entry(
         id="delete_reminder",
@@ -645,11 +651,11 @@ class MemoReminderPlugin(NekoPluginBase):
             original_len = len(reminders)
             reminders = [r for r in reminders if r.get("id") != reminder_id]
             if len(reminders) == original_len:
-                return fail("NOT_FOUND", f"未找到提醒: {reminder_id}")
+                return Err(SdkError(f"未找到提醒: {reminder_id}"))
             self._save_reminders_unlocked(reminders)
         self._notify_change()
         self.logger.info("Reminder deleted: {}", reminder_id)
-        return ok(data={"deleted": reminder_id, "remaining": len(reminders)})
+        return Ok({"deleted": reminder_id, "remaining": len(reminders)})
 
     @plugin_entry(
         id="clear_reminders",
@@ -663,4 +669,4 @@ class MemoReminderPlugin(NekoPluginBase):
             self._save_reminders_unlocked([])
         self._notify_change()
         self.logger.info("All {} reminders cleared", count)
-        return ok(data={"cleared": count})
+        return Ok({"cleared": count})

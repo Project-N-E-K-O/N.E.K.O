@@ -58,7 +58,7 @@ def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
 
 def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
     try:
-        from plugin.sdk.message_plane_transport import MessagePlaneRpcClient
+        from plugin.core.message_plane_transport import MessagePlaneRpcClient
     except Exception:
         return False
 

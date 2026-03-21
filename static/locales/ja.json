@@ -933,6 +933,18 @@
             "loop": "ループ",
             "speed": "速度:"
         },
+        "mmdModel": {
+            "selectModel": "MMDモデルを選択",
+            "deleteModel": "インポート済みMMDモデルを削除",
+            "deleteModelTitle": "インポート済みMMDモデルを削除",
+            "deleteWarning": "以下はすべてのインポート済みユーザーMMDモデルです。削除するモデルを選択してください（モデルフォルダとテクスチャも削除されます）。",
+            "noUserModels": "削除可能なユーザーMMDモデルはありません",
+            "deleteSelected": "選択を削除"
+        },
+        "mmdAnimation": {
+            "selectAnimation": "VMDアニメーションを選択",
+            "noAnimation": "アニメーションなし"
+        },
         "modelFilesFetchFailed": "モデルファイルリスト取得失敗",
         "modelConfigFetchFailed": "モデル設定取得失敗: {{status}}",
         "updatedPersistentExpression": "常時表情を更新しました",
@@ -1290,7 +1302,10 @@
         "renameError": "名前の変更に失敗しました: {{error}}",
         "renameMasterTitle": "マスターの名前を変更",
         "renameSuccess": "名前の変更に成功しました",
-        "saveMasterError": "マスター設定の保存に失敗しました"
+        "autoSaveError": "設定の保存に失敗しました",
+        "saveMasterError": "マスター設定の保存に失敗しました",
+        "autoSaved": "設定を自動保存しました",
+        "autoSaveFailed": "自動保存に失敗しました。手動で保存してからページを閉じてください"
     },
     "app": {
         "welcomeBack": "{{name}}が戻りました！",
@@ -1553,6 +1568,47 @@
             "title": "待機アニメーション",
             "changed": "待機アニメーションを切り替えました: {{name}}",
             "changeFailed": "待機アニメーションの切り替えに失敗しました"
+        },
+        "settingsTitle": "VRM モデル設定",
+        "cursorFollow": {
+            "title": "マウス追従",
+            "preset": "追従強度",
+            "none": "オフ",
+            "low": "低",
+            "medium": "中",
+            "high": "高",
+            "eyeSensitivity": "目の感度",
+            "headSensitivity": "頭の感度",
+            "headSpeed": "頭の追従速度"
+        }
+    },
+    "mmd": {
+        "settingsTitle": "MMD モデル設定",
+        "lighting": {
+            "title": "MMD ライティング",
+            "ambientIntensity": "環境光の強度",
+            "ambientColor": "環境光の色",
+            "directionalIntensity": "メインライトの強度",
+            "directionalColor": "メインライトの色"
+        },
+        "rendering": {
+            "title": "MMD レンダリング",
+            "toneMapping": "トーンマッピング",
+            "exposure": "露出",
+            "outline": "輪郭線",
+            "pixelRatio": "ピクセル比率"
+        },
+        "physics": {
+            "title": "MMD 物理設定",
+            "enabled": "物理シミュレーション",
+            "strength": "シミュレーション強度"
+        },
+        "cursorFollow": {
+            "title": "マウス追従",
+            "enabled": "頭の追従",
+            "headYaw": "左右回転範囲",
+            "headPitch": "上下回転範囲",
+            "smoothSpeed": "追従のなめらかさ"
         }
     },
     "modelManager": {
@@ -2212,6 +2268,45 @@
             "sad": "悲しい (Sad)",
             "angry": "怒り (Angry)",
             "surprised": "驚き (Surprised)"
+        }
+    },
+    "mmdEmotionManager": {
+        "title": "MMD 感情マッピング管理 - Project N.E.K.O.",
+        "pageTitle": "MMD 感情マッピング管理",
+        "subtitle": "各感情に対応するモーフターゲットマッピングを設定",
+        "selectModel": "MMDモデルを選択",
+        "morphPreview": "モーフプレビュー",
+        "morphCandidates": "モーフ候補",
+        "selectMorph": "モーフを選択",
+        "saveConfig": "設定を保存",
+        "resetToDefault": "デフォルトにリセット",
+        "loading": "読み込み中...",
+        "loadingMorphs": "モーフリストを読み込み中",
+        "pleaseSelectModel": "モデルを選択してください",
+        "noModelsFound": "利用可能なMMDモデルが見つかりません",
+        "noMorphsFound": "利用可能なモーフがありません",
+        "loadModelListFailed": "モデルリストの読み込みに失敗しました",
+        "loadMorphsFailed": "モーフリストの読み込みに失敗しました",
+        "morphsLoadedFromModel": "現在のモデルからモーフリストを読み込みました",
+        "useDefaultMorphs": "デフォルトモーフリストを使用（正確なリストを取得するには、先にメインページでモデルを読み込んでください）",
+        "configLoadSuccess": "設定を読み込みました",
+        "configLoadFailed": "設定の読み込みに失敗しました",
+        "configUseDefault": "デフォルト設定を使用",
+        "configSaveSuccess": "設定を保存しました！",
+        "saveFailed": "保存に失敗しました",
+        "configReset": "デフォルト設定にリセットしました",
+        "pleaseSelectModelFirst": "先にモデルを選択してください",
+        "tip": "ヒント：",
+        "tipContent": "MMDモデルの表情はモーフターゲットで実装されています。各感情に複数の候補モーフを選択してください。システムはモデルがサポートするモーフを自動的にマッチングします。",
+        "close": "閉じる",
+        "emotions": {
+            "neutral": "平常 (Neutral)",
+            "happy": "嬉しい (Happy)",
+            "relaxed": "リラックス (Relaxed)",
+            "sad": "悲しい (Sad)",
+            "angry": "怒り (Angry)",
+            "surprised": "驚き (Surprised)",
+            "fear": "恐怖 (Fear)"
         }
     },
     "theme": {

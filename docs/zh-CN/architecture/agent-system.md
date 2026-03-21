@@ -1,6 +1,6 @@
 # 智能体系统
 
-智能体系统使 N.E.K.O. 角色能够执行后台任务 —— 浏览网页、控制计算机和调用外部工具 —— 这些任务由对话上下文触发。
+智能体系统使 N.E.K.O. 角色能够执行后台任务 —— 浏览网页、控制计算机、运行沙盒代码和调用外部工具 —— 这些任务由对话上下文触发。
 
 ## 架构
 
@@ -13,10 +13,11 @@
 │   │ agent_flags│  PUB/SUB         │   ├── Analyzer      │
 │   │            │                  │   └── Deduper        │
 │   │ callbacks  │ <──────────────  │                      │
-│   │            │  PUSH/PULL       │ Adapters:            │
+│   │            │  PUSH/PULL       │ 适配器:              │
 └────────────────┘                  │   ├── MCP Client     │
                                     │   ├── Computer Use   │
-                                    │   └── Browser Use    │
+                                    │   ├── Browser Use    │
+                                    │   └── Virtual Machine│
                                     └────────────────────┘
 ```
 
@@ -30,6 +31,7 @@
 | `computer_use_enabled` | false | 截图分析、鼠标/键盘操作 |
 | `mcp_enabled` | false | Model Context Protocol 工具调用 |
 | `browser_use_enabled` | false | 网页浏览自动化 |
+| `vm_enabled` | false | 虚拟机沙盒执行 |
 
 ## 任务执行流水线
 
@@ -41,6 +43,7 @@
    - **MCP Client** —— 通过 Model Context Protocol 调用外部工具
    - **Computer Use** —— 截取屏幕截图，使用视觉模型分析，执行鼠标/键盘操作
    - **Browser Use** —— 导航网页、提取内容、填写表单
+   - **Virtual Machine** —— 在隔离的沙盒环境中执行代码和命令
 
 4. **分析**：`Analyzer` 评估任务目标是否已达成。
 
@@ -52,9 +55,9 @@
 
 | 地址 | 类型 | 方向 | 用途 |
 |------|------|------|------|
-| `tcp://127.0.0.1:48961` | PUB/SUB | 主服务器 -> 智能体 | 会话事件、任务请求 |
-| `tcp://127.0.0.1:48962` | PUSH/PULL | 智能体 -> 主服务器 | 任务结果、状态更新 |
-| `tcp://127.0.0.1:48963` | PUSH/PULL | 主服务器 -> 智能体 | 分析请求队列 |
+| `tcp://127.0.0.1:48961` | PUB/SUB | 主服务器 → 智能体 | 会话事件、任务请求 |
+| `tcp://127.0.0.1:48962` | PUSH/PULL | 智能体 → 主服务器 | 任务结果、状态更新 |
+| `tcp://127.0.0.1:48963` | PUSH/PULL | 主服务器 → 智能体 | 分析请求队列 |
 
 ## Computer Use
 
@@ -76,6 +79,15 @@ Browser Use 适配器（`brain/browser_use_adapter.py`）封装了 `browser-use`
 - 填写表单
 - 点击元素
 - 截取页面截图
+
+## Virtual Machine
+
+虚拟机适配器提供隔离的沙盒环境用于代码执行：
+
+- 在沙盒虚拟机中执行代码和 shell 命令
+- 文件系统隔离，防止对宿主机的意外修改
+- 支持带超时控制的长时间运行任务
+- 结果通过 ZeroMQ 流式返回
 
 ## API 端点
 

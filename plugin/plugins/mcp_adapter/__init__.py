@@ -16,15 +16,16 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
 
-from plugin.sdk import (
+from plugin.sdk.plugin import (
     neko_plugin,
     plugin_entry,
     lifecycle,
-    ok,
-    fail,
+    Ok,
+    Err,
+    SdkError,
 )
 from plugin.sdk.adapter import AdapterGatewayCore, DefaultPolicyEngine, NekoAdapterPlugin
-from plugin.sdk.adapter.gateway_models import ExternalEnvelope
+from plugin.sdk.adapter.gateway_models import ExternalRequest
 from plugin.plugins.mcp_adapter.normalizer import MCPRequestNormalizer
 from plugin.plugins.mcp_adapter.serializer import MCPResponseSerializer
 from plugin.plugins.mcp_adapter.router import MCPRouteEngine
@@ -47,7 +48,7 @@ class _MCPInternalTransport:
     async def stop(self) -> None:
         return
 
-    async def recv(self) -> ExternalEnvelope:
+    async def recv(self) -> ExternalRequest:
         raise RuntimeError("mcp_internal transport does not support recv()")
 
     async def send(self, response: object) -> None:
@@ -699,7 +700,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             # 从 tool_id 解析 server_name 和 tool_name
             server_name, tool_name = parsed_server_name, parsed_tool_name
             if not server_name or not tool_name:
-                return fail("INVALID_TOOL_ID", f"Invalid tool_id: {tool_id}")
+                return Err(SdkError(f"Invalid tool_id: {tool_id}"))
             
             # 移除 NEKO 注入的参数
             arguments = {k: v for k, v in kwargs.items() if not k.startswith("_")}
@@ -707,12 +708,12 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             # 获取对应的 client
             target_client = self._clients.get(server_name)
             if not target_client:
-                return fail("NOT_CONNECTED", f"Server '{server_name}' not connected")
+                return Err(SdkError(f"Server '{server_name}' not connected"))
             
             result = await target_client.call_tool(tool_name, arguments)
             if "error" in result:
-                return fail("MCP_ERROR", str(result["error"]))
-            return ok(data=result.get("result", {}))
+                return Err(SdkError(str(result["error"])))
+            return Ok(result.get("result", {}))
         
         # 注册为动态 entry
         return await self.register_dynamic_entry(
@@ -1061,7 +1062,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "configured": True,
                 })
         
-        return ok(data={"servers": servers, "total": len(servers)})
+        return Ok({"servers": servers, "total": len(servers)})
     
     @plugin_entry(
         id="connect_server",
@@ -1082,26 +1083,26 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     async def connect_server(self, server_name: str, **_):
         """连接到指定的 MCP server"""
         if server_name in self._clients:
-            return fail("ALREADY_CONNECTED", f"Server '{server_name}' is already connected")
+            return Err(SdkError(f"Server '{server_name}' is already connected"))
         
         # 从配置中获取 server 配置
         config = await self.config.dump()
         servers_config = config.get("mcp_servers", {})
         
         if server_name not in servers_config:
-            return fail("NOT_FOUND", f"Server '{server_name}' not found in config")
+            return Err(SdkError(f"Server '{server_name}' not found in config"))
         
         server_cfg = servers_config[server_name]
         adapter_config = config.get("mcp_adapter", {})
         timeout = adapter_config.get("connect_timeout", 30)
         
         if await self._connect_server(server_name, server_cfg, timeout):
-            return ok(data={
+            return Ok({
                 "message": f"Connected to server '{server_name}'",
                 "tools_count": len(self._clients[server_name].tools),
             })
         else:
-            return fail("CONNECTION_FAILED", f"Failed to connect to server '{server_name}'")
+            return Err(SdkError(f"Failed to connect to server '{server_name}'"))
     
     @plugin_entry(
         id="disconnect_server",
@@ -1122,7 +1123,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     async def disconnect_server(self, server_name: str, **_):
         """断开与指定 MCP server 的连接"""
         if server_name not in self._clients:
-            return fail("NOT_CONNECTED", f"Server '{server_name}' is not connected")
+            return Err(SdkError(f"Server '{server_name}' is not connected"))
         
         # 注销 MCP tools
         await self._unregister_mcp_tools(server_name)
@@ -1137,7 +1138,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             "disconnected_manually": True,
         }
         
-        return ok(data={"message": f"Disconnected from server '{server_name}'"})
+        return Ok({"message": f"Disconnected from server '{server_name}'"})
     
     @plugin_entry(
         id="add_server",
@@ -1203,13 +1204,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         servers_config = config.get("mcp_servers", {})
         
         if name in servers_config:
-            return fail("ALREADY_EXISTS", f"Server '{name}' already exists")
+            return Err(SdkError(f"Server '{name}' already exists"))
         
         # 验证配置
         if transport == "stdio" and not command:
-            return fail("INVALID_CONFIG", "Command is required for stdio transport")
+            return Err(SdkError("Command is required for stdio transport"))
         if transport in ("sse", "streamable-http") and not url:
-            return fail("INVALID_CONFIG", "URL is required for sse/http transport")
+            return Err(SdkError("URL is required for sse/http transport"))
         
         # 构建配置
         server_cfg: Dict[str, object] = {
@@ -1241,17 +1242,17 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             timeout_val = float(timeout) if isinstance(timeout, (int, float)) else 30.0
             
             if await self._connect_server(name, server_cfg, timeout_val):
-                return ok(data={
+                return Ok({
                     "message": f"Added and connected to server '{name}'",
                     "tools_count": len(self._clients[name].tools),
                 })
             else:
-                return ok(data={
+                return Ok({
                     "message": f"Added server '{name}' but connection failed",
                     "connected": False,
                 })
         
-        return ok(data={"message": f"Added server '{name}'"})
+        return Ok({"message": f"Added server '{name}'"})
     
     @plugin_entry(
         id="remove_servers",
@@ -1306,7 +1307,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self.ctx.logger.info(f"Config update result: {result}")
         self._servers_config = servers_config
         
-        return ok(data={
+        return Ok({
             "removed": removed,
             "not_found": not_found,
             "message": f"Removed {len(removed)} server(s)",
@@ -1345,7 +1346,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     ):
         """调用 MCP tool"""
         if server_name not in self._clients:
-            return fail("NOT_CONNECTED", f"Server '{server_name}' is not connected")
+            return Err(SdkError(f"Server '{server_name}' is not connected"))
         
         client = self._clients[server_name]
         
@@ -1358,9 +1359,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         
         if "error" in result:
             error_msg = str(result["error"]) if result["error"] else "Unknown error"
-            return fail("MCP_ERROR", error_msg)
-        
-        return ok(data=result.get("result", {}))
+            return Err(SdkError(error_msg))
+
+        return Ok(result.get("result", {}))
     
     @plugin_entry(
         id="list_tools",
@@ -1385,7 +1386,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "entry_id": f"mcp_{name}_{tool.name}",
                 })
         
-        return ok(data={"tools": tools, "total": len(tools)})
+        return Ok({"tools": tools, "total": len(tools)})
     
     @plugin_entry(
         id="gateway_invoke",
@@ -1430,9 +1431,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         """
         import uuid
         if self._gateway_core is None:
-            return fail("GATEWAY_NOT_INITIALIZED", "Gateway Core components not initialized")
+            return Err(SdkError("Gateway Core components not initialized"))
         
-        # 构造 ExternalEnvelope
+        # 构造 ExternalRequest
         request_id = str(uuid.uuid4())
         try:
             payload: dict[str, object] = {
@@ -1448,7 +1449,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 if timeout_s <= 0:
                     raise ValueError(f"timeout_s must be positive, got {timeout_s}")
                 payload["timeout_s"] = float(timeout_s)
-            envelope = ExternalEnvelope(
+            envelope = ExternalRequest(
                 protocol="mcp",
                 connection_id="neko_internal",
                 request_id=request_id,
@@ -1459,10 +1460,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             response = await self._gateway_core.handle_envelope(envelope)
         except Exception as exc:
             self.ctx.logger.exception(f"Gateway invoke raised unexpected exception: {exc}")
-            return fail("GATEWAY_ERROR", str(exc))
+            return Err(SdkError(str(exc)))
 
         if response.success:
-            return ok(data={
+            return Ok({
                 "request_id": response.request_id,
                 "result": response.data,
                 "latency_ms": response.latency_ms,
@@ -1480,4 +1481,4 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             response.request_id,
             response.latency_ms,
         )
-        return fail(error_code, error_msg)
+        return Err(SdkError(error_msg))
