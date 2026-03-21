@@ -315,10 +315,19 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
             const muteData = this.createMicMuteButton(btnWrapper);
             // 监听麦克风切换事件以更新静音按钮可见性
-            window.addEventListener('live2d-mic-toggle', (e) => {
+            const micToggleHandler = (e) => {
                 if (muteData && muteData.updateVisibility) {
                     muteData.updateVisibility(e.detail.active);
                 }
+            };
+            window.addEventListener('live2d-mic-toggle', micToggleHandler);
+            if (!this._uiWindowHandlers) {
+                this._uiWindowHandlers = [];
+            }
+            this._uiWindowHandlers.push({
+                event: 'live2d-mic-toggle',
+                handler: micToggleHandler,
+                target: window
             });
         }
 
