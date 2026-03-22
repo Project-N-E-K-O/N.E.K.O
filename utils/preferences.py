@@ -274,7 +274,7 @@ GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-    'proactiveMusicEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
+    'proactiveMusicEnabled', 'proactiveMemeEnabled', 'mergeMessagesEnabled', 'focusModeEnabled',
     'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage'
 }
 

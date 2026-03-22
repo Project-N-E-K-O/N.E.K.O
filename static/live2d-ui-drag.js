@@ -449,9 +449,7 @@ window.createChatModeToggle = function(options) {
                 }
             } else {
                 // 子模式关闭：如果没有其他子模式开启，停止调度
-                const hasOtherSubMode = (window.CHAT_MODE_CONFIG || []).some(config =>
-                    config.globalVarName !== globalVarName && Boolean(window[config.globalVarName])
-                );
+                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled || window.proactivePersonalChatEnabled || window.proactiveMusicEnabled;
                 if (!hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
                     window.stopProactiveChatSchedule();
                 }
@@ -511,12 +509,6 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMusicChat',
         tooltipKey: 'settings.toggles.proactiveMusicChatTooltip',
         globalVarName: 'proactiveMusicEnabled'
-    },
-    {
-        mode: 'meme',
-        labelKey: 'settings.toggles.proactiveMemeChat',
-        tooltipKey: 'settings.toggles.proactiveMemeChatTooltip',
-        globalVarName: 'proactiveMemeEnabled'
     }
 ];
 
