@@ -1220,7 +1220,7 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             error=_error_to_pass,
                         )
                         # 检查插件是否通过 meta.agent.reply=False 抑制回复
-                        _suppress_reply = _is_reply_suppressed(up_result.result.get("data") if isinstance(up_result.result, dict) else None)
+                        _suppress_reply = _is_reply_suppressed(up_result.result if isinstance(up_result.result, dict) else None)
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1842,7 +1842,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
                 )
-                _suppress_reply = _is_reply_suppressed(res.result.get("data") if isinstance(res.result, dict) else None)
+                _suppress_reply = _is_reply_suppressed(res.result if isinstance(res.result, dict) else None)
                 if not _suppress_reply:
                     if not res.success:
                         info["error"] = (detail or str(res.error or ""))[:500]
