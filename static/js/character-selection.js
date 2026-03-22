@@ -459,6 +459,7 @@ class CharacterSelection {
         }
         
         this._typeAbort = new AbortController();
+        const signal = this._typeAbort.signal;
         
         return new Promise((resolve, reject) => {
             // 清除之前的打字定时器
@@ -468,12 +469,30 @@ class CharacterSelection {
             }
             element.textContent = '';
             let i = 0;
-            this._typeTimer = setInterval(() => {
-                // 如果任务被取消，立即停止
-                if (this._typeAbort.signal.aborted) {
+            let settled = false;
+            
+            const settle = (fn, val) => {
+                if (settled) return;
+                settled = true;
+                signal.removeEventListener('abort', onAbort);
+                fn(val);
+            };
+            
+            const onAbort = () => {
+                if (this._typeTimer !== null) {
                     clearInterval(this._typeTimer);
                     this._typeTimer = null;
-                    reject(new Error('Typing cancelled'));
+                }
+                settle(reject, new Error('Typing cancelled'));
+            };
+            
+            signal.addEventListener('abort', onAbort);
+            
+            this._typeTimer = setInterval(() => {
+                if (signal.aborted) {
+                    clearInterval(this._typeTimer);
+                    this._typeTimer = null;
+                    settle(reject, new Error('Typing cancelled'));
                     return;
                 }
                 
@@ -482,7 +501,7 @@ class CharacterSelection {
                 } else {
                     clearInterval(this._typeTimer);
                     this._typeTimer = null;
-                    resolve();
+                    settle(resolve);
                 }
             }, 80);
         });
@@ -608,8 +627,15 @@ class CharacterSelection {
                 ? getI18nOrFallback(voiceMapping.personality_i18n, voiceMapping.personality)
                 : voiceMapping.personality;
             const parts = targetData['性格'] ? targetData['性格'].split(/[，,、]/) : [];
-            // 兼容旧数据：用旧 personality 值查找，用新 personality 值替换
-            const oldPersonalityValues = Object.values(CHARACTER_VOICE_MAPPING).map(m => m.personality);
+            // 兼容旧数据：用旧 personality 值查找（包含中文原文和当前语言翻译），用新值替换
+            const oldPersonalityValues = Object.values(CHARACTER_VOICE_MAPPING).flatMap(m => {
+                const vals = [m.personality];
+                if (m.personality_i18n) {
+                    const translated = getI18nOrFallback(m.personality_i18n, m.personality);
+                    if (translated !== m.personality) vals.push(translated);
+                }
+                return vals;
+            });
             const existingIdx = parts.findIndex(p => oldPersonalityValues.includes(p.trim()));
             let personality;
             if (existingIdx !== -1) {

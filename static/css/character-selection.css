@@ -698,4 +698,34 @@
     .click-star {
         animation: none;
     }
+
+    /* 禁用入场/关键帧动画 */
+    .skip-button,
+    .guide-text,
+    .start-button,
+    .cards-title,
+    .cards-hint,
+    .character-card:nth-child(1),
+    .character-card:nth-child(2),
+    .character-card:nth-child(3),
+    .character-card:nth-child(4) {
+        animation: none !important;
+        opacity: 1 !important;
+        transform: none !important;
+    }
+
+    /* 禁用悬停/交互变换与过渡 */
+    .character-card,
+    .character-card:hover,
+    .character-card.selected,
+    .start-button:hover,
+    .start-button:active,
+    .skip-button:hover,
+    .confirm-btn:hover,
+    .primary-btn:hover,
+    .secondary-btn:hover,
+    .character-overlay {
+        transition: none !important;
+        transform: none !important;
+    }
 }
