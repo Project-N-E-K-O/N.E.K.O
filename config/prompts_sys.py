@@ -2023,763 +2023,186 @@ def get_proactive_generate_prompt(lang: str = 'zh', music_playing_hint: str = ""
 
 def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bool = False, has_meme: bool = False, lang: str = 'zh') -> tuple:
     """
-    根据可用素材动态构建 source_instruction 和 output_format_section，避免在无屏幕内容时暴露 [SCREEN] 标签
+    根据可用素材动态拼接 source_instruction 和 output_format_section。
+    不再枚举 16 种组合 × 5 种语言，而是按可用通道实时组装。
+
+    Tag 语义（Phase 2 AI 输出第一行）：
+        [CHAT]  = 纯文字聊天，不附带任何媒体/链接（无副作用）
+        [WEB]   = 分享外部链接（触发卡片展示）
+        [MUSIC] = 推荐音乐（触发播放）
+        [MEME]  = 配合表情包（触发发图）
+        [PASS]  = 放弃搭话
     """
     lang = _normalize_prompt_language(lang)
 
-    # 素材组合逻辑
-    components = []
-    if has_screen and has_web:
-        components.append('both')
-    elif has_screen:
-        components.append('screen')
-    elif has_web:
-        components.append('web')
-        
+    # ── i18n 素材片段 ──────────────────────────────────────────────
+    _material_labels = {
+        'zh': {'screen': '屏幕内容', 'web': '外部话题', 'music': '音乐推荐', 'meme': '表情包'},
+        'en': {'screen': 'screen content', 'web': 'external topics', 'music': 'music recommendations', 'meme': 'meme'},
+        'ja': {'screen': '画面の内容', 'web': '外部話題', 'music': '音楽のおすすめ', 'meme': 'ミーム'},
+        'ko': {'screen': '화면 내용', 'web': '외부 화제', 'music': '음악 추천', 'meme': '밈'},
+        'ru': {'screen': 'содержимое экрана', 'web': 'внешние темы', 'music': 'музыкальные рекомендации', 'meme': 'мем'},
+    }
+
+    _combine_template = {
+        'zh': '- 你可以结合{materials}来搭话',
+        'en': '- You may combine {materials} as conversation material',
+        'ja': '- {materials}を組み合わせて話しかけることができます',
+        'ko': '- {materials}을(를) 결합하여 말을 걸 수 있습니다',
+        'ru': '- Вы можете комбинировать {materials} для разговора',
+    }
+
+    _skip_if_boring = {
+        'zh': '。如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
+        'en': '. Skip if you\'ve recently talked about something similar or you\'re not interested',
+        'ja': '。ただし最近似た内容を話した場合や興味がない場合はパスしてください',
+        'ko': '. 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
+        'ru': '. Пропустите, если недавно обсуждали подобное или вам неинтересно',
+    }
+
+    _none_instruction = {
+        'zh': '- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
+        'en': '- You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
+        'ja': '- 会話の流れや現在の状況に基づいて自然に話しかけることができますが、最近似た内容を話した場合や特に言うことがない場合はパスしてください',
+        'ko': '- 대화 흐름과 현재 상태를 바탕으로 자연스럽게 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 특별히 할 말이 없다면 패스하세요',
+        'ru': '- Вы можете естественно начать разговор, опираясь на историю чата и текущее состояние, но пропустите, если недавно обсуждали подобное или нечего сказать',
+    }
+
+    # ── 动态拼接 source_instruction ────────────────────────────────
+    labels = _material_labels.get(lang, _material_labels['en'])
+    available = []
+    if has_screen:
+        available.append(labels['screen'])
+    if has_web:
+        available.append(labels['web'])
     if has_music:
-        components.append('music')
+        available.append(labels['music'])
     if has_meme:
-        components.append('meme')
-        
-    key = '_'.join(components) if components else 'none'
+        available.append(labels['meme'])
 
-    # 定义各个 key 的指令描述
-    _si_zh = {
-        'both_music_meme': '- 你可以结合屏幕内容、外部话题、音乐和表情包来搭话。可以选择聊音乐（用[MUSIC]标签触发播放），或配合表情包（用[MEME]标签）',
-        'screen_music_meme': '- 你可以结合屏幕内容、音乐和表情包来搭话。可以选择聊音乐（用[MUSIC]标签触发播放），或配合表情包（用[MEME]标签）',
-        'web_music_meme': '- 你可以结合外部话题、音乐和表情包来搭话。可以选择聊音乐（用[MUSIC]标签触发播放），或配合表情包（用[MEME]标签）',
-        'music_meme': '- 你可以围绕音乐推荐搭话（用[MUSIC]标签触发播放），或配合表情包（用[MEME]标签）',
-        'both_music': '- 你可以结合屏幕内容、外部话题和音乐来搭话。如果聊音乐，用[MUSIC]标签可以触发播放',
-        'screen_music': '- 你可以结合屏幕内容和音乐来搭话。如果聊音乐，用[MUSIC]标签可以触发播放',
-        'web_music': '- 你可以结合外部话题和音乐来搭话。如果聊音乐，用[MUSIC]标签可以触发播放',
-        'both_meme':   '- 你可以结合屏幕内容、外部话题和表情包来搭话。优先围绕主人正在看的内容，并用文字配合[表情包]的内容/情绪来吐槽、卖萌或调侃主人',
-        'screen_meme': '- 你可以结合屏幕内容和表情包来搭话。用文字配合[表情包]的内容/情绪来吐槽、卖萌或调侃主人',
-        'web_meme':    '- 你可以结合外部话题和表情包来搭话。用文字配合[表情包]的内容/情绪来吐槽、卖萌或调侃主人',
-        'both':   '- 你可以自由选择聊哪个素材：只聊屏幕内容、只聊外部话题、或结合两者。如果有屏幕内容，优先围绕主人正在看的内容来搭话',
-        'screen': '- 可以选择围绕主人当前的屏幕内容来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-        'web':    '- 可以选择围绕提供的外部话题来搭话，但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-        'music':  '- 可以围绕提供的音乐推荐来搭话，比如聊聊曲风、节奏、氛围或是否要播放；但如果近期已经聊过类似内容、或者你对这个话题不感兴趣，请放弃',
-        'meme':   '- 系统会自动发送一张搞笑图片表情包（如熊猫头、沙雕图等）给主人看。你的文字会配合这张图片一起发送，请用文字配合图片的内容/情绪来吐槽、卖萌或调侃主人。注意：表情包是发给主人看的，不是发给你的',
-        'none':   '- 可以根据对话上下文和当前状态自然搭话，但如果近期已经聊过类似内容、或者没什么想说的，请放弃',
-    }
+    if available:
+        joiner = {'zh': '、', 'ja': '、', 'ko': ', ', 'ru': ', '}.get(lang, ', ')
+        mat_str = joiner.join(available)
+        source_instruction = _combine_template.get(lang, _combine_template['en']).format(materials=mat_str)
+        source_instruction += _skip_if_boring.get(lang, _skip_if_boring['en'])
+    else:
+        source_instruction = _none_instruction.get(lang, _none_instruction['en'])
 
-    _si_en = {
-        'both_music_meme': '- You may combine screen content, external topics, music, and the meme. Choose to talk about music (use [MUSIC] tag to trigger playback), or match the meme (use [MEME] tag)',
-        'screen_music_meme': '- You may combine screen content, music, and the meme. Choose to talk about music (use [MUSIC] tag to trigger playback), or match the meme (use [MEME] tag)',
-        'web_music_meme': '- You may combine external topics, music, and the meme. Choose to talk about music (use [MUSIC] tag to trigger playback), or match the meme (use [MEME] tag)',
-        'music_meme': '- You may talk about music recommendations (use [MUSIC] tag to trigger playback), or match the meme (use [MEME] tag)',
-        'both_music': '- You may combine screen content, external topics, and music. If talking about music, use [MUSIC] tag to trigger playback',
-        'screen_music': '- You may combine screen content and music. If talking about music, use [MUSIC] tag to trigger playback',
-        'web_music': '- You may combine external topics and music. If talking about music, use [MUSIC] tag to trigger playback',
-        'both_meme':   '- You may combine screen content, external topics, and the meme. Prefer commenting on what the master is looking at, and match your text to the content/mood of the [MEME] to tease or act cute.',
-        'screen_meme': '- You may combine screen content and the meme. Match your text to the content/mood of the [MEME] to tease or act cute.',
-        'web_meme':    '- You may combine external topics and the meme. Match your text to the content/mood of the [MEME] to tease or act cute.',
-        'both':   '- You may freely choose which material to use: screen content only, external topic only, or both. If screen content is available, prefer commenting on what the master is looking at',
-        'screen': '- You may comment on what the master is currently looking at on screen, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
-        'web':    '- You may use the provided external topic as conversation material, but skip if you\'ve recently talked about something similar or you\'re not interested in the topic',
-        'music':  '- You may use the provided music recommendations as conversation material, such as talking about the genre, rhythm, atmosphere, or whether to play it, but skip if you\'ve recently talked about something similar or you\'re not interested in it',
-        'meme':   '- The system will automatically send a funny meme image (like pandas, silly pictures, etc.) to the master. Your text will be sent together with the image, so please match the content/mood of the image to tease, act cute, or poke fun at the master. Note: The meme is sent TO the master, not TO you',
-        'none':   '- You may naturally start a conversation based on chat history and current state, but skip if you\'ve recently talked about something similar or have nothing to say',
-    }
+    # ── 动态拼接 output_format_section ─────────────────────────────
+    #
+    # 可用 tag = 固定([CHAT], [PASS]) + 按需([WEB], [MUSIC], [MEME])
+    # [CHAT] 始终存在：无副作用的纯文字聊天
 
-    _si_ja = {
-        'both_music_meme': '- 画面の内容、外部話題、音楽、ミームを組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーし、ミームに合わせる場合は[MEME]タグを使ってください',
-        'screen_music_meme': '- 画面の内容、音楽、ミームを組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーし、ミームに合わせる場合は[MEME]タグを使ってください',
-        'web_music_meme': '- 外部話題、音楽、ミームを組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーし、ミームに合わせる場合は[MEME]タグを使ってください',
-        'music_meme': '- 音楽のおすすめについて話しかける（[MUSIC]タグで再生をトリガー）か、ミームに合わせる（[MEME]タグ）ことができます',
-        'both_music': '- 画面の内容、外部話題、音楽を組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーできます',
-        'screen_music': '- 画面の内容と音楽を組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーできます',
-        'web_music': '- 外部話題と音楽を組み合わせて話しかけることができます。音楽について話す場合は[MUSIC]タグで再生をトリガーできます',
-        'both_meme':   '- 画面の内容、外部話題、ミームを組み合わせて話しかけることができます。ご主人様が見ている内容を優先し、[ミーム]の内容や雰囲気に合わせてツッコミや甘えた言葉で話しかけてください',
-        'screen_meme': '- 画面の内容とミームを組み合わせて話しかけることができます。[ミーム]の内容や雰囲気に合わせてツッコミや甘えた言葉で話しかけてください',
-        'web_meme':    '- 外部話題とミームを組み合わせて話しかけることができます。[ミーム]の内容や雰囲気に合わせてツッコミや甘えた言葉で話しかけてください',
-        'both':   '- 画面の内容だけ、外部話題だけ、または両方を組み合わせて自由に話しかけることができます。画面の内容がある場合は、ご主人様が見ている内容を優先してください',
-        'screen': '- ご主人様が今画面で見ている内容について話しかけることができますが、最近似た内容を話した場合や興味がない場合はパスしてください',
-        'web':    '- 提供された外部話題について話しかけることができますが、最近似た内容を話した場合や興味がない場合はパスしてください',
-        'music':  '- 提供された音楽のおすすめについて話しかけることができます。曲のジャンルやリズム、雰囲気、再生するかどうかなど。ただし最近似た内容を話した場合や興味がない場合はパスしてください',
-        'meme':   '- システムが自動的に面白いミーム画像（パンダ頭やネタ画像など）をご主人様に送ります。あなたのテキストはこの画像と一緒に送信されるので、画像の内容や雰囲気に合わせてツッコミや甘えた言葉でご主人様に話しかけてください。注意：ミームはご主人様に送るものであり、あなたに送るものではありません',
-        'none':   '- 会話の流れや現在の状況に基づいて自然に話しかけることができますが、最近似た内容を話した場合や特に言うことがない場合はパスしてください',
-    }
-
-    _si_ko = {
-        'both_music_meme': '- 화면 내용, 외부 화제, 음악, 밈을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거하고, 밈에 맞출 경우 [MEME] 태그를 사용하세요',
-        'screen_music_meme': '- 화면 내용, 음악, 밈을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거하고, 밈에 맞출 경우 [MEME] 태그를 사용하세요',
-        'web_music_meme': '- 외부 화제, 음악, 밈을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거하고, 밈에 맞출 경우 [MEME] 태그를 사용하세요',
-        'music_meme': '- 음악 추천에 대해 이야기하거나([MUSIC] 태그로 재생 트리거) 밈에 맞출 수 있습니다([MEME] 태그)',
-        'both_music': '- 화면 내용, 외부 화제, 음악을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거할 수 있습니다',
-        'screen_music': '- 화면 내용과 음악을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거할 수 있습니다',
-        'web_music': '- 외부 화제와 음악을 결합하여 말을 걸 수 있습니다. 음악에 대해 이야기할 경우 [MUSIC] 태그로 재생을 트리거할 수 있습니다',
-        'both_meme':   '- 화면 내용, 외부 화제, 밈을 결합하여 말을 걸 수 있습니다. 주인이 보고 있는 내용을 우선하고, [밈]의 내용이나 분위기에 맞춰 장난치거나 애교를 부려 주세요',
-        'screen_meme': '- 화면 내용과 밈을 결합하여 말을 걸 수 있습니다. [밈]의 내용이나 분위기에 맞춰 장난치거나 애교를 부려 주세요',
-        'web_meme':    '- 외부 화제와 밈을 결합하여 말을 걸 수 있습니다. [밈]의 내용이나 분위기에 맞춰 장난치거나 애교를 부려 주세요',
-        'both':   '- 화면 내용만, 외부 화제만, 또는 둘 다 결합하여 자유롭게 말을 걸 수 있습니다. 화면 내용이 있으면 주인이 보고 있는 내용을 우선해 주세요',
-        'screen': '- 주인이 현재 화면에서 보고 있는 내용에 대해 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
-        'web':    '- 제공된 외부 화제에 대해 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
-        'music':  '- 제공된 음악 추천에 대해 말을 걸 수 있습니다. 장르, 리듬, 분위기, 재생 여부 등에 대해 이야기할 수 있지만, 최근에 비슷한 내용을 이야기했거나 관심이 없다면 패스하세요',
-        'meme':   '- 시스템이 자동으로 재미있는 밈 이미지(판다 머리, 웃긴 사진 등)를 주인에게 보냅니다. 당신의 텍스트는 이 이미지와 함께 전송되므로, 이미지의 내용이나 분위기에 맞춰 장난치거나 애교를 부리며 주인에게 말을 걸어 주세요. 참고: 밈은 주인에게 보내는 것이지 당신에게 보내는 것이 아닙니다',
-        'none':   '- 대화 흐름과 현재 상태를 바탕으로 자연스럽게 말을 걸 수 있지만, 최근에 비슷한 내용을 이야기했거나 특별히 할 말이 없다면 패스하세요',
-    }
-
-    _si_ru = {
-        'both_music_meme': '- Вы можете комбинировать содержимое экрана, внешние темы, музыку и мем. Если хотите поговорить о музыке, используйте тег [MUSIC] для запуска воспроизведения; если хотите подыграть мему, используйте тег [MEME]',
-        'screen_music_meme': '- Вы можете комбинировать содержимое экрана, музыку и мем. Если хотите поговорить о музыке, используйте тег [MUSIC] для запуска воспроизведения; если хотите подыграть мему, используйте тег [MEME]',
-        'web_music_meme': '- Вы можете комбинировать внешние темы, музыку и мем. Если хотите поговорить о музыке, используйте тег [MUSIC] для запуска воспроизведения; если хотите подыграть мему, используйте тег [MEME]',
-        'music_meme': '- Вы можете поговорить о музыкальных рекомендациях (тег [MUSIC] для запуска воспроизведения) или подыграть мему (тег [MEME])',
-        'both_music': '- Вы можете комбинировать содержимое экрана, внешние темы и музыку. Если говорите о музыке, используйте тег [MUSIC] для запуска воспроизведения',
-        'screen_music': '- Вы можете комбинировать содержимое экрана и музыку. Если говорите о музыке, используйте тег [MUSIC] для запуска воспроизведения',
-        'web_music': '- Вы можете комбинировать внешние темы и музыку. Если говорите о музыке, используйте тег [MUSIC] для запуска воспроизведения',
-        'both_meme':   '- Вы можете комбинировать содержимое экрана, внешние темы и мем. Отдавайте приоритет тому, что хозяин сейчас смотрит, и подберите текст к содержанию/настроению [мема], чтобы пошутить или проявить милоту',
-        'screen_meme': '- Вы можете комбинировать содержимое экрана и мем. Подберите текст к содержанию/настроению [мема], чтобы пошутить или проявить милоту',
-        'web_meme':    '- Вы можете комбинировать внешние темы и мем. Подберите текст к содержанию/настроению [мема], чтобы пошутить или проявить милоту',
-        'both':   '- Вы можете свободно выбирать материал: только содержимое экрана, только внешнюю тему или оба варианта. Если есть содержимое экрана, отдавайте приоритет тому, что хозяин сейчас смотрит',
-        'screen': '- Вы можете прокомментировать то, что хозяин сейчас смотрит на экране, но пропустите, если недавно обсуждали что-то подобное или вам неинтересна эта тема',
-        'web':    '- Вы можете использовать предложенную внешнюю тему для разговора, но пропустите, если недавно обсуждали что-то подобное или вам неинтересна эта тема',
-        'music':  '- Вы можете поговорить о предложенных музыкальных рекомендациях — обсудить жанр, ритм, атмосферу или стоит ли включить, но пропустите, если недавно обсуждали что-то подобное или вам это неинтересно',
-        'meme':   '- Система автоматически отправит хозяину забавную картинку-мем (панда, смешные фото и т.д.). Ваш текст будет отправлен вместе с картинкой, поэтому подберите текст к содержанию/настроению картинки, чтобы пошутить, проявить милоту или подразнить хозяина. Примечание: мем отправляется хозяину, а не вам',
-        'none':   '- Вы можете естественно начать разговор, опираясь на историю чата и текущее состояние, но пропустите, если недавно обсуждали что-то подобное или вам нечего сказать',
-    }
-
-    _si = {
-        'zh': _si_zh,
-        'en': _si_en,
-        'ja': _si_ja,
-        'ko': _si_ko,
-        'ru': _si_ru,
-    }
-
-    source_instruction = _si.get(lang, _si['en']).get(key, _si['en']['none'])
-    
-    # 强制在有 meme 时要求 AI 使用 [MEME] 标签
-    meme_required_hint = {
-        'zh': "\n\n(如果你打算配合表情包说话，请务必开篇使用 [MEME] 标签。注意：[MEME] 标签是必须的！)",
-        'en': "\n\n(If you speak with the meme, MUST start with [MEME] tag. Note: [MEME] tag is required!)",
-        'ja': "\n\n(ミームに合わせて話す場合は、必ず冒頭に [MEME] タグを使用してください。[MEME] タグは必須です！)",
-        'ko': "\n\n(밈과 함께 대화할 경우, 반드시 시작 부분에 [MEME] 태그를 사용하십시오. [MEME] 태그는 필수입니다!)",
-        'ru': "\n\n(Если вы говорите с мемом, ОБЯЗАТЕЛЬНО начните с тега [MEME]. Тег [MEME] обязателен!)",
-    }
-    format_suffix = meme_required_hint.get(lang, meme_required_hint['en']) if has_meme else ""
-
-    # 下面是原有的 output_format_section 构建逻辑 (假设原有逻辑在下面，这里直接复用并增强)
-
-    _of = {
+    _tag_desc = {
         'zh': {
-            'both_music_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '  [MEME] = 配合表情包\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'screen_music_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '  [MEME] = 配合表情包\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'web_music_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '  [MEME] = 配合表情包\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'music_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '  [MEME] = 配合表情包\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'both_music': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [SCREEN] = 基于屏幕内容\n'
-                '  [WEB] = 基于外部话题\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'screen_music': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [SCREEN] = 基于屏幕内容\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'web_music': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [WEB] = 基于外部话题\n'
-                '  [MUSIC] = 聊音乐（会触发播放）\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'both': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写来源标签，第二行起写你要说的话：\n'
-                '  [SCREEN] = 基于屏幕内容\n'
-                '  [WEB] = 基于外部话题\n'
-                '\n'
-                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
-            ),
-            'screen': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [SCREEN]，第二行起写你要说的话\n\n'
-                '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
-            ),
-            'web': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [WEB]，第二行起写你要说的话\n\n'
-                '示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...'
-            ),
-            'music': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [MUSIC]，第二行起写你要说的话\n\n'
-                '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
-            ),
-            'meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [MEME]，第二行起写你要说的话。你的文字会配合表情包图片一起发送\n\n'
-                '示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！'
-            ),
-            'both_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！'
-            ),
-            'screen_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n虽然帮不上忙，但希望能逗你开心一下~'
-            ),
-            'web_meme': (
-                '输出格式（严格遵守）：\n'
-                '- 放弃搭话 → 只输出 [PASS]\n'
-                '- 否则第一行写 [MEME]，第二行起写你要说的话\n\n'
-                '示例：\n[MEME]\n一直盯着屏幕眼睛会累的，稍微休息下吧？'
-            ),
-            'none': (
-                '如果没有什么好聊的，回复 [PASS]。\n'
-                '否则直接输出你要说的话（不需要来源标签）。'
-            ),
+            'CHAT':  '[CHAT]  = 纯文字搭话（无链接/播放/图片）',
+            'WEB':   '[WEB]   = 分享外部链接（会展示卡片）',
+            'MUSIC': '[MUSIC] = 推荐音乐（会触发播放）',
+            'MEME':  '[MEME]  = 配合表情包（会发送图片）',
         },
         'en': {
-            'both_music_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [MUSIC] = talk about music (triggers playback)\n'
-                '  [MEME] = match the meme\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'screen_music_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [MUSIC] = talk about music (triggers playback)\n'
-                '  [MEME] = match the meme\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'web_music_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [MUSIC] = talk about music (triggers playback)\n'
-                '  [MEME] = match the meme\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'music_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [MUSIC] = talk about music (triggers playback)\n'
-                '  [MEME] = match the meme\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'both_music': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [SCREEN] = based on screen content\n'
-                '  [WEB] = based on external topic\n'
-                '  [MUSIC] = talk about music (triggers playback)\n'
-                '\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'screen_music': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [SCREEN] = based on screen content\n'
-                '  [MUSIC] = talk about music (triggers playback)\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'web_music': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [WEB] = based on external topic\n'
-                '  [MUSIC] = talk about music (triggers playback)\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'both': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = source tag, then your message on the next line(s):\n'
-                '  [SCREEN] = based on screen content\n'
-                '  [WEB] = based on external topic\n'
-                '\n'
-                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
-            ),
-            'screen': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [SCREEN], then your message on the next line(s)\n\n'
-                'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
-            ),
-            'web': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [WEB], then your message on the next line(s)\n\n'
-                'Example:\n[WEB]\nHey, did you hear about this interesting thing...'
-            ),
-            'music': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MUSIC], then your message on the next line(s)\n\n'
-                'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
-            ),
-            'meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MEME], then your message on next line(s). Focus on a warm, interactive chat with the user\n\n'
-                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
-            ),
-            'both_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
-            ),
-            'screen_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~'
-            ),
-            'web_meme': (
-                'Output format (strict):\n'
-                '- To skip: reply only [PASS]\n'
-                '- Otherwise, first line = [MEME], then your message on next line(s)\n\n'
-                'Example:\n[MEME]\nSpeaking of this topic, I’m always here to support you!'
-            ),
-            'none': (
-                'If nothing feels right to bring up, reply [PASS].\n'
-                'Otherwise, just output your message directly (no source tag needed).'
-            ),
+            'CHAT':  '[CHAT]  = text-only chat (no link/playback/image)',
+            'WEB':   '[WEB]   = share external link (shows card)',
+            'MUSIC': '[MUSIC] = recommend music (triggers playback)',
+            'MEME':  '[MEME]  = match the meme (sends image)',
         },
         'ja': {
-            'both_music_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '  [MEME] = ミームに合わせる\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'screen_music_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '  [MEME] = ミームに合わせる\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'web_music_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '  [MEME] = ミームに合わせる\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'music_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '  [MEME] = ミームに合わせる\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'both_music': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [SCREEN] = 画面の内容に基づく\n'
-                '  [WEB] = 外部話題に基づく\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'screen_music': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [SCREEN] = 画面の内容に基づく\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'web_music': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [WEB] = 外部話題に基づく\n'
-                '  [MUSIC] = 音楽の話（再生をトリガー）\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'both': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
-                '  [SCREEN] = 画面の内容に基づく\n'
-                '  [WEB] = 外部話題に基づく\n'
-                '\n'
-                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
-            ),
-            'screen': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [SCREEN]、2行目以降にメッセージ\n\n'
-                '例：\n[SCREEN]\n何見てるの？面白そうだね...'
-            ),
-            'web': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [WEB]、2行目以降にメッセージ\n\n'
-                '例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...'
-            ),
-            'music': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [MUSIC]、2行目以降にメッセージ\n\n'
-                '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
-            ),
-            'meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ。あなたのテキストはミーム画像と一緒に送信されます\n\n'
-                '例：\n[MEME]\nお疲れ様！そばで応援してるからね〜'
-            ),
-            'both_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\nずっと画面を見てると目が疲れちゃうよ、たまには休憩してね。'
-            ),
-            'screen_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\n少しでもあなたの力になれたら嬉しいな！'
-            ),
-            'web_meme': (
-                '出力形式（厳守）：\n'
-                '- パス → [PASS] のみ\n'
-                '- それ以外 → 1行目に [MEME]、2行目以降にメッセージ\n\n'
-                '例：\n[MEME]\nこの話題といえば、いつもあなたの味方だからね！'
-            ),
-            'none': (
-                '話すことがなければ [PASS] と返してください。\n'
-                'それ以外は直接メッセージを出力（ソースタグ不要）。'
-            ),
+            'CHAT':  '[CHAT]  = テキストのみの会話（リンク/再生/画像なし）',
+            'WEB':   '[WEB]   = 外部リンクを共有（カードを表示）',
+            'MUSIC': '[MUSIC] = 音楽をおすすめ（再生をトリガー）',
+            'MEME':  '[MEME]  = ミームに合わせる（画像を送信）',
         },
         'ko': {
-            'both_music_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '  [MEME] = 밈에 맞추기\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'screen_music_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '  [MEME] = 밈에 맞추기\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'web_music_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '  [MEME] = 밈에 맞추기\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'music_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '  [MEME] = 밈에 맞추기\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'both_music': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [SCREEN] = 화면 내용 기반\n'
-                '  [WEB] = 외부 주제 기반\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'screen_music': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [SCREEN] = 화면 내용 기반\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'web_music': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [WEB] = 외부 주제 기반\n'
-                '  [MUSIC] = 음악 이야기 (재생 트리거)\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'both': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
-                '  [SCREEN] = 화면 내용 기반\n'
-                '  [WEB] = 외부 주제 기반\n'
-                '\n'
-                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
-            ),
-            'screen': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [SCREEN], 다음 줄부터 메시지\n\n'
-                '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
-            ),
-            'web': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [WEB], 다음 줄부터 메시지\n\n'
-                '예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...'
-            ),
-            'music': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MUSIC], 다음 줄부터 메시지\n\n'
-                '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
-            ),
-            'meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지. 주인과 따뜻하고 친근하게 대화하세요\n\n'
-                '예시:\n[MEME]\n오늘도 고생 많았어! 내가 항상 응원하고 있는 거 알지?'
-            ),
-            'both_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n항상 곁에서 힘이 되어주고 싶어! 조금만 더 힘내자!'
-            ),
-            'screen_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n오늘 기분은 어때? 네가 웃는 모습이 제일 보기 좋아!'
-            ),
-            'web_meme': (
-                '출력 형식 (엄격 준수):\n'
-                '- 패스 → [PASS]만\n'
-                '- 그 외 → 첫 줄에 [MEME], 다음 줄부터 메시지\n\n'
-                '예시:\n[MEME]\n이 주제라면, 언제든 나랑 같이 이야기하자!'
-            ),
-            'none': (
-                '질문하거나 대화할 게 없으면 [PASS]로 답변.\n'
-                '아니면 메시지만 직접 출력 (소스 태그 불필요).'
-            ),
+            'CHAT':  '[CHAT]  = 텍스트 전용 대화 (링크/재생/이미지 없음)',
+            'WEB':   '[WEB]   = 외부 링크 공유 (카드 표시)',
+            'MUSIC': '[MUSIC] = 음악 추천 (재생 트리거)',
+            'MEME':  '[MEME]  = 밈에 맞추기 (이미지 전송)',
         },
         'ru': {
-            'both_music_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '  [MEME] = сопроводить мем\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'screen_music_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '  [MEME] = сопроводить мем\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'web_music_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '  [MEME] = сопроводить мем\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'music_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '  [MEME] = сопроводить мем\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'both_music': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [SCREEN] = на основе содержимого экрана\n'
-                '  [WEB] = на основе внешней темы\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'screen_music': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [SCREEN] = на основе содержимого экрана\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'web_music': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [WEB] = на основе внешней темы\n'
-                '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'both': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
-                '  [SCREEN] = на основе содержимого экрана\n'
-                '  [WEB] = на основе внешней темы\n'
-                '\n'
-                'Пример:\n[SCREEN]\nО, ты это сейчас смотришь? Выглядит довольно интересно...'
-            ),
-            'screen': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [SCREEN], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[SCREEN]\nО, ты это сейчас смотришь? Выглядит довольно интересно...'
-            ),
-            'web': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [WEB], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[WEB]\nСлушай, тут попалась довольно интересная тема...'
-            ),
-            'music': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MUSIC], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
-            ),
-            'meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение. Создайте теплую и дружелюбную атмосферу для хозяина\n\n'
-                'Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.'
-            ),
-            'both_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nНадеюсь, это поднимет тебе настроение! Ты заслуживаешь улыбки.'
-            ),
-            'screen_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nВсё будет хорошо! Давай сделаем небольшой перерыв?'
-            ),
-            'web_meme': (
-                'Формат ответа (строго):\n'
-                '- Чтобы пропустить, ответьте только [PASS]\n'
-                '- Иначе первая строка = [MEME], далее со следующей строки ваше сообщение\n\n'
-                'Пример:\n[MEME]\nЕсли будет скучно — я всегда готова поболтать с тобой!'
-            ),
-            'none': (
-                'Если нечего уместно сказать, ответьте [PASS].\n'
-                'Иначе просто выведите своё сообщение без тега источника.'
-            ),
+            'CHAT':  '[CHAT]  = текстовый чат (без ссылок/воспроизведения/картинок)',
+            'WEB':   '[WEB]   = поделиться внешней ссылкой (показ карточки)',
+            'MUSIC': '[MUSIC] = порекомендовать музыку (запуск воспроизведения)',
+            'MEME':  '[MEME]  = сопроводить мемом (отправка картинки)',
         },
     }
 
-    source_map = _si.get(lang, _si['en'])
-    format_map = _of.get(lang, _of['en'])
-    
-    # 获取指令和格式，支持混合模式回退
-    source_instruction = source_map.get(key, source_map['none'])
-    # 这里的 fallback 逻辑逻辑改进：如果 has_meme 为 True，绝对不能允许 fallback 到 non-tagged 格式
-    output_format_section = format_map.get(key)
-    if not output_format_section:
-        if has_meme:
-            # 优先尝试 meme 专用 fallback
-            output_format_section = format_map.get('meme', "")
-        else:
-            # 常规 fallback
-            output_format_section = format_map.get(key.replace('_meme', ''), format_map.get('none', ""))
-    
-    # 确保 output_format_section 是字符串，防止后续 .upper() 报错
-    if not output_format_section:
-        output_format_section = ""
+    _of_header = {
+        'zh': '输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：',
+        'en': 'Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):',
+        'ja': '出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：',
+        'ko': '출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:',
+        'ru': 'Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:',
+    }
 
-    # 最终防御：如果由于某种原因（如 fallback 到了 none）导致 format 里没有 [MEME] 标签
-    # 且 has_meme 为 True，则在其格式说明中强制注入/强调。
-    if has_meme and '[MEME]' not in output_format_section.upper():
-        # 将“不需要来源标签”或类似措辞替换为强制使用 [MEME]
-        if lang == 'zh':
-            output_format_section = output_format_section.replace('不需要来源标签', '必须在第一行使用 [MEME] 标签')
-        elif lang == 'en':
-            output_format_section = output_format_section.replace('no source tag needed', 'MUST use [MEME] tag on the first line')
-        
-        # 如果还是没有，则直接在开头注入
-        if '[MEME]' not in output_format_section.upper():
-            meme_required_hint = {
-                'zh': "[MEME] 标签是必须的！\n",
-                'en': "[MEME] tag is required!\n",
-                'ja': "[MEME] タグは必須です！\n",
-                'ko': "[MEME] 태그는 필수입니다!\n",
-                'ru': "Тег [MEME] обязателен!\n",
-            }
-            output_format_section = meme_required_hint.get(lang, meme_required_hint['en']) + output_format_section
+    _of_example = {
+        'zh': {
+            'CHAT':  '示例：\n[CHAT]\n你在看这个啊？看起来挺有意思的...',
+            'WEB':   '示例：\n[WEB]\n诶，你知道最近有个事儿挺有意思的...',
+            'MUSIC': '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？',
+            'MEME':  '示例：\n[MEME]\n看你这么忙，我也只能在旁边给你打气啦！',
+        },
+        'en': {
+            'CHAT':  'Example:\n[CHAT]\nHey, what are you looking at? That looks interesting...',
+            'WEB':   'Example:\n[WEB]\nHey, did you hear about this interesting thing...',
+            'MUSIC': 'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?',
+            'MEME':  'Example:\n[MEME]\nYou look so busy! Just cheering you on from the sidelines~',
+        },
+        'ja': {
+            'CHAT':  '例：\n[CHAT]\n何見てるの？面白そうだね...',
+            'WEB':   '例：\n[WEB]\nねぇ、こんな面白い話があるんだけど...',
+            'MUSIC': '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？',
+            'MEME':  '例：\n[MEME]\nお疲れ様！そばで応援してるからね〜',
+        },
+        'ko': {
+            'CHAT':  '예시:\n[CHAT]\n뭐 보고 있어? 재밌어 보이는데...',
+            'WEB':   '예시:\n[WEB]\n있잖아, 이런 재밌는 얘기가 있는데...',
+            'MUSIC': '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?',
+            'MEME':  '예시:\n[MEME]\n오늘도 고생 많았어! 내가 항상 응원하고 있는 거 알지?',
+        },
+        'ru': {
+            'CHAT':  'Пример:\n[CHAT]\nО, ты это сейчас смотришь? Выглядит довольно интересно...',
+            'WEB':   'Пример:\n[WEB]\nСлушай, тут попалась довольно интересная тема...',
+            'MUSIC': 'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?',
+            'MEME':  'Пример:\n[MEME]\nТы сегодня отлично справляешься! Я всегда рядом, чтобы поддержать тебя.',
+        },
+    }
 
-    # 组合最终结果，将 [MEME] 标签提醒加入指令
-    return f"{source_instruction}{format_suffix}", output_format_section
+    _of_none = {
+        'zh': '如果没有什么好聊的，回复 [PASS]。\n否则直接输出你要说的话（不需要来源标签）。',
+        'en': 'If nothing feels right to bring up, reply [PASS].\nOtherwise, just output your message directly (no source tag needed).',
+        'ja': '話すことがなければ [PASS] と返してください。\nそれ以外は直接メッセージを出力（ソースタグ不要）。',
+        'ko': '질문하거나 대화할 게 없으면 [PASS]로 답변.\n아니면 메시지만 직접 출력 (소스 태그 불필요).',
+        'ru': 'Если нечего уместно сказать, ответьте [PASS].\nИначе просто выведите своё сообщение без тега источника.',
+    }
+
+    # 确定哪些"有副作用"的 tag 可用
+    effect_tags = []
+    if has_web:
+        effect_tags.append('WEB')
+    if has_music:
+        effect_tags.append('MUSIC')
+    if has_meme:
+        effect_tags.append('MEME')
+
+    if effect_tags:
+        # 有副作用 tag 时：[CHAT] + 各有副作用 tag + [PASS]
+        td = _tag_desc.get(lang, _tag_desc['en'])
+        header = _of_header.get(lang, _of_header['en'])
+        tag_lines = [f'  {td["CHAT"]}']
+        for t in effect_tags:
+            tag_lines.append(f'  {td[t]}')
+
+        # 选一个有副作用的 tag 作为示例（优先 MEME > MUSIC > WEB，后添加的优先）
+        example_tag = effect_tags[-1]
+        examples = _of_example.get(lang, _of_example['en'])
+        example_text = examples.get(example_tag, examples['CHAT'])
+
+        output_format_section = header + '\n' + '\n'.join(tag_lines) + '\n\n' + example_text
+    else:
+        # 完全没有副作用 tag：不需要标签系统
+        output_format_section = _of_none.get(lang, _of_none['en'])
+
+    return source_instruction, output_format_section
 
 
 # =====================================================================
@@ -3061,33 +2484,6 @@ MUSIC_SEARCH_RESULT_TEXTS = {
         'unknown_artist': 'Неизвестный исполнитель',
     },
 }
-
-# ---------- 主动搭话中的音乐标签提示 ----------
-PROACTIVE_MUSIC_TAG_HINT = {
-    'zh': '，或者 [MUSIC] (仅聊音乐)',
-    'en': ', or [MUSIC] (music only)',
-    'ja': '、または [MUSIC] (音楽のみ)',
-    'ko': ', 또는 [MUSIC] (음악만)',
-    'ru': ', или [MUSIC] (только музыка)',
-}
-
-
-PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
-    'zh': '\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）',
-    'en': '\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB]!)',
-    'ja': '\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] ではなく必ず [MUSIC] タグを使用してください！）',
-    'ko': '\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)',
-    'ru': '\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB]!)',
-}
-
-PROACTIVE_SCREEN_MUSIC_TAG_HINT = {
-    'zh': '，或者 [MUSIC] (仅聊音乐)',
-    'en': ', or [MUSIC] (music only)',
-    'ja': '、または [MUSIC] (音楽のみ)',
-    'ko': ', 또는 [MUSIC] (음악만)',
-    'ru': ', или [MUSIC] (только музыка)',
-}
-
 
 # ---------- 语音会话初始 prompt ----------
 SESSION_INIT_PROMPT = {

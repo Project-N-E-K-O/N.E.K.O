@@ -47,9 +47,6 @@ from config.prompts_sys import (
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     PROACTIVE_SOURCE_LABELS,
     MUSIC_SEARCH_RESULT_TEXTS,
-    PROACTIVE_MUSIC_TAG_HINT,
-    PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
-    PROACTIVE_SCREEN_MUSIC_TAG_HINT,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -416,10 +413,15 @@ def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
     for entry in recent:
         ts, msg = entry[0], entry[1]
         ch = entry[2] if len(entry) > 2 else ''
+        # 过滤掉 vision 通道的记录，避免 AI 引用已过期的屏幕内容产生幻觉
+        if ch == 'vision':
+            continue
         tag = _rel(ts)
         if ch:
             tag += f"·{cl.get(ch, ch)}"
         lines.append(f"- [{tag}] {msg}")
+    if not lines:
+        return ""
     return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
 
 
@@ -1720,7 +1722,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
     lan_name = ctx.get('lanlan_name', 'System')
     
     match source_tag:
-        case 'SCREEN':
+        case 'CHAT':
             primary_channel = 'vision'
         case 'WEB':
             # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
@@ -2552,14 +2554,6 @@ async def proactive_chat(request: Request):
             has_meme=bool(meme_section),
             lang=proactive_lang,
         )
-        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [MUSIC] 指令
-        if music_section and external_section:
-            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC]")
-            output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
-        elif music_section and screen_section:
-            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC]")
-            output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
-
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
@@ -2582,11 +2576,6 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
-            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
-                proactive_lang,
-                PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
-            )
-
             # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
             # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
             raw_data = music_content.get('raw_data', {}) if music_content else {}
@@ -2652,8 +2641,8 @@ async def proactive_chat(request: Request):
                             m = re.search(r'主动搭话\s*\n', cleaned)
                             if m:
                                 cleaned = cleaned[m.end():]
-                            # 解析 [PASS] / [SCREEN] / [WEB] / [MUSIC] / [MEME]
-                            tag_match = re.match(r'^\[(SCREEN|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+                            # 解析 [PASS] / [CHAT] / [WEB] / [MUSIC] / [MEME]
+                            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
                                 cleaned = cleaned[tag_match.end():]
@@ -2702,7 +2691,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
