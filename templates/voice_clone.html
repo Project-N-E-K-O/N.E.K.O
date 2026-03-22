@@ -21,7 +21,14 @@
             </button>
         </div>
         <div class="container-content">
-            <div class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
+            <div class="field-row" style="margin-bottom: 16px;">
+                <label data-i18n="voice.providerLabel">语音克隆服务商</label>
+                <select id="voiceProvider" style="max-width: 600px;">
+                    <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
+                    <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国际服）</option>
+                </select>
+            </div>
+            <div id="provider-notice" class="alibaba-api-notice" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%); color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: bold; text-align: center; box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);">
                 <span data-i18n="voice.alibabaApiRequired">⚠️ 此功能需要使用阿里云API</span>
             </div>
             <label style="display: flex; align-items: center; gap: 8px;">

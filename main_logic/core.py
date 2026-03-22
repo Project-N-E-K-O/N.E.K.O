@@ -816,13 +816,20 @@ class LLMSessionManager:
 
         tts_worker = get_tts_worker(
             core_api_type=self.core_api_type,
-            has_custom_voice=has_custom_tts
+            has_custom_voice=has_custom_tts,
+            voice_id=self.voice_id or '',
         )
 
         if has_custom_tts:
             tts_config = self._config_manager.get_model_api_config('tts_custom')
         else:
             tts_config = self._config_manager.get_model_api_config('tts_default')
+
+        # MiniMax 音色需要使用 MiniMax API Key
+        if tts_worker.__name__ == 'minimax_tts_worker':
+            minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+            if minimax_key:
+                tts_config = dict(tts_config, api_key=minimax_key)
 
         # 复用现有队列，这样 tts_response_handler 不需要重建
         self.tts_request_queue = Queue()
@@ -1158,7 +1165,8 @@ class LLMSessionManager:
                 # 使用工厂函数获取合适的 TTS worker
                 tts_worker = get_tts_worker(
                     core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_tts
+                    has_custom_voice=has_custom_tts,
+                    voice_id=self.voice_id or '',
                 )
 
                 self.tts_request_queue = Queue()  # TTS request (线程队列)
@@ -1169,6 +1177,12 @@ class LLMSessionManager:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
+
+                # MiniMax 音色需要使用 MiniMax API Key
+                if tts_worker.__name__ == 'minimax_tts_worker':
+                    minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+                    if minimax_key:
+                        tts_config = dict(tts_config, api_key=minimax_key)
 
                 self.tts_thread = Thread(
                     target=tts_worker,

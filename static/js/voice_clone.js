@@ -232,13 +232,47 @@ if (window.i18n && window.i18n.isInitialized) {
     }
 })();
 
+// 服务商切换时更新提示横幅
+(function initProviderSwitch() {
+    const providerSelect = document.getElementById('voiceProvider');
+    const noticeDiv = document.getElementById('provider-notice');
+    if (!providerSelect || !noticeDiv) return;
+
+    function updateNotice() {
+        const provider = providerSelect.value;
+        if (provider === 'minimax') {
+            noticeDiv.style.background = 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)';
+            noticeDiv.style.boxShadow = '0 2px 8px rgba(99, 102, 241, 0.3)';
+            const span = noticeDiv.querySelector('span');
+            if (span) {
+                span.textContent = window.t ? window.t('voice.minimaxApiRequired') : '⚠️ 此功能需要 MiniMax API Key（国际服）';
+                span.setAttribute('data-i18n', 'voice.minimaxApiRequired');
+            }
+        } else {
+            noticeDiv.style.background = 'linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%)';
+            noticeDiv.style.boxShadow = '0 2px 8px rgba(255, 107, 107, 0.3)';
+            const span = noticeDiv.querySelector('span');
+            if (span) {
+                span.textContent = window.t ? window.t('voice.alibabaApiRequired') : '⚠️ 此功能需要使用阿里云API';
+                span.setAttribute('data-i18n', 'voice.alibabaApiRequired');
+            }
+        }
+    }
+
+    providerSelect.addEventListener('change', updateNotice);
+    // 初始化时也执行一次
+    updateNotice();
+})();
+
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
+    const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
+    if (voiceProvider) voiceProvider.disabled = disabled;
     // 禁用所有按钮
     const buttons = document.querySelectorAll('button');
     if (buttons && buttons.length > 0) {
@@ -266,10 +300,12 @@ function registerVoice() {
     setFormDisabled(true);
     resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
     resultDiv.className = 'result';
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('ref_language', refLanguage);
     formData.append('prefix', prefix);
+    formData.append('provider', provider);
     fetch('/api/characters/voice_clone', {
         method: 'POST',
         body: formData

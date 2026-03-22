@@ -1808,6 +1808,118 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         response_queue.put(("__ready__", False))
 
 
+def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    MiniMax TTS worker（国际服，用于 MiniMax 克隆音色）
+    使用 MiniMax 的 T2A v2 API，累积文本后一次性合成，返回 PCM 音频
+    
+    Args:
+        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: MiniMax API Key (ASSIST_API_KEY_MINIMAX)
+        voice_id: MiniMax 音色ID (custom_xxx)
+    """
+    import asyncio
+    import httpx
+
+    MINIMAX_TTS_URL = "https://api.minimaxi.chat/v1/t2a_v2"
+
+    async def async_worker():
+        current_speech_id = None
+        text_buffer = []
+
+        logger.info("MiniMax TTS 已就绪，发送就绪信号 (voice_id=%s)", voice_id)
+        response_queue.put(("__ready__", True))
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == "__interrupt__":
+                    sid = None
+
+                if current_speech_id != sid and sid is not None:
+                    current_speech_id = sid
+                    text_buffer = []
+
+                if sid is None:
+                    # 收到终止信号，合成累积的文本
+                    if text_buffer and current_speech_id is not None:
+                        full_text = "".join(text_buffer)
+                        if full_text.strip():
+                            try:
+                                payload = {
+                                    "model": "speech-01-turbo",
+                                    "text": full_text,
+                                    "stream": False,
+                                    "voice_setting": {
+                                        "voice_id": voice_id,
+                                        "speed": 1.0,
+                                        "vol": 1.0,
+                                        "pitch": 0,
+                                    },
+                                    "audio_setting": {
+                                        "sample_rate": 24000,
+                                        "bitrate": 128000,
+                                        "format": "pcm",
+                                        "channel": 1,
+                                    },
+                                }
+                                headers = {
+                                    'Authorization': f'Bearer {audio_api_key}',
+                                    'Content-Type': 'application/json',
+                                }
+                                async with httpx.AsyncClient(timeout=30) as client:
+                                    resp = await client.post(MINIMAX_TTS_URL, headers=headers, json=payload)
+
+                                if resp.status_code == 200:
+                                    result = resp.json()
+                                    base_resp = result.get('base_resp') or {}
+                                    if base_resp.get('status_code', 0) != 0:
+                                        _enqueue_error(response_queue, f"MiniMax TTS 错误: {base_resp.get('status_msg')}")
+                                    else:
+                                        audio_hex = result.get('data', {}).get('audio', '')
+                                        if audio_hex:
+                                            import binascii
+                                            pcm_bytes = binascii.unhexlify(audio_hex)
+                                            # MiniMax 返回 PCM 24kHz 16bit mono → 重采样到 48kHz
+                                            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+                                            resampled = _resample_audio(audio_array, 24000, 48000)
+                                            # 分块发送，每块 4096 bytes
+                                            for i in range(0, len(resampled), 4096):
+                                                chunk = resampled[i:i+4096]
+                                                if chunk:
+                                                    response_queue.put(("__audio__", current_speech_id, chunk))
+                                else:
+                                    _enqueue_error(response_queue, f"MiniMax TTS HTTP {resp.status_code}: {resp.text[:200]}")
+
+                            except Exception as e:
+                                _enqueue_error(response_queue, f"MiniMax TTS 合成失败: {e}")
+
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
+
+                # 累积文本
+                if tts_text and tts_text.strip():
+                    text_buffer.append(tts_text)
+
+        except Exception as e:
+            _enqueue_error(response_queue, f"MiniMax TTS Worker 错误: {e}")
+            response_queue.put(("__ready__", False))
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"MiniMax TTS Worker 启动失败: {e}")
+        response_queue.put(("__ready__", False))
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1835,13 +1947,29 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             break
 
 
-def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
+def _is_minimax_voice(voice_id: str) -> bool:
+    """检查 voice_id 是否为 MiniMax 克隆音色（在 voice_storage 的 __MINIMAX__ 分区中）。"""
+    if not voice_id:
+        return False
+    try:
+        cm = get_config_manager()
+        voice_storage = cm.load_voice_storage()
+        for key, voices in voice_storage.items():
+            if key.startswith('__MINIMAX__') and isinstance(voices, dict) and voice_id in voices:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     根据 core_api 类型和是否有自定义音色，返回对应的 TTS worker 函数
     
     Args:
         core_api_type: core API 类型 ('qwen', 'step', 'glm' 等)
         has_custom_voice: 是否有自定义音色 (voice_id)
+        voice_id: 可选的 voice_id，用于判断是否为 MiniMax 音色
     
     Returns:
         对应的 TTS worker 函数
@@ -1861,7 +1989,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
-    # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
+    # 检查是否为 MiniMax 克隆音色 → 使用 MiniMax TTS worker
+    if has_custom_voice and voice_id and _is_minimax_voice(voice_id):
+        logger.info("检测到 MiniMax 克隆音色: %s，使用 MiniMax TTS Worker", voice_id)
+        return minimax_tts_worker
+
+    # 如果有自定义音色，使用 CosyVoice（阿里云）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
 

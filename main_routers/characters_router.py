@@ -29,6 +29,12 @@ from .shared_state import get_config_manager, get_session_manager, get_initializ
 from main_logic.tts_client import get_custom_tts_voices, CustomTTSVoiceFetchError
 from utils.config_manager import get_reserved, set_reserved, flatten_reserved
 from utils.audio import normalize_voice_clone_api_audio
+from utils.minimax_voice_clone import (
+    MinimaxVoiceCloneClient,
+    MinimaxVoiceCloneError,
+    minimax_normalize_language,
+    MINIMAX_VOICE_STORAGE_KEY,
+)
 from utils.file_utils import atomic_write_json
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
@@ -2199,7 +2205,12 @@ async def cancel_trim_task(task_id: str):
 
 
 @router.post('/voice_clone')
-async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref_language: str = Form(default="ch")):
+async def voice_clone(
+    file: UploadFile = File(...),
+    prefix: str = Form(...),
+    ref_language: str = Form(default="ch"),
+    provider: str = Form(default="cosyvoice"),
+):
     """
     语音克隆接口
     
@@ -2208,6 +2219,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         prefix: 音色前缀名
         ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
                       注意：这是参考音频的语言，不是目标语音的语言
+        provider: 服务商，可选值：cosyvoice (阿里云), minimax (默认：cosyvoice)
     """
     # 直接读取到内存
     try:
@@ -2320,7 +2332,104 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 'error': f'本地 TTS 注册失败: {str(e)}'
             }, status_code=500)
     
-    # ==================== 阿里云 TTS 注册流程（原有逻辑） ====================
+    # ==================== MiniMax TTS 注册流程 ====================
+    if provider.lower() == 'minimax':
+        core_config = _config_manager.get_core_config()
+        minimax_api_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
+
+        if not minimax_api_key:
+            logger.error("未配置 MiniMax API Key (ASSIST_API_KEY_MINIMAX)")
+            return JSONResponse({
+                'error': 'MINIMAX_API_KEY_MISSING',
+                'code': 'MINIMAX_API_KEY_MISSING',
+                'message': '未配置 MiniMax API Key，请先在设置中填写 MiniMax API Key'
+            }, status_code=400)
+
+        # 使用 __MINIMAX__ 前缀 + API Key 后8位作为存储 key
+        minimax_storage_key = f'{MINIMAX_VOICE_STORAGE_KEY}{minimax_api_key[-8:]}'
+
+        # MD5 去重
+        existing = _config_manager.find_voice_by_audio_md5(minimax_storage_key, audio_md5, ref_language)
+        if existing:
+            voice_id, voice_data = existing
+            logger.info(f"MiniMax TTS 音频 MD5 命中，复用 voice_id: {voice_id}")
+            return JSONResponse({
+                'voice_id': voice_id,
+                'message': '已复用现有 MiniMax 音色，跳过上传',
+                'reused': True,
+                'provider': 'minimax'
+            })
+
+        minimax_lang = minimax_normalize_language(ref_language)
+
+        try:
+            # 规范化音频（复用现有校验与转换）
+            normalized_buffer, normalized_filename, audio_meta = await asyncio.to_thread(
+                normalize_voice_clone_api_audio,
+                file_buffer,
+                file.filename or 'prompt_audio.wav',
+            )
+            logger.info(
+                "MiniMax 语音克隆参考音频已规范化: %sHz/%sch -> %sHz/mono",
+                audio_meta['original']['sample_rate'],
+                audio_meta['original']['channels'],
+                audio_meta['normalized']['sample_rate'],
+            )
+
+            # 调用 MiniMax 2 步克隆流程: upload → create_voice
+            minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key)
+            voice_id = await minimax_client.clone_voice(
+                audio_buffer=normalized_buffer,
+                filename=normalized_filename,
+                prefix=prefix,
+                language=minimax_lang,
+            )
+
+            logger.info(f"MiniMax 音色注册成功，voice_id: {voice_id}")
+
+            voice_data = {
+                'voice_id': voice_id,
+                'prefix': prefix,
+                'audio_md5': audio_md5,
+                'ref_language': ref_language,
+                'minimax_language': minimax_lang,
+                'provider': 'minimax',
+                'created_at': datetime.now().isoformat()
+            }
+
+            try:
+                _config_manager.save_voice_for_api_key(minimax_storage_key, voice_id, voice_data)
+                logger.info(f"MiniMax voice_id 已保存到音色库: {voice_id}")
+            except Exception as save_error:
+                logger.error(f"保存 MiniMax voice_id 到音色库失败: {save_error}")
+                return JSONResponse({
+                    'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
+                    'voice_id': voice_id,
+                    'provider': 'minimax'
+                }, status_code=500)
+
+            return JSONResponse({
+                'voice_id': voice_id,
+                'message': 'MiniMax 音色注册成功并已保存到音色库',
+                'provider': 'minimax'
+            })
+
+        except MinimaxVoiceCloneError as e:
+            logger.error(f"MiniMax 音色注册失败: {e}")
+            return JSONResponse({
+                'error': f'MiniMax 音色注册失败: {str(e)}',
+                'provider': 'minimax'
+            }, status_code=500)
+        except ValueError as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
+        except Exception as e:
+            logger.error(f"MiniMax 音色注册时发生错误: {e}")
+            return JSONResponse({
+                'error': f'MiniMax 音色注册失败: {str(e)}',
+                'provider': 'minimax'
+            }, status_code=500)
+
+    # ==================== 阿里云 CosyVoice TTS 注册流程（默认） ====================
     
     # MD5 去重：提前获取 api_key 并检查是否有相同音频已注册
     tts_config_for_dedup = _config_manager.get_model_api_config('tts_custom')
