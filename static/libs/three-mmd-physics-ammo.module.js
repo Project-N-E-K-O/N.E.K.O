@@ -67,7 +67,8 @@ class Constraint {
     }
     if (constraint.setParam !== void 0) {
       for (let i = 0; i < 6; i++) {
-        constraint.setParam(2, 0.475, i);
+        constraint.setParam(2, 0.475, i);   // BT_CONSTRAINT_STOP_ERP
+        constraint.setParam(4, 0.005, i);   // BT_CONSTRAINT_STOP_CFM — 给约束加柔性，减少刚体堆叠振荡
       }
     }
     this.world.addConstraint(constraint, true);
@@ -581,7 +582,15 @@ class RigidBody {
     const form = this._getBoneTransform();
     const tr = manager.allocTransform();
     this.body.getMotionState().getWorldTransform(tr);
-    manager.copyOrigin(tr, form);
+    // 平滑位置过渡：lerp 当前物理位置 → 骨骼位置，避免每帧瞬移导致约束振荡
+    const currentOrigin = tr.getOrigin();
+    const targetOrigin = form.getOrigin();
+    const alpha = 0.5;
+    currentOrigin.setValue(
+      currentOrigin.x() + (targetOrigin.x() - currentOrigin.x()) * alpha,
+      currentOrigin.y() + (targetOrigin.y() - currentOrigin.y()) * alpha,
+      currentOrigin.z() + (targetOrigin.z() - currentOrigin.z()) * alpha
+    );
     this.body.setWorldTransform(tr);
     manager.freeTransform(tr);
     manager.freeTransform(form);

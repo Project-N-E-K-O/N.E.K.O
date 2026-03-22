@@ -254,9 +254,9 @@ class MMDInteraction {
                 mesh.position.add(right.multiplyScalar(dx * pixelToWorldX));
                 mesh.position.add(up.multiplyScalar(-dy * pixelToWorldY));
             } else if (this.dragMode === 'orbit') {
-                // 模型原地旋转（Y轴+X轴），位置不变
+                // 模型绕身体中心旋转（Y轴+X轴）
                 const mesh = this.manager.currentModel?.mesh;
-                if (!mesh || !this._orbitStartQuat) return;
+                if (!mesh || !this._orbitStartQuat || !this._orbitPivot) return;
 
                 const rotateSpeed = 0.005;
                 const totalDx = e.clientX - this._orbitStartMouse.x;
@@ -270,9 +270,15 @@ class MMDInteraction {
                 const totalQuat = new THREE.Quaternion();
                 totalQuat.multiplyQuaternions(yQuat, xQuat);
 
-                // 从起始状态重新计算（幂等）
+                // 绕 bounding box 中心旋转：旋转后调整位置使中心点保持不动
+                // offset = 起始位置 - 轴心（从轴心指向模型原点的向量）
+                const offset = new THREE.Vector3().subVectors(this._orbitStartPos, this._orbitPivot);
+                // 旋转这个偏移
+                const rotatedOffset = offset.clone().applyQuaternion(totalQuat);
+                // 新位置 = 轴心 + 旋转后的偏移
+                mesh.position.copy(this._orbitPivot).add(rotatedOffset);
+                // 从起始状态重新计算旋转（幂等）
                 mesh.quaternion.copy(this._orbitStartQuat).premultiply(totalQuat);
-                // 位置不变 — 模型原地转
             }
         };
 

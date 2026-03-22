@@ -822,6 +822,11 @@ class MMDCore {
             this.manager.currentModel.update(clampedDelta);
         }
 
+        // 5. 更新表情模块（眨眼、口型同步等）
+        if (this.manager.expression) {
+            this.manager.expression.update(clampedDelta);
+        }
+
         // 更新 OrbitControls
         if (this.manager.controls) {
             this.manager.controls.update();

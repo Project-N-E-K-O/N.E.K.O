@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json
-from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, load_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_reserved
 from config import (
@@ -257,6 +257,10 @@ async def save_preferences(request: Request):
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
         
+        # 防止使用保留的全局对话设置键作为模型路径
+        if data.get('model_path') == GLOBAL_CONVERSATION_KEY:
+            return {"success": False, "error": "model_path 不能使用保留键"}
+        
         # 获取参数（可选）
         parameters = data.get('parameters')
         # 获取显示器信息（可选，用于多屏幕位置恢复）
@@ -306,6 +310,34 @@ async def set_preferred_model(request: Request):
             
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/conversation-settings")
+async def get_conversation_settings():
+    """获取全局对话设置（从 user_preferences.json 同步备份中读取）"""
+    try:
+        settings = load_global_conversation_settings()
+        return {"success": True, "settings": settings}
+    except Exception as e:
+        logger.exception(f"获取对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error", "settings": {}}
+
+
+@router.post("/conversation-settings")
+async def save_conversation_settings(request: Request):
+    """保存全局对话设置（同步到 user_preferences.json 备份）"""
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return {"success": False, "error": "请求体必须为对象"}
+
+        if save_global_conversation_settings(data):
+            return {"success": True, "message": "对话设置已保存"}
+        else:
+            return {"success": False, "error": "保存失败"}
+    except Exception as e:
+        logger.exception(f"保存对话设置失败: {e}")
+        return {"success": False, "error": "Internal server error"}
 
 
 @router.get("/steam_language")
