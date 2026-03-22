@@ -14,7 +14,7 @@
 
         // 核心模块（无相互依赖，可并行）
         const parallelModules = [
-            '/static/mmd-core.js',
+            '/static/mmd-core.js?v=23',
             '/static/mmd-expression.js',
             '/static/mmd-animation.js',
             '/static/mmd-interaction.js',

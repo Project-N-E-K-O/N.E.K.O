@@ -683,12 +683,32 @@ class MMDCore {
             console.log('[MMD Core] 物理引擎已绑定');
 
             // 物理 warmup：预计算 60 帧以稳定物理状态
-            const warmupFrames = 60;
+            // 关键修复：warmup 期间运行 Grant 求解器（付与変換），
+            // 确保 kinematic 骨骼在 warmup 时处于与渲染时一致的位置。
+            // 大模型（>200 刚体）需要更多 warmup 帧让复杂约束链稳定
+            const bodyCount = mmd.physics && mmd.physics.bodies ? mmd.physics.bodies.length : 0;
+            const warmupFrames = bodyCount > 200 ? 180 : 60;
             const warmupDelta = 1 / 60;
+
+            let warmupGrantSolver = null;
+            try {
+                const mmdModule = await this._getMMDModule();
+                if (mmdModule && mmdModule.GrantSolver && mmd.grants && mmd.grants.length > 0) {
+                    warmupGrantSolver = new mmdModule.GrantSolver(mmd.mesh, mmd.grants);
+                    console.log(`[MMD Physics] Warmup Grant solver created (${mmd.grants.length} grants)`);
+                }
+            } catch (e) {
+                console.warn('[MMD Physics] Failed to create warmup Grant solver:', e);
+            }
+
+            if (mmd.mesh) mmd.mesh.updateMatrixWorld(true);
+            if (warmupGrantSolver) warmupGrantSolver.update();
+
             for (let i = 0; i < warmupFrames; i++) {
+                if (warmupGrantSolver) warmupGrantSolver.update();
                 mmd.update(warmupDelta);
             }
-            console.log(`[MMD Core] 物理 warmup 完成 (${warmupFrames} 帧)`);
+            console.log(`[MMD Core] 物理 warmup 完成 (${warmupFrames} 帧, Grant: ${!!warmupGrantSolver})`);
         } catch (error) {
             console.warn('[MMD Core] 物理初始化失败:', error);
         }
@@ -1057,6 +1077,10 @@ class MMDCore {
 
             const mesh = mmd.mesh;
 
+            // 禁用物理：防止位置变更期间渲染循环跑物理导致拉丝
+            const hadPhysics = this.manager.enablePhysics;
+            this.manager.enablePhysics = false;
+
             // 恢复位置
             if (preferences.position) {
                 const pos = preferences.position;
@@ -1094,10 +1118,14 @@ class MMDCore {
                 }
             }
 
-            // 物理重置（確保物理状态与新位置/旋转同步）
+            // 物理重置：更新世界矩阵后重置所有刚体到新骨骼位置
             if (mmd.physics && typeof mmd.physics.reset === 'function') {
+                mesh.updateMatrixWorld(true);
                 mmd.physics.reset();
             }
+
+            // 恢复物理
+            this.manager.enablePhysics = hadPhysics;
 
             console.log('[MMD Core] 偏好设置已恢复:', {
                 position: preferences.position,

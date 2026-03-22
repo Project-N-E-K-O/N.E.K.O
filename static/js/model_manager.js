@@ -63,7 +63,7 @@
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
-            '/static/mmd-core.js',
+            '/static/mmd-core.js?v=23',
             '/static/mmd-animation.js',
             '/static/mmd-expression.js',
             '/static/mmd-interaction.js',
