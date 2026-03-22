@@ -691,7 +691,7 @@
 
     /* 禁用角色卡片图标颜色脉冲动画 */
     .character-card .card-icon {
-        animation: none;
+        animation: none !important;
     }
 
     /* 禁用点击星星散射动画 */

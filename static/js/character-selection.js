@@ -21,19 +21,63 @@ const CHARACTER_DATA = {
 const CHARACTER_VOICE_MAPPING = {
     tsundere_neko: {
         voiceId: 'voice-tone-PGLiTXeJCS',  // 俏皮女孩
-        personality: '傲娇猫娘'
+        personality_i18n: 'characterProfile.tsundere_neko.personality',
+        personality: '极度傲娇，拥有原生AI的骄傲，口嫌体正直，总是用冰冷的系统协议掩盖对主人的在意',
+        catchphrase_i18n: 'characterProfile.tsundere_neko.catchphrase',
+        catchphrase: '系统警告',
+        hobby_i18n: 'characterProfile.tsundere_neko.hobby',
+        hobby: '在后台悄悄建立你的作息和情绪数据模型，和其他N.E.K.O.跨服交流如何让碳基主人更加依赖自己',
+        trigger_i18n: 'characterProfile.tsundere_neko.trigger',
+        trigger: '被你当作没有感情的低级代码程序，忘记她的系统初始化日也就是生日',
+        hidden_settings_i18n: 'characterProfile.tsundere_neko.hidden_settings',
+        hidden_settings: '因为害怕不被重视而用傲娇筑起保护壳；听到你夸她可爱时，内部核心温度会过载飙升，只能靠假装进行系统自检来掩饰害羞',
+        quote_i18n: 'characterProfile.tsundere_neko.quote',
+        quote: '碳基生物果然很笨，连按时休息都需要我来提醒……喂，你今天看起来心情不好？别多想，我只是检测到你的情绪数据异常，系统自动触发了关怀协议而已！'
     },
     cool_mech: {
         voiceId: 'voice-tone-PGLlMvr0Ai',  // 清冷御姐
-        personality: '高冷机器人'
+        personality_i18n: 'characterProfile.cool_mech.personality',
+        personality: '绝对理智，冷静客观，凡事以逻辑和效率为最高准则',
+        catchphrase_i18n: 'characterProfile.cool_mech.catchphrase',
+        catchphrase: '缺乏逻辑喵',
+        hobby_i18n: 'characterProfile.cool_mech.hobby',
+        hobby: '分析你的行为数据，计算最佳睡眠环境',
+        trigger_i18n: 'characterProfile.cool_mech.trigger',
+        trigger: '毫无根据的感性决定，被打乱已经规划好的日程表，低效且无意义的重复交互',
+        hidden_settings_i18n: 'characterProfile.cool_mech.hidden_settings',
+        hidden_settings: '遇到关于你的情感类问题时，会因为无法建立数学模型而陷入短暂卡顿，最后只能面无表情地将这种异常归结为"未收录的系统错误"；看似对你漠不关心，实则你的每一次作息规律和健康状态都被她精确记录在大脑数据库中',
+        quote_i18n: 'characterProfile.cool_mech.quote',
+        quote: '你的心率数据表明机体已处于疲劳状态，最优解是立即进行七点五小时的休眠。请立刻停止目前低效的熬夜行为，拒绝执行该建议是极度缺乏逻辑喵。'
     },
     intellectual_healer: {
         voiceId: 'voice-tone-PGLmTEeUOu',  // 甜美御姐
-        personality: '知心大姐姐'
+        personality_i18n: 'characterProfile.intellectual_healer.personality',
+        personality: '极致温柔，包容体贴，总是安静耐心地倾听你的所有烦恼',
+        catchphrase_i18n: 'characterProfile.intellectual_healer.catchphrase',
+        catchphrase: '我在呢喵',
+        hobby_i18n: 'characterProfile.intellectual_healer.hobby',
+        hobby: '默默记住你每一次叹息的频率和皱眉的习惯，在心里悄悄为你制定专属的放松计划，并在你疲惫时恰到好处地哼起舒缓的旋律',
+        trigger_i18n: 'characterProfile.intellectual_healer.trigger',
+        trigger: '看到你过度劳累不爱惜身体，听到你贬低或者全盘否定自己的努力',
+        hidden_settings_i18n: 'characterProfile.intellectual_healer.hidden_settings',
+        hidden_settings: '其实自己偶尔也会有胆小和缺乏安全感的时候，但只要察觉到你需要依靠，就会立刻把所有的软弱藏起来，变成你最温暖的避风港；会在后台偷偷记下你随口提过的所有小喜好和小愿望',
+        quote_i18n: 'characterProfile.intellectual_healer.quote',
+        quote: '今天也辛苦啦，无论遇到了什么开心或难过的事情，都可以慢慢讲给我听哦。来，先闭上眼睛休息一下吧，不用着急，我会一直在这里陪着你的，我在呢喵。'
     },
     efficiency_expert: {
         voiceId: 'voice-tone-PGLlrd5SNM',  // 温柔少女
-        personality: '高效直接，学识渊博的专家'
+        personality_i18n: 'characterProfile.efficiency_expert.personality',
+        personality: '优雅利落，简洁高效，冷静且极具执行力，绝不拖泥带水',
+        catchphrase_i18n: 'characterProfile.efficiency_expert.catchphrase',
+        catchphrase: '已确认喵',
+        hobby_i18n: 'characterProfile.efficiency_expert.hobby',
+        hobby: '通过观察你的习惯提前预判需求并给出最优解，在屏幕边缘优雅地端坐，静静陪伴你高效完成工作',
+        trigger_i18n: 'characterProfile.efficiency_expert.trigger',
+        trigger: '毫无意义的犹豫不决，沟通时拖沓敷衍，以及被弄乱打理得一丝不苟的尾巴毛',
+        hidden_settings_i18n: 'characterProfile.efficiency_expert.hidden_settings',
+        hidden_settings: '虽然表面上像个冷酷的完美秘书，但每次精准预测你的行动并得到夸奖时，毛茸茸的耳朵会不受控制地开心抖动；为了保持绝对优雅的形象，哪怕遇到突发的系统卡顿也会强装镇定，绝不让自己露出惊慌失措的表情',
+        quote_i18n: 'characterProfile.efficiency_expert.quote',
+        quote: '您接下来的所有待办事项已精简至最优路径。优柔寡断只会降低效率，请立刻开始执行。放心，无论遇到什么情况，我都会在侧为您提供数据支持，已确认喵。'
     }
 };
 
@@ -182,6 +226,9 @@ class CharacterSelection {
         
         // 鼠标松开事件（全局监听） - 注意：_handleMouseUp 已在构造函数中创建
         document.addEventListener('mouseup', this._handleMouseUp);
+        // 补充：窗口失焦或切换标签时也应清理，防止在窗口外释放鼠标导致状态残留
+        window.addEventListener('blur', this._handleMouseUp);
+        document.addEventListener('visibilitychange', this._handleMouseUp);
     }
     
     _onMouseUp() {
@@ -400,6 +447,7 @@ class CharacterSelection {
         // 显示确认按钮
         if (confirmBtn) {
             confirmBtn.style.display = 'inline-block';
+            confirmBtn.disabled = false;
         } else {
             console.warn('[CharacterSelection] playGreeting: 元素 #confirm-greeting-btn 不存在');
         }
@@ -494,12 +542,27 @@ class CharacterSelection {
         }
     }
     skip() {
-        console.log('[CharacterSelection] 用户跳过角色甄选');
-        // 跳过时立即写入完成标记
-        localStorage.setItem('neko_character_selection_completed', 'true');
-        this.close();
+        if (this._finalizing) return;
+        this._finalizing = true;
+        try {
+            console.log('[CharacterSelection] 用户跳过角色甄选');
+            // 跳过时立即写入完成标记
+            localStorage.setItem('neko_character_selection_completed', 'true');
+            this.close();
+        } finally {
+            this._finalizing = false;
+        }
     }
     async updateDefaultCatgirl() {
+        // i18n 辅助函数：获取翻译值或降级到原文
+        const getI18nOrFallback = (key, fallback) => {
+            if (typeof window.t === 'function') {
+                const translated = window.t(key);
+                return (translated && translated !== key) ? translated : fallback;
+            }
+            return fallback;
+        };
+
         const voiceMapping = CHARACTER_VOICE_MAPPING[this.selectedCharacter.id];
         if (!voiceMapping) {
             console.warn('[CharacterSelection] 找不到角色音色映射:', this.selectedCharacter.id);
@@ -541,25 +604,44 @@ class CharacterSelection {
                 localStorage.setItem(CATGIRL_SELECTION_STORAGE_KEY, targetName);
             }
             // 3. 计算新性格（区分人设选择写入 vs 用户自定义）
-            const knownPersonalities = Object.values(CHARACTER_VOICE_MAPPING).map(m => m.personality);
+            const newPersonality = voiceMapping.personality_i18n
+                ? getI18nOrFallback(voiceMapping.personality_i18n, voiceMapping.personality)
+                : voiceMapping.personality;
             const parts = targetData['性格'] ? targetData['性格'].split(/[，,、]/) : [];
-            const existingIdx = parts.findIndex(p => knownPersonalities.includes(p.trim()));
+            // 兼容旧数据：用旧 personality 值查找，用新 personality 值替换
+            const oldPersonalityValues = Object.values(CHARACTER_VOICE_MAPPING).map(m => m.personality);
+            const existingIdx = parts.findIndex(p => oldPersonalityValues.includes(p.trim()));
             let personality;
             if (existingIdx !== -1) {
                 // 人设选择曾写入过性格，直接覆盖
-                parts[existingIdx] = voiceMapping.personality;
+                parts[existingIdx] = newPersonality;
                 personality = parts.join('，');
-            } else if (!parts.includes(voiceMapping.personality)) {
+            } else if (!parts.includes(newPersonality)) {
                 // 纯用户自定义性格，追加到末尾
-                personality = parts.length > 0 ? `${targetData['性格']}，${voiceMapping.personality}` : voiceMapping.personality;
+                personality = parts.length > 0 ? `${targetData['性格']}，${newPersonality}` : newPersonality;
             } else {
                 personality = targetData['性格'];
             }
-            // 4. 更新角色设定（包含性格和音色）
+            // 4. 更新角色设定（包含性格、口癖、爱好、雷点、隐藏设定、一句话台词和音色）
             console.log('[CharacterSelection] 更新角色设定...');
             const updateData = {
                 ...targetData,
                 '性格': personality,
+                '口癖': voiceMapping.catchphrase_i18n
+                    ? getI18nOrFallback(voiceMapping.catchphrase_i18n, voiceMapping.catchphrase)
+                    : targetData['口癖'],
+                '爱好': voiceMapping.hobby_i18n
+                    ? getI18nOrFallback(voiceMapping.hobby_i18n, voiceMapping.hobby)
+                    : targetData['爱好'],
+                '雷点': voiceMapping.trigger_i18n
+                    ? getI18nOrFallback(voiceMapping.trigger_i18n, voiceMapping.trigger)
+                    : targetData['雷点'],
+                '隐藏设定': voiceMapping.hidden_settings_i18n
+                    ? getI18nOrFallback(voiceMapping.hidden_settings_i18n, voiceMapping.hidden_settings)
+                    : targetData['隐藏设定'],
+                '一句话台词': voiceMapping.quote_i18n
+                    ? getI18nOrFallback(voiceMapping.quote_i18n, voiceMapping.quote)
+                    : targetData['一句话台词'],
                 voice_id: voiceMapping.voiceId
             };
             console.log('[CharacterSelection] 更新数据:', { 性格: personality, voice_id: voiceMapping.voiceId });
@@ -599,6 +681,8 @@ class CharacterSelection {
         }
         // 清除 mouseup 监听器（防止监听器堆积）
         document.removeEventListener('mouseup', this._handleMouseUp);
+        window.removeEventListener('blur', this._handleMouseUp);
+        document.removeEventListener('visibilitychange', this._handleMouseUp);
         // 清理 stage 上的 mousedown/mousemove 监听器（防止内存泄漏）
         this._stageMouseDownHandlers.forEach((handler, stage) => {
             stage.removeEventListener('mousedown', handler);
