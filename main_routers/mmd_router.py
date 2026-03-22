@@ -812,3 +812,82 @@ async def delete_mmd_model(request: Request):
     except Exception as e:
         logger.error(f"删除 MMD 模型失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.get('/animations/list')
+async def list_mmd_animations_for_delete(request: Request):
+    """获取可删除的 VMD 动画列表"""
+    try:
+        config_mgr = get_config_manager()
+        mmd_dir = _ensure_mmd_directory(config_mgr)
+        if not mmd_dir:
+            return JSONResponse(content={"success": True, "animations": []})
+
+        user_anim_dir = mmd_dir / "animation"
+        animations = []
+
+        if user_anim_dir.exists():
+            for vmd_file in user_anim_dir.glob('*.vmd'):
+                rel_path = vmd_file.relative_to(mmd_dir)
+                animations.append({
+                    "name": vmd_file.stem,
+                    "filename": vmd_file.name,
+                    "url": f"{MMD_USER_PATH}/{rel_path}",
+                    "path": str(rel_path)
+                })
+
+        return JSONResponse(content={"success": True, "animations": animations})
+    except Exception as e:
+        logger.error(f"获取 VMD 动画列表失败: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.delete('/animation')
+async def delete_mmd_animation(request: Request):
+    """删除 VMD 动画文件"""
+    try:
+        data = await request.json()
+        anim_url = data.get('url', '').strip()
+
+        if not anim_url:
+            return JSONResponse(status_code=400, content={"success": False, "error": "缺少动画 URL"})
+
+        config_mgr = get_config_manager()
+        mmd_dir = _ensure_mmd_directory(config_mgr)
+        if not mmd_dir:
+            return JSONResponse(status_code=500, content={"success": False, "error": "MMD 目录不可用"})
+
+        # 从 URL 提取相对路径
+        if anim_url.startswith(MMD_USER_PATH + '/'):
+            rel_path = anim_url[len(MMD_USER_PATH) + 1:]
+        else:
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的动画 URL"})
+
+        # 安全路径验证
+        safe_path, error = safe_mmd_path(mmd_dir, rel_path)
+        if not safe_path:
+            return JSONResponse(status_code=400, content={"success": False, "error": error})
+
+        # 验证是 VMD 文件
+        if safe_path.suffix.lower() != '.vmd':
+            return JSONResponse(status_code=400, content={"success": False, "error": "只能删除 VMD 动画文件"})
+
+        # 验证文件在 animation 目录下
+        animation_dir = mmd_dir / "animation"
+        if not safe_path.resolve().is_relative_to(animation_dir.resolve()):
+            return JSONResponse(status_code=400, content={"success": False, "error": "动画文件不在有效目录中"})
+
+        if not safe_path.exists():
+            return JSONResponse(status_code=404, content={"success": False, "error": "动画文件不存在"})
+
+        # 删除文件
+        safe_path.unlink()
+        logger.info(f"删除 VMD 动画文件: {safe_path}")
+
+        return JSONResponse(content={
+            "success": True,
+            "message": f"已删除动画 {safe_path.stem}"
+        })
+    except Exception as e:
+        logger.error(f"删除 VMD 动画失败: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
