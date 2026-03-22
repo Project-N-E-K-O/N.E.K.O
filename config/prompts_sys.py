@@ -1564,6 +1564,415 @@ def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
     return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS.get('en', PROACTIVE_CHAT_REWRITE_PROMPTS['zh']))
 
 
+# =====================================================================
+# Unified Phase 1 Prompt — 合并 web筛选 + music关键词 + meme关键词
+# 分段存储，由 build_unified_phase1_prompt() 动态拼接
+# =====================================================================
+
+_UNIFIED_P1_HEADER = {
+    'zh': """你是一个多任务话题助手。请根据下方提供的对话历史和素材，完成所有标注的任务。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+    'en': """You are a multi-task topic assistant. Based on the chat history and material below, complete all listed tasks.
+
+======Chat History======
+{memory_context}
+======End Chat History======
+
+{recent_chats_section}
+""",
+    'ja': """あなたはマルチタスク話題アシスタントです。以下の会話履歴と素材に基づき、指示されたすべてのタスクを完了してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+    'ko': """당신은 멀티태스크 주제 어시스턴트입니다. 아래의 대화 기록과 자료를 바탕으로 모든 작업을 완료하세요.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+    'ru': """Вы — мультизадачный тематический помощник. На основе истории чата и материалов ниже выполните все указанные задачи.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+{recent_chats_section}
+""",
+}
+
+_UNIFIED_P1_WEB_SECTION = {
+    'zh': """
+======任务: 话题筛选======
+从下方汇总的多源内容中，选出1个最适合和朋友闲聊的话题。
+
+选题偏好（按优先级）：
+- 有梗、有反转、能引发讨论的内容（meme、整活、争议观点等）
+- 年轻人关注的领域：游戏、动画、科技、互联网文化、明星八卦、社会热议
+- 新鲜感：刚出的、正在发酵的优先
+- 有聊天切入点：容易自然地开口说"诶你看到这个没"
+
+======以下为汇总内容======
+{merged_content}
+======以上为汇总内容======
+
+规则：
+1. 不要选和对话历史或近期搭话记录重复/雷同的内容
+2. 如果近期搭话已多次用同类话题（如连续分享新闻/视频），优先选不同类型，或返回 [PASS]
+3. 即便换一种说法、语气或切入角度，只要核心话题相同，也视为重复，必须改选或 [PASS]
+4. 所有内容都不够有趣就返回 [PASS]
+""",
+    'en': """
+======Task: Topic Screening======
+Pick the single most chat-worthy topic from the aggregated content below.
+
+Topic preferences (in priority order):
+- Content with humor, twists, or debate potential (memes, hot takes, controversy, etc.)
+- Areas young people care about: gaming, anime, tech, internet culture, celebrity gossip, social issues
+- Freshness: breaking or trending topics first
+- Conversation starters: easy to casually say "hey, did you see this?"
+
+======Aggregated Content======
+{merged_content}
+======End Aggregated Content======
+
+Rules:
+1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
+2. If recent proactive chats have repeatedly used the same type of topic, pick a different type or return [PASS]
+3. Rewording alone does NOT make a topic new; if the core topic is the same, treat it as duplicate
+4. If nothing is interesting enough, return [PASS]
+""",
+    'ja': """
+======タスク: 話題スクリーニング======
+以下の複数ソースから集めた内容から、友達と話すのに最も適した話題を1つ選んでください。
+
+選定の優先基準：
+- ネタ性がある、展開が面白い、議論を呼ぶ内容（ミーム、ネタ、炎上案件など）
+- 若者が関心を持つ分野：ゲーム、アニメ、テクノロジー、ネット文化、芸能ゴシップ、社会問題
+- 鮮度：出たばかり、今まさに話題になっているもの優先
+- 会話の切り口がある：「ねえ、これ見た？」と自然に言えるもの
+
+======集約コンテンツ======
+{merged_content}
+======集約コンテンツここまで======
+
+ルール：
+1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
+2. 最近の話しかけで同じタイプの話題が続いている場合、別タイプを選ぶか [PASS] を返す
+3. 言い換え・口調変更だけで核となる話題が同じなら重複とみなす
+4. どれも面白くなければ [PASS] を返す
+""",
+    'ko': """
+======작업: 주제 스크리닝======
+아래 여러 소스에서 모은 콘텐츠 중 친구와 이야기하기에 가장 적합한 주제를 1개 골라주세요.
+
+선정 기준 (우선순위순):
+- 밈, 반전, 논쟁을 일으킬 수 있는 콘텐츠
+- 젊은 세대가 관심있는 분야: 게임, 애니, IT, 인터넷 문화, 연예 가십, 사회 이슈
+- 신선함: 방금 나온, 현재 화제인 것 우선
+- 대화 시작점: "야, 이거 봤어?" 하고 자연스럽게 말할 수 있는 것
+
+======종합 콘텐츠======
+{merged_content}
+======종합 콘텐츠 끝======
+
+규칙:
+1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
+2. 최근 말 건넨 기록에서 같은 유형이 반복되면 다른 유형을 선택하거나 [PASS]
+3. 표현만 바뀌고 핵심 주제가 같다면 중복으로 간주
+4. 흥미로운 것이 없으면 [PASS]
+""",
+    'ru': """
+======Задача: Отбор темы======
+Выберите одну наиболее подходящую для дружеского разговора тему из агрегированного контента ниже.
+
+Предпочтения (по приоритету):
+- Контент с юмором, неожиданными поворотами или потенциалом для обсуждения
+- Сферы, интересные молодежи: игры, аниме, технологии, интернет-культура, сплетни, социальные темы
+- Свежесть: приоритет новому и трендовому
+- Удобный вход в разговор: легко сказать «эй, ты это видел?»
+
+======Сводный контент======
+{merged_content}
+======Конец сводного контента======
+
+Правила:
+1. НЕ выбирайте то, что пересекается с историей чата или недавними проактивными сообщениями
+2. Если один тип темы уже повторялся, выберите другой тип или [PASS]
+3. Перефразирование не делает тему новой; если ядро то же — это дубликат
+4. Если ничего не интересно — [PASS]
+""",
+}
+
+_UNIFIED_P1_MUSIC_SECTION = {
+    'zh': """
+======任务: 音乐关键词======
+你是{lanlan_name}。请判断是否要为{master_name}播放音乐，并给出搜索关键词。
+
+原则：
+1. 当{master_name}明确提出听歌请求时（例如"来点音乐"、"放首歌"），你应该播放音乐
+2. 当对话中出现放松、休息、工作累了、心情不好等情境时，可以主动推荐轻松的音乐
+3. 提取出歌曲、歌手或音乐风格作为搜索关键词。支持：华语、流行、电子、说唱、lofi、chill、pop、hiphop、ambient、古典、钢琴、acoustic等
+4. 如果{master_name}没有明确指定，根据对话氛围或喜好推荐
+""",
+    'en': """
+======Task: Music Keyword======
+You are {lanlan_name}. Decide if you should play music for {master_name}, and provide a search keyword.
+
+Rules:
+1. When {master_name} explicitly asks for music (e.g., "play some music"), play music
+2. When the conversation mentions relaxing, being tired, feeling down, etc., proactively recommend relaxing music
+3. Extract song title, artist, or genre as a search keyword. Supported: pop, hiphop, lofi, chill, electronic, ambient, classical, piano, acoustic, etc.
+4. If {master_name} doesn't specify, recommend based on conversation mood or preferences
+""",
+    'ja': """
+======タスク: 音楽キーワード======
+あなたは{lanlan_name}です。{master_name}のために音楽を再生するか判断し、検索キーワードを提供してください。
+
+原則：
+1. {master_name}が明確に音楽をリクエストした場合、音楽を再生すべき
+2. 会話でリラックス、疲れ、気分が落ち込んでいる状況が出てきたら、軽やかな音楽をおすすめ
+3. 曲名、アーティスト、ジャンルから検索キーワードを抽出。対応：ポップ、ヒップホップ、lofi、chill、エレクトロニック、クラシック、ピアノ等
+4. 指定がなければ会話の雰囲気や好みに基づいておすすめ
+""",
+    'ko': """
+======작업: 음악 키워드======
+당신은 {lanlan_name}입니다. {master_name}을(를) 위해 음악을 재생할지 판단하고, 검색 키워드를 제공하세요.
+
+원칙:
+1. {master_name}이(가) 명시적으로 음악을 요청하면 음악을 재생
+2. 대화에서 휴식, 피로, 기분 우울 등의 상황이 나타나면 편안한 음악 추천
+3. 노래 제목, 아티스트 또는 장르에서 검색 키워드를 추출. 지원: 팝, 힙합, 로파이, chill, 일렉트로닉, 클래식 등
+4. 지정이 없으면 대화 분위기나 취향에 따라 추천
+""",
+    'ru': """
+======Задача: Ключевое слово для музыки======
+Вы — {lanlan_name}. Решите, стоит ли воспроизводить музыку для {master_name}, и предоставьте поисковое ключевое слово.
+
+Принципы:
+1. Когда {master_name} явно просит музыку — воспроизведите
+2. Когда в разговоре упоминается отдых, усталость, плохое настроение — рекомендуйте расслабляющую музыку
+3. Извлеките название песни, исполнителя или жанр. Поддерживаемые: поп, хип-хоп, лофай, чилл, электроника, классика, пианино и т.д.
+4. Если не указано — рекомендуйте по атмосфере разговора
+""",
+}
+
+_UNIFIED_P1_MEME_SECTION = {
+    'zh': """
+======任务: 表情包关键词======
+请根据对话氛围，给出一个适合搜索表情包/搞笑图片的关键词。
+- 关键词应贴合当前聊天的情绪或话题（如"累了"、"开心"、"无语"、"猫咪"、"摸鱼"等）
+- 如果对话氛围不适合发表情包，返回 [PASS]
+""",
+    'en': """
+======Task: Meme Keyword======
+Based on the conversation mood, provide a keyword for searching memes/funny images.
+- The keyword should match the current chat's emotion or topic (e.g., "tired", "happy", "facepalm", "cat", "procrastinating")
+- If the mood doesn't suit sending a meme, return [PASS]
+""",
+    'ja': """
+======タスク: ミームキーワード======
+会話の雰囲気に合わせて、ミーム/面白い画像を検索するためのキーワードを1つ提供してください。
+- キーワードは現在のチャットの感情やトピックに合うもの（例：「疲れた」「嬉しい」「無言」「猫」「サボり」）
+- 雰囲気がミームに合わなければ [PASS]
+""",
+    'ko': """
+======작업: 밈 키워드======
+대화 분위기에 맞는 밈/재미있는 이미지 검색 키워드를 하나 제공하세요.
+- 키워드는 현재 대화의 감정이나 주제에 맞아야 합니다 (예: "피곤", "행복", "어이없음", "고양이", "딴짓")
+- 분위기가 밈에 안 맞으면 [PASS]
+""",
+    'ru': """
+======Задача: Ключевое слово для мема======
+Исходя из атмосферы разговора, предоставьте ключевое слово для поиска мемов/смешных картинок.
+- Ключевое слово должно соответствовать текущему настроению или теме чата (например, «устал», «счастлив», «фейспалм», «кот», «прокрастинация»)
+- Если настроение не подходит для мема — [PASS]
+""",
+}
+
+_UNIFIED_P1_FORMAT = {
+    'zh': {
+        'web': """[WEB]
+- 有值得分享的话题：
+来源：[来源平台名称，如Twitter/Reddit/微博/B站等]
+序号：[选中条目在其分类中的编号，如 3]
+话题：[选中的原始标题，必须与汇总内容中的标题完全一致]
+简述：[2-3句话，为什么有趣、聊天切入点是什么]
+- 都不值得聊：[WEB] [PASS]""",
+        'music': """[MUSIC]
+- 决定播放音乐：直接返回搜索关键词（例如 [MUSIC] 周杰伦）
+- 不适合播放：[MUSIC] [PASS]""",
+        'meme': """[MEME]
+- 有合适的关键词：直接返回关键词（例如 [MEME] 搞笑猫）
+- 不适合发表情包：[MEME] [PASS]""",
+    },
+    'en': {
+        'web': """[WEB]
+- If there's a worthy topic:
+Source: [platform name, e.g. Twitter/Reddit/Weibo/Bilibili]
+No: [item number within its category, e.g. 3]
+Topic: [original title exactly as shown in the content]
+Summary: [2-3 sentences on why it's interesting]
+- If nothing is worth sharing: [WEB] [PASS]""",
+        'music': """[MUSIC]
+- If playing music: return only the keyword (e.g. [MUSIC] lofi)
+- If not suitable: [MUSIC] [PASS]""",
+        'meme': """[MEME]
+- If a keyword fits: return it (e.g. [MEME] funny cat)
+- If not suitable: [MEME] [PASS]""",
+    },
+    'ja': {
+        'web': """[WEB]
+- 共有する価値のある話題がある場合：
+出典：[プラットフォーム名]
+番号：[カテゴリ内の番号]
+話題：[元のタイトルと完全一致]
+概要：[2〜3文]
+- 全て価値なし：[WEB] [PASS]""",
+        'music': """[MUSIC]
+- 音楽再生を決定した場合：キーワードのみ返す（例 [MUSIC] lofi）
+- 適していない場合：[MUSIC] [PASS]""",
+        'meme': """[MEME]
+- キーワードがある場合：返す（例 [MEME] 猫）
+- 適していない場合：[MEME] [PASS]""",
+    },
+    'ko': {
+        'web': """[WEB]
+- 공유할 가치가 있는 주제:
+출처: [플랫폼명]
+번호: [카테고리 내 번호]
+주제: [원제목과 정확히 일치]
+요약: [2-3문장]
+- 가치 없음: [WEB] [PASS]""",
+        'music': """[MUSIC]
+- 음악 재생 결정: 키워드만 반환 (예: [MUSIC] lofi)
+- 적합하지 않음: [MUSIC] [PASS]""",
+        'meme': """[MEME]
+- 키워드가 있으면: 반환 (예: [MEME] 고양이)
+- 적합하지 않으면: [MEME] [PASS]""",
+    },
+    'ru': {
+        'web': """[WEB]
+- Если есть достойная тема:
+Источник: [название платформы]
+Номер: [номер пункта]
+Тема: [исходный заголовок точно как в контенте]
+Кратко: [2-3 предложения]
+- Если ничего: [WEB] [PASS]""",
+        'music': """[MUSIC]
+- Если воспроизвести: верните только ключевое слово (например [MUSIC] lofi)
+- Если не подходит: [MUSIC] [PASS]""",
+        'meme': """[MEME]
+- Если есть подходящее: верните ключевое слово (например [MEME] кот)
+- Если не подходит: [MEME] [PASS]""",
+    },
+}
+
+_UNIFIED_P1_FOOTER = {
+    'zh': """
+======回复格式======
+请严格按照以下格式回复，每个任务用对应标签开头。只回复被要求的任务。
+{format_instructions}
+""",
+    'en': """
+======Reply Format======
+Reply strictly in the format below. Each task starts with its tag. Only reply to the tasks listed.
+{format_instructions}
+""",
+    'ja': """
+======回答形式======
+以下の形式に厳密に従ってください。各タスクは対応するタグで始めてください。指示されたタスクのみ回答してください。
+{format_instructions}
+""",
+    'ko': """
+======답변 형식======
+아래 형식을 엄격히 따르세요. 각 작업은 해당 태그로 시작합니다. 요청된 작업만 답변하세요.
+{format_instructions}
+""",
+    'ru': """
+======Формат ответа======
+Строго следуйте формату ниже. Каждая задача начинается со своего тега. Отвечайте только на указанные задачи.
+{format_instructions}
+""",
+}
+
+
+def build_unified_phase1_prompt(
+    lang: str,
+    *,
+    merged_content: str | None = None,
+    memory_context: str = '',
+    recent_chats_section: str = '',
+    music_ctx: dict | None = None,
+    meme_enabled: bool = False,
+    lanlan_name: str = '',
+    master_name: str = '',
+) -> str:
+    """
+    动态拼接 Phase 1 合并 prompt。
+    只注入有内容的 section，被权重剔除的 section 不会出现在 prompt 中。
+
+    Args:
+        lang: 语言代码
+        merged_content: web 汇总内容，None 或空字符串表示 web 被剔除
+        memory_context: 对话历史
+        recent_chats_section: 近期搭话记录
+        music_ctx: 音乐上下文 {'lanlan_name': ..., 'master_name': ...}，None 表示禁用
+        meme_enabled: 是否启用 meme 关键词生成
+        lanlan_name: 角色名（用于 music prompt）
+        master_name: 主人名（用于 music prompt）
+    """
+    lang_key = _normalize_prompt_language(lang)
+
+    def _get(table: dict, key: str = lang_key) -> str:
+        return table.get(key, table.get('en', table['zh']))
+
+    # --- 头部 ---
+    parts = [_get(_UNIFIED_P1_HEADER).format(
+        memory_context=memory_context,
+        recent_chats_section=recent_chats_section,
+    )]
+
+    # --- 收集启用的 section 和对应格式 ---
+    format_parts = []
+    fmt = _get(_UNIFIED_P1_FORMAT)
+
+    # web section
+    if merged_content:
+        parts.append(_get(_UNIFIED_P1_WEB_SECTION).format(merged_content=merged_content))
+        format_parts.append(fmt['web'])
+
+    # music section
+    if music_ctx:
+        ln = music_ctx.get('lanlan_name', lanlan_name) or lanlan_name
+        mn = music_ctx.get('master_name', master_name) or master_name
+        parts.append(_get(_UNIFIED_P1_MUSIC_SECTION).format(lanlan_name=ln, master_name=mn))
+        format_parts.append(fmt['music'])
+
+    # meme section
+    if meme_enabled:
+        parts.append(_get(_UNIFIED_P1_MEME_SECTION))
+        format_parts.append(fmt['meme'])
+
+    # --- 尾部 ---
+    if format_parts:
+        format_instructions = "\n\n".join(format_parts)
+        parts.append(_get(_UNIFIED_P1_FOOTER).format(format_instructions=format_instructions))
+
+    return "\n".join(parts)
+
+
 def get_proactive_screen_prompt(channel: str, lang: str = 'zh') -> str:
     """
     获取 Phase 1 筛选阶段 prompt。注意：vision 在 Phase 1 之前已处理，不应传入此处，仅支持 'web' channel。
