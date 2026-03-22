@@ -180,6 +180,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         kind: str = "action",
         auto_start: bool = False,
         timeout: float | None = None,
+        llm_result_fields: list[str] | None = None,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
@@ -202,6 +203,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             kind=kind,
             auto_start=auto_start,
             timeout=timeout,
+            llm_result_fields=llm_result_fields,
             metadata={"dynamic": True, "enabled": True},
         )
         if timeout is not None:

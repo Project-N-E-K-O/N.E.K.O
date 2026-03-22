@@ -130,44 +130,35 @@ Push export data to the host.
 
 Signal task completion to the host.
 
-### Agent Reply Contract
+### Reply Control
 
-Plugin outputs can carry `agent` metadata to control whether they trigger a main reply and which fields are visible to the agent/main LLM.
+The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak.
 
 ```python
-return await self.finish(
-    data={"summary": "Done", "internal": {"debug": True}},
-    reply=True,
-    meta={"agent": {"fields": ["summary"], "summary": "Task finished"}},
-)
+# Normal: character will announce the result
+return await self.finish(data={"summary": "Done"}, reply=True)
 
-await self.export_push(
-    export_type="json",
-    json_data={"summary": "Saved", "internal": "debug"},
-    reply=True,
-    metadata={"agent": {"fields": ["summary"], "priority": 10}},
-)
-
-self.push_message(
-    source="memo",
-    message_type="proactive_notification",
-    content="Raw reminder text",
-    metadata={"agent": {"reply": True, "summary": "Reminder is due"}},
-)
+# Silent: result is recorded but character stays quiet
+return await self.finish(data={"summary": "Done"}, reply=False)
 ```
 
-Supported `agent` metadata fields:
+### LLM Result Field Filtering
 
-| Field | Type | Meaning |
-|------|------|------|
-| `reply` | `bool` | Whether this output may trigger a main reply |
-| `include` | `bool` | Whether agent-side consumers may read the raw body / JSON |
-| `fields` | `list[str]` | Field-level visibility filter for JSON payloads |
-| `summary` | `str` | Explicit short summary for the main reply |
-| `detail` | `str` | Explicit detailed text for the main reply |
-| `priority` | `int` | Priority when multiple reply candidates exist |
+Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result the main LLM can see. Fields not listed are excluded from the LLM prompt but still stored in the task registry.
 
-If an entry declares `llm_result_fields` and `agent.fields` is omitted, `return/finish()` falls back to the declared `llm_result_fields`.
+```python
+# Static entry
+@plugin_entry(llm_result_fields=["summary"])
+async def search(self, query: str):
+    return await self.finish(data={"summary": "3 results", "raw_results": [...]})
+
+# Dynamic entry
+self.register_dynamic_entry(
+    entry_id="my-tool",
+    handler=handler,
+    llm_result_fields=["summary"],
+)
+```
 
 ---
 

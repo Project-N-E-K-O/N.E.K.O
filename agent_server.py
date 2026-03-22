@@ -10,7 +10,6 @@ import uuid
 import logging
 import time
 import hashlib
-from collections.abc import Mapping
 from typing import Dict, Any, Optional, ClassVar, List
 from datetime import datetime, timezone
 import httpx
@@ -30,12 +29,12 @@ try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
     from brain.deduper import TaskDeduper
-    from brain.plugin_reply import build_plugin_reply_event
     from brain.task_executor import DirectTaskExecutor
     from brain.agent_session import get_session_manager
     from brain.result_parser import (
         parse_computer_use_result,
         parse_browser_use_result,
+        parse_plugin_result,
         _phrase as _rp_phrase,
         _get_lang as _rp_lang,
     )
@@ -627,52 +626,36 @@ async def _emit_task_result(
     )
 
 
-async def _emit_plugin_completion_reply(
-    lanlan_name: Optional[str],
-    *,
-    plugin_id: str,
-    task_id: str,
-    success: bool,
-    completion: Mapping[str, object] | None,
-    fallback_error: object = None,
-) -> bool:
-    reply_event = build_plugin_reply_event(
-        plugin_id=plugin_id,
-        completion=completion,
-        success=success,
-        fallback_error=fallback_error,
-        lang=_rp_lang(None),
-    )
-    if not reply_event.emit:
+def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Optional[list]:
+    """从 plugin_list 中查找指定 entry 的 llm_result_fields 声明。"""
+    try:
+        plugins = getattr(Modules.task_executor, "plugin_list", None) or []
+        for p in plugins:
+            if not isinstance(p, dict) or p.get("id") != plugin_id:
+                continue
+            for e in p.get("entries") or []:
+                if not isinstance(e, dict):
+                    continue
+                if e.get("id") == entry_id:
+                    fields = e.get("llm_result_fields")
+                    return list(fields) if isinstance(fields, list) else None
+            break
+    except Exception as e:
+        logger.debug("_lookup_llm_result_fields failed: plugin_id=%s entry_id=%s error=%s", plugin_id, entry_id, e)
+    return None
+
+
+def _is_reply_suppressed(result: Optional[Dict]) -> bool:
+    """检查插件是否通过 meta.agent.reply=False 显式抑制回复。"""
+    if not isinstance(result, dict):
         return False
-
-    if reply_event.event_type == "proactive_message":
-        status = "completed" if success else ("partial" if reply_event.detail else "failed")
-        await _emit_main_event(
-            "proactive_message",
-            lanlan_name,
-            text=reply_event.summary[:500],
-            task_id=task_id,
-            channel="user_plugin",
-            status=status,
-            success=success,
-            summary=reply_event.summary[:500],
-            detail=reply_event.detail[:1500] if reply_event.detail else "",
-            error_message=reply_event.error_message[:500] if reply_event.error_message else "",
-            timestamp=_now_iso(),
-        )
-        return True
-
-    await _emit_task_result(
-        lanlan_name,
-        channel="user_plugin",
-        task_id=task_id,
-        success=success,
-        summary=reply_event.summary[:500],
-        detail=reply_event.detail if success else "",
-        error_message=reply_event.error_message[:500] if not success else "",
-    )
-    return True
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    agent = meta.get("agent")
+    if not isinstance(agent, dict):
+        return False
+    return agent.get("reply") is False
 
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
@@ -1226,14 +1209,18 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         )
                         up_terminal = "completed" if up_result.success else "failed"
                         run_data = up_result.result.get("run_data") if isinstance(up_result.result, dict) else None
-                        reply_event = build_plugin_reply_event(
-                            plugin_id=plugin_id,
-                            completion=up_result.result if isinstance(up_result.result, dict) else None,
-                            success=up_result.success,
-                            fallback_error=up_result.error,
-                            lang=_rp_lang(None),
+                        run_error = up_result.result.get("run_error") if isinstance(up_result.result, dict) else None
+                        _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                        _plugin_msg = str(up_result.result.get("message") or "") if isinstance(up_result.result, dict) else ""
+                        _error_to_pass = (run_error or up_result.error) if not up_result.success else None
+                        detail = parse_plugin_result(
+                            run_data,
+                            llm_result_fields=_llm_fields,
+                            plugin_message=_plugin_msg,
+                            error=_error_to_pass,
                         )
-                        detail = reply_event.detail
+                        # 检查插件是否通过 meta.agent.reply=False 抑制回复
+                        _suppress_reply = _is_reply_suppressed(up_result.result.get("data") if isinstance(up_result.result, dict) else None)
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1258,29 +1245,36 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # 不进入后续 completed/failed 流程
                         elif up_result.success:
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
-                            try:
-                                await _emit_plugin_completion_reply(
-                                    lanlan_name,
-                                    plugin_id=plugin_id,
-                                    task_id=str(up_result.task_id or ""),
-                                    success=True,
-                                    completion=up_result.result if isinstance(up_result.result, dict) else None,
-                                )
-                            except Exception as emit_err:
-                                logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                            if not _suppress_reply:
+                                _lang = _rp_lang(None)
+                                summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                                try:
+                                    await _emit_task_result(
+                                        lanlan_name,
+                                        channel="user_plugin",
+                                        task_id=str(up_result.task_id or ""),
+                                        success=True,
+                                        summary=summary[:500],
+                                        detail=detail,
+                                    )
+                                except Exception as emit_err:
+                                    logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         else:
                             logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
-                            try:
-                                await _emit_plugin_completion_reply(
-                                    lanlan_name,
-                                    plugin_id=plugin_id,
-                                    task_id=str(up_result.task_id or ""),
-                                    success=False,
-                                    completion=up_result.result if isinstance(up_result.result, dict) else None,
-                                    fallback_error=up_result.error,
-                                )
-                            except Exception as emit_err:
-                                logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                            if not _suppress_reply:
+                                _lang = _rp_lang(None)
+                                try:
+                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                                    await _emit_task_result(
+                                        lanlan_name,
+                                        channel="user_plugin",
+                                        task_id=str(up_result.task_id or ""),
+                                        success=False,
+                                        summary=_fail_summary[:500],
+                                        error_message=(detail or str(up_result.error or ""))[:500],
+                                    )
+                                except Exception as emit_err:
+                                    logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         # Emit task_update (terminal) — deferred 任务跳过，保持 running
                         if not (up_result.success and is_deferred):
                             try:
@@ -1837,25 +1831,37 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["status"] = "completed" if res.success else "failed"
             info["end_time"] = _now_iso()
             try:
-                emitted = await _emit_plugin_completion_reply(
-                    lanlan_name,
-                    plugin_id=plugin_id,
-                    task_id=task_id,
-                    success=res.success,
-                    completion=res.result if isinstance(res.result, dict) else None,
-                    fallback_error=res.error,
+                run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
+                run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
+                _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
+                _error_to_pass = (run_error or res.error) if not res.success else None
+                detail = parse_plugin_result(
+                    run_data,
+                    llm_result_fields=_llm_fields,
+                    plugin_message=_plugin_msg,
+                    error=_error_to_pass,
                 )
-                if not res.success:
-                    if not emitted:
-                        info["error"] = str(res.error or "")[:500]
-                    elif not info.get("error"):
-                        info["error"] = str(
-                            (
-                                (res.result or {}).get("run_error")
-                                if isinstance(res.result, dict)
-                                else res.error
-                            ) or res.error or ""
-                        )[:500]
+                _suppress_reply = _is_reply_suppressed(res.result.get("data") if isinstance(res.result, dict) else None)
+                if not _suppress_reply:
+                    if not res.success:
+                        info["error"] = (detail or str(res.error or ""))[:500]
+                    _lang = _rp_lang(None)
+                    if res.success:
+                        summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                    else:
+                        summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="user_plugin",
+                        task_id=task_id,
+                        success=res.success,
+                        summary=summary[:500],
+                        detail=detail if res.success else "",
+                        error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                    )
+                elif not res.success:
+                    info["error"] = (detail or str(res.error or ""))[:500]
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except asyncio.CancelledError:

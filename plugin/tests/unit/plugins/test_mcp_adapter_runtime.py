@@ -384,11 +384,11 @@ async def test_mcp_tool_register_handler_returns_finish_envelope_with_summary() 
     )
 
     assert ok is True
+    assert captured["llm_result_fields"] == ["summary"]
     handler = captured["handler"]
     response = await handler(url="https://example.com")
     assert response["data"]["summary"] == "page title"
     assert response["data"]["result"] == {"content": [{"type": "text", "text": "page title"}]}
-    assert response["meta"]["agent"]["fields"] == ["summary"]
 
 
 @pytest.mark.asyncio

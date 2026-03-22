@@ -1196,9 +1196,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 data=payload,
                 reply=True,
                 message=str(payload.get("summary") or ""),
-                meta={"agent": {"fields": ["summary"]}},
             )
-        
+
         # 注册为动态 entry
         return self.register_dynamic_entry(
             entry_id=tool_id,
@@ -1208,6 +1207,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             input_schema=schema,
             kind="action",
             timeout=self._tool_timeout + 5.0,
+            llm_result_fields=["summary"],
         )
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
