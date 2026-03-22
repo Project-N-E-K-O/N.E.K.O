@@ -1042,9 +1042,9 @@ Topic preferences (in priority order):
 
 {recent_chats_section}
 
-======Aggregated Content======
+======以下为汇总内容======
 {merged_content}
-======End Aggregated Content======
+======以上为汇总内容======
 
 Critical rules:
 1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
@@ -1597,9 +1597,9 @@ _UNIFIED_P1_HEADER = {
 """,
     'en': """You are a multi-task topic assistant. Based on the chat history and material below, complete all listed tasks.
 
-======Chat History======
+======以下为对话历史======
 {memory_context}
-======End Chat History======
+======以上为对话历史======
 
 {recent_chats_section}
 """,
@@ -1660,9 +1660,9 @@ Topic preferences (in priority order):
 - Freshness: breaking or trending topics first
 - Conversation starters: easy to casually say "hey, did you see this?"
 
-======Aggregated Content======
+======以下为汇总内容======
 {merged_content}
-======End Aggregated Content======
+======以上为汇总内容======
 
 Rules:
 1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
