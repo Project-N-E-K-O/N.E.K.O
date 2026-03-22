@@ -1087,6 +1087,7 @@ Return only the JSON object, nothing else.
                 "run_success": run_success,
                 "run_data": completion.get("data"),
                 "run_error": completion.get("run_error", completion.get("error")),
+                "meta": completion.get("meta"),
                 "message": completion.get("message"),
                 "progress": completion.get("progress"),
                 "stage": completion.get("stage"),
