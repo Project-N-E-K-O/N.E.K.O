@@ -1,0 +1,27 @@
+[plugin]
+id = "mijia"
+name = "米家智能设备插件"
+description = "控制米家智能设备，支持设备发现、属性读写、动作调用"
+version = "1.0.0"
+entry = "plugin.plugins.mijia:MijiaPlugin"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.author]
+name = "N.E.K.O Team"
+email = ""
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+max_retries = 3
+restart_on_crash = true
+
+[plugin.dependencies]
+packages = [
+    "pillow",
+    "qrcode",
+    "mijiaapi",
+]
