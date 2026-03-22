@@ -1051,6 +1051,14 @@
     "voice": {
         "title": "Voice Registration",
         "alibabaApiRequired": "⚠️ This feature requires CosyVoice model. Please configure Alibaba Assist API or local voice server in API Keys settings.",
+        "minimaxApiRequired": "⚠️ This feature requires the MiniMax model (Domestic). Please configure the MiniMax API key in API Keys settings.",
+        "minimaxIntlApiRequired": "⚠️ This feature requires the MiniMax model (International). Please configure the MiniMax API key (International) in API Keys settings.",
+        "providerLabel": "Voice Clone Provider",
+        "provider": {
+            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "minimax": "MiniMax (Domestic)",
+            "minimax_intl": "MiniMax (International)"
+        },
         "selectFile": "Select local audio file (8 seconds recommended, max 20 seconds, wav/mp3 format)",
         "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",

@@ -1051,6 +1051,14 @@
     "voice": {
         "title": "音色注册",
         "alibabaApiRequired": "⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器",
+        "minimaxApiRequired": "⚠️ 此功能需要MiniMax模型（国服），请在API密钥设置页中配置MiniMax API Key",
+        "minimaxIntlApiRequired": "⚠️ 此功能需要MiniMax模型（国际服），请在API密钥设置页中配置MiniMax API Key（国际服）",
+        "providerLabel": "语音克隆服务商",
+        "provider": {
+            "cosyvoice": "阿里云 CosyVoice",
+            "minimax": "MiniMax（国服）",
+            "minimax_intl": "MiniMax（国际服）"
+        },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
         "customPrefixNote": "不超过10个字符，只支持数字和英文字母",

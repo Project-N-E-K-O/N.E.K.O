@@ -826,18 +826,24 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config('tts_default')
 
         # MiniMax 音色需要使用 MiniMax API Key
+        _minimax_base_url = None
         if tts_worker.__name__ == 'minimax_tts_worker':
             minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
             if minimax_key:
                 tts_config = dict(tts_config, api_key=minimax_key)
+            from main_logic.tts_client import _get_minimax_voice_base_url
+            _minimax_base_url = _get_minimax_voice_base_url(self.voice_id or '')
 
         # 复用现有队列，这样 tts_response_handler 不需要重建
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
 
+        _tts_args = (self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+        if _minimax_base_url is not None:
+            _tts_args = _tts_args + (_minimax_base_url,)
         self.tts_thread = Thread(
             target=tts_worker,
-            args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+            args=_tts_args,
         )
         self.tts_thread.daemon = True
         self.tts_thread.start()
@@ -1179,14 +1185,20 @@ class LLMSessionManager:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
 
                 # MiniMax 音色需要使用 MiniMax API Key
+                _minimax_base_url2 = None
                 if tts_worker.__name__ == 'minimax_tts_worker':
                     minimax_key = (core_config.get('ASSIST_API_KEY_MINIMAX') or '').strip()
                     if minimax_key:
                         tts_config = dict(tts_config, api_key=minimax_key)
+                    from main_logic.tts_client import _get_minimax_voice_base_url
+                    _minimax_base_url2 = _get_minimax_voice_base_url(self.voice_id or '')
 
+                _tts_args2 = (self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+                if _minimax_base_url2 is not None:
+                    _tts_args2 = _tts_args2 + (_minimax_base_url2,)
                 self.tts_thread = Thread(
                     target=tts_worker,
-                    args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+                    args=_tts_args2,
                 )
                 self.tts_thread.daemon = True
                 self.tts_thread.start()

@@ -240,22 +240,18 @@ if (window.i18n && window.i18n.isInitialized) {
 
     function updateNotice() {
         const provider = providerSelect.value;
+        const span = noticeDiv.querySelector('span');
+        if (!span) return;
+
         if (provider === 'minimax') {
-            noticeDiv.style.background = 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)';
-            noticeDiv.style.boxShadow = '0 2px 8px rgba(99, 102, 241, 0.3)';
-            const span = noticeDiv.querySelector('span');
-            if (span) {
-                span.textContent = window.t ? window.t('voice.minimaxApiRequired') : '⚠️ 此功能需要 MiniMax API Key（国际服）';
-                span.setAttribute('data-i18n', 'voice.minimaxApiRequired');
-            }
+            span.textContent = window.t ? window.t('voice.minimaxApiRequired') : '⚠️ 此功能需要MiniMax模型，请在API密钥设置页中配置MiniMax API Key';
+            span.setAttribute('data-i18n', 'voice.minimaxApiRequired');
+        } else if (provider === 'minimax_intl') {
+            span.textContent = window.t ? window.t('voice.minimaxIntlApiRequired') : '⚠️ 此功能需要MiniMax国际服模型，请在API密钥设置页中配置MiniMax API Key（国际服）';
+            span.setAttribute('data-i18n', 'voice.minimaxIntlApiRequired');
         } else {
-            noticeDiv.style.background = 'linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%)';
-            noticeDiv.style.boxShadow = '0 2px 8px rgba(255, 107, 107, 0.3)';
-            const span = noticeDiv.querySelector('span');
-            if (span) {
-                span.textContent = window.t ? window.t('voice.alibabaApiRequired') : '⚠️ 此功能需要使用阿里云API';
-                span.setAttribute('data-i18n', 'voice.alibabaApiRequired');
-            }
+            span.textContent = window.t ? window.t('voice.alibabaApiRequired') : '⚠️ 此功能需要CosyVoice模型，请在API密钥设置页中配置阿里辅助API或本地语音服务器';
+            span.setAttribute('data-i18n', 'voice.alibabaApiRequired');
         }
     }
 

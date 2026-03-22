@@ -1011,9 +1011,9 @@ class ConfigManager:
         )
 
     def _get_minimax_storage_keys(self) -> list[str]:
-        """返回 voice_storage 中所有以 __MINIMAX__ 开头的 key 列表。"""
+        """返回 voice_storage 中所有以 __MINIMAX__ 或 __MINIMAX_INTL__ 开头的 key 列表。"""
         voice_storage = self.load_voice_storage()
-        return [k for k in voice_storage if k.startswith('__MINIMAX__')]
+        return [k for k in voice_storage if k.startswith('__MINIMAX__') or k.startswith('__MINIMAX_INTL__')]
 
     def get_voices_for_current_api(self):
         """获取当前 TTS 配置对应的所有音色
@@ -1106,9 +1106,9 @@ class ConfigManager:
         """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查 MiniMax 存储（__MINIMAX__ 开头的 key）
+        # 先检查 MiniMax 存储（__MINIMAX__ / __MINIMAX_INTL__ 开头的 key）
         for storage_key in list(voice_storage.keys()):
-            if storage_key.startswith('__MINIMAX__') and voice_id in voice_storage.get(storage_key, {}):
+            if (storage_key.startswith('__MINIMAX__') or storage_key.startswith('__MINIMAX_INTL__')) and voice_id in voice_storage.get(storage_key, {}):
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True

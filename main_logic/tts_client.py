@@ -1808,9 +1808,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         response_queue.put(("__ready__", False))
 
 
-def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
     """
-    MiniMax TTS worker（国际服，用于 MiniMax 克隆音色）
+    MiniMax TTS worker（国服 / 国际服，用于 MiniMax 克隆音色）
     使用 MiniMax 的 T2A v2 API，累积文本后一次性合成，返回 PCM 音频
     
     Args:
@@ -1818,11 +1818,13 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: MiniMax API Key (ASSIST_API_KEY_MINIMAX)
         voice_id: MiniMax 音色ID (custom_xxx)
+        base_url: MiniMax API base URL（国服 / 国际服），为 None 时使用国服默认值
     """
     import asyncio
     import httpx
 
-    MINIMAX_TTS_URL = "https://api.minimaxi.chat/v1/t2a_v2"
+    _base = (base_url or "https://api.minimaxi.com").rstrip('/')
+    MINIMAX_TTS_URL = f"{_base}/v1/t2a_v2"
 
     async def async_worker():
         current_speech_id = None
@@ -1948,18 +1950,40 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def _is_minimax_voice(voice_id: str) -> bool:
-    """检查 voice_id 是否为 MiniMax 克隆音色（在 voice_storage 的 __MINIMAX__ 分区中）。"""
+    """检查 voice_id 是否为 MiniMax 克隆音色（在 voice_storage 的 __MINIMAX__ / __MINIMAX_INTL__ 分区中）。"""
     if not voice_id:
         return False
     try:
         cm = get_config_manager()
         voice_storage = cm.load_voice_storage()
         for key, voices in voice_storage.items():
-            if key.startswith('__MINIMAX__') and isinstance(voices, dict) and voice_id in voices:
+            if (key.startswith('__MINIMAX__') or key.startswith('__MINIMAX_INTL__')) and isinstance(voices, dict) and voice_id in voices:
                 return True
     except Exception:
         pass
     return False
+
+
+def _get_minimax_voice_base_url(voice_id: str) -> str:
+    """获取 MiniMax 音色对应的 API base URL（国服 / 国际服）。"""
+    from utils.minimax_voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+    if not voice_id:
+        return MINIMAX_DOMESTIC_BASE_URL
+    try:
+        cm = get_config_manager()
+        voice_storage = cm.load_voice_storage()
+        for key, voices in voice_storage.items():
+            if (key.startswith('__MINIMAX__') or key.startswith('__MINIMAX_INTL__')) and isinstance(voices, dict) and voice_id in voices:
+                vdata = voices[voice_id]
+                if isinstance(vdata, dict) and vdata.get('minimax_base_url'):
+                    return vdata['minimax_base_url']
+                # 根据 storage key 前缀推断
+                if key.startswith('__MINIMAX_INTL__'):
+                    return MINIMAX_INTL_BASE_URL
+                return MINIMAX_DOMESTIC_BASE_URL
+    except Exception:
+        pass
+    return MINIMAX_DOMESTIC_BASE_URL
 
 
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
