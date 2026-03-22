@@ -48,10 +48,8 @@ from config.prompts_sys import (
     PROACTIVE_SOURCE_LABELS,
     MUSIC_SEARCH_RESULT_TEXTS,
     PROACTIVE_MUSIC_TAG_HINT,
-    PROACTIVE_BOTH_TAG_INSTRUCTIONS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     PROACTIVE_SCREEN_MUSIC_TAG_HINT,
-    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS,
 )
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import compress_screenshot, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY
@@ -1752,16 +1750,6 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
                     logger.debug(f"[{lan_name}] Phase 2 回退到 VISION 通道")
                 else:
                     logger.debug(f"[{lan_name}] Phase 2 MEME 无表情包且无回退通道，将跳过链接展示")
-        case 'BOTH':
-            # 使用一个专门的内部变量记录兜底，绝对不要覆盖外层的 source_mode / type
-            fallback_channel = 'music' if ctx.get('is_music_used') else 'web'
-            primary_channel = 'both'  # 保持 'both' 给前端
-            if ctx.get('selected_web_link'):
-                source_links.append(ctx['selected_web_link'])
-            if ctx.get('selected_music_link'):
-                source_links.append(ctx['selected_music_link'])
-            logger.debug(f"[{lan_name}] Phase 2 确定选择 BOTH，已聚合 Web 和 Music 候选链接，内部兜底为 {fallback_channel}")
-            
     return primary_channel, source_links
 
 @router.post('/proactive_chat')
@@ -2564,12 +2552,12 @@ async def proactive_chat(request: Request):
             has_meme=bool(meme_section),
             lang=proactive_lang,
         )
-        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [BOTH] 和 [MUSIC] 指令
+        #如果同时存在网页和音乐，手动补全被 Helper 忽略的 [MUSIC] 指令
         if music_section and external_section:
-            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            music_tag_hint = PROACTIVE_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC]")
             output_format_section = output_format_section.replace('[WEB]', f'[WEB]{music_tag_hint}')
         elif music_section and screen_section:
-            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC], or [BOTH]")
+            screen_music_hint = PROACTIVE_SCREEN_MUSIC_TAG_HINT.get(proactive_lang, ", or [MUSIC]")
             output_format_section = output_format_section.replace('[SCREEN]', f'[SCREEN]{screen_music_hint}', 1)
 
         music_playing_hint = ""
@@ -2594,21 +2582,10 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
-            if external_section:
-                generate_prompt += PROACTIVE_BOTH_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_BOTH_TAG_INSTRUCTIONS.get('en', PROACTIVE_BOTH_TAG_INSTRUCTIONS['zh']),
-                )
-            elif screen_section:
-                generate_prompt += PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS['zh']),
-                )
-            else:
-                generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
-                    proactive_lang,
-                    PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
-                )
+            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+                proactive_lang,
+                PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
+            )
 
             # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
             # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
@@ -2675,8 +2652,8 @@ async def proactive_chat(request: Request):
                             m = re.search(r'主动搭话\s*\n', cleaned)
                             if m:
                                 cleaned = cleaned[m.end():]
-                            # 解析 [PASS] / [SCREEN] / [WEB] / [BOTH] / [MUSIC]
-                            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+                            # 解析 [PASS] / [SCREEN] / [WEB] / [MUSIC] / [MEME]
+                            tag_match = re.match(r'^\[(SCREEN|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
                                 cleaned = cleaned[tag_match.end():]
@@ -2725,7 +2702,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
-            tag_match = re.match(r'^\[(SCREEN|WEB|BOTH|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
+            tag_match = re.match(r'^\[(SCREEN|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
@@ -2753,19 +2730,15 @@ async def proactive_chat(request: Request):
         has_music_topic = 'music' in active_channels
 
         # 【加固】数据级锁：如果正在同步播放音乐，哪怕 AI 产生了音乐标签，也强制降级/忽略
-        # 注意：只要 source_tag 是 MUSIC 或 BOTH，就视为 AI 想要使用音乐，无论 has_music_topic 状态
-        is_music_used = has_music_topic and (source_tag in ('MUSIC', 'BOTH'))
-        ai_wants_music = source_tag in ('MUSIC', 'BOTH')
-        
+        is_music_used = has_music_topic and source_tag == 'MUSIC'
+        ai_wants_music = source_tag == 'MUSIC'
+
         if is_playing_music and ai_wants_music:
             print(f"[{lanlan_name}] 数据级锁触发：AI 在播放中尝试推荐新歌，已强制拦截并清空曲目列表")
             is_music_used = False
             music_content = None
-            if source_tag == 'MUSIC':
-                source_tag = 'PASS'
-                aborted = True
-            elif source_tag == 'BOTH':
-                source_tag = 'WEB'
+            source_tag = 'PASS'
+            aborted = True
         
         # 【加固补齐】如果触发了降级拦截（aborted），立即返回
         if aborted:

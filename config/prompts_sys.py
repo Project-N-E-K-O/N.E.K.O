@@ -2202,7 +2202,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '  [SCREEN] = 基于屏幕内容\n'
                 '  [WEB] = 基于外部话题\n'
                 '  [MUSIC] = 聊音乐（会触发播放）\n'
-                '  [BOTH] = 结合了两者\n\n'
+                '\n'
                 '示例：\n[MUSIC]\n这首歌感觉很适合现在的气氛，要不要听听看？'
             ),
             'screen_music': (
@@ -2227,7 +2227,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '- 否则第一行写来源标签，第二行起写你要说的话：\n'
                 '  [SCREEN] = 基于屏幕内容\n'
                 '  [WEB] = 基于外部话题\n'
-                '  [BOTH] = 结合了两者\n\n'
+                '\n'
                 '示例：\n[SCREEN]\n你在看这个啊？看起来挺有意思的...'
             ),
             'screen': (
@@ -2317,7 +2317,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '  [SCREEN] = based on screen content\n'
                 '  [WEB] = based on external topic\n'
                 '  [MUSIC] = talk about music (triggers playback)\n'
-                '  [BOTH] = combined both\n\n'
+                '\n'
                 'Example:\n[MUSIC]\nThis song fits the mood right now. Want to give it a try?'
             ),
             'screen_music': (
@@ -2342,7 +2342,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '- Otherwise, first line = source tag, then your message on the next line(s):\n'
                 '  [SCREEN] = based on screen content\n'
                 '  [WEB] = based on external topic\n'
-                '  [BOTH] = combined both\n\n'
+                '\n'
                 'Example:\n[SCREEN]\nHey, what are you looking at? That looks interesting...'
             ),
             'screen': (
@@ -2432,7 +2432,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '  [SCREEN] = 画面の内容に基づく\n'
                 '  [WEB] = 外部話題に基づく\n'
                 '  [MUSIC] = 音楽の話（再生をトリガー）\n'
-                '  [BOTH] = 両方を組み合わせ\n\n'
+                '\n'
                 '例：\n[MUSIC]\n今の雰囲気に合いそうな曲を見つけたんだけど、聴いてみる？'
             ),
             'screen_music': (
@@ -2457,7 +2457,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：\n'
                 '  [SCREEN] = 画面の内容に基づく\n'
                 '  [WEB] = 外部話題に基づく\n'
-                '  [BOTH] = 両方を組み合わせ\n\n'
+                '\n'
                 '例：\n[SCREEN]\n何見てるの？面白そうだね...'
             ),
             'screen': (
@@ -2547,7 +2547,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '  [SCREEN] = 화면 내용 기반\n'
                 '  [WEB] = 외부 주제 기반\n'
                 '  [MUSIC] = 음악 이야기 (재생 트리거)\n'
-                '  [BOTH] = 둘 다 결합\n\n'
+                '\n'
                 '예시:\n[MUSIC]\n지금 분위기에 잘 어울리는 곡 같은데, 들어볼래?'
             ),
             'screen_music': (
@@ -2572,7 +2572,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:\n'
                 '  [SCREEN] = 화면 내용 기반\n'
                 '  [WEB] = 외부 주제 기반\n'
-                '  [BOTH] = 둘 다 결합\n\n'
+                '\n'
                 '예시:\n[SCREEN]\n뭐 보고 있어? 재밌어 보이는데...'
             ),
             'screen': (
@@ -2662,7 +2662,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '  [SCREEN] = на основе содержимого экрана\n'
                 '  [WEB] = на основе внешней темы\n'
                 '  [MUSIC] = поговорить о музыке (запускает воспроизведение)\n'
-                '  [BOTH] = сочетает оба источника\n\n'
+                '\n'
                 'Пример:\n[MUSIC]\nПо-моему, этот трек очень подходит под нынешнее настроение. Хочешь послушать?'
             ),
             'screen_music': (
@@ -2687,7 +2687,7 @@ def get_proactive_format_sections(has_screen: bool, has_web: bool, has_music: bo
                 '- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:\n'
                 '  [SCREEN] = на основе содержимого экрана\n'
                 '  [WEB] = на основе внешней темы\n'
-                '  [BOTH] = сочетает оба источника\n\n'
+                '\n'
                 'Пример:\n[SCREEN]\nО, ты это сейчас смотришь? Выглядит довольно интересно...'
             ),
             'screen': (
@@ -3064,20 +3064,13 @@ MUSIC_SEARCH_RESULT_TEXTS = {
 
 # ---------- 主动搭话中的音乐标签提示 ----------
 PROACTIVE_MUSIC_TAG_HINT = {
-    'zh': '，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊网页话题和音乐)',
-    'en': ', or [MUSIC] (music only), or [BOTH] (both web and music)',
-    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (ウェブと音楽の両方)',
-    'ko': ', 또는 [MUSIC] (음악만), 또는 [BOTH] (웹과 음악 모두)',
-    'ru': ', или [MUSIC] (только музыка), или [BOTH] (и веб, и музыка)',
+    'zh': '，或者 [MUSIC] (仅聊音乐)',
+    'en': ', or [MUSIC] (music only)',
+    'ja': '、または [MUSIC] (音楽のみ)',
+    'ko': ', 또는 [MUSIC] (음악만)',
+    'ru': ', или [MUSIC] (только музыка)',
 }
 
-PROACTIVE_BOTH_TAG_INSTRUCTIONS = {
-    'zh': '\n（注意：如果你同时参考了网页搜索和音乐推荐，请务必使用 [BOTH] 标签作为第一行；如果最终只聊音乐，请使用 [MUSIC] 标签！）',
-    'en': '\n(Note: If you use both web search and music recommendations, you MUST use the [BOTH] tag as the first line; if only music, use the [MUSIC] tag!)',
-    'ja': '\n（注意：ウェブ検索と音楽のおすすめを両方使用する場合は、最初の行に必ず [BOTH] タグを使用してください。音楽のみの場合は [MUSIC] タグを使用してください！）',
-    'ko': '\n(주의: 웹 검색과 음악 추천을 모두 사용하는 경우 첫 줄에 반드시 [BOTH] 태그를 사용해야 합니다. 음악만 이야기할 경우 [MUSIC] 태그를 사용하세요!)',
-    'ru': '\n(Примечание: если вы используете как веб-поиск, так и музыкальные рекомендации, ОБЯЗАТЕЛЬНО используйте тег [BOTH] в первой строке; если только музыку — тег [MUSIC]!)',
-}
 
 PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
     'zh': '\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 标签！）',
@@ -3088,20 +3081,13 @@ PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
 }
 
 PROACTIVE_SCREEN_MUSIC_TAG_HINT = {
-    'zh': '，或者 [MUSIC] (仅聊音乐)，或者 [BOTH] (同时聊屏幕内容和音乐)',
-    'en': ', or [MUSIC] (music only), or [BOTH] (both screen and music)',
-    'ja': '、または [MUSIC] (音楽のみ)、または [BOTH] (画面と音楽の両方)',
-    'ko': ', 또는 [MUSIC] (음악만), 또는 [BOTH] (화면과 음악 모두)',
-    'ru': ', или [MUSIC] (только музыка), или [BOTH] (и экран, и музыка)',
+    'zh': '，或者 [MUSIC] (仅聊音乐)',
+    'en': ', or [MUSIC] (music only)',
+    'ja': '、または [MUSIC] (音楽のみ)',
+    'ko': ', 또는 [MUSIC] (음악만)',
+    'ru': ', или [MUSIC] (только музыка)',
 }
 
-PROACTIVE_SCREEN_MUSIC_TAG_INSTRUCTIONS = {
-    'zh': '\n（注意：如果你同时参考了屏幕内容和音乐推荐，请务必使用 [BOTH] 标签作为第一行；如果最终只聊音乐，请使用 [MUSIC] 标签！）',
-    'en': '\n(Note: If you use both screen content and music recommendations, you MUST use the [BOTH] tag as the first line; if only music, use the [MUSIC] tag!)',
-    'ja': '\n（注意：画面の内容と音楽のおすすめを両方使用する場合は、最初の行に必ず [BOTH] タグを使用してください。音楽のみの場合は [MUSIC] タグを使用してください！）',
-    'ko': '\n(주의: 화면 내용과 음악 추천을 모두 사용하는 경우 첫 줄에 반드시 [BOTH] 태그를 사용해야 합니다. 음악만 이야기할 경우 [MUSIC] 태그를 사용하세요!)',
-    'ru': '\n(Примечание: если вы используете как содержимое экрана, так и музыкальные рекомендации, ОБЯЗАТЕЛЬНО используйте тег [BOTH] в первой строке; если только музыку — тег [MUSIC]!)',
-}
 
 # ---------- 语音会话初始 prompt ----------
 SESSION_INIT_PROMPT = {
