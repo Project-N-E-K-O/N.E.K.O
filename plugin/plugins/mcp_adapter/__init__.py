@@ -17,7 +17,7 @@ import subprocess
 import copy
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
 from markdownify import markdownify as markdownify_html  # type: ignore[import-untyped]
@@ -1187,8 +1187,17 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             result = await target_client.call_tool(tool_name, arguments, timeout=self._tool_timeout)
             if "error" in result:
                 return Err(SdkError(str(result["error"])))
-            return Ok(result.get("result", {}))
-        
+            payload = self._build_mcp_tool_payload(
+                result=result.get("result", {}),
+                server_name=server_name,
+                tool_name=tool_name,
+            )
+            return await self.finish(
+                data=payload,
+                reply=True,
+                message=str(payload.get("summary") or ""),
+            )
+
         # 注册为动态 entry
         return self.register_dynamic_entry(
             entry_id=tool_id,
@@ -1198,6 +1207,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             input_schema=schema,
             kind="action",
             timeout=self._tool_timeout + 5.0,
+            llm_result_fields=["summary"],
         )
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
@@ -1362,6 +1372,89 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             enabled=self._coerce_bool(current.get("enabled", True), True),
         )
         return normalized_current == incoming
+
+    def _truncate_llm_text(self, text: str, limit: int = 1200) -> str:
+        cleaned = text.strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[:limit] + "..."
+
+    def _summarize_mcp_result(self, result: object) -> str:
+        if result is None:
+            return ""
+
+        if isinstance(result, str):
+            return self._truncate_llm_text(result)
+
+        if isinstance(result, dict):
+            content = result.get("content")
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    item_type = str(item.get("type") or "").strip().lower()
+                    if item_type == "text":
+                        text = str(item.get("text") or "").strip()
+                        if text:
+                            parts.append(text)
+                            continue
+                    if item_type:
+                        marker = str(item.get("mimeType") or item.get("uri") or item_type).strip()
+                        parts.append(f"[{marker}]")
+                if parts:
+                    return self._truncate_llm_text("\n".join(parts))
+
+            structured = result.get("structuredContent")
+            if isinstance(structured, (dict, list, tuple, str)):
+                structured_summary = self._summarize_mcp_result(structured)
+                if structured_summary:
+                    return structured_summary
+
+            for key in ("summary", "message", "text", "content"):
+                value = result.get(key)
+                if isinstance(value, str) and value.strip():
+                    return self._truncate_llm_text(value)
+
+            try:
+                return self._truncate_llm_text(json.dumps(result, ensure_ascii=False, indent=2))
+            except Exception:
+                return self._truncate_llm_text(str(result))
+
+        if isinstance(result, (list, tuple)):
+            parts = [self._summarize_mcp_result(item) for item in result]
+            normalized = [part for part in parts if part]
+            if normalized:
+                return self._truncate_llm_text("\n".join(normalized))
+            try:
+                return self._truncate_llm_text(json.dumps(list(result), ensure_ascii=False, indent=2))
+            except Exception:
+                return self._truncate_llm_text(str(result))
+
+        return self._truncate_llm_text(str(result))
+
+    def _build_mcp_tool_payload(
+        self,
+        *,
+        result: object,
+        server_name: str | None = None,
+        tool_name: str | None = None,
+        request_id: str | None = None,
+        latency_ms: float | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {"result": result}
+        summary = self._summarize_mcp_result(result)
+        if summary:
+            payload["summary"] = summary
+        if server_name:
+            payload["server_name"] = server_name
+        if tool_name:
+            payload["tool_name"] = tool_name
+        if request_id:
+            payload["request_id"] = request_id
+        if latency_ms is not None:
+            payload["latency_ms"] = latency_ms
+        return payload
     
     async def _register_mcp_tools(self, server_name: str, client: MCPClient) -> None:
         """
@@ -1911,7 +2004,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="call_tool",
         name="Call MCP Tool",
         description="调用指定 MCP server 的 tool",
-        llm_result_fields=["result"],
+        llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
@@ -1953,7 +2046,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             error_msg = str(result["error"]) if result["error"] else "Unknown error"
             return Err(SdkError(error_msg))
 
-        return Ok(result.get("result", {}))
+        return Ok(
+            self._build_mcp_tool_payload(
+                result=result.get("result", {}),
+                server_name=server_name,
+                tool_name=tool_name,
+            )
+        )
     
     @plugin_entry(
         id="list_tools",
@@ -1984,7 +2083,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         id="gateway_invoke",
         name="Gateway Invoke",
         description="通过 Gateway Core 调用 MCP tool（新架构）",
-        llm_result_fields=["result"],
+        llm_result_fields=["summary"],
         input_schema={
             "type": "object",
             "properties": {
@@ -2061,11 +2160,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         response = response_result.value
 
         if response.success:
-            return Ok({
-                "request_id": response.request_id,
-                "result": response.data,
-                "latency_ms": response.latency_ms,
-            })
+            return Ok(
+                self._build_mcp_tool_payload(
+                    result=response.data,
+                    tool_name=tool_name,
+                    request_id=response.request_id,
+                    latency_ms=response.latency_ms,
+                )
+            )
 
         error_code = "GATEWAY_ERROR"
         error_msg = "gateway invocation failed"

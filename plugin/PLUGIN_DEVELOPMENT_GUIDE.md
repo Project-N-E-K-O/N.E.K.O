@@ -347,6 +347,36 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html
 
 通知宿主任务完成。
 
+#### 回复控制
+
+`finish()` 的 `reply` 参数（默认 `True`）控制是否触发角色说话：
+
+```python
+# 正常：角色会播报结果
+return await self.finish(data={"summary": "天气晴朗"}, reply=True)
+
+# 静默：结果会记录但角色不说话
+return await self.finish(data={"summary": "天气晴朗"}, reply=False)
+```
+
+#### LLM 结果字段过滤
+
+通过 `llm_result_fields` 控制主 LLM 能看到结果中的哪些字段：
+
+```python
+# 静态入口：在装饰器中声明
+@plugin_entry(llm_result_fields=["summary"])
+async def search(self, query: str):
+    return await self.finish(data={"summary": "3条结果", "raw_results": [...]})
+
+# 动态入口：在注册时声明
+self.register_dynamic_entry(
+    entry_id="my-tool",
+    handler=handler,
+    llm_result_fields=["summary"],
+)
+```
+
 ### 3.4 Result 类型：Ok / Err
 
 SDK 使用 Rust 风格的 Result 类型进行错误处理，替代传统异常：
