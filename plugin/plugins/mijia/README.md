@@ -87,7 +87,8 @@
 
 ### 配置文件位置
 
-```N.E.K.O/plugin/plugins/mijia/data/config.json```
+```plugin/plugins/mijia/config.json```
+
 
 ### 配置项说明
 
@@ -105,7 +106,7 @@
 ### 1. 更新配置
 
 ```python
-通过跨插件调用
+#通过跨插件调用
 result = await self.plugins.call_entry(
     "mijia:update_config",
     {
@@ -142,7 +143,7 @@ if isinstance(result, Ok):
 ### 4. 控制设备
 
 ```python
-设置设备属性（例如：打开开关）
+#设置设备属性（例如：打开开关）
 result = await self.plugins.call_entry(
     "mijia:set_property_value",
     {
@@ -153,7 +154,7 @@ result = await self.plugins.call_entry(
     }
 )
 
-调用设备动作
+#调用设备动作
 result = await self.plugins.call_entry(
     "mijia:call_action",
     {

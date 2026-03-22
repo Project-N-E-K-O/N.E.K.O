@@ -122,8 +122,8 @@ def save_mijia_config(config: MijiaConfig, config_path: Path) -> bool:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     old_config = json.load(f)
                 config_dict['password'] = old_config.get('password', '')
-            except:
-                pass
+            except Exception as e:
+                _LOGGER.debug(f"无法读取原配置文件保留密码: {e}")
         
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config_dict, f, ensure_ascii=False, indent=2)

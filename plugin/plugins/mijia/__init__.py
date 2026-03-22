@@ -201,7 +201,7 @@ class MijiaPlugin(NekoPluginBase):
         })
 
         if self._config.get("auto_connect", False):
-            await self._adapter.disconnect()
+            await self.auto.connect()
 
         self.push_message(
             source="mijia",

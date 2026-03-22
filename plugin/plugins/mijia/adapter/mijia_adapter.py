@@ -33,12 +33,10 @@ class MijiaAdapter:
         self._auth_data: Optional[Dict[str, Any]] = None
         self._connected = False
         self._devices: Dict[str, mijiaDevice] = {}
-        self._config: Optional[MijiaConfig] = config if config is not None else load_mijia_config()
-        self._device_status_cache: Dict[str, Dict[str, Any]] = {}
+        
         if config is None:
             self._config = load_mijia_config()
         elif isinstance(config, dict):
-            from ..config.mijia_config import MijiaConfig
             self._config = MijiaConfig(
                  username=config.get("username", ""),
                  password=config.get("password", ""),

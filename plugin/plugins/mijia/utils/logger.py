@@ -98,9 +98,21 @@ def reset_logging():
     """重置日志系统（主要用于测试）"""
     global _initialized, _loggers, _log_file_path
     
-    # 清除所有处理器
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
+    # 使用插件专属的 logger 而不是修改根 logger
+    plugin_logger = logging.getLogger('mijia')
+    plugin_logger.setLevel(getattr(logging, log_level.upper()))
+
+    # 避免重复添加处理器
+    if not plugin_logger.handlers:
+        # 添加stderr处理器
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(formatter)
+        plugin_logger.addHandler(stderr_handler)
+
+        # 添加文件处理器
+        file_handler = logging.FileHandler(_log_file_path, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        plugin_logger.addHandler(file_handler)
     
     # 重置状态
     _initialized = False
