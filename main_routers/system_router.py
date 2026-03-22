@@ -46,6 +46,7 @@ from config.prompts_sys import (
     SCREEN_WINDOW_TITLE, SCREEN_IMG_HINT,
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     PROACTIVE_SOURCE_LABELS,
+    PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
 )
 from utils.workshop_utils import get_workshop_path
@@ -2576,6 +2577,11 @@ async def proactive_chat(request: Request):
             output_format_section=output_format_section,
         )
         if music_topic:
+            # 防混淆强调：确保 AI 用 [MUSIC] 而不是 [WEB]/[CHAT]
+            generate_prompt += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
+                proactive_lang,
+                PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
+            )
             # 【核心补齐】如果搜索结果是模糊匹配，注入 failsafe hint
             # 注意：random 状态（随机推荐）不应触发 failsafe hint，因为这是正常的随机推荐行为
             raw_data = music_content.get('raw_data', {}) if music_content else {}

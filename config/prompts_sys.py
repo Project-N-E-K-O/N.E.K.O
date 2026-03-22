@@ -2216,6 +2216,16 @@ def _loc(d: dict, lang: str) -> str:
     return d.get(lang, d['en'])
 
 
+# ---------- Phase 2 防混淆：音乐 tag 强调 ----------
+PROACTIVE_MUSIC_TAG_INSTRUCTIONS = {
+    'zh': '\n（注意：如果你最终决定聊音乐推荐的内容，请务必使用 [MUSIC] 标签作为第一行，而不是 [WEB] 或 [CHAT] 标签！）',
+    'en': '\n(Note: If you decide to talk about the music recommendation, you MUST use the [MUSIC] tag as the first line instead of [WEB] or [CHAT]!)',
+    'ja': '\n（注意：もし音楽のおすすめについて話すことに決めた場合、最初の行には [WEB] や [CHAT] ではなく必ず [MUSIC] タグを使用してください！）',
+    'ko': '\n(주의: 음악 추천에 대해 이야기하기로 결정했다면, 첫 줄에 [WEB]이나 [CHAT] 대신 반드시 [MUSIC] 태그를 사용해야 합니다!)',
+    'ru': '\n(Примечание: если вы решите поговорить о музыкальной рекомендации, ОБЯЗАТЕЛЬНО используйте тег [MUSIC] в первой строке вместо [WEB] или [CHAT]!)',
+}
+
+
 # ---------- 内心活动区块标题 ----------
 INNER_THOUGHTS_HEADER = {
     'zh': '\n======以下是{name}的内心活动======\n',
