@@ -772,6 +772,40 @@ class VRMManager {
     }
 
     /**
+     * 重置模型位置/旋转/缩放到默认值（供外部调用，如 N.E.K.O.-PC）
+     */
+    resetModelPosition() {
+        const model = this.currentModel;
+        if (!model || !model.scene) return;
+
+        const vrm = model.vrm || model;
+        const scene = model.scene;
+
+        scene.position.set(0, 0, 0);
+        scene.rotation.set(0, 0, 0);
+        scene.scale.set(1, 1, 1);
+
+        // 重新检测朝向并应用
+        if (window.VRMOrientationDetector && vrm) {
+            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
+            window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
+        }
+
+        // 保存重置后的状态
+        const modelUrl = model.url || '';
+        if (modelUrl && this.core && typeof this.core.saveUserPreferences === 'function') {
+            this.core.saveUserPreferences(
+                modelUrl,
+                { x: 0, y: 0, z: 0 },
+                { x: 1, y: 1, z: 1 },
+                { x: scene.rotation.x, y: scene.rotation.y, z: scene.rotation.z }
+            );
+        }
+
+        console.log('[VRM Manager] 模型位置已重置');
+    }
+
+    /**
      * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
      */
     pauseRendering() {

@@ -844,11 +844,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // VRM/MMD 专属设置区域 DOM 引用
     const vrmSettingsSection = document.getElementById('vrm-settings-section');
     const mmdSettingsSection = document.getElementById('mmd-settings-section');
-    // VRM 鼠标跟踪
-    const vrmCursorFollowPreset = document.getElementById('vrm-cursor-follow-preset');
-    const vrmEyeSensitivitySlider = document.getElementById('vrm-eye-sensitivity-slider');
-    const vrmHeadSensitivitySlider = document.getElementById('vrm-head-sensitivity-slider');
-    const vrmHeadSpeedSlider = document.getElementById('vrm-head-speed-slider');
+    // VRM 鼠标跟踪已移至 popup-ui 统一控制，不在外观管理页单独配置
     // MMD 光照
     const mmdAmbientIntensitySlider = document.getElementById('mmd-ambient-intensity-slider');
     const mmdAmbientColorPicker = document.getElementById('mmd-ambient-color-picker');
@@ -858,14 +854,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mmdTonemappingSelect = document.getElementById('mmd-tonemapping-select');
     const mmdExposureSlider = document.getElementById('mmd-exposure-slider');
     const mmdOutlineToggle = document.getElementById('mmd-outline-toggle');
-    const mmdPixelRatioSelect = document.getElementById('mmd-pixel-ratio-select');
-    // MMD 物理/跟踪
-    const mmdPhysicsToggle = document.getElementById('mmd-physics-toggle');
-    const mmdPhysicsStrengthSlider = document.getElementById('mmd-physics-strength-slider');
-    const mmdCursorFollowToggle = document.getElementById('mmd-cursor-follow-toggle');
-    const mmdHeadYawSlider = document.getElementById('mmd-head-yaw-slider');
-    const mmdHeadPitchSlider = document.getElementById('mmd-head-pitch-slider');
-    const mmdHeadSmoothSlider = document.getElementById('mmd-head-smooth-slider');
+    // 像素比例、物理模拟、拟真强度、头部跟踪 已移至 popup-ui 统一控制，不在外观管理页单独配置
     const uploadStatus = document.getElementById('upload-status');
     const backToMainBtn = document.getElementById('backToMainBtn');
     const deleteModelBtn = document.getElementById('delete-model-btn');
@@ -3889,59 +3878,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
 
-    // ==================== VRM 鼠标跟踪控件事件绑定 ====================
-    function setupVrmCursorFollowBindings() {
-        // 预设切换
-        if (vrmCursorFollowPreset) {
-            vrmCursorFollowPreset.addEventListener('change', (e) => {
-                const preset = e.target.value;
-                const presets = {
-                    none: { eye: 0, head: 0, speed: 3.0 },
-                    low: { eye: 15, head: 20, speed: 2.0 },
-                    medium: { eye: 25, head: 35, speed: 3.0 },
-                    high: { eye: 30, head: 45, speed: 4.0 }
-                };
-                const p = presets[preset] || presets.high;
-                if (vrmEyeSensitivitySlider) { vrmEyeSensitivitySlider.value = p.eye; document.getElementById('vrm-eye-sensitivity-value').textContent = p.eye + '°'; }
-                if (vrmHeadSensitivitySlider) { vrmHeadSensitivitySlider.value = p.head; document.getElementById('vrm-head-sensitivity-value').textContent = p.head + '°'; }
-                if (vrmHeadSpeedSlider) { vrmHeadSpeedSlider.value = p.speed; document.getElementById('vrm-head-speed-value').textContent = p.speed.toFixed(1); }
-                applyVrmCursorFollowSettings();
-            });
-        }
-        // 单个滑块
-        const vrmCursorSliders = [
-            { el: vrmEyeSensitivitySlider, valId: 'vrm-eye-sensitivity-value', suffix: '°' },
-            { el: vrmHeadSensitivitySlider, valId: 'vrm-head-sensitivity-value', suffix: '°' },
-            { el: vrmHeadSpeedSlider, valId: 'vrm-head-speed-value', suffix: '', fmt: v => v.toFixed(1) }
-        ];
-        vrmCursorSliders.forEach(({ el, valId, suffix, fmt }) => {
-            if (el) {
-                el.addEventListener('input', (e) => {
-                    const v = parseFloat(e.target.value);
-                    const display = fmt ? fmt(v) : v + (suffix || '');
-                    const valEl = document.getElementById(valId);
-                    if (valEl) valEl.textContent = display;
-                });
-                el.addEventListener('change', () => applyVrmCursorFollowSettings());
-            }
-        });
-    }
-
-    function applyVrmCursorFollowSettings() {
-        const cursorFollow = vrmManager?._cursorFollow;
-        if (!cursorFollow) return;
-        const config = {
-            eyeMaxAngle: vrmEyeSensitivitySlider ? parseFloat(vrmEyeSensitivitySlider.value) : 30,
-            headMaxAngle: vrmHeadSensitivitySlider ? parseFloat(vrmHeadSensitivitySlider.value) : 45,
-            smoothSpeed: vrmHeadSpeedSlider ? parseFloat(vrmHeadSpeedSlider.value) : 3.0,
-            enabled: vrmCursorFollowPreset ? vrmCursorFollowPreset.value !== 'none' : true
-        };
-        if (typeof cursorFollow.applyConfig === 'function') {
-            cursorFollow.applyConfig(config);
-        }
-    }
-
-    setupVrmCursorFollowBindings();
+    // VRM 鼠标跟踪已移至 popup-ui 统一控制，不在外观管理页单独配置
 
     // ==================== MMD 控件事件绑定 ====================
     function setupMmdControlBindings() {
@@ -3990,56 +3927,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        // 像素比例
-        if (mmdPixelRatioSelect) {
-            mmdPixelRatioSelect.addEventListener('change', () => applyMmdSettings());
-        }
-
-        // 物理开关
-        if (mmdPhysicsToggle) {
-            mmdPhysicsToggle.addEventListener('change', (e) => {
-                const statusEl = document.getElementById('mmd-physics-status');
-                if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
-                applyMmdSettings();
-            });
-        }
-
-        // 物理强度滑块
-        if (mmdPhysicsStrengthSlider) {
-            mmdPhysicsStrengthSlider.addEventListener('input', (e) => {
-                const v = parseFloat(e.target.value);
-                const valEl = document.getElementById('mmd-physics-strength-value');
-                if (valEl) valEl.textContent = v.toFixed(1);
-            });
-            mmdPhysicsStrengthSlider.addEventListener('change', () => applyMmdSettings());
-        }
-
-        // 鼠标跟踪开关
-        if (mmdCursorFollowToggle) {
-            mmdCursorFollowToggle.addEventListener('change', (e) => {
-                const statusEl = document.getElementById('mmd-cursor-follow-status');
-                if (statusEl) statusEl.textContent = e.target.checked ? 'ON' : 'OFF';
-                applyMmdSettings();
-            });
-        }
-
-        // MMD 鼠标跟踪滑块
-        const mmdCursorSliders = [
-            { el: mmdHeadYawSlider, valId: 'mmd-head-yaw-value', suffix: '°' },
-            { el: mmdHeadPitchSlider, valId: 'mmd-head-pitch-value', suffix: '°' },
-            { el: mmdHeadSmoothSlider, valId: 'mmd-head-smooth-value', suffix: '', fmt: v => v.toFixed(1) }
-        ];
-        mmdCursorSliders.forEach(({ el, valId, suffix, fmt }) => {
-            if (el) {
-                el.addEventListener('input', (e) => {
-                    const v = parseFloat(e.target.value);
-                    const display = fmt ? fmt(v) : v + (suffix || '');
-                    const valEl = document.getElementById(valId);
-                    if (valEl) valEl.textContent = display;
-                });
-                el.addEventListener('change', () => applyMmdSettings());
-            }
-        });
+        // 像素比例、物理、鼠标跟踪 已移至 popup-ui 统一控制
     }
 
     function collectMmdSettings() {
@@ -4053,19 +3941,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             rendering: {
                 toneMapping: mmdTonemappingSelect ? parseInt(mmdTonemappingSelect.value) : 0,
                 exposure: mmdExposureSlider ? parseFloat(mmdExposureSlider.value) : 1.0,
-                outline: mmdOutlineToggle ? mmdOutlineToggle.checked : true,
-                pixelRatio: mmdPixelRatioSelect ? parseFloat(mmdPixelRatioSelect.value) : 0
-            },
-            physics: {
-                enabled: mmdPhysicsToggle ? mmdPhysicsToggle.checked : true,
-                strength: mmdPhysicsStrengthSlider ? parseFloat(mmdPhysicsStrengthSlider.value) : 1.0
-            },
-            cursorFollow: {
-                enabled: mmdCursorFollowToggle ? mmdCursorFollowToggle.checked : true,
-                headYaw: mmdHeadYawSlider ? parseFloat(mmdHeadYawSlider.value) : 30,
-                headPitch: mmdHeadPitchSlider ? parseFloat(mmdHeadPitchSlider.value) : 20,
-                smoothSpeed: mmdHeadSmoothSlider ? parseFloat(mmdHeadSmoothSlider.value) : 3.0
+                outline: mmdOutlineToggle ? mmdOutlineToggle.checked : true
             }
+            // physics 和 cursorFollow 由 popup-ui 统一控制，不在此收集
         };
     }
 
@@ -4121,42 +3999,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const el = document.getElementById('mmd-outline-status');
                     if (el) el.textContent = s.rendering.outline ? 'ON' : 'OFF';
                 }
-                if (mmdPixelRatioSelect && s.rendering.pixelRatio != null) mmdPixelRatioSelect.value = s.rendering.pixelRatio;
             }
-            if (s.physics) {
-                if (mmdPhysicsToggle && s.physics.enabled != null) {
-                    mmdPhysicsToggle.checked = s.physics.enabled;
-                    const el = document.getElementById('mmd-physics-status');
-                    if (el) el.textContent = s.physics.enabled ? 'ON' : 'OFF';
-                }
-                if (mmdPhysicsStrengthSlider && s.physics.strength != null) {
-                    mmdPhysicsStrengthSlider.value = s.physics.strength;
-                    const el = document.getElementById('mmd-physics-strength-value');
-                    if (el) el.textContent = s.physics.strength.toFixed(1);
-                }
-            }
-            if (s.cursorFollow) {
-                if (mmdCursorFollowToggle && s.cursorFollow.enabled != null) {
-                    mmdCursorFollowToggle.checked = s.cursorFollow.enabled;
-                    const el = document.getElementById('mmd-cursor-follow-status');
-                    if (el) el.textContent = s.cursorFollow.enabled ? 'ON' : 'OFF';
-                }
-                if (mmdHeadYawSlider && s.cursorFollow.headYaw != null) {
-                    mmdHeadYawSlider.value = s.cursorFollow.headYaw;
-                    const el = document.getElementById('mmd-head-yaw-value');
-                    if (el) el.textContent = s.cursorFollow.headYaw + '°';
-                }
-                if (mmdHeadPitchSlider && s.cursorFollow.headPitch != null) {
-                    mmdHeadPitchSlider.value = s.cursorFollow.headPitch;
-                    const el = document.getElementById('mmd-head-pitch-value');
-                    if (el) el.textContent = s.cursorFollow.headPitch + '°';
-                }
-                if (mmdHeadSmoothSlider && s.cursorFollow.smoothSpeed != null) {
-                    mmdHeadSmoothSlider.value = s.cursorFollow.smoothSpeed;
-                    const el = document.getElementById('mmd-head-smooth-value');
-                    if (el) el.textContent = s.cursorFollow.smoothSpeed.toFixed(1);
-                }
-            }
+            // physics 和 cursorFollow 由 popup-ui 统一控制，不在此加载
         } catch (e) {
             console.warn('[MMD Settings] 加载UI设置失败:', e);
         }

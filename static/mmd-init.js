@@ -138,9 +138,13 @@ window.addEventListener('mmd-modules-ready', async () => {
                         const settingsData = await settingsRes.json();
                         if (settingsData.success && settingsData.settings) {
                             savedSettings = settingsData.settings;
-                            // 预置物理开关，避免 loadModel 时不必要的 Ammo 初始化
+                            // 预置物理开关和强度，避免 loadModel 时不必要的 Ammo 初始化，
+                            // 且确保 warmup 使用正确的重力（防止 warmup 后变更重力导致拉丝）
                             if (savedSettings.physics?.enabled != null) {
                                 window.mmdManager.enablePhysics = !!savedSettings.physics.enabled;
+                            }
+                            if (savedSettings.physics?.strength != null) {
+                                window.mmdManager.physicsStrength = Math.max(0.1, Math.min(2.0, savedSettings.physics.strength));
                             }
                         }
                     }
@@ -152,9 +156,12 @@ window.addEventListener('mmd-modules-ready', async () => {
             const resolvedPath = window._mmdConvertPath ? window._mmdConvertPath(mmdPath) : mmdPath;
             await window.mmdManager.loadModel(resolvedPath);
 
-            // 加载完成后应用完整设置
+            // 加载完成后应用外观设置（光照/渲染/鼠标跟踪）
+            // physics 已在 loadModel 前预置，不在此重复应用
+            // （warmup 后变更重力或切换物理开关会导致拉丝/爆炸）
             if (savedSettings) {
-                window.mmdManager.applySettings(savedSettings);
+                const { physics, ...nonPhysicsSettings } = savedSettings;
+                window.mmdManager.applySettings(nonPhysicsSettings);
             }
 
             console.log('[MMD Init] MMD 模型自动加载完成');

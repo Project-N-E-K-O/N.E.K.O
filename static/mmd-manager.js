@@ -323,6 +323,20 @@ class MMDManager {
         }
     }
 
+    // ═══════════════════ 模型位置/姿态重置 ═══════════════════
+
+    resetModelPosition() {
+        if (this.core && typeof this.core.resetModelPosition === 'function') {
+            this.core.resetModelPosition();
+        }
+    }
+
+    resetModelPose() {
+        if (this.core && typeof this.core.resetModelPose === 'function') {
+            this.core.resetModelPose();
+        }
+    }
+
     // ═══════════════════ 渲染控制 ═══════════════════
 
     pauseRendering() {

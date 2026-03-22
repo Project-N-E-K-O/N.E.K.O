@@ -903,14 +903,22 @@ class MMDCore {
         const mmd = this.manager.currentModel;
         if (!mmd || !mmd.mesh) return;
 
+        // 禁用物理，防止位置变更期间拉丝
+        const hadPhysics = this.manager.enablePhysics;
+        this.manager.enablePhysics = false;
+
         const mesh = mmd.mesh;
         mesh.position.set(0, 0, 0);
         mesh.quaternion.identity();
         mesh.scale.set(1, 1, 1);
 
-        if (mmd.physics) {
+        if (mmd.physics && typeof mmd.physics.reset === 'function') {
+            mesh.updateMatrixWorld(true);
             mmd.physics.reset();
         }
+
+        // 恢复物理
+        this.manager.enablePhysics = hadPhysics;
 
         const modelPath = mmd.url;
         if (modelPath) {

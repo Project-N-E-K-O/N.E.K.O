@@ -2,7 +2,6 @@ import Ammo from 'ammojs-typed';
 import { Object3D, Matrix4, Vector3, Quaternion, MeshBasicMaterial, Color, Mesh, SphereGeometry, CapsuleGeometry, BoxGeometry, Euler, Bone } from 'three';
 import { PmxObject } from '@moeru/three-mmd';
 
-console.log('[MMD Physics] === MODULE LOADED v=22 ===');
 
 class Constraint {
   bodyA;
