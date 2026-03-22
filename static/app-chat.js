@@ -65,6 +65,7 @@
         window.currentGeminiMessage = messageDiv;
 
         // ========== 追踪本轮气泡 ==========
+        window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
         window.currentTurnGeminiBubbles.push(messageDiv);
 
         // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
@@ -427,6 +428,7 @@
                 window._pendingMusicCommand = '';
                 // ========== 重置本轮气泡追踪 ==========
                 window.currentTurnGeminiBubbles = [];
+                window.currentTurnGeminiAttachments = [];
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
