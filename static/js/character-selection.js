@@ -353,6 +353,12 @@ class CharacterSelection {
         const confirmBtn = document.getElementById('confirm-greeting-btn');
         const avatar = document.getElementById('greeting-avatar');
 
+        // 重置确认按钮状态，防止从上一次运行泄漏可见性
+        if (confirmBtn) {
+            confirmBtn.style.display = 'none';
+            confirmBtn.disabled = true;
+        }
+
         // 显示角色头像
         if (avatar) {
             avatar.textContent = data.avatar;
