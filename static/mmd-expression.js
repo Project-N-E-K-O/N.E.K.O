@@ -299,6 +299,13 @@ class MMDExpression {
         // 口型同步（如果动画模块有音频分析）
         if (this.manager.animationModule && this.manager.animationModule._lipSyncEnabled) {
             const lipValue = this.manager.animationModule.getLipSyncValue();
+            if (window.DEBUG_AUDIO) {
+                console.log('[MMD Expression] 口型同步检测:', { 
+                    lipValue, 
+                    threshold: 0.05,
+                    willUpdate: lipValue > 0.05 
+                });
+            }
             if (lipValue > 0.05) {
                 this.setMouth(lipValue);
             } else {

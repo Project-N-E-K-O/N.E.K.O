@@ -188,17 +188,26 @@
                                 hasLanLan1: !!window.LanLan1,
                                 hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
                                 hasVrmManager: !!window.vrmManager,
-                                hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
+                                hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel),
+                                hasMmdManager: !!window.mmdManager,
+                                hasMmdCurrentModel: !!(window.mmdManager && window.mmdManager.currentModel),
+                                hasMmdAnimationModule: !!(window.mmdManager && window.mmdManager.animationModule),
+                                hasAnalyser: hasAnalyser
                             });
                         }
                         if (window.LanLan1 && window.LanLan1.live2dModel) {
                             startLipSync(window.LanLan1.live2dModel, S.globalAnalyser);
                             S.lipSyncActive = true;
                         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
-                            // VRM model lip sync
                             if (typeof window.vrmManager.animation.startLipSync === 'function') {
                                 window.vrmManager.animation.startLipSync(S.globalAnalyser);
                                 S.lipSyncActive = true;
+                            }
+                        } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+                            if (typeof window.mmdManager.animationModule.startLipSync === 'function') {
+                                window.mmdManager.animationModule.startLipSync(S.globalAnalyser);
+                                S.lipSyncActive = true;
+                                console.log('[Audio] MMD 口型同步已启动');
                             }
                         } else {
                             if (window.DEBUG_AUDIO) {
@@ -224,6 +233,11 @@
                                 } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                                     if (typeof window.vrmManager.animation.stopLipSync === 'function') {
                                         window.vrmManager.animation.stopLipSync();
+                                    }
+                                } else if (window.mmdManager && window.mmdManager.currentModel && window.mmdManager.animationModule) {
+                                    if (typeof window.mmdManager.animationModule.stopLipSync === 'function') {
+                                        window.mmdManager.animationModule.stopLipSync();
+                                        console.log('[Audio] MMD 口型同步已停止');
                                     }
                                 }
                                 S.lipSyncActive = false;
