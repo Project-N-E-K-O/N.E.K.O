@@ -283,7 +283,7 @@
             const completed = localStorage.getItem('neko_character_selection_completed');
             const overlay = document.getElementById('character-selection-overlay');
 
-            if (!completed) {
+            if (completed !== 'true') {
                 // 动态加载角色甄选样式，加载完成后再显示 overlay（防止 FOUC）
                 const link = document.createElement('link');
                 link.rel = 'stylesheet';

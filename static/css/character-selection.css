@@ -688,4 +688,14 @@
     .greeting-text.typing::after {
         animation: none;
     }
+
+    /* 禁用角色卡片图标颜色脉冲动画 */
+    .character-card .card-icon {
+        animation: none;
+    }
+
+    /* 禁用点击星星散射动画 */
+    .click-star {
+        animation: none;
+    }
 }

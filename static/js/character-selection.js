@@ -466,19 +466,26 @@ class CharacterSelection {
         }
     }
     async finalizeSelection() {
-        console.log('[CharacterSelection] 用户确认选择:', this.selectedCharacter);
-        if (this.selectedCharacter) {
-            const success = await this.updateDefaultCatgirl();
-            if (success) {
-                // 仅在更新成功时写入完成标记
-                localStorage.setItem('neko_character_selection_completed', 'true');
-                console.log('[CharacterSelection] 角色甄选已完成并保存');
-            } else {
-                // 更新失败，允许重试，不关闭 overlay
-                return;
+        // 防重入锁，防止并发调用 updateDefaultCatgirl
+        if (this._finalizing) return;
+        this._finalizing = true;
+        try {
+            console.log('[CharacterSelection] 用户确认选择:', this.selectedCharacter);
+            if (this.selectedCharacter) {
+                const success = await this.updateDefaultCatgirl();
+                if (success) {
+                    // 仅在更新成功时写入完成标记
+                    localStorage.setItem('neko_character_selection_completed', 'true');
+                    console.log('[CharacterSelection] 角色甄选已完成并保存');
+                } else {
+                    // 更新失败，允许重试，不关闭 overlay
+                    return;
+                }
             }
+            this.close();
+        } finally {
+            this._finalizing = false;
         }
-        this.close();
     }
     skip() {
         console.log('[CharacterSelection] 用户跳过角色甄选');

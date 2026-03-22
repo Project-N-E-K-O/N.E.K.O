@@ -379,7 +379,7 @@ document.querySelectorAll('.character-stage').forEach(s => s.style.display = 'fl
 
 ### 相关文档
 
-- [新手引导系统文档](frontend/tutorial.md)
+- [新手引导系统文档](frontend/pages.md)
 - [角色管理 API 文档](api/rest/characters.md)
 
 ---
