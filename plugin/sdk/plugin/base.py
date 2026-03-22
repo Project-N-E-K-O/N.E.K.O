@@ -127,21 +127,25 @@ class NekoPluginBase(_SharedNekoPluginBase):
         })
 
     def _notify_dynamic_entry_registered(self, entry_id: str, meta: EventMeta, *, enabled: bool = True) -> None:
+        meta_dict: dict[str, object] = {
+            "id": getattr(meta, "id", entry_id),
+            "name": getattr(meta, "name", entry_id),
+            "description": getattr(meta, "description", ""),
+            "input_schema": dict(getattr(meta, "input_schema", None) or {}),
+            "kind": getattr(meta, "kind", "action"),
+            "auto_start": bool(getattr(meta, "auto_start", False)),
+            "enabled": enabled,
+            "metadata": dict(getattr(meta, "metadata", None) or {}),
+        }
+        llm_fields = getattr(meta, "llm_result_fields", None)
+        if llm_fields:
+            meta_dict["llm_result_fields"] = list(llm_fields)
         self._notify_host_comm({
             "type": "ENTRY_UPDATE",
             "action": "register",
             "plugin_id": self.plugin_id,
             "entry_id": entry_id,
-            "meta": {
-                "id": getattr(meta, "id", entry_id),
-                "name": getattr(meta, "name", entry_id),
-                "description": getattr(meta, "description", ""),
-                "input_schema": dict(getattr(meta, "input_schema", None) or {}),
-                "kind": getattr(meta, "kind", "action"),
-                "auto_start": bool(getattr(meta, "auto_start", False)),
-                "enabled": enabled,
-                "metadata": dict(getattr(meta, "metadata", None) or {}),
-            },
+            "meta": meta_dict,
         })
 
     def _notify_dynamic_entry_unregistered(self, entry_id: str) -> None:
@@ -180,6 +184,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         kind: str = "action",
         auto_start: bool = False,
         timeout: float | None = None,
+        llm_result_fields: list[str] | None = None,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
@@ -202,6 +207,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             kind=kind,
             auto_start=auto_start,
             timeout=timeout,
+            llm_result_fields=llm_result_fields,
             metadata={"dynamic": True, "enabled": True},
         )
         if timeout is not None:

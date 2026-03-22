@@ -130,6 +130,36 @@ Push export data to the host.
 
 Signal task completion to the host.
 
+### Reply Control
+
+The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak.
+
+```python
+# Normal: character will announce the result
+return await self.finish(data={"summary": "Done"}, reply=True)
+
+# Silent: result is recorded but character stays quiet
+return await self.finish(data={"summary": "Done"}, reply=False)
+```
+
+### LLM Result Field Filtering
+
+Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result the main LLM can see. Fields not listed are excluded from the LLM prompt but still stored in the task registry.
+
+```python
+# Static entry
+@plugin_entry(llm_result_fields=["summary"])
+async def search(self, query: str):
+    return await self.finish(data={"summary": "3 results", "raw_results": [...]})
+
+# Dynamic entry
+self.register_dynamic_entry(
+    entry_id="my-tool",
+    handler=handler,
+    llm_result_fields=["summary"],
+)
+```
+
 ---
 
 ## Result Types: Ok / Err

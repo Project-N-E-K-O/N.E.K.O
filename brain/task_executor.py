@@ -64,7 +64,6 @@ class UserPluginDecision:
     plugin_args: Optional[Dict] = None
     reason: str = ""
 
-
 class DirectTaskExecutor:
     """
     直接任务执行器：并行评估 BrowserUse / ComputerUse / UserPlugin 可行性并执行
@@ -981,7 +980,6 @@ Return only the JSON object, nothing else.
                         entry_id=plugin_entry_id,
                         reason=reason or "invalid_entry_id",
                     )
-
         # New run protocol: default path (POST /runs, return accepted immediately)
         try:
             runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
@@ -1088,7 +1086,11 @@ Return only the JSON object, nothing else.
                 "run_status": completion.get("status"),
                 "run_success": run_success,
                 "run_data": completion.get("data"),
-                "run_error": completion.get("error"),
+                "run_error": completion.get("run_error", completion.get("error")),
+                "meta": completion.get("meta"),
+                "message": completion.get("message"),
+                "progress": completion.get("progress"),
+                "stage": completion.get("stage"),
             }
             return TaskResult(
                 task_id=task_id,
@@ -1232,6 +1234,7 @@ Return only the JSON object, nothing else.
                             raw = item.get("json") or item.get("json_data")
                             if isinstance(raw, dict):
                                 plugin_result["data"] = raw.get("data")
+                                plugin_result["meta"] = raw.get("meta")
                                 if raw.get("error"):
                                     err = raw["error"]
                                     if isinstance(err, dict):

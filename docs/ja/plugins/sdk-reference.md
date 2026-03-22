@@ -130,6 +130,36 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 タスク完了をホストに通知します。
 
+### 返信制御
+
+`finish()` メソッドは `reply` パラメータ（デフォルト `True`）を受け付け、プラグインの結果がメインキャラクターの発話をトリガーするかどうかを制御します。
+
+```python
+# 通常：キャラクターが結果を報告する
+return await self.finish(data={"summary": "完了"}, reply=True)
+
+# サイレント：結果は記録されるがキャラクターは話さない
+return await self.finish(data={"summary": "完了"}, reply=False)
+```
+
+### LLM 結果フィールドフィルタリング
+
+`@plugin_entry`（静的エントリ）または `register_dynamic_entry()`（動的エントリ）の `llm_result_fields` パラメータを使用して、メイン LLM が参照できる結果フィールドを制御します。リストにないフィールドは LLM プロンプトから除外されますが、タスクレジストリには保存されます。
+
+```python
+# 静的エントリ
+@plugin_entry(llm_result_fields=["summary"])
+async def search(self, query: str):
+    return await self.finish(data={"summary": "3件の結果", "raw_results": [...]})
+
+# 動的エントリ
+self.register_dynamic_entry(
+    entry_id="my-tool",
+    handler=handler,
+    llm_result_fields=["summary"],
+)
+```
+
 ---
 
 ## Result 型: Ok / Err

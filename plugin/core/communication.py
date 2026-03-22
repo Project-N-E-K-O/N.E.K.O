@@ -515,6 +515,14 @@ class PluginCommunicationResourceManager:
                 if not meta_dict:
                     self.logger.warning("ENTRY_UPDATE register missing meta: {}", msg)
                     return
+                ipc_metadata = {
+                    **(meta_dict.get("metadata") if isinstance(meta_dict.get("metadata"), dict) else {}),
+                    "_dynamic": True,
+                    "_registered_via_ipc": True,
+                }
+                llm_fields = meta_dict.get("llm_result_fields")
+                if isinstance(llm_fields, list):
+                    ipc_metadata["llm_result_fields"] = llm_fields
                 event_meta = EventMeta(
                     event_type="plugin_entry",
                     id=entry_id,
@@ -525,11 +533,7 @@ class PluginCommunicationResourceManager:
                     auto_start=meta_dict.get("auto_start", False),
                     enabled=meta_dict.get("enabled", True),
                     dynamic=True,
-                    metadata={
-                        **(meta_dict.get("metadata") if isinstance(meta_dict.get("metadata"), dict) else {}),
-                        "_dynamic": True,
-                        "_registered_via_ipc": True,
-                    },
+                    metadata=ipc_metadata,
                 )
                 handler = EventHandler(meta=event_meta, handler=lambda *args, **kwargs: None)
                 state.register_event_handler(plugin_id, handler)

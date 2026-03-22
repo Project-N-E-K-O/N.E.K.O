@@ -645,6 +645,18 @@ def _lookup_llm_result_fields(plugin_id: str, entry_id: Optional[str]) -> Option
     return None
 
 
+def _is_reply_suppressed(result: Optional[Dict]) -> bool:
+    """检查插件是否通过 meta.agent.reply=False 显式抑制回复。"""
+    if not isinstance(result, dict):
+        return False
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    agent = meta.get("agent")
+    if not isinstance(agent, dict):
+        return False
+    return agent.get("reply") is False
+
 def _check_agent_api_gate() -> Dict[str, Any]:
     """统一 Agent API 门槛检查。"""
     try:
@@ -1207,6 +1219,8 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             plugin_message=_plugin_msg,
                             error=_error_to_pass,
                         )
+                        # 检查插件是否通过 meta.agent.reply=False 抑制回复
+                        _suppress_reply = _is_reply_suppressed(up_result.result if isinstance(up_result.result, dict) else None)
                         # 检查插件是否返回 deferred 标志（如备忘提醒：调度成功但提醒尚未触发）
                         is_deferred = isinstance(run_data, dict) and run_data.get("deferred") is True
                         # Update task_registry（deferred 任务保持 running，不写 terminal 状态）
@@ -1231,34 +1245,36 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                             # 不进入后续 completed/failed 流程
                         elif up_result.success:
                             logger.info(f"[TaskExecutor] ✅ UserPlugin completed: {plugin_id}")
-                            _lang = _rp_lang(None)
-                            summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
-                            try:
-                                await _emit_task_result(
-                                    lanlan_name,
-                                    channel="user_plugin",
-                                    task_id=str(up_result.task_id or ""),
-                                    success=True,
-                                    summary=summary[:500],
-                                    detail=detail,
-                                )
-                            except Exception as emit_err:
-                                logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                            if not _suppress_reply:
+                                _lang = _rp_lang(None)
+                                summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                                try:
+                                    await _emit_task_result(
+                                        lanlan_name,
+                                        channel="user_plugin",
+                                        task_id=str(up_result.task_id or ""),
+                                        success=True,
+                                        summary=summary[:500],
+                                        detail=detail,
+                                    )
+                                except Exception as emit_err:
+                                    logger.debug("[TaskExecutor] emit task_result(success) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         else:
                             logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {up_result.error}")
-                            _lang = _rp_lang(None)
-                            try:
-                                _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
-                                await _emit_task_result(
-                                    lanlan_name,
-                                    channel="user_plugin",
-                                    task_id=str(up_result.task_id or ""),
-                                    success=False,
-                                    summary=_fail_summary[:500],
-                                    error_message=(detail or str(up_result.error or ""))[:500],
-                                )
-                            except Exception as emit_err:
-                                logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
+                            if not _suppress_reply:
+                                _lang = _rp_lang(None)
+                                try:
+                                    _fail_summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                                    await _emit_task_result(
+                                        lanlan_name,
+                                        channel="user_plugin",
+                                        task_id=str(up_result.task_id or ""),
+                                        success=False,
+                                        summary=_fail_summary[:500],
+                                        error_message=(detail or str(up_result.error or ""))[:500],
+                                    )
+                                except Exception as emit_err:
+                                    logger.debug("[TaskExecutor] emit task_result(failed) failed: task_id=%s plugin_id=%s error=%s", up_result.task_id, plugin_id, emit_err)
                         # Emit task_update (terminal) — deferred 任务跳过，保持 running
                         if not (up_result.success and is_deferred):
                             try:
@@ -1826,22 +1842,26 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
                 )
-                if not res.success:
+                _suppress_reply = _is_reply_suppressed(res.result if isinstance(res.result, dict) else None)
+                if not _suppress_reply:
+                    if not res.success:
+                        info["error"] = (detail or str(res.error or ""))[:500]
+                    _lang = _rp_lang(None)
+                    if res.success:
+                        summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
+                    else:
+                        summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
+                    await _emit_task_result(
+                        lanlan_name,
+                        channel="user_plugin",
+                        task_id=task_id,
+                        success=res.success,
+                        summary=summary[:500],
+                        detail=detail if res.success else "",
+                        error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
+                    )
+                elif not res.success:
                     info["error"] = (detail or str(res.error or ""))[:500]
-                _lang = _rp_lang(None)
-                if res.success:
-                    summary = _rp_phrase('plugin_done_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_done', _lang, id=plugin_id)
-                else:
-                    summary = _rp_phrase('plugin_failed_with', _lang, id=plugin_id, detail=detail) if detail else _rp_phrase('plugin_failed', _lang, id=plugin_id)
-                await _emit_task_result(
-                    lanlan_name,
-                    channel="user_plugin",
-                    task_id=task_id,
-                    success=res.success,
-                    summary=summary[:500],
-                    detail=detail if res.success else "",
-                    error_message=(detail or str(res.error or ""))[:500] if not res.success else "",
-                )
             except Exception as emit_err:
                 logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
         except asyncio.CancelledError:

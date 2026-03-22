@@ -34,6 +34,8 @@ def _normalize_meta(
             if isinstance(key_obj, str):
                 agent_meta[key_obj] = value
     agent_meta["reply"] = bool(reply)
+    if reply and "include" not in agent_meta:
+        agent_meta["include"] = True
     normalized["agent"] = agent_meta
     return normalized
 
