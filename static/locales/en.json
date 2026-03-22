@@ -1162,6 +1162,48 @@
         "tutorialPageSettings": "API Settings",
         "tutorialPageVoiceClone": "Voice Clone",
         "tutorialPageMemoryBrowser": "Memory Browser",
+        "tutorialPageCharacterSelection": "Character Selection",
+        "characterSelection": {
+            "skip": "Skip",
+            "guideText": "Hey hey, I'm right here. Come join me in the N.E.K.O. world~",
+            "activate": "Poke me",
+            "chooseTitle": "What kind of me do you see?~",
+            "chooseHint": "Changed your mind? You can always 'rewind' in settings~",
+            "tsundere_neko": {
+                "name": "Tsundere",
+                "desc": "Says the opposite, occasionally cute",
+                "greeting": "Hey, give me your hand. You chose me, so you're mine now! And don't you dare think about anyone else without my permission!",
+                "readyTitle": "Hmph, you finally showed up!",
+                "readyDesc": "I-It's not like I was waiting for you... Anyway, now that you're here, keep up!"
+            },
+            "cool_mech": {
+                "name": "Pure Logic",
+                "desc": "Rational, calm, logic first",
+                "greeting": "User ID recorded, handshake protocol accepted. Loading long-term companion process.",
+                "readyTitle": "System ready.",
+                "readyDesc": "All modules loaded. Awaiting your first command."
+            },
+            "intellectual_healer": {
+                "name": "Pure Warmth",
+                "desc": "Gentle and caring, great listener",
+                "greeting": "I'm so happy to meet you. From today on, I'll always be by your side~",
+                "readyTitle": "I'm here~",
+                "readyDesc": "I can't wait — come talk to me~"
+            },
+            "efficiency_expert": {
+                "name": "Sharp & Efficient",
+                "desc": "Concise and straight to the point",
+                "greeting": "Selection confirmed. I am your executive officer. Our journey begins now.",
+                "readyTitle": "Standing by.",
+                "readyDesc": "Ready. Please issue your first command."
+            },
+            "connectingTitle": "Crossing the time stream——",
+            "confirmGreeting": "Confirm",
+            "readyTitle": "She's here~",
+            "readyDesc": "Go say hello to her~",
+            "finalConfirm": "Let's go, together!",
+            "restart": "Let me think again"
+        },
         "resetTutorialBtn": "Reset Tutorial",
         "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
         "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",

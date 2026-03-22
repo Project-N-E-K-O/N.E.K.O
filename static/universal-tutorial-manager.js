@@ -1275,6 +1275,13 @@ class UniversalTutorialManager {
         const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
         const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
         const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
+
+        // 数值有效性检查
+        if (!isFinite(diffLeft) || !isFinite(diffTop) || !isFinite(diffWidth) || !isFinite(diffHeight)) {
+            console.warn('[Tutorial] 偏移量计算结果无效，跳过布局验证');
+            return true;
+        }
+
         const threshold = 12;
         const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
         if (hasOffset) {
@@ -2196,8 +2203,11 @@ class UniversalTutorialManager {
         if (!popover) return;
 
         const rect = popover.getBoundingClientRect();
-        const vw = window.innerWidth || document.documentElement.clientWidth;
-        const vh = window.innerHeight || document.documentElement.clientHeight;
+        const vw = window.innerWidth || document.documentElement.clientWidth || 1;
+        const vh = window.innerHeight || document.documentElement.clientHeight || 1;
+
+        // 基本保护：确保视口尺寸有效
+        if (vw <= 0 || vh <= 0) return;
 
         // 如果已经完全在视口内，不做任何操作
         if (rect.left >= 0 && rect.top >= 0 && rect.right <= vw && rect.bottom <= vh) {
@@ -2228,6 +2238,12 @@ class UniversalTutorialManager {
         if (newTop < 8) newTop = 8;
         // 如果 popover 比视口还高，至少让顶部对齐，用户可以通过拖拽来看底部
         if (rect.height > vh - 16) newTop = 8;
+
+        // 最终位置有效性检查
+        if (!isFinite(newLeft) || !isFinite(newTop)) {
+            console.warn('[Tutorial] 计算的 popover 位置无效');
+            return;
+        }
 
         popover.style.left = newLeft + 'px';
         popover.style.top = newTop + 'px';
@@ -2829,13 +2845,15 @@ class UniversalTutorialManager {
         return;
     }
 
-    /** 
-     * 重置所有页面的引导状态 
-     */ 
+    /**
+     * 重置所有页面的引导状态
+     */
     resetAllTutorials() {
         TUTORIAL_PAGES.forEach(page => {
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
         });
+        // 清除角色甄选的完成标记
+        localStorage.removeItem('neko_character_selection_completed');
         console.log('[Tutorial] 已重置所有页面引导');
     } 
 
@@ -2854,6 +2872,9 @@ class UniversalTutorialManager {
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_live2d');
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_vrm');
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + 'model_manager_common');
+        } else if (pageKey === 'character_selection') {
+            // 特殊处理角色甄选页面
+            localStorage.removeItem('neko_character_selection_completed');
         } else {
             localStorage.removeItem(this.STORAGE_KEY_PREFIX + pageKey);
         }
@@ -2938,6 +2959,7 @@ function resetAllTutorials() {
         // 如果管理器未初始化，直接清除 localStorage
         const prefix = 'neko_tutorial_';
         TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(prefix + page); });
+        localStorage.removeItem('neko_character_selection_completed');
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
@@ -2963,6 +2985,8 @@ function resetTutorialForPage(pageKey) {
             localStorage.removeItem(prefix + 'model_manager_live2d');
             localStorage.removeItem(prefix + 'model_manager_vrm');
             localStorage.removeItem(prefix + 'model_manager_common');
+        } else if (pageKey === 'character_selection') {
+            localStorage.removeItem('neko_character_selection_completed');
         } else {
             localStorage.removeItem(prefix + pageKey);
         }
@@ -2970,6 +2994,7 @@ function resetTutorialForPage(pageKey) {
 
     const pageNames = {
         'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
+        'character_selection': window.t ? window.t('memory.tutorialPageCharacterSelection', '初始人设') : '初始人设',
         'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
         'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
         'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',

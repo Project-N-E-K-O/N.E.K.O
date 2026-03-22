@@ -2632,8 +2632,11 @@ window.renameCatgirl = async function (oldName) {
             localStorage.setItem(newStorageKey, savedState);
             localStorage.removeItem(oldStorageKey);
         }
+        // 同步人设选择记录的目标角色名
+        if (localStorage.getItem('neko_default_catgirl_name') === oldName) {
+            localStorage.setItem('neko_default_catgirl_name', newName);
+        }
 
-        // 更新记忆文件中的角色名称
         try {
             await fetch('/api/memory/update_catgirl_name', {
                 method: 'POST',
