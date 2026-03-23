@@ -381,22 +381,8 @@ class OmniOfflineClient:
                             guard_exhausted = True
                             break
                         
-                        if chunk_usage:
-                            from utils.token_tracker import TokenTracker
-                            usage_data = chunk_usage if isinstance(chunk_usage, dict) else {}
-                            prompt_tokens = usage_data.get('prompt_tokens', 0) or usage_data.get('input_tokens', 0) or 0
-                            completion_tokens = usage_data.get('completion_tokens', 0) or usage_data.get('output_tokens', 0) or 0
-                            total_tokens = usage_data.get('total_tokens', 0) or 0
-                            cached_tokens = usage_data.get('cached_tokens') or (usage_data.get('prompt_tokens_details') or {}).get('cached_tokens') or 0
-                            if total_tokens > 0:
-                                TokenTracker.get_instance().record(
-                                    model=self.model,
-                                    prompt_tokens=prompt_tokens,
-                                    completion_tokens=completion_tokens,
-                                    total_tokens=total_tokens,
-                                    cached_tokens=cached_tokens,
-                                    call_type='offline'
-                                )
+                        # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
+                        # 此处不再手动调用 TokenTracker.record() 避免双重计数。
 
                         if assistant_message:
                             self._conversation_history.append(AIMessage(content=assistant_message))
@@ -534,22 +520,8 @@ class OmniOfflineClient:
             return False
         finally:
             self._is_responding = False
-            if chunk_usage:
-                from utils.token_tracker import TokenTracker
-                usage_data = chunk_usage if isinstance(chunk_usage, dict) else {}
-                prompt_tokens = usage_data.get('prompt_tokens', 0) or usage_data.get('input_tokens', 0) or 0
-                completion_tokens = usage_data.get('completion_tokens', 0) or usage_data.get('output_tokens', 0) or 0
-                total_tokens = usage_data.get('total_tokens', 0) or 0
-                cached_tokens = usage_data.get('cached_tokens') or usage_data.get('prompt_tokens_details', {}).get('cached_tokens') or 0
-                if total_tokens > 0:
-                    TokenTracker.get_instance().record(
-                        model=self.model,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        cached_tokens=cached_tokens,
-                        call_type='proactive'
-                    )
+            # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
+            # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             if assistant_message:
                 self._conversation_history.append(AIMessage(content=assistant_message))
             # Use lightweight proactive-done callback (TTS flush + turn_end only),
