@@ -640,12 +640,17 @@
             {dur:'4.9s',delay:'2.1s'}, {dur:'5.4s',delay:'0.9s'},
             {dur:'4.6s',delay:'3.2s'},
         ];
-        function buildPreviewRing() {
+        function buildPreviewRing(customText) {
             var container = document.getElementById('preview-ring-container');
             if (!container) return;
-            var key = 'steam.selectCharaToPreview';
-            var raw = (typeof window.t === 'function') ? window.t(key) : null;
-            var text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+            var text;
+            if (customText && typeof customText === 'string') {
+                text = customText;
+            } else {
+                var key = 'steam.selectCharaToPreview';
+                var raw = (typeof window.t === 'function') ? window.t(key) : null;
+                text = (raw && raw !== key) ? raw : '请选择角色进行预览';
+            }
             var base = Array.from(text);
             var chars = base.concat(base).concat(base);
 
