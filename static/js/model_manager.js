@@ -4484,8 +4484,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         _mmdSettingsLoadPromise = (async () => {
             try {
-                const lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
-                if (!lanlanName) return;
+                // 优先使用 getLanlanName() 获取角色名，fallback 到 DOM
+                let lanlanName = await getLanlanName();
+                if (!lanlanName) {
+                    lanlanName = document.getElementById('lanlan-name')?.textContent?.trim();
+                }
+                // 角色名仍然缺失时，应用本地缓存的设置而非静默返回
+                if (!lanlanName) {
+                    console.warn('[MMD Settings] 角色名缺失，应用本地缓存设置');
+                    loadMmdSettingsToUI();
+                    setTimeout(() => applyMmdSettings(), 100);
+                    return;
+                }
                 const result = await RequestHelper.fetchJson(
                     `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/mmd_settings`
                 );
@@ -4499,6 +4509,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } catch (e) {
                 console.warn('[MMD Settings] 从服务器加载MMD设置失败，使用本地缓存:', e);
+                // 服务器加载失败时也尝试应用本地缓存
+                loadMmdSettingsToUI();
+                setTimeout(() => applyMmdSettings(), 100);
             } finally {
                 _mmdSettingsLoadPromise = null;
             }
