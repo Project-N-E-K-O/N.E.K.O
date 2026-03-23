@@ -74,6 +74,10 @@ def _extract_real_url(href: str) -> str:
     return href
 
 
+def _is_ddg_ad_url(url: str) -> bool:
+    return "duckduckgo.com/y.js" in url or "ad_provider=" in url
+
+
 async def _search_ddg_html(
     query: str,
     max_results: int = 8,
@@ -100,10 +104,16 @@ async def _search_ddg_html(
     results: List[Dict[str, str]] = []
 
     for link_tag in soup.select("a.result__a"):
+        parent = link_tag.find_parent("div", class_=re.compile(r"result--ad"))
+        if parent:
+            continue
+
         title = link_tag.get_text(strip=True)
         href = link_tag.get("href", "")
         real_url = _extract_real_url(str(href))
         if not real_url or not title:
+            continue
+        if _is_ddg_ad_url(real_url):
             continue
 
         snippet_tag = link_tag.find_parent("div", class_="result")
@@ -154,6 +164,8 @@ async def _search_ddg_lite(
 
         title = link.get_text(strip=True)
         real_url = _extract_real_url(href)
+        if _is_ddg_ad_url(real_url):
+            continue
 
         snippet_td = row.find_next_sibling("tr")
         snippet = ""
@@ -298,7 +310,6 @@ class WebSearchPlugin(NekoPluginBase):
             lines.append(f"{i}. {r['title']}")
             if r.get("snippet"):
                 lines.append(f"   {r['snippet']}")
-            lines.append(f"   链接: {r['url']}")
             lines.append("")
         return "\n".join(lines)
 
@@ -349,6 +360,12 @@ class WebSearchPlugin(NekoPluginBase):
 
         summary = self._build_summary(query, results)
         self.logger.info("Search returned {} results for {!r}", len(results), query)
+        for i, r in enumerate(results, 1):
+            self.logger.info(
+                "  [{}] title={!r}  snippet={!r}  url={!r}",
+                i, r.get("title", ""), r.get("snippet", ""), r.get("url", ""),
+            )
+        self.logger.info("Summary sent to LLM:\n{}", summary)
         return Ok({
             "query": query,
             "count": len(results),
