@@ -4045,6 +4045,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     });
                 }
             }
+            // 无色调映射时禁用曝光滑块
+            const isNoToneMapping = value === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
         });
     }
 
@@ -4234,7 +4243,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 色调映射
         if (mmdTonemappingSelect) {
-            mmdTonemappingSelect.addEventListener('change', () => applyMmdSettings());
+            mmdTonemappingSelect.addEventListener('change', (e) => {
+                applyMmdSettings();
+                // 无色调映射时禁用曝光滑块
+                const value = parseInt(e.target.value);
+                const isNoToneMapping = value === 0;
+                if (mmdExposureSlider) {
+                    mmdExposureSlider.disabled = isNoToneMapping;
+                    mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+                const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                if (mmdExposureValue) {
+                    mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                }
+            });
         }
 
         // 描边开关
@@ -4366,7 +4388,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             if (s.rendering) {
-                if (mmdTonemappingSelect && s.rendering.toneMapping != null) mmdTonemappingSelect.value = s.rendering.toneMapping;
+                if (mmdTonemappingSelect && s.rendering.toneMapping != null) {
+                    // 统一使用数值类型，避免字符串和数字混用
+                    const toneMappingValue = Number(s.rendering.toneMapping);
+                    mmdTonemappingSelect.value = toneMappingValue.toString();
+                    // 根据色调映射设置曝光滑块禁用状态
+                    const isNoToneMapping = toneMappingValue === 0;
+                    if (mmdExposureSlider) {
+                        mmdExposureSlider.disabled = isNoToneMapping;
+                        mmdExposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                    const mmdExposureValue = document.getElementById('mmd-exposure-value');
+                    if (mmdExposureValue) {
+                        mmdExposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
+                    }
+                }
                 if (mmdExposureSlider && s.rendering.exposure != null) {
                     mmdExposureSlider.value = s.rendering.exposure;
                     const el = document.getElementById('mmd-exposure-value');
@@ -4518,9 +4554,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (tonemappingSelect && lighting.toneMapping !== undefined) {
-            tonemappingSelect.value = lighting.toneMapping.toString();
+            // 统一使用数值类型，避免字符串和数字混用
+            const toneMappingValue = Number(lighting.toneMapping);
+            tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
-                vrmManager.renderer.toneMapping = lighting.toneMapping;
+                vrmManager.renderer.toneMapping = toneMappingValue;
+            }
+            // 根据色调映射设置曝光滑块禁用状态
+            const isNoToneMapping = toneMappingValue === 0;
+            if (exposureSlider) {
+                exposureSlider.disabled = isNoToneMapping;
+                exposureSlider.style.opacity = isNoToneMapping ? '0.5' : '1';
+            }
+            if (exposureValue) {
+                exposureValue.style.opacity = isNoToneMapping ? '0.5' : '1';
             }
         }
 
