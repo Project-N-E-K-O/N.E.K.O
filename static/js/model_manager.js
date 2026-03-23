@@ -4389,9 +4389,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (s.rendering) {
                 if (mmdTonemappingSelect && s.rendering.toneMapping != null) {
-                    mmdTonemappingSelect.value = s.rendering.toneMapping;
-                    // 根据色调映射设置曝光滑块禁用状态
+                    // 统一使用数值类型，避免字符串和数字混用
                     const toneMappingValue = Number(s.rendering.toneMapping);
+                    mmdTonemappingSelect.value = toneMappingValue.toString();
+                    // 根据色调映射设置曝光滑块禁用状态
                     const isNoToneMapping = toneMappingValue === 0;
                     if (mmdExposureSlider) {
                         mmdExposureSlider.disabled = isNoToneMapping;
@@ -4553,12 +4554,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
         if (tonemappingSelect && lighting.toneMapping !== undefined) {
-            tonemappingSelect.value = lighting.toneMapping.toString();
+            // 统一使用数值类型，避免字符串和数字混用
+            const toneMappingValue = Number(lighting.toneMapping);
+            tonemappingSelect.value = toneMappingValue.toString();
             if (vrmManager.renderer) {
-                vrmManager.renderer.toneMapping = lighting.toneMapping;
+                vrmManager.renderer.toneMapping = toneMappingValue;
             }
             // 根据色调映射设置曝光滑块禁用状态
-            const toneMappingValue = Number(lighting.toneMapping);
             const isNoToneMapping = toneMappingValue === 0;
             if (exposureSlider) {
                 exposureSlider.disabled = isNoToneMapping;
