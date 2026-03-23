@@ -1501,6 +1501,8 @@
             "proactivePersonalChatTooltip": "連携しているプラットフォームの更新情報をもとに話しかける",
             "proactiveMusicChat": "音楽提案",
             "proactiveMusicChatTooltip": "おすすめの音楽を提案しながら話しかける",
+            "proactiveMemeChat": "ミーム共有",
+            "proactiveMemeChatTooltip": "面白いミームで話しかける",
             "agentMaster": "ネコクローマスタースイッチ",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
@@ -2546,6 +2548,12 @@
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice が 3.5 にアップグレードされました。旧音声は無効になりました。再度クローンしてください。"
+        }
+    },
+    "proactive": {
+        "meme": {
+            "title": "ミーム",
+            "loadError": "ミームの読み込みに失敗しました"
         }
     }
 }

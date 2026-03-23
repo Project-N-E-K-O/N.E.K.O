@@ -1501,6 +1501,8 @@
             "proactivePersonalChatTooltip": "Использовать личные обновления из подключённых платформ для проактивного чата",
             "proactiveMusicChat": "Музыкальные рекомендации",
             "proactiveMusicChatTooltip": "Использовать рекомендуемую музыку для проактивного чата",
+            "proactiveMemeChat": "Мемы",
+            "proactiveMemeChatTooltip": "Использовать забавные мемы для проактивного чата",
             "agentMaster": "Главный переключатель Лапки Неко",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
@@ -2546,6 +2548,12 @@
     "notice": {
         "voiceMigration": {
             "legacyRemoved": "CosyVoice обновлён до версии 3.5. Ваши старые голоса устарели — пожалуйста, клонируйте их повторно."
+        }
+    },
+    "proactive": {
+        "meme": {
+            "title": "Мем",
+            "loadError": "Не удалось загрузить мем"
         }
     }
 }
