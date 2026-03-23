@@ -311,10 +311,10 @@ class OmniOfflineClient:
                         async for chunk in self.llm.astream(self._conversation_history):
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
-                                logger.info(f"🔍 [Usage] {chunk_usage}")
+                                logger.debug(f"🔍 [Usage] {chunk_usage}")
                             if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                                 if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
-                                    logger.info(f"🔍 [Meta] {chunk.response_metadata}")
+                                    logger.debug(f"🔍 [Meta] {chunk.response_metadata}")
                             if not self._is_responding:
                                 break
                             

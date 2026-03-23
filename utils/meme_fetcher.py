@@ -67,6 +67,40 @@ def get_random_user_agent() -> str:
     """随机获取一个User-Agent"""
     return random.choice(USER_AGENTS)
 
+
+def _clean_imgflip_title(raw: str) -> str:
+    """
+    清洗 Imgflip 搜索结果的标题/alt 文本。
+    原始文本可能是 get_text(separator=' ') 产出的拼接文本，例如
+      '(Daffy Duck Meme) user-captioned meme, 114 views WHAT'S WRONG WITH YOU?'
+    或 img.alt 里的
+      'WHAT'S WRONG WITH YOU? | image tagged in daffy duck | made w/ Imgflip meme maker'
+
+    清洗策略：剥离元数据，只保留对用户有意义的部分。
+    """
+    s = raw.strip()
+    # 去掉 "| image tagged in ..." 及其后所有内容
+    s = re.split(r'\s*\|\s*image tagged\b', s, maxsplit=1, flags=re.I)[0]
+    # 去掉 "| made w/ Imgflip ..."
+    s = re.split(r'\s*\|\s*made w/', s, maxsplit=1, flags=re.I)[0]
+    # 去掉 "user-captioned meme" / "user-generated gif" 及可能跟的 ", N views"
+    s = re.sub(
+        r',?\s*\(?\buser-(?:captioned meme|generated gif)\)?,?\s*(?:\d[\d,]*\s*views?\b)?',
+        '', s, flags=re.I,
+    )
+    # 去掉独立的 "N views"
+    s = re.sub(r',?\s*\b\d[\d,]*\s+views?\b', '', s, flags=re.I)
+    # 去掉形如 "(Template Name Meme)" 的模板名括号段（仅当剩余还有实质内容时才移除）
+    candidate = re.sub(r'\([^)]{1,60}\b[Mm]eme\)\s*', '', s).strip()
+    if candidate:
+        s = candidate
+    # 如果整个结果被括号包裹 "(Some Name)"，脱壳
+    s = re.sub(r'^\(([^)]+)\)$', r'\1', s.strip())
+    # 合并多余空白、去除首尾管道/逗号
+    s = re.sub(r'\s+', ' ', s).strip().strip('|,').strip()
+    return s
+
+
 class MemeFetcher:
     """
     Imgflip 表情包爬取类
@@ -209,20 +243,19 @@ class MemeFetcher:
                     continue
                 seen_ids.add(item_id)
                 
-                # 提取标题：优先使用图片 alt（通常包含具体文字），其次是链接 title
+                # 提取标题：优先 img alt → 链接 title → get_text（带空格分隔）
                 img = link.find('img')
                 title = ""
                 if img and img.get('alt'):
                     title = img.get('alt')
                 if not title:
-                    title = link.get('title')
+                    title = link.get('title') or ''
                 if not title:
-                    title = link.get_text(strip=True)
-                
+                    title = link.get_text(separator=' ', strip=True)
+
                 if title:
-                    # 使用正则清理 " (user-captioned meme)" 或 " (user-generated gif)"
-                    title = re.sub(r'\s*\((user-captioned meme|user-generated gif)\)', '', title, flags=re.I).strip()
-                else:
+                    title = _clean_imgflip_title(title)
+                if not title:
                     title = f"{keyword} {item_type}"
 
                 if item_type == "i" and search_type in ["all", "meme"]:
